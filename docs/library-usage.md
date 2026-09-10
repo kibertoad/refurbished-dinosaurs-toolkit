@@ -14,6 +14,10 @@ portable content before falling back to per-user application data. Wrap top-leve
 startup with `StartupFailure.Report` so native-library and content errors are visible
 outside a terminal.
 
+For incremental extractors, `InstalledContentWriter` skips byte-identical files while
+atomically replacing changed output. `InstalledContentUninstaller` removes only paths
+owned by the manifest, leaving logs, mods, saves, and other unlisted user files intact.
+
 Do not put format decoders into this package merely because they are old-game related.
 A decoder belongs here only when its contract has multiple restoration consumers and
 can be tested without proprietary fixtures.

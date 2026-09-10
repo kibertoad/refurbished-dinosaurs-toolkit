@@ -1,12 +1,10 @@
+.config/
 .idea/
 .vs/
 **/bin/
 **/obj/
 artifacts/
+template-next/
 TestResults/
 *.user
 *.suo
-*.ghidra
-*.rep/
-template-staging/
-template-next/
