@@ -21,3 +21,4 @@ jobs:
       - run: dotnet build Toad.DiscoveryCenter.slnx --no-restore -v minimal
       - run: dotnet test --project tests/Toad.Discovery.Core.Tests/Toad.Discovery.Core.Tests.csproj --no-restore --no-progress -v minimal
       - run: dotnet pack src/Toad.Discovery.Core/Toad.Discovery.Core.csproj --no-build -c Debug --output artifacts
+      - run: dotnet pack src/Toad.Discovery.LegacyFormats/Toad.Discovery.LegacyFormats.csproj --no-build -c Debug --output artifacts

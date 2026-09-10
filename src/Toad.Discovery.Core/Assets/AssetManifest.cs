@@ -33,6 +33,7 @@ public sealed record AssetManifest(
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in Files)
         {
+            if (file is null) throw new InvalidDataException("Asset manifest contains a null file record.");
             var normalized = AssetPath.NormalizeRelative(file.Path);
             if (!seen.Add(normalized))
                 throw new InvalidDataException($"Duplicate asset path '{normalized}'.");

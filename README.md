@@ -10,7 +10,9 @@ This repository contains the durable pieces that should improve in one place:
 
 - `src/Toad.Discovery.Core`: dependency-free .NET primitives for asset
   fingerprints, manifests, staged installation, content locations, diagnostics,
-  and indexed palettes.
+  deterministic validation, safe persistence, viewport math, and indexed palettes.
+- `src/Toad.Discovery.LegacyFormats`: bounded PCX, BMP RLE8, Smacker, CUE/CDDA,
+  raw Mode 1 image, and ISO-9660 readers extracted from working restorations.
 - `tools/Verify-Repository.ps1`: configurable legal-boundary and repository-size
   enforcement used before builds and releases.
 - `actions/`: composite GitHub Actions for repository verification and a pinned,

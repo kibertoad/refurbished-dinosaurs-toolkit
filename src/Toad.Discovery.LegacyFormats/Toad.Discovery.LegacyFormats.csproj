@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Toad.Discovery.LegacyFormats</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>kibertoad</Authors>
+    <Description>Bounded decoders for file formats commonly found in legacy games.</Description>
+    <PackageTags>game-restoration;pcx;smacker;rle8;iso9660</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/kibertoad/toad-discovery-center</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Toad.Discovery.Core/Toad.Discovery.Core.csproj" />
+    <None Include="../../README.md" Pack="true" PackagePath="README.md" />
+  </ItemGroup>
+</Project>

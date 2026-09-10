@@ -17,3 +17,6 @@ outside a terminal.
 Do not put format decoders into this package merely because they are old-game related.
 A decoder belongs here only when its contract has multiple restoration consumers and
 can be tested without proprietary fixtures.
+
+Generic legacy media and disc formats live in `Toad.Discovery.LegacyFormats`, a
+separate package so modern or non-media restorations do not acquire irrelevant APIs.

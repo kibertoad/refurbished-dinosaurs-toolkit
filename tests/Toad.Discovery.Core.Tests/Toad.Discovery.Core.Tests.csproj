@@ -9,5 +9,6 @@
     <PackageReference Include="xunit.v3" Version="4.0.0" />
     <PackageReference Include="xunit.runner.visualstudio" Version="4.0.0" />
     <ProjectReference Include="../../src/Toad.Discovery.Core/Toad.Discovery.Core.csproj" />
+    <ProjectReference Include="../../src/Toad.Discovery.LegacyFormats/Toad.Discovery.LegacyFormats.csproj" />
   </ItemGroup>
 </Project>

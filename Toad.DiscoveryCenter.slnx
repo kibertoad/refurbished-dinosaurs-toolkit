@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/Toad.Discovery.Core/Toad.Discovery.Core.csproj" />
+    <Project Path="src/Toad.Discovery.LegacyFormats/Toad.Discovery.LegacyFormats.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Toad.Discovery.Core.Tests/Toad.Discovery.Core.Tests.csproj" />
