@@ -1,0 +1,40 @@
+<Project>
+  <PropertyGroup>
+    <MaximumSourceFileLines Condition="'$(MaximumSourceFileLines)' == ''">1000</MaximumSourceFileLines>
+  </PropertyGroup>
+  <UsingTask TaskName="FindOversizedSourceFiles"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)/Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <Files ParameterType="Microsoft.Build.Framework.ITaskItem[]" Required="true" />
+      <MaximumLines ParameterType="System.Int32" Required="true" />
+      <OversizedFiles ParameterType="Microsoft.Build.Framework.ITaskItem[]" Output="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System.Collections.Generic" />
+      <Using Namespace="System.IO" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+        var oversized = new List<Microsoft.Build.Framework.ITaskItem>();
+        foreach (var file in Files)
+        {
+            var lineCount = 0;
+            using (var reader = new StreamReader(file.GetMetadata("FullPath")))
+                while (reader.ReadLine() is not null) lineCount++;
+            if (lineCount <= MaximumLines) continue;
+            var result = new Microsoft.Build.Utilities.TaskItem(file.ItemSpec);
+            result.SetMetadata("LineCount", lineCount.ToString());
+            oversized.Add(result);
+        }
+        OversizedFiles = oversized.ToArray();
+      ]]></Code>
+    </Task>
+  </UsingTask>
+  <Target Name="EnforceSourceFileLineLimit" BeforeTargets="CoreCompile"
+          Condition="'$(DisableSourceFileLineLimit)' != 'true'">
+    <FindOversizedSourceFiles Files="@(Compile)" MaximumLines="$(MaximumSourceFileLines)">
+      <Output TaskParameter="OversizedFiles" ItemName="_OversizedSourceFile" />
+    </FindOversizedSourceFiles>
+    <Error Condition="'@(_OversizedSourceFile)' != ''"
+           Text="Compiled C# source files must not exceed $(MaximumSourceFileLines) lines. Split: @(_OversizedSourceFile->'%(Identity) (%(LineCount) lines)', ', ')" />
+  </Target>
+</Project>

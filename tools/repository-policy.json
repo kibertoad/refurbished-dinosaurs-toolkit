@@ -1,0 +1,21 @@
+{
+  "$schema": "../schemas/repository-policy.schema.json",
+  "deniedRoots": [
+    "UserContent/",
+    "Assets/Original/",
+    "analysis/original/",
+    "reference/original/"
+  ],
+  "restrictedExtensions": [
+    ".666", ".bmp", ".csf", ".cue", ".dat", ".dib", ".exe", ".fnt",
+    ".gob", ".gif", ".ico", ".iso", ".jpeg", ".jpg", ".low", ".mid",
+    ".midi", ".mp3", ".ogg", ".pal", ".pcc", ".pcx", ".png", ".rat",
+    ".res", ".smk", ".wav"
+  ],
+  "approvedRestrictedRoots": [
+    "assets/clean-room/",
+    "tests/fixtures/synthetic/"
+  ],
+  "maximumTrackedFileBytes": 1048576,
+  "approvedLargeFiles": []
+}

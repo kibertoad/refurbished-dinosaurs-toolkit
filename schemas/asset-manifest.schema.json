@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kibertoad/toad-discovery-center/schemas/asset-manifest.schema.json",
+  "title": "Original asset source manifest",
+  "type": "object",
+  "required": ["gameId", "sourceEdition", "files"],
+  "properties": {
+    "gameId": { "type": "string", "minLength": 1 },
+    "sourceEdition": { "type": "string", "minLength": 1 },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "size"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "size": { "type": "integer", "minimum": 0 },
+          "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-fA-F]{64}$" },
+          "required": { "type": "boolean", "default": true }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,33 @@
+name: Set up Inno Setup 7
+description: Downloads, verifies, and installs the pinned Inno Setup compiler on Windows.
+inputs:
+  version:
+    description: Exact Inno Setup 7 version.
+    required: false
+    default: 7.1.0
+runs:
+  using: composite
+  steps:
+    - name: Install verified Inno Setup compiler
+      shell: pwsh
+      env:
+        INNO_VERSION: ${{ inputs.version }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if ($env:INNO_VERSION -notmatch '^7\.\d+\.\d+$') { throw 'Only an exact Inno Setup 7 version is accepted.' }
+        $installer = Join-Path $env:RUNNER_TEMP "innosetup-$env:INNO_VERSION-x64.exe"
+        $compilerRoot = Join-Path $env:RUNNER_TEMP 'InnoSetup'
+        gh release download "is-$($env:INNO_VERSION.Replace('.', '_'))" `
+          --repo jrsoftware/issrc --pattern (Split-Path -Leaf $installer) --dir $env:RUNNER_TEMP
+        gh release verify-asset $installer --repo jrsoftware/issrc
+        $signature = Get-AuthenticodeSignature -LiteralPath $installer
+        if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*Pyrsys B.V.*') {
+          throw "Unexpected Inno Setup signature: $($signature.Status) $($signature.SignerCertificate.Subject)"
+        }
+        $process = Start-Process -FilePath $installer -Wait -PassThru -WindowStyle Hidden `
+          -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/CURRENTUSER','/SP-','/NORESTART',"/DIR=`"$compilerRoot`"")
+        if ($process.ExitCode -ne 0) { throw "Inno Setup installation returned $($process.ExitCode)." }
+        $compiler = Join-Path $compilerRoot 'ISCC.exe'
+        $reported = (& $compiler --version | Out-String).Trim()
+        if ($reported -ne $env:INNO_VERSION) { throw "Expected $env:INNO_VERSION; compiler reports $reported." }
+        "INNO_COMPILER=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Append

@@ -1,0 +1,18 @@
+name: Verify restoration repository
+description: Reject proprietary content, unsafe roots, and unreviewed large files.
+inputs:
+  policy:
+    description: Repository-relative policy JSON path.
+    required: false
+    default: tools/repository-policy.json
+runs:
+  using: composite
+  steps:
+    - name: Verify repository boundary
+      shell: pwsh
+      env:
+        RESTORATION_POLICY: ${{ inputs.policy }}
+      run: >-
+        & "$env:GITHUB_ACTION_PATH/../../tools/Verify-Repository.ps1"
+        -RepositoryRoot "$env:GITHUB_WORKSPACE"
+        -PolicyPath (Join-Path "$env:GITHUB_WORKSPACE" "$env:RESTORATION_POLICY")

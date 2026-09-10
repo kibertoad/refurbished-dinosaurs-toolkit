@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kibertoad/toad-discovery-center/schemas/repository-policy.schema.json",
+  "title": "Restoration repository policy",
+  "type": "object",
+  "required": ["deniedRoots", "restrictedExtensions", "approvedRestrictedRoots", "maximumTrackedFileBytes", "approvedLargeFiles"],
+  "properties": {
+    "deniedRoots": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "restrictedExtensions": { "type": "array", "items": { "type": "string", "pattern": "^\\." }, "uniqueItems": true },
+    "approvedRestrictedRoots": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "maximumTrackedFileBytes": { "type": "integer", "minimum": 1 },
+    "approvedLargeFiles": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+  },
+  "additionalProperties": false
+}

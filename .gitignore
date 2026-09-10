@@ -1,0 +1,10 @@
+.idea/
+.vs/
+**/bin/
+**/obj/
+artifacts/
+TestResults/
+*.user
+*.suo
+*.ghidra
+*.rep/
