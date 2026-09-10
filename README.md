@@ -9,8 +9,9 @@ their Windows installer with Inno Setup 7, and use Ghidra for static analysis.
 This repository contains the durable pieces that should improve in one place:
 
 - `src/Toad.Discovery.Core`: dependency-free .NET primitives for asset
-  fingerprints, manifests, staged installation, content locations, diagnostics,
-  deterministic validation, safe persistence, viewport math, and indexed palettes.
+  fingerprints, manifests, staged and idempotent installation, manifest-scoped
+  uninstall, content locations, diagnostics, deterministic validation, safe
+  persistence, viewport math, and indexed palettes.
 - `src/Toad.Discovery.LegacyFormats`: bounded PCX, BMP RLE8, Smacker, CUE/CDDA,
   raw Mode 1 image, and ISO-9660 readers extracted from working restorations.
 - `tools/Verify-Repository.ps1`: configurable legal-boundary and repository-size

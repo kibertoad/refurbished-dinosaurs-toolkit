@@ -4,6 +4,15 @@ namespace Toad.Discovery.Core.Assets;
 
 public static class FileFingerprint
 {
+    public static string Sha256(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        using var stream = new FileStream(
+            path, FileMode.Open, FileAccess.Read, FileShare.Read,
+            bufferSize: 128 * 1024, FileOptions.SequentialScan);
+        return Convert.ToHexStringLower(SHA256.HashData(stream));
+    }
+
     public static async Task<string> Sha256Async(
         string path,
         CancellationToken cancellationToken = default)

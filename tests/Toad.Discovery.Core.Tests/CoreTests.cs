@@ -222,6 +222,30 @@ public sealed class CoreTests
         finally { Directory.Delete(root, true); }
     }
 
+    [Fact]
+    public void InstalledWriterReusesFilesAndUninstallerPreservesUnlistedContent()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var first = InstalledContentWriter.WriteBytes(root, "Decoded/asset.bin", [1, 2, 3]);
+            var second = InstalledContentWriter.WriteBytes(root, "Decoded/asset.bin", [1, 2, 3]);
+            Assert.True(first.Changed);
+            Assert.False(second.Changed);
+            File.WriteAllText(Path.Combine(root, "notes.txt"), "keep me");
+            File.WriteAllText(Path.Combine(root, "manifest.json"), "placeholder");
+            var manifest = new InstalledAssetManifest(1, "game", "disc", new string('a', 64),
+                DateTimeOffset.UtcNow,
+                [new("Decoded/asset.bin", first.Bytes, first.Sha256, "SOURCE.DAT")], "1.0.0");
+
+            Assert.Equal(1, InstalledContentUninstaller.Remove(root, manifest));
+            Assert.True(File.Exists(Path.Combine(root, "notes.txt")));
+            Assert.False(File.Exists(Path.Combine(root, "Decoded", "asset.bin")));
+            Assert.False(File.Exists(Path.Combine(root, "manifest.json")));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     private static string CreateTemporaryDirectory()
     {
         var path = Path.Combine(Path.GetTempPath(), "toad-discovery-tests", Guid.NewGuid().ToString("N"));

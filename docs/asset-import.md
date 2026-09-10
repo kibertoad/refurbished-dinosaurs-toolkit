@@ -25,6 +25,12 @@ matching destination can be a no-op unless `--force` is supplied. Support separa
 `--verify-source`, `--verify-output`, and catalog/report modes so diagnosis never
 requires rewriting content.
 
+Use `InstalledContentWriter` when an extractor emits files incrementally: it
+atomically replaces changed output and reuses byte-identical output. If imported
+content can be removed separately from the remake, use
+`InstalledContentUninstaller`; it deletes only paths declared by the installed
+manifest and preserves any unlisted user files.
+
 The output manifest should include importer version, source edition (not purchase
 channel unless relevant), source fingerprints, every generated relative path, length,
 and hash. Never copy executables when decoded data is sufficient. Never place imported
