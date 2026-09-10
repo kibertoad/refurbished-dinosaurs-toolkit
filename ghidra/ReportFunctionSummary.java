@@ -1,5 +1,5 @@
 // Prints focused decompiler output for explicitly supplied virtual addresses.
-// @category Rechaos
+// @category Restoration
 
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;

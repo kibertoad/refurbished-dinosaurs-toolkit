@@ -1,5 +1,5 @@
 // Prints an explicitly bounded line window from one focused decompilation.
-// @category Rechaos
+// @category Restoration
 
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;

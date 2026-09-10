@@ -1,5 +1,5 @@
 // Reports the three nearest pushed arguments at every direct call to a function.
-// @category Rechaos
+// @category Restoration
 
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;

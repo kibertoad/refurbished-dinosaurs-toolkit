@@ -1,5 +1,5 @@
 // Prints a bounded byte range at an explicitly supplied virtual address.
-// @category Rechaos
+// @category Restoration
 
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;

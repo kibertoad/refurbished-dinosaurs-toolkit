@@ -1,5 +1,5 @@
 // Prints bounded instruction context around explicitly supplied addresses.
-// @category Rechaos
+// @category Restoration
 
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;

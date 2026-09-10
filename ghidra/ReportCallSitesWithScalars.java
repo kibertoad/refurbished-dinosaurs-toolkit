@@ -1,5 +1,5 @@
 // Reports bounded call sites whose preceding argument setup contains requested scalars.
-// @category Rechaos
+// @category Restoration
 
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;

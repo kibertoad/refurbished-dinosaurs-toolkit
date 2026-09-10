@@ -1,5 +1,5 @@
 // Prints bounded context around requested text in one focused decompilation.
-// @category Rechaos
+// @category Restoration
 
 import ghidra.app.decompiler.DecompInterface;
 import ghidra.app.decompiler.DecompileResults;

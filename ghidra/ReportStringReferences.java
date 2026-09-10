@@ -1,5 +1,5 @@
 // Finds bounded references to explicitly requested string fragments.
-// @category Rechaos
+// @category Restoration
 
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.listing.Data;

@@ -1,5 +1,5 @@
 // Reports navigation metadata only; run from Ghidra's headless analyzer.
-// @category Rechaos
+// @category Restoration
 
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.listing.Function;

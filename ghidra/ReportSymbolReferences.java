@@ -1,5 +1,5 @@
 // Reports bounded references to explicitly requested symbol-name fragments.
-// @category Rechaos
+// @category Restoration
 
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.listing.Function;

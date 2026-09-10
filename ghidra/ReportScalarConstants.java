@@ -1,5 +1,5 @@
 // Reports bounded instruction references to explicitly supplied scalar values.
-// @category Rechaos
+// @category Restoration
 
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.listing.Function;
