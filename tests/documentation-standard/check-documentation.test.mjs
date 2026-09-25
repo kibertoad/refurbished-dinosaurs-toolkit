@@ -428,3 +428,55 @@ test("a procedure another rule may interrupt is not established by a complete re
   assert.equal(status, 1);
   assert.match(output, /another rule may interrupt this procedure \(# may run:\), so a complete reading cannot establish it/);
 });
+
+// An emulated-call experiment of the kill handler, cited by RULE-SCORE-001 beside its static finding.
+function establishByEmulatedCall(root) {
+  establishByReading(root, null);
+  mkdirSync(join(root, "spec", "experiments"));
+  writeFileSync(join(root, "spec", "experiments", "EXP-SCORE-001.md"), [
+    "---", "id: EXP-SCORE-001", "title: Calling the kill handler adds one to the score", "status: recorded",
+    "builds: [BLD-EXAMPLE-1.0]", "superseded_by: []", "recorded_by: example", "reproduced_by: []",
+    "environment: Unicorn 2.1.3, harness at 0123abc", "starting_state: emulated-call", "recording: null",
+    "repetitions: 1000", "fixture: EXP-SCORE-001.json", "---", "",
+    ...["Question", "Setup", "Procedure", "Observations", "Results", "Conclusion"].flatMap((h) => [`## ${h}`, "", "None.", ""]),
+  ].join("\n"));
+  writeFileSync(join(root, "spec", "experiments", "EXP-SCORE-001.json"),
+    JSON.stringify({ experiment: "EXP-SCORE-001", runs: [{ arguments: { n: 0 }, end_state: { return: 1 } }] }));
+  replaceIn(root, "spec/rules/RULE-SCORE-001.md", "evidence: [SRC-MANUAL, FND-SCORE-001]", "evidence: [SRC-MANUAL, FND-SCORE-001, EXP-SCORE-001]");
+}
+
+test("an emulated call establishes a rule and needs no save hash", (t) => {
+  const root = broken(t, (r) => establishByEmulatedCall(r));
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+});
+
+test("emulated calls alone do not establish a rule another rule may interrupt", (t) => {
+  const root = broken(t, (r) => {
+    establishByEmulatedCall(r);
+    copyRule(r, "RULE-SCORE-002");
+    replaceIn(r, "parity/SCORE.md", "| `RULE-SCORE-001` |", `${row("RULE-SCORE-002")}\n| \`RULE-SCORE-001\` |`);
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "related: []", "related: [RULE-SCORE-002]");
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "    return n + 1", "    # may run: RULE-SCORE-002\n    return n + 1");
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /so emulated calls alone cannot establish it/);
+});
+
+test("tests against emulated calls alone do not validate a rule another rule may interrupt", (t) => {
+  const root = broken(t, (r) => {
+    establishByEmulatedCall(r);
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "status: established\n", "status: supported\n");
+    copyRule(r, "RULE-SCORE-002");
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "related: []", "related: [RULE-SCORE-002]");
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "    return n + 1", "    # may run: RULE-SCORE-002\n    return n + 1");
+    mkdirSync(join(r, "tests"));
+    writeFileSync(join(r, "tests", "Score.test.ts"), "// Replays EXP-SCORE-001 for RULE-SCORE-001.\n");
+    replaceIn(r, "parity/SCORE.md", "| `RULE-SCORE-001` | A kill adds one point to the score | established | missing | None | None | established | None |",
+      `${row("RULE-SCORE-002")}\n| \`RULE-SCORE-001\` | A kill adds one point to the score | supported | complete | \`tests/Score.test.ts\` | None | validated | None |`);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /RULE-SCORE-001: another rule may interrupt it \(# may run:\), so tests against emulated calls alone cannot validate it/);
+});
