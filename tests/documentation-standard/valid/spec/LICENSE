@@ -1,0 +1,4 @@
+Licences for the spec/ directory
+
+Markdown files are covered by CC BY 4.0, and Kaitai Struct definitions
+(formats/*.ksy) by the MIT License. This fixture is test data.
