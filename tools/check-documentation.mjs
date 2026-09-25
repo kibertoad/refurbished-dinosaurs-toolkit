@@ -343,6 +343,15 @@ function cells(line) {
 const idsIn = (text) => [...new Set(String(text ?? "").match(ID_RE) ?? [])];
 const kindOf = (id) => id.split("-")[0];
 const areaOf = (id) => id.split("-")[1];
+// Orders IDs of one kind and area by number, so RULE-A-999 comes before RULE-A-1000. Anything else
+// compares by UTF-16 code unit, as Array.prototype.sort does, so the order does not depend on the
+// machine's locale.
+const idSortKey = (id) => id.replace(/^((?:FMT|RULE|FND|EXP|BUG|SCR|DEV)-[A-Z][A-Z0-9]*-)(\d+)$/, (_, head, n) => head + n.padStart(12, "0"));
+const compareIds = (a, b) => {
+  const x = idSortKey(a);
+  const y = idSortKey(b);
+  return x < y ? -1 : x > y ? 1 : 0;
+};
 const asList = (v) => (Array.isArray(v) ? v : v === null || v === undefined || v === "" ? [] : [v]);
 
 // ---------------------------------------------------------------------------------------------
@@ -387,6 +396,8 @@ for (const [kind, { dir }] of Object.entries(KINDS)) {
     const id = entry.meta.id;
     if (typeof id !== "string") { problem(file, "has no id"); continue; }
     if (name !== `${id}.md`) problem(file, `file name must be ${id}.md`);
+    // Later checks look the kind up in KINDS, so an entry of an unknown kind is reported and dropped.
+    if (!KINDS[kindOf(id)]) { problem(file, `${id} is not an ID of a known kind`); continue; }
     if (kindOf(id) !== kind) problem(file, `a ${kindOf(id)} entry does not belong in spec/${dir}/`);
     if (entries.has(id)) problem(file, `ID ${id} is used twice`);
     entries.set(id, entry);
@@ -648,7 +659,7 @@ function checkFormat(e) {
     }
   }
   for (const pattern of asList(meta.files)) {
-    const re = new RegExp("^" + String(pattern).replace(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("*", "[^/]*") + "$");
+    const re = new RegExp("^" + String(pattern).replace(/[.+^${}()|[\]\\]/g, "\\$&").replaceAll("*", "[^/]*").replaceAll("?", "[^/]") + "$");
     for (const b of asList(meta.builds)) if (!(buildFiles.get(b) ?? []).some((f) => re.test(f.path))) problem(file, `files pattern ${pattern} matches no file of ${b}`);
   }
   const layout = e.sections.find((s) => s.title === "Layout");
@@ -662,6 +673,7 @@ function checkFormat(e) {
     const evCol = t.header.indexOf("Evidence");
     const nameCol = t.header.indexOf("Name");
     for (const row of t.rows) {
+      if (row.length !== t.header.length) { problem(file, `${kindLabel} row ${row.join(" | ")} has ${row.length} cells, not ${t.header.length}`); continue; }
       const isTotal = /^Total/.test(row[t.header.indexOf("Meaning")] ?? "") && (row[statusCol] ?? "") === "";
       if (isTotal) continue;
       const st = row[statusCol];
@@ -690,6 +702,7 @@ function checkFormat(e) {
     else for (const f of (t.heading.match(/`([^`]+)`/g) ?? t.heading.split(/\s*,\s*|\s+and\s+/)).map((x) => x.replaceAll("`", "").trim()).filter(Boolean)) if (!names.has(f)) problem(file, `enumeration heading names ${f}, which is not a field of the layout`);
     visit(t, "enumeration");
     for (const row of t.rows) {
+      if (row.length !== t.header.length) continue; // visit reported it
       const n = row[1].replaceAll("`", "");
       if (!/^[A-Z][A-Z0-9_]*$/.test(n)) problem(file, `enumeration name ${n} must be upper-case letters, digits and underscores`);
       if (!enumNames.has(n)) enumNames.set(n, []);
@@ -815,7 +828,7 @@ for (const [id, e] of entries) {
 // Glossary claims
 for (const [term, text] of glossary) {
   for (const x of idsIn(text)) if (!entries.has(x)) problem(join(specDir, "glossary.md"), `${term} cites ${x}, which does not exist`);
-  else if (isSuperseded(x) && /\[[^\]]*\]/.test(text) && text.includes(x)) problem(join(specDir, "glossary.md"), `${term} cites ${x}, which is superseded`);
+  else if (isSuperseded(x)) problem(join(specDir, "glossary.md"), `${term} cites ${x}, which is superseded`);
 }
 
 // Body references
@@ -893,7 +906,7 @@ if (!skipKsy) {
   if (compiler && ksys.length) {
     const out = mkdtempSync(join(tmpdir(), "ksy-check-"));
     try {
-      execFileSync(compiler.cmd, [...compiler.args, "--target", "python", "--outdir", out, "--import-path", fd, ...ksys], { stdio: "pipe", shell: process.platform === "win32" });
+      runTool(compiler.cmd, [...compiler.args, "--target", "python", "--outdir", out, "--import-path", fd, ...ksys]);
     } catch (err) {
       problem(null, `Kaitai definitions do not compile:\n${String(err.stdout ?? "")}${String(err.stderr ?? "")}`);
     } finally {
@@ -906,11 +919,20 @@ function findKaitai() {
   if (process.env.KSC) return { cmd: process.env.KSC, args: [] };
   for (const cmd of ["kaitai-struct-compiler", "ksc"]) {
     try {
-      execFileSync(cmd, ["--version"], { stdio: "pipe", shell: process.platform === "win32" });
+      runTool(cmd, ["--version"]);
       return { cmd, args: [] };
     } catch {}
   }
   return null;
+}
+
+// On Windows the compiler is a .bat file, which only cmd.exe can run. Node's shell: true joins the
+// arguments without quoting them, so a path with a space would split. This quotes every argument
+// and hands cmd.exe the line as is. A % in an argument would still expand; paths here have none.
+function runTool(cmd, args) {
+  if (process.platform !== "win32") return execFileSync(cmd, args, { stdio: "pipe" });
+  const line = [cmd, ...args].map((a) => `"${a}"`).join(" ");
+  return execFileSync(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `"${line}"`], { stdio: "pipe", windowsVerbatimArguments: true });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -982,11 +1004,12 @@ const parityRows = new Map();
       for (const t of tables(s.text)) {
         if (t.header.join("|") !== header.join("|")) { problem(path, `tables under ${s.title} have the columns ${header.join(" | ")}`); continue; }
         for (const row of t.rows) {
+          if (row.length !== header.length) { problem(path, `the row ${row.join(" | ")} under ${s.title} has ${row.length} cells, not ${header.length}`); continue; }
           const [specId, title, specStatus, code, tests, devs, status, notes] = row.map((c) => c.replaceAll("`", "").trim());
           if (parityRows.has(specId)) problem(path, `${specId} has more than one row`);
           parityRows.set(specId, true);
           if (areaOf(specId) !== s.title) problem(path, `${specId} belongs under ${areaOf(specId)}`);
-          if (specId < previous) problem(path, `${specId} is out of ID order`);
+          if (compareIds(specId, previous) < 0) problem(path, `${specId} is out of ID order`);
           previous = specId;
           const e = entries.get(specId);
           if (!e) { problem(path, `${specId} does not exist in the spec`); continue; }
@@ -1003,8 +1026,8 @@ const parityRows = new Map();
             else if (!readFileSync(p, "utf8").includes(specId)) problem(path, `${specId}: test file ${tf} does not mention ${specId}`);
           }
           const listedDevs = devs === "None" ? [] : devs.split(",").map((x) => x.trim()).filter(Boolean);
-          const expectedDevs = [...deviations].filter(([, d]) => !d.dropped && d.departs.includes(specId)).map(([k]) => k).sort();
-          if (listedDevs.slice().sort().join(",") !== expectedDevs.join(",")) problem(path, `${specId}: Deviations must be ${expectedDevs.join(", ") || "None"}`);
+          const expectedDevs = [...deviations].filter(([, d]) => !d.dropped && d.departs.includes(specId)).map(([k]) => k).sort(compareIds);
+          if (listedDevs.slice().sort(compareIds).join(",") !== expectedDevs.join(",")) problem(path, `${specId}: Deviations must be ${expectedDevs.join(", ") || "None"}`);
           let expectedStatus;
           if (code !== "complete" || e.meta.status === "disputed") expectedStatus = e.meta.status;
           else if (testFiles.length === 0) expectedStatus = "implemented";
@@ -1109,13 +1132,27 @@ function walk(dir, fn) {
       const m = /^spec\/(?:builds|sources|formats|rules|findings|experiments|bugs|screens)\/([A-Z]+-[A-Z0-9.-]+)\.md$/.exec(p);
       if (m && !entries.has(m[1])) problem(null, `${m[1]} exists at ${base} and has been deleted or renamed`);
     }
-    try {
-      // ./ makes the path relative to --root, which need not be the top of the repository.
-      const oldReadme = git("show", `${base}:./spec/README.md`);
-      for (const m of oldReadme.matchAll(/^\| `([A-Z][A-Z0-9]*)` \|/gm)) if (!areas.includes(m[1])) problem(null, `area ${m[1]} exists at ${base} and has been removed or renamed`);
-      const oldDev = git("show", `${base}:./DEVIATIONS.md`);
-      for (const m of oldDev.matchAll(/^## (DEV-[A-Z0-9]+-\d+)$/gm)) if (!deviations.has(m[1])) problem(null, `${m[1]} exists at ${base} and has been removed`);
-    } catch {}
+    // ./ makes the path relative to --root, which need not be the top of the repository. A file
+    // that does not exist at the base has nothing to compare, and each is read on its own so a
+    // missing README does not skip the deviation comparison.
+    const show = (path) => {
+      try {
+        return git("show", `${base}:./${path}`).replace(/\r\n/g, "\n");
+      } catch {
+        return null;
+      }
+    };
+    const oldReadme = show("spec/README.md");
+    // Reads the area table the way the current README is read, so areas with or without
+    // backticks are both found.
+    const oldAreaSection = oldReadme && splitSections(oldReadme).find((s) => s.title === "Areas");
+    const oldAreaTable = oldAreaSection && tables(oldAreaSection.text)[0];
+    for (const row of oldAreaTable?.rows ?? []) {
+      const a = row[0].replaceAll("`", "");
+      if (!areas.includes(a)) problem(null, `area ${a} exists at ${base} and has been removed or renamed`);
+    }
+    const oldDev = show("DEVIATIONS.md");
+    if (oldDev) for (const m of oldDev.matchAll(/^## (DEV-[A-Z0-9]+-\d+)$/gm)) if (!deviations.has(m[1])) problem(null, `${m[1]} exists at ${base} and has been removed`);
   }
 }
 
@@ -1127,7 +1164,7 @@ function link(id) {
   return `[${id}](../${KINDS[e.kind].dir}/${id}.md)`;
 }
 const esc = (s) => String(s ?? "").replaceAll("|", "\\|");
-const sortedIds = [...entries.keys()].sort();
+const sortedIds = [...entries.keys()].sort(compareIds);
 const header = "<!-- Generated by the documentation standard check. Do not edit. -->\n\n";
 
 const byKind = [header + "# Entries by kind\n"];
@@ -1185,7 +1222,7 @@ for (const x of sortedIds) {
   const m = refs.get(x);
   if (!m.size) { references.push("None.\n"); continue; }
   references.push("| Cited by | In |\n|---|---|\n");
-  for (const [from, hows] of [...m].sort((a, b) => a[0].localeCompare(b[0]))) references.push(`| ${entries.has(from) ? link(from) : esc(from)} | ${[...hows].sort().join(", ")} |\n`);
+  for (const [from, hows] of [...m].sort((a, b) => compareIds(a[0], b[0]))) references.push(`| ${entries.has(from) ? link(from) : esc(from)} | ${[...hows].sort().join(", ")} |\n`);
 }
 
 const indexes = { "by-kind.md": byKind.join(""), "by-area.md": byArea.join(""), "by-status.md": byStatus.join(""), "references.md": references.join("") };

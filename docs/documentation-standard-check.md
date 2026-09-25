@@ -70,9 +70,11 @@ jobs:
 With the default `fetch-depth: 1` the check still runs, but the deleted-ID comparison is skipped
 because `origin/main` is not fetched.
 
-The job needs only `contents: read`. The action installs the Kaitai Struct compiler on the
-runner's Java; the GitHub-hosted Linux, Windows and macOS runners all have one. On a self-hosted
-runner without Java, set `java-version: "21"`.
+The job needs only `contents: read`. When `spec/formats/` holds a `.ksy` file, the action installs
+the Kaitai Struct compiler on the runner's Java; the GitHub-hosted Linux, Windows and macOS runners
+all have one. On a self-hosted runner without Java, set `java-version: "21"`. The compiler download
+is cached per version, and its SHA-256 is checked on every run. A restoration with no `.ksy` file
+skips the install and needs no Java.
 
 ### 4. Choose the inputs
 
@@ -85,7 +87,7 @@ Most restorations need no inputs. Set one when the defaults do not match the rep
 | `references` | empty | Directories whose files may cite IDs but whose `PLACEHOLDER:` comments do not count against parity. |
 | `data-dirs` | from the build entries | Top-level directories of the original's data. A path into one must name a build file with its exact case. |
 | `base` | fork point | Ref whose IDs, areas and deviations must still exist. |
-| `kaitai-version` | `0.11` | Compiler release to install, or empty to skip the install. |
+| `kaitai-version` | `0.11` | Compiler release to install, or empty to skip the install. With no `.ksy` file the install is skipped anyway. |
 | `java-version` | empty | Java to install with `actions/setup-java` before the compiler. |
 
 The code directories are scanned for `.cs`, `.ts`, `.mjs`, `.js`, `.ps1`, `.fs`, `.md` and `.json`

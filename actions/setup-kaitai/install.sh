@@ -13,9 +13,17 @@ esac
 tmp="$RUNNER_TEMP"
 if [ "$RUNNER_OS" = Windows ]; then tmp="$(cygpath -u "$tmp")"; fi
 zip="$tmp/kaitai-struct-compiler-$KSC_VERSION.zip"
-curl -fsSL --retry 3 -o "$zip" \
-  "https://github.com/kaitai-io/kaitai_struct_compiler/releases/download/$KSC_VERSION/kaitai-struct-compiler-$KSC_VERSION.zip"
-echo "$sha256  $zip" | sha256sum --check --strict
+# The action may have restored the zip from its cache. It is checked against the hash either way.
+if [ ! -f "$zip" ]; then
+  curl -fsSL --retry 3 -o "$zip" \
+    "https://github.com/kaitai-io/kaitai_struct_compiler/releases/download/$KSC_VERSION/kaitai-struct-compiler-$KSC_VERSION.zip"
+fi
+# macOS may have shasum without GNU sha256sum.
+if command -v sha256sum > /dev/null; then
+  echo "$sha256  $zip" | sha256sum --check --strict
+else
+  echo "$sha256  $zip" | shasum -a 256 --check
+fi
 unzip -q -o "$zip" -d "$tmp"
 bin="$tmp/kaitai-struct-compiler-$KSC_VERSION/bin/kaitai-struct-compiler"
 if [ "$RUNNER_OS" = Windows ]; then bin="$bin.bat"; fi

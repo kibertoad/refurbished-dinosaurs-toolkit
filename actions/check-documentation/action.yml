@@ -22,7 +22,7 @@ inputs:
     required: false
     default: ""
   kaitai-version:
-    description: Kaitai Struct compiler release to install for compiling spec/formats/*.ksy. Empty skips the install.
+    description: Kaitai Struct compiler release to install for compiling spec/formats/*.ksy. Empty skips the install, as does a root with no .ksy file.
     required: false
     default: "0.11"
   java-version:
@@ -32,14 +32,27 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Look for Kaitai definitions
+      id: ksy
+      shell: bash
+      env:
+        DOC_ROOT: ${{ inputs.root }}
+      run: |
+        if compgen -G "$DOC_ROOT/spec/formats/*.ksy" > /dev/null; then echo "found=true" >> "$GITHUB_OUTPUT"; fi
     - name: Set up Java
-      if: inputs.kaitai-version != '' && inputs.java-version != ''
+      if: inputs.kaitai-version != '' && inputs.java-version != '' && steps.ksy.outputs.found == 'true'
       uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
       with:
         distribution: temurin
         java-version: ${{ inputs.java-version }}
+    - name: Cache the Kaitai Struct compiler download
+      if: inputs.kaitai-version != '' && steps.ksy.outputs.found == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/kaitai-struct-compiler-${{ inputs.kaitai-version }}.zip
+        key: kaitai-struct-compiler-${{ inputs.kaitai-version }}-${{ runner.os }}
     - name: Install verified Kaitai Struct compiler
-      if: inputs.kaitai-version != ''
+      if: inputs.kaitai-version != '' && steps.ksy.outputs.found == 'true'
       shell: bash
       env:
         KSC_VERSION: ${{ inputs.kaitai-version }}

@@ -22,6 +22,11 @@ runs:
       with:
         distribution: temurin
         java-version: ${{ inputs.java-version }}
+    - name: Cache the compiler download
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/kaitai-struct-compiler-${{ inputs.version }}.zip
+        key: kaitai-struct-compiler-${{ inputs.version }}-${{ runner.os }}
     - name: Install verified Kaitai Struct compiler
       id: install
       shell: bash
