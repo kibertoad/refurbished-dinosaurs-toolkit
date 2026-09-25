@@ -97,6 +97,89 @@ test("a PLACEHOLDER keeps a row from being complete only under --code", (t) => {
   assert.match(asCode.output, /RULE-SCORE-001: a PLACEHOLDER comment cites it, so it cannot be complete/);
 });
 
+// A copy of RULE-SCORE-001 under another ID, without the define that would clash with it.
+function copyRule(root, id, edit = (text) => text) {
+  const text = readFileSync(join(root, "spec", "rules", "RULE-SCORE-001.md"), "utf8")
+    .replace("id: RULE-SCORE-001", `id: ${id}`)
+    .replace("define add_points(n: UINT16):\n    return n + 1", "return n + 1");
+  writeFileSync(join(root, "spec", "rules", `${id}.md`), edit(text));
+}
+
+test("an entry whose ID has an unknown kind is reported without a crash", (t) => {
+  const root = broken(t, (r) => copyRule(r, "RUEL-SCORE-002"));
+  const { status, output } = run(root, "--check");
+  assert.equal(status, 1);
+  assert.match(output, /RUEL-SCORE-002\.md: RUEL-SCORE-002 is not an ID of a known kind/);
+  assert.doesNotMatch(output, /TypeError/);
+});
+
+test("a parity row with too few cells is reported without a crash", (t) => {
+  const root = broken(t, (r) => replaceIn(r, "PARITY.md", "| `FMT-SCORE-001` | The best score in DATA/SCORES.BIN | sourced | missing | None | None | sourced | None |",
+    "| `FMT-SCORE-001` | The best score in DATA/SCORES.BIN | sourced | missing |"));
+  const { status, output } = run(root, "--check");
+  assert.equal(status, 1);
+  assert.match(output, /PARITY\.md: the row .*FMT-SCORE-001.* under SCORE has 4 cells, not 8/);
+  assert.doesNotMatch(output, /TypeError/);
+});
+
+test("IDs past 999 are ordered by number", (t) => {
+  const root = broken(t, (r) => {
+    copyRule(r, "RULE-SCORE-999");
+    copyRule(r, "RULE-SCORE-1000");
+    const row = (id) => `| \`${id}\` | A kill adds one point to the score | sourced | missing | None | None | sourced | None |`;
+    replaceIn(r, "PARITY.md", row("RULE-SCORE-001"), [row("RULE-SCORE-001"), row("RULE-SCORE-999"), row("RULE-SCORE-1000")].join("\n"));
+    replaceIn(r, "PARITY.md", "| `sourced` | 2 |", "| `sourced` | 4 |");
+    replaceIn(r, "PARITY.md", "| `missing` | 2 |", "| `missing` | 4 |");
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  const byArea = readFileSync(join(root, "spec", "index", "by-area.md"), "utf8");
+  assert.ok(byArea.indexOf("RULE-SCORE-999") < byArea.indexOf("RULE-SCORE-1000"), byArea);
+});
+
+test("a glossary term that names a superseded entry is reported", (t) => {
+  const root = broken(t, (r) => {
+    copyRule(r, "RULE-SCORE-002", (text) => text.replace("status: sourced", "status: superseded").replace("superseded_by: []", "superseded_by: [RULE-SCORE-001]"));
+    replaceIn(r, "spec/glossary.md", "RULE-SCORE-001.", "RULE-SCORE-001, which replaced RULE-SCORE-002.");
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /add_points cites RULE-SCORE-002, which is superseded/);
+});
+
+test("? in a files pattern matches one character", (t) => {
+  const root = broken(t, (r) => replaceIn(r, "spec/formats/FMT-SCORE-001.md", 'files: ["DATA/SCORES.BIN"]', 'files: ["DATA/SCORES.BI?"]'));
+  const { status, output } = run(root, "--check");
+  assert.equal(status, 0, output);
+});
+
+test("an area without backticks that is removed since the base is reported", (t) => {
+  const root = broken(t, (r) => {
+    replaceIn(r, "spec/README.md", "| `SCORE` | The high-score table and how a score is counted. |",
+      "| SCORE | The high-score table and how a score is counted. |\n| EXTRA | Nothing yet. |");
+    const git = (...args) => assert.equal(spawnSync("git", ["-C", r, "-c", "user.name=test", "-c", "user.email=test@example.com", ...args]).status, 0);
+    git("init", "-q");
+    git("add", ".");
+    git("commit", "-q", "-m", "base");
+    replaceIn(r, "spec/README.md", "\n| EXTRA | Nothing yet. |", "");
+  });
+  const { status, output } = run(root, "--check", "--base", "HEAD");
+  assert.equal(status, 1);
+  assert.match(output, /area EXTRA exists at HEAD and has been removed or renamed/);
+});
+
+test("a compiler path and a root with spaces reach the compiler whole", { skip: process.platform !== "win32" && "Windows only" }, (t) => {
+  const root = broken(t, () => {});
+  const spaced = mkdtempSync(join(tmpdir(), "doc check "));
+  t.after(() => rmSync(spaced, { recursive: true, force: true }));
+  cpSync(root, join(spaced, "repo root"), { recursive: true });
+  // Succeeds only when the sixth argument, the import path, arrives as one existing directory.
+  const ksc = join(spaced, "fake ksc.bat");
+  writeFileSync(ksc, '@echo off\r\nif not exist "%~6\\fmt_score_001.ksy" exit /b 1\r\nexit /b 0\r\n');
+  const result = spawnSync(process.execPath, [script, "--root", join(spaced, "repo root"), "--check"], { encoding: "utf8", env: { ...process.env, KSC: ksc } });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
 test("unknown options exit with 2", () => {
   const { status, output } = run(fixture, "--frobnicate");
   assert.equal(status, 2);
