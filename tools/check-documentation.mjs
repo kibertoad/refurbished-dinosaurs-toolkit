@@ -27,7 +27,7 @@
 // scalars, flow lists, and block lists of flat maps.
 
 import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
-import { join, dirname, relative, basename, resolve } from "node:path";
+import { join, dirname, relative, basename, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -353,7 +353,8 @@ function cells(line) {
 // A value file: CSV as RFC 4180 defines it, with a header row. Returns { header, rows }, or null
 // after reporting a problem.
 function readCsv(file) {
-  const text = readFileSync(file, "utf8");
+  // Spreadsheet programs start a UTF-8 CSV with a byte order mark, which would join the first header.
+  const text = readFileSync(file, "utf8").replace(/^﻿/, "");
   const records = [];
   let record = [];
   let field = "";
@@ -378,6 +379,8 @@ function readCsv(file) {
   }
   if (quoted) { problem(file, "has a quoted field that is never closed"); return null; }
   if (field !== "" || record.length > 0) { record.push(field); records.push(record); }
+  // Blank lines at the end of the file are not rows.
+  while (records.length > 0 && records.at(-1).length === 1 && records.at(-1)[0] === "") records.pop();
   if (records.length === 0) { problem(file, "has no header row"); return null; }
   const [header, ...rows] = records;
   for (const row of rows) if (row.length !== header.length) { problem(file, `the row ${row.join(",")} has ${row.length} fields, not ${header.length}`); return null; }
@@ -510,9 +513,11 @@ for (const [id, e] of entries) {
   const manifest = parseYaml(readText(path), path);
   for (const key of Object.keys(manifest)) if (key !== "files") problem(path, `a manifest has only the key files, not ${key}`);
   if (!Array.isArray(manifest.files)) { problem(path, "files must be a list"); continue; }
-  buildFiles.set(id, manifest.files);
-  for (const f of manifest.files) {
-    if (!f || typeof f !== "object") { problem(path, "every item of files is a map of path, format, size and xxh3"); continue; }
+  // Later checks read f.path, so an item that is not a map is reported and left out.
+  if (manifest.files.some((f) => !f || typeof f !== "object")) problem(path, "every item of files is a map of path, format, size and xxh3");
+  const files = manifest.files.filter((f) => f && typeof f === "object");
+  buildFiles.set(id, files);
+  for (const f of files) {
     if (!f.path) problem(path, "every file has a path");
     if (!["MZ", "COM", "NE", "PE", "LE", "LX", "ELF", "cdda", "data"].includes(f.format)) problem(path, `${f.path}: format ${f.format} is not one of MZ, COM, NE, PE, LE, LX, ELF, cdda, data`);
     if (!/^[0-9a-f]{32}$/.test(String(f.xxh3))) problem(path, `${f.path}: xxh3 must be 32 lower-case hex digits`);
@@ -679,6 +684,7 @@ for (const [id, e] of entries) {
         if (meta.starting_state !== "new-game" && !(fx.starting_state && fx.starting_state.xxh3)) problem(fixture, "gives the hash of the save its runs started from");
         if (typeof meta.starting_state === "string" && meta.starting_state.endsWith(".patch.json") && !fx.starting_state?.base_xxh3) problem(fixture, "a patch fixture gives the base save's hash as well");
         for (const run of asList(fx.runs)) for (const ev of asList(run.events)) if (!glossary.has(ev.event)) problem(fixture, `event ${ev.event} has no glossary entry`);
+        if (typeof meta.recording === "string" && meta.recording !== "" && !fx.recording_xxh3) problem(fixture, "an experiment with a recording gives the recording's hash in recording_xxh3");
       } catch (err) {
         problem(fixture, `is not valid JSON: ${err.message}`);
       }
@@ -688,12 +694,7 @@ for (const [id, e] of entries) {
     if (typeof meta.recording === "string" && meta.recording !== "") {
       const rec = meta.recording;
       if (rec.startsWith("recordings/")) { if (!existsSync(join(specDir, "experiments", rec))) problem(file, `recording ${rec} does not exist`); }
-      else if (!rec.startsWith("captures/") && !builds.some((b) => (buildFiles.get(b) ?? []).some((f) => f?.path === rec))) problem(file, `recording ${rec} is neither in recordings/ or captures/ nor a file of ${builds.join(", ")}`);
-      if (fixture && existsSync(fixture)) {
-        try {
-          if (!JSON.parse(readFileSync(fixture, "utf8")).recording_xxh3) problem(fixture, "an experiment with a recording gives the recording's hash in recording_xxh3");
-        } catch {}
-      }
+      else if (!rec.startsWith("captures/") && !builds.some((b) => (buildFiles.get(b) ?? []).some((f) => f.path === rec))) problem(file, `recording ${rec} is neither in recordings/ or captures/ nor a file of ${builds.join(", ")}`);
     }
   }
 
@@ -846,6 +847,8 @@ function valueFileTables(e, text) {
     const h = /^### (.+)$/.exec(line);
     if (h) { heading = h[1].trim(); continue; }
     for (const m of line.matchAll(/\b([A-Z]+-[A-Z0-9]+-\d{3,}\.[A-Za-z0-9_]+\.csv)\b/g)) {
+      // Another entry's value file holds that entry's rows, so it is not read as one of these.
+      if (!m[1].startsWith(`${e.meta.id}.`)) { problem(e.file, `value file ${m[1]} belongs to another entry; an entry's value files are named ${e.meta.id}.<table>.csv`); continue; }
       const path = join(dirname(e.file), m[1]);
       if (!existsSync(path)) { problem(e.file, `value file ${m[1]} does not exist`); continue; }
       const csv = readCsv(path);
@@ -913,6 +916,8 @@ for (const [id, e] of entries) {
       (_, head, params) => `${head}${params.split(",").map((p) => p.split(":")[0].trim()).join(", ")})`);
   const related = asList(meta.related);
   const openQuestions = e.sections.find((s) => s.title === "Open questions")?.text ?? "";
+  // Names are letters, digits and underscores, so best_score does not count as listing score.
+  const listsOpen = (name) => new RegExp(`(?<![A-Za-z0-9_])${name}(?![A-Za-z0-9_])`).test(openQuestions);
   if (meta.status !== "unknown" && e.code.trim() === "") problem(file, "Procedure has no ```text block");
   const usedTerms = new Set();
   const useTerm = (name) => { if (glossary.has(name)) usedTerms.add(name); return glossary.has(name); };
@@ -942,7 +947,7 @@ for (const [id, e] of entries) {
   for (const m of code.matchAll(/\bdrain\s+([A-Za-z_][A-Za-z0-9_]*)/g)) if (!useTerm(m[1])) problem(file, `drains ${m[1]}, which has no glossary entry`);
   for (const m of code.matchAll(/\b((?:fn|g|scr)_[A-Za-z0-9_]+)\b/g)) {
     if (!useTerm(m[1])) problem(file, `uses the neutral name ${m[1]}, which has no glossary entry`);
-    if (!openQuestions.includes(m[1])) problem(file, `uses the neutral name ${m[1]}; list it in Open questions`);
+    if (!listsOpen(m[1])) problem(file, `uses the neutral name ${m[1]}; list it in Open questions`);
   }
   const noNeutral = code.replace(/\b(?:fn|g|scr)_[A-Za-z0-9_]+\b/g, "");
   if (/\b0x[0-9A-Fa-f]{6,}\b/.test(noNeutral) && /\b0x00[4-9A-F][0-9A-F]{5}\b/.test(noNeutral)) problem(file, "the procedure contains what looks like an address outside a neutral name");
@@ -980,7 +985,7 @@ for (const [id, e] of entries) {
       if (["FND", "EXP"].includes(kindOf(x)) && !asList(meta.evidence).includes(x)) problem(file, `relies on ${term}, whose glossary entry cites ${x}; add it to evidence`);
     }
     if (text.includes("(unknown)")) {
-      if (!openQuestions.includes(term)) problem(file, `relies on ${term}, a glossary claim that is (unknown); list it in Open questions`);
+      if (!listsOpen(term)) problem(file, `relies on ${term}, a glossary claim that is (unknown); list it in Open questions`);
       if (meta.status === "established") problem(file, `relies on ${term}, a glossary claim that is (unknown), so it cannot be established`);
     }
   }
@@ -1004,7 +1009,7 @@ for (const [id, e] of entries) for (const x of idsIn(e.body)) if (!entries.has(x
   const folded = new Map();
   const topDirs = new Set();
   for (const files of buildFiles.values()) for (const f of files) {
-    const p = typeof f === "string" ? f : f?.path;
+    const p = f.path;
     if (typeof p !== "string") continue;
     exact.add(p);
     folded.set(p.toLowerCase(), p);
@@ -1095,7 +1100,8 @@ for (const [id, e] of entries) {
   const related = asList(e.meta.related);
   for (const x of related) {
     const other = entries.get(x);
-    const group = other ? [x, ...asList(other.meta.split_with)] : [];
+    // A superseded part cannot be related to, so it is left out of the group.
+    const group = other ? [x, ...asList(other.meta.split_with).filter((g) => !isSuperseded(g))] : [];
     if (group.length < 2 || group.includes(id)) continue;
     for (const g of group) if (!related.includes(g)) problem(e.file, `relates to ${x}, which is split with ${g}; add ${g} to related`);
     for (const b of asList(e.meta.builds)) if (!group.some((g) => asList(entries.get(g)?.meta.builds).includes(b))) problem(e.file, `lists ${b}, which no entry of the split ${group.join(", ")} lists`);
@@ -1197,7 +1203,7 @@ function markdownTree(dir) {
 
 const deviations = new Map();
 const devDir = join(repoDir, "deviations");
-const isDeviationFile = (f) => resolve(f).startsWith(devDir + (process.platform === "win32" ? "\\" : "/"));
+const isDeviationFile = (f) => resolve(f).startsWith(devDir + sep);
 {
   if (existsSync(join(repoDir, "DEVIATIONS.md"))) problem(join(repoDir, "DEVIATIONS.md"), "the deviation log is the directory deviations/; move each ## deviation to deviations/<ID>.md with the ID as its # heading");
   if (!existsSync(devDir)) problem(null, "deviations/ is missing");
@@ -1249,10 +1255,12 @@ const PARITY_HEADER = ["Spec ID", "Title", "Spec status", "Code", "Tests", "Devi
 const parityDir = join(repoDir, "parity");
 const parityRows = new Map(); // spec ID -> { cells, file }
 const parityCounts = { status: {}, code: {} };
+// A PARITY.md that still holds the rows is left alone until they have moved, so the check does not
+// overwrite them with the totals.
+const legacyParity = existsSync(join(repoDir, "PARITY.md")) && tables(readText(join(repoDir, "PARITY.md"))).some((t) => t.header.join("|") === PARITY_HEADER.join("|"));
 {
   if (!existsSync(parityDir)) problem(null, "parity/ is missing");
-  const parityMd = join(repoDir, "PARITY.md");
-  if (existsSync(parityMd) && tables(readText(parityMd)).some((t) => t.header.join("|") === PARITY_HEADER.join("|"))) problem(parityMd, "the rows move to parity/, one <AREA>.md per area, and the check writes PARITY.md");
+  if (legacyParity) problem(join(repoDir, "PARITY.md"), "the rows move to parity/, one <AREA>.md per area, and the check writes PARITY.md");
   const placeholders = collectPlaceholders();
   const files = existsSync(parityDir) ? markdownTree(parityDir) : new Map();
   walk(parityDir, (f) => { if (!f.endsWith(".md") && basename(f) !== ".gitkeep") problem(f, "is not a parity file; parity/ holds one <AREA>.md per area"); });
@@ -1517,7 +1525,7 @@ const generated = new Map(); // absolute path -> text
     return `| [${a}](${target}) | ${[...parityRows.keys()].filter((x) => areaOf(x) === a).length} |`;
   }));
   out.push("");
-  generated.set(join(repoDir, "PARITY.md"), out.join("\n"));
+  if (!legacyParity) generated.set(join(repoDir, "PARITY.md"), out.join("\n"));
 }
 {
   const stale = [];

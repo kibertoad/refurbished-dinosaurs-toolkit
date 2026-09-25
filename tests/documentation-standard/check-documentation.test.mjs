@@ -353,3 +353,23 @@ test("indexes and parity files split by area, kind and block exactly where the l
   const again = run(root, "--check");
   assert.equal(again.status, 0, again.output);
 });
+
+test("a PARITY.md that still holds the rows is not overwritten", (t) => {
+  const old = ["# Parity matrix", "", "## SCORE", "", "| Spec ID | Title | Spec status | Code | Tests | Deviations | Status | Notes |", "|---|---|---|---|---|---|---|---|", row("RULE-SCORE-001"), ""].join("\n");
+  const root = broken(t, (r) => writeFileSync(join(r, "PARITY.md"), old));
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /PARITY\.md: the rows move to parity\//);
+  assert.equal(readFileSync(join(root, "PARITY.md"), "utf8"), old);
+});
+
+test("a manifest item that is not a map is reported without a crash", (t) => {
+  const root = broken(t, (r) => {
+    writeFileSync(join(r, "spec", "builds", "BLD-EXAMPLE-1.0.files.yaml"), readFileSync(join(r, "spec", "builds", "BLD-EXAMPLE-1.0.files.yaml"), "utf8") + "  - null\n");
+    replaceIn(r, "spec/formats/FMT-SCORE-001.md", 'files: ["DATA/SCORES.BIN"]', 'files: ["DATA/NOPE.BIN"]');
+  });
+  const { status, output } = run(root, "--check");
+  assert.equal(status, 1);
+  assert.match(output, /BLD-EXAMPLE-1\.0\.files\.yaml: every item of files is a map/);
+  assert.match(output, /files pattern DATA\/NOPE\.BIN matches no file of BLD-EXAMPLE-1\.0/);
+});
