@@ -14,6 +14,7 @@ jobs:
           persist-credentials: false
       - shell: pwsh
         run: ./tools/Verify-Repository.ps1
+      - run: node --test tests/documentation-standard/check-documentation.test.mjs
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           dotnet-version: 10.0.400
@@ -22,3 +23,20 @@ jobs:
       - run: dotnet test --project tests/Toad.Discovery.Core.Tests/Toad.Discovery.Core.Tests.csproj --no-restore --no-progress -v minimal
       - run: dotnet pack src/Toad.Discovery.Core/Toad.Discovery.Core.csproj --no-build -c Debug --output artifacts
       - run: dotnet pack src/Toad.Discovery.LegacyFormats/Toad.Discovery.LegacyFormats.csproj --no-build -c Debug --output artifacts
+  # Runs the check-documentation action as a restoration would, against the test fixture, so the
+  # Kaitai Struct compiler install and the .ksy compilation run on both runner platforms.
+  documentation-action:
+    name: check-documentation (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./actions/check-documentation
+        with:
+          root: tests/documentation-standard/valid

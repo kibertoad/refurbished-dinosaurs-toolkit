@@ -1,0 +1,30 @@
+name: Set up the Kaitai Struct compiler
+description: Downloads a pinned Kaitai Struct compiler release, checks its SHA-256, and exports KSC.
+inputs:
+  version:
+    description: Exact compiler release. Only versions with a SHA-256 pinned in install.sh are accepted.
+    required: false
+    default: "0.11"
+  java-version:
+    description: Java version to install with actions/setup-java first. Empty uses the runner's Java.
+    required: false
+    default: ""
+outputs:
+  path:
+    description: Path of the compiler launcher, also exported as KSC.
+    value: ${{ steps.install.outputs.path }}
+runs:
+  using: composite
+  steps:
+    - name: Set up Java
+      if: inputs.java-version != ''
+      uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.java-version }}
+    - name: Install verified Kaitai Struct compiler
+      id: install
+      shell: bash
+      env:
+        KSC_VERSION: ${{ inputs.version }}
+      run: bash "$GITHUB_ACTION_PATH/install.sh"

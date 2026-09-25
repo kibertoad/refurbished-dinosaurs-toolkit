@@ -1,0 +1,60 @@
+name: Check documentation standard
+description: Checks spec/, PARITY.md and DEVIATIONS.md against version 1 of the documentation standard.
+inputs:
+  root:
+    description: Workspace-relative path of the repository to check.
+    required: false
+    default: "."
+  code:
+    description: Comma-separated directories whose files may cite spec and deviation IDs and hold PLACEHOLDER comments.
+    required: false
+    default: src,tests,tools
+  references:
+    description: Comma-separated directories whose files may cite spec and deviation IDs but whose PLACEHOLDER comments do not count.
+    required: false
+    default: ""
+  data-dirs:
+    description: Comma-separated top-level directories of the original's data. Empty derives them from the build entries.
+    required: false
+    default: ""
+  base:
+    description: Ref whose spec IDs, areas and deviations must still exist. Empty uses where HEAD forked from origin/$GITHUB_BASE_REF or origin/main.
+    required: false
+    default: ""
+  kaitai-version:
+    description: Kaitai Struct compiler release to install for compiling spec/formats/*.ksy. Empty skips the install.
+    required: false
+    default: "0.11"
+  java-version:
+    description: Java version to install for the compiler. Empty uses the runner's Java.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Set up Java
+      if: inputs.kaitai-version != '' && inputs.java-version != ''
+      uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+      with:
+        distribution: temurin
+        java-version: ${{ inputs.java-version }}
+    - name: Install verified Kaitai Struct compiler
+      if: inputs.kaitai-version != ''
+      shell: bash
+      env:
+        KSC_VERSION: ${{ inputs.kaitai-version }}
+      run: bash "$GITHUB_ACTION_PATH/../setup-kaitai/install.sh"
+    - name: Check documentation
+      shell: bash
+      env:
+        DOC_ROOT: ${{ inputs.root }}
+        DOC_CODE: ${{ inputs.code }}
+        DOC_REFERENCES: ${{ inputs.references }}
+        DOC_DATA_DIRS: ${{ inputs.data-dirs }}
+        DOC_BASE: ${{ inputs.base }}
+      run: |
+        set -euo pipefail
+        args=(--root "$DOC_ROOT" --check --code "$DOC_CODE" --references "$DOC_REFERENCES")
+        if [ -n "$DOC_DATA_DIRS" ]; then args+=(--data-dirs "$DOC_DATA_DIRS"); fi
+        if [ -n "$DOC_BASE" ]; then args+=(--base "$DOC_BASE"); fi
+        node "$GITHUB_ACTION_PATH/../../tools/check-documentation.mjs" "${args[@]}"
