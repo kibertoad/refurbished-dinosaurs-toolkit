@@ -17,8 +17,8 @@ This repository contains the durable pieces that should improve in one place:
 - `tools/Verify-Repository.ps1`: configurable legal-boundary and repository-size
   enforcement used before builds and releases.
 - `tools/check-documentation.mjs`: the documentation standard's checks over a
-  restoration's `spec/`, `PARITY.md` and `DEVIATIONS.md`, and the generator of
-  its spec indexes. See
+  restoration's `spec/`, `parity/` and `deviations/`, and the generator of
+  its spec indexes and `PARITY.md`. See
   [`docs/documentation-standard-check.md`](docs/documentation-standard-check.md).
 - `actions/`: composite GitHub Actions for repository verification, the
   documentation standard check, a pinned, signature-checked Inno Setup 7

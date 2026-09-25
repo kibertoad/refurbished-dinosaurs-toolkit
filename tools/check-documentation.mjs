@@ -1,17 +1,17 @@
 #!/usr/bin/env node
-// Checks a restoration's spec/, PARITY.md and DEVIATIONS.md against version 1 of the
-// documentation standard (https://dinorefurb.com/documentation-standard/#checks), and writes the
-// four indexes in spec/index/.
+// Checks a restoration's spec/, parity/ and deviations/ against version 1 of the documentation
+// standard (https://dinorefurb.com/documentation-standard/#checks), and writes the four indexes in
+// spec/index/ and PARITY.md.
 //
 // Usage:
 //   node check-documentation.mjs [options]
 //
 //   --root <dir>        the repository to check (default: the current directory)
-//   --check             fail when an index is stale instead of rewriting it
+//   --check             fail when an index or PARITY.md is stale instead of rewriting it
 //   --base <ref>        also fail when an ID or area that exists at <ref> is gone (default: where
 //                       HEAD forked from origin/$GITHUB_BASE_REF or origin/main, when it resolves)
 //   --no-ksy            skip compiling the Kaitai definitions
-//   --glossary <file>   also accept the terms of a draft glossary file
+//   --glossary <path>   also accept the terms of a draft glossary file, or of a directory of them
 //   --code <dirs>       comma-separated directories whose files may cite spec and deviation IDs
 //                       and hold PLACEHOLDER comments (default: src,tests,tools)
 //   --references <dirs> comma-separated directories whose files may cite spec and deviation IDs
@@ -105,7 +105,7 @@ const SECTIONS = {
 const COMMON = ["id", "title", "status", "builds", "superseded_by"];
 const CLAIM_LINKS = ["evidence", "conflicting", "split_with", "related"];
 const FIELDS = {
-  BLD: { required: ["id", "title", "superseded_by", "developer", "publisher", "publisher_version", "distribution", "languages", "int_width", "files"] },
+  BLD: { required: ["id", "title", "superseded_by", "developer", "publisher", "publisher_version", "distribution", "languages", "int_width", "manifest"] },
   SRC: { required: ["id", "title", "superseded_by", "author", "date", "location", "xxh3", "licence"] },
   FND: { required: [...COMMON, "recorded_by", "reproduced_by", "method", "locations", "tool", "environment"] },
   EXP: { required: [...COMMON, "recorded_by", "reproduced_by", "environment", "starting_state", "recording", "repetitions", "fixture"] },
@@ -134,6 +134,16 @@ const ENUM_TABLE = ["Value", "Name", "Meaning", "Status", "Evidence"];
 
 const ID_RE = /\b(?:(?:FMT|RULE|FND|EXP|BUG|SCR)-[A-Z][A-Z0-9]*-\d{3,}|(?:BLD|SRC)-[A-Z][A-Z0-9.-]*[A-Z0-9])\b/g;
 const DEV_RE = /\bDEV-[A-Z][A-Z0-9]*-\d{3,}\b/g;
+
+// Every Markdown file the standard defines, generated or not, is at most this many lines long.
+const LINE_LIMIT = 1000;
+// A list written out in a procedure or a table definition holds at most this many values. A longer
+// one takes them from a value file.
+const LIST_LIMIT = 64;
+// Names Windows cannot give a file, whatever the extension, so no glossary term may be one.
+const RESERVED_NAMES = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+const lineCount = (text) => (text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0));
+const readText = (file) => readFileSync(file, "utf8").replace(/\r\n/g, "\n");
 
 // ---------------------------------------------------------------------------------------------
 // Front matter reader
@@ -340,6 +350,40 @@ function cells(line) {
   return parts;
 }
 
+// A value file: CSV as RFC 4180 defines it, with a header row. Returns { header, rows }, or null
+// after reporting a problem.
+function readCsv(file) {
+  const text = readFileSync(file, "utf8");
+  const records = [];
+  let record = [];
+  let field = "";
+  let quoted = false;
+  let wasQuoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (ch === '"') quoted = false;
+      else field += ch;
+    } else if (ch === '"' && field === "" && !wasQuoted) { quoted = true; wasQuoted = true; }
+    else if (ch === ",") { record.push(field); field = ""; wasQuoted = false; }
+    else if (ch === "\n" || ch === "\r") {
+      if (ch === "\r" && text[i + 1] === "\n") i++;
+      record.push(field);
+      records.push(record);
+      record = [];
+      field = "";
+      wasQuoted = false;
+    } else field += ch;
+  }
+  if (quoted) { problem(file, "has a quoted field that is never closed"); return null; }
+  if (field !== "" || record.length > 0) { record.push(field); records.push(record); }
+  if (records.length === 0) { problem(file, "has no header row"); return null; }
+  const [header, ...rows] = records;
+  for (const row of rows) if (row.length !== header.length) { problem(file, `the row ${row.join(",")} has ${row.length} fields, not ${header.length}`); return null; }
+  return { header, rows };
+}
+
 const idsIn = (text) => [...new Set(String(text ?? "").match(ID_RE) ?? [])];
 const kindOf = (id) => id.split("-")[0];
 const areaOf = (id) => id.split("-")[1];
@@ -406,22 +450,81 @@ for (const [kind, { dir }] of Object.entries(KINDS)) {
 // Stray Markdown anywhere else in spec/ that looks like an entry.
 for (const dir of readdirSync(specDir)) {
   const d = join(specDir, dir);
-  if (!statSync(d).isDirectory() || Object.values(KINDS).some((k) => k.dir === dir) || dir === "index") continue;
+  if (!statSync(d).isDirectory() || Object.values(KINDS).some((k) => k.dir === dir) || dir === "index" || dir === "glossary") continue;
   problem(d, "is not a directory the standard defines");
 }
 
-const glossaryText = existsSync(join(specDir, "glossary.md")) ? readFileSync(join(specDir, "glossary.md"), "utf8").replace(/\r\n/g, "\n") : "";
-if (!glossaryText) problem(null, "spec/glossary.md is missing");
-const glossary = new Map(splitSections(glossaryText).map((s) => [s.title.replaceAll("`", ""), s.text]));
-// --glossary <file> adds the terms of a draft glossary file, for checking entries before their
-// terms are merged into spec/glossary.md.
+// The glossary: one file per term in spec/glossary/, named after the term and opening with it as a
+// # heading. A glossary file is not an entry, so it has no front matter.
+const glossaryDir = join(specDir, "glossary");
+const glossary = new Map(); // term -> text after the heading
+const glossaryFiles = new Map(); // term -> file
+const glossaryFile = (term) => glossaryFiles.get(term) ?? glossaryDir;
+if (existsSync(join(specDir, "glossary.md"))) problem(join(specDir, "glossary.md"), "the glossary is the directory spec/glossary/; move each ## term to spec/glossary/<term>.md with the term as its # heading");
+function readTerm(file, report = true) {
+  const text = readText(file);
+  const say = (message) => { if (report) problem(file, message); };
+  if (text.startsWith("---\n")) say("a glossary file has no front matter");
+  const m = /^# (.+)\n?([\s\S]*)$/.exec(text.replace(/^---\n[\s\S]*?\n---\n/, "").replace(/^\s+/, ""));
+  if (!m) { say("opens with the term as a # heading"); return null; }
+  const term = m[1].trim().replaceAll("`", "");
+  if (basename(file) !== `${term}.md`) say(`is named after its term, ${term}.md`);
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(term)) say(`${term} is not a name the pseudocode can use`);
+  if (RESERVED_NAMES.test(term)) say(`${term} is a name Windows reserves for a device, so no file can have it`);
+  return { term, text: m[2] };
+}
+const termFiles = (dir) => readdirSync(dir).filter((name) => name !== ".gitkeep").map((name) => join(dir, name));
+if (!existsSync(glossaryDir)) problem(null, "spec/glossary/ is missing");
+else {
+  const folded = new Map();
+  for (const file of termFiles(glossaryDir)) {
+    if (statSync(file).isDirectory() || !file.endsWith(".md")) { problem(file, "is not a glossary file; spec/glossary/ holds one <term>.md per term"); continue; }
+    const t = readTerm(file);
+    if (!t) continue;
+    const key = t.term.toLowerCase();
+    if (folded.has(key)) problem(file, `${t.term} differs only in case from ${folded.get(key)}`);
+    else folded.set(key, t.term);
+    glossary.set(t.term, t.text);
+    glossaryFiles.set(t.term, file);
+  }
+}
+// --glossary <path> adds the terms of a draft term file, or of a directory of them, for checking
+// entries before their terms are merged into spec/glossary/.
 for (const draft of options.glossary) {
-  const extra = readFileSync(draft, "utf8").replace(/\r\n/g, "\n");
-  for (const s of splitSections(extra)) if (!glossary.has(s.title.replaceAll("`", ""))) glossary.set(s.title.replaceAll("`", ""), s.text);
+  const files = statSync(draft).isDirectory() ? termFiles(draft).filter((f) => f.endsWith(".md")) : [draft];
+  for (const file of files) {
+    const t = readTerm(file, false);
+    if (t && !glossary.has(t.term)) glossary.set(t.term, t.text);
+  }
 }
 
+// Build manifests: builds/<ID>.files.yaml holds a build's files list and nothing else.
 const buildFiles = new Map();
-for (const [id, e] of entries) if (e.kind === "BLD") buildFiles.set(id, asList(e.meta.files));
+for (const [id, e] of entries) {
+  if (e.kind !== "BLD") continue;
+  const expected = `${id}.files.yaml`;
+  if ("files" in e.meta) problem(e.file, `the files list belongs in the manifest ${expected}, not in the entry`);
+  if (e.meta.manifest !== expected) { problem(e.file, `manifest must be ${expected}`); continue; }
+  const path = join(dirname(e.file), expected);
+  if (!existsSync(path)) { problem(e.file, `manifest ${expected} does not exist`); continue; }
+  const manifest = parseYaml(readText(path), path);
+  for (const key of Object.keys(manifest)) if (key !== "files") problem(path, `a manifest has only the key files, not ${key}`);
+  if (!Array.isArray(manifest.files)) { problem(path, "files must be a list"); continue; }
+  buildFiles.set(id, manifest.files);
+  for (const f of manifest.files) {
+    if (!f || typeof f !== "object") { problem(path, "every item of files is a map of path, format, size and xxh3"); continue; }
+    if (!f.path) problem(path, "every file has a path");
+    if (!["MZ", "COM", "NE", "PE", "LE", "LX", "ELF", "cdda", "data"].includes(f.format)) problem(path, `${f.path}: format ${f.format} is not one of MZ, COM, NE, PE, LE, LX, ELF, cdda, data`);
+    if (!/^[0-9a-f]{32}$/.test(String(f.xxh3))) problem(path, `${f.path}: xxh3 must be 32 lower-case hex digits`);
+    if (typeof f.size !== "number") problem(path, `${f.path}: size must be a number`);
+    if (f.packer && !(f.unpacked && f.unpacked.size && f.unpacked.xxh3 && f.unpacked.format && f.unpacked.tool)) problem(path, `${f.path}: a packed file gives the size, xxh3, format and tool of its unpacked form`);
+    if (String(f.path).includes("\\")) problem(path, `${f.path}: paths use forward slashes`);
+  }
+}
+if (existsSync(join(specDir, "builds"))) for (const name of readdirSync(join(specDir, "builds"))) {
+  const m = /^(.+)\.files\.yaml$/.exec(name);
+  if (m && entries.get(m[1])?.kind !== "BLD") problem(join(specDir, "builds", name), `belongs to no build entry (${m[1]})`);
+}
 
 // ---------------------------------------------------------------------------------------------
 // Per-entry checks
@@ -581,6 +684,17 @@ for (const [id, e] of entries) {
       }
     }
     if (typeof meta.starting_state === "string" && meta.starting_state.startsWith("saves/") && !existsSync(join(specDir, "experiments", meta.starting_state))) problem(file, `starting_state ${meta.starting_state} does not exist`);
+    // A recording is committed in recordings/, kept with the captures, or one of the build's files.
+    if (typeof meta.recording === "string" && meta.recording !== "") {
+      const rec = meta.recording;
+      if (rec.startsWith("recordings/")) { if (!existsSync(join(specDir, "experiments", rec))) problem(file, `recording ${rec} does not exist`); }
+      else if (!rec.startsWith("captures/") && !builds.some((b) => (buildFiles.get(b) ?? []).some((f) => f?.path === rec))) problem(file, `recording ${rec} is neither in recordings/ or captures/ nor a file of ${builds.join(", ")}`);
+      if (fixture && existsSync(fixture)) {
+        try {
+          if (!JSON.parse(readFileSync(fixture, "utf8")).recording_xxh3) problem(fixture, "an experiment with a recording gives the recording's hash in recording_xxh3");
+        } catch {}
+      }
+    }
   }
 
   if (KINDS[kind].statuses === "claim") {
@@ -621,17 +735,7 @@ for (const [id, e] of entries) {
     }
   }
 
-  if (kind === "BLD") {
-    if (![16, 32].includes(meta.int_width)) problem(file, "int_width must be 16 or 32");
-    for (const f of asList(meta.files)) {
-      if (!f.path) problem(file, "every file has a path");
-      if (!["MZ", "COM", "NE", "PE", "LE", "LX", "ELF", "cdda", "data"].includes(f.format)) problem(file, `${f.path}: format ${f.format} is not one of MZ, COM, NE, PE, LE, LX, ELF, cdda, data`);
-      if (!/^[0-9a-f]{32}$/.test(String(f.xxh3))) problem(file, `${f.path}: xxh3 must be 32 lower-case hex digits`);
-      if (typeof f.size !== "number") problem(file, `${f.path}: size must be a number`);
-      if (f.packer && !(f.unpacked && f.unpacked.size && f.unpacked.xxh3 && f.unpacked.format && f.unpacked.tool)) problem(file, `${f.path}: a packed file gives the size, xxh3, format and tool of its unpacked form`);
-      if (String(f.path).includes("\\")) problem(file, `${f.path}: paths use forward slashes`);
-    }
-  }
+  if (kind === "BLD" && ![16, 32].includes(meta.int_width)) problem(file, "int_width must be 16 or 32");
   if (kind === "SRC" && meta.xxh3 !== null && !/^[0-9a-f]{32}$/.test(String(meta.xxh3))) problem(file, "xxh3 must be null or 32 lower-case hex digits");
 
   if (kind === "FMT") checkFormat(e);
@@ -696,8 +800,11 @@ function checkFormat(e) {
       else visit(t, "layout");
     }
   }
-  if (enums) for (const t of tables(enums.text)) {
-    if (t.header.join("|") !== ENUM_TABLE.join("|")) { problem(file, `an enumeration table has the columns ${ENUM_TABLE.join(" | ")}`); continue; }
+  // An enumeration table kept in a value file counts as one of the entry's tables.
+  const enumTables = enums ? [...tables(enums.text), ...valueFileTables(e, enums.text)] : [];
+  e.valueTables = enumTables.filter((t) => t.file);
+  for (const t of enumTables) {
+    if (t.header.join("|") !== ENUM_TABLE.join("|")) { problem(t.file ?? file, `an enumeration table has the columns ${ENUM_TABLE.join(" | ")}`); continue; }
     if (!t.heading) problem(file, "an enumeration table sits under a ### heading naming its fields");
     else for (const f of (t.heading.match(/`([^`]+)`/g) ?? t.heading.split(/\s*,\s*|\s+and\s+/)).map((x) => x.replaceAll("`", "").trim()).filter(Boolean)) if (!names.has(f)) problem(file, `enumeration heading names ${f}, which is not a field of the layout`);
     visit(t, "enumeration");
@@ -714,6 +821,7 @@ function checkFormat(e) {
     if (expected && meta.status !== expected) problem(file, `status must be ${expected}, the lowest status among its rows`);
   }
   const cited = tableIds(e, ["Layout", "Enumerations and flags"]);
+  for (const t of e.valueTables) for (const row of t.rows) for (const x of idsIn(row[t.header.length - 1])) cited.add(x);
   const listed = new Set([...asList(meta.evidence), ...asList(meta.conflicting)]);
   for (const x of cited) if (!listed.has(x) && ["FND", "EXP", "SRC"].includes(kindOf(x))) problem(file, `${x} is cited in a table but not in evidence or conflicting`);
   for (const t of tables(layout?.text ?? "")) for (const row of t.rows) for (const x of idsIn(row[t.header.indexOf("Meaning")])) if (kindOf(x) === "RULE" && !asList(meta.related).includes(x)) problem(file, `layout names ${x}; add it to related`);
@@ -724,6 +832,27 @@ function checkFormat(e) {
     if (!new RegExp(`^\\s*id:\\s*${expectedId}\\s*$`, "m").test(ksy)) problem(join(dirname(file), meta.definition), `meta/id must be ${expectedId}`);
     if (!/^\s*license:\s*\S+/m.test(ksy)) problem(join(dirname(file), meta.definition), "meta/license must name the licence");
   }
+}
+
+// The enumeration tables an entry keeps in value files: each ### heading stays in the entry, followed
+// by a sentence naming its file, formats/<ID>.<table>.csv.
+function valueFileTables(e, text) {
+  const out = [];
+  let heading = null;
+  let fence = false;
+  for (const line of text.split("\n")) {
+    if (/^(```|~~~)/.test(line)) fence = !fence;
+    if (fence) continue;
+    const h = /^### (.+)$/.exec(line);
+    if (h) { heading = h[1].trim(); continue; }
+    for (const m of line.matchAll(/\b([A-Z]+-[A-Z0-9]+-\d{3,}\.[A-Za-z0-9_]+\.csv)\b/g)) {
+      const path = join(dirname(e.file), m[1]);
+      if (!existsSync(path)) { problem(e.file, `value file ${m[1]} does not exist`); continue; }
+      const csv = readCsv(path);
+      if (csv) out.push({ heading, header: csv.header, rows: csv.rows, file: path });
+    }
+  }
+  return out;
 }
 
 function checkScreen(e) {
@@ -754,7 +883,7 @@ function checkScreen(e) {
 
 const BUILTINS = new Set(["min", "max", "abs", "count", "append", "insert", "remove_at", "copy", "stable_sort", "sprintf", "floor", "ceil", "round_even", "draw", "resource", "read_file", "write_file", "free", "fmod",
   "UINT8", "INT8", "UINT16", "INT16", "UINT32", "INT32", "UINT64", "INT64", "FLOAT32", "FLOAT64", "FLOAT80", "REAL48"]);
-const KEYWORDS = new Set(["for", "each", "in", "if", "else", "while", "break", "continue", "return", "let", "and", "or", "not", "true", "false", "call", "define", "emit", "drain", "show", "new", "table", "clock", "Hz"]);
+const KEYWORDS = new Set(["for", "each", "in", "if", "else", "while", "break", "continue", "return", "let", "and", "or", "not", "true", "false", "call", "define", "emit", "drain", "show", "new", "table", "clock", "from", "Hz"]);
 const defined = new Map(); // function/table/clock name -> rule IDs
 
 for (const [id, e] of entries) {
@@ -770,7 +899,7 @@ for (const [id, e] of entries) {
 for (const [name, ids] of defined) {
   const splitGroup = asList(entries.get(ids[0]).meta.split_with).concat(ids[0]);
   if (ids.length > 1 && !ids.every((x) => splitGroup.includes(x))) problem(null, `${name} is defined by more than one rule: ${ids.join(", ")}`);
-  if (!glossary.has(name)) problem(join(specDir, "glossary.md"), `${name}, defined by ${ids[0]}, has no glossary entry`);
+  if (!glossary.has(name)) problem(glossaryDir, `${name}, defined by ${ids[0]}, has no glossary entry`);
 }
 
 for (const [id, e] of entries) {
@@ -785,15 +914,34 @@ for (const [id, e] of entries) {
   const related = asList(meta.related);
   const openQuestions = e.sections.find((s) => s.title === "Open questions")?.text ?? "";
   if (meta.status !== "unknown" && e.code.trim() === "") problem(file, "Procedure has no ```text block");
+  const usedTerms = new Set();
+  const useTerm = (name) => { if (glossary.has(name)) usedTerms.add(name); return glossary.has(name); };
+  // Lists written out hold at most LIST_LIMIT values; a table of more takes them from a value file.
+  for (const m of code.matchAll(/=\s*\[([^\]]*)\]/g)) {
+    const count = m[1].split(",").filter((x) => x.trim() !== "").length;
+    if (count > LIST_LIMIT) problem(file, `writes out a list of ${count} values; a list of more than ${LIST_LIMIT} is a table with a value file`);
+  }
+  for (const m of e.code.matchAll(/^\s*table\s+([a-z_][a-z0-9_]*)\s*:\s*[A-Za-z0-9]+\[([^\]]*)\]\s*from\s*"([^"]*)"/gm)) {
+    const [, name, count, csvName] = m;
+    const expected = `${id}.${name}.csv`;
+    if (csvName !== expected) { problem(file, `table ${name} takes its values from ${expected}, not ${csvName}`); continue; }
+    const path = join(dirname(file), csvName);
+    if (!existsSync(path)) { problem(file, `value file ${csvName} does not exist`); continue; }
+    const csv = readCsv(path);
+    if (!csv) continue;
+    if (csv.header.join("|") !== "value") problem(path, "a table's value file has the single column value");
+    if (/^\d+$/.test(count.trim()) && csv.rows.length !== Number(count)) problem(path, `has ${csv.rows.length} values, but table ${name} has ${count}`);
+    for (const [v] of csv.rows) if (!/^-?(?:0x[0-9A-Fa-f]+|\d+(?:\.\d+)?)$/.test(v.trim())) { problem(path, `${v} is not a number`); break; }
+  }
   for (const m of code.matchAll(/\bcall\s+(RULE-[A-Z0-9]+-\d+)/g)) if (!related.includes(m[1])) problem(file, `calls ${m[1]}; add it to related`);
   for (const m of code.matchAll(/\bshow\s+(SCR-[A-Z0-9]+-\d+)/g)) if (!related.includes(m[1])) problem(file, `shows ${m[1]}; add it to related`);
   for (const m of code.matchAll(/\b(FMT-[A-Z0-9]+-\d+)/g)) if (!related.includes(m[1])) problem(file, `uses ${m[1]}; add it to related`);
   for (const m of e.code.matchAll(/# may run: (RULE-[A-Z0-9]+-\d+)/g)) if (!related.includes(m[1])) problem(file, `may be interrupted by ${m[1]}; add it to related`);
   for (const x of idsIn(code)) if (!entries.has(x)) problem(file, `procedure names ${x}, which does not exist`);
-  for (const m of code.matchAll(/\bemit\s+([A-Za-z_][A-Za-z0-9_]*)/g)) if (!glossary.has(m[1])) problem(file, `emits ${m[1]}, which has no glossary entry`);
-  for (const m of code.matchAll(/\bdrain\s+([A-Za-z_][A-Za-z0-9_]*)/g)) if (!glossary.has(m[1])) problem(file, `drains ${m[1]}, which has no glossary entry`);
+  for (const m of code.matchAll(/\bemit\s+([A-Za-z_][A-Za-z0-9_]*)/g)) if (!useTerm(m[1])) problem(file, `emits ${m[1]}, which has no glossary entry`);
+  for (const m of code.matchAll(/\bdrain\s+([A-Za-z_][A-Za-z0-9_]*)/g)) if (!useTerm(m[1])) problem(file, `drains ${m[1]}, which has no glossary entry`);
   for (const m of code.matchAll(/\b((?:fn|g|scr)_[A-Za-z0-9_]+)\b/g)) {
-    if (!glossary.has(m[1])) problem(file, `uses the neutral name ${m[1]}, which has no glossary entry`);
+    if (!useTerm(m[1])) problem(file, `uses the neutral name ${m[1]}, which has no glossary entry`);
     if (!openQuestions.includes(m[1])) problem(file, `uses the neutral name ${m[1]}; list it in Open questions`);
   }
   const noNeutral = code.replace(/\b(?:fn|g|scr)_[A-Za-z0-9_]+\b/g, "");
@@ -808,7 +956,7 @@ for (const [id, e] of entries) {
   for (const m of code.matchAll(/(?<![.\w])([a-z_][a-z0-9_]*)\s*\(/g)) {
     const name = m[1];
     if (BUILTINS.has(name) || KEYWORDS.has(name) || locals.has(name)) continue;
-    if (!defined.has(name) && !glossary.has(name)) { problem(file, `calls ${name}(), which no rule defines and the glossary does not list`); continue; }
+    if (!defined.has(name) && !useTerm(name)) { problem(file, `calls ${name}(), which no rule defines and the glossary does not list`); continue; }
     for (const owner of defined.get(name) ?? []) if (owner !== id && !related.includes(owner)) problem(file, `uses ${name} from ${owner}; add ${owner} to related`);
   }
   for (const m of code.matchAll(/(?<![.\w])([A-Z][A-Z0-9_]*[A-Z0-9])(?![\w-])/g)) {
@@ -821,14 +969,27 @@ for (const [id, e] of entries) {
   for (const m of code.matchAll(/(?<![.\w])([a-z_][a-z0-9_]*)(?=\s*(?:\.|\[|=[^=]|$))/gm)) {
     const name = m[1];
     if (locals.has(name) || KEYWORDS.has(name) || BUILTINS.has(name) || defined.has(name)) continue;
-    if (!glossary.has(name)) problem(file, `${name} is neither a local nor a glossary term`);
+    if (!useTerm(name)) problem(file, `${name} is neither a local nor a glossary term`);
+  }
+  // A glossary claim a procedure relies on counts toward the rule's status: its evidence is the
+  // rule's evidence, and while it is (unknown) the rule lists it as an open question and is not
+  // established.
+  for (const term of usedTerms) {
+    const text = glossary.get(term);
+    for (const b of text.matchAll(/\[([^\]]*)\]/g)) for (const x of idsIn(b[1])) {
+      if (["FND", "EXP"].includes(kindOf(x)) && !asList(meta.evidence).includes(x)) problem(file, `relies on ${term}, whose glossary entry cites ${x}; add it to evidence`);
+    }
+    if (text.includes("(unknown)")) {
+      if (!openQuestions.includes(term)) problem(file, `relies on ${term}, a glossary claim that is (unknown); list it in Open questions`);
+      if (meta.status === "established") problem(file, `relies on ${term}, a glossary claim that is (unknown), so it cannot be established`);
+    }
   }
 }
 
 // Glossary claims
 for (const [term, text] of glossary) {
-  for (const x of idsIn(text)) if (!entries.has(x)) problem(join(specDir, "glossary.md"), `${term} cites ${x}, which does not exist`);
-  else if (isSuperseded(x)) problem(join(specDir, "glossary.md"), `${term} cites ${x}, which is superseded`);
+  for (const x of idsIn(text)) if (!entries.has(x)) problem(glossaryFile(term), `${term} cites ${x}, which does not exist`);
+  else if (isSuperseded(x)) problem(glossaryFile(term), `${term} cites ${x}, which is superseded`);
 }
 
 // Body references
@@ -867,7 +1028,7 @@ for (const [id, e] of entries) for (const x of idsIn(e.body)) if (!entries.has(x
   };
   if (dataDirs.length > 0) {
     for (const [, e] of entries) if (e.kind !== "BLD") checkPaths(e.file, readFileSync(e.file, "utf8"));
-    checkPaths(join(specDir, "glossary.md"), glossaryText);
+    for (const [term, text] of glossary) if (glossaryFiles.has(term)) checkPaths(glossaryFiles.get(term), text);
   }
 }
 
@@ -888,6 +1049,56 @@ for (const [name, fmts] of enumNames) {
       if (f === ".gitkeep" || f.endsWith(".patch.json")) continue;
       if (!licence.includes(`experiments/${sub}/${f}`)) problem(join(d, f), "is not listed in spec/LICENSE as covered by neither licence");
     }
+  }
+}
+
+// Every save and recording is named by some experiment.
+{
+  const named = new Set();
+  for (const e of entries.values()) if (e.kind === "EXP") for (const v of [e.meta.starting_state, e.meta.recording]) if (typeof v === "string") named.add(v);
+  for (const sub of ["saves", "recordings"]) {
+    const d = join(specDir, "experiments", sub);
+    if (existsSync(d)) for (const f of readdirSync(d)) if (f !== ".gitkeep" && !named.has(`${sub}/${f}`)) problem(join(d, f), "is named by no experiment");
+  }
+}
+
+// Every value file belongs to the entry its name gives, in that entry's directory, and is named by it.
+for (const { dir } of Object.values(KINDS)) {
+  const d = join(specDir, dir);
+  if (!existsSync(d)) continue;
+  for (const name of readdirSync(d)) {
+    if (!name.endsWith(".csv")) continue;
+    const m = /^([A-Z]+-[A-Z0-9]+-\d{3,})\.[A-Za-z0-9_]+\.csv$/.exec(name);
+    const owner = m && entries.get(m[1]);
+    if (!owner || owner.file !== join(d, `${m[1]}.md`)) { problem(join(d, name), "belongs to no entry; a value file is named <ID>.<table>.csv and sits beside its entry"); continue; }
+    if (!readText(owner.file).includes(name)) problem(join(d, name), `is not named by ${m[1]}`);
+  }
+}
+
+// No chain of superseded_by links leads back to where it started.
+for (const [id, e] of entries) {
+  const seen = new Set();
+  const stack = [...asList(e.meta.superseded_by)];
+  while (stack.length) {
+    const x = stack.pop();
+    if (x === id) { problem(e.file, "its superseded_by links lead back to it"); break; }
+    if (seen.has(x) || !entries.has(x)) continue;
+    seen.add(x);
+    stack.push(...asList(entries.get(x).meta.superseded_by));
+  }
+}
+
+// An entry that relates to a split rule or format relates to every entry of the split, and every
+// build it lists is listed by one of them.
+for (const [id, e] of entries) {
+  if (KINDS[e.kind].statuses !== "claim" || e.meta.status === "superseded") continue;
+  const related = asList(e.meta.related);
+  for (const x of related) {
+    const other = entries.get(x);
+    const group = other ? [x, ...asList(other.meta.split_with)] : [];
+    if (group.length < 2 || group.includes(id)) continue;
+    for (const g of group) if (!related.includes(g)) problem(e.file, `relates to ${x}, which is split with ${g}; add ${g} to related`);
+    for (const b of asList(e.meta.builds)) if (!group.some((g) => asList(entries.get(g)?.meta.builds).includes(b))) problem(e.file, `lists ${b}, which no entry of the split ${group.join(", ")} lists`);
   }
 }
 
@@ -936,33 +1147,83 @@ function runTool(cmd, args) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Splitting generated files
+
+// A generated file that would pass the line limit becomes a directory of the same name, split by
+// area (BLD-SRC for builds and sources, which have no area), then by kind, then by a block of 100
+// numbers, or by the first character of a build's or source's alias.
+const groupOf = (id) => (["BLD", "SRC"].includes(kindOf(id)) ? "BLD-SRC" : areaOf(id));
+const blockOf = (id) => {
+  const kind = kindOf(id);
+  if (kind === "BLD" || kind === "SRC") return id.charAt(kind.length + 1);
+  return String(Math.floor(Number(id.split("-")[2]) / 100) * 100).padStart(3, "0");
+};
+const SPLIT_LEVELS = [groupOf, kindOf, blockOf];
+function orderKeys(level, keys) {
+  if (level === 0) return [...areas.filter((a) => keys.includes(a)), ...keys.filter((k) => !areas.includes(k)).sort()];
+  if (level === 1) return Object.keys(KINDS).filter((k) => keys.includes(k));
+  return keys.sort((a, b) => (/^\d+$/.test(a) && /^\d+$/.test(b) ? Number(a) - Number(b) : a < b ? -1 : a > b ? 1 : 0));
+}
+// Lays out one generated file: `${name}.md` when render's text fits, otherwise a directory split only
+// as far as the limit requires. render(ids, path) gives the text of the file at path, which has no
+// .md and is relative to the generated tree. Returns a Map of path -> { ids, text }.
+function layout(name, ids, render, level = 0, out = new Map()) {
+  const text = render(ids, name);
+  if (lineCount(text) <= LINE_LIMIT || level === SPLIT_LEVELS.length) {
+    if (lineCount(text) > LINE_LIMIT) problem(null, `${name}.md would pass ${LINE_LIMIT} lines even split by block`);
+    out.set(name, { ids, text });
+    return out;
+  }
+  const groups = new Map();
+  for (const id of ids) {
+    const key = SPLIT_LEVELS[level](id);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(id);
+  }
+  for (const key of orderKeys(level, [...groups.keys()])) layout(`${name}/${key}`, groups.get(key), render, level + 1, out);
+  return out;
+}
+const GENERATED = "<!-- Generated by the documentation standard check. Do not edit. -->";
+const toSlash = (p) => p.replaceAll("\\", "/");
+// Markdown files under dir, by path relative to dir without .md.
+function markdownTree(dir) {
+  const found = new Map();
+  walk(dir, (f) => { if (f.endsWith(".md")) found.set(toSlash(relative(dir, f)).replace(/\.md$/, ""), f); });
+  return found;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Deviation log and parity matrix
 
 const deviations = new Map();
+const devDir = join(repoDir, "deviations");
+const isDeviationFile = (f) => resolve(f).startsWith(devDir + (process.platform === "win32" ? "\\" : "/"));
 {
-  const path = join(repoDir, "DEVIATIONS.md");
-  if (!existsSync(path)) problem(null, "DEVIATIONS.md is missing");
-  else {
-    const text = readFileSync(path, "utf8").replace(/\r\n/g, "\n");
-    for (const s of splitSections(text)) {
-      if (!/^DEV-[A-Z][A-Z0-9]*-\d{3,}$/.test(s.title)) { problem(path, `heading ${s.title} is not a deviation ID`); continue; }
-      if (deviations.has(s.title)) problem(path, `${s.title} is used twice`);
-      if (!areas.includes(areaOf(s.title))) problem(path, `${s.title}: area is not in the area list`);
-      const items = [...s.text.matchAll(/^- ([A-Za-z ]+): (.*)$/gm)].map((m) => [m[1], m[2]]);
-      const item = Object.fromEntries(items);
-      const order = ["Departs from", "Reason", "Setting", "Default", ...("Justification" in item ? ["Justification"] : []), "Dropped"];
-      if (items.slice(0, order.length).map((x) => x[0]).join("|") !== order.join("|")) problem(path, `${s.title}: items must be ${order.join(", ")} in that order`);
-      const departs = idsIn(item["Departs from"]);
-      const dropped = item.Dropped && item.Dropped !== "no";
-      if (dropped && !/^\d{4}-\d{2}-\d{2}\b/.test(item.Dropped)) problem(path, `${s.title}: Dropped gives the date, YYYY-MM-DD, and the reason`);
-      checkResolves(path, departs, `${s.title} Departs from`);
-      if (!dropped) {
-        if (!departs.some((x) => ["RULE", "FMT", "SCR"].includes(kindOf(x)))) problem(path, `${s.title}: Departs from names at least one rule, format or screen`);
-        for (const x of departs) if (isSuperseded(x)) problem(path, `${s.title} departs from ${x}, which is superseded`);
-        checkDeviationDefault(path, s.title, item, departs);
-      }
-      deviations.set(s.title, { departs, dropped });
+  if (existsSync(join(repoDir, "DEVIATIONS.md"))) problem(join(repoDir, "DEVIATIONS.md"), "the deviation log is the directory deviations/; move each ## deviation to deviations/<ID>.md with the ID as its # heading");
+  if (!existsSync(devDir)) problem(null, "deviations/ is missing");
+  else for (const file of termFiles(devDir)) {
+    if (statSync(file).isDirectory() || !file.endsWith(".md")) { problem(file, "is not a deviation file; deviations/ holds one <ID>.md per deviation"); continue; }
+    const m = /^# (.+)\n?([\s\S]*)$/.exec(readText(file));
+    if (!m) { problem(file, "opens with the deviation's ID as a # heading"); continue; }
+    const title = m[1].trim();
+    if (!/^DEV-[A-Z][A-Z0-9]*-\d{3,}$/.test(title)) { problem(file, `heading ${title} is not a deviation ID`); continue; }
+    if (basename(file) !== `${title}.md`) problem(file, `file name must be ${title}.md`);
+    if (deviations.has(title)) problem(file, `${title} is used twice`);
+    if (!areas.includes(areaOf(title))) problem(file, `${title}: area is not in the area list`);
+    const items = [...m[2].matchAll(/^- ([A-Za-z ]+): (.*)$/gm)].map((x) => [x[1], x[2]]);
+    const item = Object.fromEntries(items);
+    const order = ["Departs from", "Reason", "Setting", "Default", ...("Justification" in item ? ["Justification"] : []), "Dropped"];
+    if (items.slice(0, order.length).map((x) => x[0]).join("|") !== order.join("|")) problem(file, `${title}: items must be ${order.join(", ")} in that order`);
+    const departs = idsIn(item["Departs from"]);
+    const dropped = item.Dropped && item.Dropped !== "no";
+    if (dropped && !/^\d{4}-\d{2}-\d{2}\b/.test(item.Dropped)) problem(file, `${title}: Dropped gives the date, YYYY-MM-DD, and the reason`);
+    checkResolves(file, departs, `${title} Departs from`);
+    if (!dropped) {
+      if (!departs.some((x) => ["RULE", "FMT", "SCR"].includes(kindOf(x)))) problem(file, `${title}: Departs from names at least one rule, format or screen`);
+      for (const x of departs) if (isSuperseded(x)) problem(file, `${title} departs from ${x}, which is superseded`);
+      checkDeviationDefault(file, title, item, departs);
     }
+    deviations.set(title, { departs, dropped, file });
   }
 }
 
@@ -982,80 +1243,82 @@ function checkDeviationDefault(path, title, item, departs) {
   if (!needsJustification && hasJustification) problem(path, `${title}: has a Justification, which only a mandatory deviation or one that is on without fixing an unintended, not-relied-on bug has`);
 }
 
-const parityRows = new Map();
+// The parity rows live in parity/, one file per area, split by kind and then by block where the
+// limit requires it. PARITY.md holds the totals and is written by this script.
+const PARITY_HEADER = ["Spec ID", "Title", "Spec status", "Code", "Tests", "Deviations", "Status", "Notes"];
+const parityDir = join(repoDir, "parity");
+const parityRows = new Map(); // spec ID -> { cells, file }
+const parityCounts = { status: {}, code: {} };
 {
-  const path = join(repoDir, "PARITY.md");
-  if (!existsSync(path)) problem(null, "PARITY.md is missing");
-  else {
-    const text = readFileSync(path, "utf8").replace(/\r\n/g, "\n");
-    const all = tables(text);
-    const header = ["Spec ID", "Title", "Spec status", "Code", "Tests", "Deviations", "Status", "Notes"];
-    const statusCounts = all.find((t) => t.header.join("|") === "Status|Rows");
-    const codeCounts = all.find((t) => t.header.join("|") === "Code|Rows");
-    if (!statusCounts || !codeCounts) problem(path, "opens with a table counting rows by Status and one by Code");
-    const sectionAreas = splitSections(text).map((s) => s.title);
-    const expectedAreas = areas.filter((a) => [...entries.values()].some((e) => ["RULE", "FMT", "SCR"].includes(e.kind) && e.meta.status !== "superseded" && areaOf(e.meta.id) === a));
-    if (sectionAreas.join("|") !== expectedAreas.join("|")) problem(path, `needs one ## heading per area with rows, in the order of the area list: ${expectedAreas.join(", ")}`);
-    const placeholders = collectPlaceholders();
-    const byStatus = {};
-    const byCode = {};
-    for (const s of splitSections(text)) {
-      let previous = "";
-      for (const t of tables(s.text)) {
-        if (t.header.join("|") !== header.join("|")) { problem(path, `tables under ${s.title} have the columns ${header.join(" | ")}`); continue; }
-        for (const row of t.rows) {
-          if (row.length !== header.length) { problem(path, `the row ${row.join(" | ")} under ${s.title} has ${row.length} cells, not ${header.length}`); continue; }
-          const [specId, title, specStatus, code, tests, devs, status, notes] = row.map((c) => c.replaceAll("`", "").trim());
-          if (parityRows.has(specId)) problem(path, `${specId} has more than one row`);
-          parityRows.set(specId, true);
-          if (areaOf(specId) !== s.title) problem(path, `${specId} belongs under ${areaOf(specId)}`);
-          if (compareIds(specId, previous) < 0) problem(path, `${specId} is out of ID order`);
-          previous = specId;
-          const e = entries.get(specId);
-          if (!e) { problem(path, `${specId} does not exist in the spec`); continue; }
-          if (!["RULE", "FMT", "SCR"].includes(e.kind) || e.meta.status === "superseded") problem(path, `${specId} cannot have a row`);
-          if (title !== e.meta.title) problem(path, `${specId}: Title must be "${e.meta.title}"`);
-          if (specStatus !== e.meta.status) problem(path, `${specId}: Spec status must be ${e.meta.status}`);
-          if (!["missing", "partial", "complete"].includes(code)) problem(path, `${specId}: Code must be missing, partial or complete`);
-          if (code === "complete" && e.meta.status === "unknown") problem(path, `${specId}: an unknown entry cannot be complete`);
-          if (code === "complete" && placeholders.has(specId)) problem(path, `${specId}: a PLACEHOLDER comment cites it, so it cannot be complete`);
-          const testFiles = tests === "None" ? [] : tests.split(",").map((x) => x.trim()).filter(Boolean);
-          for (const tf of testFiles) {
-            const p = join(repoDir, tf);
-            if (!existsSync(p)) problem(path, `${specId}: test file ${tf} does not exist`);
-            else if (!readFileSync(p, "utf8").includes(specId)) problem(path, `${specId}: test file ${tf} does not mention ${specId}`);
-          }
-          const listedDevs = devs === "None" ? [] : devs.split(",").map((x) => x.trim()).filter(Boolean);
-          const expectedDevs = [...deviations].filter(([, d]) => !d.dropped && d.departs.includes(specId)).map(([k]) => k).sort(compareIds);
-          if (listedDevs.slice().sort(compareIds).join(",") !== expectedDevs.join(",")) problem(path, `${specId}: Deviations must be ${expectedDevs.join(", ") || "None"}`);
-          let expectedStatus;
-          if (code !== "complete" || e.meta.status === "disputed") expectedStatus = e.meta.status;
-          else if (testFiles.length === 0) expectedStatus = "implemented";
-          else if (["supported", "established"].includes(e.meta.status)) expectedStatus = "validated";
-          else { problem(path, `${specId}: complete with tests while the spec status is ${e.meta.status}; the evidence belongs in the spec entry first`); expectedStatus = status; }
-          if (status !== expectedStatus) problem(path, `${specId}: Status must be ${expectedStatus}`);
-          for (const cell of [code, tests, devs, notes]) if (cell === "") problem(path, `${specId}: an empty cell says None`);
-          byStatus[status] = (byStatus[status] ?? 0) + 1;
-          byCode[code] = (byCode[code] ?? 0) + 1;
-        }
+  if (!existsSync(parityDir)) problem(null, "parity/ is missing");
+  const parityMd = join(repoDir, "PARITY.md");
+  if (existsSync(parityMd) && tables(readText(parityMd)).some((t) => t.header.join("|") === PARITY_HEADER.join("|"))) problem(parityMd, "the rows move to parity/, one <AREA>.md per area, and the check writes PARITY.md");
+  const placeholders = collectPlaceholders();
+  const files = existsSync(parityDir) ? markdownTree(parityDir) : new Map();
+  walk(parityDir, (f) => { if (!f.endsWith(".md") && basename(f) !== ".gitkeep") problem(f, "is not a parity file; parity/ holds one <AREA>.md per area"); });
+  const byArea = new Map(); // area -> Map of path -> ids in the file
+  for (const [path, file] of files) {
+    const text = readText(file);
+    if (!text.startsWith(`# ${path}\n`)) problem(file, `opens with its path as a # heading: # ${path}`);
+    const [area, kind, block, ...rest] = path.split("/");
+    if (!areas.includes(area)) { problem(file, `${area} is not an area in the area list`); continue; }
+    if (rest.length > 0 || (kind !== undefined && !["RULE", "FMT", "SCR"].includes(kind))) { problem(file, "is not an area, kind or block file of parity/"); continue; }
+    const ts = tables(text);
+    if (ts.length !== 1 || ts[0].header.join("|") !== PARITY_HEADER.join("|")) { problem(file, `holds one table with the columns ${PARITY_HEADER.join(" | ")}`); continue; }
+    if (!byArea.has(area)) byArea.set(area, new Map());
+    const inFile = [];
+    byArea.get(area).set(path, inFile);
+    let previous = "";
+    for (const row of ts[0].rows) {
+      if (row.length !== PARITY_HEADER.length) { problem(file, `the row ${row.join(" | ")} has ${row.length} cells, not ${PARITY_HEADER.length}`); continue; }
+      const cells = row.map((c) => c.replaceAll("`", "").trim());
+      const [specId, title, specStatus, code, tests, devs, status, notes] = cells;
+      if (parityRows.has(specId)) problem(file, `${specId} has more than one row`);
+      parityRows.set(specId, { cells: row, file });
+      inFile.push(specId);
+      if (areaOf(specId) !== area || (kind && kindOf(specId) !== kind) || (block && blockOf(specId) !== block)) problem(file, `${specId} does not belong in parity/${path}.md`);
+      if (compareIds(specId, previous) < 0) problem(file, `${specId} is out of ID order`);
+      previous = specId;
+      const e = entries.get(specId);
+      if (!e) { problem(file, `${specId} does not exist in the spec`); continue; }
+      if (!["RULE", "FMT", "SCR"].includes(e.kind) || e.meta.status === "superseded") problem(file, `${specId} cannot have a row`);
+      if (title !== e.meta.title) problem(file, `${specId}: Title must be "${e.meta.title}"`);
+      if (specStatus !== e.meta.status) problem(file, `${specId}: Spec status must be ${e.meta.status}`);
+      if (!["missing", "partial", "complete"].includes(code)) problem(file, `${specId}: Code must be missing, partial or complete`);
+      if (code === "complete" && e.meta.status === "unknown") problem(file, `${specId}: an unknown entry cannot be complete`);
+      if (code === "complete" && placeholders.has(specId)) problem(file, `${specId}: a PLACEHOLDER comment cites it, so it cannot be complete`);
+      const testFiles = tests === "None" ? [] : tests.split(",").map((x) => x.trim()).filter(Boolean);
+      for (const tf of testFiles) {
+        const p = join(repoDir, tf);
+        if (!existsSync(p)) problem(file, `${specId}: test file ${tf} does not exist`);
+        else if (!readFileSync(p, "utf8").includes(specId)) problem(file, `${specId}: test file ${tf} does not mention ${specId}`);
       }
+      const listedDevs = devs === "None" ? [] : devs.split(",").map((x) => x.trim()).filter(Boolean);
+      const expectedDevs = [...deviations].filter(([, d]) => !d.dropped && d.departs.includes(specId)).map(([k]) => k).sort(compareIds);
+      if (listedDevs.slice().sort(compareIds).join(",") !== expectedDevs.join(",")) problem(file, `${specId}: Deviations must be ${expectedDevs.join(", ") || "None"}`);
+      let expectedStatus;
+      if (code !== "complete" || e.meta.status === "disputed") expectedStatus = e.meta.status;
+      else if (testFiles.length === 0) expectedStatus = "implemented";
+      else if (["supported", "established"].includes(e.meta.status)) expectedStatus = "validated";
+      else { problem(file, `${specId}: complete with tests while the spec status is ${e.meta.status}; the evidence belongs in the spec entry first`); expectedStatus = status; }
+      if (status !== expectedStatus) problem(file, `${specId}: Status must be ${expectedStatus}`);
+      for (const cell of [code, tests, devs, notes]) if (cell === "") problem(file, `${specId}: an empty cell says None`);
+      parityCounts.status[status] = (parityCounts.status[status] ?? 0) + 1;
+      parityCounts.code[code] = (parityCounts.code[code] ?? 0) + 1;
     }
-    for (const [id, e] of entries) if (["RULE", "FMT", "SCR"].includes(e.kind) && e.meta.status !== "superseded" && !parityRows.has(id)) problem(path, `${id} has no row`);
-    const checkCounts = (t, counts, keys) => {
-      if (!t) return;
-      for (const k of keys) {
-        const row = t.rows.find((r) => r[0].replaceAll("`", "") === k);
-        const want = counts[k] ?? 0;
-        if (!row) problem(path, `the count table lacks ${k}`);
-        else if (Number(row[1]) !== want) problem(path, `count for ${k} must be ${want}`);
-      }
-    };
-    checkCounts(statusCounts, byStatus, ["unknown", "sourced", "supported", "established", "disputed", "implemented", "validated"]);
-    checkCounts(codeCounts, byCode, ["missing", "partial", "complete"]);
+  }
+  for (const [id, e] of entries) if (["RULE", "FMT", "SCR"].includes(e.kind) && e.meta.status !== "superseded" && !parityRows.has(id)) problem(parityDir, `${id} has no row`);
+  // Each area is split exactly where the limit requires it, going by the rows it has.
+  for (const [area, actual] of byArea) {
+    const ids = [...actual.values()].flat().filter((x) => entries.has(x)).sort(compareIds);
+    const render = (subset, path) => [`# ${path}`, "", `| ${PARITY_HEADER.join(" | ")} |`, `|${"---|".repeat(PARITY_HEADER.length)}`, ...subset.map((x) => `| ${parityRows.get(x).cells.join(" | ")} |`), ""].join("\n");
+    const expected = [...layout(area, ids, render, 1).keys()];
+    const found = [...actual.keys()].sort();
+    if (expected.slice().sort().join(",") !== found.join(",")) problem(parityDir, `the rows of ${area} belong in ${expected.map((p) => `parity/${p}.md`).join(", ")}, split only where the ${LINE_LIMIT}-line limit requires it; found ${found.map((p) => `parity/${p}.md`).join(", ")}`);
   }
 }
 
-for (const [dev, d] of deviations) if (!d.dropped && !d.departs.some((x) => parityRows.has(x))) problem(join(repoDir, "DEVIATIONS.md"), `${dev} departs from no entry that has a parity row`);
+for (const [dev, d] of deviations) if (!d.dropped && !d.departs.some((x) => parityRows.has(x))) problem(d.file, `${dev} departs from no entry that has a parity row`);
 
 // The --code and --references directories, walked and read once for the placeholder and the
 // implementation-reference checks. The cache is a property of the function because the parity
@@ -1089,24 +1352,22 @@ function walk(dir, fn) {
   }
 }
 
-// Implementation references: every spec and deviation ID in code, tests and the two ledgers resolves
+// Implementation references: every spec and deviation ID in code, tests, the parity files and the
+// deviation files resolves. A deviation keeps citing what it departed from after that is superseded.
 {
   const scan = codeFiles().filter(({ file }) => !file.endsWith(".fs"));
-  for (const name of ["PARITY.md", "DEVIATIONS.md"]) {
-    const file = join(repoDir, name);
-    if (existsSync(file)) scan.push({ file, text: readFileSync(file, "utf8") });
-  }
+  for (const dir of [parityDir, devDir]) walk(dir, (f) => { if (f.endsWith(".md")) scan.push({ file: f, text: readFileSync(f, "utf8") }); });
   for (const { file: f, text } of scan) {
     for (const x of idsIn(text)) {
       if (["BLD", "SRC"].includes(kindOf(x)) && !entries.has(x)) continue; // aliases can collide with ordinary words
       if (!entries.has(x)) problem(f, `cites ${x}, which does not exist in the spec`);
-      else if (isSuperseded(x) && !f.endsWith("DEVIATIONS.md")) problem(f, `cites ${x}, which is superseded; cite what replaced it`);
+      else if (isSuperseded(x) && !isDeviationFile(f)) problem(f, `cites ${x}, which is superseded; cite what replaced it`);
     }
-    if (!f.endsWith("DEVIATIONS.md")) for (const x of new Set(text.match(DEV_RE) ?? [])) if (!deviations.has(x)) problem(f, `cites ${x}, which is not in DEVIATIONS.md`);
+    if (!isDeviationFile(f)) for (const x of new Set(text.match(DEV_RE) ?? [])) if (!deviations.has(x)) problem(f, `cites ${x}, which is not in deviations/`);
   }
 }
 
-// IDs and areas that exist on the base branch must not disappear
+// IDs, areas and deviations that exist on the base branch must not disappear
 {
   // Without --base, compare with the point this branch left the base branch (the pull request's
   // target in CI), not that branch's tip: an entry added on the base branch after this branch
@@ -1123,7 +1384,7 @@ function walk(dir, fn) {
   }
   let listing = null;
   if (base) try {
-    listing = git("ls-tree", "-r", "--name-only", base, "--", "spec");
+    listing = git("ls-tree", "-r", "--name-only", base, "--", "spec", "deviations");
   } catch {
     if (baseArg) problem(null, `cannot list spec/ at ${base}`);
   }
@@ -1131,6 +1392,8 @@ function walk(dir, fn) {
     for (const p of listing.split("\n")) {
       const m = /^spec\/(?:builds|sources|formats|rules|findings|experiments|bugs|screens)\/([A-Z]+-[A-Z0-9.-]+)\.md$/.exec(p);
       if (m && !entries.has(m[1])) problem(null, `${m[1]} exists at ${base} and has been deleted or renamed`);
+      const d = /^deviations\/(DEV-[A-Z0-9]+-\d+)\.md$/.exec(p);
+      if (d && !deviations.has(d[1])) problem(null, `${d[1]} exists at ${base} and has been deleted or renamed`);
     }
     // ./ makes the path relative to --root, which need not be the top of the repository. A file
     // that does not exist at the base has nothing to compare, and each is read on its own so a
@@ -1151,61 +1414,67 @@ function walk(dir, fn) {
       const a = row[0].replaceAll("`", "");
       if (!areas.includes(a)) problem(null, `area ${a} exists at ${base} and has been removed or renamed`);
     }
+    // A base from before the deviation log became a directory keeps its deviations in DEVIATIONS.md.
     const oldDev = show("DEVIATIONS.md");
     if (oldDev) for (const m of oldDev.matchAll(/^## (DEV-[A-Z0-9]+-\d+)$/gm)) if (!deviations.has(m[1])) problem(null, `${m[1]} exists at ${base} and has been removed`);
   }
 }
 
 // ---------------------------------------------------------------------------------------------
-// Indexes
+// Indexes and PARITY.md
 
-function link(id) {
-  const e = entries.get(id);
-  return `[${id}](../${KINDS[e.kind].dir}/${id}.md)`;
-}
 const esc = (s) => String(s ?? "").replaceAll("|", "\\|");
 const sortedIds = [...entries.keys()].sort(compareIds);
-const header = "<!-- Generated by the documentation standard check. Do not edit. -->\n\n";
+const indexDir = join(specDir, "index");
+const linkFrom = (path) => (id) => `[${id}](${toSlash(relative(dirname(join(indexDir, `${path}.md`)), entries.get(id).file))})`;
+const opening = (path, what) => [`# ${path}`, "", GENERATED, "", what, ""];
+// A file of the full index lists every group, empty ones too, so its counts read as a progress
+// report. A file of a split index lists only the groups it has entries in.
+const isWhole = (path) => !path.includes("/");
 
-const byKind = [header + "# Entries by kind\n"];
-for (const [kind, { dir }] of Object.entries(KINDS)) {
-  const ids = sortedIds.filter((x) => entries.get(x).kind === kind);
-  byKind.push(`\n## ${dir}\n\n${ids.length} entries.\n`);
-  if (ids.length) {
-    byKind.push("\n| ID | Title | Status |\n|---|---|---|\n");
-    for (const x of ids) byKind.push(`| ${link(x)} | ${esc(entries.get(x).meta.title)} | ${entries.get(x).meta.status ?? "None"} |\n`);
+function renderByKind(ids, path) {
+  const link = linkFrom(path);
+  const out = opening(path, "Entries by kind.");
+  for (const [kind, { dir }] of Object.entries(KINDS)) {
+    const kindIds = ids.filter((x) => kindOf(x) === kind);
+    if (!kindIds.length && !isWhole(path)) continue;
+    out.push(`## ${dir}`, "", `${kindIds.length} entries.`, "");
+    if (kindIds.length) out.push("| ID | Title | Status |", "|---|---|---|", ...kindIds.map((x) => `| ${link(x)} | ${esc(entries.get(x).meta.title)} | ${entries.get(x).meta.status ?? "None"} |`), "");
   }
+  return out.join("\n");
 }
 
-const byArea = [header + "# Entries by area\n"];
-for (const a of areas) {
-  const ids = sortedIds.filter((x) => !["BLD", "SRC"].includes(kindOf(x)) && areaOf(x) === a);
-  byArea.push(`\n## ${a}\n\n`);
-  if (!ids.length) { byArea.push("None.\n"); continue; }
-  byArea.push("| ID | Title | Status |\n|---|---|---|\n");
-  for (const x of ids) byArea.push(`| ${link(x)} | ${esc(entries.get(x).meta.title)} | ${entries.get(x).meta.status} |\n`);
-}
-
-const byStatus = [header + "# Entries by status\n"];
-for (const st of [...CLAIM_STATUSES, ...EVIDENCE_STATUSES.filter((x) => x !== "superseded")]) {
-  const ids = sortedIds.filter((x) => entries.get(x).meta.status === st);
-  byStatus.push(`\n## ${st}\n\n${ids.length} entries.\n`);
-  if (ids.length) {
-    byStatus.push("\n| ID | Title |\n|---|---|\n");
-    for (const x of ids) byStatus.push(`| ${link(x)} | ${esc(entries.get(x).meta.title)} |\n`);
+function renderByArea(ids, path) {
+  const link = linkFrom(path);
+  const out = opening(path, "Entries by area.");
+  for (const a of areas) {
+    const areaIds = ids.filter((x) => areaOf(x) === a);
+    if (!areaIds.length && !isWhole(path)) continue;
+    out.push(`## ${a}`, "");
+    if (!areaIds.length) out.push("None.", "");
+    else out.push("| ID | Title | Status |", "|---|---|---|", ...areaIds.map((x) => `| ${link(x)} | ${esc(entries.get(x).meta.title)} | ${entries.get(x).meta.status} |`), "");
   }
+  return out.join("\n");
 }
-{
-  const ids = sortedIds.filter((x) => KINDS[kindOf(x)].statuses === "claim" && entries.get(x).meta.status === "established" && asList(entries.get(x).meta.evidence).filter((y) => ["FND", "EXP"].includes(kindOf(y))).every((y) => entries.get(y)?.meta.status !== "reproduced"));
-  byStatus.push("\n## Established on unreproduced evidence\n\nEntries whose status is established and whose findings and experiments are all only recorded.\n\n");
-  if (!ids.length) byStatus.push("None.\n");
-  else { byStatus.push("| ID | Title |\n|---|---|\n"); for (const x of ids) byStatus.push(`| ${link(x)} | ${esc(entries.get(x).meta.title)} |\n`); }
-}
-{
-  byStatus.push("\n## Open questions\n\nEntries whose Open questions section says more than None known.\n\n");
-  const ids = sortedIds.filter((x) => { const s = entries.get(x).sections.find((y) => y.title === "Open questions"); return s && !/^\s*None( known)?\.\s*$/.test(s.text); });
-  if (!ids.length) byStatus.push("None.\n");
-  else { byStatus.push("| ID | Title | Status |\n|---|---|---|\n"); for (const x of ids) byStatus.push(`| ${link(x)} | ${esc(entries.get(x).meta.title)} | ${entries.get(x).meta.status} |\n`); }
+
+function renderByStatus(ids, path) {
+  const link = linkFrom(path);
+  const out = opening(path, "Entries by status.");
+  const section = (title, intro, list, withStatus) => {
+    if (!list.length && !isWhole(path)) return;
+    out.push(`## ${title}`, "");
+    if (intro) out.push(intro, "");
+    if (!list.length) { out.push(intro ? "None." : "0 entries.", ""); return; }
+    if (!intro) out.push(`${list.length} entries.`, "");
+    out.push(withStatus ? "| ID | Title | Status |" : "| ID | Title |", withStatus ? "|---|---|---|" : "|---|---|",
+      ...list.map((x) => `| ${link(x)} | ${esc(entries.get(x).meta.title)} |${withStatus ? ` ${entries.get(x).meta.status} |` : ""}`), "");
+  };
+  for (const st of [...CLAIM_STATUSES, ...EVIDENCE_STATUSES.filter((x) => x !== "superseded")]) section(st, null, ids.filter((x) => entries.get(x).meta.status === st), false);
+  section("Established on unreproduced evidence", "Entries whose status is established and whose findings and experiments are all only recorded.",
+    ids.filter((x) => KINDS[kindOf(x)].statuses === "claim" && entries.get(x).meta.status === "established" && asList(entries.get(x).meta.evidence).filter((y) => ["FND", "EXP"].includes(kindOf(y))).every((y) => entries.get(y)?.meta.status !== "reproduced")), false);
+  section("Open questions", "Entries whose Open questions section says more than None known.",
+    ids.filter((x) => { const s = entries.get(x).sections.find((y) => y.title === "Open questions"); return s && !/^\s*None( known)?\.\s*$/.test(s.text); }), true);
+  return out.join("\n");
 }
 
 const refs = new Map(sortedIds.map((x) => [x, new Map()]));
@@ -1215,31 +1484,81 @@ for (const [id, e] of entries) {
   for (const loc of asList(e.meta.locations)) if (loc?.build) addRef(loc.build, id, "locations");
   for (const x of idsIn(e.body)) addRef(x, id, "body");
 }
-for (const [term, text] of glossary) for (const x of idsIn(text)) addRef(x, `glossary: ${term}`, "glossary");
-const references = [header + "# References\n\nFor each entry, the entries that cite or relate to it, and the field they do it in.\n"];
-for (const x of sortedIds) {
-  references.push(`\n## ${x}\n\n`);
-  const m = refs.get(x);
-  if (!m.size) { references.push("None.\n"); continue; }
-  references.push("| Cited by | In |\n|---|---|\n");
-  for (const [from, hows] of [...m].sort((a, b) => compareIds(a[0], b[0]))) references.push(`| ${entries.has(from) ? link(from) : esc(from)} | ${[...hows].sort().join(", ")} |\n`);
+for (const [term, text] of glossary) for (const x of idsIn(text)) addRef(x, `glossary:${term}`, "glossary");
+
+// One row per entry: everything that cites it goes in one cell.
+function renderReferences(ids, path) {
+  const link = linkFrom(path);
+  const termLink = (term) => (glossaryFiles.has(term) ? `[${term}](${toSlash(relative(dirname(join(indexDir, `${path}.md`)), glossaryFiles.get(term)))})` : esc(term));
+  const out = opening(path, "For each entry, the entries and glossary terms that cite or relate to it, and the field they do it in.");
+  out.push("| ID | Cited by |", "|---|---|");
+  for (const x of ids) {
+    const cited = [...refs.get(x)].sort((a, b) => compareIds(a[0], b[0]))
+      .map(([from, hows]) => `${from.startsWith("glossary:") ? termLink(from.slice(9)) : link(from)} (${[...hows].sort().join(", ")})`);
+    out.push(`| ${link(x)} | ${cited.join(", ") || "None"} |`);
+  }
+  out.push("");
+  return out.join("\n");
 }
 
-const indexes = { "by-kind.md": byKind.join(""), "by-area.md": byArea.join(""), "by-status.md": byStatus.join(""), "references.md": references.join("") };
-const indexDir = join(specDir, "index");
-for (const [name, content] of Object.entries(indexes)) {
-  const p = join(indexDir, name);
-  const current = existsSync(p) ? readFileSync(p, "utf8").replace(/\r\n/g, "\n") : null;
-  if (current === content) continue;
-  if (checkOnly) problem(p, "is stale; run the check without --check to rewrite it");
-  else { mkdirSync(indexDir, { recursive: true }); writeFileSync(p, content); console.log(`wrote ${relative(repoDir, p)}`); }
+const generated = new Map(); // absolute path -> text
+{
+  const areaIds = sortedIds.filter((x) => !["BLD", "SRC"].includes(kindOf(x)));
+  const indexes = { "by-kind": [renderByKind, sortedIds], "by-area": [renderByArea, areaIds], "by-status": [renderByStatus, sortedIds], references: [renderReferences, sortedIds] };
+  for (const [name, [render, ids]] of Object.entries(indexes)) for (const [path, { text }] of layout(name, ids, render)) generated.set(join(indexDir, `${path}.md`), text);
+
+  const out = ["# Parity matrix", "", GENERATED, "", "How much of the spec in `spec/` the rebuild does. The rows are in `parity/`, one file per area.", "",
+    "| Status | Rows |", "|---|---|", ...["unknown", "sourced", "supported", "established", "disputed", "implemented", "validated"].map((k) => `| ${k} | ${parityCounts.status[k] ?? 0} |`), "",
+    "| Code | Rows |", "|---|---|", ...["missing", "partial", "complete"].map((k) => `| ${k} | ${parityCounts.code[k] ?? 0} |`), "", "## Areas", ""];
+  const withRows = areas.filter((a) => existsSync(join(parityDir, `${a}.md`)) || existsSync(join(parityDir, a)));
+  if (!withRows.length) out.push("None yet.");
+  else out.push("| Area | Rows |", "|---|---|", ...withRows.map((a) => {
+    const target = existsSync(join(parityDir, `${a}.md`)) ? `parity/${a}.md` : `parity/${a}/`;
+    return `| [${a}](${target}) | ${[...parityRows.keys()].filter((x) => areaOf(x) === a).length} |`;
+  }));
+  out.push("");
+  generated.set(join(repoDir, "PARITY.md"), out.join("\n"));
+}
+{
+  const stale = [];
+  for (const [p, content] of generated) {
+    const current = existsSync(p) ? readText(p) : null;
+    if (current !== content) stale.push(p);
+  }
+  const extra = [...(existsSync(indexDir) ? markdownTree(indexDir).values() : [])].filter((f) => !generated.has(f));
+  if (checkOnly) {
+    for (const p of stale) problem(p, existsSync(p) ? "is stale; run the check without --check to rewrite it" : "is missing; run the check without --check to write it");
+    for (const f of extra) problem(f, "is not a file the check writes; run the check without --check to remove it");
+  } else {
+    for (const p of stale) { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, generated.get(p)); console.log(`wrote ${toSlash(relative(repoDir, p))}`); }
+    for (const f of extra) { rmSync(f); console.log(`removed ${toSlash(relative(repoDir, f))}`); }
+    // Directories left empty by a file that moved.
+    const prune = (dir) => {
+      for (const name of readdirSync(dir)) { const p = join(dir, name); if (statSync(p).isDirectory()) prune(p); }
+      if (dir !== indexDir && readdirSync(dir).length === 0) rmSync(dir, { recursive: true });
+    };
+    if (existsSync(indexDir)) prune(indexDir);
+  }
+}
+
+// Every Markdown file the standard defines is at most LINE_LIMIT lines long.
+{
+  const files = [join(repoDir, "PARITY.md")];
+  for (const dir of [specDir, parityDir, devDir]) walk(dir, (f) => { if (f.endsWith(".md")) files.push(f); });
+  for (const f of files) {
+    if (!existsSync(f)) continue;
+    const lines = lineCount(readText(f));
+    if (lines > LINE_LIMIT) problem(f, `has ${lines} lines; the documentation standard allows ${LINE_LIMIT}. Split it as the standard's File size section describes`);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
 
-if (problems.length) {
-  for (const p of problems) console.error(p);
-  console.error(`\n${problems.length} problem(s) in ${entries.size} spec entries.`);
+// The same problem can be found twice, such as a term that cites one finding in two places.
+const unique = [...new Set(problems)];
+if (unique.length) {
+  for (const p of unique) console.error(p);
+  console.error(`\n${unique.length} problem(s) in ${entries.size} spec entries.`);
   process.exit(1);
 }
 console.log(`spec check passed: ${entries.size} entries, ${parityRows.size} parity rows, ${deviations.size} deviations.`);
