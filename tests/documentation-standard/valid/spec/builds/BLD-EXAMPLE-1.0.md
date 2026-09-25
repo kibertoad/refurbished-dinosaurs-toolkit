@@ -8,15 +8,7 @@ publisher: Example Publisher
 distribution: CD-ROM
 languages: [en]
 int_width: 32
-files:
-  - path: GAME.EXE
-    format: PE
-    size: 1024
-    xxh3: 0123456789abcdef0123456789abcdef
-  - path: DATA/SCORES.BIN
-    format: data
-    size: 2
-    xxh3: fedcba9876543210fedcba9876543210
+manifest: BLD-EXAMPLE-1.0.files.yaml
 ---
 
 ## Obtaining

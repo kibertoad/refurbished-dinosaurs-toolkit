@@ -1,5 +1,5 @@
 name: Check documentation standard
-description: Checks spec/, PARITY.md and DEVIATIONS.md against version 1 of the documentation standard.
+description: Checks spec/, parity/ and deviations/ against version 1 of the documentation standard.
 inputs:
   root:
     description: Workspace-relative path of the repository to check.

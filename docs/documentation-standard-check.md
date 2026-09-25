@@ -1,10 +1,10 @@
 # Documentation standard check
 
-`tools/check-documentation.mjs` checks a restoration's `spec/`, `PARITY.md` and `DEVIATIONS.md`
+`tools/check-documentation.mjs` checks a restoration's `spec/`, `parity/` and `deviations/`
 against version 1 of the
 [documentation standard](https://dinorefurb.com/documentation-standard/#checks) and writes the
-four indexes in `spec/index/`. It needs Node.js 20 or newer and no packages. It started as
-`tools/check-spec.mjs` in the Chaos Overlords restoration.
+four indexes in `spec/index/` and the totals in `PARITY.md`. It needs Node.js 20 or newer and no
+packages. It started as `tools/check-spec.mjs` in the Chaos Overlords restoration.
 
 `actions/check-documentation` runs it in GitHub Actions. The toolkit repository is public, so any
 workflow can use the action by path and commit. Nothing needs publishing to the Marketplace.
@@ -16,11 +16,16 @@ workflow can use the action by path and commit. Nothing needs publishing to the 
 The check expects these at the root it is given (the repository root by default):
 
 - `spec/README.md` with the sections Scope, Standard version and Areas, in that order;
-- `spec/glossary.md` and `spec/LICENSE`;
+- `spec/LICENSE`, and `spec/glossary/` with one `<term>.md` per term;
 - the entries in `spec/builds/`, `spec/sources/`, `spec/formats/`, `spec/rules/`,
   `spec/findings/`, `spec/experiments/`, `spec/bugs/` and `spec/screens/`, as far as the
-  restoration has any;
-- `PARITY.md` and `DEVIATIONS.md`.
+  restoration has any, with a `<ID>.files.yaml` manifest beside each build entry and any CSV
+  value files beside the entries that name them;
+- `parity/`, with one `<AREA>.md` of parity rows per area, split by kind and then by block of 100
+  numbers where an area would pass 1,000 lines;
+- `deviations/`, with one `<ID>.md` per deviation.
+
+The check writes `PARITY.md`. An empty directory needs a `.gitkeep` so that git keeps it.
 
 `tests/documentation-standard/valid/` is the smallest layout that passes and can be copied as a
 starting point.
@@ -82,7 +87,7 @@ Most restorations need no inputs. Set one when the defaults do not match the rep
 
 | Input | Default | Meaning |
 |---|---|---|
-| `root` | `.` | Workspace-relative path of the directory holding `spec/`, `PARITY.md` and `DEVIATIONS.md`. |
+| `root` | `.` | Workspace-relative path of the directory holding `spec/`, `parity/` and `deviations/`. |
 | `code` | `src,tests,tools` | Directories whose files may cite spec and deviation IDs and hold `PLACEHOLDER:` comments. |
 | `references` | empty | Directories whose files may cite IDs but whose `PLACEHOLDER:` comments do not count against parity. |
 | `data-dirs` | from the build entries | Top-level directories of the original's data. A path into one must name a build file with its exact case. |
@@ -107,16 +112,17 @@ parity work:
           references: multiplayer
 ```
 
-### 5. Generate the indexes before the first run
+### 5. Generate the indexes and PARITY.md before the first run
 
-The action runs with `--check`, which fails when an index in `spec/index/` is missing or stale. Run
-the script once locally without `--check` and commit what it writes:
+The action runs with `--check`, which fails when an index in `spec/index/` or `PARITY.md` is
+missing or stale, or when `spec/index/` holds a file the check would not write. Run the script
+once locally without `--check` and commit what it writes:
 
 ```sh
 curl -fsSLo check-documentation.mjs \
   https://raw.githubusercontent.com/kibertoad/refurbished-dinosaurs-toolkit/<sha>/tools/check-documentation.mjs
 node check-documentation.mjs
-git add spec/index
+git add spec/index PARITY.md
 ```
 
 Keep the downloaded script out of the repository (add it to `.gitignore`) or delete it after use.
@@ -134,7 +140,8 @@ all actions.
 ### Updating
 
 To pick up new checks, replace the SHA in the workflow with a newer toolkit commit, regenerate the
-indexes with the script from that commit, and fix what it reports in the same pull request.
+indexes and `PARITY.md` with the script from that commit, and fix what it reports in the same pull
+request.
 
 ## Using setup-kaitai on its own
 
@@ -154,14 +161,14 @@ its hash there.
 ## Running the script locally
 
 ```sh
-node check-documentation.mjs            # check, then rewrite stale indexes
-node check-documentation.mjs --check    # check, and fail on a stale index
+node check-documentation.mjs            # check, then rewrite stale indexes and PARITY.md
+node check-documentation.mjs --check    # check, and fail on a stale index or PARITY.md
 node check-documentation.mjs --help     # every option
 ```
 
 Run it from the restoration's root or pass `--root`. The command-line options match the action's
 inputs: `--code`, `--references`, `--data-dirs` and `--base`, plus `--no-ksy` to skip compiling
-and `--glossary <file>` to accept the terms of a draft glossary. Set `KSC` to the compiler's
+and `--glossary <path>` to accept the terms of a draft term file or a directory of them. Set `KSC` to the compiler's
 launcher, or put `kaitai-struct-compiler` on `PATH`, to compile the `.ksy` definitions.
 
 ## Moving a restoration onto it
@@ -173,6 +180,39 @@ A restoration that has its own copy of `check-spec.mjs`:
 3. Point local validation scripts at the downloaded script.
 4. Regenerate the indexes. The generated header now names the documentation standard check
    instead of `tools/check-spec.mjs`, so all four indexes change once.
+
+## Moving to the directory layout
+
+The standard's 1,000-line limit replaced three shared files with directories. A restoration still
+on the single files gets one problem per file saying where it moves:
+
+1. Move each `##` term of `spec/glossary.md` to `spec/glossary/<term>.md`, with the term as the
+   file's `#` heading and no front matter.
+2. Move each `##` deviation of `DEVIATIONS.md` to `deviations/<ID>.md` the same way.
+3. Move each area's parity rows out of `PARITY.md` to `parity/<AREA>.md`, which opens with
+   `# <AREA>` and holds one table. The check tells you where an area has to be split further.
+4. Move each build entry's `files` list to `builds/<ID>.files.yaml` and put
+   `manifest: <ID>.files.yaml` in the entry.
+5. Run the script without `--check` to write `PARITY.md` and the indexes, which now have a path
+   heading, one row per entry in `references.md`, and are split where they would pass the limit.
+
+No ID changes, so code and tests that cite IDs stay as they are.
+
+## What it does not check
+
+A few checks in the standard's list need something the script does not have, and are left to
+review:
+
+- that a glossary entry gives what the standard asks of its kind of term, and that no procedure
+  assigns to a value from outside the game, since the glossary does not mark kinds in a form a
+  script can read;
+- that a neutral name is the one from the entry's first build;
+- that no list of fixed length is given to `append`, `insert` or `remove_at`, and that every field
+  a procedure names is in its format's layout;
+- that a Kaitai definition's fixed sizes match its layout table;
+- the fixture schema, the field paths of fixtures and save patches, and the hashes of saves and
+  recordings, since the schemas are not published yet and xxHash3 needs a package;
+- the spec package version, since the package does not exist yet.
 
 The tests in `tests/documentation-standard/` run the script over a small fixture restoration and
 over broken copies of it.
