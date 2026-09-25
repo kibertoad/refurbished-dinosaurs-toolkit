@@ -373,3 +373,58 @@ test("a manifest item that is not a map is reported without a crash", (t) => {
   assert.match(output, /BLD-EXAMPLE-1\.0\.files\.yaml: every item of files is a map/);
   assert.match(output, /files pattern DATA\/NOPE\.BIN matches no file of BLD-EXAMPLE-1\.0/);
 });
+
+// A static finding in GAME.EXE, and RULE-SCORE-001 raised to established on it.
+function establishByReading(root, completeReading = "[FND-SCORE-001]") {
+  mkdirSync(join(root, "spec", "findings"));
+  writeFileSync(join(root, "spec", "findings", "FND-SCORE-001.md"), [
+    "---", "id: FND-SCORE-001", "title: The kill handler adds one to the score", "status: recorded",
+    "builds: [BLD-EXAMPLE-1.0]", "superseded_by: []", "recorded_by: example", "reproduced_by: []",
+    "method: static", "locations:", "  - build: BLD-EXAMPLE-1.0", "    file: GAME.EXE",
+    "    address: 0x00401000..0x00401010", "tool: Ghidra 12.1.3", "environment: null", "---", "",
+    "## Observation", "", "The handler adds 1 to the score and has no other branch.", "",
+    "## Interpretation", "", "Each kill adds one point.", "",
+    "## Alternatives", "", "None known.", "",
+    "## How to reproduce", "", "Open the function at 0x00401000.", "",
+  ].join("\n"));
+  replaceIn(root, "spec/rules/RULE-SCORE-001.md", "status: sourced\n", "status: established\n");
+  replaceIn(root, "spec/rules/RULE-SCORE-001.md", "evidence: [SRC-MANUAL]\n",
+    `evidence: [SRC-MANUAL, FND-SCORE-001]\n${completeReading === null ? "" : `complete_reading: ${completeReading}\n`}`);
+  replaceIn(root, "parity/SCORE.md", row("RULE-SCORE-001"),
+    "| `RULE-SCORE-001` | A kill adds one point to the score | established | missing | None | None | established | None |");
+}
+
+test("a complete reading establishes a rule without a run, and the status index lists it", (t) => {
+  const root = broken(t, (r) => establishByReading(r));
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  const byStatus = readFileSync(join(root, "spec", "index", "by-status.md"), "utf8");
+  assert.match(byStatus, /## Established by a complete reading alone[\s\S]*RULE-SCORE-001/);
+});
+
+test("established on static findings alone needs complete_reading", (t) => {
+  const root = broken(t, (r) => establishByReading(r, null));
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /RULE-SCORE-001\.md: status established needs a static finding and either a dynamic finding or experiment .* or a complete reading in complete_reading/);
+});
+
+test("complete_reading holds only static findings the entry cites", (t) => {
+  const root = broken(t, (r) => establishByReading(r, "[SRC-MANUAL]"));
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /complete_reading may hold only static findings, not SRC-MANUAL/);
+});
+
+test("a procedure another rule may interrupt is not established by a complete reading", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    copyRule(r, "RULE-SCORE-002");
+    replaceIn(r, "parity/SCORE.md", "| `RULE-SCORE-001` |", `${row("RULE-SCORE-002")}\n| \`RULE-SCORE-001\` |`);
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "related: []", "related: [RULE-SCORE-002]");
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "    return n + 1", "    # may run: RULE-SCORE-002\n    return n + 1");
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /another rule may interrupt this procedure \(# may run:\), so a complete reading cannot establish it/);
+});
