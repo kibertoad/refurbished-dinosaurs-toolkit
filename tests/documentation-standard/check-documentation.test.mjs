@@ -176,6 +176,48 @@ test("a compiler path and a root with spaces reach the compiler whole", { skip: 
   assert.equal(result.status, 0, result.stdout + result.stderr);
 });
 
+test("many definitions reach the compiler in several calls on Windows", { skip: process.platform !== "win32" && "Windows only" }, (t) => {
+  const count = 60;
+  const root = broken(t, (r) => {
+    const fmt = readFileSync(join(r, "spec", "formats", "FMT-SCORE-001.md"), "utf8");
+    const ksy = readFileSync(join(r, "spec", "formats", "fmt_score_001.ksy"), "utf8");
+    const rows = [];
+    for (let n = 2; n <= count; n++) {
+      const id = `FMT-SCORE-${String(n).padStart(3, "0")}`;
+      const name = `fmt_score_${String(n).padStart(3, "0")}`;
+      writeFileSync(join(r, "spec", "formats", `${id}.md`), fmt.replace("id: FMT-SCORE-001", `id: ${id}`).replace("fmt_score_001.ksy", `${name}.ksy`));
+      writeFileSync(join(r, "spec", "formats", `${name}.ksy`), ksy.replace("id: fmt_score_001", `id: ${name}`).replace("doc-ref: FMT-SCORE-001", `doc-ref: ${id}`));
+      rows.push(`| \`${id}\` | The best score in DATA/SCORES.BIN | sourced | missing | None | None | sourced | None |`);
+    }
+    replaceIn(r, "parity/SCORE.md", "| `RULE-SCORE-001` |", `${rows.join("\n")}\n| \`RULE-SCORE-001\` |`);
+  });
+  // Appends one line per call to the log, holding the arguments it was given.
+  const log = join(root, "ksc.log");
+  const ksc = join(root, "fake-ksc.bat");
+  writeFileSync(ksc, `@echo off\r\necho %* >> "${log}"\r\nexit /b 0\r\n`);
+  const result = spawnSync(process.execPath, [script, "--root", root], { encoding: "utf8", env: { ...process.env, KSC: ksc } });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  const calls = readFileSync(log, "utf8").trim().split(/\r?\n/);
+  assert.ok(calls.length > 1, `expected several calls, got ${calls.length}`);
+  for (const call of calls) assert.ok(call.length < 4000, `a call is ${call.length} characters long`);
+  assert.equal(calls.join(" ").match(/fmt_score_\d{3}\.ksy/g).length, count);
+});
+
+test("a data path with a space is read whole", (t) => {
+  const root = broken(t, (r) => {
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "  - path: DATA/SCORES.BIN",
+      '  - path: "DATA/OLD SCORES/SCORES2.BIN"\n    format: data\n    size: 2\n    xxh3: 00112233445566778899aabbccddeeff\n  - path: DATA/SCORES.BIN');
+    replaceIn(r, "spec/formats/FMT-SCORE-001.md", "`DATA/SCORES.BIN` holds", "`DATA/OLD SCORES/SCORES2.BIN` is a copy. `DATA/SCORES.BIN` holds");
+  });
+  const passing = run(root);
+  assert.equal(passing.status, 0, passing.output);
+  replaceIn(root, "spec/formats/FMT-SCORE-001.md", "`DATA/OLD SCORES/SCORES2.BIN`", "`DATA/OLD SCORES/SCORES3.BIN`");
+  const { status, output } = run(root, "--check");
+  assert.equal(status, 1);
+  assert.match(output, /path DATA\/OLD SCORES\/SCORES3\.BIN is not a file of any build/);
+  assert.doesNotMatch(output, /path DATA\/OLD is/);
+});
+
 test("unknown options exit with 2", () => {
   const { status, output } = run(fixture, "--frobnicate");
   assert.equal(status, 2);

@@ -1003,7 +1003,8 @@ for (const [id, e] of entries) for (const x of idsIn(e.body)) if (!entries.has(x
 // A path into a build's data directories names a file of some build with its exact case. A
 // directory, or a pattern whose last part holds a placeholder such as nn or xxx, is left alone.
 // The data directories are the top-level directories of the build files unless --data-dirs
-// names them.
+// names them. A build path that holds a space is matched whole, longest first, together with any
+// path that follows it, so Dir/With Space/file.ext is read as one path.
 {
   const exact = new Set();
   const folded = new Map();
@@ -1019,7 +1020,10 @@ for (const [id, e] of entries) for (const x of idsIn(e.body)) if (!entries.has(x
   }
   const dataDirs = dirList(options["data-dirs"], [...topDirs].sort());
   const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const dataPath = new RegExp(String.raw`(?<!\w)(?:${dataDirs.map(escapeRe).join("|")})\/[A-Za-z0-9_./-]*[A-Za-z0-9]`, "g");
+  const tail = String.raw`[A-Za-z0-9_./-]*[A-Za-z0-9]`;
+  const spaced = [...exact].filter((p) => p.includes(" ") && dataDirs.includes(p.split("/")[0])).sort((a, b) => b.length - a.length);
+  const whole = spaced.length ? `(?:${spaced.map(escapeRe).join("|")})(?:${tail})?|` : "";
+  const dataPath = new RegExp(String.raw`(?<!\w)(?:${whole}(?:${dataDirs.map(escapeRe).join("|")})\/${tail})`, "g");
   const dirsFolded = new Set([...exact].map((p) => p.toLowerCase()));
   const checkPaths = (file, text) => {
     for (const m of text.matchAll(dataPath)) {
@@ -1122,14 +1126,44 @@ if (!skipKsy) {
   const compiler = findKaitai();
   if (compiler && ksys.length) {
     const out = mkdtempSync(join(tmpdir(), "ksy-check-"));
+    const fixed = [...compiler.args, "--target", "python", "--outdir", out, "--import-path", fd];
     try {
-      runTool(compiler.cmd, [...compiler.args, "--target", "python", "--outdir", out, "--import-path", fd, ...ksys]);
-    } catch (err) {
-      problem(null, `Kaitai definitions do not compile:\n${String(err.stdout ?? "")}${String(err.stderr ?? "")}`);
+      for (const batch of kaitaiBatches([compiler.cmd, ...fixed], ksys)) {
+        try {
+          runTool(compiler.cmd, [...fixed, ...batch]);
+        } catch (err) {
+          problem(null, `Kaitai definitions do not compile:\n${String(err.stdout ?? "")}${String(err.stderr ?? "")}`);
+        }
+      }
     } finally {
       rmSync(out, { recursive: true, force: true });
     }
   } else if (ksys.length) console.warn("warning: no Kaitai Struct compiler found (set KSC or install kaitai-struct-compiler); definitions were not compiled.");
+}
+
+// cmd.exe takes a command line of at most 8,191 characters, and the compiler's .bat launcher adds
+// its class path to the arguments it is given. On Windows the definitions are compiled in batches
+// whose quoted command line stays under 4,000 characters. Every batch gets the same --import-path,
+// so imports between definitions still resolve.
+function kaitaiBatches(fixed, files) {
+  if (process.platform !== "win32") return [files];
+  const limit = 4000;
+  const quoted = (a) => a.length + 3;
+  const start = fixed.reduce((n, a) => n + quoted(a), 0);
+  const batches = [];
+  let batch = [];
+  let length = start;
+  for (const f of files) {
+    if (batch.length > 0 && length + quoted(f) > limit) {
+      batches.push(batch);
+      batch = [];
+      length = start;
+    }
+    batch.push(f);
+    length += quoted(f);
+  }
+  if (batch.length > 0) batches.push(batch);
+  return batches;
 }
 
 function findKaitai() {
