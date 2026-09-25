@@ -555,26 +555,52 @@ function checkResolves(file, ids, what) {
 }
 
 // What the evidence of a claim covers for the first build.
-const evidenceFacts = (e) => rowFacts(asList(e.meta.evidence), asList(e.meta.builds)[0]);
+// A whole entry counts as read completely when complete_reading holds any valid finding; a row of
+// its tables only when every static finding the row cites is part of that reading.
+const evidenceFacts = (e) => {
+  const reading = completeReading(e);
+  return { ...rowFacts(asList(e.meta.evidence), asList(e.meta.builds)[0], reading), completeReading: reading.length > 0 };
+};
+
+// The static findings of a complete reading: those in complete_reading that the entry cites in
+// evidence and that list its first build. Anything else there is reported where the field is checked.
+function completeReading(e) {
+  const first = asList(e.meta.builds)[0];
+  const evidence = asList(e.meta.evidence);
+  return asList(e.meta.complete_reading).filter((x) => {
+    const f = entries.get(x);
+    return f?.kind === "FND" && f.meta.method === "static" && evidence.includes(x) && asList(f.meta.builds).includes(first);
+  });
+}
+
+// True when all of an entry's evidence from the original running is emulated calls of single
+// functions, which model neither interrupts nor timing.
+function onlyEmulatedRuns(e) {
+  const runs = asList(e.meta.evidence).map((x) => entries.get(x)).filter((x) => x && (x.kind === "EXP" || (x.kind === "FND" && x.meta.method === "dynamic")));
+  return runs.length > 0 && runs.every((x) => x.kind === "EXP" && x.meta.starting_state === "emulated-call");
+}
+const mayBeInterrupted = (e) => e.kind === "RULE" && /# may run: RULE-/.test(e.code ?? "");
 
 function checkStatusCitations(file, status, facts, conflicting, label = "status") {
   if (status === "sourced" && facts.sources === 0) problem(file, `${label} sourced needs at least one source`);
   if (status === "supported" && facts.staticF + facts.dynamic === 0) problem(file, `${label} supported needs at least one finding or experiment that lists the first build`);
-  if (status === "established" && (facts.staticF === 0 || facts.dynamic === 0)) problem(file, `${label} established needs a static finding and a dynamic finding or experiment that list the first build`);
+  if (status === "established" && (facts.staticF === 0 || (facts.dynamic === 0 && !facts.completeReading))) problem(file, `${label} established needs a static finding and either a dynamic finding or experiment that list the first build, or a complete reading in complete_reading`);
   if (status === "disputed" && conflicting.length === 0) problem(file, `${label} disputed needs at least one finding or experiment in conflicting`);
 }
 
-function rowFacts(ids, first) {
-  let sources = 0, staticF = 0, dynamic = 0;
+// complete is the entry's complete reading, and the cited evidence counts as part of it when it
+// holds static findings and every one of them is in it.
+function rowFacts(ids, first, complete = []) {
+  let sources = 0, staticF = 0, dynamic = 0, outside = 0;
   for (const id of ids) {
     const ev = entries.get(id);
     if (!ev) continue;
     if (ev.kind === "SRC") sources++;
     if (!["FND", "EXP"].includes(ev.kind) || !asList(ev.meta.builds).includes(first)) continue;
     if (ev.kind === "EXP" || ev.meta.method === "dynamic") dynamic++;
-    else if (ev.meta.method === "static") staticF++;
+    else if (ev.meta.method === "static") { staticF++; if (!complete.includes(id)) outside++; }
   }
-  return { sources, staticF, dynamic };
+  return { sources, staticF, dynamic, completeReading: complete.length > 0 && staticF > 0 && outside === 0 };
 }
 
 const addressFormat = {
@@ -681,7 +707,7 @@ for (const [id, e] of entries) {
       try {
         const fx = JSON.parse(readFileSync(fixture, "utf8"));
         if (fx.experiment !== id) problem(fixture, `experiment must be ${id}`);
-        if (meta.starting_state !== "new-game" && !(fx.starting_state && fx.starting_state.xxh3)) problem(fixture, "gives the hash of the save its runs started from");
+        if (!["new-game", "emulated-call"].includes(meta.starting_state) && !(fx.starting_state && fx.starting_state.xxh3)) problem(fixture, "gives the hash of the save its runs started from");
         if (typeof meta.starting_state === "string" && meta.starting_state.endsWith(".patch.json") && !fx.starting_state?.base_xxh3) problem(fixture, "a patch fixture gives the base save's hash as well");
         for (const run of asList(fx.runs)) for (const ev of asList(run.events)) if (!glossary.has(ev.event)) problem(fixture, `event ${ev.event} has no glossary entry`);
         if (typeof meta.recording === "string" && meta.recording !== "" && !fx.recording_xxh3) problem(fixture, "an experiment with a recording gives the recording's hash in recording_xxh3");
@@ -708,6 +734,19 @@ for (const [id, e] of entries) {
     checkResolves(file, conflicting, "conflicting");
     checkResolves(file, related, "related");
     checkResolves(file, split, "split_with");
+    if ("complete_reading" in meta) {
+      if (!Array.isArray(meta.complete_reading)) problem(file, "complete_reading must be a list");
+      const reading = asList(meta.complete_reading);
+      checkResolves(file, reading, "complete_reading");
+      const first = asList(meta.builds)[0];
+      for (const x of reading) {
+        const f = entries.get(x);
+        if (!f) continue;
+        if (f.kind !== "FND" || f.meta.method !== "static") problem(file, `complete_reading may hold only static findings, not ${x}`);
+        else if (!evidence.includes(x)) problem(file, `complete_reading names ${x}; list it in evidence as well`);
+        else if (!asList(f.meta.builds).includes(first)) problem(file, `complete_reading names ${x}, which does not list the first build ${first}`);
+      }
+    }
     for (const x of evidence) if (!["FND", "EXP", "SRC"].includes(kindOf(x))) problem(file, `evidence may hold only findings, experiments and sources, not ${x}`);
     for (const x of conflicting) if (!["FND", "EXP"].includes(kindOf(x))) problem(file, `conflicting may hold only findings and experiments, not ${x}`);
     if (conflicting.length > 0 && status !== "disputed") problem(file, "conflicting must be empty unless the status is disputed");
@@ -788,7 +827,7 @@ function checkFormat(e) {
       const ids = idsIn(row[evCol]);
       checkResolves(file, ids, `${kindLabel} row ${row[nameCol] ?? row[0]}`);
       const conflicting = ids.filter((x) => asList(meta.conflicting).includes(x));
-      checkStatusCitations(file, st, rowFacts(ids, first), conflicting, `${kindLabel} row ${(row[nameCol] ?? row[0]).replaceAll("`", "")}: status`);
+      checkStatusCitations(file, st, rowFacts(ids, first, completeReading(e)), conflicting, `${kindLabel} row ${(row[nameCol] ?? row[0]).replaceAll("`", "")}: status`);
       if (nameCol >= 0 && row[nameCol]) names.add(row[nameCol].replaceAll("`", ""));
     }
   };
@@ -942,6 +981,8 @@ for (const [id, e] of entries) {
   for (const m of code.matchAll(/\bshow\s+(SCR-[A-Z0-9]+-\d+)/g)) if (!related.includes(m[1])) problem(file, `shows ${m[1]}; add it to related`);
   for (const m of code.matchAll(/\b(FMT-[A-Z0-9]+-\d+)/g)) if (!related.includes(m[1])) problem(file, `uses ${m[1]}; add it to related`);
   for (const m of e.code.matchAll(/# may run: (RULE-[A-Z0-9]+-\d+)/g)) if (!related.includes(m[1])) problem(file, `may be interrupted by ${m[1]}; add it to related`);
+  if (meta.status === "established" && mayBeInterrupted(e) && onlyEmulatedRuns(e)) problem(file, "another rule may interrupt this procedure (# may run:), so emulated calls alone cannot establish it");
+  if (asList(meta.complete_reading).length > 0 && /# may run: RULE-/.test(e.code)) problem(file, "another rule may interrupt this procedure (# may run:), so a complete reading cannot establish it; leave complete_reading empty");
   for (const x of idsIn(code)) if (!entries.has(x)) problem(file, `procedure names ${x}, which does not exist`);
   for (const m of code.matchAll(/\bemit\s+([A-Za-z_][A-Za-z0-9_]*)/g)) if (!useTerm(m[1])) problem(file, `emits ${m[1]}, which has no glossary entry`);
   for (const m of code.matchAll(/\bdrain\s+([A-Za-z_][A-Za-z0-9_]*)/g)) if (!useTerm(m[1])) problem(file, `drains ${m[1]}, which has no glossary entry`);
@@ -1344,6 +1385,7 @@ const legacyParity = existsSync(join(repoDir, "PARITY.md")) && tables(readText(j
       else if (["supported", "established"].includes(e.meta.status)) expectedStatus = "validated";
       else { problem(file, `${specId}: complete with tests while the spec status is ${e.meta.status}; the evidence belongs in the spec entry first`); expectedStatus = status; }
       if (status !== expectedStatus) problem(file, `${specId}: Status must be ${expectedStatus}`);
+      if (expectedStatus === "validated" && mayBeInterrupted(e) && onlyEmulatedRuns(e)) problem(file, `${specId}: another rule may interrupt it (# may run:), so tests against emulated calls alone cannot validate it`);
       for (const cell of [code, tests, devs, notes]) if (cell === "") problem(file, `${specId}: an empty cell says None`);
       parityCounts.status[status] = (parityCounts.status[status] ?? 0) + 1;
       parityCounts.code[code] = (parityCounts.code[code] ?? 0) + 1;
@@ -1514,6 +1556,9 @@ function renderByStatus(ids, path) {
   for (const st of [...CLAIM_STATUSES, ...EVIDENCE_STATUSES.filter((x) => x !== "superseded")]) section(st, null, ids.filter((x) => entries.get(x).meta.status === st), false);
   section("Established on unreproduced evidence", "Entries whose status is established and whose findings and experiments are all only recorded.",
     ids.filter((x) => KINDS[kindOf(x)].statuses === "claim" && entries.get(x).meta.status === "established" && asList(entries.get(x).meta.evidence).filter((y) => ["FND", "EXP"].includes(kindOf(y))).every((y) => entries.get(y)?.meta.status !== "reproduced")), false);
+  // Listed only when there are any, so that indexes written before complete readings stay fresh.
+  const byReading = ids.filter((x) => KINDS[kindOf(x)].statuses === "claim" && entries.get(x).meta.status === "established" && evidenceFacts(entries.get(x)).dynamic === 0);
+  if (byReading.length) section("Established by a complete reading alone", "Entries whose status is established and that no dynamic finding or experiment confirms.", byReading, false);
   section("Open questions", "Entries whose Open questions section says more than None known.",
     ids.filter((x) => { const s = entries.get(x).sections.find((y) => y.title === "Open questions"); return s && !/^\s*None( known)?\.\s*$/.test(s.text); }), true);
   return out.join("\n");
