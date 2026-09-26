@@ -1319,7 +1319,8 @@ const isDeviationFile = (f) => resolve(f).startsWith(devDir + sep);
 }
 
 // Default is off, on or mandatory. Only the fix of an unintended, not-relied-on bug is on by right;
-// mandatory, and on for anything else, carry a Justification that the rebuild is strictly better.
+// mandatory, and on for anything else, carry a Justification that the rebuild is strictly better or a
+// small judgement call that makes the game better to play.
 function checkDeviationDefault(path, title, item, departs) {
   const defaults = ["off", "on", "mandatory"];
   const dflt = item.Default;
@@ -1330,7 +1331,7 @@ function checkDeviationDefault(path, title, item, departs) {
   if (bugFix && dflt === "off") problem(path, `${title}: Default is on or mandatory for the fix of an unintended, not-relied-on bug`);
   const needsJustification = dflt === "mandatory" || (dflt === "on" && !bugFix);
   const hasJustification = "Justification" in item;
-  if (needsJustification && !hasJustification) problem(path, `${title}: is ${dflt} but has no Justification saying why the rebuild's behaviour is strictly better`);
+  if (needsJustification && !hasJustification) problem(path, `${title}: is ${dflt} but has no Justification saying why the rebuild's behaviour is strictly better, or what the judgement call improves`);
   if (!needsJustification && hasJustification) problem(path, `${title}: has a Justification, which only a mandatory deviation or one that is on without fixing an unintended, not-relied-on bug has`);
 }
 
