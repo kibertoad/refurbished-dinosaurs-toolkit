@@ -20,9 +20,10 @@
 //                       one of them must name a file of some build with its exact case (default:
 //                       the top-level directories of the files the build entries list)
 //   --record-validation <builds>
-//                       write VALIDATION.md for the test files of the validated rows, naming the
-//                       comma-separated build IDs the run used. Run it only after every test in
-//                       those files passed, with none skipped, against the original's files
+//                       write VALIDATION.md for the test files of the validated rows that carry a
+//                       "needs: GAME_DIR" comment, naming the comma-separated build IDs the run
+//                       used. Run it only after every test in those files passed, with none
+//                       skipped, against the original's files
 //
 // The KSC environment variable names the Kaitai Struct compiler. Without it, the check looks for
 // kaitai-struct-compiler or ksc on PATH, and warns when it finds neither.
@@ -1339,7 +1340,12 @@ const PARITY_HEADER = ["Spec ID", "Title", "Spec status", "Code", "Tests", "Devi
 const parityDir = join(repoDir, "parity");
 const parityRows = new Map(); // spec ID -> { cells, file }
 const parityCounts = { status: {}, code: {} };
-const validatedTests = new Map(); // test file of a validated row -> [{ specId, file }]
+const validatedTests = new Map(); // marked test file of a validated row -> [{ specId, file }]
+// A test file that reads the original's files through GAME_DIR says so with this comment. It runs
+// only on a maintainer's machine, so its validated rows need it in VALIDATION.md; every other test
+// runs in CI.
+const NEEDS_GAME = /needs:\s*GAME_DIR/;
+const needsGame = (p) => existsSync(p) && NEEDS_GAME.test(readFileSync(p, "utf8"));
 // A PARITY.md that still holds the rows is left alone until they have moved, so the check does not
 // overwrite them with the totals.
 const legacyParity = existsSync(join(repoDir, "PARITY.md")) && tables(readText(join(repoDir, "PARITY.md"))).some((t) => t.header.join("|") === PARITY_HEADER.join("|"));
@@ -1384,7 +1390,11 @@ const legacyParity = existsSync(join(repoDir, "PARITY.md")) && tables(readText(j
       for (const tf of testFiles) {
         const p = join(repoDir, tf);
         if (!existsSync(p)) problem(file, `${specId}: test file ${tf} does not exist`);
-        else if (!readFileSync(p, "utf8").includes(specId)) problem(file, `${specId}: test file ${tf} does not mention ${specId}`);
+        else {
+          const text = readFileSync(p, "utf8");
+          if (!text.includes(specId)) problem(file, `${specId}: test file ${tf} does not mention ${specId}`);
+          if (text.includes("GAME_DIR") && !NEEDS_GAME.test(text)) problem(file, `${specId}: test file ${tf} mentions GAME_DIR without a "needs: GAME_DIR" comment, so CI would skip it unseen`);
+        }
       }
       const listedDevs = devs === "None" ? [] : devs.split(",").map((x) => x.trim()).filter(Boolean);
       const expectedDevs = [...deviations].filter(([, d]) => !d.dropped && d.departs.includes(specId)).map(([k]) => k).sort(compareIds);
@@ -1395,7 +1405,7 @@ const legacyParity = existsSync(join(repoDir, "PARITY.md")) && tables(readText(j
       else if (["supported", "established"].includes(e.meta.status)) expectedStatus = "validated";
       else { problem(file, `${specId}: complete with tests while the spec status is ${e.meta.status}; the evidence belongs in the spec entry first`); expectedStatus = status; }
       if (status !== expectedStatus) problem(file, `${specId}: Status must be ${expectedStatus}`);
-      if (expectedStatus === "validated") for (const tf of testFiles) {
+      if (expectedStatus === "validated") for (const tf of testFiles.filter((x) => needsGame(join(repoDir, x)))) {
         if (!validatedTests.has(tf)) validatedTests.set(tf, []);
         validatedTests.get(tf).push({ specId, file });
       }
@@ -1418,7 +1428,7 @@ const legacyParity = existsSync(join(repoDir, "PARITY.md")) && tables(readText(j
 
 for (const [dev, d] of deviations) if (!d.dropped && !d.departs.some((x) => parityRows.has(x))) problem(d.file, `${dev} departs from no entry that has a parity row`);
 
-// VALIDATION.md records the test files of the validated rows as they were when a maintainer ran
+// VALIDATION.md records the marked test files of the validated rows as they were when a maintainer ran
 // them against the original's files, which CI never holds. A file is hashed with CRLF read as LF,
 // so a Windows checkout and a Linux one give the same hash.
 const validationPath = join(repoDir, "VALIDATION.md");
@@ -1431,9 +1441,10 @@ if (options["record-validation"] !== undefined) {
   let commit;
   try { commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf8" }).trim(); }
   catch { console.error("--record-validation: git rev-parse HEAD failed"); process.exit(2); }
-  const files = [...validatedTests.keys()].filter((f) => existsSync(join(repoDir, f))).sort();
+  const files = [...validatedTests.keys()].sort();
+  if (!files.length) { console.error("--record-validation: no validated row lists a test file with a \"needs: GAME_DIR\" comment, so there is nothing to record"); process.exit(2); }
   writeFileSync(validationPath, ["# Validation record", "",
-    "The test files of the validated parity rows, as they were when every test in them passed against the original's files.", "",
+    "The test files of the validated parity rows that read the original's files, as they were when every test in them passed against those files.", "",
     `- Commit: ${commit}`, `- Date: ${new Date().toISOString().slice(0, 10)}`, `- Builds: ${builds.join(", ")}`, "",
     `| ${VALIDATION_HEADER.join(" | ")} |`, `|${"---|".repeat(VALIDATION_HEADER.length)}`,
     ...files.map((f) => `| \`${f}\` | \`${testHash(join(repoDir, f))}\` |`), ""].join("\n"));
@@ -1463,7 +1474,7 @@ if (options["record-validation"] !== undefined) {
         if (path < previous) problem(validationPath, `${path} is out of order; the files are sorted by path`);
         previous = path;
         recorded.set(path, hash);
-        if (!validatedTests.has(path)) problem(validationPath, `${path} is in no validated row's Tests; run the check with --record-validation again`);
+        if (!validatedTests.has(path)) problem(validationPath, `${path} is not a test file with a "needs: GAME_DIR" comment in a validated row's Tests; run the check with --record-validation again`);
       }
     }
   }

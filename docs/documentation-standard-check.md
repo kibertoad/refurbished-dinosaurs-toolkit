@@ -24,7 +24,7 @@ The check expects these at the root it is given (the repository root by default)
 - `parity/`, with one `<AREA>.md` of parity rows per area, split by kind and then by block of 100
   numbers where an area would pass 1,000 lines;
 - `deviations/`, with one `<ID>.md` per deviation;
-- `VALIDATION.md`, once any parity row is `validated` (see below).
+- `VALIDATION.md`, once a `validated` row lists a test file marked `needs: GAME_DIR` (see below).
 
 The check writes `PARITY.md`. An empty directory needs a `.gitkeep` so that git keeps it.
 
@@ -174,19 +174,25 @@ launcher, or put `kaitai-struct-compiler` on `PATH`, to compile the `.ksy` defin
 
 ## Recording a validation run
 
-The tests of a `validated` row need the original game's files, which CI never has, so they run on
-a maintainer's machine. After a run in which every test in those files passed and none was
-skipped, record it:
+A listed test runs in CI unless it needs content that cannot be committed: the shipped files a
+format test decodes, captures of the original's screens, or a base save. A test file that reads
+such files through `GAME_DIR` carries the comment `needs: GAME_DIR`, and CI, which never has them,
+skips it. The check fails a listed test file that mentions `GAME_DIR` without the comment, since CI
+would skip it while its row claims to be validated.
+
+A marked test file of a `validated` row runs on a maintainer's machine. After a run in which every
+test in those files passed and none was skipped, record it:
 
 ```sh
 node check-documentation.mjs --record-validation BLD-GOG-EN-1.1
 ```
 
 This writes `VALIDATION.md` at the root: the commit, the date, the builds the run used, and the
-SHA-256 of every test file a validated row lists, hashed with CRLF read as LF. Commit it with the
-change. From then on the check, in CI as well, fails a validated row whose test file is missing from
-the record or has changed since, and a record that lists a file no validated row lists. The script
-cannot tell whether the tests passed; running them before recording is the maintainer's part.
+SHA-256 of every marked test file a validated row lists, hashed with CRLF read as LF. Commit it with
+the change. From then on the check, in CI as well, fails a validated row whose marked test file is
+missing from the record or has changed since, and a record that lists any other file. A
+restoration whose validated rows list no marked file needs no record. The script cannot tell
+whether the tests passed; running them before recording is the maintainer's part.
 
 ## Moving a restoration onto it
 
