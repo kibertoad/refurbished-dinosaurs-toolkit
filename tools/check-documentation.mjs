@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Checks a restoration's spec/, parity/ and deviations/ against version 1 of the documentation
 // standard (https://dinorefurb.com/documentation-standard/#checks), and writes the four indexes in
-// spec/index/ and PARITY.md.
+// spec/index/ and PARITY.md. With --record-validation it also writes VALIDATION.md.
 //
 // Usage:
 //   node check-documentation.mjs [options]
@@ -19,6 +19,11 @@
 //   --data-dirs <dirs>  comma-separated top-level directories of the original's data; a path into
 //                       one of them must name a file of some build with its exact case (default:
 //                       the top-level directories of the files the build entries list)
+//   --record-validation <builds>
+//                       write VALIDATION.md for the test files of the validated rows that carry a
+//                       "needs: GAME_DIR" comment, naming the comma-separated build IDs the run
+//                       used. Run it only after every test in those files passed, with none
+//                       skipped, against the original's files
 //
 // The KSC environment variable names the Kaitai Struct compiler. Without it, the check looks for
 // kaitai-struct-compiler or ksc on PATH, and warns when it finds neither.
@@ -31,6 +36,7 @@ import { join, dirname, relative, basename, resolve, sep } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const selfPath = fileURLToPath(import.meta.url);
 const argv = process.argv.slice(2);
@@ -40,7 +46,7 @@ if (argv.includes("--help") || argv.includes("-h")) {
   process.exit(0);
 }
 const FLAGS = ["--check", "--no-ksy"];
-const VALUED = ["--root", "--base", "--glossary", "--code", "--references", "--data-dirs"];
+const VALUED = ["--root", "--base", "--glossary", "--code", "--references", "--data-dirs", "--record-validation"];
 const options = { glossary: [] };
 for (let k = 0; k < argv.length; k++) {
   const arg = argv[k];
@@ -62,6 +68,10 @@ const dirList = (value, fallback) => (value === undefined ? fallback : value.spl
 const repoDir = resolve(options.root ?? ".");
 const specDir = join(repoDir, "spec");
 const checkOnly = options.check === true;
+if (checkOnly && options["record-validation"] !== undefined) {
+  console.error("--record-validation writes VALIDATION.md, so it cannot be combined with --check");
+  process.exit(2);
+}
 const skipKsy = options["no-ksy"] === true;
 const baseArg = options.base ?? null;
 const codeRoots = dirList(options.code, ["src", "tests", "tools"]);
@@ -1330,6 +1340,12 @@ const PARITY_HEADER = ["Spec ID", "Title", "Spec status", "Code", "Tests", "Devi
 const parityDir = join(repoDir, "parity");
 const parityRows = new Map(); // spec ID -> { cells, file }
 const parityCounts = { status: {}, code: {} };
+const validatedTests = new Map(); // marked test file of a validated row -> [{ specId, file }]
+// A test file that reads the original's files through GAME_DIR says so with this comment. It runs
+// only on a maintainer's machine, so its validated rows need it in VALIDATION.md; every other test
+// runs in CI.
+const NEEDS_GAME = /needs:\s*GAME_DIR/;
+const needsGame = (p) => existsSync(p) && NEEDS_GAME.test(readFileSync(p, "utf8"));
 // A PARITY.md that still holds the rows is left alone until they have moved, so the check does not
 // overwrite them with the totals.
 const legacyParity = existsSync(join(repoDir, "PARITY.md")) && tables(readText(join(repoDir, "PARITY.md"))).some((t) => t.header.join("|") === PARITY_HEADER.join("|"));
@@ -1374,7 +1390,11 @@ const legacyParity = existsSync(join(repoDir, "PARITY.md")) && tables(readText(j
       for (const tf of testFiles) {
         const p = join(repoDir, tf);
         if (!existsSync(p)) problem(file, `${specId}: test file ${tf} does not exist`);
-        else if (!readFileSync(p, "utf8").includes(specId)) problem(file, `${specId}: test file ${tf} does not mention ${specId}`);
+        else {
+          const text = readFileSync(p, "utf8");
+          if (!text.includes(specId)) problem(file, `${specId}: test file ${tf} does not mention ${specId}`);
+          if (text.includes("GAME_DIR") && !NEEDS_GAME.test(text)) problem(file, `${specId}: test file ${tf} mentions GAME_DIR without a "needs: GAME_DIR" comment, so CI would skip it unseen`);
+        }
       }
       const listedDevs = devs === "None" ? [] : devs.split(",").map((x) => x.trim()).filter(Boolean);
       const expectedDevs = [...deviations].filter(([, d]) => !d.dropped && d.departs.includes(specId)).map(([k]) => k).sort(compareIds);
@@ -1385,6 +1405,10 @@ const legacyParity = existsSync(join(repoDir, "PARITY.md")) && tables(readText(j
       else if (["supported", "established"].includes(e.meta.status)) expectedStatus = "validated";
       else { problem(file, `${specId}: complete with tests while the spec status is ${e.meta.status}; the evidence belongs in the spec entry first`); expectedStatus = status; }
       if (status !== expectedStatus) problem(file, `${specId}: Status must be ${expectedStatus}`);
+      if (expectedStatus === "validated") for (const tf of testFiles.filter((x) => needsGame(join(repoDir, x)))) {
+        if (!validatedTests.has(tf)) validatedTests.set(tf, []);
+        validatedTests.get(tf).push({ specId, file });
+      }
       if (expectedStatus === "validated" && mayBeInterrupted(e) && onlyEmulatedRuns(e)) problem(file, `${specId}: another rule may interrupt it (# may run:), so tests against emulated calls alone cannot validate it`);
       for (const cell of [code, tests, devs, notes]) if (cell === "") problem(file, `${specId}: an empty cell says None`);
       parityCounts.status[status] = (parityCounts.status[status] ?? 0) + 1;
@@ -1403,6 +1427,67 @@ const legacyParity = existsSync(join(repoDir, "PARITY.md")) && tables(readText(j
 }
 
 for (const [dev, d] of deviations) if (!d.dropped && !d.departs.some((x) => parityRows.has(x))) problem(d.file, `${dev} departs from no entry that has a parity row`);
+
+// VALIDATION.md records the marked test files of the validated rows as they were when a maintainer ran
+// them against the original's files, which CI never holds. A file is hashed with CRLF read as LF,
+// so a Windows checkout and a Linux one give the same hash.
+const validationPath = join(repoDir, "VALIDATION.md");
+const VALIDATION_HEADER = ["Test file", "SHA-256"];
+const testHash = (p) => createHash("sha256").update(Buffer.from(readFileSync(p).toString("latin1").replaceAll("\r\n", "\n"), "latin1")).digest("hex");
+if (options["record-validation"] !== undefined) {
+  const builds = dirList(options["record-validation"], []);
+  if (!builds.length) { console.error("--record-validation needs at least one build ID"); process.exit(2); }
+  for (const b of builds) if (entries.get(b)?.kind !== "BLD") { console.error(`--record-validation: ${b} is not a build entry`); process.exit(2); }
+  let commit;
+  try { commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf8" }).trim(); }
+  catch { console.error("--record-validation: git rev-parse HEAD failed"); process.exit(2); }
+  const files = [...validatedTests.keys()].sort();
+  if (!files.length) { console.error("--record-validation: no validated row lists a test file with a \"needs: GAME_DIR\" comment, so there is nothing to record"); process.exit(2); }
+  writeFileSync(validationPath, ["# Validation record", "",
+    "The test files of the validated parity rows that read the original's files, as they were when every test in them passed against those files.", "",
+    `- Commit: ${commit}`, `- Date: ${new Date().toISOString().slice(0, 10)}`, `- Builds: ${builds.join(", ")}`, "",
+    `| ${VALIDATION_HEADER.join(" | ")} |`, `|${"---|".repeat(VALIDATION_HEADER.length)}`,
+    ...files.map((f) => `| \`${f}\` | \`${testHash(join(repoDir, f))}\` |`), ""].join("\n"));
+  console.log("wrote VALIDATION.md");
+}
+{
+  const recorded = new Map(); // test file -> hash
+  if (existsSync(validationPath)) {
+    const text = readText(validationPath);
+    const item = (key, pattern) => {
+      const m = text.match(new RegExp(`^- ${key}: (.*)$`, "m"));
+      if (!m || !pattern.test(m[1].trim())) { problem(validationPath, `needs a "- ${key}:" item in the form the standard gives`); return null; }
+      return m[1].trim();
+    };
+    item("Commit", /^[0-9a-f]{40}$/);
+    item("Date", /^\d{4}-\d{2}-\d{2}$/);
+    const builds = item("Builds", /^\S.*$/);
+    if (builds !== null) for (const b of builds.split(",").map((x) => x.trim())) if (entries.get(b)?.kind !== "BLD") problem(validationPath, `Builds names ${b}, which is not a build entry`);
+    const ts = tables(text);
+    if (ts.length !== 1 || ts[0].header.join("|") !== VALIDATION_HEADER.join("|")) problem(validationPath, `holds one table with the columns ${VALIDATION_HEADER.join(" | ")}`);
+    else {
+      let previous = "";
+      for (const row of ts[0].rows) {
+        const [path, hash] = row.map((c) => c.replaceAll("`", "").trim());
+        if (row.length !== VALIDATION_HEADER.length || !/^[0-9a-f]{64}$/.test(hash ?? "")) { problem(validationPath, `the row ${row.join(" | ")} needs a test file and its SHA-256 in lowercase hex`); continue; }
+        if (recorded.has(path)) problem(validationPath, `${path} is listed twice`);
+        if (path < previous) problem(validationPath, `${path} is out of order; the files are sorted by path`);
+        previous = path;
+        recorded.set(path, hash);
+        if (!validatedTests.has(path)) problem(validationPath, `${path} is not a test file with a "needs: GAME_DIR" comment in a validated row's Tests; run the check with --record-validation again`);
+      }
+    }
+  }
+  for (const [tf, rows] of validatedTests) {
+    const p = join(repoDir, tf);
+    if (!existsSync(p)) continue;
+    const hash = recorded.get(tf);
+    for (const { specId, file } of rows) {
+      if (hash === undefined) problem(file, `${specId}: ${tf} is not in VALIDATION.md, so the row cannot be validated until its tests pass against the original's files and are recorded`);
+      else if (hash !== testHash(p)) problem(file, `${specId}: ${tf} has changed since VALIDATION.md recorded it; run its tests against the original's files and record them again`);
+    }
+  }
+}
 
 // The --code and --references directories, walked and read once for the placeholder and the
 // implementation-reference checks. The cache is a property of the function because the parity
@@ -1630,7 +1715,7 @@ const generated = new Map(); // absolute path -> text
 
 // Every Markdown file the standard defines is at most LINE_LIMIT lines long.
 {
-  const files = [join(repoDir, "PARITY.md")];
+  const files = [join(repoDir, "PARITY.md"), validationPath];
   for (const dir of [specDir, parityDir, devDir]) walk(dir, (f) => { if (f.endsWith(".md")) files.push(f); });
   for (const f of files) {
     if (!existsSync(f)) continue;

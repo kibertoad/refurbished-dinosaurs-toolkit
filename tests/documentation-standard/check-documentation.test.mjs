@@ -522,3 +522,82 @@ test("tests against emulated calls alone do not validate a rule another rule may
   assert.equal(status, 1);
   assert.match(output, /RULE-SCORE-001: another rule may interrupt it \(# may run:\), so tests against emulated calls alone cannot validate it/);
 });
+
+// RULE-SCORE-001 established, complete, and tested by tests/Score.test.ts, so its row is validated.
+// A marked test reads the original's files and runs only locally.
+const LOCAL_TEST = "// needs: GAME_DIR\n// Replays EXP-SCORE-001 for RULE-SCORE-001 from a save in GAME_DIR.\n";
+function validateRow(root, text = `${LOCAL_TEST}expect(kill(0)).toBe(1);\n`) {
+  establishByEmulatedCall(root);
+  mkdirSync(join(root, "tests"));
+  writeFileSync(join(root, "tests", "Score.test.ts"), text);
+  replaceIn(root, "parity/SCORE.md", "| `RULE-SCORE-001` | A kill adds one point to the score | established | missing | None | None | established | None |",
+    "| `RULE-SCORE-001` | A kill adds one point to the score | established | complete | `tests/Score.test.ts` | None | validated | None |");
+}
+
+function commitAll(root) {
+  const git = (...args) => spawnSync("git", ["-c", "user.name=Example", "-c", "user.email=example@example.com", ...args], { cwd: root, encoding: "utf8" });
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-q", "-m", "fixture");
+}
+
+test("a validated row whose tests run in CI needs no VALIDATION.md", (t) => {
+  const root = broken(t, (r) => validateRow(r, "// Replays EXP-SCORE-001 for RULE-SCORE-001.\nexpect(kill(0)).toBe(1);\n"));
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.equal(run(root, "--record-validation", "BLD-EXAMPLE-1.0").status, 2);
+});
+
+test("a test file that mentions GAME_DIR without the comment is reported", (t) => {
+  const root = broken(t, (r) => validateRow(r, "// Replays EXP-SCORE-001 for RULE-SCORE-001.\nconst dir = process.env.GAME_DIR;\n"));
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /RULE-SCORE-001: test file tests\/Score\.test\.ts mentions GAME_DIR without a "needs: GAME_DIR" comment/);
+});
+
+test("a validated row needs its marked test files in VALIDATION.md", (t) => {
+  const root = broken(t, (r) => validateRow(r));
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /RULE-SCORE-001: tests\/Score\.test\.ts is not in VALIDATION\.md/);
+});
+
+test("--record-validation writes a record that a changed test file no longer matches", (t) => {
+  const root = broken(t, (r) => { validateRow(r); commitAll(r); });
+  const recorded = run(root, "--record-validation", "BLD-EXAMPLE-1.0");
+  assert.equal(recorded.status, 0, recorded.output);
+  const record = readFileSync(join(root, "VALIDATION.md"), "utf8");
+  assert.match(record, /^- Commit: [0-9a-f]{40}$/m);
+  assert.match(record, /^- Builds: BLD-EXAMPLE-1\.0$/m);
+  assert.match(record, /^\| `tests\/Score\.test\.ts` \| `[0-9a-f]{64}` \|$/m);
+  assert.equal(run(root, "--check").status, 0);
+
+  // A checkout with CRLF line endings hashes the same.
+  const test = join(root, "tests", "Score.test.ts");
+  writeFileSync(test, readFileSync(test, "utf8").replaceAll("\n", "\r\n"));
+  const crlf = run(root, "--check");
+  assert.equal(crlf.status, 0, crlf.output);
+
+  writeFileSync(test, `${LOCAL_TEST}expect(kill(0)).toBe(2);\n`);
+  const changed = run(root, "--check");
+  assert.equal(changed.status, 1);
+  assert.match(changed.output, /RULE-SCORE-001: tests\/Score\.test\.ts has changed since VALIDATION\.md recorded it/);
+});
+
+test("VALIDATION.md lists only the marked test files of validated rows", (t) => {
+  const root = broken(t, (r) => {
+    validateRow(r);
+    commitAll(r);
+    assert.equal(run(r, "--record-validation", "BLD-EXAMPLE-1.0").status, 0);
+    replaceIn(r, "VALIDATION.md", "|---|---|\n", `|---|---|\n| \`tests/Other.test.ts\` | \`${"0".repeat(64)}\` |\n`);
+  });
+  const { status, output } = run(root, "--check");
+  assert.equal(status, 1);
+  assert.match(output, /VALIDATION\.md: tests\/Other\.test\.ts is not a test file with a "needs: GAME_DIR" comment in a validated row's Tests/);
+});
+
+test("--record-validation needs build entries and cannot run with --check", (t) => {
+  const root = broken(t, (r) => validateRow(r));
+  assert.equal(run(root, "--record-validation", "BLD-NOPE-1.0").status, 2);
+  assert.equal(run(root, "--check", "--record-validation", "BLD-EXAMPLE-1.0").status, 2);
+});
