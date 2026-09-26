@@ -23,7 +23,8 @@ The check expects these at the root it is given (the repository root by default)
   value files beside the entries that name them;
 - `parity/`, with one `<AREA>.md` of parity rows per area, split by kind and then by block of 100
   numbers where an area would pass 1,000 lines;
-- `deviations/`, with one `<ID>.md` per deviation.
+- `deviations/`, with one `<ID>.md` per deviation;
+- `VALIDATION.md`, once any parity row is `validated` (see below).
 
 The check writes `PARITY.md`. An empty directory needs a `.gitkeep` so that git keeps it.
 
@@ -170,6 +171,22 @@ Run it from the restoration's root or pass `--root`. The command-line options ma
 inputs: `--code`, `--references`, `--data-dirs` and `--base`, plus `--no-ksy` to skip compiling
 and `--glossary <path>` to accept the terms of a draft term file or a directory of them. Set `KSC` to the compiler's
 launcher, or put `kaitai-struct-compiler` on `PATH`, to compile the `.ksy` definitions.
+
+## Recording a validation run
+
+The tests of a `validated` row need the original game's files, which CI never has, so they run on
+a maintainer's machine. After a run in which every test in those files passed and none was
+skipped, record it:
+
+```sh
+node check-documentation.mjs --record-validation BLD-GOG-EN-1.1
+```
+
+This writes `VALIDATION.md` at the root: the commit, the date, the builds the run used, and the
+SHA-256 of every test file a validated row lists, hashed with CRLF read as LF. Commit it with the
+change. From then on the check, in CI as well, fails a validated row whose test file is missing from
+the record or has changed since, and a record that lists a file no validated row lists. The script
+cannot tell whether the tests passed; running them before recording is the maintainer's part.
 
 ## Moving a restoration onto it
 
