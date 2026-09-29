@@ -656,3 +656,70 @@ for (const [offset, error] of [
   assert.equal(result.status, error ? 1 : 0, result.output);
   if (error) assert.match(result.output, error);
 });
+
+for (const format of ["COM", "NE", "PE", "LE", "LX", "ELF"]) test(`a ${format} executable cannot be located by offset`, (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", `format: ${format}`);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", 'offset: "0x0200..0x03FF"');
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, new RegExp(`a ${format} executable is located by address`));
+});
+
+test("a file format without a location rule fails until the Standard documents one", (t) => {
+  const root = broken(t, (r) => replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", "format: MachO"));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /format MachO has no location rule in Standard v1 \(known: MZ, COM, NE, PE, LE, LX, ELF, data, cdda\); the Standard must document how it is located/);
+});
+
+for (const format of ["data", "cdda"]) test(`a ${format} file is located by offset`, (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", `format: ${format}`);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", 'offset: "0x0200..0x03FF"');
+  });
+  const result = run(root);
+  assert.equal(result.status, 0, result.output);
+});
+
+const packAs = (unpacked) => (r) => replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "    format: PE\n",
+  `    format: MZ\n    packer: PKLITE\n    unpacked:\n      size: 4096\n      xxh3: 00112233445566778899aabbccddeeff\n      format: ${unpacked}\n      tool: unp\n`);
+
+test("an unpacked form in a format without a location rule fails", (t) => {
+  const root = broken(t, packAs("MachO"));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /GAME\.EXE: unpacked format MachO has no location rule in Standard v1/);
+});
+
+test("a packed MZ file whose unpacked form is LE cannot be located by offset", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    packAs("LE")(r);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", 'offset: "0x0200..0x03FF"');
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /a LE executable is located by address/);
+});
+
+test("a file without a format is reported as missing one", (t) => {
+  const root = broken(t, (r) => replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "    format: PE\n", ""));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /GAME\.EXE: every file has a format/);
+  assert.doesNotMatch(result.output, /format undefined/);
+});
+
+test("a packed MZ file whose unpacked form is MZ can locate overlay code by offset", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    packAs("MZ")(r);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", 'offset: "0x0200..0x03FF"');
+  });
+  const result = run(root);
+  assert.equal(result.status, 0, result.output);
+});

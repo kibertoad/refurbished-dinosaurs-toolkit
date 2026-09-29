@@ -150,6 +150,27 @@ const LINE_LIMIT = 1000;
 // A list written out in a procedure or a table definition holds at most this many values. A longer
 // one takes them from a value file.
 const LIST_LIMIT = 64;
+// How a location in each file format is given, per Standard v1. `address` is the notation of a
+// loaded address; `offset` allows a range of the shipped file. Both are judged by the unpacked
+// format when the file is packed. A format not listed here has no rule: the Standard must first decide and document how it
+// is located, and only then is it added here.
+const SEG = /^[0-9A-F]{4}:[0-9A-F]{4}$/;
+const FLAT32 = /^0x[0-9A-F]{8}$/;
+const LOCATIONS = {
+  MZ: { address: SEG, offset: true }, // offset only for overlay code outside the load image
+  COM: { address: SEG },
+  NE: { address: SEG },
+  PE: { address: FLAT32 },
+  LE: { address: FLAT32 },
+  LX: { address: FLAT32 },
+  ELF: { address: /^0x(?:[0-9A-F]{8}|[0-9A-F]{16})$/ },
+  data: { offset: true },
+  cdda: { offset: true },
+};
+const FORMATS = Object.keys(LOCATIONS);
+const locationRule = (format) => (Object.hasOwn(LOCATIONS, format) ? LOCATIONS[format] : undefined);
+const unlistedFormat = (format) =>
+  `format ${format} has no location rule in Standard v1 (known: ${FORMATS.join(", ")}); the Standard must document how it is located before it is used`;
 // Names Windows cannot give a file, whatever the extension, so no glossary term may be one.
 const RESERVED_NAMES = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
 const lineCount = (text) => (text === "" ? 0 : text.split("\n").length - (text.endsWith("\n") ? 1 : 0));
@@ -529,7 +550,10 @@ for (const [id, e] of entries) {
   buildFiles.set(id, files);
   for (const f of files) {
     if (!f.path) problem(path, "every file has a path");
-    if (!["MZ", "COM", "NE", "PE", "LE", "LX", "ELF", "cdda", "data"].includes(f.format)) problem(path, `${f.path}: format ${f.format} is not one of MZ, COM, NE, PE, LE, LX, ELF, cdda, data`);
+    if (f.format === undefined || f.format === null || f.format === "") problem(path, `${f.path}: every file has a format`);
+    else if (!locationRule(f.format)) problem(path, `${f.path}: ${unlistedFormat(f.format)}`);
+    const unpackedFormat = f.unpacked?.format;
+    if (unpackedFormat !== undefined && unpackedFormat !== null && unpackedFormat !== "" && !locationRule(unpackedFormat)) problem(path, `${f.path}: unpacked ${unlistedFormat(unpackedFormat)}`);
     if (!/^[0-9a-f]{32}$/.test(String(f.xxh3))) problem(path, `${f.path}: xxh3 must be 32 lower-case hex digits`);
     if (typeof f.size !== "number") problem(path, `${f.path}: size must be a number`);
     if (f.packer && !(f.unpacked && f.unpacked.size && f.unpacked.xxh3 && f.unpacked.format && f.unpacked.tool)) problem(path, `${f.path}: a packed file gives the size, xxh3, format and tool of its unpacked form`);
@@ -613,17 +637,11 @@ function rowFacts(ids, first, complete = []) {
   return { sources, staticF, dynamic, completeReading: complete.length > 0 && staticF > 0 && outside === 0 };
 }
 
-const addressFormat = {
-  PE: /^0x[0-9A-F]{8}$/,
-  ELF: /^0x(?:[0-9A-F]{8}|[0-9A-F]{16})$/,
-  LE: /^0x[0-9A-F]{8}$/,
-  LX: /^0x[0-9A-F]{8}$/,
-  MZ: /^[0-9A-F]{4}:[0-9A-F]{4}$/,
-  COM: /^[0-9A-F]{4}:[0-9A-F]{4}$/,
-  NE: /^[0-9A-F]{4}:[0-9A-F]{4}$/,
-};
+// An unlisted format is already reported against its manifest, so it is skipped here.
 function checkAddress(file, value, format) {
-  const re = addressFormat[format];
+  const rule = locationRule(format);
+  if (!rule) return;
+  const re = rule.address;
   if (!re) { problem(file, `an address cannot be given in a file of format ${format}; use offset`); return; }
   const parts = String(value).split("..");
   if (parts.length > 2 || parts.some((p) => !re.test(p))) problem(file, `address ${value} is not in the notation for a ${format} file`);
@@ -707,7 +725,12 @@ for (const [id, e] of entries) {
       if ("address" in loc && "offset" in loc) problem(file, "a location gives address or offset, not both");
       if ("address" in loc) checkAddress(file, loc.address, format);
       else if ("offset" in loc) {
-        // V1 permits overlay offsets. The finding must establish the mapping.
+        // Offsets name bytes of the shipped file: data, CD audio, or MZ overlay code
+        // outside the load image. The finding must establish the overlay mapping. Like an
+        // address, an offset is judged by the unpacked format, so a packed MZ stub around LE
+        // or PE code cannot use offsets for code the loader maps.
+        const rule = locationRule(format);
+        if (rule && !rule.offset) problem(file, `location in ${loc.file} gives an offset; a ${format} executable is located by address (only MZ overlay code uses offsets)`);
         checkOffset(file, loc.offset, bf);
       } else problem(file, "a location gives an address or an offset");
     }
