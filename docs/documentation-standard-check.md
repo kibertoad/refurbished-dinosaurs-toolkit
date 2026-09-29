@@ -265,9 +265,11 @@ with a rule:
 | `data` | no | yes |
 | `cdda` | no | yes |
 
-An address is checked against the unpacked format when the file is packed. An offset is an
-inclusive range, such as `0x0200..0x03FF`, or a single byte of the shipped file. The checker
-validates its syntax, ordering and file-size bounds.
+When the file is packed, its unpacked format decides both whether an address or an offset is
+allowed and the address notation. An offset is `0x` followed by at least two upper-case hex
+digits, naming a single byte of the shipped file, or an inclusive range of two, such as
+`0x0200..0x03FF`. The checker validates its syntax, ordering and bounds against the shipped
+file's size.
 
 MZ executables accept offsets because overlay code sits outside the load image and has no fixed
 address. The finding must explain the overlay mapping and establish that the range belongs to
