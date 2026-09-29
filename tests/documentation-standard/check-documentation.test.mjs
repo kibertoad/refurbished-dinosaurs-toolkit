@@ -601,3 +601,58 @@ test("--record-validation needs build entries and cannot run with --check", (t) 
   assert.equal(run(root, "--record-validation", "BLD-NOPE-1.0").status, 2);
   assert.equal(run(root, "--check", "--record-validation", "BLD-EXAMPLE-1.0").status, 2);
 });
+
+test("historical procedures retain definitions without owning active names", (t) => {
+  const root = broken(t, (r) => {
+    const original = readFileSync(join(r, "spec/rules/RULE-SCORE-001.md"), "utf8");
+    writeFileSync(join(r, "spec/rules/RULE-SCORE-002.md"), original
+      .replace("id: RULE-SCORE-001", "id: RULE-SCORE-002")
+      .replace("status: sourced", "status: superseded")
+      .replace("superseded_by: []", "superseded_by: [RULE-SCORE-001]"));
+  });
+  const result = run(root);
+  assert.equal(result.status, 0, result.output);
+  const repeated = run(root, "--check");
+  assert.equal(repeated.status, 0, repeated.output);
+});
+
+test("two live rules still cannot own the same procedure", (t) => {
+  const root = broken(t, (r) => {
+    const original = readFileSync(join(r, "spec/rules/RULE-SCORE-001.md"), "utf8");
+    writeFileSync(join(r, "spec/rules/RULE-SCORE-002.md"), original.replace("id: RULE-SCORE-001", "id: RULE-SCORE-002"));
+    replaceIn(r, "parity/SCORE.md", row("RULE-SCORE-001"), row("RULE-SCORE-001") + "\n" + row("RULE-SCORE-002"));
+  });
+  const result = run(root);
+  assert.equal(result.status, 1);
+  assert.match(result.output, /add_points is defined by more than one rule/);
+});
+
+test("a live rule cannot call a function only a superseded rule defines", (t) => {
+  const root = broken(t, (r) => {
+    copyRule(r, "RULE-SCORE-002", (text) => text.replace("return n + 1", "return add_points(n)"));
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "status: sourced", "status: superseded");
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "superseded_by: []", "superseded_by: [RULE-SCORE-002]");
+    replaceIn(r, "spec/glossary/add_points.md", " A function, defined by\nRULE-SCORE-001.", " A function.");
+    replaceIn(r, "parity/SCORE.md", row("RULE-SCORE-001"), row("RULE-SCORE-002"));
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /RULE-SCORE-002\.md: calls add_points\(\), which only superseded RULE-SCORE-001 defines/);
+});
+
+for (const [offset, error] of [
+  ["0x0200..0x03FF", null], ["0x03FF", null],
+  ["0x0400", /outside the shipped file/],
+  ["0x0300..0x0200", /offset range is reversed/],
+  ["0x10000000000000000", /outside the shipped file/],
+  ["0x02ab", /upper-case hex/],
+]) test(`overlay file location ${offset}`, (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", "format: MZ");
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", `offset: "${offset}"`);
+  });
+  const result = run(root);
+  assert.equal(result.status, error ? 1 : 0, result.output);
+  if (error) assert.match(result.output, error);
+});
