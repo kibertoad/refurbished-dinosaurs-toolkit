@@ -493,6 +493,31 @@ test("an emulated call establishes a rule and needs no save hash", (t) => {
   assert.equal(status, 0, output);
 });
 
+// The emulated call's fixture with its run's draws replaced.
+function withDraws(root, draws) {
+  establishByEmulatedCall(root);
+  writeFileSync(join(root, "spec", "experiments", "EXP-SCORE-001.json"),
+    JSON.stringify({ experiment: "EXP-SCORE-001", runs: [{ arguments: { n: 0 }, draws, end_state: { return: 1 } }] }));
+}
+
+test("a run's draws name the rule each was made under", (t) => {
+  const root = broken(t, (r) => withDraws(r, [{ rule: "RULE-SCORE-001", bound: 6, result: 3 }]));
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+});
+
+test("a draw names a rule entry, never an address", (t) => {
+  const root = broken(t, (r) => withDraws(r, [
+    { rule: "FND-SCORE-001", bound: 6, result: 3 },
+    { rule: "RULE-SCORE-001", call: "0x4012a0", bound: 6, result: "3" },
+  ]));
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /draw 0 names FND-SCORE-001, which is not a rule entry/);
+  assert.match(output, /draw 1 has call; a draw gives only rule, bound and result/);
+  assert.match(output, /draw 1 gives bound and result as integers/);
+});
+
 test("emulated calls alone do not establish a rule another rule may interrupt", (t) => {
   const root = broken(t, (r) => {
     establishByEmulatedCall(r);

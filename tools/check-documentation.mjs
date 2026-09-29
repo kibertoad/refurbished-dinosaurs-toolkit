@@ -609,6 +609,20 @@ function completeReading(e) {
 
 // True when all of an entry's evidence from the original running is emulated calls of single
 // functions, which model neither interrupts nor timing.
+// A run's draws from the generator, in order. Each is named by the rule it was made under, which
+// the rebuild cites too, and never by the address of the call in the original's code.
+const DRAW_KEYS = ["rule", "bound", "result"];
+function checkDraws(fixture, draws) {
+  if (draws === undefined) return;
+  if (!Array.isArray(draws)) return problem(fixture, "draws is a list");
+  draws.forEach((draw, i) => {
+    const extra = Object.keys(draw ?? {}).filter((k) => !DRAW_KEYS.includes(k));
+    if (extra.length) problem(fixture, `draw ${i} has ${extra.join(", ")}; a draw gives only rule, bound and result`);
+    if (entries.get(draw?.rule)?.kind !== "RULE") problem(fixture, `draw ${i} names ${draw?.rule}, which is not a rule entry`);
+    if (!Number.isInteger(draw?.bound) || !Number.isInteger(draw?.result)) problem(fixture, `draw ${i} gives bound and result as integers`);
+  });
+}
+
 function onlyEmulatedRuns(e) {
   const runs = asList(e.meta.evidence).map((x) => entries.get(x)).filter((x) => x && (x.kind === "EXP" || (x.kind === "FND" && x.meta.method === "dynamic")));
   return runs.length > 0 && runs.every((x) => x.kind === "EXP" && x.meta.starting_state === "emulated-call");
@@ -748,6 +762,7 @@ for (const [id, e] of entries) {
         if (!["new-game", "emulated-call"].includes(meta.starting_state) && !(fx.starting_state && fx.starting_state.xxh3)) problem(fixture, "gives the hash of the save its runs started from");
         if (typeof meta.starting_state === "string" && meta.starting_state.endsWith(".patch.json") && !fx.starting_state?.base_xxh3) problem(fixture, "a patch fixture gives the base save's hash as well");
         for (const run of asList(fx.runs)) for (const ev of asList(run.events)) if (!glossary.has(ev.event)) problem(fixture, `event ${ev.event} has no glossary entry`);
+        for (const run of asList(fx.runs)) checkDraws(fixture, run.draws);
         if (typeof meta.recording === "string" && meta.recording !== "" && !fx.recording_xxh3) problem(fixture, "an experiment with a recording gives the recording's hash in recording_xxh3");
       } catch (err) {
         problem(fixture, `is not valid JSON: ${err.message}`);
