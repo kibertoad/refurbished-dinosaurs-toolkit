@@ -602,7 +602,6 @@ test("--record-validation needs build entries and cannot run with --check", (t) 
   assert.equal(run(root, "--check", "--record-validation", "BLD-EXAMPLE-1.0").status, 2);
 });
 
-
 test("historical procedures retain definitions without owning active names", (t) => {
   const root = broken(t, (r) => {
     const original = readFileSync(join(r, "spec/rules/RULE-SCORE-001.md"), "utf8");
@@ -613,7 +612,6 @@ test("historical procedures retain definitions without owning active names", (t)
   });
   const result = run(root);
   assert.equal(result.status, 0, result.output);
-  assert.match(readFileSync(join(root, "spec/rules/RULE-SCORE-002.md"), "utf8"), /define add_points/);
   const repeated = run(root, "--check");
   assert.equal(repeated.status, 0, repeated.output);
 });
@@ -627,6 +625,19 @@ test("two live rules still cannot own the same procedure", (t) => {
   const result = run(root);
   assert.equal(result.status, 1);
   assert.match(result.output, /add_points is defined by more than one rule/);
+});
+
+test("a live rule cannot call a function only a superseded rule defines", (t) => {
+  const root = broken(t, (r) => {
+    copyRule(r, "RULE-SCORE-002", (text) => text.replace("return n + 1", "return add_points(n)"));
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "status: sourced", "status: superseded");
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "superseded_by: []", "superseded_by: [RULE-SCORE-002]");
+    replaceIn(r, "spec/glossary/add_points.md", " A function, defined by\nRULE-SCORE-001.", " A function.");
+    replaceIn(r, "parity/SCORE.md", row("RULE-SCORE-001"), row("RULE-SCORE-002"));
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /RULE-SCORE-002\.md: calls add_points\(\), which only superseded RULE-SCORE-001 defines/);
 });
 
 for (const [offset, error] of [

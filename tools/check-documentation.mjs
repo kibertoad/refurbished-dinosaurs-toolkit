@@ -628,9 +628,14 @@ function checkAddress(file, value, format) {
   const parts = String(value).split("..");
   if (parts.length > 2 || parts.some((p) => !re.test(p))) problem(file, `address ${value} is not in the notation for a ${format} file`);
 }
-function checkOffset(file, value) {
+// An offset is into the shipped file bf, so it lies within bf.size.
+function checkOffset(file, value, bf) {
   const parts = String(value).split("..");
-  if (parts.length > 2 || parts.some((p) => !/^0x[0-9A-F]{2,}$/.test(p))) problem(file, `offset ${value} must be 0x followed by at least two upper-case hex digits, or a range of two`);
+  if (parts.length > 2 || parts.some((p) => !/^0x[0-9A-F]{2,}$/.test(p))) { problem(file, `offset ${value} must be 0x followed by at least two upper-case hex digits, or a range of two`); return; }
+  const values = parts.map((p) => BigInt(p));
+  if (values.length === 2 && values[0] > values[1]) problem(file, "offset range is reversed");
+  if (Number.isSafeInteger(bf.size) && bf.size >= 0 && values.some((x) => x >= BigInt(bf.size)))
+    problem(file, `offset ${value} is outside the shipped file ${bf.path} (${bf.size} bytes)`);
 }
 
 const enumNames = new Map(); // name -> format IDs
@@ -703,14 +708,7 @@ for (const [id, e] of entries) {
       if ("address" in loc) checkAddress(file, loc.address, format);
       else if ("offset" in loc) {
         // V1 permits overlay offsets. The finding must establish the mapping.
-        checkOffset(file, loc.offset);
-        const ends = String(loc.offset).split("..");
-        if (ends.length <= 2 && ends.every((x) => /^0x[0-9A-F]{2,}$/.test(x))) {
-          const values = ends.map((x) => BigInt(x));
-          if (values.length === 2 && values[0] > values[1]) problem(file, "offset range is reversed");
-          if (Number.isSafeInteger(bf.size) && bf.size >= 0 && values.some((x) => x >= BigInt(bf.size)))
-            problem(file, `offset ${loc.offset} is outside the shipped file ${loc.file} (${bf.size} bytes)`);
-        }
+        checkOffset(file, loc.offset, bf);
       } else problem(file, "a location gives an address or an offset");
     }
   }
@@ -944,17 +942,22 @@ const BUILTINS = new Set(["min", "max", "abs", "count", "append", "insert", "rem
   "UINT8", "INT8", "UINT16", "INT16", "UINT32", "INT32", "UINT64", "INT64", "FLOAT32", "FLOAT64", "FLOAT80", "REAL48"]);
 const KEYWORDS = new Set(["for", "each", "in", "if", "else", "while", "break", "continue", "return", "let", "and", "or", "not", "true", "false", "call", "define", "emit", "drain", "show", "new", "table", "clock", "from", "Hz"]);
 const defined = new Map(); // function/table/clock name -> rule IDs
+// A superseded rule keeps its procedure for history, but its declarations own no active name.
+const historical = new Map(); // name declared by superseded rules -> rule IDs
 
 for (const [id, e] of entries) {
-  if (e.kind !== "RULE" || e.meta.status === "superseded") continue;
+  if (e.kind !== "RULE") continue;
   const proc = e.sections.find((s) => s.title === "Procedure")?.text ?? "";
   e.code = [...proc.matchAll(/```text\n([\s\S]*?)```/g)].map((m) => m[1]).join("\n");
+  const owners = e.meta.status === "superseded" ? historical : defined;
   for (const m of e.code.matchAll(/^\s*(?:define\s+([a-z_][a-z0-9_]*)\s*\(|table\s+([a-z_][a-z0-9_]*)\s*:|clock\s+([a-z_][a-z0-9_]*)\s*:)/gm)) {
     const name = m[1] ?? m[2] ?? m[3];
-    if (!defined.has(name)) defined.set(name, []);
-    defined.get(name).push(id);
+    if (!owners.has(name)) owners.set(name, []);
+    owners.get(name).push(id);
   }
 }
+// A live procedure cannot rely on a name only a superseded rule declares.
+const onlyHistorical = (name) => !defined.has(name) && historical.has(name);
 for (const [name, ids] of defined) {
   const splitGroup = asList(entries.get(ids[0]).meta.split_with).concat(ids[0]);
   if (ids.length > 1 && !ids.every((x) => splitGroup.includes(x))) problem(null, `${name} is defined by more than one rule: ${ids.join(", ")}`);
@@ -1019,6 +1022,7 @@ for (const [id, e] of entries) {
   for (const m of code.matchAll(/(?<![.\w])([a-z_][a-z0-9_]*)\s*\(/g)) {
     const name = m[1];
     if (BUILTINS.has(name) || KEYWORDS.has(name) || locals.has(name)) continue;
+    if (onlyHistorical(name)) { problem(file, `calls ${name}(), which only superseded ${historical.get(name).join(", ")} defines`); continue; }
     if (!defined.has(name) && !useTerm(name)) { problem(file, `calls ${name}(), which no rule defines and the glossary does not list`); continue; }
     for (const owner of defined.get(name) ?? []) if (owner !== id && !related.includes(owner)) problem(file, `uses ${name} from ${owner}; add ${owner} to related`);
   }
@@ -1032,6 +1036,7 @@ for (const [id, e] of entries) {
   for (const m of code.matchAll(/(?<![.\w])([a-z_][a-z0-9_]*)(?=\s*(?:\.|\[|=[^=]|$))/gm)) {
     const name = m[1];
     if (locals.has(name) || KEYWORDS.has(name) || BUILTINS.has(name) || defined.has(name)) continue;
+    if (onlyHistorical(name)) { problem(file, `${name} is declared only by superseded ${historical.get(name).join(", ")}`); continue; }
     if (!useTerm(name)) problem(file, `${name} is neither a local nor a glossary term`);
   }
   // A glossary claim a procedure relies on counts toward the rule's status: its evidence is the

@@ -240,7 +240,6 @@ review:
 The tests in `tests/documentation-standard/` run the script over a small fixture restoration and
 over broken copies of it.
 
-
 ## Version 1 evidence locations and historical rules
 
 A superseded rule keeps its Procedure text for history. Its declarations do
