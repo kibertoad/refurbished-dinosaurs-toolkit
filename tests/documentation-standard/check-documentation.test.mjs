@@ -493,6 +493,58 @@ test("an emulated call establishes a rule and needs no save hash", (t) => {
   assert.equal(status, 0, output);
 });
 
+// The emulated call's fixture with its run's draws replaced.
+function withDraws(root, draws) {
+  establishByEmulatedCall(root);
+  writeFileSync(join(root, "spec", "experiments", "EXP-SCORE-001.json"),
+    JSON.stringify({ experiment: "EXP-SCORE-001", runs: [{ arguments: { n: 0 }, draws, end_state: { return: 1 } }] }));
+}
+
+test("a run's draws name the rule each was made under", (t) => {
+  const root = broken(t, (r) => withDraws(r, [{ rule: "RULE-SCORE-001", bound: 6, result: 3 }]));
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+});
+
+test("a draw names a rule entry, never an address", (t) => {
+  const root = broken(t, (r) => withDraws(r, [
+    { rule: "FND-SCORE-001", bound: 6, result: 3 },
+    { rule: "RULE-SCORE-001", call: "0x4012a0", bound: 6, result: "3" },
+  ]));
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /draw 0 names FND-SCORE-001, which is not a rule entry/);
+  assert.match(output, /draw 1 has call; a draw gives only rule, bound and result/);
+  assert.match(output, /draw 1 gives bound and result as integers/);
+});
+
+test("a run's draws are a list of objects", (t) => {
+  const listRoot = broken(t, (r) => withDraws(r, { rule: "RULE-SCORE-001", bound: 6, result: 3 }));
+  const list = run(listRoot);
+  assert.equal(list.status, 1, list.output);
+  assert.match(list.output, /draws is a list/);
+  const objectRoot = broken(t, (r) => withDraws(r, ["RULE-SCORE-001", null]));
+  const objects = run(objectRoot);
+  assert.equal(objects.status, 1, objects.output);
+  assert.match(objects.output, /draw 0 is an object with rule, bound and result/);
+  assert.match(objects.output, /draw 1 is an object with rule, bound and result/);
+  assert.doesNotMatch(objects.output, /is not valid JSON/);
+});
+
+test("a live experiment's draw cannot name a superseded rule", (t) => {
+  const root = broken(t, (r) => {
+    const original = readFileSync(join(r, "spec/rules/RULE-SCORE-001.md"), "utf8");
+    writeFileSync(join(r, "spec/rules/RULE-SCORE-002.md"), original
+      .replace("id: RULE-SCORE-001", "id: RULE-SCORE-002")
+      .replace("status: sourced", "status: superseded")
+      .replace("superseded_by: []", "superseded_by: [RULE-SCORE-001]"));
+    withDraws(r, [{ rule: "RULE-SCORE-002", bound: 6, result: 3 }]);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.match(output, /draw 0 names RULE-SCORE-002, which is superseded/);
+});
+
 test("emulated calls alone do not establish a rule another rule may interrupt", (t) => {
   const root = broken(t, (r) => {
     establishByEmulatedCall(r);

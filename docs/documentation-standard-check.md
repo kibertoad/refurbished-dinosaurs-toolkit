@@ -238,8 +238,10 @@ review:
 - that no list of fixed length is given to `append`, `insert` or `remove_at`, and that every field
   a procedure names is in its format's layout;
 - that a Kaitai definition's fixed sizes match its layout table;
-- the fixture schema, the field paths of fixtures and save patches, and the hashes of saves and
-  recordings, since the schemas are not published yet and xxHash3 needs a package;
+- the fixture schema beyond a run's `draws`, the field paths of fixtures and save patches, and
+  the hashes of saves and recordings, since the schemas are not published yet and xxHash3 needs a
+  package. Each draw is checked to be `{ rule, bound, result }` with integer bound and result,
+  naming a rule entry that a live experiment's fixture may not name once it is superseded;
 - the spec package version, since the package does not exist yet.
 
 The tests in `tests/documentation-standard/` run the script over a small fixture restoration and
