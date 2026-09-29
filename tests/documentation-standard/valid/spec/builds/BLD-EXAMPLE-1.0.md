@@ -22,3 +22,7 @@ None known.
 ## Other files
 
 None.
+
+## Code ranges
+
+None.

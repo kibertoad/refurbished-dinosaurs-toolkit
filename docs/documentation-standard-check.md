@@ -19,7 +19,8 @@ The check expects these at the root it is given (the repository root by default)
 - `spec/LICENSE`, and `spec/glossary/` with one `<term>.md` per term;
 - the entries in `spec/builds/`, `spec/sources/`, `spec/formats/`, `spec/rules/`,
   `spec/findings/`, `spec/experiments/`, `spec/bugs/` and `spec/screens/`, as far as the
-  restoration has any, with a `<ID>.files.yaml` manifest beside each build entry and any CSV
+  restoration has any, with a `<ID>.files.yaml` manifest beside each build entry, a
+  `<ID>.other-files.yaml` beside it where the build's list of left-out paths is long, and any CSV
   value files beside the entries that name them;
 - `parity/`, with one `<AREA>.md` of parity rows per area, split by kind and then by block of 100
   numbers where an area would pass 1,000 lines;
@@ -144,6 +145,10 @@ To pick up new checks, replace the SHA in the workflow with a newer toolkit comm
 indexes and `PARITY.md` with the script from that commit, and fix what it reports in the same pull
 request.
 
+A build entry written before the Code ranges section existed fails with a missing section. Add
+`## Code ranges` after Other files, with `None.` where no finding locates code by offset, or with
+one row per code range where one does.
+
 ## Using setup-kaitai on its own
 
 `actions/setup-kaitai` installs the compiler without running the check, for a workflow that
@@ -267,15 +272,42 @@ with a rule:
 
 When the file is packed, its unpacked format decides both whether an address or an offset is
 allowed and the address notation. An offset is `0x` followed by at least two upper-case hex
-digits, naming a single byte of the shipped file, or an inclusive range of two, such as
-`0x0200..0x03FF`. The checker validates its syntax, ordering and bounds against the shipped
-file's size.
+digits, naming a single byte of the shipped file, or a half-open range of two, as the Standard's
+Notation section writes ranges: `0x0200..0x0400` covers `0x0200` up to but not including
+`0x0400`. The checker validates its syntax, ordering and bounds against the shipped file's size,
+so a range may end exactly at the end of the file, and fails an empty range.
 
 MZ executables accept offsets because overlay code sits outside the load image and has no fixed
-address. The finding must explain the overlay mapping and establish that the range belongs to
-the relevant code; accepting an offset does not prove that mapping. The other executable formats
-map their code through the loader, so their code always has an address and an offset into them
-fails.
+address. The other executable formats map their code through the loader, so their code always
+has an address and an offset into them fails.
+
+### Code ranges
+
+An offset into overlay code locates code only if that part of the file holds code, and the
+file's length does not say which parts do. Every build entry has a Code ranges section after
+Other files: a table `File | Range | Overlay | Finding`, or `None.` for a build whose code is all
+located by address. Each row gives a file of the manifest, one half-open `offset` range of it,
+the overlay or bank number needed to read that range or `-`, and the ID of the finding that
+shows the range holds code. The checker fails a row whose file is not in the manifest, whose
+range is malformed, empty or outside the file, whose overlay is neither a number nor `-`, or
+whose finding does not exist or does not list the build.
+
+An `offset` into an executable (an MZ file, or a packed file whose unpacked form is MZ) must lie
+wholly inside one row for that file. Adjacent rows are not joined, so a range that crosses from
+one bank into the next fails, and so does one that crosses a hole or the end of a code payload.
+Lying inside a row does not show that an instruction starts at the offset; the finding still
+has to. An offset into a `data` or `cdda` file needs no row.
+
+### Other files
+
+A build's Other files section accounts for every path of the installation's listing that the
+manifest leaves out. Where that list would take the entry past the line limit, it goes in
+`builds/<ID>.other-files.yaml`, whose only key `other_files` is a list of maps of `path` and
+`reason`, and the section names the file. The checker fails a list that the section does not
+name, a section that names a list that does not exist, a list that belongs to no build, an item
+without a path or a reason, a path listed twice, and a path that is also in the manifest. It
+cannot tell whether the listing itself is complete; the section's account of how it was made is
+left to review.
 
 A file in any other format fails the manifest check, and so does a packed file whose unpacked
 form is in any other format. Before such a file is documented, the Standard must decide how

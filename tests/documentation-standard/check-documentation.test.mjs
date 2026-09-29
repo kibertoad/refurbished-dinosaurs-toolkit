@@ -640,8 +640,18 @@ test("a live rule cannot call a function only a superseded rule defines", (t) =>
   assert.match(result.output, /RULE-SCORE-002\.md: calls add_points\(\), which only superseded RULE-SCORE-001 defines/);
 });
 
+// Replaces the build's Code ranges section with a table of the given rows, each
+// [file, range, overlay, finding].
+function codeRanges(root, rows) {
+  const table = ["| File | Range | Overlay | Finding |", "|---|---|---|---|", ...rows.map((r) => `| ${r.map((c) => `\`${c}\``).join(" | ")} |`)];
+  replaceIn(root, "spec/builds/BLD-EXAMPLE-1.0.md", "## Code ranges\n\nNone.\n", `## Code ranges\n\n${table.join("\n")}\n`);
+}
+const wholeFile = (r) => codeRanges(r, [["GAME.EXE", "0x0000..0x0400", "-", "FND-SCORE-001"]]);
+
 for (const [offset, error] of [
-  ["0x0200..0x03FF", null], ["0x03FF", null],
+  ["0x0200..0x03FF", null], ["0x03FF", null], ["0x0200..0x0400", null],
+  ["0x0200..0x0401", /outside the shipped file/],
+  ["0x0200..0x0200", /offset range 0x0200\.\.0x0200 is empty/],
   ["0x0400", /outside the shipped file/],
   ["0x0300..0x0200", /offset range is reversed/],
   ["0x10000000000000000", /outside the shipped file/],
@@ -650,6 +660,7 @@ for (const [offset, error] of [
   const root = broken(t, (r) => {
     establishByReading(r);
     replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", "format: MZ");
+    wholeFile(r);
     replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", `offset: "${offset}"`);
   });
   const result = run(root);
@@ -718,8 +729,141 @@ test("a packed MZ file whose unpacked form is MZ can locate overlay code by offs
   const root = broken(t, (r) => {
     establishByReading(r);
     packAs("MZ")(r);
+    wholeFile(r);
     replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", 'offset: "0x0200..0x03FF"');
   });
   const result = run(root);
   assert.equal(result.status, 0, result.output);
+});
+
+// Overlay code in an MZ file with two code payloads: 0x0100..0x0200 in bank 1, 0x0200..0x0280 in
+// bank 2, a hole, and 0x0300..0x0400. An offset range cited as code lies wholly inside one row.
+const banks = [
+  ["GAME.EXE", "0x0100..0x0200", "1", "FND-SCORE-001"],
+  ["GAME.EXE", "0x0200..0x0280", "2", "FND-SCORE-001"],
+  ["GAME.EXE", "0x0300..0x0400", "-", "FND-SCORE-001"],
+];
+for (const [offset, passes, why] of [
+  ["0x0100..0x0180", true, "starts exactly where a code range starts"],
+  ["0x0180..0x0200", true, "ends exactly where a code range ends"],
+  ["0x0300..0x0400", true, "is a whole code range that ends at the end of the file"],
+  ["0x01FF", true, "is the last byte of a code range"],
+  ["0x0200", true, "is the first byte of the next bank"],
+  ["0x00F0..0x0110", false, "starts before the first code range"],
+  ["0x0180..0x0220", false, "crosses into another bank"],
+  ["0x0240..0x0290", false, "crosses the end of a code payload"],
+  ["0x0270..0x0310", false, "crosses a hole"],
+  ["0x0290", false, "lies in a hole"],
+]) test(`an overlay offset that ${why} ${passes ? "passes" : "fails"}`, (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", "format: MZ");
+    codeRanges(r, banks);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", `offset: "${offset}"`);
+  });
+  const result = run(root);
+  assert.equal(result.status, passes ? 0 : 1, result.output);
+  if (!passes) assert.match(result.output, /FND-SCORE-001\.md: offset .* in GAME\.EXE does not lie wholly inside one of the rows the Code ranges section of BLD-EXAMPLE-1\.0 gives/);
+});
+
+test("an overlay offset fails while the build's Code ranges section says None.", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", "format: MZ");
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", 'offset: "0x0200..0x03FF"');
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /does not lie wholly inside one of the rows/);
+});
+
+test("an offset into a data file needs no code range", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", "format: data");
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", 'offset: "0x0200..0x03FF"');
+  });
+  const result = run(root);
+  assert.equal(result.status, 0, result.output);
+});
+
+test("a build entry without a Code ranges section is reported", (t) => {
+  const root = broken(t, (r) => replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.md", "\n## Code ranges\n\nNone.\n", ""));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /BLD-EXAMPLE-1\.0\.md: sections must be Obtaining, Compared with other builds, Other files, Code ranges in that order/);
+});
+
+for (const [rows, error] of [
+  [[["GAME.EXE", "0x0100..0x0200", "-", "FND-SCORE-001"]], null],
+  [[["GAME.OVL", "0x0100..0x0200", "-", "FND-SCORE-001"]], /GAME\.OVL is not in the manifest/],
+  [[["GAME.EXE", "0x0100", "-", "FND-SCORE-001"]], /the range is one half-open offset range/],
+  [[["GAME.EXE", "0x0200..0x0100", "-", "FND-SCORE-001"]], /offset range is reversed/],
+  [[["GAME.EXE", "0x0300..0x0500", "-", "FND-SCORE-001"]], /outside the shipped file GAME\.EXE/],
+  [[["GAME.EXE", "0x0100..0x0200", "none", "FND-SCORE-001"]], /the overlay is its number, or -/],
+  [[["GAME.EXE", "0x0100..0x0200", "-", "RULE-SCORE-001"]], /the finding column holds the ID of one finding/],
+  [[["GAME.EXE", "0x0100..0x0200", "-", "FND-SCORE-002"]], /cites FND-SCORE-002, which does not exist/],
+]) test(`a Code ranges row ${rows[0].join(" ")} ${error ? "fails" : "passes"}`, (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    codeRanges(r, rows);
+  });
+  const result = run(root);
+  assert.equal(result.status, error ? 1 : 0, result.output);
+  if (error) assert.match(result.output, error);
+});
+
+test("a Code ranges row names a finding that lists the build", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    codeRanges(r, [["GAME.EXE", "0x0100..0x0200", "-", "FND-SCORE-001"]]);
+    const other = readFileSync(join(r, "spec/builds/BLD-EXAMPLE-1.0.md"), "utf8").replace("id: BLD-EXAMPLE-1.0", "id: BLD-EXAMPLE-1.1")
+      .replace("manifest: BLD-EXAMPLE-1.0.files.yaml", "manifest: BLD-EXAMPLE-1.1.files.yaml");
+    writeFileSync(join(r, "spec/builds/BLD-EXAMPLE-1.1.md"), other);
+    writeFileSync(join(r, "spec/builds/BLD-EXAMPLE-1.1.files.yaml"), readFileSync(join(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml"), "utf8"));
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /BLD-EXAMPLE-1\.1\.md: Code ranges row GAME\.EXE 0x0100\.\.0x0200: FND-SCORE-001 does not list BLD-EXAMPLE-1\.1/);
+});
+
+test("a Code ranges section that is neither a table nor None. is reported", (t) => {
+  const root = broken(t, (r) => replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.md", "## Code ranges\n\nNone.\n", "## Code ranges\n\nAll code is located by address.\n"));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /the Code ranges section is one table with the columns File \| Range \| Overlay \| Finding, or None\./);
+});
+
+// A long list of the paths the manifest leaves out goes in builds/<ID>.other-files.yaml.
+const otherFiles = (items, named = true) => (r) => {
+  writeFileSync(join(r, "spec/builds/BLD-EXAMPLE-1.0.other-files.yaml"), items);
+  if (named) replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.md", "## Other files\n\nNone.\n",
+    "## Other files\n\nListed with `find` over the installation. The paths the manifest leaves out are in `BLD-EXAMPLE-1.0.other-files.yaml`.\n");
+};
+for (const [items, named, error] of [
+  ["other_files:\n  - path: SETUP.EXE\n    reason: installer\n  - path: DOSBOX/dosbox.conf\n    reason: wrapper\n", true, null],
+  ["other_files:\n  - path: SETUP.EXE\n    reason: installer\n", false, /the Other files section names BLD-EXAMPLE-1\.0\.other-files\.yaml/],
+  ["other_files:\n  - path: SETUP.EXE\n", true, /every item of other_files is a map of path and reason/],
+  ["other_files:\n  - path: GAME.EXE\n    reason: installer\n", true, /GAME\.EXE is in the manifest, so it is not one of the other files/],
+  ["other_files:\n  - path: SETUP.EXE\n    reason: installer\n  - path: SETUP.EXE\n    reason: again\n", true, /SETUP\.EXE is listed twice/],
+  ["files:\n  - path: SETUP.EXE\n    reason: installer\n", true, /a list of other files has only the key other_files, not files/],
+]) test(`a list of other files ${error ?? "that is well formed passes"}`, (t) => {
+  const root = broken(t, otherFiles(items, named));
+  const result = run(root);
+  assert.equal(result.status, error ? 1 : 0, result.output);
+  if (error) assert.match(result.output, error);
+});
+
+test("an Other files section that names a missing list is reported", (t) => {
+  const root = broken(t, (r) => replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.md", "## Other files\n\nNone.\n", "## Other files\n\nSee `BLD-EXAMPLE-1.0.other-files.yaml`.\n"));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /Other files names BLD-EXAMPLE-1\.0\.other-files\.yaml, which does not exist/);
+});
+
+test("a list of other files that belongs to no build is reported", (t) => {
+  const root = broken(t, (r) => writeFileSync(join(r, "spec/builds/BLD-NOPE-1.0.other-files.yaml"), "other_files: []\n"));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /BLD-NOPE-1\.0\.other-files\.yaml: belongs to no build entry/);
 });

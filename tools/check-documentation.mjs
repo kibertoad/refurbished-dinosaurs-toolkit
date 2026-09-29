@@ -99,7 +99,7 @@ const EVIDENCE_STATUSES = ["recorded", "reproduced", "superseded"];
 const ROW_STATUSES = ["unknown", "sourced", "supported", "established", "disputed"];
 
 const SECTIONS = {
-  BLD: ["Obtaining", "Compared with other builds", "Other files"],
+  BLD: ["Obtaining", "Compared with other builds", "Other files", "Code ranges"],
   SRC: ["Use", "Known errors"],
   FND: ["Observation", "Interpretation", "Alternatives", "How to reproduce"],
   EXP: ["Question", "Setup", "Procedure", "Observations", "Results", "Conclusion"],
@@ -561,8 +561,72 @@ for (const [id, e] of entries) {
   }
 }
 if (existsSync(join(specDir, "builds"))) for (const name of readdirSync(join(specDir, "builds"))) {
-  const m = /^(.+)\.files\.yaml$/.exec(name);
+  const m = /^(.+)\.(?:other-)?files\.yaml$/.exec(name);
   if (m && entries.get(m[1])?.kind !== "BLD") problem(join(specDir, "builds", name), `belongs to no build entry (${m[1]})`);
+}
+
+// Other files: every path of the installation's listing that the manifest leaves out, each with
+// its reason, in the build entry's Other files section or, for a long list, in
+// builds/<ID>.other-files.yaml, which that section names.
+for (const [id, e] of entries) {
+  if (e.kind !== "BLD") continue;
+  const name = `${id}.other-files.yaml`;
+  const path = join(dirname(e.file), name);
+  const named = (e.sections.find((s) => s.title === "Other files")?.text ?? "").includes(name);
+  if (!existsSync(path)) {
+    if (named) problem(e.file, `Other files names ${name}, which does not exist`);
+    continue;
+  }
+  if (!named) problem(e.file, `the Other files section names ${name}, which lists the paths the manifest leaves out`);
+  const list = parseYaml(readText(path), path);
+  for (const key of Object.keys(list)) if (key !== "other_files") problem(path, `a list of other files has only the key other_files, not ${key}`);
+  if (!Array.isArray(list.other_files)) { problem(path, "other_files must be a list"); continue; }
+  const inManifest = new Set((buildFiles.get(id) ?? []).map((f) => f.path));
+  const seen = new Set();
+  for (const item of list.other_files) {
+    if (!item || typeof item !== "object" || Object.keys(item).sort().join(",") !== "path,reason") { problem(path, "every item of other_files is a map of path and reason"); continue; }
+    if (typeof item.path !== "string" || item.path === "") { problem(path, "every other file has a path"); continue; }
+    if (typeof item.reason !== "string" || item.reason.trim() === "") problem(path, `${item.path}: every other file gives the reason the manifest leaves it out`);
+    if (item.path.includes("\\")) problem(path, `${item.path}: paths use forward slashes`);
+    if (inManifest.has(item.path)) problem(path, `${item.path} is in the manifest, so it is not one of the other files`);
+    if (seen.has(item.path)) problem(path, `${item.path} is listed twice`);
+    seen.add(item.path);
+  }
+}
+
+// Code ranges: the half-open ranges of each file that hold code located by offset, each with the
+// finding that shows it. A table File | Range | Overlay | Finding, or None.
+const CODE_RANGES = ["File", "Range", "Overlay", "Finding"];
+const codeRanges = new Map(); // build ID -> [{ file, start, end }]
+const unticked = (cell) => cell.replace(/^`(.*)`$/, "$1").trim();
+for (const [id, e] of entries) {
+  if (e.kind !== "BLD") continue;
+  const section = e.sections.find((s) => s.title === "Code ranges");
+  // A missing section is reported with the other sections.
+  if (!section) continue;
+  const ranges = [];
+  codeRanges.set(id, ranges);
+  if (/^\s*None\.\s*$/.test(section.text)) continue;
+  const found = tables(section.text);
+  if (found.length !== 1 || found[0].header.join("|") !== CODE_RANGES.join("|") || found[0].rows.length === 0) {
+    problem(e.file, `the Code ranges section is one table with the columns ${CODE_RANGES.join(" | ")}, or None.`);
+    continue;
+  }
+  const files = buildFiles.get(id) ?? [];
+  for (const row of found[0].rows) {
+    const [path, range, overlay, finding] = row.map(unticked);
+    const at = `Code ranges row ${path} ${range}`;
+    const bf = files.find((f) => f.path === path);
+    if (!bf) { problem(e.file, `${at}: ${path} is not in the manifest`); continue; }
+    if (!/^0x[0-9A-F]{2,}\.\.0x[0-9A-F]{2,}$/.test(range)) { problem(e.file, `${at}: the range is one half-open offset range, 0x followed by upper-case hex digits on each side of ..`); continue; }
+    if (!/^(?:-|\d+|0x[0-9A-F]+)$/.test(overlay ?? "")) problem(e.file, `${at}: the overlay is its number, or - where there is none`);
+    const ids = idsIn(finding);
+    if (ids.length !== 1 || kindOf(ids[0]) !== "FND" || finding !== ids[0]) problem(e.file, `${at}: the finding column holds the ID of one finding`);
+    else if (!entries.has(ids[0])) problem(e.file, `${at}: cites ${ids[0]}, which does not exist`);
+    else if (!asList(entries.get(ids[0]).meta.builds).includes(id)) problem(e.file, `${at}: ${ids[0]} does not list ${id}`);
+    const parsed = checkOffset(e.file, range, bf);
+    if (parsed) ranges.push({ file: path, start: parsed[0], end: parsed[1] });
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -646,14 +710,27 @@ function checkAddress(file, value, format) {
   const parts = String(value).split("..");
   if (parts.length > 2 || parts.some((p) => !re.test(p))) problem(file, `address ${value} is not in the notation for a ${format} file`);
 }
-// An offset is into the shipped file bf, so it lies within bf.size.
-function checkOffset(file, value, bf) {
+// An offset names one byte, or a half-open range of two: 0x20..0x3C covers 0x20 up to but not
+// including 0x3C. Returns [start, end) as BigInts, or null when the notation is wrong.
+function parseOffset(value) {
   const parts = String(value).split("..");
-  if (parts.length > 2 || parts.some((p) => !/^0x[0-9A-F]{2,}$/.test(p))) { problem(file, `offset ${value} must be 0x followed by at least two upper-case hex digits, or a range of two`); return; }
-  const values = parts.map((p) => BigInt(p));
-  if (values.length === 2 && values[0] > values[1]) problem(file, "offset range is reversed");
-  if (Number.isSafeInteger(bf.size) && bf.size >= 0 && values.some((x) => x >= BigInt(bf.size)))
+  if (parts.length > 2 || parts.some((p) => !/^0x[0-9A-F]{2,}$/.test(p))) return null;
+  const [start, end] = parts.map((p) => BigInt(p));
+  return [start, end ?? start + 1n];
+}
+// An offset is into the shipped file bf, so the bytes it covers lie within bf.size. Returns the
+// parsed range when it is well formed.
+function checkOffset(file, value, bf) {
+  const range = parseOffset(value);
+  if (!range) { problem(file, `offset ${value} must be 0x followed by at least two upper-case hex digits, or a range of two`); return null; }
+  const [start, end] = range;
+  if (start > end) { problem(file, "offset range is reversed"); return null; }
+  if (start === end) { problem(file, `offset range ${value} is empty; a range is half-open`); return null; }
+  if (Number.isSafeInteger(bf.size) && bf.size >= 0 && end > BigInt(bf.size)) {
     problem(file, `offset ${value} is outside the shipped file ${bf.path} (${bf.size} bytes)`);
+    return null;
+  }
+  return range;
 }
 
 const enumNames = new Map(); // name -> format IDs
@@ -731,7 +808,14 @@ for (const [id, e] of entries) {
         // or PE code cannot use offsets for code the loader maps.
         const rule = locationRule(format);
         if (rule && !rule.offset) problem(file, `location in ${loc.file} gives an offset; a ${format} executable is located by address (only MZ overlay code uses offsets)`);
-        checkOffset(file, loc.offset, bf);
+        const range = checkOffset(file, loc.offset, bf);
+        // An offset into an executable locates overlay code, so it lies wholly inside one row of
+        // the build's Code ranges. Adjacent rows are not joined: a range that crosses from one
+        // into the next, such as into another bank, fails.
+        if (range && rule?.address && codeRanges.has(loc.build)) {
+          const inside = codeRanges.get(loc.build).some((r) => r.file === loc.file && r.start <= range[0] && range[1] <= r.end);
+          if (!inside) problem(file, `offset ${loc.offset} in ${loc.file} does not lie wholly inside one of the rows the Code ranges section of ${loc.build} gives for that file`);
+        }
       } else problem(file, "a location gives an address or an offset");
     }
   }
