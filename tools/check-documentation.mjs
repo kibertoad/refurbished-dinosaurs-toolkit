@@ -623,13 +623,20 @@ for (const [id, e] of entries) {
     const at = `Code ranges row ${path} ${range}`;
     const bf = files.find((f) => f.path === path);
     if (!bf) { problem(e.file, `${at}: ${path} is not in the manifest`); continue; }
-    if (!/^0x[0-9A-F]{2,}\.\.0x[0-9A-F]{2,}$/.test(range)) { problem(e.file, `${at}: the range is one half-open offset range, 0x followed by upper-case hex digits on each side of ..`); continue; }
-    if (!/^(?:-|\d+|0x[0-9A-F]+)$/.test(overlay ?? "")) problem(e.file, `${at}: the overlay is its number, or - where there is none`);
+    // Only overlay code is located by offset, so a row is for a file whose unpacked format takes
+    // both addresses and offsets (MZ). An unlisted format is already reported against its manifest.
+    const format = bf.unpacked?.format ?? bf.format;
+    const rule = locationRule(format);
+    if (rule && !(rule.offset && rule.address)) problem(e.file, `${at}: ${path} is a ${format} file, which holds no code located by offset`);
+    // The notation is parseOffset's; a row additionally needs both ends of the range.
+    if (!range.includes("..") || !parseOffset(range)) { problem(e.file, `${at}: the range is one half-open offset range, 0x followed by upper-case hex digits on each side of ..`); continue; }
+    if (!/^(?:-|\d+|0x[0-9A-F]+)$/.test(overlay)) problem(e.file, `${at}: the overlay is its number, or - where there is none`);
+    // A finding that does not exist is reported with the other unresolved IDs of the body.
     const ids = idsIn(finding);
+    const cited = entries.get(ids[0]);
     if (ids.length !== 1 || kindOf(ids[0]) !== "FND" || finding !== ids[0]) problem(e.file, `${at}: the finding column holds the ID of one finding`);
-    else if (!entries.has(ids[0])) problem(e.file, `${at}: cites ${ids[0]}, which does not exist`);
-    else if (!asList(entries.get(ids[0]).meta.builds).includes(id)) problem(e.file, `${at}: ${ids[0]} does not list ${id}`);
-    else if (entries.get(ids[0]).meta.status === "superseded") problem(e.file, `${at}: cites ${ids[0]}, which is superseded`);
+    else if (cited && !asList(cited.meta.builds).includes(id)) problem(e.file, `${at}: ${ids[0]} does not list ${id}`);
+    else if (cited?.meta.status === "superseded") problem(e.file, `${at}: cites ${ids[0]}, which is superseded`);
     const parsed = checkOffset(e.file, range, bf);
     if (parsed) ranges.push({ file: path, start: parsed[0], end: parsed[1] });
   }

@@ -646,6 +646,10 @@ function codeRanges(root, rows) {
   const table = ["| File | Range | Overlay | Finding |", "|---|---|---|---|", ...rows.map((r) => `| ${r.map((c) => `\`${c}\``).join(" | ")} |`)];
   replaceIn(root, "spec/builds/BLD-EXAMPLE-1.0.md", "## Code ranges\n\nNone.\n", `## Code ranges\n\n${table.join("\n")}\n`);
 }
+// Makes GAME.EXE an MZ file, the one format whose code can be located by offset, and moves the
+// finding's location to MZ notation.
+const mzAddress = (r) => replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", "address: 1000:0000..1000:0010");
+const asMz = (r) => { replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", "format: MZ"); mzAddress(r); };
 const wholeFile = (r) => codeRanges(r, [["GAME.EXE", "0x0000..0x0400", "-", "FND-SCORE-001"]]);
 
 for (const [offset, error] of [
@@ -798,14 +802,16 @@ for (const [rows, error] of [
   [[["GAME.EXE", "0x0100..0x0200", "-", "FND-SCORE-001"]], null],
   [[["GAME.OVL", "0x0100..0x0200", "-", "FND-SCORE-001"]], /GAME\.OVL is not in the manifest/],
   [[["GAME.EXE", "0x0100", "-", "FND-SCORE-001"]], /the range is one half-open offset range/],
+  [[["GAME.EXE", "0x01ab..0x0200", "-", "FND-SCORE-001"]], /the range is one half-open offset range/],
   [[["GAME.EXE", "0x0200..0x0100", "-", "FND-SCORE-001"]], /offset range is reversed/],
   [[["GAME.EXE", "0x0300..0x0500", "-", "FND-SCORE-001"]], /outside the shipped file GAME\.EXE/],
   [[["GAME.EXE", "0x0100..0x0200", "none", "FND-SCORE-001"]], /the overlay is its number, or -/],
   [[["GAME.EXE", "0x0100..0x0200", "-", "RULE-SCORE-001"]], /the finding column holds the ID of one finding/],
-  [[["GAME.EXE", "0x0100..0x0200", "-", "FND-SCORE-002"]], /cites FND-SCORE-002, which does not exist/],
+  [[["GAME.EXE", "0x0100..0x0200", "-", "FND-SCORE-002"]], /BLD-EXAMPLE-1\.0\.md: the body names FND-SCORE-002, which does not exist/],
 ]) test(`a Code ranges row ${rows[0].join(" ")} ${error ? "fails" : "passes"}`, (t) => {
   const root = broken(t, (r) => {
     establishByReading(r);
+    asMz(r);
     codeRanges(r, rows);
   });
   const result = run(root);
@@ -816,6 +822,7 @@ for (const [rows, error] of [
 test("a Code ranges row names a finding that lists the build", (t) => {
   const root = broken(t, (r) => {
     establishByReading(r);
+    asMz(r);
     codeRanges(r, [["GAME.EXE", "0x0100..0x0200", "-", "FND-SCORE-001"]]);
     const other = readFileSync(join(r, "spec/builds/BLD-EXAMPLE-1.0.md"), "utf8").replace("id: BLD-EXAMPLE-1.0", "id: BLD-EXAMPLE-1.1")
       .replace("manifest: BLD-EXAMPLE-1.0.files.yaml", "manifest: BLD-EXAMPLE-1.1.files.yaml");
@@ -879,9 +886,44 @@ test("an offset into a PE file is reported once, as an offset, not also against 
   assert.doesNotMatch(result.output, /does not lie wholly inside one of the rows/);
 });
 
+for (const [format, packed] of [["PE", false], ["COM", false], ["data", false], ["cdda", false], ["PE", true]]) test(`a Code ranges row for ${packed ? "a packed file unpacking to" : "a"} ${format} ${packed ? "" : "file "}fails`, (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    if (packed) packAs(format)(r);
+    else replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", `format: ${format}`);
+    codeRanges(r, [["GAME.EXE", "0x0100..0x0200", "-", "FND-SCORE-001"]]);
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, new RegExp(`Code ranges row GAME\\.EXE 0x0100\\.\\.0x0200: GAME\\.EXE is a ${format} file, which holds no code located by offset`));
+});
+
+test("a Code ranges row for a packed file that unpacks to MZ passes", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    packAs("MZ")(r);
+    mzAddress(r);
+    codeRanges(r, [["GAME.EXE", "0x0100..0x0200", "-", "FND-SCORE-001"]]);
+  });
+  const result = run(root);
+  assert.equal(result.status, 0, result.output);
+});
+
+test("a Code ranges row citing a finding that does not exist is reported once", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    asMz(r);
+    codeRanges(r, [["GAME.EXE", "0x0100..0x0200", "-", "FND-SCORE-002"]]);
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.equal(result.output.match(/FND-SCORE-002/g).length, 1, result.output);
+});
+
 test("a Code ranges row that cites a superseded finding is reported", (t) => {
   const root = broken(t, (r) => {
     establishByReading(r);
+    asMz(r);
     codeRanges(r, [["GAME.EXE", "0x0100..0x0200", "-", "FND-SCORE-001"]]);
     replaceIn(r, "spec/findings/FND-SCORE-001.md", "status: recorded", "status: superseded");
   });
@@ -893,6 +935,7 @@ test("a Code ranges row that cites a superseded finding is reported", (t) => {
 test("a Code ranges row with the wrong number of cells is reported", (t) => {
   const root = broken(t, (r) => {
     establishByReading(r);
+    asMz(r);
     codeRanges(r, [["GAME.EXE", "0x0100..0x0200", "-", "FND-SCORE-001", "extra"]]);
   });
   const result = run(root);

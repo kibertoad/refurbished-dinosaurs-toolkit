@@ -288,9 +288,10 @@ file's length does not say which parts do. Every build entry has a Code ranges s
 Other files: a table `File | Range | Overlay | Finding`, or `None.` for a build whose code is all
 located by address. Each row gives a file of the manifest, one half-open `offset` range of it,
 the overlay or bank number needed to read that range or `-`, and the ID of the finding that
-shows the range holds code. The checker fails a row whose file is not in the manifest, whose
-range is malformed, empty or outside the file, whose overlay is neither a number nor `-`, or
-whose finding does not exist, does not list the build or is superseded.
+shows the range holds code. The checker fails a row whose file is not in the manifest or is not
+MZ (after unpacking; no other format holds code located by offset), whose range is malformed,
+empty or outside the file, whose overlay is neither a number nor `-`, or whose finding does not
+exist, does not list the build or is superseded.
 
 An `offset` into an executable (an MZ file, or a packed file whose unpacked form is MZ) must lie
 wholly inside one row for that file. Adjacent rows are not joined, so a range that crosses from
