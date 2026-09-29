@@ -239,3 +239,18 @@ review:
 
 The tests in `tests/documentation-standard/` run the script over a small fixture restoration and
 over broken copies of it.
+
+
+## Version 1 evidence locations and historical rules
+
+A superseded rule keeps its Procedure text for history. Its declarations do
+not own active function, table or clock names; live rules still cannot define
+the same name outside a declared split group. References to superseded entries
+continue to fail where the Standard requires a living citation.
+
+Overlay code may use the existing `offset` location field with an inclusive
+shipped-file range such as `0x0200..0x03FF`. The checker validates syntax,
+ordering and file-size bounds. The finding must explain the overlay mapping
+and establish that the range belongs to the relevant code; accepting an offset
+does not prove that mapping. Offsets refer to the manifest's shipped file;
+mapped or unpacked addresses use `address`. These fixes implement Standard v1.

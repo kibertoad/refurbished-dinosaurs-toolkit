@@ -702,8 +702,15 @@ for (const [id, e] of entries) {
       if ("address" in loc && "offset" in loc) problem(file, "a location gives address or offset, not both");
       if ("address" in loc) checkAddress(file, loc.address, format);
       else if ("offset" in loc) {
-        if (format !== "data" && format !== "cdda") problem(file, `location in ${loc.file} gives an offset; an executable is located by address (overlay code excepted)`);
+        // V1 permits overlay offsets. The finding must establish the mapping.
         checkOffset(file, loc.offset);
+        const ends = String(loc.offset).split("..");
+        if (ends.length <= 2 && ends.every((x) => /^0x[0-9A-F]{2,}$/.test(x))) {
+          const values = ends.map((x) => BigInt(x));
+          if (values.length === 2 && values[0] > values[1]) problem(file, "offset range is reversed");
+          if (Number.isSafeInteger(bf.size) && bf.size >= 0 && values.some((x) => x >= BigInt(bf.size)))
+            problem(file, `offset ${loc.offset} is outside the shipped file ${loc.file} (${bf.size} bytes)`);
+        }
       } else problem(file, "a location gives an address or an offset");
     }
   }
@@ -939,7 +946,7 @@ const KEYWORDS = new Set(["for", "each", "in", "if", "else", "while", "break", "
 const defined = new Map(); // function/table/clock name -> rule IDs
 
 for (const [id, e] of entries) {
-  if (e.kind !== "RULE") continue;
+  if (e.kind !== "RULE" || e.meta.status === "superseded") continue;
   const proc = e.sections.find((s) => s.title === "Procedure")?.text ?? "";
   e.code = [...proc.matchAll(/```text\n([\s\S]*?)```/g)].map((m) => m[1]).join("\n");
   for (const m of e.code.matchAll(/^\s*(?:define\s+([a-z_][a-z0-9_]*)\s*\(|table\s+([a-z_][a-z0-9_]*)\s*:|clock\s+([a-z_][a-z0-9_]*)\s*:)/gm)) {
