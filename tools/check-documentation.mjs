@@ -581,16 +581,18 @@ for (const [id, e] of entries) {
   const list = parseYaml(readText(path), path);
   for (const key of Object.keys(list)) if (key !== "other_files") problem(path, `a list of other files has only the key other_files, not ${key}`);
   if (!Array.isArray(list.other_files)) { problem(path, "other_files must be a list"); continue; }
-  const inManifest = new Set((buildFiles.get(id) ?? []).map((f) => f.path));
+  // The front matter reader turns a bare name such as 1990 into a number, so paths compare as text.
+  const inManifest = new Set((buildFiles.get(id) ?? []).map((f) => String(f.path)));
   const seen = new Set();
   for (const item of list.other_files) {
     if (!item || typeof item !== "object" || Object.keys(item).sort().join(",") !== "path,reason") { problem(path, "every item of other_files is a map of path and reason"); continue; }
-    if (typeof item.path !== "string" || item.path === "") { problem(path, "every other file has a path"); continue; }
-    if (typeof item.reason !== "string" || item.reason.trim() === "") problem(path, `${item.path}: every other file gives the reason the manifest leaves it out`);
-    if (item.path.includes("\\")) problem(path, `${item.path}: paths use forward slashes`);
-    if (inManifest.has(item.path)) problem(path, `${item.path} is in the manifest, so it is not one of the other files`);
-    if (seen.has(item.path)) problem(path, `${item.path} is listed twice`);
-    seen.add(item.path);
+    if (item.path === null || item.path === undefined || item.path === "") { problem(path, "every other file has a path"); continue; }
+    const other = String(item.path);
+    if (item.reason === null || String(item.reason).trim() === "") problem(path, `${other}: every other file gives the reason the manifest leaves it out`);
+    if (other.includes("\\")) problem(path, `${other}: paths use forward slashes`);
+    if (inManifest.has(other)) problem(path, `${other} is in the manifest, so it is not one of the other files`);
+    if (seen.has(other)) problem(path, `${other} is listed twice`);
+    seen.add(other);
   }
 }
 
@@ -605,15 +607,18 @@ for (const [id, e] of entries) {
   // A missing section is reported with the other sections.
   if (!section) continue;
   const ranges = [];
-  codeRanges.set(id, ranges);
-  if (/^\s*None\.\s*$/.test(section.text)) continue;
+  if (/^\s*None\.\s*$/.test(section.text)) { codeRanges.set(id, ranges); continue; }
   const found = tables(section.text);
+  // A malformed section is reported once here; offsets into the build are then not measured
+  // against it, as with a missing section, rather than each failing again.
   if (found.length !== 1 || found[0].header.join("|") !== CODE_RANGES.join("|") || found[0].rows.length === 0) {
     problem(e.file, `the Code ranges section is one table with the columns ${CODE_RANGES.join(" | ")}, or None.`);
     continue;
   }
+  codeRanges.set(id, ranges);
   const files = buildFiles.get(id) ?? [];
   for (const row of found[0].rows) {
+    if (row.length !== CODE_RANGES.length) { problem(e.file, `Code ranges row ${row.join(" | ")}: a row has ${CODE_RANGES.length} cells, not ${row.length}`); continue; }
     const [path, range, overlay, finding] = row.map(unticked);
     const at = `Code ranges row ${path} ${range}`;
     const bf = files.find((f) => f.path === path);
@@ -624,6 +629,7 @@ for (const [id, e] of entries) {
     if (ids.length !== 1 || kindOf(ids[0]) !== "FND" || finding !== ids[0]) problem(e.file, `${at}: the finding column holds the ID of one finding`);
     else if (!entries.has(ids[0])) problem(e.file, `${at}: cites ${ids[0]}, which does not exist`);
     else if (!asList(entries.get(ids[0]).meta.builds).includes(id)) problem(e.file, `${at}: ${ids[0]} does not list ${id}`);
+    else if (entries.get(ids[0]).meta.status === "superseded") problem(e.file, `${at}: cites ${ids[0]}, which is superseded`);
     const parsed = checkOffset(e.file, range, bf);
     if (parsed) ranges.push({ file: path, start: parsed[0], end: parsed[1] });
   }
@@ -812,7 +818,7 @@ for (const [id, e] of entries) {
         // An offset into an executable locates overlay code, so it lies wholly inside one row of
         // the build's Code ranges. Adjacent rows are not joined: a range that crosses from one
         // into the next, such as into another bank, fails.
-        if (range && rule?.address && codeRanges.has(loc.build)) {
+        if (range && rule?.offset && rule.address && codeRanges.has(loc.build)) {
           const inside = codeRanges.get(loc.build).some((r) => r.file === loc.file && r.start <= range[0] && range[1] <= r.end);
           if (!inside) problem(file, `offset ${loc.offset} in ${loc.file} does not lie wholly inside one of the rows the Code ranges section of ${loc.build} gives for that file`);
         }

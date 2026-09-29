@@ -867,3 +867,56 @@ test("a list of other files that belongs to no build is reported", (t) => {
   assert.equal(result.status, 1, result.output);
   assert.match(result.output, /BLD-NOPE-1\.0\.other-files\.yaml: belongs to no build entry/);
 });
+
+test("an offset into a PE file is reported once, as an offset, not also against Code ranges", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", 'offset: "0x0200..0x03FF"');
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /gives an offset; a PE executable is located by address/);
+  assert.doesNotMatch(result.output, /does not lie wholly inside one of the rows/);
+});
+
+test("a Code ranges row that cites a superseded finding is reported", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    codeRanges(r, [["GAME.EXE", "0x0100..0x0200", "-", "FND-SCORE-001"]]);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "status: recorded", "status: superseded");
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /Code ranges row GAME\.EXE 0x0100\.\.0x0200: cites FND-SCORE-001, which is superseded/);
+});
+
+test("a Code ranges row with the wrong number of cells is reported", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    codeRanges(r, [["GAME.EXE", "0x0100..0x0200", "-", "FND-SCORE-001", "extra"]]);
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /a row has 4 cells, not 5/);
+});
+
+test("a malformed Code ranges section is reported once, not again for each overlay offset", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", "format: MZ");
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.md", "## Code ranges\n\nNone.\n", "## Code ranges\n\nAll code is located by address.\n");
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", 'offset: "0x0200..0x03FF"');
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /the Code ranges section is one table/);
+  assert.doesNotMatch(result.output, /does not lie wholly inside one of the rows/);
+});
+
+test("a list of other files compares a numeric path as text", (t) => {
+  const root = broken(t, otherFiles("other_files:\n  - path: 1990\n    reason: a save slot\n  - path: 1990\n    reason: again\n"));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /1990 is listed twice/);
+  assert.doesNotMatch(result.output, /every other file has a path/);
+});
