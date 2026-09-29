@@ -656,3 +656,14 @@ for (const [offset, error] of [
   assert.equal(result.status, error ? 1 : 0, result.output);
   if (error) assert.match(result.output, error);
 });
+
+for (const format of ["PE", "ELF"]) test(`a ${format} executable cannot be located by offset`, (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", `format: ${format}`);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", 'offset: "0x0200..0x03FF"');
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, new RegExp(`a ${format} executable is located by address`));
+});

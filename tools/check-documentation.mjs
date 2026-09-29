@@ -707,7 +707,9 @@ for (const [id, e] of entries) {
       if ("address" in loc && "offset" in loc) problem(file, "a location gives address or offset, not both");
       if ("address" in loc) checkAddress(file, loc.address, format);
       else if ("offset" in loc) {
-        // V1 permits overlay offsets. The finding must establish the mapping.
+        // Offsets name bytes of the shipped file: data, CD audio, or MZ overlay code
+        // outside the load image. The finding must establish the overlay mapping.
+        if (!["data", "cdda", "MZ"].includes(bf.format)) problem(file, `location in ${loc.file} gives an offset; a ${bf.format} executable is located by address (only MZ overlay code uses offsets)`);
         checkOffset(file, loc.offset, bf);
       } else problem(file, "a location gives an address or an offset");
     }

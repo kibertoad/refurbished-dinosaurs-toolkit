@@ -247,9 +247,11 @@ not own active function, table or clock names; live rules still cannot define
 the same name outside a declared split group. References to superseded entries
 continue to fail where the Standard requires a living citation.
 
-Overlay code may use the existing `offset` location field with an inclusive
+Overlay code in an MZ executable may use the existing `offset` location field with an inclusive
 shipped-file range such as `0x0200..0x03FF`. The checker validates syntax,
 ordering and file-size bounds. The finding must explain the overlay mapping
 and establish that the range belongs to the relevant code; accepting an offset
 does not prove that mapping. Offsets refer to the manifest's shipped file;
-mapped or unpacked addresses use `address`. These fixes implement Standard v1.
+mapped or unpacked addresses use `address`. Every other executable format
+(COM, NE, PE, LE, LX, ELF) maps its code through the loader and is located by
+`address`; an offset into one of them fails. These fixes implement Standard v1.
