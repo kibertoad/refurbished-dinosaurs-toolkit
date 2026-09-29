@@ -247,11 +247,36 @@ not own active function, table or clock names; live rules still cannot define
 the same name outside a declared split group. References to superseded entries
 continue to fail where the Standard requires a living citation.
 
-Overlay code in an MZ executable may use the existing `offset` location field with an inclusive
-shipped-file range such as `0x0200..0x03FF`. The checker validates syntax,
-ordering and file-size bounds. The finding must explain the overlay mapping
-and establish that the range belongs to the relevant code; accepting an offset
-does not prove that mapping. Offsets refer to the manifest's shipped file;
-mapped or unpacked addresses use `address`. Every other executable format
-(COM, NE, PE, LE, LX, ELF) maps its code through the loader and is located by
-`address`; an offset into one of them fails. These fixes implement Standard v1.
+### Locations by file format
+
+Each location in a finding names a shipped file and gives either an `address` or an `offset`.
+The file's `format` in the build manifest decides which is allowed. These are the only formats
+with a rule:
+
+| Format | `address` notation | `offset` |
+|---|---|---|
+| `MZ` | `SSSS:OOOO` | overlay code only |
+| `COM` | `SSSS:OOOO` | no |
+| `NE` | `SSSS:OOOO` | no |
+| `PE` | `0xXXXXXXXX` | no |
+| `LE` | `0xXXXXXXXX` | no |
+| `LX` | `0xXXXXXXXX` | no |
+| `ELF` | `0xXXXXXXXX` or `0xXXXXXXXXXXXXXXXX` | no |
+| `data` | no | yes |
+| `cdda` | no | yes |
+
+An address is checked against the unpacked format when the file is packed. An offset is an
+inclusive range, such as `0x0200..0x03FF`, or a single byte of the shipped file. The checker
+validates its syntax, ordering and file-size bounds.
+
+MZ executables accept offsets because overlay code sits outside the load image and has no fixed
+address. The finding must explain the overlay mapping and establish that the range belongs to
+the relevant code; accepting an offset does not prove that mapping. The other executable formats
+map their code through the loader, so their code always has an address and an offset into them
+fails.
+
+A file in any other format fails the manifest check, and so does a packed file whose unpacked
+form is in any other format. Before such a file is documented, the Standard must decide how
+locations in that format are given and record that decision. Only then is the format added to
+the `LOCATIONS` table in `tools/check-documentation.mjs` and to this table. These rules
+implement Standard v1.

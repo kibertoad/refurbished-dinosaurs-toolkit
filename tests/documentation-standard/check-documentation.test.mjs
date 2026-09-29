@@ -667,3 +667,10 @@ for (const format of ["PE", "ELF"]) test(`a ${format} executable cannot be locat
   assert.equal(result.status, 1, result.output);
   assert.match(result.output, new RegExp(`a ${format} executable is located by address`));
 });
+
+test("a file format without a location rule fails until the Standard documents one", (t) => {
+  const root = broken(t, (r) => replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", "format: MachO"));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /format MachO has no location rule in Standard v1 \(known: MZ, COM, NE, PE, LE, LX, ELF, data, cdda\); the Standard must document how it is located/);
+});
