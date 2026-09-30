@@ -1,5 +1,8 @@
 """Focused reports derived from instruction paths and explicit source bounds."""
+from capstone import CS_AC_READ, CS_AC_WRITE
 from capstone.x86 import X86_OP_MEM
+from .machine import State, StopPath
+from .values import unknown
 from .image import Image, integer
 from .trace import trace, walk, call_target
 
@@ -120,6 +123,40 @@ def uses(image, config):
                     key = (e["site"], e["kind"], repr(e["value"]["expression"]))
                     if key not in unique:
                         matches.append(e); unique.add(key)
+    # Operand discovery is distinct from value propagation. An unread call stops
+    # trace effects, but it must not erase a later instruction reached by the CFG.
+    path_sites = {(e["site"], e["kind"]) for e in matches + unresolved}
+    for at, ins in sorted(seen.items()):
+        if ins.mnemonic == "lea":
+            continue  # Address formation is not a memory use.
+        for operand in ins.operands:
+            if operand.type != X86_OP_MEM:
+                continue
+            kinds = [kind for flag, kind in ((CS_AC_READ, "read"), (CS_AC_WRITE, "write")) if operand.access & flag]
+            for kind in kinds:
+                if mode not in ("both", kind) or (at, kind) in path_sites:
+                    continue
+                state = State(at, image, {})
+                try:
+                    segment_value, offset_value = state.address(ins, operand)
+                except StopPath as error:
+                    gaps.append({"site": at, "reason": str(error)}); continue
+                mem = operand.mem
+                base = ins.reg_name(mem.base) if mem.base else None
+                index = ins.reg_name(mem.index) if mem.index else None
+                segment_name = ins.reg_name(mem.segment) if mem.segment else ("ss" if base in ("bp", "sp") or index == "bp" else "ds")
+                event = {"site": at, "kind": kind, "width": operand.size,
+                         "segment": segment_value.report(), "offset": offset_value.report(),
+                         "value": unknown(f"CFG-operand:{at}", operand.size * 8).report(),
+                         "effectiveSegmentRegister": segment_name,
+                         "classification": "entry-CFG operand; values and callee effects unresolved",
+                         "reachability": "conditional on encoded branch outcomes and returning callees"}
+                off = offset_value.number
+                if off is not None and max(offset, off) < min(offset + width, off + operand.size):
+                    # A concrete segment query cannot bind an unpropagated DS/SS.
+                    (matches if segment is None else unresolved).append(event)
+                elif off is None:
+                    unresolved.append(event)
     for at in controls:
         if type(at) is not int or not any(e["site"] == at for e in matches):
             raise ValueError(f"Positive variable-use control {at} missed; negative result rejected")
