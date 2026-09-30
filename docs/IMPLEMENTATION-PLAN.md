@@ -42,3 +42,41 @@ address caller regression and add a paired memory test that reads different
 values through the same BP-derived BX offset before and after instructions make
 DS equal to SS. No reporter API or instruction semantics change is planned.
 Exit: synthetic reporter tests pass and the template pins the reviewed update.
+
+
+## Game-case verification refinements
+
+Verify the ten report contracts against recorded restoration cases. Refine
+entry-based use discovery so an unread callee cannot hide subsequent explicit
+memory operands: emit separate CFG operand observations with unknown values,
+effective segment names, and conditional reachability; do not invent callee
+effects or promote those observations to path-value proofs. Keep positive
+controls mandatory and undecoded/unsupported paths visible.
+
+Support XCHG with both operand addresses captured before any write and the
+low-result two/three-operand IMUL forms, leaving their flags unresolved. Recognize
+an immediately executed push-CS/near-call frame only with a matching four-byte
+return and encoded stack/segment checks. Ordinary near calls stay two-byte.
+Synthetic regressions cover unread-call continuation, segment uncertainty,
+address-taking exclusions, frame mismatches, register/memory exchange and
+wrapped multiplication. No original code or bytes enter the repository.
+Exit: reporter, bridge, checker, repository-policy and .NET gates pass; publish
+a reviewable PR describing the observed defects and unsupported remainder.
+
+Also preserve a distinct generation for each unresolved flag producer, so
+separate arithmetic instructions cannot correlate unrelated branches. Report
+effective widths for both accumulator and high-half sign extensions instead of
+trusting decoder mnemonic labels. Regressions check independent producers,
+complementary branches on one producer and prefixed/unprefixed conversions.
+
+Conditional call models must also account for an explicitly evidenced four-byte
+return after push-CS/near-call. Require the width in the model, validate the
+encoded frame, and consume the existing CS word before invalidating memory.
+A model with mismatched width must fail instead of inventing stack balance.
+
+Far indirect calls must retain the full loaded pointer and its guard comparison,
+just like near indirect calls. An intervening model invalidates that pointer's
+provenance; keep the fresh load distinct and stop unresolved target execution.
+
+Report-output exhaustion must name the 32 MiB bound and suggest narrowing
+rather than surfacing only the process wrapper ENOBUFS diagnostic.

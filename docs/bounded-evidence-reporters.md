@@ -60,7 +60,9 @@ select the relevant events from the same traversal. Event order numbers refer to
 the complete traversal, so gaps in a projection are expected.
 
 Arguments are recognized by consumed stack offsets and widths relative to each
-call frame. Near returns occupy two bytes and far returns four; saved BP is
+call frame. Near returns occupy two bytes and far returns four; an immediately executed
+`push cs` followed by a near call supplies a four-byte frame that must end in
+a matching far return with unchanged stack/segment provenance; saved BP is
 accounted for by actual pushes. LDS/LES consuming four bytes establishes a far
 pointer grouping. Adjacent pushes alone do not. Register widening, frame cleanup,
 stack overwrites and unknown return addresses remain visible. A root query may
@@ -85,7 +87,13 @@ still inspect the predicate, domain and unknown effects.
 numeric `segment`. It traces each established entry instead of linearly decoding
 a region. `controls` names known matching instruction offsets; a missed control
 is an error. The report separates matching accesses, possible unknown aliases,
-raw operand candidates and undecoded ranges. The control is a known use of this
+raw operand candidates and undecoded ranges. After a stopped effect trace,
+explicit memory operands reached by the entry CFG are still inventoried, labelled
+as operand observations with unknown values and segment state. Their default or
+overridden segment-register name is retained. Reachability is conditional on
+encoded guards and returning callees; these observations do not prove callee
+preservation, effective-address values, or feasible native execution. A concrete
+segment query leaves those unpropagated operands unresolved. LEA is not a use. The control is a known use of this
 query, so a controlled inventory normally contains at least that use. For an
 absence claim about additional uses, compare the inventory with that known set
 and account for every gap; `negativeUsable` is deliberately conservative.
@@ -126,7 +134,8 @@ and saved versus returned pointers stay visible; no rollback is inferred.
 ## Limits and assumptions
 
 The decoder supports 16-bit addressing and a bounded subset of ordinary integer
-operations: MOV/MOVZX/MOVSX, LEA, LDS/LES, PUSH/POP, LEAVE, ADD/SUB, bitwise logic,
+operations: MOV/MOVZX/MOVSX, XCHG, low-result two/three-operand IMUL (flags unresolved),
+LEA, LDS/LES, PUSH/POP, LEAVE, ADD/SUB, bitwise logic,
 shifts, INC/DEC and effective-size sign extension. It follows direct near/far
 calls, jumps, common conditional branches and balanced returns. Unsupported
 instructions, repeat prefixes, 32-bit control transfers, indirect targets,
@@ -136,7 +145,9 @@ There is no solver claiming that all symbolic paths are feasible.
 
 Explicit `callModels` can describe an external return for a conditional query.
 Each has `site`, `evidence`, full-register `preserves`, and `cases` with register
-values. The model assumes a returning call with balanced stack and preserved CS;
+values. A model for push-CS/near-call must explicitly give `returnBytes: 4`; its
+existing CS word is checked and consumed. A mismatched encoded frame fails.
+The model assumes a returning call with balanced stack and preserved CS;
 it invalidates memory, flags and every unpreserved register. Its assumptions are
 printed on each affected path. A model supplies no evidence about actual external
 services, hardware behavior or native failure reachability.
@@ -171,3 +182,13 @@ PR 26, merged at `94f8f678afb05171567f48d9fb19488e48309f12`.
 A report that says its search is complete makes that claim only for the stated
 domain and model; it establishes neither native reachability nor a complete
 reading under the standard.
+
+
+### Refinements verified on restoration cases
+
+Unresolved flag producers carry distinct generations: two different unmodelled
+flag-setting instructions do not imply the same later branch outcome. Branches
+on one unchanged producer still share their complementary condition. IMUL
+reports only its low result; its signed overflow flags remain unresolved.
+CBW/CWDE and CWD/CDQ report effective operand size, source/destination registers
+and any mismatch with the decoder mnemonic. Width comes from the prefix.
