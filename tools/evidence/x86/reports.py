@@ -4,7 +4,7 @@ from capstone.x86 import X86_OP_MEM
 from .machine import State, StopPath, REGISTERS, ALIASES, segment_register
 from .values import unknown
 from .image import Image, integer
-from .trace import trace, walk, call_target
+from .trace import trace, walk, call_target, unsupported_transfer, OVERLAP_REASON
 
 
 def entries(image):
@@ -48,6 +48,26 @@ def incoming(image, config):
                 (hits if verified else candidates).append(row)
             elif resolved is None:
                 partial.append(row)
+    for at, ins in seen.items():
+        if at in scanned or ins.mnemonic not in ("call", "lcall"):
+            continue
+        region = image.region(at)
+        if region["name"] not in scans:
+            continue
+        # A reached call can start with a prefix, so the raw E8/9A scan above never sees it.
+        if unsupported_transfer(image, ins):
+            partial.append({"site": at, "target": None, "encoding": ins.mnemonic, "region": region["name"],
+                            "classification": "unsupported control-transfer frame encoding"})
+            continue
+        resolved, provenance = call_target(image, at, ins)
+        row = {"site": at, "target": resolved, "encoding": ins.mnemonic,
+               "classification": "entry-path instruction", "provenance": provenance, "region": region["name"]}
+        scanned[at] = row
+        if resolved == target:
+            hits.append(row)
+        elif resolved is None:
+            partial.append(row)
+    hits.sort(key=lambda row: row["site"])
     controls = config.get("controls", [])
     if not isinstance(controls, list) or len(controls) > 256:
         raise ValueError("Invalid positive controls")
@@ -71,19 +91,21 @@ def incoming(image, config):
             "truncated": truncated, "controls": [scanned[at] for at in controls],
             "searched": [r for r in image.regions if r["name"] in scans], "undecodedRanges": undecoded, "gaps": gaps,
             "negativeUsable": bool(controls) and not (hits or candidates or partial or gaps or truncated or undecoded),
-            "exclusions": ["computed calls", "unrelocated far calls", "undeclared mappings", "prefix-started raw candidates"],
+            "exclusions": ["computed call targets", "unrelocated far calls", "undeclared mappings", "prefix-started raw candidates off the entry path"],
             "scope": "All bytes of declared search regions; verified calls follow established entries. Never proves universal absence."}
 
 
 def uses(image, config):
     query = config.get("query", {})
-    offset = integer(query.get("offset"), 0, 65535, "query offset")
+    offset = integer(query.get("offset"), 0, image.mask, "query offset")
     width = integer(query.get("width", 1), 1, 32, "query width")
-    if offset + width > 65536:
-        raise ValueError("Query crosses segment boundary")
+    if offset + width > 1 << image.bits:
+        raise ValueError("Query crosses address boundary")
     segment = query.get("segment")
     if segment is not None:
         integer(segment, 0, 65535, "query segment")
+        if image.flat:
+            raise ValueError("PE32 variable queries use flat VA offsets, not segment selectors")
     mode = query.get("access", "both")
     if mode not in ("read", "write", "both"):
         raise ValueError("query access must be read, write or both")
@@ -92,6 +114,7 @@ def uses(image, config):
         raise ValueError("Invalid positive controls")
     result_limit = integer(config.get("limit", 100), 1, 10000, "result limit")
     seen, gaps, _, undecoded = walk(image, entries(image), config.get("instructionLimit", 10000))
+    overlaps = {g["site"] for g in gaps if g.get("reason") == OVERLAP_REASON}
     matches, unresolved, unique = [], [], set()
     # Trace each established entry independently; never decode a whole segment as one stream.
     remaining = integer(config.get("totalSteps", 20000), 1, 100000, "totalSteps")
@@ -114,12 +137,21 @@ def uses(image, config):
             for e in path["events"]:
                 if e["kind"] not in ("read", "write") or mode not in ("both", e["kind"]):
                     continue
+                if e["site"] not in seen:
+                    key = (e["site"], e["kind"], "unverified-boundary")
+                    if key not in unique:
+                        classification = ("unverified overlapping instruction path" if e["site"] in overlaps
+                                          else "outside the bounded entry walk")
+                        unresolved.append({**e, "classification": classification}); unique.add(key)
+                    continue
                 off, seg = e["offset"]["value"], e["segment"]["value"]
-                if off is None or (segment is not None and seg is None):
+                if off is None or ((segment is not None or image.flat) and seg is None):
                     key = (e["site"], e["kind"], repr(e["offset"]["expression"]), repr(e["segment"]["expression"]))
                     if key not in unique:
                         unresolved.append(e); unique.add(key)
                     continue
+                if image.flat:
+                    off += seg
                 if segment is None:
                     overlap = max(offset, off) < min(offset + width, off + e["width"])
                 else:
@@ -139,7 +171,7 @@ def uses(image, config):
         if ins.mnemonic == "lea":
             continue  # Address formation is not a memory use.
         if ins.mnemonic == "xlatb":
-            gaps.append({"site": at, "reason": "implicit DS:[BX+AL] operand is not inventoried"}); continue
+            gaps.append({"site": at, "reason": "implicit DS:[(E)BX+AL] operand is not inventoried"}); continue
         state = None
         for operand in ins.operands:
             if operand.type != X86_OP_MEM:
@@ -156,8 +188,8 @@ def uses(image, config):
                 segment_value, offset_value = state.address(ins, operand)
             except StopPath as error:
                 gaps.append({"site": at, "reason": str(error)}); continue
-            # Capstone reports the LDS/LES source as a word, but the load reads the full 16:16 pointer.
-            size = 4 if ins.mnemonic in ("lds", "les") else operand.size
+            # Capstone reports the LDS/LES source as a word, but the load reads the full selector:offset pointer.
+            size = 2 + ins.operands[0].size if ins.mnemonic in ("lds", "les") else operand.size
             off = offset_value.number
             overlaps = off is not None and max(offset, off) < min(offset + width, off + size)
             if off is not None and not overlaps:
@@ -184,7 +216,7 @@ def uses(image, config):
                 break
             scanned_bytes += 1
             ins = image.decode(at)
-            if ins and at not in seen and any(o.type == X86_OP_MEM and max(offset, o.mem.disp & 65535) < min(offset + width, (o.mem.disp & 65535) + max(o.size, 1))
+            if ins and at not in seen and any(o.type == X86_OP_MEM and max(offset, o.mem.disp & image.mask) < min(offset + width, (o.mem.disp & image.mask) + max(o.size, 1))
                                               for o in ins.operands):
                 if len(raw) < result_limit:
                     raw.append({"site": at, "size": ins.size, "classification": "unverified operand candidate"})
@@ -222,12 +254,23 @@ def dispatch(image, config):
     ins = image.decode(site)
     if ins is None or ins.mnemonic != "jmp" or len(ins.operands) != 1 or ins.operands[0].type != X86_OP_MEM:
         raise ValueError("Dispatch site must be an indirect near memory jump")
+    if ins.addr_size != image.bits // 8:
+        raise ValueError("Dispatch address-size override is unsupported")
     mem = ins.operands[0].mem
+    if image.flat and mem.segment and ins.reg_name(mem.segment) in ("fs", "gs"):
+        raise ValueError("Dispatch table has an unknown segment base")
     address_reg = ins.reg_name(mem.base) if mem.base else None
-    if mem.index or address_reg != index_reg or ins.operands[0].size != width or divisor != stride:
+    scale = 1
+    if image.flat and mem.index and not mem.base:
+        address_reg, scale = ins.reg_name(mem.index), mem.scale
+    elif mem.index:
+        raise ValueError("Dispatch needs one address register")
+    if address_reg != index_reg or ins.operands[0].size != width or divisor != stride:
         raise ValueError("Dispatch index register/stride/width differs from the encoded access")
-    if integer(table.get("offset"), 0, 65535, "table memory offset") != (mem.disp & 65535) or not table.get("mappingEvidence"):
+    if integer(table.get("offset"), 0, image.mask, "table memory offset") != (mem.disp & image.mask) or not table.get("mappingEvidence"):
         raise ValueError("Dispatch requires the encoded table displacement and mapping evidence")
+    if image.config.get("peMetadata") and image.file_offset(table["offset"], count * stride) != start:
+        raise ValueError("Dispatch table mapping differs from PE source sections")
     for value in values:
         integer(value, 0, (1 << ALIASES[input_reg][2]) - 1, "input value")
         report = trace(image, {**config, "registers": {**config.get("registers", {}), input_reg: value}})
@@ -236,6 +279,7 @@ def dispatch(image, config):
             reached = bool(path["instructionPath"]) and path["instructionPath"][-1] == site
             index_value = path["registers"].get(index_reg, {}).get("value")
             if reached and index_value is not None:
+                index_value *= scale
                 if index_value % divisor or index_value // divisor >= count:
                     outcomes.append({"status": "out-of-layout index", "encodedIndex": index_value})
                 else:
@@ -255,6 +299,8 @@ def allocations(report, config):
     if not isinstance(requests, list) or not 1 <= len(requests) <= 64:
         raise ValueError("Declare 1..64 allocation call contracts")
     results = []
+    flat = config.get("addressModel") == "flat32"
+    paragraph = 1 if flat else 16
     for a in requests:
         site = integer(a.get("site"), 0, 0x7fffffff, "allocation site")
         unit = integer(a.get("unitBytes"), 1, 65536, "allocator unit bytes")
@@ -293,7 +339,11 @@ def allocations(report, config):
                         if value["value"] is not None:
                             capacity = value["value"] * unit_bytes
                     else:
-                        segment = checkpoint["registers"].get(observation.get("segmentRegister"))
+                        if flat and observation.get("segmentRegister") is not None:
+                            raise ValueError("Flat allocation pointer observations use only offsetRegister")
+                        segment = ({"bits": 32, "expression": ("constant", 0), "value": 0, "producers": [],
+                                    "provenance": "PE32 flat base assumption"} if flat
+                                   else checkpoint["registers"].get(observation.get("segmentRegister")))
                         offset = checkpoint["registers"].get(observation.get("offsetRegister"))
                         if segment is None or offset is None:
                             raise ValueError("Invalid returned pointer registers")
@@ -304,7 +354,7 @@ def allocations(report, config):
                         if write["kind"] != "write":
                             continue
                         ws, wo = write["segment"]["value"], write["offset"]["value"]
-                        relative = None if None in (seg, off, ws, wo) else ws * 16 + wo - (seg * 16 + off)
+                        relative = None if None in (seg, off, ws, wo) else (ws - seg) * paragraph + wo - off
                         comparisons.append({"site": write["site"], "relativeStart": relative, "width": write["width"],
                                             "withinObservedExtent": None if relative is None else 0 <= relative and relative + write["width"] <= capacity,
                                             "association": "address comparison only; write ownership remains a reading"})
@@ -324,8 +374,7 @@ def allocations(report, config):
     return {"allocations": results, "paths": report["paths"], "gaps": report["gaps"], "completeWithinModel": report["completeWithinModel"]}
 
 
-def run_report(data, config, command):
-    image = Image(data, config)
+def _run_report(image, config, command):
     if command == "incoming":
         return incoming(image, config)
     if command == "uses":
@@ -352,3 +401,11 @@ def run_report(data, config, command):
         for path in report["paths"]:
             path["events"] = [e for e in path["events"] if e["kind"] in kinds]
     return report
+
+
+def run_report(data, config, command):
+    image = Image(data, config)
+    result = _run_report(image, image.config, command)
+    return {"instructionModel": {"bits": image.bits, "addressModel": "flat32" if image.flat else "segmented16",
+                                 "flatAssumption": "CS/DS/ES/SS bases zero; FS/GS bases unknown" if image.flat else None},
+            "sourceMapping": image.config.get("peMetadata"), "declaredRegions": image.regions, **result}

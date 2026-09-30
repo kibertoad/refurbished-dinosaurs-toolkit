@@ -40,7 +40,7 @@ against the source. Overlay view mappings remain explicit researcher inputs and
 must have distinct coordinates; the loader checks containment in a declared
 payload, not the truth of a researcher's entry or code classification. Select
 complete declared code regions for incoming-call searches. A narrower region is
-a narrower search, even when every instruction in it was decoded. Other executable
+a narrower search, even when every instruction in it was decoded. PE32/i386 is also supported as described below. Other executable
 formats are rejected. `synthetic-raw` is for constructed test inputs.
 
 Initial registers are unknown. An optional `registers` object supplies explicit
@@ -166,7 +166,7 @@ under the documentation standard.
 
 ## Acceptance and propagation
 
-Run `python -B -m unittest discover -s tests/evidence -p test_x86.py` and
+Run `python -B -m unittest discover -s tests/evidence -p 'test*.py'` and
 `node --test tests/evidence/bridge.test.mjs`. The fixtures are entirely synthetic. The paired segment test reads distinct
 values through the same BP-derived BX offset before and after `push ss; pop ds`;
 the incoming-call test places a caller at a higher address than the target's code.
@@ -183,7 +183,6 @@ A report that says its search is complete makes that claim only for the stated
 domain and model; it establishes neither native reachability nor a complete
 reading under the standard.
 
-
 ### Refinements verified on restoration cases
 
 Unresolved flag producers carry distinct generations: two different unmodelled
@@ -191,4 +190,58 @@ flag-setting instructions do not imply the same later branch outcome. Branches
 on one unchanged producer still share their complementary condition. IMUL
 reports only its low result; its signed overflow flags remain unresolved.
 CBW/CWDE and CWD/CDQ report effective operand size, source/destination registers
-and any mismatch with the decoder mnemonic. Width comes from the prefix.
+and any mismatch with the decoder mnemonic. Width comes from the prefix and the
+model's default operand size.
+
+## PE32/i386 model
+
+Select `sourceKind: "pe32"`. The Python loader independently parses the source
+COFF/PE32 headers and section table for both CLI paths; supplied mapping metadata
+is not trusted. The source fingerprint guard remains mandatory at the CLI.
+Declare regions with file-offset `start`/exclusive `end`, established file-offset
+`entries`, unique `name` and bounds `evidence`. `ip` and `segment` may be omitted:
+virtual addresses are derived from ImageBase, section RVA and raw offset, with
+segment zero as a mapping token. Supplied values must agree. Each region stays
+inside one raw executable section. Virtual zero-fill is not initialized source
+code. Overlapping raw or virtual sections, truncated headers and sections,
+unsupported machines, PE32+, conflicting mappings and MZ relocation/overlay
+inputs fail. Headers and section metadata appear in every report's sourceMapping.
+
+The model decodes i386 instructions with 32-bit effective addresses, ESP/EBP
+stack frames, four-byte near return addresses and E8 rel32 target arithmetic.
+File-offset query sites remain distinct from loaded virtual addresses: variable
+`query.offset` and table `offset` are preferred-base VAs; `entry`, `target`,
+`controls`, checkpoints and table `start` are file offsets. PE table mappings
+are checked against the initialized raw section bytes. A SIB jump with only one
+index register is accepted; its encoded scale participates in table selection.
+No actual loader, import resolver or relocation execution is simulated. Rebasing,
+packed/self-modifying code and runtime-written targets require another reading.
+
+CS/DS/ES/SS bases are explicitly assumed zero under the flat Windows model.
+Selectors remain separate values; FS/GS bases stay unknown even when their
+selector value is supplied. Selector writes, descriptor loads, far transfers,
+address-size overrides and operand-size control-transfer overrides stop paths.
+Memory begins unknown: file data and virtual zero-fill are not silently turned
+into runtime values. Scaled base/index addressing retains byte widths and
+producers; unknown aliases invalidate memory rather than prove preservation.
+Allocation pointer observations use only `offsetRegister` in this model; the
+base is the explicit flat assumption, not the DS selector.
+
+All ten commands have PE32 synthetic acceptance: use inventories with data
+between entries; source/VA mapping; flat and unknown FS memory; mixed-width
+arguments and callee cleanup; early effects; low-byte return predicates; partial
+byte producers; late/raw incoming calls; guarded reloads after unknown writers;
+wrapped allocation requests and observed extents; normalized/scaled dispatch
+and rejection. Malformed PE sources, mapping mismatches, failed controls and
+limits are negative cases. The legacy 16-bit suite remains mandatory.
+
+Incoming queries follow established instruction entries, retaining overlaps as
+explicit unresolved boundary gaps. A raw E8 candidate inside another instruction
+is never a confirmed hit. The raw scan covers all selected declared regions,
+including later callers; reached prefixed and indirect calls are also reported.
+Unknown calls have explicit gaps and fallthrough assumes they return. Narrower
+regions and exhausted budgets are partial scope, even with zero hits. There is
+no universal call-completeness or native-reachability claim. PE indirect imports,
+IAT trampolines, stored callables, exception dispatch and computed targets remain
+unresolved rather than guessed. This initial model implements bounded reports,
+not a solver, loader emulator or whole-program analysis.
