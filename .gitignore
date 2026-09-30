@@ -8,3 +8,8 @@ template-next/
 TestResults/
 *.user
 *.suo
+
+__pycache__/
+*.pyc
+.venv/
+analysis/original/

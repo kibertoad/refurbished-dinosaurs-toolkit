@@ -23,6 +23,8 @@ This repository contains the durable pieces that should improve in one place:
 - `actions/`: composite GitHub Actions for repository verification, the
   documentation standard check, a pinned, signature-checked Inno Setup 7
   compiler, and a pinned, hash-checked Kaitai Struct compiler.
+- `tools/evidence/`: bounded instruction-derived research reports for segmented x86;
+  see [the commands and acceptance tests](docs/bounded-evidence-reporters.md).
 - `ghidra/`: generic headless-analysis scripts shared by restoration projects.
 - `schemas/`: JSON schemas for the asset and repository policy contracts.
 - `docs/`: the living restoration handbook and decision records distilled from
