@@ -627,5 +627,37 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(len(result["paths"]),2)
         self.assertEqual(sorted(p["registers"]["di"]["value"] for p in result["paths"]),[255,257])
 
+
+    def test_explicit_edge_proves_overlapping_iret_and_restores_caller_direction(self):
+        code=Code().emit("fd 9c fc b8 00").label("iret").emit("cf 0e").label("call").branch("e8","iret").emit("aa c3")
+        result=report(code,registers={"ss":0x9000,"sp":0x8000,"es":0x2000,"di":256})
+        self.assertTrue(result["completeWithinModel"])
+        self.assertEqual(result["paths"][0]["registers"]["di"]["value"],255)
+        self.assertEqual(len(events(result,"local-iret")),1)
+        self.assertEqual(events(result,"flags-restore")[0]["direction"]["value"],1)
+        incoming=report(code,"incoming",target=code.labels["iret"])
+        self.assertIn(code.labels["call"],[e["site"] for e in incoming["confirmed"]])
+        self.assertFalse(any("overlapping" in g["reason"] for g in incoming["gaps"]))
+        self.assertTrue(incoming["confirmed"][0]["overlappingTarget"])
+        self.assertIn("independently verified",incoming["confirmed"][0]["boundaryEvidence"])
+
+    def test_local_iret_requires_saved_frame_and_unmodified_return(self):
+        code=Code().emit("0e").branch("e8","iret").emit("c3").label("iret").emit("cf")
+        result=report(code,registers={"ss":0x9000,"sp":0x8000})
+        self.assertIn("saved FLAGS",result["paths"][0]["stop"])
+        for bytes_,reason in (("cf","traced local"),("66 cf","unprefixed")):
+            result=report(bytes_)
+            self.assertIn(reason,result["paths"][0]["stop"])
+        code=Code().emit("9c 0e").branch("e8","callee").emit("c3").label("callee").emit("89 e3 36 c7 07 00 00 cf")
+        result=report(code,registers={"ss":0x9000,"sp":0x8000})
+        self.assertIn("overwritten",result["paths"][0]["stop"])
+
+    def test_local_iret_corrupted_flags_do_not_restore_old_producer(self):
+        code=Code().emit("fc 9c 0e").branch("e8","callee").emit("aa c3").label("callee").emit("89 e3 36 c7 47 04 00 04 cf")
+        result=report(code,registers={"ss":0x9000,"sp":0x8000,"es":0x2000,"di":256})
+        self.assertTrue(result["completeWithinModel"])
+        self.assertFalse(events(result,"flags-restore")[0]["intactLocalSnapshot"])
+        self.assertEqual(result["paths"][0]["registers"]["di"]["value"],255)
+
 if __name__ == "__main__":
     unittest.main()

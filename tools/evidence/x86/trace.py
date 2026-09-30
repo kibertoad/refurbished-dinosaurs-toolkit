@@ -74,13 +74,25 @@ def walk(image, entries, limit=10000):
         pending.append(following)
     # An entry into another instruction is not a verified boundary. Retain both
     # interpretations as gaps rather than choosing whichever was visited first.
-    active, conflicts = [], set()
+    active, conflicts, pairs = [], set(), []
     for start, end in sorted((at, at + ins.size) for at, ins in seen.items()):
         active = [(a, b) for a, b in active if b > start]
         for a, b in active:
             conflicts.update((a, start))
+            pairs.append((a, start))
         active.append((start, end))
-    for at in sorted(conflicts):
+    # Only an encoded edge whose own boundary is independent of every conflict
+    # proves the interior start. Raw candidates and conflicting declared entries
+    # never supply this proof.
+    proofs = {e["target"]: e for e in edges if e["target"] is not None and e["site"] not in conflicts}
+    unresolved = set()
+    for outer, inner in pairs:
+        if inner in proofs:
+            proofs[inner]["overlappingTarget"] = True
+            proofs[inner]["boundaryEvidence"] = "direct edge from an independently verified instruction"
+        else:
+            unresolved.update((outer, inner))
+    for at in sorted(unresolved):
         gaps.append({"site": at, "reason": OVERLAP_REASON})
         del seen[at]
     intervals = sorted((at, at + ins.size) for at, ins in seen.items())
@@ -272,13 +284,37 @@ def trace(image, config):
                     if m == "lcall":
                         state.push(state.reg("cs"))
                     state.push(const(return_ip, image.bits, at))
+                    flags_frame = False
+                    if push_cs:
+                        flags_word = state.access(state.segment("ss"), op("add", state.reg(state.sp), const(4,16), at), 2,
+                                                  role="local-iret-flags-frame")
+                        flags_frame = (16, flags_word.term) in state.saved_flags
                     state.frames.append({"entry": target, "sp": state.reg(state.sp), "returnBytes": 4 if m == "lcall" or push_cs else image.bits // 8,
                                          "frameSource": "push-CS/near-call; matching far return required" if push_cs else m,
                                          "continuation": following, "returnIP": return_ip, "callSite": at,
-                                         "callerCS": state.reg("cs")})
+                                         "callerCS": state.reg("cs"), "localFlagsFrame": flags_frame})
                     if m == "lcall":
                         state.setreg("cs", const(target_region["segment"], 16, at), at)
                     state.at = target
+                    continue
+                if m in ("iret", "iretd"):
+                    if image.flat or 0x66 in ins.prefix or m != "iret":
+                        raise StopPath("IRET requires an unprefixed segmented16 local frame")
+                    frame = state.frames[-1]
+                    if len(state.frames) == 1 or not frame.get("localFlagsFrame"):
+                        raise StopPath("IRET requires a traced local push-CS call above saved FLAGS")
+                    if state.reg(state.sp).term != frame["sp"].term:
+                        raise StopPath("IRET stack balance differs from the local call")
+                    actual_ip, actual_cs = state.pop(2), state.pop(2)
+                    if actual_ip.number != frame["returnIP"] or actual_cs.term != frame["callerCS"].term:
+                        raise StopPath("IRET return target or segment was overwritten or unresolved")
+                    state.setreg("cs", actual_cs, at)
+                    state.restore_flags(16)
+                    state.event("local-iret", continuation=frame["continuation"],
+                                interpretation="local stack/flags transfer only; no interrupt or hardware simulation")
+                    state.frames.pop()
+                    state.event("call-return", callSite=frame["callSite"], registers=snapshot(state), modeled=False)
+                    state.at = frame["continuation"]
                     continue
                 if m in ("ret", "retf"):
                     if image.flat and m == "retf":

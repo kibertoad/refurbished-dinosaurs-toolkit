@@ -424,5 +424,11 @@ class PEReporterTests(unittest.TestCase):
         self.assertEqual(events(result,'flags-restore')[0]['width'],4)
         self.assertEqual(result['paths'][0]['registers']['edi']['value'],DATA_VA-1)
 
+
+    def test_flat_iret_is_not_a_local_real_mode_frame(self):
+        result=report('cf')
+        self.assertFalse(result['completeWithinModel'])
+        self.assertIn('segmented16',result['paths'][0]['stop'])
+
 if __name__ == '__main__':
     unittest.main()

@@ -67,6 +67,10 @@ def incoming(image, config):
             hits.append(row)
         elif resolved is None:
             partial.append(row)
+    for edge in edges:
+        if edge.get("overlappingTarget") and edge["site"] in scanned:
+            scanned[edge["site"]]["overlappingTarget"] = True
+            scanned[edge["site"]]["boundaryEvidence"] = edge["boundaryEvidence"]
     hits.sort(key=lambda row: row["site"])
     controls = config.get("controls", [])
     if not isinstance(controls, list) or len(controls) > 256:

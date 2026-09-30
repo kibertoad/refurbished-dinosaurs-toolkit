@@ -273,6 +273,25 @@ intact in local memory. Corrupted words leave arithmetic predicates unresolved;
 DF/IF are extracted from the replacement word. CLI/STI have local flag effects
 only. Unknown returning call models invalidate DF/IF as well as arithmetic flags.
 
-These are memory effects, not pixels, timing or interrupt observations. IRET,
+These are memory effects, not pixels, timing or interrupt observations. External IRET,
 interrupt scheduling and hardware presentation remain unsupported. A stopped
 prefix does not establish the behavior of the full caller or helper.
+
+
+## Explicit overlapping entries and local flag-return frames
+
+A direct control-flow edge from an independently verified instruction can prove
+an interior target as an alternate reachable start. Reports retain that edge's
+`overlappingTarget` and `boundaryEvidence`, decode the other continuation too,
+and continue to reject conflicting declared entries and operand-byte raw hits
+without such an edge. This does not prove native reachability or arbitrary
+self-modifying instruction layouts.
+
+An unprefixed segmented16 IRET is modeled only inside a traced push-CS/near-call
+frame built above a locally saved FLAGS word. Stack balance, continuation IP and
+CS are checked; FLAGS consumption uses the same intact/corrupt snapshot rules as
+POPF. This permits a local procedure's encoded flag-restoring continuation;
+it does not simulate an interrupt, privilege transition, asynchronous activity
+or hardware. Root/external IRET, PE32 IRET and unsupported prefixes stop with
+a named gap. Unknown stack aliases can invalidate the frame and stop the path;
+a supplied nonaliasing stack is a query hypothesis, not observed native state.
