@@ -279,7 +279,7 @@ def trace(image, config):
                     continue
                 ordinary(state, ins, image)
                 state.at = following
-        except (StopPath, KeyError) as error:
+        except StopPath as error:
             finish(state, str(error))
     return {"paths": outputs, "gaps": global_gaps,
             "completeWithinModel": not global_gaps and bool(outputs) and all(p["returned"] for p in outputs),

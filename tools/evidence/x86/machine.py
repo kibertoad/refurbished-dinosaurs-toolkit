@@ -18,6 +18,14 @@ class StopPath(Exception):
     pass
 
 
+def alias(name):
+    # Registers outside the modeled set (control, debug, FPU, ...) stop the path instead of failing the report.
+    try:
+        return ALIASES[name]
+    except KeyError:
+        raise StopPath("Unsupported register: " + name) from None
+
+
 class State:
     def __init__(self, entry, image, config):
         self.at = entry
@@ -42,11 +50,11 @@ class State:
         self.conditional = []
 
     def reg(self, name):
-        root, low, bits = ALIASES[name]
+        root, low, bits = alias(name)
         return extract(self.regs[root], low, bits)
 
     def setreg(self, name, value, site):
-        root, low, bits = ALIASES[name]
+        root, low, bits = alias(name)
         value = resize(value, bits)
         value = Value(bits, value.term, sources(value, site=site))
         if bits == ALIASES[root][2]:

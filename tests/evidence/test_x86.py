@@ -369,6 +369,10 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(write["uncertainAliasesInvalidated"], 1)
         self.assertIsNone(events(r, "read")[-1]["value"]["value"])
 
+    def test_unsupported_register_stops_path_with_reason(self):
+        r = report("0f 20 c0 c3")
+        self.assertEqual(r["paths"][0]["stop"], "Unsupported register: cr0")
+
     def test_cli_identity_and_errors(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); data = bytes.fromhex("b8 01 00 c3")
