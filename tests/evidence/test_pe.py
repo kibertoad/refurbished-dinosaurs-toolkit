@@ -1,6 +1,7 @@
 """PE32 acceptance uses constructed headers and instructions only."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import struct
 import subprocess
@@ -251,15 +252,16 @@ class PEReporterTests(unittest.TestCase):
             path = Path(directory)
             (path / 'source.bin').write_bytes(data)
             config.update(source='source.bin', sha256=hashlib.sha256(data).hexdigest())
+            environment = {**os.environ, 'EVIDENCE_PYTHON': sys.executable}
             (path / 'config.json').write_text(json.dumps(config))
-            process = subprocess.run(['node', str(TOOLS / 'report.mjs'), 'trace', str(path / 'config.json')], capture_output=True, text=True)
+            process = subprocess.run(['node', str(TOOLS / 'report.mjs'), 'trace', str(path / 'config.json')], capture_output=True, text=True, env=environment)
             self.assertEqual(process.returncode, 0, process.stderr)
             r = json.loads(process.stdout)
             self.assertEqual(r['sourceIdentity']['sha256'], config['sha256'])
             self.assertEqual(r['sourceMapping']['format'], 'PE32/i386')
             config['regions'][0]['ip'] = CODE_VA + 1
             (path / 'config.json').write_text(json.dumps(config))
-            process = subprocess.run(['node', str(TOOLS / 'report.mjs'), 'trace', str(path / 'config.json')], capture_output=True, text=True)
+            process = subprocess.run(['node', str(TOOLS / 'report.mjs'), 'trace', str(path / 'config.json')], capture_output=True, text=True, env=environment)
             self.assertNotEqual(process.returncode, 0)
             self.assertIn('mapping', process.stderr)
 
@@ -343,6 +345,15 @@ class PEReporterTests(unittest.TestCase):
         self.assertTrue(any(e['site'] == CODE_RAW + 1 for e in r['unresolvedAccesses']))
         with self.assertRaisesRegex(ValueError, 'control'):
             report(code, 'uses', entries=(0, 1), query={'offset': DATA_VA, 'width': 4}, controls=[CODE_RAW + 1])
+        overlap = next(e for e in r['unresolvedAccesses'] if e['site'] == CODE_RAW + 1)
+        self.assertEqual(overlap['classification'], 'unverified overlapping instruction path')
+
+    def test_use_beyond_walk_limit_is_not_called_an_overlap(self):
+        code = 'a1 00 20 40 00 90 a1 00 20 40 00 c3'
+        r = report(code, 'uses', query={'offset': DATA_VA, 'width': 4}, instructionLimit=1)
+        late = next(e for e in r['unresolvedAccesses'] if e['site'] == CODE_RAW + 6)
+        self.assertEqual(late['classification'], 'outside the bounded entry walk')
+        self.assertFalse(r['negativeUsable'])
 
 
 

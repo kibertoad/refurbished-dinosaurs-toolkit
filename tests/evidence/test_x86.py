@@ -208,6 +208,15 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual([e["site"] for e in r["candidates"]], [7])
         self.assertFalse(r["negativeUsable"])
 
+    def test_reached_operand_size_call_is_unsupported_not_confirmed(self):
+        # 66 E8 rel32 starts with the prefix, so only the entry-path pass sees it.
+        data = bytes.fromhex("66 e8 01 00 00 00 c3 c3")
+        r = run_report(data, configuration(data, target=7), "incoming")
+        self.assertEqual(r["confirmed"], [])
+        self.assertEqual([(e["site"], e["classification"]) for e in r["unresolved"]],
+                         [(0, "unsupported operand-size call candidate")])
+        self.assertFalse(r["negativeUsable"])
+
     def test_far_aliases_resolve_to_same_canonical_target(self):
         data = bytes.fromhex("9a 0b 00 00 00 9a 1b 00 00 00 c3 c3")
         cfg = configuration(data, target=11, controls=[0, 5], relocations=[

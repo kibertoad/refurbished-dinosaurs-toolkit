@@ -28,6 +28,16 @@ def call_target(image, site, ins):
     return None, {"reason": "computed transfer remains unresolved"}
 
 
+OVERLAP_REASON = "overlapping entry-path instructions; boundary unresolved"
+
+
+def unsupported_transfer(image, ins):
+    """Operand-size overrides and flat-model far transfers fall outside the frame model."""
+    m = ins.mnemonic
+    return ((0x66 in ins.prefix and (m in ("call", "lcall", "ret", "retf", "jmp", "ljmp") or m.startswith("j")))
+            or (image.flat and m in ("lcall", "ljmp", "retf")))
+
+
 def walk(image, entries, limit=10000):
     integer(limit, 1, 100000, "instruction limit")
     pending, seen, gaps, edges = list(entries), {}, [], []
@@ -44,7 +54,7 @@ def walk(image, entries, limit=10000):
             continue
         seen[at] = ins
         m, following = ins.mnemonic, at + ins.size
-        if (0x66 in ins.prefix and (m in ("call", "lcall", "ret", "retf", "jmp", "ljmp") or m.startswith("j"))) or (image.flat and m in ("lcall", "ljmp", "retf")):
+        if unsupported_transfer(image, ins):
             gaps.append({"site": at, "reason": "unsupported control-transfer frame encoding"})
             continue
         if m in ("ret", "retf", "iret", "iretd"):
@@ -71,7 +81,7 @@ def walk(image, entries, limit=10000):
             conflicts.update((a, start))
         active.append((start, end))
     for at in sorted(conflicts):
-        gaps.append({"site": at, "reason": "overlapping entry-path instructions; boundary unresolved"})
+        gaps.append({"site": at, "reason": OVERLAP_REASON})
         del seen[at]
     intervals = sorted((at, at + ins.size) for at, ins in seen.items())
     undecoded = []
@@ -100,9 +110,8 @@ def trace(image, config):
     max_steps = integer(config.get("maxSteps", 512), 1, 10000, "maxSteps")
     max_paths = integer(config.get("maxPaths", 64), 1, 256, "maxPaths")
     max_depth = integer(config.get("maxDepth", 8), 1, 32, "maxDepth")
-    default_return = 4 if image.flat else 2
-    integer(config.get("returnBytes", default_return), 2, 4, "returnBytes")
-    if (image.flat and config.get("returnBytes", 4) != 4) or config.get("returnBytes", default_return) not in (2, 4):
+    integer(config.get("returnBytes", image.bits // 8), 2, 4, "returnBytes")
+    if config.get("returnBytes", image.bits // 8) not in ((4,) if image.flat else (2, 4)):
         raise ValueError("returnBytes must agree with the selected near/far frame model")
     models = config.get("callModels", [])
     if not isinstance(models, list) or len(models) > 64:

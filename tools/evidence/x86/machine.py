@@ -150,8 +150,6 @@ class State:
         index = ins.reg_name(mem.index) if mem.index else None
         if ins.addr_size != self.bits // 8:
             raise StopPath("Address-size override is outside the selected model")
-        if not self.flat and any(r and r.startswith("e") for r in (base, index)):
-            raise StopPath("32-bit effective addressing is outside this reporter")
         offset = const(mem.disp, self.bits, self.at)
         if base:
             offset = op("add", self.reg(base), offset, self.at)
