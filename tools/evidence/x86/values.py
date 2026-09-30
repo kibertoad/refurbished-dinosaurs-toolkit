@@ -48,7 +48,10 @@ def extract(v, low, bits):
         if low % 8 == 0 and bits % 8 == 0:
             selected = parts[low // 8:(low + bits) // 8]
             return join([Value(8, term, v.sources) for term in selected])
-    return Value(bits, ("extract", v.term, low, bits), v.sources)
+    if v.term[0] == "extract":
+        original, previous_low, _, original_bits = v.term[1:]
+        return Value(bits, ("extract", original, previous_low + low, bits, original_bits), v.sources)
+    return Value(bits, ("extract", v.term, low, bits, v.bits), v.sources)
 
 
 def join(parts):
@@ -61,7 +64,9 @@ def join(parts):
         return Value(bits, const(n, bits).term, sources(*parts))
     if all(v.term[0] == "extract" and v.term[1] == parts[0].term[1]
            and v.term[2] == i * 8 and v.bits == 8 for i, v in enumerate(parts)):
-        return Value(bits, parts[0].term[1], sources(*parts))
+        original_bits = parts[0].term[4]
+        term = parts[0].term[1] if bits == original_bits else ("extract", parts[0].term[1], 0, bits, original_bits)
+        return Value(bits, term, sources(*parts))
     return Value(bits, ("join", tuple(v.term for v in parts)), sources(*parts))
 
 

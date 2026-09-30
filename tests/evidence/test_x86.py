@@ -303,6 +303,14 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(events(r, "address-formation")[0]["addressingSegment"]["value"], 0x3000)
         self.assertEqual(next(e for e in events(r, "read") if e["site"] == 6)["segment"]["value"], 0x2000)
 
+
+    def test_symbolic_byte_guard_is_not_a_word_pointer_guard(self):
+        c = Code().emit("89 c8 89 c3 3c 00").branch("74", "done").emit("8b 0f").label("done").emit("c3")
+        r = report(c, "guards")
+        access = events(r, "read")[0]
+        self.assertEqual(r["paths"][0]["guards"][0]["left"]["bits"], 8)
+        self.assertFalse(access["guards"][0]["samePointerValue"])
+
     def test_cli_identity_and_errors(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); data = bytes.fromhex("b8 01 00 c3")
