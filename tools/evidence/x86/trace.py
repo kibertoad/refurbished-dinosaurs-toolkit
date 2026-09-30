@@ -2,7 +2,8 @@
 from copy import deepcopy
 from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
 from .image import integer
-from .machine import State, StopPath, ordinary, predicate, REGISTERS, ALIASES, string_instruction, string_count, string_effect
+from .machine import (State, StopPath, ordinary, predicate, REGISTERS, ALIASES, string_instruction, string_count,
+                      string_effect, check_string_form)
 from .values import const, unknown, sources, op, Value
 
 # Synonymous and complementary branches on one flag producer share a single assumption.
@@ -84,14 +85,20 @@ def walk(image, entries, limit=10000):
     # Only an encoded edge whose own boundary is independent of every conflict
     # proves the interior start. Raw candidates and conflicting declared entries
     # never supply this proof.
-    proofs = {e["target"]: e for e in edges if e["target"] is not None and e["site"] not in conflicts}
+    proofs = {}
+    for e in edges:
+        if e["target"] is not None and e["site"] not in conflicts:
+            proofs.setdefault(e["target"], []).append(e)
     unresolved = set()
     for outer, inner in pairs:
-        if inner in proofs:
-            proofs[inner]["overlappingTarget"] = True
-            proofs[inner]["boundaryEvidence"] = "direct edge from an independently verified instruction"
-        else:
+        if inner not in proofs:
             unresolved.update((outer, inner))
+    # Mark every proving edge, but only once its target survives every other conflict.
+    for _, inner in pairs:
+        if inner not in unresolved:
+            for e in proofs[inner]:
+                e["overlappingTarget"] = True
+                e["boundaryEvidence"] = "direct edge from an independently verified instruction"
     for at in sorted(unresolved):
         gaps.append({"site": at, "reason": OVERLAP_REASON})
         del seen[at]
@@ -152,6 +159,14 @@ def trace(image, config):
     total_limit = integer(config.get("totalSteps", 20000), 1, 100000, "totalSteps")
     checkpoints = set(config.get("checkpoints", []))
 
+    def string_step(s, ins, count):
+        # Reserve iterations only when they fit, so a rejected request never drains the shared budget.
+        nonlocal total_string_steps
+        remaining = string_limit - total_string_steps
+        if count.number is not None and count.number <= remaining:
+            total_string_steps += count.number
+        string_effect(s, ins, remaining)
+
     def finish(s, reason=None, returned=False):
         outputs.append({"returned": returned, "stop": reason, "stopSite": None if returned else s.at, "steps": s.steps,
                         "instructionPath": s.path, "guards": s.guards, "events": s.events,
@@ -178,40 +193,42 @@ def trace(image, config):
                 if at in checkpoints:
                     state.event("checkpoint", registers=snapshot(state))
                 m, following = ins.mnemonic, at + ins.size
-                if (0xf2 in ins.prefix or 0xf3 in ins.prefix) and not string_instruction(ins):
+                is_string = string_instruction(ins)
+                if (0xf2 in ins.prefix or 0xf3 in ins.prefix) and not is_string:
                     raise StopPath("repeat prefix requires a separate bounded string-operation reading")
                 if 0x66 in ins.prefix and (m in ("call", "lcall", "ret", "retf", "jmp", "ljmp") or m.startswith("j")):
                     raise StopPath("Operand-size control transfer override is outside the selected frame model")
                 if image.flat and m in ("lcall", "ljmp"):
                     raise StopPath("Far transfer is outside the PE32 flat model")
-                if string_instruction(ins):
+                if is_string:
+                    # Unsupported forms stop once, before any direction split.
+                    check_string_form(state, ins)
                     count = string_count(state, ins)
-                    if count.number != 0 and state.direction_flag.number is None and count.number is not None and count.number <= string_limit - total_string_steps:
-                        direction = state.direction_flag
+                    direction = state.direction_flag
+                    if count.number and direction.number is None and count.number <= string_limit - total_string_steps:
                         key = repr(("direction", direction.term))
-                        choices = [state.assumptions[key]] if key in state.assumptions else [0, 1]
-                        for choice in choices:
-                            if created >= max_paths:
-                                global_gaps.append({"site": at, "reason": "path limit at unknown direction flag"})
-                                break
-                            child = deepcopy(state); created += 1
-                            child.assumptions[key] = choice
-                            child.direction_flag = const(choice, 1, at)
-                            child.event("flag-assumption", flag="DF", value=choice, producer=direction.report(),
+                        if key in state.assumptions:
+                            state.direction_flag = const(state.assumptions[key], 1, at)
+                            state.event("flag-assumption", flag="DF", value=state.direction_flag.report(), producer=direction.report(),
                                         evidence="conditional outcome of one unresolved direction producer")
-                            try:
-                                remaining = string_limit - total_string_steps
-                                total_string_steps += count.number
-                                string_effect(child, ins, remaining)
-                                child.at = following
-                                pending.append(child)
-                            except StopPath as error:
-                                finish(child, str(error))
-                        break
-                    remaining = string_limit - total_string_steps
-                    if count.number is not None and count.number <= remaining:
-                        total_string_steps += count.number
-                    string_effect(state, ins, remaining)
+                        else:
+                            for choice in (0, 1):
+                                if created >= max_paths:
+                                    global_gaps.append({"site": at, "reason": "path limit at unknown direction flag"})
+                                    break
+                                child = deepcopy(state); created += 1
+                                child.assumptions[key] = choice
+                                child.direction_flag = const(choice, 1, at)
+                                child.event("flag-assumption", flag="DF", value=child.direction_flag.report(), producer=direction.report(),
+                                            evidence="conditional outcome of one unresolved direction producer")
+                                try:
+                                    string_step(child, ins, count)
+                                    child.at = following
+                                    pending.append(child)
+                                except StopPath as error:
+                                    finish(child, str(error))
+                            break
+                    string_step(state, ins, count)
                     state.at = following
                     continue
                 if m in ("call", "lcall"):
@@ -286,9 +303,12 @@ def trace(image, config):
                     state.push(const(return_ip, image.bits, at))
                     flags_frame = False
                     if push_cs:
-                        flags_word = state.access(state.segment("ss"), op("add", state.reg(state.sp), const(4,16), at), 2,
-                                                  role="local-iret-flags-frame")
-                        flags_frame = (16, flags_word.term) in state.saved_flags
+                        # Inspect the word above CS without reporting a read the program never made.
+                        try:
+                            flags_word = state.peek(state.segment("ss"), op("add", state.reg(state.sp), const(4, 16), at), 2)
+                            flags_frame = (16, flags_word.term) in state.saved_flags
+                        except StopPath:
+                            flags_frame = False
                     state.frames.append({"entry": target, "sp": state.reg(state.sp), "returnBytes": 4 if m == "lcall" or push_cs else image.bits // 8,
                                          "frameSource": "push-CS/near-call; matching far return required" if push_cs else m,
                                          "continuation": following, "returnIP": return_ip, "callSite": at,

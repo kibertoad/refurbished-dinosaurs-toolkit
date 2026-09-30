@@ -585,6 +585,23 @@ class ReporterTests(unittest.TestCase):
             self.assertIn(reason,result["paths"][0]["stop"])
             self.assertFalse(events(result,"write"))
 
+    def test_string_repetition_keeps_register_terms_and_budget_bounded(self):
+        # Many 16-bit pointer updates must not nest the unknown upper register halves.
+        result=report("f3 aa c3",flags={"direction":0},registers={"es":0x2000,"di":0,"cx":4096})
+        self.assertTrue(result["completeWithinModel"])
+        self.assertEqual(result["paths"][0]["registers"]["di"]["value"],4096)
+        # A direction case that cannot fit the budget reserves nothing, so later zero counts still complete.
+        result=report("b9 03 00 bf 00 01 f3 aa b9 00 00 f3 aa c3",stringIterations=5,registers={"es":0x2000})
+        self.assertEqual(sorted(p["returned"] for p in result["paths"]),[False,True])
+        result=report("f2 aa c3")
+        self.assertEqual(len(result["paths"]),1)
+        self.assertFalse(events(result,"flag-assumption"))
+
+    def test_local_flags_frame_check_reports_no_read(self):
+        result=report("0e e8 01 00 c3 cb","memory",registers={"ss":0x9000,"sp":0x8000})
+        self.assertTrue(result["completeWithinModel"])
+        self.assertEqual([e["role"] for e in events(result,"read")],["pop","pop"])
+
     def test_string_overlap_is_sequential_and_source_override_distinct(self):
         result=report("c6 06 00 01 01 c6 06 01 01 02 c6 06 02 01 03 be 00 01 bf 01 01 b9 02 00 fc f3 a4 a0 02 01 c3",
                       registers={"ds":0x2000,"es":0x2000})

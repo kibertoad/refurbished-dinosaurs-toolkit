@@ -56,6 +56,9 @@ def extract(v, low, bits):
 
 def join(parts):
     bits = sum(v.bits for v in parts)
+    if len(parts) == 1:
+        # A single part is already its own value; wrapping it would nest on every partial register write.
+        return Value(bits, parts[0].term, sources(*parts))
     if all(v.number is not None for v in parts):
         n, shift = 0, 0
         for v in parts:

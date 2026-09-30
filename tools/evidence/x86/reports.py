@@ -427,7 +427,9 @@ def operand_provenance(image, config):
               "boundaryEvidence":"decoded from established entries", "gaps":gaps,
               "nativeReachability":"unconfirmed"}
     if fixup:
-        if fixup.get("raw") != raw:
+        if "raw" not in fixup:
+            raise ValueError("Relocation lacks its source raw word; use the hash-guarded source loader")
+        if fixup["raw"] != raw:
             raise ValueError("Relocation raw word disagrees with the selected operand")
         result.update({"relocation":fixup, "descriptor":fixup.get("descriptor"),
                        "canonicalMappedSegment":fixup["segment"],

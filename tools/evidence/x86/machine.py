@@ -137,11 +137,19 @@ class State:
         base, delta = address_parts(offset)
         return segment.term, base, delta
 
-    def access(self, segment, offset, width, write=None, role=None):
+    def keys(self, segment, offset, width):
         if offset.number is not None and offset.number + width > 1 << self.bits:
             raise StopPath("Memory access crosses the address boundary")
         seg, base, delta = self.location(segment, offset)
-        keys = [(seg, base, (delta + i) if seg == ("linear",) else (delta + i) % (1 << self.bits)) for i in range(width)]
+        return seg, base, delta, [(seg, base, (delta + i) if seg == ("linear",) else (delta + i) % (1 << self.bits)) for i in range(width)]
+
+    def peek(self, segment, offset, width):
+        """Inspect modeled memory without reporting an access the program never performed."""
+        _, _, _, keys = self.keys(segment, offset, width)
+        return join([self.memory.get(key, unknown(f"memory:{self.memory_epoch}:{key}", 8, self.at)) for key in keys])
+
+    def access(self, segment, offset, width, write=None, role=None):
+        seg, base, delta, keys = self.keys(segment, offset, width)
         uncertain = []
         if write is not None:
             write = Value(write.bits, write.term, sources(write, site=self.at))
@@ -417,11 +425,15 @@ def string_count(state, ins):
     return state.reg("ecx" if state.flat else "cx") if 0xF3 in ins.prefix else const(1, state.bits)
 
 
-def string_effect(state, ins, remaining):
+def check_string_form(state, ins):
     if ins.addr_size != state.bits // 8:
         raise StopPath("Address-size override on string operation is outside the selected model")
     if 0xF2 in ins.prefix:
         raise StopPath("REPNE string form is not supported")
+
+
+def string_effect(state, ins, remaining):
+    check_string_form(state, ins)
     count = string_count(state, ins)
     width = 1 if ins.bytes[-1] % 2 == 0 else (4 if (0x66 in ins.prefix) != state.flat else 2)
     operation = ins.mnemonic.split()[-1][:4]
