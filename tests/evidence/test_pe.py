@@ -115,6 +115,35 @@ class PEReporterTests(unittest.TestCase):
         self.assertIsNone(image.file_offset(CODE_VA + 0x300))
         self.assertIsNone(image.near_target(CODE_RAW, CODE_VA + 0x300))
 
+    def test_alignment_padding_past_virtual_size_is_not_loaded(self):
+        data, config = fixture('c3')
+        data = bytearray(data)
+        struct.pack_into('<I', data, 0x178 + 8, 0x10); struct.pack_into('<I', data, 0x1a0 + 8, 0x10)
+        data = bytes(data)
+        image = Image(data, config)
+        self.assertEqual(image.file_offset(DATA_VA + 0xf), DATA_RAW + 0xf)
+        self.assertIsNone(image.file_offset(DATA_VA + 0x10))
+        self.assertIsNone(image.file_offset(DATA_VA + 0xc, 8))
+        self.assertEqual(image.config['peMetadata']['sections'][0]['loadedRawSize'], 0x10)
+        with self.assertRaises(ValueError):
+            Image(data, {**config, 'regions': [{**config['regions'][0], 'end': CODE_RAW + 0x11}]})
+
+    def test_malformed_regions_fail_with_a_diagnosable_error(self):
+        data, config = fixture('c3')
+        for regions in ({'name': 'text'}, [1], ['text'], [None]):
+            with self.subTest(regions=regions), self.assertRaises(ValueError):
+                Image(data, {**config, 'regions': regions})
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'source.bin').write_bytes(data)
+            config.update(source='source.bin', sha256=hashlib.sha256(data).hexdigest(), regions=[1])
+            (path / 'config.json').write_text(json.dumps(config))
+            process = subprocess.run([sys.executable, '-B', str(TOOLS / 'report.py'), 'trace', str(path / 'config.json')],
+                                     capture_output=True, text=True)
+            self.assertEqual(process.returncode, 1, process.stderr)
+            self.assertTrue(process.stderr.startswith('Evidence report: '), process.stderr)
+            self.assertNotIn('Traceback', process.stderr)
+
     def test_arguments_follow_esp_ebp_and_32bit_return_frame(self):
         c = Code().emit('68 78 56 34 12').branch('e8', 'callee').emit('83 c4 04 c3')
         c.label('callee').emit('55 89 e5 8b 45 08 c9 c3')
