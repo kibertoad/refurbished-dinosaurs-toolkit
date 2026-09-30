@@ -295,3 +295,21 @@ it does not simulate an interrupt, privilege transition, asynchronous activity
 or hardware. Root/external IRET, PE32 IRET and unsupported prefixes stop with
 a named gap. Unknown stack aliases can invalidate the frame and stop the path;
 a supplied nonaliasing stack is a query hypothesis, not observed native state.
+
+
+## Instruction-owned segment operand query
+
+`operand` takes `query: { site, operandSite, targetOffset }` (file offsets for
+sites, a 16-bit field offset for targetOffset). It verifies an entry-path MOV or
+PUSH owns that complete 16-bit immediate, then reports instruction/operand
+locations, destination representation, raw token and source-derived MZ/FBOV
+membership. Declared mappings name the descriptor and mapped segment/address;
+undeclared words stay explicitly raw. Wrong widths, partial words, conflicting
+boundaries and mismatched source words fail. Traversal gaps remain separate;
+this query never establishes native reachability, pointer use or a caller's
+argument grouping. Use the ordinary hash-guarded source loader, not supplied
+relocation guesses. The original ten commands remain available.
+
+Effect summaries retain string-operation and flag write/assumption/save/restore
+and local-IRET events alongside ordered writes, so the direction provenance is
+visible in an effects query as well as a full trace.

@@ -634,6 +634,9 @@ class ReporterTests(unittest.TestCase):
         self.assertTrue(result["completeWithinModel"])
         self.assertEqual(result["paths"][0]["registers"]["di"]["value"],255)
         self.assertEqual(len(events(result,"local-iret")),1)
+        effects=report(code,"effects",registers={"ss":0x9000,"sp":0x8000,"es":0x2000,"di":256})
+        self.assertEqual(len(events(effects,"flags-restore")),1)
+        self.assertEqual(len(events(effects,"string-operation")),1)
         self.assertEqual(events(result,"flags-restore")[0]["direction"]["value"],1)
         incoming=report(code,"incoming",target=code.labels["iret"])
         self.assertIn(code.labels["call"],[e["site"] for e in incoming["confirmed"]])
@@ -658,6 +661,23 @@ class ReporterTests(unittest.TestCase):
         self.assertTrue(result["completeWithinModel"])
         self.assertFalse(events(result,"flags-restore")[0]["intactLocalSnapshot"])
         self.assertEqual(result["paths"][0]["registers"]["di"]["value"],255)
+
+
+    def test_operand_query_verifies_instruction_membership_and_raw_mapping(self):
+        for code,site,word,representation in (("b8 34 12 c3",0,1,"register immediate"),
+                ("c7 06 00 02 34 12 c3",0,4,"stored word"),("68 34 12 c3",0,1,"pushed word")):
+            query={"site":site,"operandSite":word,"targetOffset":10}
+            result=report(code,"operand",query=query,relocations=[{"site":word,"raw":0x1234,"segment":0x2234,"descriptor":None,"evidence":"synthetic relocation"}])
+            self.assertEqual(result["rawToken"],"1234")
+            self.assertEqual(result["loadedAddress"],"2234:000A")
+            self.assertEqual(result["representation"],representation)
+            unresolved=report(code,"operand",query=query)
+            self.assertFalse(unresolved["relocated"])
+            self.assertNotIn("loadedAddress",unresolved)
+        for code,query in (("b8 34 12 c3",{"site":1,"operandSite":2}),
+                ("b8 34 12 c3",{"site":0,"operandSite":2}),
+                ("66 b8 34 12 00 00 c3",{"site":0,"operandSite":2})):
+            with self.assertRaises(ValueError):report(code,"operand",query=query)
 
 if __name__ == "__main__":
     unittest.main()

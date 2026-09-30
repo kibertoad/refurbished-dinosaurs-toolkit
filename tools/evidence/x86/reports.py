@@ -1,6 +1,6 @@
 """Focused reports derived from instruction paths and explicit source bounds."""
 from capstone import CS_AC_READ, CS_AC_WRITE
-from capstone.x86 import X86_OP_MEM
+from capstone.x86 import X86_OP_MEM, X86_OP_REG
 from .machine import State, StopPath, REGISTERS, ALIASES, segment_register
 from .values import unknown
 from .image import Image, integer
@@ -403,7 +403,43 @@ def allocations(report, config):
     return {"allocations": results, "paths": report["paths"], "gaps": report["gaps"], "completeWithinModel": report["completeWithinModel"]}
 
 
+def operand_provenance(image, config):
+    query = config.get("query", {})
+    site = integer(query.get("site"), 0, len(image.data)-1, "instruction site")
+    word_site = integer(query.get("operandSite"), 0, len(image.data)-2, "segment operand site")
+    offset = integer(query.get("targetOffset", 0), 0, 65535, "target offset")
+    if image.flat:
+        raise ValueError("Segment relocation operands require the segmented16 model")
+    seen, gaps, _, _ = walk(image, entries(image), config.get("instructionLimit", 10000))
+    ins = seen.get(site)
+    if ins is None:
+        raise ValueError("Operand instruction is not a verified entry-path boundary")
+    if ins.mnemonic not in ("mov", "push") or ins.imm_size != 2 or site + ins.imm_offset != word_site:
+        raise ValueError("Selected word is not the complete 16-bit immediate of a supported MOV/PUSH")
+    raw = int.from_bytes(image.data[word_site:word_site+2], "little")
+    fixup = image.fixups.get(word_site)
+    destination = ins.operands[0]
+    kind = "pushed word" if ins.mnemonic == "push" else ("stored word" if destination.type == X86_OP_MEM else "register immediate")
+    result = {"instructionSite":site, "operandSite":word_site, "mnemonic":ins.mnemonic,
+              "instructionSize":ins.size, "immediateWidth":2, "representation":kind,
+              "destinationRegister":ins.reg_name(destination.reg) if destination.type == X86_OP_REG else None,
+              "raw":raw, "rawToken":f"{raw:04X}", "relocated":fixup is not None,
+              "boundaryEvidence":"decoded from established entries", "gaps":gaps,
+              "nativeReachability":"unconfirmed"}
+    if fixup:
+        if fixup.get("raw") != raw:
+            raise ValueError("Relocation raw word disagrees with the selected operand")
+        result.update({"relocation":fixup, "descriptor":fixup.get("descriptor"),
+                       "canonicalMappedSegment":fixup["segment"],
+                       "loadedAddress":f"{fixup['segment']:04X}:{offset:04X}"})
+    else:
+        result["reason"] = "No declared relocation or fixup; raw operand does not establish a segment"
+    return result
+
+
 def _run_report(image, config, command):
+    if command == "operand":
+        return operand_provenance(image, config)
     if command == "incoming":
         return incoming(image, config)
     if command == "uses":
@@ -423,7 +459,8 @@ def _run_report(image, config, command):
     if command == "allocation":
         return allocations(report, config)
     if command != "trace":
-        kinds = {"arguments": ("read", "call", "call-return"), "effects": ("write", "call", "call-return", "return", "branch"),
+        kinds = {"arguments": ("read", "call", "call-return"), "effects": ("write", "call", "call-return", "return", "branch", "string-operation",
+                             "flag-assumption", "flag-write", "flags-save", "flags-restore", "local-iret"),
                  "returns": ("return", "call-return", "compare", "branch", "write"),
                  "guards": ("compare", "branch", "read", "write", "call", "call-return"),
                  "memory": ("read", "write", "address-formation")}[command]
