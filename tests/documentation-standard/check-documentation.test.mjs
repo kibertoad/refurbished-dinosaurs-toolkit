@@ -1015,3 +1015,42 @@ test("a list of other files compares a numeric path as text", (t) => {
   assert.match(result.output, /1990 is listed twice/);
   assert.doesNotMatch(result.output, /every other file has a path/);
 });
+
+
+for (const format of ["MZ", "COM", "NE", "PE", "LE", "LX", "ELF"]) test(`explicit ${format} file-data locations retain shipped offsets`, (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", `format: ${format}`);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", 'kind: file-data\n    offset: "0x0000..0x0040"');
+  });
+  const result = run(root);
+  assert.equal(result.status, 0, result.output);
+});
+
+for (const [location, error] of [
+  ['kind: file-data\n    offset: "0x0000..0x0401"', /outside the shipped file/],
+  ['kind: file-data\n    offset: "0x0020..0x0020"', /is empty/],
+  ['kind: file-data\n    address: 0x00401000', /shipped-file offset, not an address/],
+  ['kind: header\n    offset: "0x0000..0x0040"', /kind must be code or file-data/],
+  ['kind: code\n    offset: "0x0000..0x0040"', /a PE executable is located by address/],
+]) test(`invalid file-data contract: ${location}`, (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", location);
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, error);
+});
+
+test("a file-data-only finding cannot establish overlay code ranges", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", "format: MZ");
+    wholeFile(r);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", 'kind: file-data\n    offset: "0x0000..0x0040"');
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /locates only file data, which cannot establish a code range/);
+});
