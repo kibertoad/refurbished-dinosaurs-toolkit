@@ -283,6 +283,11 @@ MZ executables accept offsets because overlay code sits outside the load image a
 address. The other executable formats map their code through the loader, so their code always
 has an address and an offset into them fails.
 
+A location may also give `kind: code` (the default) or `kind: file-data`. A `file-data` location
+names executable headers, container tables or other shipped bytes that are not code, so it
+gives an `offset` into the shipped file in any format, never an `address`, and needs no Code
+ranges row. The checker fails any other kind, and an address on a `file-data` location.
+
 ### Code ranges
 
 An offset into overlay code locates code only if that part of the file holds code, and the
@@ -293,7 +298,8 @@ the overlay or bank number needed to read that range or `-`, and the ID of the f
 shows the range holds code. The checker fails a row whose file is not in the manifest or is not
 MZ (after unpacking; no other format holds code located by offset), whose range is malformed,
 empty or outside the file, whose overlay is neither a number nor `-`, or whose finding does not
-exist, does not list the build or is superseded.
+exist, does not list the build or is superseded. It also fails a row whose finding locates only
+file data, either in all its locations or in all its locations in that file of that build.
 
 An `offset` into an executable (an MZ file, or a packed file whose unpacked form is MZ) must lie
 wholly inside one row for that file. Adjacent rows are not joined, so a range that crosses from

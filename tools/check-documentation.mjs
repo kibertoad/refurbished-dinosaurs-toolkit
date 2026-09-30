@@ -637,7 +637,12 @@ for (const [id, e] of entries) {
     if (ids.length !== 1 || kindOf(ids[0]) !== "FND" || finding !== ids[0]) problem(e.file, `${at}: the finding column holds the ID of one finding`);
     else if (cited && !asList(cited.meta.builds).includes(id)) problem(e.file, `${at}: ${ids[0]} does not list ${id}`);
     else if (cited?.meta.status === "superseded") problem(e.file, `${at}: cites ${ids[0]}, which is superseded`);
-    if (cited && asList(cited.meta.locations).length > 0 && asList(cited.meta.locations).every((loc) => loc?.kind === "file-data")) problem(e.file, `${at}: ${ids[0]} locates only file data, which cannot establish a code range`);
+    // A finding that locates only file data, either at all or in this file of this build, shows
+    // no code there.
+    const locs = asList(cited?.meta.locations);
+    const code = locs.filter((loc) => loc?.kind !== "file-data");
+    const here = (loc) => loc?.build === id && loc?.file === path;
+    if (cited && locs.length > 0 && (code.length === 0 || (locs.some(here) && !code.some(here)))) problem(e.file, `${at}: ${ids[0]} locates only file data, which cannot establish a code range`);
     const parsed = checkOffset(e.file, range, bf);
     if (parsed) ranges.push({ file: path, start: parsed[0], end: parsed[1] });
   }
@@ -830,11 +835,11 @@ for (const [id, e] of entries) {
       const bf = files.find((f) => f.path === loc.file);
       if (!bf) { problem(file, `location file ${loc.file} is not in the files of ${loc.build}`); continue; }
       const format = bf.unpacked?.format ?? bf.format;
-      if (loc.kind !== undefined && loc.kind !== "code" && loc.kind !== "file-data") problem(file, "location kind must be code or file-data when given");
+      if (loc.kind !== undefined && loc.kind !== "code" && loc.kind !== "file-data") problem(file, `location kind ${loc.kind} in ${loc.file}: kind must be code or file-data when given`);
       const fileData = loc.kind === "file-data";
-      if (fileData && (!("offset" in loc) || "address" in loc)) problem(file, "a file-data location gives a shipped-file offset, not an address");
+      if (fileData && "address" in loc) problem(file, `a file-data location in ${loc.file} gives a shipped-file offset, not an address`);
       if ("address" in loc && "offset" in loc) problem(file, "a location gives address or offset, not both");
-      if ("address" in loc) checkAddress(file, loc.address, format);
+      if ("address" in loc) { if (!fileData) checkAddress(file, loc.address, format); }
       else if ("offset" in loc) {
         // Explicit file-data offsets name shipped container metadata or data, never code.
         // Other offsets name bytes of the shipped file: data, CD audio, or MZ overlay code
