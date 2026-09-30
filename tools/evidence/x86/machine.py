@@ -28,10 +28,14 @@ def alias(name):
 
 class State:
     def __init__(self, entry, image, config):
+        self.bits, self.flat, self.mask = image.bits, image.flat, image.mask
+        self.sp, self.bp = ("esp", "ebp") if self.flat else ("sp", "bp")
         self.at = entry
         self.regs = {r: unknown("initial:" + r, ALIASES[r][2]) for r in REGISTERS}
-        self.regs["esp"] = resize(unknown("entry:sp", 16), 32)
-        self.setreg("sp", unknown("entry:sp", 16), None)
+        self.regs["esp"] = resize(unknown("entry:sp", self.bits), 32)
+        self.setreg(self.sp, unknown("entry:sp", self.bits), None)
+        self.segment_bases = {r: const(0, 32) if r in ("cs", "ds", "es", "ss") else unknown("initial-base:" + r, 32)
+                              for r in ("cs", "ds", "es", "ss", "fs", "gs")}
         self.setreg("cs", const(image.region(entry)["segment"], 16), None)
         for r, n in config.get("registers", {}).items():
             if r not in ALIASES or type(n) is not int or not 0 <= n < 1 << ALIASES[r][2]:
@@ -43,7 +47,7 @@ class State:
         self.guards = []
         self.assumptions = {}
         self.flags = None
-        self.frames = [{"entry": entry, "sp": self.reg("sp"), "returnBytes": config.get("returnBytes", 2)}]
+        self.frames = [{"entry": entry, "sp": self.reg(self.sp), "returnBytes": config.get("returnBytes", 4 if self.flat else 2)}]
         self.steps = 0
         self.visits = {}
         self.path = []
@@ -71,18 +75,22 @@ class State:
         self.events.append(event)
         return event
 
+    def segment(self, name):
+        # PE selectors are not real-mode paragraph bases. FS/GS bases remain unknown.
+        return self.segment_bases[name] if self.flat else self.reg(name)
+
     def location(self, segment, offset):
         # Segment aliases resolve only when both components are concrete.
         if segment.number is not None and offset.number is not None:
-            return ("linear",), ("absolute",), segment.number * 16 + offset.number
+            return ("linear",), ("absolute",), segment.number * (1 if self.flat else 16) + offset.number
         base, delta = address_parts(offset)
         return segment.term, base, delta
 
     def access(self, segment, offset, width, write=None, role=None):
-        if offset.number is not None and offset.number + width > 65536:
-            raise StopPath("Memory access crosses the 16-bit offset boundary")
+        if offset.number is not None and offset.number + width > 1 << self.bits:
+            raise StopPath("Memory access crosses the address boundary")
         seg, base, delta = self.location(segment, offset)
-        keys = [(seg, base, (delta + i) if seg == ("linear",) else (delta + i) % 65536) for i in range(width)]
+        keys = [(seg, base, (delta + i) if seg == ("linear",) else (delta + i) % (1 << self.bits)) for i in range(width)]
         uncertain = []
         if write is not None:
             write = Value(write.bits, write.term, sources(write, site=self.at))
@@ -92,8 +100,8 @@ class State:
                 if k[0] == ("linear",):
                     return k[2], k[2] + 1
                 if k[0][0] == "constant":
-                    start = k[0][1] * 16
-                    return start, start + 65536
+                    start = k[0][1] * (1 if self.flat else 16)
+                    return start, start + (1 << self.bits)
                 return None
             # A concrete write covers every byte it stores, not only its first byte.
             written = (keys[0][2], keys[-1][2] + 1) if seg == ("linear",) else domain(keys[0])
@@ -122,7 +130,7 @@ class State:
                                  "samePointerValue": same,
                                  "assessment": "same expression; inspect predicate polarity" if same else "checked value differs from this access"})
         event = self.event("write" if write is not None else "read", segment=segment.report(), offset=offset.report(),
-                           width=width, interval={"segment": seg, "base": base, "start": delta, "end": delta + width},
+                           width=width, segmentInterpretation="base" if self.flat else "selector-paragraph", interval={"segment": seg, "base": base, "start": delta, "end": delta + width},
                            value=value.report(), missingByteProducers=missing,
                            byteProducers=[{"index": i, "producers": list(self.memory[key].sources) if key in self.memory else []} for i, key in enumerate(keys)],
                            guards=deepcopy(relevant), role=role,
@@ -130,8 +138,8 @@ class State:
         f = self.frames[-1]
         stack_base, stack_delta = address_parts(f["sp"])
         mem_base, mem_delta = address_parts(offset)
-        relative = (mem_delta - stack_delta) % 65536
-        if write is None and segment.term == self.reg("ss").term and mem_base == stack_base and f["returnBytes"] <= relative < 32768:
+        relative = (mem_delta - stack_delta) % (1 << self.bits)
+        if write is None and segment.term == self.segment("ss").term and mem_base == stack_base and f["returnBytes"] <= relative < 1 << (self.bits - 1):
             event["argument"] = {"offsetFromEntrySP": relative, "width": width, "returnFrameBytes": f["returnBytes"],
                                  "pushProducers": list(value.sources), "grouping": role or "consumed width only"}
         return value
@@ -140,16 +148,18 @@ class State:
         mem = operand.mem
         base = ins.reg_name(mem.base) if mem.base else None
         index = ins.reg_name(mem.index) if mem.index else None
-        if any(r and r.startswith("e") for r in (base, index)):
+        if ins.addr_size != self.bits // 8:
+            raise StopPath("Address-size override is outside the selected model")
+        if not self.flat and any(r and r.startswith("e") for r in (base, index)):
             raise StopPath("32-bit effective addressing is outside this reporter")
-        offset = const(mem.disp, 16, self.at)
+        offset = const(mem.disp, self.bits, self.at)
         if base:
             offset = op("add", self.reg(base), offset, self.at)
         if index:
-            index_value = op("mul", self.reg(index), const(mem.scale, 16), self.at)
+            index_value = op("mul", self.reg(index), const(mem.scale, self.bits), self.at)
             offset = op("add", offset, index_value, self.at)
-        segment_name = ins.reg_name(mem.segment) if mem.segment else ("ss" if base in ("bp", "sp") or index == "bp" else "ds")
-        return self.reg(segment_name), offset
+        segment_name = ins.reg_name(mem.segment) if mem.segment else ("ss" if base in ("bp", "sp", "ebp", "esp") or (not self.flat and index == "bp") else "ds")
+        return self.segment(segment_name), offset
 
     def get(self, ins, operand, image):
         if operand.type == X86_OP_REG:
@@ -177,12 +187,12 @@ class State:
 
     def push(self, value):
         size = value.bits // 8
-        self.setreg("sp", op("sub", self.reg("sp"), const(size, 16), self.at), self.at)
-        self.access(self.reg("ss"), self.reg("sp"), size, value, role="push")
+        self.setreg(self.sp, op("sub", self.reg(self.sp), const(size, self.bits), self.at), self.at)
+        self.access(self.segment("ss"), self.reg(self.sp), size, value, role="push")
 
     def pop(self, size):
-        value = self.access(self.reg("ss"), self.reg("sp"), size, role="pop")
-        self.setreg("sp", op("add", self.reg("sp"), const(size, 16), self.at), self.at)
+        value = self.access(self.segment("ss"), self.reg(self.sp), size, role="pop")
+        self.setreg(self.sp, op("add", self.reg(self.sp), const(size, self.bits), self.at), self.at)
         return value
 
 
@@ -231,6 +241,8 @@ def ordinary(state, ins, image):
     if m == "nop":
         return
     if m in ("mov", "movzx", "movsx"):
+        if state.flat and operands[0].type == X86_OP_REG and ins.reg_name(operands[0].reg) in state.segment_bases:
+            raise StopPath("Segment selector assignment requires a descriptor model")
         value = state.get(ins, operands[1], image)
         state.put(ins, operands[0], resize(value, operands[0].size * 8, signed=m == "movsx"))
         return
@@ -241,6 +253,8 @@ def ordinary(state, ins, image):
                     note="LEA does not access memory; this addressing default does not bind a later dereference")
         return
     if m in ("lds", "les"):
+        if state.flat:
+            raise StopPath("Descriptor loads are outside the PE32 flat model")
         segment, offset = state.address(ins, operands[1])
         if operands[0].size != 2:
             raise StopPath("Only 16:16 pointer loads are supported")
@@ -249,14 +263,20 @@ def ordinary(state, ins, image):
         state.setreg("ds" if m == "lds" else "es", extract(value, 16, 16), state.at)
         return
     if m == "push":
+        if state.flat and operands[0].type == X86_OP_REG and ins.reg_name(operands[0].reg) in state.segment_bases:
+            raise StopPath("Segment stack operations require a descriptor model")
         state.push(state.get(ins, operands[0], image))
         return
     if m == "pop":
+        if state.flat and operands[0].type == X86_OP_REG and ins.reg_name(operands[0].reg) in state.segment_bases:
+            raise StopPath("Segment selector assignment requires a descriptor model")
         state.put(ins, operands[0], state.pop(operands[0].size))
         return
     if m == "leave":
-        state.setreg("sp", state.reg("bp"), state.at)
-        state.setreg("bp", state.pop(2), state.at)
+        if 0x66 in ins.prefix:
+            raise StopPath("Operand-size override on LEAVE is unsupported")
+        state.setreg(state.sp, state.reg(state.bp), state.at)
+        state.setreg(state.bp, state.pop(state.bits // 8), state.at)
         return
     if m in ("cmp", "test"):
         a, b = (state.get(ins, o, image) for o in operands)
@@ -280,7 +300,7 @@ def ordinary(state, ins, image):
         return
     if m in ("cbw", "cwde"):
         # Capstone 5 names these inconsistently in 16-bit mode. Use effective size.
-        wide = 0x66 in ins.prefix
+        wide = (0x66 in ins.prefix) != state.flat
         state.setreg("eax" if wide else "ax", resize(state.reg("ax" if wide else "al"), 32 if wide else 16, True), state.at)
         return
     raise StopPath("Unsupported instruction semantics: " + m)

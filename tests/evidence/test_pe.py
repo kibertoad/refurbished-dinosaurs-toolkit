@@ -1,0 +1,350 @@
+"""PE32 acceptance uses constructed headers and instructions only."""
+import hashlib
+import json
+from pathlib import Path
+import struct
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[2]
+TOOLS = ROOT / 'tools/evidence'
+if not (TOOLS / 'x86').exists():
+    TOOLS /= 'x86-reporter'
+sys.path.insert(0, str(TOOLS))
+from x86.image import Image
+from x86.pe import pe32
+from x86.reports import run_report
+
+BASE, CODE_VA, DATA_VA = 0x400000, 0x401000, 0x402000
+CODE_RAW, DATA_RAW = 0x200, 0x400
+
+
+def fixture(code, entries=(0,), **extra):
+    data = bytearray(0x600)
+    def w(at, n):
+        struct.pack_into('<H', data, at, n)
+    def d(at, n):
+        struct.pack_into('<I', data, at, n)
+    data[:2] = b'MZ'; d(60, 0x80); data[0x80:0x84] = b'PE\0\0'
+    w(0x84, 0x14c); w(0x86, 2); w(0x94, 0xe0)
+    opt = 0x98
+    w(opt, 0x10b); d(opt + 28, BASE); d(opt + 32, 0x1000); d(opt + 36, 0x200)
+    d(opt + 56, 0x3000); d(opt + 60, 0x200); d(opt + 92, 16)
+    for at, name, rva, raw, flags in ((0x178, b'.text', 0x1000, CODE_RAW, 0x60000020),
+                                      (0x1a0, b'.data', 0x2000, DATA_RAW, 0xc0000040)):
+        data[at:at + len(name)] = name
+        for off, n in ((8, 0x200), (12, rva), (16, 0x200), (20, raw), (36, flags)):
+            d(at + off, n)
+    code = bytes.fromhex(code) if isinstance(code, str) else code
+    if not 0 < len(code) <= 0x200:
+        raise ValueError('synthetic code extent')
+    data[CODE_RAW:CODE_RAW + len(code)] = code
+    config = {'sourceKind': 'pe32', 'entry': CODE_RAW,
+              'regions': [{'name': 'text', 'start': CODE_RAW, 'end': CODE_RAW + len(code),
+                           'entries': [CODE_RAW + x for x in entries], 'evidence': 'synthetic established entries'}], **extra}
+    return bytes(data), config
+
+
+class Code:
+    def __init__(self):
+        self.data, self.labels, self.fixups = bytearray(), {}, []
+    def emit(self, code):
+        self.data.extend(bytes.fromhex(code)); return self
+    def label(self, name):
+        self.labels[name] = len(self.data); return self
+    def branch(self, opcode, label):
+        self.emit(opcode)
+        width = 4 if opcode in ('e8', 'e9', '0f 84', '0f 85') else 1
+        self.fixups.append((len(self.data), width, label))
+        self.data.extend(bytes(width)); return self
+    def bytes(self):
+        for at, width, label in self.fixups:
+            self.data[at:at + width] = (self.labels[label] - at - width).to_bytes(width, 'little', signed=True)
+        return bytes(self.data)
+
+
+def report(code, command='trace', entries=(0,), **extra):
+    data, config = fixture(code.bytes() if isinstance(code, Code) else code, entries, **extra)
+    return run_report(data, config, command)
+
+
+def events(result, kind):
+    return [e for p in result['paths'] for e in p['events'] if e['kind'] == kind]
+
+
+class PEReporterTests(unittest.TestCase):
+    def test_mapping_is_source_derived_and_does_not_mutate_config(self):
+        data, config = fixture('b8 78 56 34 12 c3')
+        image = Image(data, config)
+        self.assertNotIn('ip', config['regions'][0])
+        self.assertEqual(image.near_target(CODE_RAW, CODE_VA), CODE_RAW)
+        self.assertEqual(image.file_offset(DATA_VA + 17), DATA_RAW + 17)
+        r = run_report(data, config, 'trace')
+        self.assertTrue(r['completeWithinModel'], r)
+        self.assertEqual(r['paths'][0]['registers']['eax']['value'], 0x12345678)
+        self.assertEqual(r['sourceMapping']['imageBase'], BASE)
+        self.assertEqual(r['instructionModel']['bits'], 32)
+
+    def test_loader_rejects_unsupported_or_ambiguous_inputs(self):
+        original, config = fixture('c3')
+        for at, width, value in ((0x84, 2, 0x8664), (0x98, 2, 0x20b), (60, 4, 0xffff),
+                                 (0x94, 2, 95), (0x98 + 92, 4, 17), (0x98 + 28, 4, 0xfffff000),
+                                 (0x178 + 20, 4, 0x100), (0x1a0 + 20, 4, CODE_RAW),
+                                 (0x1a0 + 12, 4, 0x1000), (0x178 + 16, 4, 0x1000)):
+            with self.subTest(at=at, value=value):
+                data = bytearray(original); struct.pack_into('<H' if width == 2 else '<I', data, at, value)
+                with self.assertRaises(ValueError):
+                    Image(bytes(data), config)
+        with self.assertRaises(ValueError):
+            Image(original[:0x190], config)
+        for overrides in ({'ip': CODE_VA + 1}, {'segment': 1}, {'resident': True},
+                          {'start': DATA_RAW, 'end': DATA_RAW + 1}, {'end': CODE_RAW + 513}):
+            with self.assertRaises(ValueError):
+                Image(original, {**config, 'regions': [{**config['regions'][0], **overrides}]})
+        for overrides in ({'bits': 16}, {'addressModel': 'segmented16'}, {'relocations': [{'site': 1}]}):
+            with self.assertRaises(ValueError):
+                Image(original, {**config, **overrides})
+
+    def test_zero_fill_is_not_raw_code(self):
+        data, config = fixture('c3')
+        data = bytearray(data); struct.pack_into('<I', data, 0x178 + 8, 0x800)
+        image = Image(bytes(data), config)
+        self.assertIsNone(image.file_offset(CODE_VA + 0x300))
+        self.assertIsNone(image.near_target(CODE_RAW, CODE_VA + 0x300))
+
+    def test_arguments_follow_esp_ebp_and_32bit_return_frame(self):
+        c = Code().emit('68 78 56 34 12').branch('e8', 'callee').emit('83 c4 04 c3')
+        c.label('callee').emit('55 89 e5 8b 45 08 c9 c3')
+        r = report(c, 'arguments')
+        self.assertTrue(r['completeWithinModel'], r)
+        arg = next(e for e in events(r, 'read') if e.get('argument'))
+        self.assertEqual(arg['value']['value'], 0x12345678)
+        self.assertEqual(arg['argument']['returnFrameBytes'], 4)
+        self.assertEqual(arg['argument']['offsetFromEntrySP'], 4)
+        self.assertEqual(arg['width'], 4)
+
+    def test_callee_cleanup_and_pointer_plus_independent_word(self):
+        c = Code().emit('68 00 20 40 00 66 68 07 00').branch('e8', 'callee').emit('c3')
+        c.label('callee').emit('55 89 e5 66 8b 45 08 8b 55 0a c9 c2 06 00')
+        r = report(c, 'arguments')
+        self.assertTrue(r['completeWithinModel'], r)
+        args = [e for e in events(r, 'read') if e.get('argument')]
+        self.assertEqual([(e['width'], e['value']['value']) for e in args], [(2, 7), (4, DATA_VA)])
+        self.assertTrue(all(e['argument']['grouping'] == 'consumed width only' for e in args))
+
+    def test_returns_preserve_low_byte_predicate_and_discarded_width(self):
+        for value in ('01 00 ff ff', '00 01 00 00'):
+            c = Code().branch('e8', 'callee').emit('84 c0').branch('74', 'zero').emit('c3')
+            c.label('zero').emit('c3').label('callee').emit('b8 ' + value + ' c3')
+            r = report(c, 'returns', returnContracts=[{'entry': CODE_RAW + c.labels['callee'], 'register': 'eax',
+                                                      'failures': [0xffff0001], 'evidence': 'synthetic failure contract'}])
+            self.assertTrue(r['completeWithinModel'], r)
+            branch = events(r, 'branch')[0]
+            self.assertEqual(branch['left']['bits'], 8)
+            self.assertEqual(branch['taken'], value.startswith('00'))
+            self.assertEqual(events(r, 'return')[0]['resultContracts'][0]['matchesFailureEncoding'], value.startswith('01'))
+
+    def test_effects_keep_write_before_failure_and_bypassed_write(self):
+        c = Code().emit('c7 05 00 20 40 00 01 00 00 00 85 c9').branch('74', 'failure')
+        c.emit('c7 05 04 20 40 00 02 00 00 00 b8 01 00 00 00 c3')
+        c.label('failure').emit('b8 ff ff ff ff c3')
+        r = report(c, 'effects')
+        self.assertTrue(r['completeWithinModel'], r)
+        self.assertEqual(sorted(len([e for e in p['events'] if e['kind'] == 'write']) for p in r['paths']), [1, 2])
+        self.assertTrue(all(p['events'][0]['kind'] == 'write' for p in r['paths']))
+
+    def test_memory_sib_flat_alias_and_fs_base_unknown(self):
+        r = report('b9 00 20 40 00 ba 01 00 00 00 c7 44 91 08 44 33 22 11 a1 0c 20 40 00 c3', 'memory')
+        self.assertTrue(r['completeWithinModel'], r)
+        self.assertEqual(events(r, 'read')[-1]['value']['value'], 0x11223344)
+        self.assertEqual(events(r, 'write')[0]['offset']['value'], DATA_VA + 12)
+        r = report('c7 05 00 20 40 00 11 11 11 11 64 a1 00 20 40 00 c3', 'memory', registers={'fs': 0})
+        read = events(r, 'read')[-1]
+        self.assertIsNone(read['segment']['value'])
+        self.assertIsNone(read['value']['value'])
+        self.assertEqual(read['missingByteProducers'], [0, 1, 2, 3])
+
+    def test_overlap_keeps_unknown_neighbor_bytes(self):
+        for prefix, expected, missing in (('c7 05 00 20 40 00 00 01 02 03 ', 0x03020100, []), ('', None, [1, 2, 3])):
+            r = report(prefix + 'c6 05 00 20 40 00 00 a1 00 20 40 00 c3', 'memory')
+            read = events(r, 'read')[-1]
+            self.assertEqual(read['value']['value'], expected)
+            self.assertEqual(read['missingByteProducers'], missing)
+
+    def test_guards_use_actual_value_and_unknown_call_invalidates_reload(self):
+        c = Code().emit('a1 00 20 40 00 83 f8 00').branch('74', 'exit').emit('8b 10')
+        c.label('model').branch('e8', 'outside').emit('a1 00 20 40 00 ff d0').label('exit').emit('c3')
+        c.label('outside').emit('c3')
+        r = report(c, 'guards', callModels=[{'site': CODE_RAW + c.labels['model'], 'evidence': 'unknown external writer', 'cases': [{}]}])
+        indirect = next(e for e in events(r, 'call') if e['indirectValue'])
+        self.assertFalse(indirect['guards'][0]['sameTargetValue'])
+        dereference = next(e for e in events(r, 'read') if e['site'] == CODE_RAW + 10)
+        self.assertTrue(dereference['guards'][0]['samePointerValue'])
+        self.assertFalse(r['completeWithinModel'])
+
+    def test_incoming_late_cross_region_and_raw_embedded_candidate(self):
+        c = Code().label('target').emit('c3').label('caller').branch('e8', 'target').emit('c3')
+        c.label('raw').branch('e8', 'target')
+        r = report(c, 'incoming', entries=(0, 1), target=CODE_RAW, controls=[CODE_RAW + 1])
+        self.assertEqual([x['site'] for x in r['confirmed']], [CODE_RAW + 1])
+        self.assertEqual([x['site'] for x in r['candidates']], [CODE_RAW + c.labels['raw']])
+        self.assertEqual(r['confirmed'][0]['provenance']['encoding'], 'relative32')
+        self.assertEqual(r['confirmed'][0]['provenance']['loadedTarget'], CODE_VA)
+        self.assertFalse(r['negativeUsable'])
+        with self.assertRaisesRegex(ValueError, 'control'):
+            report(c, 'incoming', entries=(0, 1), target=CODE_RAW, controls=[CODE_RAW + c.labels['raw']])
+
+    def test_variable_uses_keep_data_between_entries_and_failed_control(self):
+        code = 'a1 00 20 40 00 c3 ff ff a3 00 20 40 00 c3'
+        r = report(code, 'uses', entries=(0, 8), query={'offset': DATA_VA, 'width': 4}, controls=[CODE_RAW, CODE_RAW + 8])
+        self.assertEqual({e['site'] for e in r['matches']}, {CODE_RAW, CODE_RAW + 8})
+        self.assertTrue(r['undecodedRanges'])
+        with self.assertRaisesRegex(ValueError, 'control'):
+            report(code, 'uses', entries=(0, 8), query={'offset': DATA_VA, 'width': 4}, controls=[CODE_RAW + 6])
+
+    def test_dispatch_decodes_scale_normalization_gate_and_source_mapping(self):
+        c = Code().emit('83 e0 01 83 f9 02').branch('73', 'exit').label('dispatch').emit('ff 24 85 00 20 40 00')
+        c.label('exit').emit('c3')
+        data, config = fixture(c.bytes())
+        data = bytearray(data); struct.pack_into('<II', data, DATA_RAW, CODE_VA, CODE_VA + c.labels['exit'])
+        d = {'site': CODE_RAW + c.labels['dispatch'], 'inputRegister': 'eax', 'indexRegister': 'eax', 'inputs': [0, 2, 1],
+             'indexEvidence': 'decoded mask and SIB', 'table': {'start': DATA_RAW, 'count': 2, 'stride': 4, 'width': 4,
+             'offset': DATA_VA, 'countEvidence': 'synthetic two rows', 'mappingEvidence': 'PE data section'}}
+        r = run_report(bytes(data), {**config, 'dispatch': d, 'registers': {'ecx': 0}}, 'dispatch')
+        self.assertEqual([x['outcomes'][0]['position'] for x in r['cases']], [0, 0, 1])
+        r = run_report(bytes(data), {**config, 'dispatch': d, 'registers': {'ecx': 2}}, 'dispatch')
+        self.assertTrue(all(x['outcomes'][0]['status'] == 'returned-before-dispatch' for x in r['cases']))
+        d['table']['start'] += 4
+        with self.assertRaisesRegex(ValueError, 'mapping'):
+            run_report(bytes(data), {**config, 'dispatch': d}, 'dispatch')
+
+    def test_allocation_width_extent_and_flat_write_comparison(self):
+        c = Code().emit('b8 ff ff ff ff 83 c0 05').label('call').branch('e8', 'allocator')
+        c.label('after').emit('c7 00 11 22 33 44 c3').label('allocator').emit('b8 00 20 40 00 b9 01 00 00 00 c3')
+        r = report(c, 'allocation', allocations=[{'site': CODE_RAW + c.labels['call'], 'requestRegister': 'eax',
+            'unitBytes': 1, 'unitEvidence': 'synthetic byte request',
+            'extent': {'site': CODE_RAW + c.labels['after'], 'register': 'ecx', 'unitBytes': 16, 'evidence': 'synthetic paragraphs'},
+            'pointer': {'site': CODE_RAW + c.labels['after'], 'offsetRegister': 'eax', 'evidence': 'flat pointer'}}])
+        a = r['allocations'][0]
+        self.assertEqual(a['requestedBytes'], 4)
+        self.assertEqual(a['requestModulus'], 1 << 32)
+        self.assertEqual(a['observedExtentBytes'], 16)
+        self.assertTrue(a['writeComparisons'][0]['withinObservedExtent'])
+        self.assertEqual(a['writeComparisons'][0]['relativeStart'], 0)
+
+    def test_unsupported_and_limit_paths_cannot_be_complete(self):
+        for code in ('66 c3', '67 a1 00 20 c3', '0f 31 c3', 'cb', 'ff d0', '8e d8 c3', '0f a0 c3'):
+            r = report(code)
+            self.assertFalse(r['completeWithinModel'], (code, r))
+            self.assertTrue(r['paths'][0]['stop'])
+        r = report('90 c3', maxSteps=1)
+        self.assertFalse(r['completeWithinModel'])
+        r = report('c3', 'incoming', target=CODE_RAW)
+        self.assertEqual(r['counts']['confirmed'], 0)
+        self.assertFalse(r['negativeUsable'])
+
+    def test_node_cli_parses_pe_and_reports_mapping(self):
+        data, config = fixture('b8 01 00 00 00 c3')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / 'source.bin').write_bytes(data)
+            config.update(source='source.bin', sha256=hashlib.sha256(data).hexdigest())
+            (path / 'config.json').write_text(json.dumps(config))
+            process = subprocess.run(['node', str(TOOLS / 'report.mjs'), 'trace', str(path / 'config.json')], capture_output=True, text=True)
+            self.assertEqual(process.returncode, 0, process.stderr)
+            r = json.loads(process.stdout)
+            self.assertEqual(r['sourceIdentity']['sha256'], config['sha256'])
+            self.assertEqual(r['sourceMapping']['format'], 'PE32/i386')
+            config['regions'][0]['ip'] = CODE_VA + 1
+            (path / 'config.json').write_text(json.dumps(config))
+            process = subprocess.run(['node', str(TOOLS / 'report.mjs'), 'trace', str(path / 'config.json')], capture_output=True, text=True)
+            self.assertNotEqual(process.returncode, 0)
+            self.assertIn('mapping', process.stderr)
+
+    def test_overlapping_entries_never_verify_a_false_call_boundary(self):
+        # Entry 0's MOV embeds an E8 opcode. Entry 1 conflicts with that path.
+        code = 'b8 e8 fa ff ff ff c3'
+        r = report(code, 'incoming', entries=(0, 1), target=CODE_RAW)
+        self.assertEqual(r['counts']['confirmed'], 0)
+        self.assertEqual(r['candidates'][0]['site'], CODE_RAW + 1)
+        self.assertTrue(any('overlapping' in g['reason'] for g in r['gaps']))
+        with self.assertRaisesRegex(ValueError, 'control'):
+            report(code, 'incoming', entries=(0, 1), target=CODE_RAW, controls=[CODE_RAW + 1])
+
+    def test_cross_region_rel32_and_negative_displacement(self):
+        c = Code().label('target').emit('c3').label('caller').branch('e8', 'target').emit('c3')
+        data, config = fixture(c.bytes())
+        config['regions'] = [{'name': 'target', 'start': CODE_RAW, 'end': CODE_RAW + 1, 'entries': [CODE_RAW], 'evidence': 'synthetic target'},
+                             {'name': 'caller', 'start': CODE_RAW + 1, 'end': CODE_RAW + 7, 'entries': [CODE_RAW + 1], 'evidence': 'synthetic late caller'}]
+        r = run_report(data, {**config, 'target': CODE_RAW, 'controls': [CODE_RAW + 1]}, 'incoming')
+        self.assertEqual(r['confirmed'][0]['target'], CODE_RAW)
+        self.assertEqual(r['confirmed'][0]['region'], 'caller')
+        r = run_report(data, {**config, 'target': CODE_RAW, 'searchRegions': ['target']}, 'incoming')
+        self.assertEqual(r['counts']['confirmed'], 0)
+        self.assertEqual([x['name'] for x in r['searched']], ['target'])
+        self.assertFalse(r['negativeUsable'])
+
+    def test_instruction_and_scan_limits_remain_gaps(self):
+        c = Code().emit('c3').label('caller').branch('e8', 'target').emit('c3')
+        c.labels['target'] = 0
+        r = report(c, 'incoming', entries=(0, 1), target=CODE_RAW, instructionLimit=1, scanLimit=1)
+        self.assertTrue(any('instruction limit' in g['reason'] for g in r['gaps']))
+        self.assertTrue(any('raw scan limit' in g['reason'] for g in r['gaps']))
+        self.assertFalse(r['negativeUsable'])
+
+    def test_unknown_fs_alias_does_not_count_as_flat_variable_use(self):
+        r = report('64 a1 00 20 40 00 c3', 'uses', query={'offset': DATA_VA, 'width': 4})
+        self.assertEqual(r['matches'], [])
+        self.assertTrue(r['unresolvedAccesses'])
+        with self.assertRaisesRegex(ValueError, 'control'):
+            report('64 a1 00 20 40 00 c3', 'uses', query={'offset': DATA_VA, 'width': 4}, controls=[CODE_RAW])
+
+    def test_dereference_before_check_has_no_retroactive_guard(self):
+        r = report('8b 10 83 f8 00 74 00 c3', 'guards')
+        self.assertEqual(events(r, 'read')[0]['guards'], [])
+
+    def test_allocation_failure_retains_earlier_mutation(self):
+        c = Code().emit('c7 05 00 20 40 00 01 00 00 00 b8 08 00 00 00').label('call').branch('e8', 'allocator')
+        c.emit('c3').label('allocator').emit('b8 00 00 00 00 c3')
+        r = report(c, 'allocation', allocations=[{'site': CODE_RAW + c.labels['call'], 'requestRegister': 'eax', 'unitBytes': 1, 'unitEvidence': 'synthetic request'}])
+        self.assertEqual(events(r, 'write')[0]['value']['value'], 1)
+        self.assertEqual(r['allocations'][0]['returnedRegisters']['eax']['value'], 0)
+        self.assertIsNone(r['allocations'][0]['observedExtentBytes'])
+        self.assertIn('unproven', r['allocations'][0]['rollback'])
+
+    def test_prefixed_call_and_indirect_import_remain_visible(self):
+        # Harmless segment prefix on direct call: raw scan starts at E8 but the
+        # established entry is the prefix. Both interpretations stay distinct.
+        c = Code().emit('2e').branch('e8', 'target').emit('c3').label('target').emit('c3')
+        r = report(c, 'incoming', entries=(0,), target=CODE_RAW + c.labels['target'], controls=[CODE_RAW])
+        self.assertEqual(r['confirmed'][0]['site'], CODE_RAW)
+        self.assertEqual(r['candidates'][0]['site'], CODE_RAW + 1)
+        r = report('ff 15 00 20 40 00 c3', 'incoming', target=CODE_RAW)
+        self.assertTrue(r['unresolved'])
+        self.assertTrue(r['gaps'])
+        self.assertFalse(r['negativeUsable'])
+
+    def test_32bit_stack_overwrite_and_boundary_are_rejected(self):
+        c = Code().branch('e8', 'callee').emit('c3').label('callee').emit('c7 04 24 00 00 00 00 c3')
+        r = report(c)
+        self.assertFalse(r['completeWithinModel'])
+        self.assertIn('return target', r['paths'][0]['stop'])
+        r = report('a1 fe ff ff ff c3')
+        self.assertFalse(r['completeWithinModel'])
+        self.assertIn('address boundary', r['paths'][0]['stop'])
+
+
+    def test_overlapping_use_is_unresolved_and_cannot_be_a_control(self):
+        code = 'b8 a1 00 20 40 00 c3'
+        r = report(code, 'uses', entries=(0, 1), query={'offset': DATA_VA, 'width': 4})
+        self.assertFalse(any(e['site'] == CODE_RAW + 1 for e in r['matches']))
+        self.assertTrue(any(e['site'] == CODE_RAW + 1 for e in r['unresolvedAccesses']))
+        with self.assertRaisesRegex(ValueError, 'control'):
+            report(code, 'uses', entries=(0, 1), query={'offset': DATA_VA, 'width': 4}, controls=[CODE_RAW + 1])
+
+
+
+if __name__ == '__main__':
+    unittest.main()

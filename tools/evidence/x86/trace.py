@@ -23,7 +23,8 @@ def call_target(image, site, ins):
     if ins.mnemonic in ("lcall", "ljmp"):
         return image.far_target(site, ins)
     if ins.operands and ins.operands[0].type == X86_OP_IMM:
-        return image.near_target(site, ins.operands[0].imm), {"encoding": "relative16"}
+        return image.near_target(site, ins.operands[0].imm), {"encoding": "relative32" if image.flat else "relative16", "loadedTarget": ins.operands[0].imm & image.mask,
+                                                             "mapping": "source PE section table" if image.config.get("peMetadata") else "declared region mapping"}
     return None, {"reason": "computed transfer remains unresolved"}
 
 
@@ -43,6 +44,9 @@ def walk(image, entries, limit=10000):
             continue
         seen[at] = ins
         m, following = ins.mnemonic, at + ins.size
+        if (0x66 in ins.prefix and (m in ("call", "lcall", "ret", "retf", "jmp", "ljmp") or m.startswith("j"))) or (image.flat and m in ("lcall", "ljmp", "retf")):
+            gaps.append({"site": at, "reason": "unsupported control-transfer frame encoding"})
+            continue
         if m in ("ret", "retf", "iret", "iretd"):
             continue
         if m in ("call", "lcall", "jmp", "ljmp") or m.startswith("j") or m.startswith("loop"):
@@ -58,6 +62,17 @@ def walk(image, entries, limit=10000):
             gaps.append({"site": at, "reason": "hardware or interrupt boundary"})
             continue
         pending.append(following)
+    # An entry into another instruction is not a verified boundary. Retain both
+    # interpretations as gaps rather than choosing whichever was visited first.
+    active, conflicts = [], set()
+    for start, end in sorted((at, at + ins.size) for at, ins in seen.items()):
+        active = [(a, b) for a, b in active if b > start]
+        for a, b in active:
+            conflicts.update((a, start))
+        active.append((start, end))
+    for at in sorted(conflicts):
+        gaps.append({"site": at, "reason": "overlapping entry-path instructions; boundary unresolved"})
+        del seen[at]
     intervals = sorted((at, at + ins.size) for at, ins in seen.items())
     undecoded = []
     for r in image.regions:
@@ -78,15 +93,17 @@ def snapshot(state):
 
 
 def trace(image, config):
+    config = {**image.config, **config}
     entry = integer(config.get("entry"), 0, len(image.data) - 1, "entry")
     if not any(entry in r["entries"] for r in image.regions):
         raise ValueError("Trace entry must be an established region entry")
     max_steps = integer(config.get("maxSteps", 512), 1, 10000, "maxSteps")
     max_paths = integer(config.get("maxPaths", 64), 1, 256, "maxPaths")
     max_depth = integer(config.get("maxDepth", 8), 1, 32, "maxDepth")
-    integer(config.get("returnBytes", 2), 2, 4, "returnBytes")
-    if config.get("returnBytes", 2) not in (2, 4):
-        raise ValueError("returnBytes must be 2 or 4")
+    default_return = 4 if image.flat else 2
+    integer(config.get("returnBytes", default_return), 2, 4, "returnBytes")
+    if (image.flat and config.get("returnBytes", 4) != 4) or config.get("returnBytes", default_return) not in (2, 4):
+        raise ValueError("returnBytes must agree with the selected near/far frame model")
     models = config.get("callModels", [])
     if not isinstance(models, list) or len(models) > 64:
         raise ValueError("At most 64 explicit call models")
@@ -140,7 +157,9 @@ def trace(image, config):
                 if 0xf2 in ins.prefix or 0xf3 in ins.prefix:
                     raise StopPath("repeat prefix requires a separate bounded string-operation reading")
                 if 0x66 in ins.prefix and (m in ("call", "lcall", "ret", "retf", "jmp", "ljmp") or m.startswith("j")):
-                    raise StopPath("32-bit control transfer is outside the 16-bit frame model")
+                    raise StopPath("Operand-size control transfer override is outside the selected frame model")
+                if image.flat and m in ("lcall", "ljmp"):
+                    raise StopPath("Far transfer is outside the PE32 flat model")
                 if m in ("call", "lcall"):
                     target, provenance = call_target(image, at, ins)
                     indirect_value = None
@@ -185,11 +204,11 @@ def trace(image, config):
                     if target_region is None:
                         raise StopPath("call target outside declared code regions")
                     here = image.region(at)
-                    return_ip = (here["ip"] + following - here["start"]) & 0xFFFF
+                    return_ip = (here["ip"] + following - here["start"]) & image.mask
                     if m == "lcall":
                         state.push(state.reg("cs"))
-                    state.push(const(return_ip, 16, at))
-                    state.frames.append({"entry": target, "sp": state.reg("sp"), "returnBytes": 4 if m == "lcall" else 2,
+                    state.push(const(return_ip, image.bits, at))
+                    state.frames.append({"entry": target, "sp": state.reg(state.sp), "returnBytes": 4 if m == "lcall" else image.bits // 8,
                                          "continuation": following, "returnIP": return_ip, "callSite": at,
                                          "callerCS": state.reg("cs")})
                     if m == "lcall":
@@ -197,6 +216,8 @@ def trace(image, config):
                     state.at = target
                     continue
                 if m in ("ret", "retf"):
+                    if image.flat and m == "retf":
+                        raise StopPath("Far return is outside the PE32 flat model")
                     frame = state.frames[-1]
                     roles = []
                     for contract in config.get("returnContracts", []):
@@ -214,13 +235,13 @@ def trace(image, config):
                                       "evidence": contract["evidence"]})
                     state.event("return", registers=snapshot(state), cleanupBytes=ins.operands[0].imm if ins.operands else 0, resultContracts=roles)
                     # The entry frame gets the same width and balance checks as a traced call.
-                    expected = 4 if m == "retf" else 2
-                    if expected != frame["returnBytes"] or state.reg("sp").term != frame["sp"].term:
+                    expected = 4 if m == "retf" else image.bits // 8
+                    if expected != frame["returnBytes"] or state.reg(state.sp).term != frame["sp"].term:
                         raise StopPath("return frame or stack balance differs from the call")
                     if len(state.frames) == 1:
                         finish(state, returned=True)
                         break
-                    actual_ip = state.pop(2)
+                    actual_ip = state.pop(image.bits // 8)
                     if actual_ip.number != frame["returnIP"]:
                         raise StopPath("return target was overwritten or has unknown provenance")
                     if m == "retf":
@@ -229,7 +250,7 @@ def trace(image, config):
                             raise StopPath("far return segment changed")
                         state.setreg("cs", actual_cs, at)
                     if ins.operands:
-                        state.setreg("sp", op("add", state.reg("sp"), const(ins.operands[0].imm, 16), at), at)
+                        state.setreg(state.sp, op("add", state.reg(state.sp), const(ins.operands[0].imm, image.bits), at), at)
                     state.frames.pop()
                     state.event("call-return", callSite=frame["callSite"], registers=snapshot(state), modeled=False)
                     state.at = frame["continuation"]

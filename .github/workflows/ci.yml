@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -r tools/evidence/requirements.txt
-      - run: python -B -m unittest discover -s tests/evidence -p test_x86.py
+      - run: python -B -m unittest discover -s tests/evidence -p 'test*.py'
       - run: node --test tests/evidence/bridge.test.mjs
       - run: node --test tests/documentation-standard/check-documentation.test.mjs
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0

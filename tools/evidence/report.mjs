@@ -15,7 +15,9 @@ export function prepare(config, base) {
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   if (sha256 !== config.sha256) throw new Error("Source SHA-256 differs from supplied baseline");
   if (config.sourceKind === "synthetic-raw") return { ...config, source };
-  if (config.sourceKind !== "mz") throw new Error("sourceKind must be mz or synthetic-raw; other loaders are unsupported");
+  // PE parsing and mapping validation are performed by the Python source loader.
+  if (config.sourceKind === "pe32") return { ...config, source };
+  if (config.sourceKind !== "mz") throw new Error("sourceKind must be mz, pe32 or synthetic-raw; other loaders are unsupported");
   const image = readMz(bytes, config.loadSegment);
   if (config.targetSelector) {
     const { descriptor, trampoline } = config.targetSelector;
