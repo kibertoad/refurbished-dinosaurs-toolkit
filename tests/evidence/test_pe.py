@@ -185,6 +185,33 @@ class PEReporterTests(unittest.TestCase):
         self.assertTrue(dereference['guards'][0]['samePointerValue'])
         self.assertFalse(r['completeWithinModel'])
 
+    def test_call_model_uses_flat_near_frame_even_after_encoded_push_cs(self):
+        c = Code().branch('eb', 'call').emit('0e').label('call').branch('e8', 'external').emit('c3').label('external').emit('c3')
+        model = {'site': CODE_RAW + c.labels['call'], 'evidence': 'synthetic flat callee', 'cases': [{}]}
+        for extra in ({}, {'returnBytes': 4}):
+            r = report(c, callModels=[{**model, **extra}])
+            self.assertTrue(r['completeWithinModel'])
+            self.assertTrue(r['paths'][0]['conditionalModels'])
+        with self.assertRaisesRegex(ValueError, 'encoded call frame'):
+            report(c, callModels=[{**model, 'returnBytes': 2}])
+
+    def test_conversions_toggle_the_flat_default_operand_size(self):
+        r = report('b8 80 00 00 00 66 98 98 99 66 99 c3')
+        rows = [(e['decoderMnemonic'], e['sourceRegister'], e['destinationRegister'], e['effectiveOperandBits'],
+                 e['mnemonicWidthMismatch'], e['result']['value']) for e in events(r, 'conversion')]
+        self.assertEqual(rows, [('cbw', 'al', 'ax', 16, False, 0xff80), ('cwde', 'ax', 'eax', 32, False, 0xffffff80),
+                                ('cdq', 'eax', 'edx', 32, False, 0xffffffff), ('cwd', 'ax', 'dx', 16, False, 0xffff)])
+
+    def test_cfg_operands_use_flat_stack_segment_and_full_far_pointer(self):
+        c = Code().branch('e8', 'external').emit('8b 45 08 c5 1d 00 20 40 00 66 c5 1d 00 20 40 00 c3')
+        c.label('external').emit('c3')
+        data, config = fixture(c.bytes(), query={'offset': DATA_VA, 'width': 1})
+        config['regions'][0]['end'] = CODE_RAW + c.labels['external']
+        r = run_report(data, config, 'uses')
+        found = {e['site'] - CODE_RAW: (e['width'], e['effectiveSegmentRegister']) for e in r['matches'] + r['unresolvedAccesses']}
+        self.assertEqual(found, {5: (4, 'ss'), 8: (6, 'ds'), 14: (4, 'ds')})
+        self.assertFalse(r['negativeUsable'])
+
     def test_incoming_late_cross_region_and_raw_embedded_candidate(self):
         c = Code().label('target').emit('c3').label('caller').branch('e8', 'target').emit('c3')
         c.label('raw').branch('e8', 'target')
