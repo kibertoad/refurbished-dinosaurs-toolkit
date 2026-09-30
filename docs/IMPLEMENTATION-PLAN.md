@@ -49,7 +49,8 @@ Exit: synthetic reporter tests pass and the template pins the reviewed update.
 Verify the ten report contracts against recorded restoration cases. Refine
 entry-based use discovery so an unread callee cannot hide subsequent explicit
 memory operands: emit separate CFG operand observations with unknown values,
-effective segment names, and conditional reachability; do not invent callee
+effective segment names, conditional reachability and the stops and untraced
+calls each one depends on; do not invent callee
 effects or promote those observations to path-value proofs. Keep positive
 controls mandatory and undecoded/unsupported paths visible.
 

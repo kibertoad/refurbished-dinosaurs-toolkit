@@ -119,20 +119,25 @@ def uses(image, config):
     # Trace each established entry independently; never decode a whole segment as one stream.
     remaining = integer(config.get("totalSteps", 20000), 1, 100000, "totalSteps")
     entry_limit = integer(config.get("entryLimit", 64), 1, 256, "entryLimit")
-    # CFG points where value propagation stopped (or never started); operands after them are inventoried below.
-    stopped_roots = []
+    # CFG points where value propagation stopped (or never started), with why; operands after them are inventoried below.
+    stops = {}
     established = entries(image)
     for index, at in enumerate(established):
         if remaining <= 0 or index >= entry_limit:
             gaps.append({"entry": at, "reason": "entry or total instruction budget exhausted"})
-            stopped_roots.extend(established[index:])
+            for root in established[index:]:
+                stops.setdefault(root, "entry not traced: entry or total instruction budget exhausted")
             break
         report = trace(image, {**config, "entry": at, "totalSteps": remaining})
         remaining -= report["stepsUsed"]
         if not report["completeWithinModel"]:
             gaps.append({"entry": at, "reason": "incomplete path effects", "stops": list({p["stop"] for p in report["paths"] if p["stop"]})})
-        stopped_roots.extend(p["stopSite"] for p in report["paths"] if p["stop"] and p["stopSite"] is not None)
-        stopped_roots.extend(g["site"] for g in report["gaps"] if "site" in g)
+        for p in report["paths"]:
+            if p["stop"] and p["stopSite"] is not None:
+                stops.setdefault(p["stopSite"], p["stop"])
+        for g in report["gaps"]:
+            if "site" in g:
+                stops.setdefault(g["site"], g["reason"])
         for path in report["paths"]:
             for e in path["events"]:
                 if e["kind"] not in ("read", "write") or mode not in ("both", e["kind"]):
@@ -164,9 +169,22 @@ def uses(image, config):
     # Operand discovery is distinct from value propagation. An unread call stops
     # trace effects, but it must not erase a later instruction reached by the CFG.
     # Only the CFG reachable from a stop is inventoried; fully traced accesses keep their values.
+    # Those operands stay out of matches: each names the stops whose CFG reaches it, so
+    # reading one callee later shows exactly which accesses depended on it.
     reported = {(e["site"], e["kind"]) for e in matches + unresolved}
-    after_stop, stop_gaps, _, _ = walk(image, stopped_roots, config.get("instructionLimit", 10000)) if stopped_roots else ({}, [], None, None)
+    instruction_limit = config.get("instructionLimit", 10000)
+    after_stop, stop_gaps, _, _ = walk(image, list(stops), instruction_limit) if stops else ({}, [], None, None)
     gaps.extend(g for g in stop_gaps if g["reason"] == "instruction limit")
+    # A call past a stop was never traced either, so code after it also depends on it returning.
+    starts = [(root, root, reason) for root, reason in stops.items()]
+    starts += [(at, at + ins.size, "call past a stop; assumed to return")
+               for at, ins in after_stop.items() if ins.mnemonic in ("call", "lcall") and at not in stops]
+    depends = {}
+    for site, start, reason in sorted(starts):
+        reached, _, _, _ = walk(image, [start], instruction_limit)
+        for at in reached:
+            depends.setdefault(at, []).append({"site": site, "reason": reason})
+    conditional = []
     for at, ins in sorted(after_stop.items()):
         if ins.mnemonic == "lea":
             continue  # Address formation is not a memory use.
@@ -195,16 +213,19 @@ def uses(image, config):
             if off is not None and not overlaps:
                 continue
             for kind in kinds:
-                event = {"site": at, "kind": kind, "width": size,
-                         "segment": segment_value.report(), "offset": offset_value.report(),
-                         "value": unknown(f"CFG-operand:{at}", size * 8).report(),
-                         "effectiveSegmentRegister": segment_register(ins, operand.mem),
-                         "classification": "entry-CFG operand; values and callee effects unresolved",
-                         "reachability": "conditional on encoded branch outcomes and returning callees"}
                 # A concrete segment query cannot bind an unpropagated DS/SS.
-                (matches if overlaps and segment is None else unresolved).append(event)
+                conditional.append({"site": at, "kind": kind, "width": size,
+                                    "segment": segment_value.report(), "offset": offset_value.report(),
+                                    "value": unknown(f"CFG-operand:{at}", size * 8).report(),
+                                    "effectiveSegmentRegister": segment_register(ins, operand.mem),
+                                    "address": "overlaps query" if overlaps and segment is None else "possible alias",
+                                    "classification": "entry-CFG operand past a stop; values and callee effects unresolved",
+                                    "dependsOn": depends.get(at, []),
+                                    "reachability": "conditional on encoded branch outcomes and on execution continuing past every named stop"})
+    # A control proves the search reaches a known use, which an operand found past a stop still shows.
+    found = matches + [e for e in conditional if e["address"] == "overlaps query"]
     for at in controls:
-        if type(at) is not int or not any(e["site"] == at for e in matches):
+        if type(at) is not int or not any(e["site"] == at for e in found):
             raise ValueError(f"Positive variable-use control {at} missed; negative result rejected")
     raw = []
     scanned_bytes = 0
@@ -222,11 +243,15 @@ def uses(image, config):
                     raw.append({"site": at, "size": ins.size, "classification": "unverified operand candidate"})
                 else:
                     gaps.append({"reason": "raw candidate limit"}); break
-    truncated = len(matches) + len(unresolved) > result_limit
-    return {"query": query, "matches": matches[:result_limit], "unresolvedAccesses": unresolved[:max(0, result_limit-len(matches))],
+    truncated = len(matches) + len(unresolved) + len(conditional) > result_limit
+    kept_matches = matches[:result_limit]
+    kept_unresolved = unresolved[:result_limit - len(kept_matches)]
+    return {"query": query, "matches": kept_matches, "unresolvedAccesses": kept_unresolved,
+            "conditionalAccesses": conditional[:result_limit - len(kept_matches) - len(kept_unresolved)],
             "rawCandidates": raw, "controls": controls, "truncated": truncated, "gaps": gaps, "undecodedRanges": undecoded,
-            "negativeUsable": bool(controls) and not (matches or unresolved or raw or gaps or truncated or undecoded),
-            "interpretation": "Unknown segments or addresses remain possible aliases; raw candidates are never counted as uses."}
+            "negativeUsable": bool(controls) and not (matches or unresolved or conditional or raw or gaps or truncated or undecoded),
+            "interpretation": "Unknown segments or addresses remain possible aliases; raw candidates are never counted as uses. "
+                              "Matches were traced; conditionalAccesses were reached only past the stops each one names."}
 
 
 def dispatch(image, config):

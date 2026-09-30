@@ -398,8 +398,10 @@ class ReporterTests(unittest.TestCase):
         config = configuration(data, query={"offset": 0x220, "width": 1}, controls=[6])
         config["regions"][0]["end"] = 10
         result = run_report(data, config, "uses")
-        later = next(e for e in result["matches"] if e["site"] == 6)
+        self.assertEqual([e["site"] for e in result["matches"]], [0])
+        later = next(e for e in result["conditionalAccesses"] if e["site"] == 6)
         self.assertIn("entry-CFG operand", later["classification"])
+        self.assertEqual([d["site"] for d in later["dependsOn"]], [3])
         self.assertEqual(later["effectiveSegmentRegister"], "ds")
         self.assertIsNone(later["segment"]["value"])
         self.assertIsNone(later["value"]["value"])
@@ -409,19 +411,43 @@ class ReporterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "control.*missed"):
             run_report(data, config, "uses")
 
+    def test_only_access_past_an_unread_call_is_not_a_traced_use(self):
+        code = Code().branch("e8", "external").emit("a0 20 02 c3").label("external").emit("c3")
+        data = code.bytes()
+        config = configuration(data, query={"offset": 0x220, "width": 1})
+        config["regions"][0]["end"] = code.labels["external"]
+        result = run_report(data, config, "uses")
+        self.assertEqual(result["matches"], [])
+        self.assertEqual(result["unresolvedAccesses"], [])
+        [later] = result["conditionalAccesses"]
+        self.assertEqual((later["site"], later["address"]), (3, "overlaps query"))
+        self.assertEqual([d["site"] for d in later["dependsOn"]], [0])
+        self.assertIsNone(later["value"]["value"])
+        self.assertFalse(result["negativeUsable"])
+
+    def test_access_past_two_unread_calls_names_both(self):
+        code = Code().branch("e8", "external").branch("e8", "external").emit("a0 20 02 c3").label("external").emit("c3")
+        data = code.bytes()
+        config = configuration(data, query={"offset": 0x220, "width": 1})
+        config["regions"][0]["end"] = code.labels["external"]
+        [later] = run_report(data, config, "uses")["conditionalAccesses"]
+        self.assertEqual([d["site"] for d in later["dependsOn"]], [0, 3])
+        self.assertIn("assumed to return", later["dependsOn"][1]["reason"])
+
     def test_cfg_operand_does_not_bind_unknown_segment_or_count_lea(self):
         data = Code().branch("e8", "external").emit("a0 20 02 8d 1e 20 02 c3").label("external").emit("c3").bytes()
         config = configuration(data, query={"offset": 0x220, "width": 1, "segment": 0x1234})
         config["regions"][0]["end"] = 11
         result = run_report(data, config, "uses")
         self.assertEqual(result["matches"], [])
-        self.assertTrue(any(e["site"] == 3 for e in result["unresolvedAccesses"]))
-        self.assertFalse(any(e["site"] == 6 for e in result["unresolvedAccesses"]))
+        self.assertTrue(any(e["site"] == 3 and e["address"] == "possible alias" for e in result["conditionalAccesses"]))
+        self.assertFalse(any(e["site"] == 6 for e in result["conditionalAccesses"]))
 
     def test_cfg_inventory_skips_fully_traced_accesses(self):
         data = bytes.fromhex("bb 00 03 8a 07 a0 20 02 c3")
         result = run_report(data, configuration(data, query={"offset": 0x220, "width": 1}, controls=[5], registers={"ds": 0x1234}), "uses")
         self.assertEqual(result["unresolvedAccesses"], [])
+        self.assertEqual(result["conditionalAccesses"], [])
         data = bytes.fromhex("a0 20 02 c3")
         result = run_report(data, configuration(data, query={"offset": 0x220, "width": 1, "segment": 0x2000}, registers={"ds": 0x1234}), "uses")
         self.assertEqual(result["unresolvedAccesses"], [])
@@ -430,7 +456,7 @@ class ReporterTests(unittest.TestCase):
         data = Code().branch("e8", "external").emit("c5 1e 1e 02 c3").label("external").emit("c3").bytes()
         config = configuration(data, query={"offset": 0x220, "width": 1})
         config["regions"][0]["end"] = len(data) - 1
-        later = next(e for e in run_report(data, config, "uses")["matches"] if e["site"] == 3)
+        later = next(e for e in run_report(data, config, "uses")["conditionalAccesses"] if e["site"] == 3)
         self.assertEqual(later["width"], 4)
         self.assertNotIn("initial", repr(later["segment"]["expression"]))
 
