@@ -78,6 +78,8 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(read["value"]["value"], 0x100)
         self.assertEqual(read["width"], 2)
         self.assertEqual(read["missingByteProducers"], [])
+        self.assertIn(6, read["byteProducers"][0]["producers"])
+        self.assertIn(0, read["byteProducers"][1]["producers"])
 
     def test_unknown_high_byte_stays_unknown(self):
         r = report("c6 06 00 02 00 a1 00 02 c3")
@@ -282,6 +284,24 @@ class ReporterTests(unittest.TestCase):
     def test_symbolic_growth_is_bounded(self):
         with self.assertRaisesRegex(ValueError, "complexity"):
             report("01 d8 " * 200 + "c3")
+
+
+    def test_dispatch_rejects_wrong_layout_and_reports_index_overrun(self):
+        c = Code().emit("89 c3 d1 e3").label("dispatch").emit("ff 27").label("table").emit("20 00")
+        data = c.bytes()
+        dispatch = {"site": c.labels["dispatch"], "inputRegister": "ax", "indexRegister": "bx", "inputs": [1],
+                    "indexEvidence": "synthetic doubling", "table": {"start": c.labels["table"], "count": 1, "stride": 2,
+                    "width": 2, "countEvidence": "synthetic single entry", "offset": 0, "mappingEvidence": "synthetic table"}}
+        r = run_report(data, configuration(data, dispatch=dispatch), "dispatch")
+        self.assertEqual(r["cases"][0]["outcomes"][0]["status"], "out-of-layout index")
+        dispatch["indexDivisor"] = 1
+        with self.assertRaisesRegex(ValueError, "stride"):
+            run_report(data, configuration(data, dispatch=dispatch), "dispatch")
+
+    def test_offset_formation_does_not_bind_later_segment(self):
+        r = report("55 89 e5 8d 5e fc 8b 07 c9 c3", registers={"ds": 0x2000, "ss": 0x3000})
+        self.assertEqual(events(r, "address-formation")[0]["addressingSegment"]["value"], 0x3000)
+        self.assertEqual(next(e for e in events(r, "read") if e["site"] == 6)["segment"]["value"], 0x2000)
 
     def test_cli_identity_and_errors(self):
         with tempfile.TemporaryDirectory() as folder:

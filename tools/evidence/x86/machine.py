@@ -112,7 +112,9 @@ class State:
                                  "assessment": "same expression; inspect predicate polarity" if same else "checked value differs from this access"})
         event = self.event("write" if write is not None else "read", segment=segment.report(), offset=offset.report(),
                            width=width, interval={"segment": seg, "base": base, "start": delta, "end": delta + width},
-                           value=value.report(), missingByteProducers=missing, guards=deepcopy(relevant), role=role,
+                           value=value.report(), missingByteProducers=missing,
+                           byteProducers=[{"index": i, "producers": list(self.memory[key].sources) if key in self.memory else []} for i, key in enumerate(keys)],
+                           guards=deepcopy(relevant), role=role,
                            uncertainAliasesInvalidated=len(uncertain))
         f = self.frames[-1]
         stack_base, stack_delta = address_parts(f["sp"])
@@ -217,9 +219,10 @@ def ordinary(state, ins, image):
         state.put(ins, operands[0], resize(value, operands[0].size * 8, signed=m == "movsx"))
         return
     if m == "lea":
-        _, offset = state.address(ins, operands[1])
+        segment, offset = state.address(ins, operands[1])
         state.put(ins, operands[0], offset)
-        state.event("address-formation", value=offset.report(), note="LEA forms an offset; later access chooses its segment")
+        state.event("address-formation", value=offset.report(), addressingSegment=segment.report(),
+                    note="LEA does not access memory; this addressing default does not bind a later dereference")
         return
     if m in ("lds", "les"):
         segment, offset = state.address(ins, operands[1])
