@@ -253,6 +253,16 @@ class ReporterTests(unittest.TestCase):
         with self.assertRaises(ValueError): report("c3", maxSteps=0)
         with self.assertRaises(ValueError): report("c3", returnBytes=3)
 
+    def test_entry_frame_return_requires_balanced_stack(self):
+        r = report("50 c3")
+        self.assertFalse(r["paths"][0]["returned"])
+        self.assertFalse(r["completeWithinModel"])
+
+    def test_entry_frame_return_width_must_match_return_bytes(self):
+        self.assertFalse(report("c3", returnBytes=4)["completeWithinModel"])
+        self.assertFalse(report("cb")["completeWithinModel"])
+        self.assertTrue(report("cb", returnBytes=4)["completeWithinModel"])
+
 
     def test_allocation_observed_header_extent_is_separate_from_request(self):
         c = Code().emit("b8 01 00").label("call").branch("e8", "allocator")

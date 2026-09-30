@@ -213,12 +213,13 @@ def trace(image, config):
                                       "matchesFailureEncoding": None if value.number is None else value.number in failures,
                                       "evidence": contract["evidence"]})
                     state.event("return", registers=snapshot(state), cleanupBytes=ins.operands[0].imm if ins.operands else 0, resultContracts=roles)
-                    if len(state.frames) == 1:
-                        finish(state, returned=True)
-                        break
+                    # The entry frame gets the same width and balance checks as a traced call.
                     expected = 4 if m == "retf" else 2
                     if expected != frame["returnBytes"] or state.reg("sp").term != frame["sp"].term:
                         raise StopPath("return frame or stack balance differs from the call")
+                    if len(state.frames) == 1:
+                        finish(state, returned=True)
+                        break
                     actual_ip = state.pop(2)
                     if actual_ip.number != frame["returnIP"]:
                         raise StopPath("return target was overwritten or has unknown provenance")

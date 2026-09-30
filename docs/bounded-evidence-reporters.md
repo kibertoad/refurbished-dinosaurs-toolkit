@@ -64,7 +64,9 @@ call frame. Near returns occupy two bytes and far returns four; saved BP is
 accounted for by actual pushes. LDS/LES consuming four bytes establishes a far
 pointer grouping. Adjacent pushes alone do not. Register widening, frame cleanup,
 stack overwrites and unknown return addresses remain visible. A root query may
-set `returnBytes` to 4 for a far entry (default 2).
+set `returnBytes` to 4 for a far entry (default 2). The root return must use
+that width and leave SP where it was on entry; otherwise the path stops and the
+report is not complete within the model.
 
 Return snapshots retain full and partial registers. Optional `returnContracts`
 contain `entry`, `register`, `failures` (numeric encodings) and `evidence`. Only
