@@ -103,7 +103,6 @@ def snapshot(state):
 
 
 def trace(image, config):
-    config = {**image.config, **config}
     entry = integer(config.get("entry"), 0, len(image.data) - 1, "entry")
     if not any(entry in r["entries"] for r in image.regions):
         raise ValueError("Trace entry must be an established region entry")
