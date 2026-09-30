@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only bounded x86 evidence reports. Keep inputs/outputs local-only."""
+"""Read-only bounded x86 evidence reports. Keep configs and reports in GAME_DIR, uncommitted."""
 import json
 import sys
 from pathlib import Path

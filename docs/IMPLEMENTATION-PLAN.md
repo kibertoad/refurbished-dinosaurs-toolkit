@@ -2,10 +2,9 @@
 
 ## Bounded reporter tooling
 
-Implement the ten remaining reporter requests identified in the restoration gap
-review: variable uses (14), near-pointer segments (21), stack arguments (35),
-path effects (27), return widths (26), overlapping accesses (36), incoming calls
-(13), effective guards (32), allocation extents (42), and dispatch inputs (18).
+Implement bounded reports for variable uses, near-pointer segments, stack
+arguments, path effects, return widths, overlapping accesses, incoming calls,
+effective guards, allocation extents and dispatch inputs.
 This is research tooling; it changes no gameplay, evidence status or asset pack.
 
 The toolkit owns a bounded 16-bit x86 instruction reader and path reporter. The
@@ -32,3 +31,14 @@ produce explicit incomplete reports. Tests require no original files or runtime.
 Exit: all ten cases have executable reports and synthetic regressions, the
 command interface and limits are documented, repository gates pass, and linked
 PRs identify the exact delivered scope for review before propagation.
+
+## Alignment with merged reporter contracts
+
+Align the guide with standards PR 26 as merged at
+`94f8f678afb05171567f48d9fb19488e48309f12`: configs and reports live in
+`GAME_DIR`, completion is scoped to the declared domain and model, and a game's
+reporter request stays open until its own case passes. Keep the existing higher-
+address caller regression and add a paired memory test that reads different
+values through the same BP-derived BX offset before and after instructions make
+DS equal to SS. No reporter API or instruction semantics change is planned.
+Exit: synthetic reporter tests pass and the template pins the reviewed update.

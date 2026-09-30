@@ -97,6 +97,19 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(r["paths"][0]["registers"]["ds"]["value"], 0x3000)
         self.assertTrue(any(e.get("argument") for e in events(r, "read")))
 
+    def test_bp_derived_bx_reads_change_when_instructions_equalize_ds_ss(self):
+        c = Code().emit("89 e5 83 ec 02 8d 5e fe c7 07 11 11 36 c7 07 22 22")
+        c.label("unequal").emit("8b 07 16 1f").label("equal").emit("8b 17 83 c4 02 c3")
+        r = report(c, "memory", registers={"ds": 0x2000, "ss": 0x3000, "sp": 0x8000})
+        self.assertTrue(r["completeWithinModel"], r)
+        before = next(e for e in events(r, "read") if e["site"] == c.labels["unequal"])
+        after = next(e for e in events(r, "read") if e["site"] == c.labels["equal"])
+        self.assertEqual(before["offset"]["value"], 0x7ffe)
+        self.assertEqual(after["offset"]["value"], before["offset"]["value"])
+        self.assertEqual((before["segment"]["value"], after["segment"]["value"]), (0x2000, 0x3000))
+        self.assertEqual((before["value"]["value"], after["value"]["value"]), (0x1111, 0x2222))
+        self.assertEqual(r["paths"][0]["registers"]["ds"]["value"], r["paths"][0]["registers"]["ss"]["value"])
+
     def test_near_call_consumes_actual_stack_widths(self):
         c = Code().emit("68 34 12").branch("e8", "callee").emit("83 c4 02 c3")
         c.label("callee").emit("55 89 e5 8b 46 04 c9 c3")

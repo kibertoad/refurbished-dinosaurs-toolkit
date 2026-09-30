@@ -1,11 +1,17 @@
 # Bounded instruction reports
 
 Run `python -m pip install -r tools/evidence/requirements.txt` once in the Python
-environment used for research, then `node tools/evidence/report.mjs trace
-analysis/original/query.json`. Python 3.10 or later, Capstone 5.0.7 and Node 22 or
-later are required. `EVIDENCE_PYTHON` selects another Python executable. Keep
-source files, configs and reports in local-only analysis storage. Nothing runs
-the original program, invokes DOSBox or changes a spec status.
+environment used for research. Python 3.10 or later, Capstone 5.0.7 and Node 22 or
+later are required. `EVIDENCE_PYTHON` selects another Python executable.
+Reports and their configurations stay in `GAME_DIR` and are not committed.
+For example, from PowerShell with `GAME_DIR` set to the owned game's directory:
+
+```powershell
+node tools/evidence/report.mjs trace "$env:GAME_DIR/analysis/query.json"
+```
+
+Save redirected output under `GAME_DIR` too. The reporter does not run the
+original program, invoke DOSBox or change a spec status.
 
 The input names a hash-checked source and evidenced code regions. For MZ/FBOV,
 the Node entry point derives relocation membership and canonical trampoline
@@ -15,7 +21,7 @@ input, not independently verified evidence. Use the Node entry point for origina
 
 ```json
 {
-  "source": "owned.exe",
+  "source": "../owned.exe",
   "sourceKind": "mz",
   "sha256": "replace-with-the-source-sha256",
   "entry": 64,
@@ -86,7 +92,7 @@ and account for every gap; `negativeUsable` is deliberately conservative.
 call sites to any resolved target. For FBOV a `targetSelector` may instead name a
 `descriptor` and canonical resident `trampoline` offset. The loader verifies both.
 The reporter scans every byte of the named `searchRegions` (all regions by
-default), including callers after the target's return. It separates relative
+default), including callers placed at higher addresses than the target's code. It separates relative
 calls, resident relocations and overlay fixups, preserves encoded descriptor
 words and resolved addresses, and distinguishes raw candidates from entry-path
 instructions. Aliases resolve by canonical target. Computed calls, unrelocated
@@ -147,8 +153,18 @@ under the documentation standard.
 ## Acceptance and propagation
 
 Run `python -B -m unittest discover -s tests/evidence -p test_x86.py` and
-`node --test tests/evidence/bridge.test.mjs`. The fixtures are entirely synthetic.
+`node --test tests/evidence/bridge.test.mjs`. The fixtures are entirely synthetic. The paired segment test reads distinct
+values through the same BP-derived BX offset before and after `push ss; pop ds`;
+the incoming-call test places a caller at a higher address than the target's code.
 The template vendors an exact pinned copy; refine the toolkit source and update
 the template's copy and digest record together. The website describes acceptance
 contracts, while these executable tests establish delivered reporter behavior.
-No gap in a game repository is deleted merely because this tooling exists.
+A reporter need not support every query. Each supported query must meet its
+contract, with unsupported cases and remaining limits stated separately. A
+request for reporter behaviour in a game's repository stays open until the
+reporter passes that request's own case. Passing synthetic cases or adopting
+review guidance alone does not close it. These requirements follow standards
+PR 26, merged at `94f8f678afb05171567f48d9fb19488e48309f12`.
+A report that says its search is complete makes that claim only for the stated
+domain and model; it establishes neither native reachability nor a complete
+reading under the standard.
