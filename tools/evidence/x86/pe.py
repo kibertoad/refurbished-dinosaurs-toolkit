@@ -38,6 +38,8 @@ def pe32(data):
         at = table + i * 40
         virtual_size, rva, raw_size, raw = (dword(at + j) for j in (8, 12, 16, 20))
         extent = max(virtual_size, raw_size)
+        # Raw bytes past VirtualSize are file-alignment padding, not loaded source.
+        loaded = min(raw_size, virtual_size) if virtual_size else raw_size
         if not extent or rva < headers or rva + extent > size:
             raise ValueError("PE section escapes image or overlaps headers")
         if raw_size:
@@ -46,7 +48,7 @@ def pe32(data):
                 raise ValueError("PE section raw bytes overlap headers")
         section = {"index": i, "name": data[at:at + 8].split(b'\0')[0].decode('ascii', errors='replace'),
                    "rva": rva, "va": base + rva, "virtualSize": virtual_size,
-                   "rawStart": raw, "rawSize": raw_size, "mappedExtent": extent,
+                   "rawStart": raw, "rawSize": raw_size, "loadedRawSize": loaded, "mappedExtent": extent,
                    "executable": bool(dword(at + 36) & 0x20000000)}
         for prior in sections:
             if max(rva, prior['rva']) < min(rva + extent, prior['rva'] + prior['mappedExtent']):
@@ -67,14 +69,17 @@ def prepare_pe(data, config):
         raise ValueError("PE32 requires the 32-bit flat model")
     if config.get('relocations') or config.get('targetSelector'):
         raise ValueError("MZ relocation/overlay inputs cannot be used for PE32")
+    regions = result.get('regions', [])
+    if not isinstance(regions, list) or not all(isinstance(r, dict) for r in regions):
+        raise ValueError("Regions must be a list of objects")
     result.update(bits=32, addressModel='flat32', peMetadata=metadata)
-    for region in result.get('regions', []):
+    for region in regions:
         start, end = region.get('start'), region.get('end')
         if type(start) is not int or type(end) is not int or end <= start:
             raise ValueError("PE code bounds must be integer file offsets")
-        section = next((s for s in metadata['sections'] if s['executable'] and s['rawStart'] <= start < end <= s['rawStart'] + s['rawSize']), None)
+        section = next((s for s in metadata['sections'] if s['executable'] and s['rawStart'] <= start < end <= s['rawStart'] + s['loadedRawSize']), None)
         if section is None:
-            raise ValueError("PE code region must be within raw executable section bytes")
+            raise ValueError("PE code region must be within loaded raw executable section bytes")
         va = section['va'] + start - section['rawStart']
         if region.get('ip', va) != va or region.get('segment', 0) != 0 or region.get('resident', False):
             raise ValueError("PE region mapping disagrees with source section table")

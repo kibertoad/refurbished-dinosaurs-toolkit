@@ -202,8 +202,8 @@ Declare regions with file-offset `start`/exclusive `end`, established file-offse
 `entries`, unique `name` and bounds `evidence`. `ip` and `segment` may be omitted:
 virtual addresses are derived from ImageBase, section RVA and raw offset, with
 segment zero as a mapping token. Supplied values must agree. Each region stays
-inside one raw executable section. Virtual zero-fill is not initialized source
-code. Overlapping raw or virtual sections, truncated headers and sections,
+inside one raw executable section. Virtual zero-fill and raw alignment padding
+past VirtualSize are not initialized source code. Overlapping raw or virtual sections, truncated headers and sections,
 unsupported machines, PE32+, conflicting mappings and MZ relocation/overlay
 inputs fail. Headers and section metadata appear in every report's sourceMapping.
 
@@ -212,7 +212,7 @@ stack frames, four-byte near return addresses and E8 rel32 target arithmetic.
 File-offset query sites remain distinct from loaded virtual addresses: variable
 `query.offset` and table `offset` are preferred-base VAs; `entry`, `target`,
 `controls`, checkpoints and table `start` are file offsets. PE table mappings
-are checked against the initialized raw section bytes. A SIB jump with only one
+are checked against the loaded raw section bytes. A SIB jump with only one
 index register is accepted; its encoded scale participates in table selection.
 No actual loader, import resolver or relocation execution is simulated. Rebasing,
 packed/self-modifying code and runtime-written targets require another reading.

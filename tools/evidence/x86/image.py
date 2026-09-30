@@ -50,6 +50,8 @@ class Image:
             raise ValueError("Declare 1..256 code regions")
         names = set()
         for r in self.regions:
+            if not isinstance(r, dict):
+                raise ValueError("Each region must be an object")
             name = r.get("name")
             if not isinstance(name, str) or not name or name in names:
                 raise ValueError("Region names must be unique")
@@ -136,11 +138,11 @@ class Image:
         return target, {"rawSegment": raw, "offset": ip, "resolvedSegment": fixup["segment"], "relocation": fixup}
 
     def file_offset(self, va, width=1):
-        """Only initialized raw PE bytes; virtual zero-fill is not a source extent."""
+        """Only loaded raw PE bytes; zero-fill and alignment padding are not source extents."""
         metadata = self.config.get("peMetadata")
         if not metadata:
             return None
         for section in metadata["sections"]:
-            if section["va"] <= va and va + width <= section["va"] + section["rawSize"]:
+            if section["va"] <= va and va + width <= section["va"] + section["loadedRawSize"]:
                 return section["rawStart"] + va - section["va"]
         return None
