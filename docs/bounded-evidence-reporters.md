@@ -253,3 +253,26 @@ no universal call-completeness or native-reachability claim. PE indirect imports
 IAT trampolines, stored callables, exception dispatch and computed targets remain
 unresolved rather than guessed. This initial model implements bounded reports,
 not a solver, loader emulator or whole-program analysis.
+
+
+## Bounded string effects and saved flags
+
+MOVS/STOS/LODS report sequential memory accesses in segmented16 and flat32,
+with operand widths, source overrides, fixed ES destination and modular pointers.
+REP requires a concrete count. `stringIterations` bounds the entire query
+(default 4096, maximum 65536), including reserved iterations of paths that stop.
+Zero count touches no memory and needs no direction assumption. Address-size
+changes and REPNE forms stop with explicit gaps.
+
+DF begins unknown. CLD/STD establish local values; otherwise string effects fork
+conditional forward/backward cases tied to that producer. Optional
+`flags: { "direction": 0 }` (or 1) is a reported starting hypothesis, never native
+state evidence. PUSHF/POPF and their effective 32-bit forms restore arithmetic,
+direction and interrupt provenance only when the complete saved word remains
+intact in local memory. Corrupted words leave arithmetic predicates unresolved;
+DF/IF are extracted from the replacement word. CLI/STI have local flag effects
+only. Unknown returning call models invalidate DF/IF as well as arithmetic flags.
+
+These are memory effects, not pixels, timing or interrupt observations. IRET,
+interrupt scheduling and hardware presentation remain unsupported. A stopped
+prefix does not establish the behavior of the full caller or helper.

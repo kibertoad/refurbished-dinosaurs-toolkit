@@ -2,7 +2,7 @@
 from copy import deepcopy
 from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
 from .image import integer
-from .machine import State, StopPath, ordinary, predicate, REGISTERS, ALIASES
+from .machine import State, StopPath, ordinary, predicate, REGISTERS, ALIASES, string_instruction, string_count, string_effect
 from .values import const, unknown, sources, op, Value
 
 # Synonymous and complementary branches on one flag producer share a single assumption.
@@ -135,6 +135,8 @@ def trace(image, config):
     pending, outputs, global_gaps = [State(entry, image, config)], [], []
     created = 1
     total_steps = 0
+    total_string_steps = 0
+    string_limit = integer(config.get("stringIterations", 4096), 1, 65536, "string iteration budget")
     total_limit = integer(config.get("totalSteps", 20000), 1, 100000, "totalSteps")
     checkpoints = set(config.get("checkpoints", []))
 
@@ -164,12 +166,42 @@ def trace(image, config):
                 if at in checkpoints:
                     state.event("checkpoint", registers=snapshot(state))
                 m, following = ins.mnemonic, at + ins.size
-                if 0xf2 in ins.prefix or 0xf3 in ins.prefix:
+                if (0xf2 in ins.prefix or 0xf3 in ins.prefix) and not string_instruction(ins):
                     raise StopPath("repeat prefix requires a separate bounded string-operation reading")
                 if 0x66 in ins.prefix and (m in ("call", "lcall", "ret", "retf", "jmp", "ljmp") or m.startswith("j")):
                     raise StopPath("Operand-size control transfer override is outside the selected frame model")
                 if image.flat and m in ("lcall", "ljmp"):
                     raise StopPath("Far transfer is outside the PE32 flat model")
+                if string_instruction(ins):
+                    count = string_count(state, ins)
+                    if count.number != 0 and state.direction_flag.number is None and count.number is not None and count.number <= string_limit - total_string_steps:
+                        direction = state.direction_flag
+                        key = repr(("direction", direction.term))
+                        choices = [state.assumptions[key]] if key in state.assumptions else [0, 1]
+                        for choice in choices:
+                            if created >= max_paths:
+                                global_gaps.append({"site": at, "reason": "path limit at unknown direction flag"})
+                                break
+                            child = deepcopy(state); created += 1
+                            child.assumptions[key] = choice
+                            child.direction_flag = const(choice, 1, at)
+                            child.event("flag-assumption", flag="DF", value=choice, producer=direction.report(),
+                                        evidence="conditional outcome of one unresolved direction producer")
+                            try:
+                                remaining = string_limit - total_string_steps
+                                total_string_steps += count.number
+                                string_effect(child, ins, remaining)
+                                child.at = following
+                                pending.append(child)
+                            except StopPath as error:
+                                finish(child, str(error))
+                        break
+                    remaining = string_limit - total_string_steps
+                    if count.number is not None and count.number <= remaining:
+                        total_string_steps += count.number
+                    string_effect(state, ins, remaining)
+                    state.at = following
+                    continue
                 if m in ("call", "lcall"):
                     target, provenance = call_target(image, at, ins)
                     indirect_value = None
@@ -217,6 +249,8 @@ def trace(image, config):
                             child.memory.clear()
                             child.memory_epoch += 1
                             child.forget_flags()
+                            child.direction_flag = unknown(f"modeled-call:{at}:DF:{child.flag_serial}", 1, at)
+                            child.interrupt_flag = unknown(f"modeled-call:{at}:IF:{child.flag_serial}", 1, at)
                             for r, n in case.get("registers", {}).items():
                                 child.setreg(r, const(n, ALIASES[r][2], at), at)
                             child.conditional.append({"site": at, "evidence": model["evidence"],

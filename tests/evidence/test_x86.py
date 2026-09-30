@@ -559,5 +559,73 @@ class ReporterTests(unittest.TestCase):
             self.assertIn("baseline", result.stderr)
 
 
+
+    def test_string_direction_paths_and_explicit_hypothesis(self):
+        code = "b0 07 b9 03 00 bf 00 01 f3 aa c3"
+        for direction, offsets in ((0, [256,257,258]), (1, [256,255,254])):
+            result = report(code, flags={"direction":direction}, registers={"es":0x2000})
+            self.assertTrue(result["completeWithinModel"])
+            self.assertEqual([e["offset"]["value"] for e in events(result,"write")], offsets)
+            self.assertEqual(result["paths"][0]["registers"]["cx"]["value"],0)
+        result=report(code, registers={"es":0x2000})
+        self.assertEqual(len(result["paths"]),2)
+        self.assertEqual(sorted(p["registers"]["di"]["value"] for p in result["paths"]),[253,259])
+        self.assertEqual(len(events(result,"flag-assumption")),2)
+
+    def test_string_zero_unknown_and_budget(self):
+        result=report("b9 00 00 bf 00 01 f3 aa c3")
+        self.assertTrue(result["completeWithinModel"])
+        self.assertFalse(events(result,"write"))
+        self.assertFalse(events(result,"flag-assumption"))
+        for code, options, reason in (("f3 aa c3",{},"count unresolved"),
+                ("b9 03 00 f3 aa c3",{"stringIterations":2},"budget exhausted"),
+                ("67 aa c3",{},"Address-size"), ("f2 aa c3",{},"REPNE")):
+            result=report(code,flags={"direction":0},**options)
+            self.assertFalse(result["completeWithinModel"])
+            self.assertIn(reason,result["paths"][0]["stop"])
+            self.assertFalse(events(result,"write"))
+
+    def test_string_overlap_is_sequential_and_source_override_distinct(self):
+        result=report("c6 06 00 01 01 c6 06 01 01 02 c6 06 02 01 03 be 00 01 bf 01 01 b9 02 00 fc f3 a4 a0 02 01 c3",
+                      registers={"ds":0x2000,"es":0x2000})
+        self.assertEqual(result["paths"][0]["registers"]["al"]["value"],1)
+        result=report("36 f3 a4 c3",flags={"direction":0},registers={"cx":1,"si":256,"di":512,"ss":0x4000,"ds":0x2000,"es":0x3000})
+        self.assertEqual(events(result,"read")[0]["segment"]["value"],0x4000)
+        self.assertEqual(events(result,"write")[0]["segment"]["value"],0x3000)
+
+    def test_string_operand_width_and_pointer_wrap(self):
+        result=report("66 f3 ab c3",flags={"direction":0},registers={"eax":0x11223344,"cx":2,"di":256,"es":0x2000})
+        self.assertEqual([e["width"] for e in events(result,"write")],[4,4])
+        self.assertEqual(result["paths"][0]["registers"]["di"]["value"],264)
+        result=report("fc aa aa c3",registers={"di":65535,"es":0x2000})
+        self.assertEqual([e["offset"]["value"] for e in events(result,"write")],[65535,0])
+        result=report("fd ac c3",registers={"si":0,"ds":0x2000})
+        self.assertEqual(result["paths"][0]["registers"]["si"]["value"],65535)
+        self.assertEqual(len(events(result,"read")),1)
+
+    def test_saved_flags_restore_direction_and_arithmetic_producer(self):
+        result=report("fd 9c fc b9 03 00 bf 00 01 f3 aa 9d aa c3",registers={"ss":0x9000,"sp":0x8000,"es":0x2000})
+        restore=events(result,"flags-restore")[0]
+        self.assertTrue(restore["intactLocalSnapshot"])
+        self.assertEqual(restore["direction"]["value"],1)
+        self.assertEqual(result["paths"][0]["registers"]["di"]["value"],258)
+        code=Code().emit("31 c0 39 c0 9c 83 f8 01 9d").branch("75","bad").emit("c3").label("bad").emit("b8 01 00 c3")
+        result=report(code,registers={"ss":0x9000,"sp":0x8000})
+        self.assertEqual(len(result["paths"]),1)
+        self.assertEqual(result["paths"][0]["registers"]["ax"]["value"],0)
+
+    def test_saved_flags_corruption_cannot_restore_snapshot(self):
+        result=report("9c 89 e3 36 c7 07 00 04 9d aa c3",registers={"ss":0x9000,"sp":0x8000,"es":0x2000,"di":256})
+        restore=events(result,"flags-restore")[0]
+        self.assertFalse(restore["intactLocalSnapshot"])
+        self.assertEqual(restore["direction"]["value"],1)
+        self.assertEqual(result["paths"][0]["registers"]["di"]["value"],255)
+
+    def test_modeled_call_invalidates_direction(self):
+        result=report("fc e8 00 10 aa c3",registers={"di":256,"es":0x2000},callModels=[{
+            "site":1,"evidence":"synthetic unknown returning service","preserves":["edi","es"],"cases":[{}]}])
+        self.assertEqual(len(result["paths"]),2)
+        self.assertEqual(sorted(p["registers"]["di"]["value"] for p in result["paths"]),[255,257])
+
 if __name__ == "__main__":
     unittest.main()
