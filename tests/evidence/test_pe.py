@@ -237,7 +237,7 @@ class PEReporterTests(unittest.TestCase):
         data, config = fixture(c.bytes(), query={'offset': DATA_VA, 'width': 1})
         config['regions'][0]['end'] = CODE_RAW + c.labels['external']
         r = run_report(data, config, 'uses')
-        found = {e['site'] - CODE_RAW: (e['width'], e['effectiveSegmentRegister']) for e in r['matches'] + r['unresolvedAccesses']}
+        found = {e['site'] - CODE_RAW: (e['width'], e['effectiveSegmentRegister']) for e in r['conditionalAccesses']}
         self.assertEqual(found, {5: (4, 'ss'), 8: (6, 'ds'), 14: (4, 'ds')})
         self.assertFalse(r['negativeUsable'])
 

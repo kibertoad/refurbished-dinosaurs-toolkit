@@ -88,12 +88,18 @@ numeric `segment`. It traces each established entry instead of linearly decoding
 a region. `controls` names known matching instruction offsets; a missed control
 is an error. The report separates matching accesses, possible unknown aliases,
 raw operand candidates and undecoded ranges. After a stopped effect trace,
-explicit memory operands reached by the entry CFG are still inventoried, labelled
-as operand observations with unknown values and segment state. Their default or
-overridden segment-register name is retained. Reachability is conditional on
-encoded guards and returning callees; these observations do not prove callee
+explicit memory operands reached by the entry CFG are still inventoried, in
+`conditionalAccesses` rather than `matches`, with unknown values and segment state.
+Their default or overridden segment-register name is retained. Each one's
+`dependsOn` names the stops whose CFG reaches it (an unread call, an unsupported
+instruction, an exhausted budget) and every call it is reached past, since those
+calls were never traced either. Once a named callee has been read, those are the
+accesses to re-check. Reachability is conditional on encoded guards and on
+execution continuing past every named stop; these observations do not prove callee
 preservation, effective-address values, or feasible native execution. A concrete
-segment query leaves those unpropagated operands unresolved. LEA is not a use. The control is a known use of this
+segment query marks their `address` as a possible alias. They still satisfy a
+positive control, since the control shows the search reached that instruction,
+and they always make `negativeUsable` false. LEA is not a use. The control is a known use of this
 query, so a controlled inventory normally contains at least that use. For an
 absence claim about additional uses, compare the inventory with that known set
 and account for every gap; `negativeUsable` is deliberately conservative.
@@ -179,6 +185,8 @@ request for reporter behaviour in a game's repository stays open until the
 reporter passes that request's own case. Passing synthetic cases or adopting
 review guidance alone does not close it. These requirements follow standards
 PR 26, merged at `94f8f678afb05171567f48d9fb19488e48309f12`.
+The separate `conditionalAccesses` list follows the variable-use contract of
+standards PR 27.
 A report that says its search is complete makes that claim only for the stated
 domain and model; it establishes neither native reachability nor a complete
 reading under the standard.
