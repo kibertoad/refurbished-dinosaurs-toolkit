@@ -4,6 +4,9 @@ import json
 import sys
 from pathlib import Path
 
+CONFIG_LIMIT = 1024 * 1024
+PREPARED_CONFIG_LIMIT = 16 * 1024 * 1024
+
 
 def main():
     from x86.image import read_source
@@ -12,15 +15,18 @@ def main():
         raise ValueError("Usage: report.py <trace|uses|arguments|effects|returns|memory|incoming|guards|allocation|dispatch> <config.json|->")
     command, config_path = sys.argv[1:]
     if config_path == "-":
-        text = sys.stdin.read(1024 * 1024 + 1)
+        # The Node loader caps its input at 1 MiB, then adds every source relocation.
+        limit, label = PREPARED_CONFIG_LIMIT, "Prepared config exceeds 16 MiB"
+        text = sys.stdin.read(limit + 1)
         base = Path.cwd()
     else:
+        limit, label = CONFIG_LIMIT, "Config exceeds 1 MiB"
         path = Path(config_path).resolve()
-        if path.stat().st_size > 1024 * 1024:
-            raise ValueError("Config exceeds 1 MiB")
+        if path.stat().st_size > limit:
+            raise ValueError(label)
         text, base = path.read_text(encoding="utf-8"), path.parent
-    if len(text.encode("utf-8")) > 1024 * 1024:
-        raise ValueError("Config exceeds 1 MiB")
+    if len(text.encode("utf-8")) > limit:
+        raise ValueError(label)
     config = json.loads(text)
     if not isinstance(config, dict):
         raise ValueError("Config must be an object")

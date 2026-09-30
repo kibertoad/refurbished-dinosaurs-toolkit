@@ -79,17 +79,20 @@ class State:
         if write is not None:
             write = Value(write.bits, write.term, sources(write, site=self.at))
             self.memory_epoch += 1
+
+            def domain(k):
+                if k[0] == ("linear",):
+                    return k[2], k[2] + 1
+                if k[0][0] == "constant":
+                    start = k[0][1] * 16
+                    return start, start + 65536
+                return None
+            # A concrete write covers every byte it stores, not only its first byte.
+            written = (keys[0][2], keys[-1][2] + 1) if seg == ("linear",) else domain(keys[0])
             for key in list(self.memory):
                 if key not in keys and (key[0], key[1]) != (seg, base):
                     # Different symbolic segments/bases may alias. Concrete linear locations do not.
-                    def domain(k):
-                        if k[0] == ("linear",):
-                            return k[2], k[2] + 1
-                        if k[0][0] == "constant":
-                            start = k[0][1] * 16
-                            return start, start + 65536
-                        return None
-                    a, b = domain(key), domain(keys[0])
+                    a, b = domain(key), written
                     disjoint = a is not None and b is not None and (a[1] <= b[0] or b[1] <= a[0])
                     if not disjoint:
                         uncertain.append(key)
@@ -182,9 +185,14 @@ def predicate(state, mnemonic):
     a, b, operation, site = flags
     info = {"predicate": mnemonic, "flagProducer": site, "operation": operation,
             "left": a.report(), "right": b.report()}
-    if a.number is None or b.number is None:
+    if a.number is not None and b.number is not None:
+        x, y = a.number, b.number
+    elif operation in ("cmp", "sub", "xor") and a.term == b.term:
+        # Any value compared with, subtracted from or XORed with itself yields zero.
+        x = y = 0
+    else:
         return None, info
-    x, y, bits = a.number, b.number, a.bits
+    bits = a.bits
     if operation in ("cmp", "sub"):
         raw = x - y
         result = raw % (1 << bits)

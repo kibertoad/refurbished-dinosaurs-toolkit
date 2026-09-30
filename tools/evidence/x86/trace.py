@@ -3,7 +3,20 @@ from copy import deepcopy
 from capstone.x86 import X86_OP_IMM
 from .image import integer
 from .machine import State, StopPath, ordinary, predicate, REGISTERS, ALIASES
-from .values import const, unknown, sources, Value
+from .values import const, unknown, sources, op, Value
+
+# Synonymous and complementary branches on one flag producer share a single assumption.
+BRANCH_CONDITIONS = {}
+for names, condition in ((("je", "jz"), "z"), (("jb", "jc", "jnae"), "c"), (("jbe", "jna"), "be"),
+                         (("jl", "jnge"), "l"), (("jle", "jng"), "le"), (("js",), "s"),
+                         (("jo",), "o"), (("jp", "jpe"), "p")):
+    for name in names:
+        BRANCH_CONDITIONS[name] = (condition, False)
+for names, condition in ((("jne", "jnz"), "z"), (("jae", "jnb", "jnc"), "c"), (("ja", "jnbe"), "be"),
+                         (("jge", "jnl"), "l"), (("jg", "jnle"), "le"), (("jns",), "s"),
+                         (("jno",), "o"), (("jnp", "jpo"), "p")):
+    for name in names:
+        BRANCH_CONDITIONS[name] = (condition, True)
 
 
 def call_target(image, site, ins):
@@ -96,6 +109,7 @@ def trace(image, config):
     created = 1
     total_steps = 0
     total_limit = integer(config.get("totalSteps", 20000), 1, 100000, "totalSteps")
+    checkpoints = set(config.get("checkpoints", []))
 
     def finish(s, reason=None, returned=False):
         outputs.append({"returned": returned, "stop": reason, "steps": s.steps,
@@ -120,7 +134,6 @@ def trace(image, config):
                 state.visits[at] = state.visits.get(at, 0) + 1
                 if state.visits[at] > 4:
                     raise StopPath("repeated instruction; bounded loop reading required")
-                checkpoints = config.get("checkpoints", [])
                 if at in checkpoints:
                     state.event("checkpoint", registers=snapshot(state))
                 m, following = ins.mnemonic, at + ins.size
@@ -168,13 +181,19 @@ def trace(image, config):
                         raise StopPath("unresolved call: " + provenance.get("reason", "outside mapped code"))
                     if len(state.frames) >= max_depth:
                         raise StopPath("call depth limit; recursion or callee remains unresolved")
+                    target_region = image.region(target)
+                    if target_region is None:
+                        raise StopPath("call target outside declared code regions")
+                    here = image.region(at)
+                    return_ip = (here["ip"] + following - here["start"]) & 0xFFFF
                     if m == "lcall":
                         state.push(state.reg("cs"))
-                    state.push(const(image.region(at)["ip"] + following - image.region(at)["start"], 16, at))
+                    state.push(const(return_ip, 16, at))
                     state.frames.append({"entry": target, "sp": state.reg("sp"), "returnBytes": 4 if m == "lcall" else 2,
-                                         "continuation": following, "callSite": at, "callerCS": state.reg("cs")})
+                                         "continuation": following, "returnIP": return_ip, "callSite": at,
+                                         "callerCS": state.reg("cs")})
                     if m == "lcall":
-                        state.setreg("cs", const(image.region(target)["segment"], 16, at), at)
+                        state.setreg("cs", const(target_region["segment"], 16, at), at)
                     state.at = target
                     continue
                 if m in ("ret", "retf"):
@@ -201,9 +220,7 @@ def trace(image, config):
                     if expected != frame["returnBytes"] or state.reg("sp").term != frame["sp"].term:
                         raise StopPath("return frame or stack balance differs from the call")
                     actual_ip = state.pop(2)
-                    caller = image.region(frame["continuation"])
-                    expected_ip = caller["ip"] + frame["continuation"] - caller["start"]
-                    if actual_ip.number != expected_ip:
+                    if actual_ip.number != frame["returnIP"]:
                         raise StopPath("return target was overwritten or has unknown provenance")
                     if m == "retf":
                         actual_cs = state.pop(2)
@@ -211,7 +228,6 @@ def trace(image, config):
                             raise StopPath("far return segment changed")
                         state.setreg("cs", actual_cs, at)
                     if ins.operands:
-                        from .values import op
                         state.setreg("sp", op("add", state.reg("sp"), const(ins.operands[0].imm, 16), at), at)
                     state.frames.pop()
                     state.event("call-return", callSite=frame["callSite"], registers=snapshot(state), modeled=False)
@@ -222,7 +238,10 @@ def trace(image, config):
                     if target is None:
                         raise StopPath("unresolved jump: " + provenance.get("reason", "outside mapped code"))
                     if m == "ljmp":
-                        state.setreg("cs", const(image.region(target)["segment"], 16, at), at)
+                        target_region = image.region(target)
+                        if target_region is None:
+                            raise StopPath("jump target outside declared code regions")
+                        state.setreg("cs", const(target_region["segment"], 16, at), at)
                     state.at = target
                     continue
                 if m.startswith("j"):
@@ -230,17 +249,19 @@ def trace(image, config):
                         raise StopPath("counter branch not supported")
                     target, _ = call_target(image, at, ins)
                     answer, info = predicate(state, m)
-                    key = repr((m, state.flags))
-                    if answer is None:
-                        answer = state.assumptions.get(key)
+                    condition, negated = BRANCH_CONDITIONS.get(m, (m, False))
+                    key = repr((condition, state.flags))
+                    if answer is None and key in state.assumptions:
+                        answer = state.assumptions[key] != negated
                     choices = [answer] if answer is not None else [False, True]
                     branches = []
-                    for taken in choices:
-                        child = deepcopy(state)
+                    for index, taken in enumerate(choices):
+                        # The last choice reuses this state; earlier ones copy it before it changes.
+                        child = state if index == len(choices) - 1 else deepcopy(state)
                         guard = {"site": at, "taken": taken, **info}
                         child.guards.append(guard)
                         child.event("branch", **{k: v for k, v in guard.items() if k != "site"})
-                        child.assumptions[key] = taken
+                        child.assumptions[key] = taken != negated
                         child.at = target if taken else following
                         if child.at is None:
                             finish(child, "branch target outside mapped code")
@@ -262,4 +283,5 @@ def trace(image, config):
             finish(state, str(error))
     return {"paths": outputs, "gaps": global_gaps,
             "completeWithinModel": not global_gaps and bool(outputs) and all(p["returned"] for p in outputs),
-            "nativeReachability": "unconfirmed", "limits": {"steps": max_steps, "paths": max_paths, "depth": max_depth}}
+            "nativeReachability": "unconfirmed", "stepsUsed": total_steps,
+            "limits": {"steps": max_steps, "paths": max_paths, "depth": max_depth}}

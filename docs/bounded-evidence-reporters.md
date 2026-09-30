@@ -144,7 +144,8 @@ Defaults cap each path at 512 instructions, the query at 20,000 steps, paths at
 maximum 1,048,576); use inventories stop after 64 entries (`entryLimit`, maximum
 256). `instructionLimit` bounds graph traversal; `limit` bounds search results.
 Caps, undecoded ranges and unsupported cases are explicit. Source size is capped
-at 256 MiB, config size at 1 MiB and each symbolic expression at 1,024 tuple nodes.
+at 256 MiB, config size at 1 MiB (16 MiB for the relocation-expanded config the
+Node wrapper pipes to Python) and each symbolic expression at 1,024 tuple nodes.
 The Node wrapper caps output at 32 MiB and execution at 120 seconds. A limit never
 turns a partial search into an absence claim. `completeWithinModel` means all
 explored paths reached a return within these assumptions, not a complete reading

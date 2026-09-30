@@ -98,7 +98,7 @@ def uses(image, config):
             gaps.append({"entry": at, "reason": "entry or total instruction budget exhausted"})
             break
         report = trace(image, {**config, "entry": at, "totalSteps": remaining})
-        remaining -= sum(path["steps"] for path in report["paths"])
+        remaining -= report["stepsUsed"]
         if not report["completeWithinModel"]:
             gaps.append({"entry": at, "reason": "incomplete path effects", "stops": list({p["stop"] for p in report["paths"] if p["stop"]})})
         for path in report["paths"]:
@@ -133,7 +133,8 @@ def uses(image, config):
                 break
             scanned_bytes += 1
             ins = image.decode(at)
-            if ins and at not in seen and any(o.type == X86_OP_MEM and offset <= (o.mem.disp & 65535) < offset + width for o in ins.operands):
+            if ins and at not in seen and any(o.type == X86_OP_MEM and max(offset, o.mem.disp & 65535) < min(offset + width, (o.mem.disp & 65535) + max(o.size, 1))
+                                              for o in ins.operands):
                 if len(raw) < result_limit:
                     raw.append({"site": at, "size": ins.size, "classification": "unverified operand candidate"})
                 else:
