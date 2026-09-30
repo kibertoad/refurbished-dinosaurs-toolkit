@@ -184,9 +184,9 @@ contract, with unsupported cases and remaining limits stated separately. A
 request for reporter behaviour in a game's repository stays open until the
 reporter passes that request's own case. Passing synthetic cases or adopting
 review guidance alone does not close it. These requirements follow standards
-PR 26, merged at `94f8f678afb05171567f48d9fb19488e48309f12`.
-The separate `conditionalAccesses` list follows the variable-use contract of
-standards PR 27.
+PR 26, merged at `94f8f678afb05171567f48d9fb19488e48309f12`, and standards
+PR 27, merged at `3b4e6fcfca887620cdf13c8a8e62f9ca53133d60`, whose variable-use
+contract the separate `conditionalAccesses` list implements.
 A report that says its search is complete makes that claim only for the stated
 domain and model; it establishes neither native reachability nor a complete
 reading under the standard.
