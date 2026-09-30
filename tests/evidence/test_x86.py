@@ -214,7 +214,7 @@ class ReporterTests(unittest.TestCase):
         r = run_report(data, configuration(data, target=7), "incoming")
         self.assertEqual(r["confirmed"], [])
         self.assertEqual([(e["site"], e["classification"]) for e in r["unresolved"]],
-                         [(0, "unsupported operand-size call candidate")])
+                         [(0, "unsupported control-transfer frame encoding")])
         self.assertFalse(r["negativeUsable"])
 
     def test_far_aliases_resolve_to_same_canonical_target(self):

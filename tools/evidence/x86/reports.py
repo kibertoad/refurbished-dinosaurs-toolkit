@@ -54,7 +54,7 @@ def incoming(image, config):
         # A reached call can start with a prefix, so the raw E8/9A scan above never sees it.
         if unsupported_transfer(image, ins):
             partial.append({"site": at, "target": None, "encoding": ins.mnemonic, "region": region["name"],
-                            "classification": "unsupported operand-size call candidate"})
+                            "classification": "unsupported control-transfer frame encoding"})
             continue
         resolved, provenance = call_target(image, at, ins)
         row = {"site": at, "target": resolved, "encoding": ins.mnemonic,
