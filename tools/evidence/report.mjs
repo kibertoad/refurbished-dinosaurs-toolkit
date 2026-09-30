@@ -54,6 +54,8 @@ export function prepare(config, base) {
   return { ...config, source, relocations };
 }
 
+const MAX_REPORT_MIB = 32;
+
 export function run(args) {
   const [command, file, ...extra] = args;
   if (!command || !file || extra.length) throw new Error("Usage: node tools/evidence/report.mjs <command> <local-config.json>");
@@ -61,7 +63,8 @@ export function run(args) {
   const config = prepare(JSON.parse(readFileSync(file, "utf8")), dirname(resolve(file)));
   const python = process.env.EVIDENCE_PYTHON || "python";
   const child = spawnSync(python, ["-B", resolve(dirname(fileURLToPath(import.meta.url)), "report.py"), command, "-"],
-    { input: JSON.stringify(config), encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 120000 });
+    { input: JSON.stringify(config), encoding: "utf8", maxBuffer: MAX_REPORT_MIB * 1024 * 1024, timeout: 120000 });
+  if (child.error?.code === "ENOBUFS") throw new Error(`Report exceeds the ${MAX_REPORT_MIB} MiB output limit; narrow the query or reduce path/step limits. No complete report was produced.`);
   if (child.error) throw child.error;
   if (child.status !== 0) throw new Error(child.stderr.trim() || `Reporter exited ${child.status}`);
   return JSON.parse(child.stdout);

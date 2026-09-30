@@ -1,6 +1,6 @@
 """Bounded control flow and interprocedural path reports."""
 from copy import deepcopy
-from capstone.x86 import X86_OP_IMM
+from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
 from .image import integer
 from .machine import State, StopPath, ordinary, predicate, REGISTERS, ALIASES
 from .values import const, unknown, sources, op, Value
@@ -124,6 +124,8 @@ def trace(image, config):
         cases = model.get("cases", [])
         if not isinstance(cases, list) or not 1 <= len(cases) <= 16:
             raise ValueError("A model requires 1..16 return cases")
+        if "returnBytes" in model and (type(model["returnBytes"]) is not int or model["returnBytes"] not in (2, 4)):
+            raise ValueError("Modeled returnBytes must be 2 or 4")
         if any(r not in REGISTERS for r in model.get("preserves", [])):
             raise ValueError("Model preserves must name full registers")
         for case in cases:
@@ -137,7 +139,7 @@ def trace(image, config):
     checkpoints = set(config.get("checkpoints", []))
 
     def finish(s, reason=None, returned=False):
-        outputs.append({"returned": returned, "stop": reason, "steps": s.steps,
+        outputs.append({"returned": returned, "stop": reason, "stopSite": None if returned else s.at, "steps": s.steps,
                         "instructionPath": s.path, "guards": s.guards, "events": s.events,
                         "registers": snapshot(s), "conditionalModels": s.conditional})
 
@@ -171,7 +173,7 @@ def trace(image, config):
                 if m in ("call", "lcall"):
                     target, provenance = call_target(image, at, ins)
                     indirect_value = None
-                    if target is None and ins.operands and ins.mnemonic == "call":
+                    if target is None and ins.operands and ins.operands[0].type in (X86_OP_REG, X86_OP_MEM):
                         indirect_value = state.get(ins, ins.operands[0], image)
                     guard_checks = []
                     if indirect_value is not None:
@@ -181,8 +183,28 @@ def trace(image, config):
                                                      "sameTargetValue": g.get("left", {}).get("expression") == indirect_value.term})
                     state.event("call", target=target, provenance=provenance, registers=snapshot(state),
                                 indirectValue=indirect_value.report() if indirect_value is not None else None, guards=guard_checks)
+                    previous = image.decode(state.path[-2]) if len(state.path) > 1 else None
+                    # push cs + near call builds a far frame only in real mode; far transfers stop in the flat model.
+                    push_cs = (not image.flat and m == "call" and previous is not None and previous.mnemonic == "push"
+                               and previous.size + state.path[-2] == at and previous.operands[0].type == X86_OP_REG
+                               and previous.reg_name(previous.operands[0].reg) == "cs" and previous.operands[0].size == 2)
                     model = next((x for x in models if x["site"] == at), None)
                     if model:
+                        return_bytes = model.get("returnBytes", 4 if m == "lcall" else image.bits // 8)
+                        # The encoding before the call decides validity; a path that reaches the call
+                        # without executing that push only stops, it does not invalidate the model.
+                        encoded_push_cs = at > 0 and image.region(at - 1) is image.region(at) and image.data[at - 1] == 0x0E
+                        if (return_bytes != 4 if image.flat else
+                                (m == "lcall" and return_bytes != 4) or (m == "call" and return_bytes == 4 and not encoded_push_cs)):
+                            raise ValueError("Modeled return width differs from the encoded call frame")
+                        if not image.flat and return_bytes == 4 and m == "call" and not push_cs:
+                            raise StopPath("four-byte call model reached without an immediately executed push cs")
+                        if push_cs and return_bytes != 4:
+                            raise StopPath("push-CS/near-call model requires an explicit four-byte return contract")
+                        if push_cs:
+                            actual_cs = state.pop(2)
+                            if actual_cs.term != state.reg("cs").term:
+                                raise StopPath("modeled far return segment changed")
                         for case in model["cases"]:
                             if created >= max_paths:
                                 global_gaps.append({"site": at, "reason": "path limit at modeled call"})
@@ -194,7 +216,7 @@ def trace(image, config):
                                     child.regs[r] = unknown(f"modeled-call:{at}:{r}", ALIASES[r][2], at)
                             child.memory.clear()
                             child.memory_epoch += 1
-                            child.flags = None
+                            child.forget_flags()
                             for r, n in case.get("registers", {}).items():
                                 child.setreg(r, const(n, ALIASES[r][2], at), at)
                             child.conditional.append({"site": at, "evidence": model["evidence"],
@@ -216,7 +238,8 @@ def trace(image, config):
                     if m == "lcall":
                         state.push(state.reg("cs"))
                     state.push(const(return_ip, image.bits, at))
-                    state.frames.append({"entry": target, "sp": state.reg(state.sp), "returnBytes": 4 if m == "lcall" else image.bits // 8,
+                    state.frames.append({"entry": target, "sp": state.reg(state.sp), "returnBytes": 4 if m == "lcall" or push_cs else image.bits // 8,
+                                         "frameSource": "push-CS/near-call; matching far return required" if push_cs else m,
                                          "continuation": following, "returnIP": return_ip, "callSite": at,
                                          "callerCS": state.reg("cs")})
                     if m == "lcall":
@@ -280,7 +303,7 @@ def trace(image, config):
                     target, _ = call_target(image, at, ins)
                     answer, info = predicate(state, m)
                     condition, negated = BRANCH_CONDITIONS.get(m, (m, False))
-                    key = repr((condition, state.flags))
+                    key = repr((condition, state.flags if state.flags is not None else ("unresolved", state.flag_epoch)))
                     if answer is None and key in state.assumptions:
                         answer = state.assumptions[key] != negated
                     choices = [answer] if answer is not None else [False, True]

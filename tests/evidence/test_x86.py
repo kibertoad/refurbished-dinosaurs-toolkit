@@ -392,6 +392,131 @@ class ReporterTests(unittest.TestCase):
         r = report("0f 20 c0 c3")
         self.assertEqual(r["paths"][0]["stop"], "Unsupported register: cr0")
 
+    def test_cfg_uses_survive_an_unread_call_without_claiming_value_flow(self):
+        code = Code().emit("a0 20 02").branch("e8", "external").emit("a0 20 02 c3").label("external").emit("c3")
+        data = code.bytes()
+        config = configuration(data, query={"offset": 0x220, "width": 1}, controls=[6])
+        config["regions"][0]["end"] = 10
+        result = run_report(data, config, "uses")
+        later = next(e for e in result["matches"] if e["site"] == 6)
+        self.assertIn("entry-CFG operand", later["classification"])
+        self.assertEqual(later["effectiveSegmentRegister"], "ds")
+        self.assertIsNone(later["segment"]["value"])
+        self.assertIsNone(later["value"]["value"])
+        self.assertTrue(result["gaps"])
+        self.assertFalse(result["negativeUsable"])
+        config["controls"] = [1]
+        with self.assertRaisesRegex(ValueError, "control.*missed"):
+            run_report(data, config, "uses")
+
+    def test_cfg_operand_does_not_bind_unknown_segment_or_count_lea(self):
+        data = Code().branch("e8", "external").emit("a0 20 02 8d 1e 20 02 c3").label("external").emit("c3").bytes()
+        config = configuration(data, query={"offset": 0x220, "width": 1, "segment": 0x1234})
+        config["regions"][0]["end"] = 11
+        result = run_report(data, config, "uses")
+        self.assertEqual(result["matches"], [])
+        self.assertTrue(any(e["site"] == 3 for e in result["unresolvedAccesses"]))
+        self.assertFalse(any(e["site"] == 6 for e in result["unresolvedAccesses"]))
+
+    def test_cfg_inventory_skips_fully_traced_accesses(self):
+        data = bytes.fromhex("bb 00 03 8a 07 a0 20 02 c3")
+        result = run_report(data, configuration(data, query={"offset": 0x220, "width": 1}, controls=[5], registers={"ds": 0x1234}), "uses")
+        self.assertEqual(result["unresolvedAccesses"], [])
+        data = bytes.fromhex("a0 20 02 c3")
+        result = run_report(data, configuration(data, query={"offset": 0x220, "width": 1, "segment": 0x2000}, registers={"ds": 0x1234}), "uses")
+        self.assertEqual(result["unresolvedAccesses"], [])
+
+    def test_cfg_operand_counts_full_far_pointer_and_names_no_entry_value(self):
+        data = Code().branch("e8", "external").emit("c5 1e 1e 02 c3").label("external").emit("c3").bytes()
+        config = configuration(data, query={"offset": 0x220, "width": 1})
+        config["regions"][0]["end"] = len(data) - 1
+        later = next(e for e in run_report(data, config, "uses")["matches"] if e["site"] == 3)
+        self.assertEqual(later["width"], 4)
+        self.assertNotIn("initial", repr(later["segment"]["expression"]))
+
+    def test_four_byte_model_reached_without_push_cs_stops_the_path(self):
+        code = Code().branch("eb", "call").emit("0e").label("call").branch("e8", "external").emit("c3").label("external").emit("cb")
+        result = report(code, callModels=[{"site": code.labels["call"], "returnBytes": 4, "evidence": "synthetic", "cases": [{}]}])
+        self.assertIn("without an immediately executed push cs", result["paths"][0]["stop"])
+        with self.assertRaisesRegex(ValueError, "returnBytes"):
+            report("c3", callModels=[{"site": 0, "returnBytes": "4", "evidence": "unreached", "cases": [{}]}])
+
+    def test_push_cs_near_call_consumes_a_verified_far_frame(self):
+        code = Code().emit("68 34 12 0e").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("55 89 e5 8b 46 06 5d cb")
+        result = report(code)
+        self.assertTrue(result["completeWithinModel"])
+        argument = next(e for e in events(result, "read") if "argument" in e)
+        self.assertEqual(argument["argument"]["returnFrameBytes"], 4)
+        self.assertEqual(argument["value"]["value"], 0x1234)
+        self.assertEqual(result["paths"][0]["registers"]["ax"]["value"], 0x1234)
+
+    def test_push_cs_near_call_rejects_a_near_return(self):
+        code = Code().emit("0e").branch("e8", "callee").emit("c3").label("callee").emit("c3")
+        result = report(code)
+        self.assertFalse(result["completeWithinModel"])
+        self.assertIn("return frame", result["paths"][0]["stop"])
+
+    def test_xchg_captures_memory_address_before_register_update(self):
+        result = report("bb 20 02 b8 78 56 89 07 bb 20 02 87 1f c3", registers={"ds": 0x1234})
+        self.assertTrue(result["completeWithinModel"])
+        self.assertEqual(result["paths"][0]["registers"]["bx"]["value"], 0x5678)
+        writes = [e for e in events(result, "write") if e["offset"]["value"] == 0x220]
+        self.assertEqual(writes[-1]["value"]["value"], 0x220)
+        exchanged = report("b8 11 00 bb 22 00 93 c3")
+        self.assertEqual(exchanged["paths"][0]["registers"]["ax"]["value"], 0x22)
+        self.assertEqual(exchanged["paths"][0]["registers"]["bx"]["value"], 0x11)
+
+    def test_imul_low_product_wraps_and_leaves_overflow_flags_unresolved(self):
+        result = report("bb 00 80 6b c3 03 0f af c3 74 01 c3 c3")
+        self.assertTrue(result["completeWithinModel"])
+        self.assertEqual(len(result["paths"]), 2)
+        self.assertEqual(result["paths"][0]["registers"]["ax"]["value"], 0)
+        signed = report("bb 02 00 6b c3 ff c3")
+        self.assertEqual(signed["paths"][0]["registers"]["ax"]["value"], 0xfffe)
+
+    def test_distinct_unknown_flag_producers_do_not_correlate_branches(self):
+        code = Code().emit("d1 e0").branch("74", "first").emit("90").label("first").emit("d1 e3").branch("74", "second").emit("90").label("second").emit("c3")
+        result = report(code)
+        self.assertEqual(len(result["paths"]), 4)
+        self.assertEqual({tuple(g["taken"] for g in p["guards"]) for p in result["paths"]},
+                         {(False, False), (False, True), (True, False), (True, True)})
+
+    def test_implicit_conversions_report_effective_width_and_decoder_mismatch(self):
+        result = report("98 66 98 99 66 99 c3", registers={"eax": 0x12340080, "edx": 0x56780000})
+        conversions = events(result, "conversion")
+        self.assertEqual([e["effectiveOperandBits"] for e in conversions], [16, 32, 16, 32])
+        self.assertEqual([e["sourceRegister"] for e in conversions], ["al", "ax", "ax", "eax"])
+        self.assertEqual([e["destinationRegister"] for e in conversions], ["ax", "eax", "dx", "edx"])
+        self.assertEqual(conversions[0]["result"]["value"], 0xff80)
+        self.assertEqual(conversions[1]["result"]["value"], 0xffffff80)
+        self.assertEqual(conversions[2]["result"]["value"], 0xffff)
+        self.assertEqual(conversions[3]["result"]["value"], 0xffffffff)
+        for event in conversions:
+            expected = {("al", "ax"): "cbw", ("ax", "eax"): "cwde", ("ax", "dx"): "cwd", ("eax", "edx"): "cdq"}
+            self.assertEqual(event["mnemonicWidthMismatch"], event["decoderMnemonic"] != expected[event["sourceRegister"], event["destinationRegister"]])
+
+    def test_modeled_push_cs_call_requires_and_consumes_far_frame(self):
+        code = Code().emit("0e").branch("e8", "external").emit("c3").label("external").emit("cb")
+        model = {"site": 1, "returnBytes": 4, "evidence": "conditional synthetic far-return contract", "cases": [{}]}
+        result = report(code, callModels=[model])
+        self.assertTrue(result["completeWithinModel"])
+        self.assertTrue(result["paths"][0]["conditionalModels"])
+        model.pop("returnBytes")
+        result = report(code, callModels=[model])
+        self.assertIn("explicit four-byte", result["paths"][0]["stop"])
+        with self.assertRaisesRegex(ValueError, "encoded call frame"):
+            report("e8 01 00 c3 c3", callModels=[{"site": 0, "returnBytes": 4, "evidence": "bad frame", "cases": [{}]}])
+
+    def test_far_indirect_reload_after_callee_has_fresh_guard_provenance(self):
+        code = Code().emit("66 83 3e 20 02 00").branch("74", "done").label("bracket").branch("e8", "external").label("indirect").emit("ff 1e 20 02").label("done").emit("c3").label("external").emit("c3")
+        result = report(code, callModels=[{"site": code.labels["bracket"], "evidence": "unknown bracket returns", "cases": [{}]}])
+        calls = [e for e in events(result, "call") if e["site"] == code.labels["indirect"]]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["indirectValue"]["bits"], 32)
+        self.assertTrue(calls[0]["guards"])
+        self.assertFalse(calls[0]["guards"][0]["sameTargetValue"])
+        self.assertFalse(result["completeWithinModel"])
+
     def test_cli_identity_and_errors(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); data = bytes.fromhex("b8 01 00 c3")

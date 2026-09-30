@@ -18,6 +18,15 @@ class StopPath(Exception):
     pass
 
 
+def segment_register(ins, mem):
+    """Name the segment register an explicit memory operand uses (override or stack/data default)."""
+    if mem.segment:
+        return ins.reg_name(mem.segment)
+    base = ins.reg_name(mem.base) if mem.base else None
+    index = ins.reg_name(mem.index) if mem.index else None
+    return "ss" if base in ("bp", "sp", "ebp", "esp") or index == "bp" else "ds"
+
+
 def alias(name):
     # Registers outside the modeled set (control, debug, FPU, ...) stop the path instead of failing the report.
     try:
@@ -47,11 +56,18 @@ class State:
         self.guards = []
         self.assumptions = {}
         self.flags = None
+        self.flag_epoch = 0
+        self.unknown_flag_site = None
         self.frames = [{"entry": entry, "sp": self.reg(self.sp), "returnBytes": config.get("returnBytes", 4 if self.flat else 2)}]
         self.steps = 0
         self.visits = {}
         self.path = []
         self.conditional = []
+
+    def forget_flags(self):
+        self.flags = None
+        self.flag_epoch += 1
+        self.unknown_flag_site = self.at
 
     def reg(self, name):
         root, low, bits = alias(name)
@@ -156,8 +172,7 @@ class State:
         if index:
             index_value = op("mul", self.reg(index), const(mem.scale, self.bits), self.at)
             offset = op("add", offset, index_value, self.at)
-        segment_name = ins.reg_name(mem.segment) if mem.segment else ("ss" if base in ("bp", "sp", "ebp", "esp") or (not self.flat and index == "bp") else "ds")
-        return self.segment(segment_name), offset
+        return self.segment(segment_register(ins, mem)), offset
 
     def get(self, ins, operand, image):
         if operand.type == X86_OP_REG:
@@ -197,7 +212,8 @@ class State:
 def predicate(state, mnemonic):
     flags = state.flags
     if flags is None:
-        return None, {"predicate": mnemonic, "reason": "flag producer unresolved"}
+        return None, {"predicate": mnemonic, "reason": "flag producer unresolved",
+                      "flagProducer": state.unknown_flag_site, "flagGeneration": state.flag_epoch}
     a, b, operation, site = flags
     info = {"predicate": mnemonic, "flagProducer": site, "operation": operation,
             "left": a.report(), "right": b.report()}
@@ -244,6 +260,27 @@ def ordinary(state, ins, image):
         value = state.get(ins, operands[1], image)
         state.put(ins, operands[0], resize(value, operands[0].size * 8, signed=m == "movsx"))
         return
+    if m == "xchg":
+        values = [state.get(ins, operand, image) for operand in operands]
+        addresses = [state.address(ins, operand) if operand.type == X86_OP_MEM else None for operand in operands]
+        for index, operand in enumerate(operands):
+            value = values[1-index]
+            if addresses[index] is None:
+                state.put(ins, operand, value)
+            else:
+                segment, offset = addresses[index]
+                state.access(segment, offset, operand.size, resize(value, operand.size * 8))
+        return
+    if m == "imul" and len(operands) in (2, 3):
+        left, right = (state.get(ins, operand, image) for operand in (operands if len(operands) == 2 else operands[1:]))
+        left = resize(left, operands[0].size * 8)
+        right = resize(right, left.bits, signed=True)
+        result = op("mul", left, right, state.at)
+        state.put(ins, operands[0], result)
+        state.forget_flags()  # CF/OF require the full signed product; other flags are undefined.
+        state.event("arithmetic", operation="imul", left=left.report(), right=right.report(),
+                    result=result.report(), modulus=1 << left.bits, flags="unresolved signed-product overflow")
+        return
     if m == "lea":
         segment, offset = state.address(ins, operands[1])
         state.put(ins, operands[0], offset)
@@ -286,7 +323,10 @@ def ordinary(state, ins, image):
         b = resize(b, a.bits)
         result = op("shl" if m == "sal" else m, a, b, state.at)
         state.put(ins, operands[0], result)
-        state.flags = (a, b, m, state.at) if m in ("add", "sub", "and", "or", "xor") else None
+        if m in ("add", "sub", "and", "or", "xor"):
+            state.flags = (a, b, m, state.at)
+        else:
+            state.forget_flags()
         state.event("arithmetic", operation=m, left=a.report(), right=b.report(), result=result.report(), modulus=1 << a.bits)
         return
     if m in ("inc", "dec"):
@@ -294,11 +334,27 @@ def ordinary(state, ins, image):
         result = op("add" if m == "inc" else "sub", a, const(1, a.bits), state.at)
         state.put(ins, operands[0], result)
         # Carry is preserved; don't claim a full flag producer without modeling it.
-        state.flags = None
+        state.forget_flags()
         return
     if m in ("cbw", "cwde"):
         # Capstone 5 names these inconsistently in 16-bit mode. Use effective size.
+        # The prefix toggles the mode's default operand size (16-bit real mode, 32-bit flat).
         wide = (0x66 in ins.prefix) != state.flat
-        state.setreg("eax" if wide else "ax", resize(state.reg("ax" if wide else "al"), 32 if wide else 16, True), state.at)
+        source, destination = ("ax", "eax") if wide else ("al", "ax")
+        value = resize(state.reg(source), 32 if wide else 16, True)
+        state.setreg(destination, value, state.at)
+        state.event("conversion", sourceRegister=source, destinationRegister=destination,
+                    effectiveOperandBits=32 if wide else 16, decoderMnemonic=m,
+                    mnemonicWidthMismatch=m != ("cwde" if wide else "cbw"), result=value.report())
+        return
+    if m in ("cwd", "cdq"):
+        wide = (0x66 in ins.prefix) != state.flat
+        source, destination = ("eax", "edx") if wide else ("ax", "dx")
+        bits = 32 if wide else 16
+        value = resize(extract(state.reg(source), bits-1, 1), bits, signed=True)
+        state.setreg(destination, value, state.at)
+        state.event("conversion", sourceRegister=source, destinationRegister=destination,
+                    effectiveOperandBits=bits, decoderMnemonic=m,
+                    mnemonicWidthMismatch=m != ("cdq" if wide else "cwd"), result=value.report())
         return
     raise StopPath("Unsupported instruction semantics: " + m)
