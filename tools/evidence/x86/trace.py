@@ -99,6 +99,8 @@ def trace(image, config):
         cases = model.get("cases", [])
         if not isinstance(cases, list) or not 1 <= len(cases) <= 16:
             raise ValueError("A model requires 1..16 return cases")
+        if "returnBytes" in model and (type(model["returnBytes"]) is not int or model["returnBytes"] not in (2, 4)):
+            raise ValueError("Modeled returnBytes must be 2 or 4")
         if any(r not in REGISTERS for r in model.get("preserves", [])):
             raise ValueError("Model preserves must name full registers")
         for case in cases:
@@ -112,7 +114,7 @@ def trace(image, config):
     checkpoints = set(config.get("checkpoints", []))
 
     def finish(s, reason=None, returned=False):
-        outputs.append({"returned": returned, "stop": reason, "steps": s.steps,
+        outputs.append({"returned": returned, "stop": reason, "stopSite": None if returned else s.at, "steps": s.steps,
                         "instructionPath": s.path, "guards": s.guards, "events": s.events,
                         "registers": snapshot(s), "conditionalModels": s.conditional})
 
@@ -161,10 +163,13 @@ def trace(image, config):
                     model = next((x for x in models if x["site"] == at), None)
                     if model:
                         return_bytes = model.get("returnBytes", 4 if m == "lcall" else 2)
-                        if return_bytes not in (2, 4) or type(return_bytes) is not int:
-                            raise ValueError("Modeled returnBytes must be 2 or 4")
-                        if (m == "lcall" and return_bytes != 4) or (m == "call" and return_bytes == 4 and not push_cs):
+                        # The encoding before the call decides validity; a path that reaches the call
+                        # without executing that push only stops, it does not invalidate the model.
+                        encoded_push_cs = at > 0 and image.region(at - 1) is image.region(at) and image.data[at - 1] == 0x0E
+                        if (m == "lcall" and return_bytes != 4) or (m == "call" and return_bytes == 4 and not encoded_push_cs):
                             raise ValueError("Modeled return width differs from the encoded call frame")
+                        if return_bytes == 4 and m == "call" and not push_cs:
+                            raise StopPath("four-byte call model reached without an immediately executed push cs")
                         if push_cs and return_bytes != 4:
                             raise StopPath("push-CS/near-call model requires an explicit four-byte return contract")
                         if push_cs:

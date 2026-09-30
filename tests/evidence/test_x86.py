@@ -409,6 +409,29 @@ class ReporterTests(unittest.TestCase):
         self.assertTrue(any(e["site"] == 3 for e in result["unresolvedAccesses"]))
         self.assertFalse(any(e["site"] == 6 for e in result["unresolvedAccesses"]))
 
+    def test_cfg_inventory_skips_fully_traced_accesses(self):
+        data = bytes.fromhex("bb 00 03 8a 07 a0 20 02 c3")
+        result = run_report(data, configuration(data, query={"offset": 0x220, "width": 1}, controls=[5], registers={"ds": 0x1234}), "uses")
+        self.assertEqual(result["unresolvedAccesses"], [])
+        data = bytes.fromhex("a0 20 02 c3")
+        result = run_report(data, configuration(data, query={"offset": 0x220, "width": 1, "segment": 0x2000}, registers={"ds": 0x1234}), "uses")
+        self.assertEqual(result["unresolvedAccesses"], [])
+
+    def test_cfg_operand_counts_full_far_pointer_and_names_no_entry_value(self):
+        data = Code().branch("e8", "external").emit("c5 1e 1e 02 c3").label("external").emit("c3").bytes()
+        config = configuration(data, query={"offset": 0x220, "width": 1})
+        config["regions"][0]["end"] = len(data) - 1
+        later = next(e for e in run_report(data, config, "uses")["matches"] if e["site"] == 3)
+        self.assertEqual(later["width"], 4)
+        self.assertNotIn("initial", repr(later["segment"]["expression"]))
+
+    def test_four_byte_model_reached_without_push_cs_stops_the_path(self):
+        code = Code().branch("eb", "call").emit("0e").label("call").branch("e8", "external").emit("c3").label("external").emit("cb")
+        result = report(code, callModels=[{"site": code.labels["call"], "returnBytes": 4, "evidence": "synthetic", "cases": [{}]}])
+        self.assertIn("without an immediately executed push cs", result["paths"][0]["stop"])
+        with self.assertRaisesRegex(ValueError, "returnBytes"):
+            report("c3", callModels=[{"site": 0, "returnBytes": "4", "evidence": "unreached", "cases": [{}]}])
+
     def test_push_cs_near_call_consumes_a_verified_far_frame(self):
         code = Code().emit("68 34 12 0e").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("55 89 e5 8b 46 06 5d cb")
         result = report(code)

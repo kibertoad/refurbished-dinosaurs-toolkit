@@ -1,7 +1,7 @@
 """Focused reports derived from instruction paths and explicit source bounds."""
 from capstone import CS_AC_READ, CS_AC_WRITE
 from capstone.x86 import X86_OP_MEM
-from .machine import State, StopPath
+from .machine import State, StopPath, REGISTERS, ALIASES, segment_register
 from .values import unknown
 from .image import Image, integer
 from .trace import trace, walk, call_target
@@ -96,14 +96,20 @@ def uses(image, config):
     # Trace each established entry independently; never decode a whole segment as one stream.
     remaining = integer(config.get("totalSteps", 20000), 1, 100000, "totalSteps")
     entry_limit = integer(config.get("entryLimit", 64), 1, 256, "entryLimit")
-    for index, at in enumerate(entries(image)):
+    # CFG points where value propagation stopped (or never started); operands after them are inventoried below.
+    stopped_roots = []
+    established = entries(image)
+    for index, at in enumerate(established):
         if remaining <= 0 or index >= entry_limit:
             gaps.append({"entry": at, "reason": "entry or total instruction budget exhausted"})
+            stopped_roots.extend(established[index:])
             break
         report = trace(image, {**config, "entry": at, "totalSteps": remaining})
         remaining -= report["stepsUsed"]
         if not report["completeWithinModel"]:
             gaps.append({"entry": at, "reason": "incomplete path effects", "stops": list({p["stop"] for p in report["paths"] if p["stop"]})})
+        stopped_roots.extend(p["stopSite"] for p in report["paths"] if p["stop"] and p["stopSite"] is not None)
+        stopped_roots.extend(g["site"] for g in report["gaps"] if "site" in g)
         for path in report["paths"]:
             for e in path["events"]:
                 if e["kind"] not in ("read", "write") or mode not in ("both", e["kind"]):
@@ -125,38 +131,46 @@ def uses(image, config):
                         matches.append(e); unique.add(key)
     # Operand discovery is distinct from value propagation. An unread call stops
     # trace effects, but it must not erase a later instruction reached by the CFG.
-    path_sites = {(e["site"], e["kind"]) for e in matches + unresolved}
-    for at, ins in sorted(seen.items()):
+    # Only the CFG reachable from a stop is inventoried; fully traced accesses keep their values.
+    reported = {(e["site"], e["kind"]) for e in matches + unresolved}
+    after_stop, stop_gaps, _, _ = walk(image, stopped_roots, config.get("instructionLimit", 10000)) if stopped_roots else ({}, [], None, None)
+    gaps.extend(g for g in stop_gaps if g["reason"] == "instruction limit")
+    for at, ins in sorted(after_stop.items()):
         if ins.mnemonic == "lea":
             continue  # Address formation is not a memory use.
+        if ins.mnemonic == "xlatb":
+            gaps.append({"site": at, "reason": "implicit DS:[BX+AL] operand is not inventoried"}); continue
+        state = None
         for operand in ins.operands:
             if operand.type != X86_OP_MEM:
                 continue
-            kinds = [kind for flag, kind in ((CS_AC_READ, "read"), (CS_AC_WRITE, "write")) if operand.access & flag]
-            for kind in kinds:
-                if mode not in ("both", kind) or (at, kind) in path_sites:
-                    continue
+            kinds = [kind for flag, kind in ((CS_AC_READ, "read"), (CS_AC_WRITE, "write"))
+                     if operand.access & flag and mode in ("both", kind) and (at, kind) not in reported]
+            if not kinds:
+                continue
+            if state is None:
+                # Registers are unknown here; name them for this operand site so no entry value is implied.
                 state = State(at, image, {})
-                try:
-                    segment_value, offset_value = state.address(ins, operand)
-                except StopPath as error:
-                    gaps.append({"site": at, "reason": str(error)}); continue
-                mem = operand.mem
-                base = ins.reg_name(mem.base) if mem.base else None
-                index = ins.reg_name(mem.index) if mem.index else None
-                segment_name = ins.reg_name(mem.segment) if mem.segment else ("ss" if base in ("bp", "sp") or index == "bp" else "ds")
-                event = {"site": at, "kind": kind, "width": operand.size,
+                state.regs.update({r: unknown(f"CFG-operand:{at}:{r}", ALIASES[r][2]) for r in REGISTERS if r != "cs"})
+            try:
+                segment_value, offset_value = state.address(ins, operand)
+            except StopPath as error:
+                gaps.append({"site": at, "reason": str(error)}); continue
+            # Capstone reports the LDS/LES source as a word, but the load reads the full 16:16 pointer.
+            size = 4 if ins.mnemonic in ("lds", "les") else operand.size
+            off = offset_value.number
+            overlaps = off is not None and max(offset, off) < min(offset + width, off + size)
+            if off is not None and not overlaps:
+                continue
+            for kind in kinds:
+                event = {"site": at, "kind": kind, "width": size,
                          "segment": segment_value.report(), "offset": offset_value.report(),
-                         "value": unknown(f"CFG-operand:{at}", operand.size * 8).report(),
-                         "effectiveSegmentRegister": segment_name,
+                         "value": unknown(f"CFG-operand:{at}", size * 8).report(),
+                         "effectiveSegmentRegister": segment_register(ins, operand.mem),
                          "classification": "entry-CFG operand; values and callee effects unresolved",
                          "reachability": "conditional on encoded branch outcomes and returning callees"}
-                off = offset_value.number
-                if off is not None and max(offset, off) < min(offset + width, off + operand.size):
-                    # A concrete segment query cannot bind an unpropagated DS/SS.
-                    (matches if segment is None else unresolved).append(event)
-                elif off is None:
-                    unresolved.append(event)
+                # A concrete segment query cannot bind an unpropagated DS/SS.
+                (matches if overlaps and segment is None else unresolved).append(event)
     for at in controls:
         if type(at) is not int or not any(e["site"] == at for e in matches):
             raise ValueError(f"Positive variable-use control {at} missed; negative result rejected")

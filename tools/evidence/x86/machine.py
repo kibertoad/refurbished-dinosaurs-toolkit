@@ -18,6 +18,15 @@ class StopPath(Exception):
     pass
 
 
+def segment_register(ins, mem):
+    """Name the segment register an explicit memory operand uses (override or 16-bit default)."""
+    if mem.segment:
+        return ins.reg_name(mem.segment)
+    base = ins.reg_name(mem.base) if mem.base else None
+    index = ins.reg_name(mem.index) if mem.index else None
+    return "ss" if base in ("bp", "sp") or index == "bp" else "ds"
+
+
 def alias(name):
     # Registers outside the modeled set (control, debug, FPU, ...) stop the path instead of failing the report.
     try:
@@ -155,8 +164,7 @@ class State:
         if index:
             index_value = op("mul", self.reg(index), const(mem.scale, 16), self.at)
             offset = op("add", offset, index_value, self.at)
-        segment_name = ins.reg_name(mem.segment) if mem.segment else ("ss" if base in ("bp", "sp") or index == "bp" else "ds")
-        return self.reg(segment_name), offset
+        return self.reg(segment_register(ins, mem)), offset
 
     def get(self, ins, operand, image):
         if operand.type == X86_OP_REG:
