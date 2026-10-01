@@ -529,3 +529,19 @@ a raw or contested candidate fails that control. `scanLimit`, `limit`, coverage
 and partial-search flags bound the inventory. Implicit/computed uses, segment
 alias proofs and runtime reachability are excluded; counts never prove their
 absence or promote a candidate to original behavior.
+
+
+Argument and effect reports retain LEA `address-formation` events with the
+addressing segment register and its propagated value/producers. LEA's default
+segment never binds a near pointer. Consumed stack parameter reads add
+`nearPointerArgumentCandidates`; matching dereference offsets add
+`nearPointerAccessCandidates`, keeping formation and dereference segments,
+register choices, producers and offset relations together. Effect reports also
+retain these pointer-related reads. Only matching propagated segment expressions
+and identical or affine symbolic offsets permit `mayMergeStorage` within the
+model. Unknown segments remain unresolved possible aliases; producer ancestry
+alone never proves pointer identity. Concrete distinct segment values are labeled
+`differentWithinModel`, not a universal nonalias claim for arbitrary offsets.
+`pointerFormationLimit` (1..1024, default 128) bounds associations; omitted
+formations remain explicit per path/event and refuse storage merging. A complete
+or stopped trace never promotes a modeled association to runtime state evidence.

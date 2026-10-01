@@ -176,7 +176,7 @@ class State:
         _, _, _, keys = self.keys(segment, offset, width)
         return join([self.memory.get(key, unknown(f"memory:{self.memory_epoch}:{key}", 8, self.at)) for key in keys])
 
-    def access(self, segment, offset, width, write=None, role=None):
+    def access(self, segment, offset, width, write=None, role=None, addressing_register=None):
         seg, base, delta, keys = self.keys(segment, offset, width)
         uncertain = []
         if write is not None:
@@ -223,7 +223,7 @@ class State:
                                  "samePointerValue": same,
                                  "assessment": "same expression; inspect predicate polarity" if same else "checked value differs from this access"})
         event = self.event("write" if write is not None else "read", segment=segment.report(), offset=offset.report(),
-                           width=width, segmentInterpretation="base" if self.flat else "selector-paragraph", interval={"segment": seg, "base": base, "start": delta, "end": delta + width},
+                           width=width, effectiveSegmentRegister=addressing_register, segmentInterpretation="base" if self.flat else "selector-paragraph", interval={"segment": seg, "base": base, "start": delta, "end": delta + width},
                            value=value.report(), missingByteProducers=missing,
                            byteProducers=[{"index": i, "producers": list(self.memory[key].sources) if key in self.memory else []} for i, key in enumerate(keys)],
                            guards=deepcopy(relevant), role=role,
@@ -263,7 +263,7 @@ class State:
             return value
         if operand.type == X86_OP_MEM:
             segment, offset = self.address(ins, operand)
-            return self.access(segment, offset, operand.size)
+            return self.access(segment, offset, operand.size, addressing_register=segment_register(ins, operand.mem))
         raise StopPath("Unsupported operand")
 
     def put(self, ins, operand, value):
@@ -271,17 +271,17 @@ class State:
             self.setreg(ins.reg_name(operand.reg), value, self.at)
         elif operand.type == X86_OP_MEM:
             segment, offset = self.address(ins, operand)
-            self.access(segment, offset, operand.size, resize(value, operand.size * 8))
+            self.access(segment, offset, operand.size, resize(value, operand.size * 8), addressing_register=segment_register(ins, operand.mem))
         else:
             raise StopPath("Unsupported destination")
 
     def push(self, value):
         size = value.bits // 8
         self.setreg(self.sp, op("sub", self.reg(self.sp), const(size, self.bits), self.at), self.at)
-        self.access(self.segment("ss"), self.reg(self.sp), size, value, role="push")
+        self.access(self.segment("ss"), self.reg(self.sp), size, value, role="push", addressing_register="ss")
 
     def pop(self, size):
-        value = self.access(self.segment("ss"), self.reg(self.sp), size, role="pop")
+        value = self.access(self.segment("ss"), self.reg(self.sp), size, role="pop", addressing_register="ss")
         self.setreg(self.sp, op("add", self.reg(self.sp), const(size, self.bits), self.at), self.at)
         return value
 
@@ -387,6 +387,7 @@ def ordinary(state, ins, image):
         segment, offset = state.address(ins, operands[1])
         state.put(ins, operands[0], offset)
         state.event("address-formation", value=offset.report(), addressingSegment=segment.report(),
+                    addressingSegmentRegister=segment_register(ins, operands[1].mem), destinationRegister=ins.reg_name(operands[0].reg),
                     note="LEA does not access memory; this addressing default does not bind a later dereference")
         return
     if m in ("lds", "les"):

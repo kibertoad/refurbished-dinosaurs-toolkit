@@ -1002,17 +1002,67 @@ def _run_report(image, config, command):
                 if a.get(field):
                     checkpoints.add(a[field]["site"])
         config = {**config, "checkpoints": sorted(checkpoints)}
-    report = trace(image, config)
+    report = near_pointer_provenance(trace(image, config), config)
     if command == "allocation":
         return allocations(report, config)
     if command != "trace":
-        kinds = {"arguments": ("read", "call", "call-return"), "effects": ("write", "call", "call-return", "return", "branch", "string-operation",
+        kinds = {"arguments": ("address-formation", "read", "call", "call-return"), "effects": ("address-formation", "write", "call", "call-return", "return", "branch", "string-operation",
                              "flag-assumption", "flag-write", "flags-save", "flags-restore", "local-iret"),
                  "returns": ("return", "call-return", "compare", "branch", "write"),
                  "guards": ("compare", "branch", "read", "write", "call", "call-return"),
                  "memory": ("read", "write", "address-formation")}[command]
         for path in report["paths"]:
-            path["events"] = [e for e in path["events"] if e["kind"] in kinds]
+            path["events"] = [e for e in path["events"] if e["kind"] in kinds or
+                              (command == "effects" and e["kind"] == "read" and (e.get("nearPointerAccessCandidates") or e.get("nearPointerArgumentCandidates")))]
+    return report
+
+
+def near_pointer_provenance(report, config):
+    limit = integer(config.get("pointerFormationLimit", 128), 1, 1024, "pointer formation limit")
+    for path in report["paths"]:
+        formations, omitted = [], 0
+        for order, event in enumerate(path["events"]):
+            if event["kind"] == "address-formation":
+                if len(formations) >= limit:
+                    omitted += 1
+                else:
+                    formations.append((order, event))
+                continue
+            if event["kind"] not in ("read", "write"):
+                continue
+            def links(value):
+                results = []
+                for formed_order, formed in formations:
+                    original = formed["value"]
+                    if formed["site"] not in value["producers"] or original["bits"] != value["bits"]:
+                        continue
+                    a, b = original["expression"], value["expression"]
+                    ab, ad = (a[1], a[2]) if a[0] == "offset" else (a, 0)
+                    bb, bd = (b[1], b[2]) if b[0] == "offset" else (b, 0)
+                    relation = "sameOffset" if a == b else "affineFieldOffset" if ab == bb and ab[0] != "constant" else "producerOnly"
+                    delta = (bd - ad) % (1 << value["bits"]) if relation != "producerOnly" else None
+                    results.append({"formationSite": formed["site"], "formationOrder": formed_order,
+                                    "formationValue": original, "formationAddressingSegment": formed["addressingSegment"],
+                                    "formationSegmentRegister": formed.get("addressingSegmentRegister"),
+                                    "offsetRelation": relation, "offsetDeltaModulo": delta,
+                                    "note": "LEA addressing default is not a segment binding"})
+                return results
+            if event.get("argument"):
+                event["nearPointerArgumentCandidates"] = links(event["value"])
+            accesses = links(event["offset"])
+            for candidate in accesses:
+                formed_segment, accessed_segment = candidate["formationAddressingSegment"], event["segment"]
+                relation = ("sameWithinModel" if formed_segment["bits"] == accessed_segment["bits"] and formed_segment["expression"] == accessed_segment["expression"] else
+                            "differentWithinModel" if formed_segment["value"] is not None and accessed_segment["value"] is not None else "unresolved")
+                candidate.update(dereferenceSegment=accessed_segment, dereferenceSegmentRegister=event.get("effectiveSegmentRegister"),
+                                 segmentRelationship=relation,
+                                 mayMergeStorage=relation == "sameWithinModel" and candidate["offsetRelation"] != "producerOnly" and not omitted,
+                                 interpretation="offset and segment comparison within the propagated model only; unknown segment relationships remain possible aliases")
+            if accesses:
+                event["nearPointerAccessCandidates"] = accesses
+            event["pointerFormationsOmittedBeforeEvent"] = omitted
+        path["nearPointerProvenance"] = {"formationLimit": limit, "formationsOmitted": omitted,
+                                          "interpretation": "bounded provenance candidates; no absence or runtime alias proof"}
     return report
 
 
