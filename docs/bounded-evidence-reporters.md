@@ -383,7 +383,6 @@ descriptor fails with that descriptor's flags. The lightweight `incomingCalls`
 inventory lists a far-call candidate whose instruction would leave every mapped
 range under `unresolved` instead of skipping it.
 
-
 ## Function bounds and site ownership
 
 `bounds` takes an established `entry`. It follows every conditional branch,
@@ -391,8 +390,10 @@ direct jump and fall-through from that entry without entering callees, and
 reports `intervals` (the contiguous runs of reached instruction bytes), `holes`
 between them, `span`, `coveredBytes`, every `exit` (near, far and interrupt
 returns, halts, tail transfers and unresolved jumps) and every call. A direct
-jump to another established entry or region, or any far jump, is a tail
-transfer. Calls, interrupts and port accesses continue at the next
+jump or conditional branch to another established entry or region, or any far
+jump, is a tail transfer; a conditional one is marked `conditional` and its
+fall-through is still followed. Repeat and BND prefixes do not hide a return or
+port access. Calls, interrupts and port accesses continue at the next
 instruction, and each such continuation is listed in `assumedContinuations`.
 `sharedEntries` lists other established entries the body runs into.
 `complete` means every path ended in a listed exit with no gap; it is not a
@@ -407,8 +408,11 @@ beyond it, so a size added to a start cannot silently cut off a later return.
 site as an instruction start, under the same rules. It lists entries that reach
 an instruction containing the site, marks a site several entries reach as
 `shared`, and checks at most `entryLimit` entries (default 64, maximum 256),
-reporting the rest as unchecked. For each owner it lists the returns that lie
-before the site by address, which are warnings only. An optional
+reporting the rest as unchecked. Entries whose bodies stopped at a gap without
+reaching the site are listed under `incompleteEntries`, and while any entry is
+unchecked or incomplete a site with no owner is `unresolved`, not `unowned`. For
+each owner it lists the exits that lie between the entry and the site by address,
+which are warnings only. An optional
 `analyzerFunction` (`start`, `evidence`) says whether the analyzer's function is
 among the owners, whether its body reaches the site, and which of its returns
 come before the site.
