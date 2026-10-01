@@ -175,7 +175,7 @@ test("overlay regions carry their overlay bounds so a narrower incoming search i
   assert.equal(run(["incoming", path]).partialSearch, false);
 });
 
-test('pointer inventory separates exact loaded pairs, aliases and unresolved mappings', t => {
+test('pointer inventory separates exact loaded pairs, aliases and out-of-domain exclusions', t => {
   const dir = mkdtempSync(join(tmpdir(), 'pointer-inventory-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const data = Buffer.alloc(512), w = (p,n) => data.writeUInt16LE(n,p);
@@ -190,14 +190,16 @@ test('pointer inventory separates exact loaded pairs, aliases and unresolved map
   assert.equal(r.target,112); assert.equal(r.counts.exactPair,1); assert.equal(r.counts.aliasedTarget,1);
   assert.equal(r.exactPair[0].segmentOperandSite,82); assert.equal(r.aliasedTarget[0].segmentOperandSite,98);
   assert.equal(r.exactPair[0].raw,1); assert.equal(r.aliasedTarget[0].raw,0);
-  assert.equal(r.counts.unresolved,1); assert.equal(r.negativeUsable,false);
+  assert.equal(r.counts.excluded,1); assert.equal(r.negativeUsable,false);
   writeFileSync(path,JSON.stringify({...config,limit:1}));
   const capped=run(['pointers',path]); assert.equal(capped.truncated,true);
-  assert.equal(capped.exactPair.length+capped.aliasedTarget.length+capped.unresolved.length,1);
+  assert.equal(capped.exactPair.length+capped.aliasedTarget.length+capped.unresolved.length+capped.excluded.length,1);
   writeFileSync(path,JSON.stringify({...config,controls:[83]}));
   assert.throws(()=>run(['pointers',path]),/positive control/);
   writeFileSync(path,JSON.stringify({...config,query:{segment:4097,offset:33}}));
-  assert.equal(run(['pointers',path]).negativeUsable,false);
+  assert.equal(run(['pointers',path]).negativeUsable,true);
+  writeFileSync(path,JSON.stringify({...config,query:{segment:4097,offset:33},limit:1}));
+  assert.equal(run(['pointers',path]).negativeUsable,true);
   w(6,2); writeFileSync(config.source,data); config.sha256=createHash('sha256').update(data).digest('hex');
   writeFileSync(path,JSON.stringify({...config,query:{segment:4097,offset:33}}));
   const negative=run(['pointers',path]); assert.equal(negative.negativeUsable,true);
@@ -222,4 +224,26 @@ test('pointer inventory retains FBOV descriptor tokens and canonical trampolines
   assert.equal(Number(overlay.trampoline),288); assert.equal(Number(overlay.canonicalTarget),528);
   writeFileSync(path,JSON.stringify({...config,sourceKind:'synthetic-raw',query:{segment:4108,offset:32}}));
   assert.throws(()=>run(['pointers',path]),/requires source-derived/);
+});
+
+test('pointer exclusions remain bounded and do not qualify overflow or partial output', t => {
+  const dir=mkdtempSync(join(tmpdir(),'pointer-exclusions-'));
+  t.after(()=>rmSync(dir,{recursive:true,force:true}));
+  const data=Buffer.alloc(512),w=(p,n)=>data.writeUInt16LE(n,p);
+  data.write('MZ');w(4,1);w(8,4);w(6,4);w(24,28);
+  for(const [p,site] of [[28,64],[32,82],[36,98],[40,114]]){w(p,site-64);w(p+2,0);}
+  w(64,0);w(80,32);w(82,1);w(96,0);w(98,50);w(112,0);w(114,60);
+  const path=join(dir,'config.json'),source=join(dir,'source.bin');
+  const config={source,sourceKind:'mz',query:{segment:4097,offset:33},controls:[82],limit:10};
+  const execute=c=>{writeFileSync(source,data);writeFileSync(path,JSON.stringify({...c,sha256:createHash('sha256').update(data).digest('hex')}));return run(['pointers',path]);};
+  const r=execute(config);assert.equal(r.counts.excluded,3);assert.equal(r.counts.unresolved,0);assert.equal(r.negativeUsable,true);
+  assert.equal(r.excluded[0].classification,'outside declared adjacent-pair representation');
+  assert.deepEqual([r.excluded[0].offsetSite,r.excluded[0].offsetWordRange,r.excluded[0].segmentWordRange],[62,null,'resident']);
+  assert.equal(r.excluded[0].rawSegment,undefined);
+  assert(r.excluded.slice(1).every(x=>x.candidateFileOffset>=x.residentBounds.end));
+  const capped=execute({...config,limit:2});assert.equal(capped.truncated,true);assert.equal(capped.excluded.length,2);assert.equal(capped.negativeUsable,false);
+  w(114,0xF000);const overflow=execute(config);assert.equal(overflow.counts.unresolved,1);assert.equal(overflow.negativeUsable,false);
+  // FEFF+0100 = FFFF:0010 is linear 100000h; with A20 wrap it can alias the low image, so it is not excluded.
+  w(112,0x10);w(114,0xFEFF);const wrapped=execute({...config,loadSegment:256,query:{segment:257,offset:33}});
+  assert.equal(wrapped.counts.unresolved,1);assert.equal(wrapped.counts.excluded,2);assert.equal(wrapped.negativeUsable,false);
 });
