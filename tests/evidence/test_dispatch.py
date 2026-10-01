@@ -3,7 +3,11 @@ import copy
 from pathlib import Path
 import sys
 import unittest
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools/evidence"))
+ROOT = Path(__file__).resolve().parents[2]
+TOOLS = ROOT / "tools/evidence"
+if not (TOOLS / "x86").exists():
+    TOOLS = TOOLS / "x86-reporter"
+sys.path.insert(0, str(TOOLS))
 from x86.reports import run_report
 from x86.image import Image
 from x86.trace import walk, OVERLAP_REASON

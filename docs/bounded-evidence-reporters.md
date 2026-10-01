@@ -483,17 +483,25 @@ matches; `aliasedTarget` contains other pairs resolving to the same file target,
 including distinct trampoline aliases. Rows retain raw/loaded identities,
 descriptor metadata and canonical trampoline destinations. They are adjacent
 word-pair candidates: this does not prove the original uses them as pointers.
-`unresolved` retains mappings the resolver cannot complete, such as loaded-segment
-overflow or 20-bit wrap; `excluded` (below) retains pairs outside the representation
-or resident image. `limit` (1..10000) caps matching, unresolved and excluded rows
-together, with full counts and `truncated`.
-`controls` names known segment-operand file offsets to any resolved target;
-missing or unresolved controls fail. A controlled zero result is usable only
-within these representations and only without unresolved/capped rows. Computed
-and unrelocated pointers, instruction ownership and runtime use remain excluded.
+`unresolved` retains mappings the resolver cannot complete: loaded-segment
+overflow and wrapped 20-bit linear addresses. `excluded` retains pairs outside
+the adjacent-pair representation or the resident image, separately from
+unresolved mappings. `limit` (1..10000) caps matching, unresolved and excluded
+rows together, with full counts and `truncated`. `controls` names known
+segment-operand file offsets to any resolved target; missing or unresolved
+controls fail. Computed and unrelocated pointers, instruction ownership and
+runtime use remain excluded.
 
-Pointer reports retain `excluded` rows separately from unresolved mappings. A pair crossing its declared source range is outside the adjacent-pair representation; its row records `offsetSite` and the range view holding each word (`offsetWordRange`, `segmentWordRange`, `null` when none), never a decoded segment or offset. A nonwrapping address (no loaded-segment overflow and no 20-bit linear wrap) arithmetically outside the resident image cannot name the valid query target or a resident trampoline; its row records the arithmetic and image bounds. Loaded-segment overflow and wrapped linear addresses remain unresolved. Exclusions count toward the result cap. Only an uncapped, positively controlled zero inventory without unresolved mappings sets `negativeUsable`; it covers the declared representation alone and never establishes runtime pointer use or universal absence.
-
+A pair crossing its declared source range is outside the adjacent-pair
+representation; its `excluded` row records `offsetSite` and the range view
+holding each word (`offsetWordRange`, `segmentWordRange`, `null` when none),
+never a decoded segment or offset. A nonwrapping address (no loaded-segment
+overflow and no 20-bit linear wrap) arithmetically outside the resident image
+cannot name the valid query target or a resident trampoline; its `excluded` row
+records the arithmetic and image bounds. Only an uncapped, positively controlled
+zero inventory without unresolved mappings sets `negativeUsable`; it covers the
+declared representation alone and never establishes runtime pointer use or
+universal absence.
 
 Owner reports include `checkedEntries` with traversed ranges, completeness,
 entry evidence, continuation assumptions and source-derived overlay exports.
