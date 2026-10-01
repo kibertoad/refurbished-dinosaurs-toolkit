@@ -33,7 +33,8 @@ jobs:
       - run: pnpm exec tsc -p tools/tsconfig.json
       - run: pnpm run test
       - run: node --test "tools/release/*.test.ts"
-      # Packs the npm packages as they would be published, which builds them.
+      # Builds the npm packages and packs them as they would be published.
+      - run: pnpm run build
       - run: pnpm -r exec pnpm pack --pack-destination "$RUNNER_TEMP/npm"
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
