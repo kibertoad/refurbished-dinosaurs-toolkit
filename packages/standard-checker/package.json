@@ -22,7 +22,6 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "build": "tsc -p tsconfig.build.json",
-    "prepack": "pnpm run build",
     "prepublishOnly": "pnpm run build",
     "test": "node --test \"test/*.test.ts\""
   },
