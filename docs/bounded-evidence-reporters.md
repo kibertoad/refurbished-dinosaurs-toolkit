@@ -120,6 +120,21 @@ counted in `counts.contested`, shares the result `limit`, and makes
 unrelocated far calls and prefix-started raw candidates are excluded. Even a zero
 report covers only the declared domain.
 
+`coverage` groups the searched regions by the complete domain that holds them:
+the overlay's code (the Node loader passes each overlay region's bounds), the PE
+section, or a segment the query declares in `segments` (`name`, `start`, `end`,
+`evidence`), which is how a resident segment's bounds from the build's code
+ranges reach the report. A declared segment counts when it overlaps a searched
+region, even if the region crosses its bounds. A domain the bytes actually scanned
+do not cover (including bytes a `scanLimit` stopped short of) lists its
+`unsearched` ranges and sets `partialSearch`, which makes `negativeUsable` false.
+Regions with no known domain are reported as covering only themselves. Each
+unverified candidate carries a `position`: inside a reached instruction (bytes
+of that instruction, so a call there needs an overlapping start) or in an
+undecoded range that no established path reaches. `unresolvedTransfers` lists
+the computed jumps and calls in the searched regions, the routes that may reach
+those undecoded bytes.
+
 `dispatch` adds `dispatch.site`, `inputRegister`, `indexRegister`, up to 256 numeric
 `inputs`, `indexEvidence`, and `table` with `start`, `count`, `stride`, `width`,
 `countEvidence`, `offset` and `mappingEvidence`. `offset` is the encoded memory
@@ -146,12 +161,29 @@ and saved versus returned pointers stay visible; no rollback is inferred.
 
 The decoder supports 16-bit addressing and a bounded subset of ordinary integer
 operations: MOV/MOVZX/MOVSX, XCHG, low-result two/three-operand IMUL (flags unresolved),
-LEA, LDS/LES, PUSH/POP, LEAVE, ADD/SUB, bitwise logic,
-shifts, INC/DEC and effective-size sign extension. It follows direct near/far
-calls, jumps, common conditional branches and balanced returns. Unsupported
-instructions, repeat prefixes, 32-bit control transfers, indirect targets,
-hardware accesses and recursion/loop limits stop the affected path. INC/DEC and
-shifts leave flags unresolved; unknown branch conditions are explored both ways.
+one-operand MUL/IMUL/DIV/IDIV, LEA, LDS/LES, PUSH/POP, LEAVE, ADD/SUB, ADC/SBB,
+NEG/NOT, bitwise logic, shifts, ROL/ROR/RCL/RCR with a known count, CLC/STC/CMC,
+INC/DEC and effective-size sign extension. It follows direct near/far
+calls, jumps, common conditional branches, JCXZ, the LOOP family and balanced
+returns. Unsupported instructions, repeat prefixes, 32-bit control transfers,
+indirect targets, hardware accesses and recursion/loop limits stop the affected
+path. INC/DEC leave flags other than CF unresolved; unknown branch conditions are
+explored both ways.
+
+CF is tracked on its own where an instruction sets it without leaving a
+comparable producer. Shifts with a known count carry the last bit shifted out,
+as an expression of the shifted value when that value is unknown, so a
+SHL/RCL pair builds a double word bit for bit. ADC/SBB and rotates through carry
+consume it, INC/DEC preserve it, and an intact saved FLAGS word restores it.
+JB/JC/JAE/JNC decide from a known carry. One-operand MUL/IMUL write both halves
+of the product and set CF from whether the high half is needed. DIV/IDIV with
+known operands stop the path on a zero divisor or a quotient that does not fit,
+since interrupt 0 is not modeled; with unknown operands the path continues
+under a listed `no divide error` assumption. LOOP decrements CX (ECX with a
+32-bit address size) without changing flags. A loop whose count is known runs
+to its end within `visitLimit`, the number of times one path may pass the same
+instruction (default 4, maximum 4096); past it the path stops and names the
+limit. A loop whose count is unknown forks at each test and still stops there.
 There is no solver claiming that all symbolic paths are feasible.
 
 Explicit `callModels` can describe an external return for a conditional query.
