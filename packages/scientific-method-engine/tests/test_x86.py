@@ -430,6 +430,55 @@ class CallOrderTests(unittest.TestCase):
         r, _ = self.run_order(loop)
         self.assertTrue(all(g["kind"] == "unread" for caller in r["callers"] for g in caller["groups"]))
 
+    def test_capped_analysis_does_not_deny_recurrence(self):
+        c = Code().branch("e8", "helper").emit("90 c3").label("helper").emit("c3")
+        r, _ = self.run_order(c, analysisLimit=1)
+        self.assertTrue(r["callers"][0]["analysisCapped"])
+        self.assertIsNone(r["callers"][0]["groups"][0]["mayRepeatAcrossGuardVisits"])
+
+    def test_a_call_reached_around_another_is_not_sequenced_after_it(self):
+        # Two branches reach the first call, so neither edge alone is necessary, and the JMP skips it.
+        c = Code().emit("85 c0").branch("74", "first").branch("75", "first").branch("eb", "second")
+        c.label("first").branch("e8", "helper").label("second").branch("e8", "helper").emit("c3").label("helper").emit("c3")
+        r, cfg = self.run_order(c)
+        self.assertEqual(r["callers"][0]["groups"][0]["kind"], "unread")
+        cfg["orderControls"] = [{"entry": 0, "kind": "sequence", "sites": [c.labels["first"], c.labels["second"]]}]
+        with self.assertRaisesRegex(ValueError, "positive control"):
+            run_report(c.bytes(), cfg, "call-order")
+
+    def test_a_call_that_can_be_skipped_after_another_is_not_sequenced_after_it(self):
+        c = Code().label("first").branch("e8", "helper").emit("85 c0").branch("74", "second").branch("75", "second").emit("c3")
+        c.label("second").branch("e8", "helper").emit("c3").label("helper").emit("c3")
+        r, _ = self.run_order(c)
+        self.assertEqual(r["callers"][0]["groups"][0]["kind"], "unread")
+
+    def test_alternatives_have_the_full_group_shape_and_unordered_controls(self):
+        c = Code().emit("85 c0").branch("74", "other").label("one").branch("e8", "helper").emit("c3")
+        c.label("other").branch("e8", "helper").emit("c3").label("helper").emit("c3")
+        r, _ = self.run_order(c, orderControls=[{"entry": 0, "kind": "branchAlternatives", "sites": [c.labels["other"], c.labels["one"]]}])
+        g = r["callers"][0]["groups"][0]
+        self.assertEqual(g["kind"], "branchAlternatives")
+        self.assertEqual((g["scope"], g["mayRepeatAcrossGuardVisits"]), ("caller CFG", False))
+
+    def test_count_branches_and_entry_branches_take_no_adjacent_comparison(self):
+        c = Code().emit("83 f8 05").branch("e3", "end").branch("e8", "helper").label("end").emit("c3").label("helper").emit("c3")
+        r, _ = self.run_order(c)
+        self.assertIsNone(r["callers"][0]["calls"][0]["necessaryGuards"][0]["comparison"])
+        # The CMP before the entry is its only CFG predecessor, but the entry is also entered from outside.
+        c = Code().label("compare").emit("83 f8 05").label("entry").branch("7c", "end").branch("e8", "helper").branch("eb", "compare")
+        c.label("end").emit("c3").label("helper").emit("c3")
+        data = c.bytes()
+        cfg = configuration(data, target=c.labels["helper"])
+        cfg["regions"][0]["entries"] = [c.labels["entry"], c.labels["helper"]]
+        r = run_report(data, cfg, "call-order")
+        self.assertIsNone(r["callers"][0]["calls"][0]["necessaryGuards"][0]["comparison"])
+
+    def test_a_negative_stack_adjustment_is_not_cleanup(self):
+        c = Code().branch("e8", "helper").emit("81 c4 00 80 c3").label("helper").emit("c3")
+        r, _ = self.run_order(c)
+        self.assertEqual(r["callers"][0]["calls"][0]["cleanup"]["status"], "unread cleanup")
+        self.assertIsNone(r["callers"][0]["calls"][0]["cleanup"]["argumentBytes"])
+
 
 class ReporterTests(unittest.TestCase):
     def test_register_parts_preserve_neighbor(self):

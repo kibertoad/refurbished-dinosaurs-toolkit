@@ -994,7 +994,34 @@ def callees(image, config):
                               "that does not. Neither proves runtime recursion."}
 
 
+# These branches test CX/ECX (LOOPE/LOOPNE also ZF), so an adjacent CMP/TEST never describes their predicate.
+COUNT_BRANCHES = frozenset(("jcxz", "jecxz", "jrcxz", "loop", "loope", "loopne", "loopz", "loopnz"))
+
+
+def _operand_view(ins, o):
+    if o.type == X86_OP_REG:
+        return {"kind": "register", "name": ins.reg_name(o.reg), "width": o.size}
+    if o.type == X86_OP_IMM:
+        return {"kind": "immediate", "value": o.imm, "width": o.size}
+    if o.type == X86_OP_MEM:
+        return {"kind": "memory", "width": memory_width(ins, o), "segmentRegister": segment_register(ins, o.mem),
+                "baseRegister": ins.reg_name(o.mem.base) or None, "indexRegister": ins.reg_name(o.mem.index) or None,
+                "displacement": o.mem.disp}
+    return {"kind": "unresolved"}
+
+
+def _stack_cleanup(ins):
+    """The bytes an immediate ADD SP/ESP releases, or None for any other instruction or a negative immediate."""
+    if (ins is None or ins.mnemonic != "add" or len(ins.operands) != 2 or ins.operands[0].type != X86_OP_REG
+            or ins.reg_name(ins.operands[0].reg) not in ("sp", "esp") or ins.operands[1].type != X86_OP_IMM):
+        return None
+    bits = 8 * ins.operands[0].size
+    amount = ins.operands[1].imm & ((1 << bits) - 1)
+    return amount if 0 < amount < 1 << (bits - 1) else None
+
+
 def call_order(image, config):
+    """Group the confirmed incoming calls of each containing entry by necessary guards and CFG order."""
     flat = incoming(image, config)
     entry_limit = integer(config.get("entryLimit", 64), 1, 256, "entry limit")
     analysis_limit = integer(config.get("analysisLimit", 1000000), 1, 10000000, "call order analysis limit")
@@ -1010,17 +1037,7 @@ def call_order(image, config):
         if not selected:
             continue
         usable = b["complete"] and not unchecked and not conflicts.get(entry) and not flat["truncated"] and all(owners[at] == [entry] for at in selected)
-        instructions, successors, branches = b["instructions"], {}, []
-        def operand_view(ins, o):
-            if o.type == X86_OP_REG:
-                return {"kind": "register", "name": ins.reg_name(o.reg), "width": o.size}
-            if o.type == X86_OP_IMM:
-                return {"kind": "immediate", "value": o.imm, "width": o.size}
-            if o.type == X86_OP_MEM:
-                return {"kind": "memory", "width": memory_width(ins, o), "segmentRegister": segment_register(ins, o.mem),
-                        "baseRegister": ins.reg_name(o.mem.base) or None, "indexRegister": ins.reg_name(o.mem.index) or None,
-                        "displacement": o.mem.disp}
-            return {"kind": "unresolved"}
+        instructions, successors, branches, exits = b["instructions"], {}, [], set()
         ending = {}
         for at, ins in instructions.items():
             ending.setdefault(at + ins.size, []).append(at)
@@ -1036,10 +1053,10 @@ def call_order(image, config):
                 target = call_target(image, at, ins)[0]
                 targets = [target, following]
                 if target != following:
-                    producer = ending.get(at, [])
+                    producer = ending.get(at, []) if m not in COUNT_BRANCHES and at != entry else []
                     comparison = instructions[producer[0]] if len(producer) == 1 else None
                     context = ({"site": producer[0], "mnemonic": comparison.mnemonic,
-                                "operands": [operand_view(comparison, o) for o in comparison.operands]}
+                                "operands": [_operand_view(comparison, o) for o in comparison.operands]}
                                if comparison and comparison.mnemonic in ("cmp", "test") else None)
                     for taken, to in ((True, target), (False, following)):
                         if to is not None:
@@ -1048,6 +1065,9 @@ def call_order(image, config):
             else:
                 targets = [following]
             successors[at] = sorted(set(t for t in targets if t in instructions))
+            # Returns, halts, unsupported frames and transfers out of the body leave the caller CFG.
+            if not targets or any(t not in instructions for t in targets):
+                exits.add(at)
         predecessors = {}
         for source, targets in successors.items():
             for to in targets:
@@ -1074,7 +1094,20 @@ def call_order(image, config):
                 todo.extend(to for to in successors[at] if (at, to) != blocked)
             cache[key] = seen
             return seen
-        reachable(entry)
+
+        def dominates(first, second):
+            """Whether every route from the entry to second passes first."""
+            return second not in reachable(entry, stops=frozenset((first,)))
+
+        def must_follow(first, second, guards):
+            """Whether every route from first's continuation reaches second before an exit or a guard revisit."""
+            start = first + instructions[first].size
+            if start == second:
+                return True
+            if start in guards:
+                return False
+            seen = reachable(start, stops=guards | {second})
+            return not seen & exits and not any(to in guards for at in seen for to in successors[at])
         necessary = {at: [] for at in selected}
         for guard in branches:
             remaining = reachable(entry, (guard["site"], guard["to"]))
@@ -1085,10 +1118,7 @@ def call_order(image, config):
         rows = []
         for at in selected:
             following = at + instructions[at].size
-            cleanup = instructions.get(following)
-            amount = (cleanup.operands[1].imm if cleanup and cleanup.mnemonic == "add" and len(cleanup.operands) == 2
-                      and cleanup.operands[0].type == X86_OP_REG and cleanup.reg_name(cleanup.operands[0].reg) in ("sp", "esp")
-                      and cleanup.operands[1].type == X86_OP_IMM and cleanup.operands[1].imm > 0 else None)
+            amount = _stack_cleanup(instructions.get(following))
             rows.append({"site": at, "necessaryGuards": necessary[at] if not capped else [],
                          "cleanup": {"continuation": following, "site": following if amount is not None else None,
                                      "argumentBytes": amount, "status": "observed after assumed return" if amount is not None else "unread cleanup",
@@ -1108,10 +1138,19 @@ def call_order(image, config):
             alternatives = len(members) > 1 and all(z not in local_later[a] and a not in local_later[z] for a, z in pairs)
             kind = "unread" if not usable or capped else "sequence" if sequence else "branchAlternatives" if alternatives else "unread"
             order = sorted(members, key=lambda a: sum(a in local_later[z] for z in members if z != a)) if kind == "sequence" else None
+            # Equal single-edge guards do not make every member run: a later call may be reached around an
+            # earlier one (two branches to it, a jump table) or be skipped after it. Each call must dominate
+            # the next and the next must follow it on every route within the visit.
+            if order and not all(dominates(a, z) and must_follow(a, z, guard_sites) for a, z in zip(order, order[1:])):
+                kind, order = "unread", None
             groups.append({"kind": kind, "sites": members, "order": order,
                            "sharedGuards": shared_guards,
                            "scope": "one visit past the shared guard edges" if guard_sites else "caller CFG",
                            "mayRepeatAcrossGuardVisits": any(a in later[a] for a in members)})
+        if capped or not usable:
+            # A cycle found in a partial read still may repeat; finding none there proves nothing.
+            for group in groups:
+                group["mayRepeatAcrossGuardVisits"] = group["mayRepeatAcrossGuardVisits"] or None
         if capped:
             for group in groups:
                 group.update(kind="unread", order=None, sharedGuards=[])
@@ -1127,7 +1166,8 @@ def call_order(image, config):
                                   "order": [first, second] if kind == "sequence" and forward else [second, first] if kind == "sequence" else None})
         if relations and all(r["kind"] == "branchAlternatives" for r in relations):
             common = [g for g in rows[0]["necessaryGuards"] if all(any(g["site"] == h["site"] and g["taken"] == h["taken"] for h in row["necessaryGuards"]) for row in rows)]
-            groups = [{"kind": "branchAlternatives", "sites": selected, "order": None, "sharedGuards": common}]
+            groups = [{"kind": "branchAlternatives", "sites": selected, "order": None, "sharedGuards": common,
+                       "scope": "caller CFG", "mayRepeatAcrossGuardVisits": any(a in later[a] for a in selected)}]
         reports.append({"entry": entry, "ranges": b["intervals"], "boundaryUsable": usable, "orderingUsable": usable and not capped,
                         "gaps": b["gaps"], "conflicts": conflicts.get(entry, []), "analysisCapped": capped, "analysisSteps": spent,
                         "calls": rows, "groups": groups, "relations": relations, "assumptions": b["assumedContinuations"]})
@@ -1138,7 +1178,9 @@ def call_order(image, config):
         if not isinstance(control, dict) or control.get("kind") not in ("sequence", "branchAlternatives") or not isinstance(control.get("sites"), list) or not control["sites"] or len(control["sites"]) > 256 or any(type(at) is not int for at in control["sites"]) or type(control.get("entry")) is not int:
             raise ValueError("Invalid call order control")
         report = next((r for r in reports if r["entry"] == control.get("entry")), None)
-        group = next((g for g in report["groups"] if g["kind"] == control["kind"] and (g["order"] if g["kind"] == "sequence" else g["sites"]) == control["sites"]), None) if report else None
+        # Sequence sites are compared in order; branch alternatives have none.
+        expected = control["sites"] if control["kind"] == "sequence" else sorted(control["sites"])
+        group = next((g for g in report["groups"] if g["kind"] == control["kind"] and (g["order"] if g["kind"] == "sequence" else sorted(g["sites"])) == expected), None) if report else None
         if group is None:
             raise ValueError("Call order positive control missed")
     return {"incoming": flat, "callers": reports, "uncheckedEntries": unchecked, "orderControls": controls,

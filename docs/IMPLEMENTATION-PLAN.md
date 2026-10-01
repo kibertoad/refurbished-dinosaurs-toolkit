@@ -197,7 +197,8 @@ upstream reviewable PR; adopted closure requires reviewed merge and rerun.
 
 Tooling outcome: keep the flat incoming inventory and group verified calls by
 containing established entry, necessary local branch guards and CFG order.
-Acceptance: prove sequences by reachable continuations rather than address order;
+Acceptance: prove sequences by reachable continuations rather than address order,
+with each call dominating the next and the next following it on every route;
 branch alternatives cannot reach each other in the complete declared caller CFG.
 A guard is recorded from its conditional edge, with adjacent CMP/TEST context
 only when that producer is unambiguous. Cleanup is observed after an assumed
