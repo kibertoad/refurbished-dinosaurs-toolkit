@@ -161,3 +161,16 @@ test("format controls reject tables whose counts differ before any query", t => 
   assert.throws(() => prepare({ ...config, sourceKind: "synthetic-raw", formatControls: { fixups: 1 } }, dir), /only to mz sources/);
   assert.throws(() => prepare({ ...config, formatTables: { counts: {} } }, dir), /cannot be supplied/);
 });
+
+test("overlay regions carry their overlay bounds so a narrower incoming search is partial", t => {
+  const { dir, config } = overlayFixture(t);
+  const path = join(dir, "config.json");
+  const narrow = { ...config, target: 528, controls: [532], searchRegions: ["overlay"],
+    regions: [config.regions[0], { ...config.regions[1], end: 540 }] };
+  writeFileSync(path, JSON.stringify(narrow));
+  const result = run(["incoming", path]);
+  assert.equal(result.partialSearch, true);
+  assert.deepEqual(result.coverage[0].unsearched, [{ start: 540, end: 560 }]);
+  writeFileSync(path, JSON.stringify({ ...narrow, regions: config.regions }));
+  assert.equal(run(["incoming", path]).partialSearch, false);
+});

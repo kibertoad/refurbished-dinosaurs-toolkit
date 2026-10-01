@@ -54,7 +54,8 @@ offsets alone never establish storage identity.
 ## Commands
 
 All commands return JSON with the input fingerprint and schema `bounded-x86-v1`.
-`target` is described under [Call-target provenance](#call-target-provenance).
+`target` is described under [Call-target provenance](#call-target-provenance), and `bounds`
+and `owner` under [Function bounds and site ownership](#function-bounds-and-site-ownership).
 `trace` follows direct calls and local branches, records ordered effects and keeps
 each return separately. `arguments`, `effects`, `returns`, `memory` and `guards`
 select the relevant events from the same traversal. Event order numbers refer to
@@ -119,6 +120,21 @@ counted in `counts.contested`, shares the result `limit`, and makes
 unrelocated far calls and prefix-started raw candidates are excluded. Even a zero
 report covers only the declared domain.
 
+`coverage` groups the searched regions by the complete domain that holds them:
+the overlay's code (the Node loader passes each overlay region's bounds), the PE
+section, or a segment the query declares in `segments` (`name`, `start`, `end`,
+`evidence`), which is how a resident segment's bounds from the build's code
+ranges reach the report. A declared segment counts when it overlaps a searched
+region, even if the region crosses its bounds. A domain the bytes actually scanned
+do not cover (including bytes a `scanLimit` stopped short of) lists its
+`unsearched` ranges and sets `partialSearch`, which makes `negativeUsable` false.
+Regions with no known domain are reported as covering only themselves. Each
+unverified candidate carries a `position`: inside a reached instruction (bytes
+of that instruction, so a call there needs an overlapping start) or in an
+undecoded range that no established path reaches. `unresolvedTransfers` lists
+the computed jumps and calls in the searched regions, the routes that may reach
+those undecoded bytes.
+
 `dispatch` adds `dispatch.site`, `inputRegister`, `indexRegister`, up to 256 numeric
 `inputs`, `indexEvidence`, and `table` with `start`, `count`, `stride`, `width`,
 `countEvidence`, `offset` and `mappingEvidence`. `offset` is the encoded memory
@@ -145,12 +161,29 @@ and saved versus returned pointers stay visible; no rollback is inferred.
 
 The decoder supports 16-bit addressing and a bounded subset of ordinary integer
 operations: MOV/MOVZX/MOVSX, XCHG, low-result two/three-operand IMUL (flags unresolved),
-LEA, LDS/LES, PUSH/POP, LEAVE, ADD/SUB, bitwise logic,
-shifts, INC/DEC and effective-size sign extension. It follows direct near/far
-calls, jumps, common conditional branches and balanced returns. Unsupported
-instructions, repeat prefixes, 32-bit control transfers, indirect targets,
-hardware accesses and recursion/loop limits stop the affected path. INC/DEC and
-shifts leave flags unresolved; unknown branch conditions are explored both ways.
+one-operand MUL/IMUL/DIV/IDIV, LEA, LDS/LES, PUSH/POP, LEAVE, ADD/SUB, ADC/SBB,
+NEG/NOT, bitwise logic, shifts, ROL/ROR/RCL/RCR with a known count, CLC/STC/CMC,
+INC/DEC and effective-size sign extension. It follows direct near/far
+calls, jumps, common conditional branches, JCXZ, the LOOP family and balanced
+returns. Unsupported instructions, repeat prefixes, 32-bit control transfers,
+indirect targets, hardware accesses and recursion/loop limits stop the affected
+path. INC/DEC leave flags other than CF unresolved; unknown branch conditions are
+explored both ways.
+
+CF is tracked on its own where an instruction sets it without leaving a
+comparable producer. Shifts with a known count carry the last bit shifted out,
+as an expression of the shifted value when that value is unknown, so a
+SHL/RCL pair builds a double word bit for bit. ADC/SBB and rotates through carry
+consume it, INC/DEC preserve it, and an intact saved FLAGS word restores it.
+JB/JC/JAE/JNC decide from a known carry. One-operand MUL/IMUL write both halves
+of the product and set CF from whether the high half is needed. DIV/IDIV with
+known operands stop the path on a zero divisor or a quotient that does not fit,
+since interrupt 0 is not modeled; with unknown operands the path continues
+under a listed `no divide error` assumption. LOOP decrements CX (ECX with a
+32-bit address size) without changing flags. A loop whose count is known runs
+to its end within `visitLimit`, the number of times one path may pass the same
+instruction (default 4, maximum 4096); past it the path stops and names the
+limit. A loop whose count is unknown forks at each test and still stops there.
 There is no solver claiming that all symbolic paths are feasible.
 
 Explicit `callModels` can describe an external return for a conditional query.
@@ -298,7 +331,10 @@ the entries without passing through the start it proves. Once rejection settles,
 only instructions reachable from the accepted starts remain established; the
 rest of what rejected starts reached is returned as contested, so a call is
 never confirmed while its proof is refused. This does not prove native
-reachability or arbitrary self-modifying instruction layouts.
+reachability or arbitrary self-modifying instruction layouts. The entry-path
+walk and `bounds` share one reading of returns, interrupts (including `int1`) and
+port accesses (including `insd`/`outsd`), and repeat and BND prefixes hide none
+of them or any jump.
 
 An unprefixed segmented16 IRET is modeled only inside a traced push-CS/near-call
 frame built above a locally saved FLAGS word. Stack balance, continuation IP and
@@ -372,3 +408,41 @@ descriptor fails with that descriptor's flags. The lightweight `incomingCalls`
 inventory lists a far-call candidate whose instruction would leave every mapped
 range under `unresolved` instead of skipping it, and gives no negative result
 while any candidate is unresolved.
+
+## Function bounds and site ownership
+
+`bounds` takes an established `entry`. It follows every conditional branch,
+direct jump and fall-through from that entry without entering callees, and
+reports `intervals` (the contiguous runs of reached instruction bytes), `holes`
+between them, `span`, `coveredBytes`, every `exit` (near, far and interrupt
+returns, halts, tail transfers and unresolved jumps) and every call. A direct
+jump or conditional branch to another established entry or region, or any far
+jump, is a tail transfer; a conditional one is marked `conditional` and its
+fall-through is still followed. Repeat and BND prefixes do not hide a return or
+port access. Calls, interrupts and port accesses continue at the next
+instruction, and each such continuation is listed in `assumedContinuations`.
+`sharedEntries` lists other established entries the body runs into.
+`complete` means every path ended in a listed exit with no gap; it is not a
+complete reading under the standard.
+
+An optional `analyzerFunction` (`start`, `bodyBytes`, `evidence`) compares an
+analyzer's function with the reached body. `bodyBytes` is a count of body bytes.
+The report gives `startPlusBodyBytes` and lists the exits and instructions at or
+beyond it, so a size added to a start cannot silently cut off a later return.
+
+`owner` takes `query: { site }` and reports which established entries reach the
+site as an instruction start, under the same rules. It lists entries that reach
+an instruction containing the site, marks a site several entries reach as
+`shared`, and checks at most `entryLimit` entries (default 64, maximum 256),
+reporting the rest as unchecked. Entries whose bodies stopped at a gap without
+reaching the site are listed under `incompleteEntries`, and while any entry is
+unchecked or incomplete a site with no owner is `unresolved`, not `unowned`.
+Each owner's `contestedBy` lists instructions of other checked entries' bodies
+that partly overlap its own; at least one side is misdecoded, so while any owner
+is contested (`contestedOwners`) the site is `unresolved`. This does not decide
+which side is right and is narrower than the entry-path walk's proof. For
+each owner it lists the exits that lie between the entry and the site by address,
+which are warnings only. An optional
+`analyzerFunction` (`start`, `evidence`) says whether the analyzer's function is
+among the owners, whether its body reaches the site, whether it is contested,
+and which of its returns come before the site.
