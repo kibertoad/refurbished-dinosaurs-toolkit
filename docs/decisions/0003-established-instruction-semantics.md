@@ -246,8 +246,8 @@ Rules for every iteration:
 
 | Phase | Status | Date | Evidence |
 |---|---|---|---|
-| 0 freeze and baseline | in progress | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
-| 1 pypcode spike | not started | | |
+| 0 freeze and baseline | done | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
+| 1 pypcode spike | in progress | 2026-10-02 | question 1 answered (PR pending) |
 | 2 semantics seam | not started | | |
 | 3 pypcode backend | not started | | |
 | 4 parity on recorded cases | not started | | |
@@ -289,7 +289,22 @@ Semantics outside `ordinary()`:
 
 ### Spike answers
 
-None yet.
+Spike code ran outside the repository on synthetic bytes, with pypcode 4.0.0, Unicorn 2.1.4 and
+Capstone 5.0.7 on Python 3.14 (Windows).
+
+1. **Wheels and licenses: go, with pypcode 4.0.0 and Python 3.12 or later.** pypcode 4.0.0 carries
+   Ghidra 12.1's SLEIGH files, the version the shipped Ghidra scripts compile against. It publishes
+   wheels for CPython 3.12, 3.13 and 3.14 on Windows (x86-64), Linux (x86-64 and aarch64,
+   manylinux 2.28) and macOS (x86-64 and arm64), and requires Python 3.12. The last release with
+   3.10 and 3.11 wheels, 3.3.3, predates Ghidra 12. Its x86 SLEIGH files differ from 4.0.0 only in
+   VMX prefix constraints and SSE4a encodings the engine never interprets. The maintainer chose
+   4.0.0, so phase 3 raises the engine's `requires-python` from `>=3.10` to `>=3.12`; CI already
+   runs 3.12, and Python 3.10 reaches end of life in October 2026. pypcode is BSD-2-Clause, and
+   the SLEIGH library and processor files it bundles are Apache-2.0 with Ghidra's NOTICE, a
+   permissive combination the MIT-licensed engine may depend on. Unicorn 2.1.4 ships abi3 wheels
+   (CPython 3.7 and later) for the same three platforms. The wheels bundle the Unicorn core, which is
+   GPLv2, so Unicorn may only be a test dependency: it is installed to run the tests and never
+   ships with or is imported by the published package (decision 4).
 
 ### Groups moved
 
