@@ -1,5 +1,6 @@
 """Focused reports derived from instruction paths and explicit source bounds."""
 from bisect import bisect_right
+from collections import deque
 from capstone import CS_AC_READ, CS_AC_WRITE
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 from .machine import State, StopPath, REGISTERS, ALIASES, segment_register
@@ -279,7 +280,7 @@ def uses(image, config):
                 state = State(at, image, {})
                 state.regs.update({r: unknown(f"CFG-operand:{at}:{r}", ALIASES[r][2]) for r in REGISTERS if r != "cs"})
             try:
-                segment_value, offset_value = state.address(ins, operand)
+                segment_value, offset_value, segment_name = state.address(ins, operand)
             except StopPath as error:
                 gaps.append({"site": at, "reason": str(error)}); continue
             # Capstone reports the LDS/LES source as a word, but the load reads the full selector:offset pointer.
@@ -293,7 +294,7 @@ def uses(image, config):
                 conditional.append({"site": at, "kind": kind, "width": size,
                                     "segment": segment_value.report(), "offset": offset_value.report(),
                                     "value": unknown(f"CFG-operand:{at}", size * 8).report(),
-                                    "effectiveSegmentRegister": segment_register(ins, operand.mem),
+                                    "effectiveSegmentRegister": segment_name,
                                     "address": "overlaps query" if overlaps and segment is None else "possible alias",
                                     "classification": ("unverified overlapping instruction path" if at in unverified else
                                                        "entry-CFG operand past a stop; values and callee effects unresolved"),
@@ -1043,19 +1044,23 @@ def _formation_links(formations, value):
 def near_pointer_provenance(report, config):
     limit = integer(config.get("pointerFormationLimit", 128), 1, 1024, "pointer formation limit")
     for path in report["paths"]:
-        formations, retained, omitted = {}, 0, 0
+        formations, retained, omitted = {}, deque(), 0
         for event in path["events"]:
             if event["kind"] == "address-formation":
-                if retained >= limit:
+                if len(retained) >= limit:
+                    # Evict the oldest formation so the most recent ones stay linkable.
+                    oldest = retained.popleft()
+                    formations[oldest["site"]].pop(0)
                     omitted += 1
-                else:
-                    formations.setdefault(event["site"], []).append(event)
-                    retained += 1
+                formations.setdefault(event["site"], []).append(event)
+                retained.append(event)
                 continue
             if event["kind"] not in ("read", "write"):
                 continue
             if event.get("argument"):
-                event["nearPointerArgumentCandidates"] = _formation_links(formations, event["value"])
+                arguments = _formation_links(formations, event["value"])
+                if arguments:
+                    event["nearPointerArgumentCandidates"] = arguments
             accesses = _formation_links(formations, event["offset"])
             for candidate in accesses:
                 formed_segment, accessed_segment = candidate["formationAddressingSegment"], event["segment"]

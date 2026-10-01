@@ -542,6 +542,8 @@ and identical or affine symbolic offsets permit `mayMergeStorage` within the
 model. Unknown segments remain unresolved possible aliases; producer ancestry
 alone never proves pointer identity. Concrete distinct segment values are labeled
 `differentWithinModel`, not a universal nonalias claim for arbitrary offsets.
-`pointerFormationLimit` (1..1024, default 128) bounds associations; omitted
-formations remain explicit per path/event and refuse storage merging. A complete
+`pointerFormationLimit` (1..1024, default 128) bounds associations by keeping
+the most recent formations on each path and evicting the oldest; evicted
+formations remain explicit per path/event and refuse storage merging. Candidate
+lists are present only when non-empty. A complete
 or stopped trace never promotes a modeled association to runtime state evidence.

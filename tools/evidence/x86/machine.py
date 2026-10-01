@@ -249,7 +249,8 @@ class State:
         if index:
             index_value = op("mul", self.reg(index), const(mem.scale, self.bits), self.at)
             offset = op("add", offset, index_value, self.at)
-        return self.segment(segment_register(ins, mem)), offset
+        register = segment_register(ins, mem)
+        return self.segment(register), offset, register
 
     def get(self, ins, operand, image):
         if operand.type == X86_OP_REG:
@@ -262,16 +263,16 @@ class State:
                 self.event("relocated-immediate", provenance=fixup, value=value.report())
             return value
         if operand.type == X86_OP_MEM:
-            segment, offset = self.address(ins, operand)
-            return self.access(segment, offset, operand.size, addressing_register=segment_register(ins, operand.mem))
+            segment, offset, register = self.address(ins, operand)
+            return self.access(segment, offset, operand.size, addressing_register=register)
         raise StopPath("Unsupported operand")
 
     def put(self, ins, operand, value):
         if operand.type == X86_OP_REG:
             self.setreg(ins.reg_name(operand.reg), value, self.at)
         elif operand.type == X86_OP_MEM:
-            segment, offset = self.address(ins, operand)
-            self.access(segment, offset, operand.size, resize(value, operand.size * 8), addressing_register=segment_register(ins, operand.mem))
+            segment, offset, register = self.address(ins, operand)
+            self.access(segment, offset, operand.size, resize(value, operand.size * 8), addressing_register=register)
         else:
             raise StopPath("Unsupported destination")
 
@@ -370,8 +371,8 @@ def ordinary(state, ins, image):
             if addresses[index] is None:
                 state.put(ins, operand, value)
             else:
-                segment, offset = addresses[index]
-                state.access(segment, offset, operand.size, resize(value, operand.size * 8), addressing_register=segment_register(ins, operand.mem))
+                segment, offset, register = addresses[index]
+                state.access(segment, offset, operand.size, resize(value, operand.size * 8), addressing_register=register)
         return
     if m == "imul" and len(operands) in (2, 3):
         left, right = (state.get(ins, operand, image) for operand in (operands if len(operands) == 2 else operands[1:]))
@@ -384,19 +385,19 @@ def ordinary(state, ins, image):
                     result=result.report(), modulus=1 << left.bits, flags="unresolved signed-product overflow")
         return
     if m == "lea":
-        segment, offset = state.address(ins, operands[1])
+        segment, offset, register = state.address(ins, operands[1])
         state.put(ins, operands[0], offset)
         state.event("address-formation", value=offset.report(), addressingSegment=segment.report(),
-                    addressingSegmentRegister=segment_register(ins, operands[1].mem), destinationRegister=ins.reg_name(operands[0].reg),
+                    addressingSegmentRegister=register, destinationRegister=ins.reg_name(operands[0].reg),
                     note="LEA does not access memory; this addressing default does not bind a later dereference")
         return
     if m in ("lds", "les"):
         if state.flat:
             raise StopPath("Descriptor loads are outside the PE32 flat model")
-        segment, offset = state.address(ins, operands[1])
+        segment, offset, register = state.address(ins, operands[1])
         if operands[0].size != 2:
             raise StopPath("Only 16:16 pointer loads are supported")
-        value = state.access(segment, offset, 4, role="far-pointer", addressing_register=segment_register(ins, operands[1].mem))
+        value = state.access(segment, offset, 4, role="far-pointer", addressing_register=register)
         state.put(ins, operands[0], extract(value, 0, 16))
         state.setreg("ds" if m == "lds" else "es", extract(value, 16, 16), state.at)
         return
