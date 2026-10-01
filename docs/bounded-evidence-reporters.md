@@ -540,3 +540,18 @@ usable bodies for every node the reused node reaches, no reached node on the
 active path, and no limit-omitted or instruction-capped route beneath the reused
 node, any of which could lead back into the active path. x87 stores and loads
 take their access direction from the mnemonic, since Capstone misreports some.
+
+`operand-candidates` scans explicitly declared region starts for an encoded
+memory displacement or immediate matching `query.offset`; implicit operands and
+relative branch targets are not encoded literals and never match. It retains prefixes,
+operand widths/access, segment-register choice and byte spans. Entry-based
+instruction starts, rejected overlapping decodes and unresolved boundaries stay
+separate; only verified memory operand starts count as uses of that literal
+representation. `overlapGroups` groups returned intersecting candidate spans;
+truncated output marks groups incomplete. `overlapsVerified` also names reached
+instructions intersected by an apparent candidate that starts before a read or
+crosses a following jump. Known memory sites can be supplied as `controls`;
+a raw or contested candidate fails that control. `scanLimit`, `limit`, coverage
+and partial-search flags bound the inventory. Implicit/computed uses, segment
+alias proofs and runtime reachability are excluded; counts never prove their
+absence or promote a candidate to original behavior.

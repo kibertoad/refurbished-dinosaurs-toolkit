@@ -279,3 +279,19 @@ test("callee graph through the source bridge keeps a reused node distinct from r
   assert.ok(r.edges.every(e => !e.calleeSummary.effectComplete));
   assert.equal(r.completeWithinDeclaredGraph, true);
 });
+
+test("operand candidates preserve prefixed widths and reject interior starts through the source bridge", t => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  data.set([0x66, 0x83, 0x3e, 0xf6, 0x02, 0, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const cfg = { ...config, sha256: createHash("sha256").update(data).digest("hex"), query: { offset: 0x2f6 }, controls: [64] };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  const r = run(["operand-candidates", join(dir, "config.json")]);
+  const actual = r.candidates.find(c => c.site === 64), stripped = r.candidates.find(c => c.site === 65);
+  assert.equal(actual.width, 4); assert.deepEqual(actual.prefixes, [0x66]); assert.equal(actual.countedAsUse, true);
+  assert.equal(stripped.width, 2); assert.equal(stripped.classification, "rejectedOverlap"); assert.equal(stripped.countedAsUse, false);
+  assert.ok(r.overlapGroups.some(g => g.members.some(m => m.site === 64) && g.members.some(m => m.site === 65)));
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ ...cfg, controls: [65] }));
+  assert.throws(() => run(["operand-candidates", join(dir, "config.json")]), /positive control/);
+});

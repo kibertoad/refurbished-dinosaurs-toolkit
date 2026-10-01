@@ -164,3 +164,16 @@ Synthetic diamond, true recursion, conditional writes, unresolved calls and caps
 plus recorded configured source controls prove the distinction. No original
 bytes/configs or gameplay claims in Git. Exit: complete toolkit gates and source
 controls pass, publish upstream PR; adopted closure requires reviewed delivery.
+
+## Explicit overlapping operand candidate inventory
+
+Tooling outcome: inventory literal displacement/immediate candidates with their
+prefixes, operand widths, entry-path classification and overlapping byte spans.
+Evidence: locally decodable stripped prefixes and starts inside preceding
+instructions can invent memory writes. Acceptance: only verified memory operand
+starts count as uses; raw and contested starts remain separate. Scan/result caps,
+partial coverage and omitted overlap members remain explicit. Controls require
+known verified memory sites. Synthetic prefix/interior/ambiguous/capped fixtures
+and configured recorded rejected-candidate controls prove the behavior. No
+proprietary fixtures, runtime access or game claims. Exit: shared reporter and
+canonical toolkit gates pass; publish a reviewable PR before adopted closure.
