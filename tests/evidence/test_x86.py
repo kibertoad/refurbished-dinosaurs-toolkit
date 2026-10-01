@@ -98,6 +98,20 @@ class OperandCandidateTests(unittest.TestCase):
         self.assertFalse(row["countedAsUse"])
         self.assertGreaterEqual(len(row["overlapsVerified"]), 2)
 
+    def test_only_encoded_literals_match_and_one_instruction_is_not_an_overlap(self):
+        # call rel16 to 0x2f6, mov word [0x2f6],0x2f6, lss si,[0x2f6], 66 66 cmp dword [0x2f6],0, ret
+        data = bytes.fromhex("e8 f3 02 c7 06 f6 02 f6 02 0f b2 36 f6 02 66 66 83 3e f6 02 00 c3")
+        r = run_report(data, configuration(data, query={"offset": 0x2f6}), "operand-candidates")
+        self.assertNotIn(0, [x["site"] for x in r["candidates"]])
+        both = [x for x in r["candidates"] if x["site"] == 3]
+        self.assertEqual(len(both), 2)
+        self.assertTrue(all(x["overlapsVerified"] == [] for x in both))
+        self.assertFalse(any({m["site"] for m in g["members"]} == {3} for g in r["overlapGroups"]))
+        self.assertEqual(next(x for x in r["candidates"] if x["site"] == 9)["width"], 4)
+        self.assertEqual(next(x for x in r["candidates"] if x["site"] == 14)["prefixes"], [0x66, 0x66])
+        shift = bytes.fromhex("d1 e0 c3")
+        self.assertEqual(run_report(shift, configuration(shift, query={"offset": 1}), "operand-candidates")["candidates"], [])
+
     def test_ambiguous_prefix_entries_remain_unresolved_and_caps_remain_partial(self):
         data = bytes.fromhex("66 83 3e f6 02 00 c3")
         cfg = configuration(data, query={"offset": 0x2f6})

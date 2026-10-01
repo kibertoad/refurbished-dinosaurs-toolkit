@@ -331,6 +331,22 @@ def uses(image, config):
                               "Matches were traced; conditionalAccesses were reached only past the stops each one names."}
 
 
+# Legacy prefix bytes in encoded order (segment overrides, operand/address size, LOCK/REP).
+PREFIX_BYTES = frozenset((0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0xf0, 0xf2, 0xf3))
+
+
+def prefixes(ins):
+    count = 0
+    while count < ins.size and ins.bytes[count] in PREFIX_BYTES:
+        count += 1
+    return list(ins.bytes[:count])
+
+
+def _relative_transfer(ins):
+    m = base_mnemonic(ins)
+    return m in ("call", "jmp") or m.startswith(("j", "loop"))
+
+
 def operand_candidates(image, config):
     query = config.get("query", {})
     if not isinstance(query, dict):
@@ -343,6 +359,7 @@ def operand_candidates(image, config):
     intervals = sorted((at, at + ins.size) for at, ins in seen.items())
     starts = [a for a, _ in intervals]
     rows, controls_found, scanned, read = [], set(), 0, {}
+    low = value & 0xff
     counts = {"verifiedMemoryUses": 0, "verifiedOtherOperands": 0, "rejectedOverlap": 0, "unresolvedBoundary": 0}
     for region in image.regions:
         end = region["start"]
@@ -351,18 +368,25 @@ def operand_candidates(image, config):
                 break
             scanned += 1
             end = at + 1
+            # Every encoded width of the literal (including sign-extended 8-bit forms) holds its low byte.
+            if image.data.find(low, at, min(at + 15, region["end"])) < 0:
+                continue
             ins = image.decode(at)
-            if ins is None or at + ins.size > region["end"]:
+            if ins is None:
                 continue
             for index, operand in enumerate(ins.operands):
-                if operand.type not in (X86_OP_MEM, X86_OP_IMM):
+                # Only encoded literals: implicit forms (SHL r,1; [BX]) and relative branch targets are excluded.
+                if operand.type == X86_OP_MEM:
+                    if not ins.disp_size:
+                        continue
+                elif operand.type != X86_OP_IMM or not ins.imm_size or _relative_transfer(ins):
                     continue
                 literal = operand.mem.disp if operand.type == X86_OP_MEM else operand.imm
                 if literal & image.mask != value:
                     continue
                 # At most 15 bytes precede a partly overlapping x86 instruction.
                 lo, hi = bisect_right(starts, at - 15), bisect_right(starts, at + ins.size - 1)
-                overlaps = [{"site": a, "end": z} for a, z in intervals[lo:hi] if a < at + ins.size and z > at]
+                overlaps = [{"site": a, "end": z} for a, z in intervals[lo:hi] if a != at and a < at + ins.size and z > at]
                 memory = operand.type == X86_OP_MEM and ins.mnemonic != "lea" and bool(operand.access & (CS_AC_READ | CS_AC_WRITE))
                 classification = ("unresolvedBoundary" if at in ambiguous else
                                   "verifiedMemoryUses" if at in seen and memory else
@@ -375,8 +399,8 @@ def operand_candidates(image, config):
                     continue
                 rows.append({"site": at, "end": at + ins.size, "operandIndex": index,
                              "operandKind": "memory" if operand.type == X86_OP_MEM else "immediate",
-                             "width": 2 + ins.operands[0].size if ins.mnemonic in ("lds", "les") and operand.type == X86_OP_MEM else operand.size,
-                             "prefixes": [p for p in ins.prefix if p], "mnemonic": ins.mnemonic,
+                             "width": 2 + ins.operands[0].size if ins.mnemonic in ("lds", "les", "lss", "lfs", "lgs") and operand.type == X86_OP_MEM else operand.size,
+                             "prefixes": prefixes(ins), "mnemonic": ins.mnemonic,
                              "access": [name for flag, name in ((CS_AC_READ, "read"), (CS_AC_WRITE, "write")) if operand.access & flag],
                              "effectiveSegmentRegister": segment_register(ins, operand.mem) if operand.type == X86_OP_MEM else None,
                              "classification": classification, "countedAsUse": classification == "verifiedMemoryUses",
@@ -398,9 +422,9 @@ def operand_candidates(image, config):
                         "unsearched": uncovered(r["start"], r["end"], [read[r["name"]]])} for r in image.regions]
     return {"query": query, "regionCoverage": region_coverage, "candidates": rows, "counts": counts, "truncated": total > limit,
             "scannedStarts": scanned, "coverage": coverage, "partialSearch": any(r["partial"] for r in coverage) or any(r["unsearched"] for r in region_coverage),
-            "overlapGroups": [g | {"completeWithinSearch": total <= limit} for g in groups if len(g["members"]) > 1],
+            "overlapGroups": [g | {"completeWithinSearch": total <= limit} for g in groups if len({m["site"] for m in g["members"]}) > 1],
             "controls": controls, "gaps": gaps,
-            "exclusions": ["computed displacements", "implicit operands", "segment-value alias proof", "runtime reachability"],
+            "exclusions": ["computed displacements", "implicit operands", "relative branch targets", "segment-value alias proof", "runtime reachability"],
             "interpretation": "Only entry-path memory operand starts count as uses of this literal representation; local decodability never establishes a boundary. Groups cover returned candidates only when truncated."}
 
 

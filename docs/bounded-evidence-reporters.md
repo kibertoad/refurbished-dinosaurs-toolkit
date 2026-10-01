@@ -516,7 +516,8 @@ loader derives export metadata from hash-guarded MZ/FBOV tables and rejects a
 caller-supplied copy. Body-byte size is never treated as a contiguous end.
 
 `operand-candidates` scans explicitly declared region starts for an encoded
-memory displacement or immediate matching `query.offset`. It retains prefixes,
+memory displacement or immediate matching `query.offset`; implicit operands and
+relative branch targets are not encoded literals and never match. It retains prefixes,
 operand widths/access, segment-register choice and byte spans. Entry-based
 instruction starts, rejected overlapping decodes and unresolved boundaries stay
 separate; only verified memory operand starts count as uses of that literal
