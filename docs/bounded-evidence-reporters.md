@@ -580,3 +580,33 @@ the most recent formations on each path and evicting the oldest; evicted
 formations remain explicit per path/event and refuse storage merging. Candidate
 lists are present only when non-empty. A complete
 or stopped trace never promotes a modeled association to runtime state evidence.
+
+## Return widths, declared encodings and caller dependencies
+
+`returns` retains value-transfer events (register names, source/destination bits,
+MOV/MOVZX/MOVSX conversion and containing-register value after sibling-byte
+writes), implicit sign extensions, reads, stores and exact branch predicates. Optional
+`returnContracts` has at most 256 unique entry/register declarations with evidence,
+width-bounded `failures`, and optional `encodings` rows with value, role and their
+own evidence. Raw field roles and failure encodings are separate; matching either
+is a static contract comparison, never live occurrence or successful setup.
+Known encoding lists are never assumed exhaustive. All
+declarations, including unreachable ones, are validated before tracing.
+
+Each path's `returnFlows` records the callee result width/value/known encodings,
+caller entry/call site, conditional model marker and later producer-dependent
+transfers, stores and predicates. Return-width relationships expose low-byte
+consumption independently of a same-width byte MOV. Producer ancestry is only a
+dependency candidate: a derived value, loop/reused instruction producer or alias
+is never unchanged value or storage identity. Unknown expressions remain unknown;
+coincident constants without shared producers are not linked. Both predicate operands are retained; `dependentValueFields` marks which share
+producers. Nothing normalizes
+a nonzero check into success or proves resource contents/extent.
+
+`returnFlowLimit` (default 128, maximum 1024), `returnConsumerLimit` (default 256,
+maximum 10000) and `returnFlowAnalysisLimit` (default one million, maximum ten
+million inspections across paths) cap summaries and report omissions/incompleteness.
+Stopped paths and trace path/step/depth caps also prevent complete summaries.
+Call models remain conditional with unknown memory effects and declared register
+assumptions; return-contract metadata supplies no call behavior. Original-game
+runtime and player-visible effects require separate evidence.

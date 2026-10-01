@@ -361,7 +361,15 @@ def ordinary(state, ins, image):
         if state.flat and operands[0].type == X86_OP_REG and ins.reg_name(operands[0].reg) in state.segment_bases:
             raise StopPath("Segment selector assignment requires a descriptor model")
         value = state.get(ins, operands[1], image)
-        state.put(ins, operands[0], resize(value, operands[0].size * 8, signed=m == "movsx"))
+        result = resize(value, operands[0].size * 8, signed=m == "movsx")
+        state.put(ins, operands[0], result)
+        def location(operand):
+            return {"kind": "register", "register": ins.reg_name(operand.reg)} if operand.type == X86_OP_REG else {"kind": "memory"} if operand.type == X86_OP_MEM else {"kind": "immediate"}
+        destination_container = ALIASES[ins.reg_name(operands[0].reg)][0] if operands[0].type == X86_OP_REG else None
+        state.event("value-transfer", operation=m, source=location(operands[1]), destination=location(operands[0]),
+                    destinationContainer=destination_container, destinationContainerValue=state.reg(destination_container).report() if destination_container else None,
+                    sourceBits=value.bits, destinationBits=result.bits, sourceValue=value.report(), resultValue=result.report(),
+                    conversion="truncate" if result.bits < value.bits else "signExtend" if m == "movsx" else "zeroExtend" if result.bits > value.bits else "sameWidth")
         return
     if m == "xchg":
         values = [state.get(ins, operand, image) for operand in operands]
@@ -445,21 +453,25 @@ def ordinary(state, ins, image):
         # The prefix toggles the mode's default operand size (16-bit real mode, 32-bit flat).
         wide = (0x66 in ins.prefix) != state.flat
         source, destination = ("ax", "eax") if wide else ("al", "ax")
-        value = resize(state.reg(source), 32 if wide else 16, True)
+        source_value = state.reg(source)
+        value = resize(source_value, 32 if wide else 16, True)
         state.setreg(destination, value, state.at)
         state.event("conversion", sourceRegister=source, destinationRegister=destination,
                     effectiveOperandBits=32 if wide else 16, decoderMnemonic=m,
-                    mnemonicWidthMismatch=m != ("cwde" if wide else "cbw"), result=value.report())
+                    mnemonicWidthMismatch=m != ("cwde" if wide else "cbw"), result=value.report(),
+                    sourceValue=source_value.report(), sourceBits=source_value.bits, destinationBits=value.bits, conversion="signExtend")
         return
     if m in ("cwd", "cdq"):
         wide = (0x66 in ins.prefix) != state.flat
         source, destination = ("eax", "edx") if wide else ("ax", "dx")
         bits = 32 if wide else 16
-        value = resize(extract(state.reg(source), bits-1, 1), bits, signed=True)
+        source_value = state.reg(source)
+        value = resize(extract(source_value, bits-1, 1), bits, signed=True)
         state.setreg(destination, value, state.at)
         state.event("conversion", sourceRegister=source, destinationRegister=destination,
                     effectiveOperandBits=bits, decoderMnemonic=m,
-                    mnemonicWidthMismatch=m != ("cdq" if wide else "cwd"), result=value.report())
+                    mnemonicWidthMismatch=m != ("cdq" if wide else "cwd"), result=value.report(),
+                    sourceValue=source_value.report(), sourceBits=source_value.bits, destinationBits=value.bits, conversion="signFillHighHalf")
         return
     if m in ("clc", "stc", "cmc"):
         if m == "cmc":
