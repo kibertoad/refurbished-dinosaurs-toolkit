@@ -152,6 +152,47 @@ class ReturnFlowTests(unittest.TestCase):
         self.assertTrue(f["conditionalModel"])
         self.assertTrue(r["paths"][0]["conditionalModels"])
 
+    def test_values_sharing_only_the_return_or_call_site_are_not_dependent(self):
+        # The return pops SP at its own site; a call model clobbers BX at the call site.
+        c = Code().branch("e8", "callee").emit("89 e5 39 e9 89 d9 c3").label("callee").emit("b8 ff ff c3")
+        contracts = [self.contract(c.labels["callee"])]
+        r = self.flow(c, contracts, registers={"ss": 8192, "sp": 32768})
+        self.assertEqual(r["paths"][0]["returnFlows"]["results"][0]["consumers"], [])
+        r = self.flow(c, contracts, callModels=[{"site": 0, "evidence": "synthetic conditional case", "cases": [{"registers": {"ax": 1}}]}])
+        f = r["paths"][0]["returnFlows"]["results"][0]
+        self.assertTrue(f["conditionalModel"])
+        self.assertEqual(f["consumers"], [])
+        self.assertNotIn(0, r["paths"][0]["registers"]["sp"].get("resultOrigins", []))
+
+    def test_each_execution_of_one_return_is_a_separate_origin(self):
+        c = Code().branch("e8", "callee").emit("89 c3").branch("e8", "callee").emit("89 c1 c3")
+        c.label("callee").emit("66 b8 ff ff 00 00 c3")
+        rows = self.flow(c, [self.contract(c.labels["callee"])])["paths"][0]["returnFlows"]["results"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([[e["site"] for e in f["consumers"]] for f in rows], [[3], [8]])
+        self.assertEqual(rows[0]["resultContract"]["value"]["resultOrigins"], [rows[0]["originOrder"]])
+        self.assertTrue(all(isinstance(p, int) and p >= 0 for p in rows[0]["resultContract"]["value"]["producers"]))
+
+    def test_sign_flag_gate_is_a_signed_predicate(self):
+        c = Code().branch("e8", "callee").emit("85 c0").branch("78", "negative").emit("c3")
+        c.label("negative").emit("c3").label("callee").emit("b8 ff ff c3")
+        rows = self.flow(c, [self.contract(c.labels["callee"], failures=[65535])])["paths"][0]["returnFlows"]["results"][0]["consumers"]
+        branch = next(e for e in rows if e["kind"] == "branch")
+        self.assertEqual((branch["predicate"], branch["predicateDomain"], branch["taken"]), ("js", "signed", True))
+
+    def test_analysis_cap_marks_the_truncated_flow(self):
+        c = Code().branch("e8", "callee").emit("a2 20 00 85 c0").branch("74", "end").emit("90")
+        c.label("end").emit("c3").label("callee").emit("b8 ff ff c3")
+        r = self.flow(c, [self.contract(c.labels["callee"], failures=[65535]), self.contract(0)], returnFlowAnalysisLimit=1)
+        flows = r["paths"][0]["returnFlows"]
+        self.assertTrue(r["returnFlowAnalysis"]["capped"])
+        self.assertFalse(flows["results"][0]["consumerScanComplete"])
+        self.assertEqual(flows["resultsOmitted"], 1)
+        self.assertFalse(flows["complete"])
+        r = self.flow(c, [self.contract(c.labels["callee"], failures=[65535]), self.contract(0)])
+        self.assertTrue(all(f["consumerScanComplete"] for f in r["paths"][0]["returnFlows"]["results"]))
+        self.assertTrue(r["paths"][0]["returnFlows"]["complete"])
+
     def test_invalid_unreachable_contracts_are_rejected(self):
         for bad in (self.contract(0, failures=[65536]), self.contract(0, encodings=[{"value": 1, "role": "failure"}]),
                     self.contract(0, "fpu"), self.contract(0, ["ax"]), self.contract(0, evidence="")):

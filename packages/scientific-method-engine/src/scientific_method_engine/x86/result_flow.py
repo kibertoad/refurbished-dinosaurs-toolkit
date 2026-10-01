@@ -1,6 +1,7 @@
 """Declared result roles and bounded producer dependencies across caller continuations."""
 from .image import integer
 from .machine import ALIASES
+from .values import result_marker
 
 
 def validate_contracts(config, image):
@@ -39,9 +40,11 @@ def result_contracts(state, contracts, entry):
         if c["entry"] != entry:
             continue
         register = c["register"]
-        # Tag the declared value at the return boundary. A producer dependency is
-        # deliberately weaker than unchanged value identity, especially for loops.
-        state.setreg(register, state.reg(register), state.at)
+        # Tag the declared value with a marker unique to the return event about to be
+        # recorded. The instruction site would also tag the SP the return pops, every
+        # register a call model clobbers and every later execution of the same return.
+        # A producer dependency is still weaker than unchanged value identity.
+        state.setreg(register, state.reg(register), result_marker(len(state.events)))
         value = state.reg(register)
         rows.append({"entry": entry, "register": register, "value": value.report(),
                      "failureEncodings": c.get("failures", []), "encodings": c.get("encodings", []),
@@ -51,8 +54,23 @@ def result_contracts(state, contracts, entry):
     return rows
 
 
-SIGNED = {"jl", "jnge", "jle", "jng", "jg", "jnle", "jge", "jnl"}
+# Sign and overflow tests read the operand as a signed value.
+SIGNED = {"jl", "jnge", "jle", "jng", "jg", "jnle", "jge", "jnl", "js", "jns", "jo", "jno"}
 UNSIGNED = {"jb", "jc", "jnae", "jbe", "jna", "ja", "jnbe", "jae", "jnb", "jnc"}
+
+
+VALUE_FIELDS = ("sourceValue", "resultValue", "destinationContainerValue", "result", "value", "left", "right", "carry", "count")
+CONSUMER_KINDS = ("value-transfer", "conversion", "read", "write", "compare", "branch", "return")
+ROW_FIELDS = ("kind", "site", "entry", "depth", "order", "operation", "source", "destination", "sourceBits", "destinationBits",
+              "destinationContainer", "conversion", "sourceRegister", "destinationRegister", "effectiveOperandBits", "decoderMnemonic",
+              "width", "segment", "offset", "effectiveSegmentRegister", "predicate", "taken", "flagProducer")
+
+
+def _event_values(event):
+    values = {k: event[k] for k in VALUE_FIELDS if isinstance(event.get(k), dict)}
+    if event["kind"] == "return":
+        values.update({"return:" + c["register"]: c["value"] for c in event.get("resultContracts", [])})
+    return values
 
 
 def return_flows(report, config):
@@ -61,36 +79,36 @@ def return_flows(report, config):
     analysis_limit = integer(config.get("returnFlowAnalysisLimit", 1000000), 1, 10000000, "return flow analysis limit")
     steps, capped = 0, False
     for path in report["paths"]:
+        events = path["events"]
+        event_values = {}
         flows, omitted = [], 0
-        for index, event in enumerate(path["events"]):
+        for index, event in enumerate(events):
             if event["kind"] != "return" and not (event["kind"] == "call-return" and event.get("modeled")):
                 continue
             for contract in event.get("resultContracts", []):
                 if len(flows) >= limit or capped:
                     omitted += 1
                     continue
-                consumers, dropped = [], 0
-                marker = event["site"]
-                for later in path["events"][index + 1:]:
+                consumers, dropped, scanned = [], 0, True
+                marker = event["order"]
+                for later_index in range(index + 1, len(events)):
                     if steps >= analysis_limit:
-                        capped = True
+                        capped, scanned = True, False
                         break
                     steps += 1
-                    if later["kind"] not in ("value-transfer", "conversion", "read", "write", "compare", "branch", "return"):
+                    later = events[later_index]
+                    if later["kind"] not in CONSUMER_KINDS:
                         continue
-                    values = {k: later[k] for k in ("sourceValue", "resultValue", "destinationContainerValue", "result", "value", "left", "right", "carry", "count")
-                              if isinstance(later.get(k), dict)}
-                    if later["kind"] == "return":
-                        values.update({"return:" + c["register"]: c["value"] for c in later.get("resultContracts", [])})
-                    dependent = {k: v for k, v in values.items() if marker in v.get("producers", [])}
+                    if later_index not in event_values:
+                        event_values[later_index] = _event_values(later)
+                    values = event_values[later_index]
+                    dependent = {k: v for k, v in values.items() if marker in v.get("resultOrigins", ())}
                     if not dependent:
                         continue
                     if len(consumers) >= consumer_limit:
                         dropped += 1
                         continue
-                    row = {k: later[k] for k in ("kind", "site", "entry", "depth", "order", "operation", "source", "destination",
-                                                 "sourceBits", "destinationBits", "destinationContainer", "conversion", "sourceRegister", "destinationRegister", "effectiveOperandBits", "decoderMnemonic", "width", "segment", "offset",
-                                                 "effectiveSegmentRegister", "predicate", "taken", "flagProducer") if k in later}
+                    row = {k: later[k] for k in ROW_FIELDS if k in later}
                     widths = {k: "narrower" if v["bits"] < contract["value"]["bits"] else
                               "wider" if v["bits"] > contract["value"]["bits"] else "sameWidth"
                               for k, v in dependent.items()}
@@ -102,14 +120,12 @@ def return_flows(report, config):
                 flows.append({"originOrder": event["order"], "originSite": event["site"], "calleeEntry": contract["entry"],
                               "callSite": event.get("callSite"), "callerEntry": event.get("callerEntry"),
                               "conditionalModel": event.get("modeled", False), "resultContract": contract,
-                              "consumers": consumers, "consumersOmitted": dropped,
+                              "consumers": consumers, "consumersOmitted": dropped, "consumerScanComplete": scanned,
                               "successEstablished": False})
         path["returnFlows"] = {"results": flows, "resultsOmitted": omitted, "resultLimit": limit,
                                "consumerLimit": consumer_limit,
-                               "complete": not omitted and not any(f["consumersOmitted"] for f in flows) and path["returned"] and not report["gaps"],
+                               "complete": not omitted and all(not f["consumersOmitted"] and f["consumerScanComplete"] for f in flows)
+                                           and path["returned"] and not report["gaps"],
                                "interpretation": "conditional static dependency paths; encodings are declared evidence, not live occurrence; a branch never establishes initialization, accepted contents or extent"}
     report["returnFlowAnalysis"] = {"limit": analysis_limit, "steps": steps, "capped": capped}
-    if capped:
-        for path in report["paths"]:
-            path["returnFlows"]["complete"] = False
     return report

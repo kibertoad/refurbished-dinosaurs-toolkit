@@ -1,7 +1,7 @@
 """Path-specific instruction effects. Unsupported semantics stop the path."""
 from copy import deepcopy
 from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
-from .values import Value, const, unknown, op, extract, join, resize, sources, address_parts
+from .values import Value, const, unknown, op, extract, join, resize, sources, address_parts, producers
 
 REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "cs", "ds", "es", "ss", "fs", "gs")
 ALIASES = {}
@@ -225,7 +225,7 @@ class State:
         event = self.event("write" if write is not None else "read", segment=segment.report(), offset=offset.report(),
                            width=width, effectiveSegmentRegister=addressing_register, segmentInterpretation="base" if self.flat else "selector-paragraph", interval={"segment": seg, "base": base, "start": delta, "end": delta + width},
                            value=value.report(), missingByteProducers=missing,
-                           byteProducers=[{"index": i, "producers": list(self.memory[key].sources) if key in self.memory else []} for i, key in enumerate(keys)],
+                           byteProducers=[{"index": i, "producers": producers(self.memory[key]) if key in self.memory else []} for i, key in enumerate(keys)],
                            guards=deepcopy(relevant), role=role,
                            uncertainAliasesInvalidated=len(uncertain))
         f = self.frames[-1]
@@ -234,7 +234,7 @@ class State:
         relative = (mem_delta - stack_delta) % (1 << self.bits)
         if write is None and segment.term == self.segment("ss").term and mem_base == stack_base and f["returnBytes"] <= relative < 1 << (self.bits - 1):
             event["argument"] = {"offsetFromEntrySP": relative, "width": width, "returnFrameBytes": f["returnBytes"],
-                                 "pushProducers": list(value.sources), "grouping": role or "consumed width only"}
+                                 "pushProducers": producers(value), "grouping": role or "consumed width only"}
         return value
 
     def address(self, ins, operand):
