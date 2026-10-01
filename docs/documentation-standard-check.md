@@ -1,10 +1,10 @@
 # Documentation standard check
 
-`tools/check-documentation.mjs` checks a restoration's `spec/`, `parity/` and `deviations/`
-against version 1 of the
+`@scientific-method/standard-checker` (source in `packages/standard-checker`) checks a
+restoration's `spec/`, `parity/` and `deviations/` against version 1 of the
 [documentation standard](https://dinorefurb.com/documentation-standard/#checks) and writes the
-four indexes in `spec/index/` and the totals in `PARITY.md`. It needs Node.js 20 or newer and no
-packages. It started as `tools/check-spec.mjs` in the Chaos Overlords restoration.
+four indexes in `spec/index/` and the totals in `PARITY.md`. It needs Node.js 22 or newer and has
+no dependencies. It started as `tools/check-spec.mjs` in the Chaos Overlords restoration.
 
 `actions/check-documentation` runs it in GitHub Actions. The toolkit repository is public, so any
 workflow can use the action by path and commit. Nothing needs publishing to the Marketplace.
@@ -29,7 +29,7 @@ The check expects these at the root it is given (the repository root by default)
 
 The check writes `PARITY.md`. An empty directory needs a `.gitkeep` so that git keeps it.
 
-`tests/documentation-standard/valid/` is the smallest layout that passes and can be copied as a
+`packages/standard-checker/test/valid/` is the smallest layout that passes and can be copied as a
 starting point.
 
 ### 2. Pick the toolkit commit
@@ -40,8 +40,8 @@ Pin the action to a full commit SHA of the toolkit's `main`, never to a branch:
 git ls-remote https://github.com/kibertoad/refurbished-dinosaurs-toolkit refs/heads/main
 ```
 
-Use the same SHA for every toolkit action a restoration uses, and for the local copy of the
-script in step 5, so CI and local runs apply the same checks.
+Use the same SHA for every toolkit action a restoration uses, and the checker version that
+commit carries for local runs (step 5), so CI and local runs apply the same checks.
 
 ### 3. Add the workflow
 
@@ -154,17 +154,16 @@ parity work:
 ### 5. Generate the indexes and PARITY.md before the first run
 
 The action runs with `--check`, which fails when an index in `spec/index/` or `PARITY.md` is
-missing or stale, or when `spec/index/` holds a file the check would not write. Run the script
+missing or stale, or when `spec/index/` holds a file the check would not write. Run the checker
 once locally without `--check` and commit what it writes:
 
 ```sh
-curl -fsSLo check-documentation.mjs \
-  https://raw.githubusercontent.com/kibertoad/refurbished-dinosaurs-toolkit/<sha>/tools/check-documentation.mjs
-node check-documentation.mjs
+npx @scientific-method/standard-checker@<version>
 git add spec/index PARITY.md
 ```
 
-Keep the downloaded script out of the repository (add it to `.gitignore`) or delete it after use.
+Use the version the action's toolkit commit carries in `packages/standard-checker/package.json`,
+so the local run and CI agree.
 
 ### 6. Make it required
 
@@ -179,7 +178,7 @@ all actions.
 ### Updating
 
 To pick up new checks, replace the SHA in the workflow with a newer toolkit commit, regenerate the
-indexes and `PARITY.md` with the script from that commit, and fix what it reports in the same pull
+indexes and `PARITY.md` with the checker version from that commit, and fix what it reports in the same pull
 request.
 
 A build entry written before the Code ranges section existed fails with a missing section. Add
@@ -206,12 +205,14 @@ It exports `KSC` and sets the `path` output to the compiler's launcher. It refus
 whose SHA-256 is not pinned in `actions/setup-kaitai/install.sh`; to support a new release, add
 its hash there.
 
-## Running the script locally
+## Running the checker locally
+
+Add it as a development dependency (`pnpm add -D @scientific-method/standard-checker`), then:
 
 ```sh
-node check-documentation.mjs            # check, then rewrite stale indexes and PARITY.md
-node check-documentation.mjs --check    # check, and fail on a stale index or PARITY.md
-node check-documentation.mjs --help     # every option
+pnpm exec standard-checker            # check, then rewrite stale indexes and PARITY.md
+pnpm exec standard-checker --check    # check, and fail on a stale index or PARITY.md
+pnpm exec standard-checker --help     # every option
 ```
 
 Run it from the restoration's root or pass `--root`. The command-line options match the action's
@@ -231,14 +232,14 @@ A marked test file of a `validated` row runs on a maintainer's machine. After a 
 test in those files passed and none was skipped, record it:
 
 ```sh
-node check-documentation.mjs --record-validation BLD-GOG-EN-1.1
+pnpm exec standard-checker --record-validation BLD-GOG-EN-1.1
 ```
 
 This writes `VALIDATION.md` at the root: the commit, the date, the builds the run used, and the
 SHA-256 of every marked test file a validated row lists, hashed with CRLF read as LF. Commit it with
 the change. From then on the check, in CI as well, fails a validated row whose marked test file is
 missing from the record or has changed since, and a record that lists any other file. A
-restoration whose validated rows list no marked file needs no record. The script cannot tell
+restoration whose validated rows list no marked file needs no record. The checker cannot tell
 whether the tests passed; running them before recording is the maintainer's part.
 
 ## Moving a restoration onto it
@@ -247,7 +248,8 @@ A restoration that has its own copy of `check-spec.mjs`:
 
 1. Delete the copy and the workflow step that installs the Kaitai compiler.
 2. Add the action as above, with the inputs that reproduce the old directory list.
-3. Point local validation scripts at the downloaded script.
+3. Add `@scientific-method/standard-checker` as a development dependency and point local
+   validation scripts at `standard-checker`.
 4. Regenerate the indexes. The generated header now names the documentation standard check
    instead of `tools/check-spec.mjs`, so all four indexes change once.
 
@@ -263,19 +265,19 @@ on the single files gets one problem per file saying where it moves:
    `# <AREA>` and holds one table. The check tells you where an area has to be split further.
 4. Move each build entry's `files` list to `builds/<ID>.files.yaml` and put
    `manifest: <ID>.files.yaml` in the entry.
-5. Run the script without `--check` to write `PARITY.md` and the indexes, which now have a path
+5. Run the checker without `--check` to write `PARITY.md` and the indexes, which now have a path
    heading, one row per entry in `references.md`, and are split where they would pass the limit.
 
 No ID changes, so code and tests that cite IDs stay as they are.
 
 ## What it does not check
 
-A few checks in the standard's list need something the script does not have, and are left to
+A few checks in the standard's list need something the checker does not have, and are left to
 review:
 
 - that a glossary entry gives what the standard asks of its kind of term, and that no procedure
   assigns to a value from outside the game, since the glossary does not mark kinds in a form a
-  script can read;
+  checker can read;
 - that a neutral name is the one from the entry's first build;
 - that no list of fixed length is given to `append`, `insert` or `remove_at`, and that every field
   a procedure names is in its format's layout;
@@ -286,7 +288,7 @@ review:
   naming a rule entry that a live experiment's fixture may not name once it is superseded;
 - the spec package version, since the package does not exist yet.
 
-The tests in `tests/documentation-standard/` run the script over a small fixture restoration and
+The tests in `packages/standard-checker/test/` run the checker over a small fixture restoration and
 over broken copies of it.
 
 ## Version 1 evidence locations and historical rules
@@ -373,5 +375,5 @@ left to review.
 A file in any other format fails the manifest check, and so does a packed file whose unpacked
 form is in any other format. Before such a file is documented, the Standard must decide how
 locations in that format are given and record that decision. Only then is the format added to
-the `LOCATIONS` table in `tools/check-documentation.mjs` and to this table. These rules
+the `LOCATIONS` table in `packages/standard-checker/src/standard-checker.ts` and to this table. These rules
 implement Standard v1.

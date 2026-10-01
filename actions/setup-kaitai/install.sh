@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs the Kaitai Struct compiler release named by KSC_VERSION under RUNNER_TEMP, checks it
-# against the SHA-256 pinned below, and exports KSC, which check-documentation.mjs reads.
+# against the SHA-256 pinned below, and exports KSC, which standard-checker reads.
 # The releases are not signed, so the pinned hash is the only integrity check. A version without
 # a hash here is refused.
 set -euo pipefail

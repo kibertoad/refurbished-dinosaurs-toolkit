@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // The checker indexes table rows, regex groups and front matter that it validates as it goes,
+    // and reports a malformed one as a problem instead of guarding every access.
+    "noUncheckedIndexedAccess": false,
+    "noEmit": true
+  },
+  "include": ["src", "test"]
+}

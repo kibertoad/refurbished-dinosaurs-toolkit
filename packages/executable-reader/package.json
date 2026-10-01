@@ -1,0 +1,47 @@
+{
+  "name": "@scientific-method/executable-reader",
+  "version": "0.0.0",
+  "description": "Hash-guarded MZ and Borland FBOV executable reader, and the command line for scientific-method-engine reports.",
+  "type": "module",
+  "license": "MIT",
+  "author": "kibertoad",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kibertoad/refurbished-dinosaurs-toolkit.git",
+    "directory": "packages/executable-reader"
+  },
+  "bin": {
+    "scientific-method": "dist/bin/scientific-method.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/report.d.ts",
+      "default": "./dist/src/report.js"
+    },
+    "./legacy-image": {
+      "types": "./dist/src/legacy-image.d.ts",
+      "default": "./dist/src/legacy-image.js"
+    },
+    "./pointer-inventory": {
+      "types": "./dist/src/pointer-inventory.d.ts",
+      "default": "./dist/src/pointer-inventory.js"
+    }
+  },
+  "files": [
+    "dist",
+    "NOTICE.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "pnpm run build",
+    "test": "node --test \"test/*.test.ts\""
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

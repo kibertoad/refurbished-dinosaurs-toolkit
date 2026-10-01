@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="Toad.Discovery.Core/Toad.Discovery.Core.csproj" />
+    <Project Path="Toad.Discovery.LegacyFormats/Toad.Discovery.LegacyFormats.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="Toad.Discovery.Core.Tests/Toad.Discovery.Core.Tests.csproj" />
+  </Folder>
+</Solution>

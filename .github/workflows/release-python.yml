@@ -1,0 +1,88 @@
+name: Release Python package
+
+# When a pull request that changed packages/scientific-method-engine merges with a release:major,
+# release:minor or release:patch label, publishes the next version to PyPI through trusted
+# publishing (OIDC) and creates the scientific-method-engine@<version> tag and GitHub release.
+# The version comes from the latest such tag plus the largest bump among the pull requests merged
+# since that tag.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - packages/scientific-method-engine/**
+
+# One release at a time. GitHub replaces a pending run when another is queued, which loses nothing:
+# the plan covers every pull request merged since the latest release tag, not only the one that
+# started the run.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.x
+      - id: plan
+        run: node tools/release/plan.ts release pypi "$AFTER"
+        env:
+          AFTER: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+  publish:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pypi
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.x
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - name: Set the version and licence
+        run: |
+          node tools/release/plan.ts set-version packages/scientific-method-engine/pyproject.toml "$VERSION"
+          cp LICENSE packages/scientific-method-engine/LICENSE
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+      - name: Test
+        working-directory: packages/scientific-method-engine
+        run: uv run --isolated --with-editable . python -B -m unittest discover -s tests -p 'test*.py'
+      - name: Build
+        run: uv build packages/scientific-method-engine --out-dir dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
+          # A rerun after a failed release step finds the version already uploaded.
+          skip-existing: true
+      - name: Tag and create the GitHub release
+        run: gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$TAG" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.plan.outputs.tag }}

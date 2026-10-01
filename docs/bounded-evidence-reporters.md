@@ -1,23 +1,30 @@
 # Bounded instruction reports
 
-Run `python -m pip install -r tools/evidence/requirements.txt` once in the Python
-environment used for research. Python 3.10 or later, Capstone 5.0.7 and Node 22 or
-later are required. `EVIDENCE_PYTHON` selects another Python executable.
+The reports come from two published packages built in this repository's `packages/`:
+`@scientific-method/executable-reader` on npm reads and hash-checks the original and runs the
+reports, and `scientific-method-engine` on PyPI decodes the instructions. Run
+`python -m pip install scientific-method-engine` once in the Python environment used for
+research, and add the reader to the project (`pnpm add -D @scientific-method/executable-reader`).
+Python 3.10 or later and Node 22 or later are required; the engine pins Capstone 5.0.7.
+`EVIDENCE_PYTHON` selects another Python executable. The reader refuses an engine whose
+prepared-config protocol differs from its own, so upgrade the two together.
+See [moving from the vendored reporters](migrating-to-scientific-method.md).
 Reports and their configurations stay in `GAME_DIR` and are not committed.
 For example, from PowerShell with `GAME_DIR` set to the owned game's directory:
 
 ```powershell
-node tools/evidence/report.mjs trace "$env:GAME_DIR/analysis/query.json"
+pnpm exec scientific-method trace "$env:GAME_DIR/analysis/query.json"
 ```
 
 Save redirected output under `GAME_DIR` too. The reporter does not run the
 original program, invoke DOSBox or change a spec status.
 
 The input names a hash-checked source and evidenced code regions. For MZ/FBOV,
-the Node entry point derives relocation membership and canonical trampoline
-targets from the source. The Python entry point is a lower-level interface for
+the reader derives relocation membership and canonical trampoline
+targets from the source. The engine's own command line
+(`python -m scientific_method_engine <command> <config.json>`) is a lower-level interface for
 synthetic data or already checked mappings. Its relocation metadata is supplied
-input, not independently verified evidence. Use the Node entry point for originals.
+input, not independently verified evidence. Use the reader for originals.
 
 ```json
 {
@@ -53,7 +60,30 @@ offsets alone never establish storage identity.
 
 ## Commands
 
-All commands return JSON with the input fingerprint and schema `bounded-x86-v1`.
+Run each command as `scientific-method <command> <config.json>` (the reader) or, for synthetic
+and PE32 inputs only, `python -m scientific_method_engine <command> <config.json>` (the engine).
+
+| Command | Reports | Described in |
+|---|---|---|
+| `trace` | ordered effects and every return along bounded paths from `entry` | this section |
+| `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal | this section |
+| `uses` | accesses to one memory offset from every established entry | this section |
+| `incoming` | calls that reach a canonical target, with search coverage | this section |
+| `dispatch` | the target of each input through a switch's jump table | this section, [jump tables](#evidenced-indirect-jump-tables) |
+| `allocation` | allocation requests, returned pointers and later writes | this section |
+| `operand` | the target an instruction-owned segment operand names | [segment operand query](#instruction-owned-segment-operand-query) |
+| `operand-candidates` | encoded displacements and immediates equal to an offset | [function bounds](#function-bounds-and-site-ownership) |
+| `target` | call-target provenance of one call site | [call-target provenance](#call-target-provenance) |
+| `bounds` | the instruction extent reached from one entry | [function bounds](#function-bounds-and-site-ownership) |
+| `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
+| `callees` | the bounded call graph below an entry, with recursion and shared callees | [function bounds](#function-bounds-and-site-ownership) |
+| `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
+
+The engine also has `scientific-method-engine ghidra-scripts`, which prints the directory of the
+packaged Ghidra scripts (see the engine's README for the list).
+
+All engine commands return JSON with the input fingerprint and schema `bounded-x86-v1`;
+`pointers` returns its own inventory object, described in its section.
 `target` is described under [Call-target provenance](#call-target-provenance), and `bounds`
 and `owner` under [Function bounds and site ownership](#function-bounds-and-site-ownership).
 `trace` follows direct calls and local branches, records ordered effects and keeps
@@ -209,12 +239,12 @@ under the documentation standard.
 
 ## Acceptance and propagation
 
-Run `python -B -m unittest discover -s tests/evidence -p 'test*.py'` and
-`node --test tests/evidence/bridge.test.mjs`. The fixtures are entirely synthetic. The paired segment test reads distinct
+Run `python -B -m unittest discover -s tests -p 'test*.py'` in
+`packages/scientific-method-engine` and `pnpm --filter @scientific-method/executable-reader test`. The fixtures are entirely synthetic. The paired segment test reads distinct
 values through the same BP-derived BX offset before and after `push ss; pop ds`;
 the incoming-call test places a caller at a higher address than the target's code.
-The template vendors an exact pinned copy; refine the toolkit source and update
-the template's copy and digest record together. The website describes acceptance
+Restorations depend on released versions of the two packages; refine the reporters here and
+release them (see [releasing](releasing.md)). The website describes acceptance
 contracts, while these executable tests establish delivered reporter behavior.
 A reporter need not support every query. Each supported query must meet its
 contract, with unsupported cases and remaining limits stated separately. A
@@ -471,7 +501,7 @@ A true exhaustive flag is not independently validated behavior or native reachab
 
 ## Relocated pointer-pair inventory
 
-Run `node tools/evidence/report.mjs pointers <config.json>` through the ordinary
+Run `scientific-method pointers <config.json>` through the ordinary
 hash-guarded MZ/FBOV loader. `query: { segment, offset }` names a loaded resident
 address or overlay trampoline, not a raw stored segment; an optional `target`
 must agree with the canonical source-derived destination. Regions are optional
