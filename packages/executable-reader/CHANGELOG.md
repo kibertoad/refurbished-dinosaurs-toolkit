@@ -1,5 +1,11 @@
 # @scientific-method/executable-reader
 
+## 0.2.0
+
+### Minor Changes
+
+- eab782d: Verify delivery of ordered effect-path summaries through the prepared engine bridge.
+
 ## 0.1.0
 
 ### Minor Changes
