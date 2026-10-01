@@ -317,3 +317,20 @@ test("near-pointer arguments and DS dereferences retain caller SS provenance thr
     assert.ok(link); assert.equal(link.segmentRelationship, "unresolved"); assert.equal(link.mayMergeStorage, false);
   }
 });
+
+
+test("call-order retains flat coverage and caller guard/cleanup qualifications through the source bridge", t => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  data.set([0x83,0xf8,5,0x7c,12,0xe8,10,0,0x83,0xc4,8,0xe8,4,0,0x83,0xc4,8,0xc3,0xc3],64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const cfg = { ...config, sha256: createHash("sha256").update(data).digest("hex"), target: 82,
+    regions: [{ ...config.regions[0], entries: [64,82] }], controls: [69,75],
+    orderControls: [{entry:64,kind:"sequence",sites:[69,75]}] };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  const r = run(["call-order", join(dir, "config.json")]);
+  assert.equal(r.incoming.confirmed.length, 2);
+  assert.deepEqual(r.callers[0].groups[0].order, [69,75]);
+  assert.ok(r.callers[0].groups[0].sharedGuards.length);
+  assert.ok(r.callers[0].calls.every(c => c.cleanup.argumentBytes === 8 && c.calleeEffects.status === "unresolved"));
+});

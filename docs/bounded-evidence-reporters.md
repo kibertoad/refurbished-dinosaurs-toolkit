@@ -580,3 +580,24 @@ the most recent formations on each path and evicting the oldest; evicted
 formations remain explicit per path/event and refuse storage merging. Candidate
 lists are present only when non-empty. A complete
 or stopped trace never promotes a modeled association to runtime state evidence.
+
+
+`call-order` keeps the ordinary `incoming` report and adds caller groups for its
+confirmed target calls. Every declared entry is boundary-checked, and shared or
+contested ownership remains unread. `necessaryGuards` are conditional CFG edges
+whose removal prevents reaching that call; an adjacent CMP/TEST is described
+only when it is the branch's sole predecessor. The guard describes the tested
+operand/width and segment choice, never a preserved value across callee effects.
+Groups with the same necessary guards report `sequence`, `branchAlternatives`
+or `unread`; sequence order is derived from continuation reachability, not file
+addresses. Within guarded loops it covers one visit past the shared guard edges,
+with `mayRepeatAcrossGuardVisits` retaining recurrence. Pair `relations` describe
+the whole caller CFG and remain unread for cyclic order. Calls also describe
+immediate ADD SP/ESP cleanup after an assumed return; other cleanup remains
+unread and callee effects/return success/state restoration always remain a gap.
+`entryLimit` (1..256, default 64), the incoming result/scan limits, per-body
+`instructionLimit`, and `analysisLimit` (1..10000000, default 1000000 per caller)
+bound work. Limits retain unread ordering, omitted entries and flat coverage.
+`orderControls` names known entry/kind/sites groups (sequence sites in order);
+false sequences/alternatives fail rather than overriding the CFG. No runtime
+execution, input-feasibility or universal incoming coverage claim is made.
