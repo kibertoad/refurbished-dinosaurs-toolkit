@@ -104,6 +104,8 @@ class Image:
             if f["site"] in self.fixups or not f.get("evidence"):
                 raise ValueError("Duplicate relocation or missing provenance")
             self.fixups[f["site"]] = f
+        from .dispatch import read_indirect_jumps
+        self.indirect_jumps = read_indirect_jumps(self)
 
     def region(self, site):
         return next((r for r in self.regions if r["start"] <= site < r["end"]), None)

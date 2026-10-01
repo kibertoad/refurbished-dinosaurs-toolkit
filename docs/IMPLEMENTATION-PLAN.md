@@ -110,3 +110,26 @@ Tooling batch. Outcome: an incoming report says, for each overlay, PE section or
 ## Carry, multiply, divide and counted loops
 
 Tooling batch. Outcome: the path model tracks CF where shifts, rotates, CLC/STC/CMC, ADC/SBB and one-operand MUL/IMUL set it, keeps it across INC/DEC and saved FLAGS, and decides carry branches from it. It adds ADC/SBB, NEG/NOT, ROL/ROR/RCL/RCR with known counts, one-operand MUL/IMUL/DIV/IDIV (a known divide error stops the path; an unknown one is a listed assumption), JCXZ/JECXZ and the LOOP family. `visitLimit` replaces the fixed bound of four passes per instruction, so a loop with a known count completes and an unknown one still stops with the limit named. These are the instructions that stopped the recorded initializer, allocator and loader cases. Tests: SHL/RCL double-word shifts with known and unknown values, an ADC chain, carry branches after STC/INC, a shift and a FLAGS round trip, NEG/NOT/ROL, a counted LOOP under the default and a raised limit, JCXZ with known and unknown CX, MUL into DX:AX, unsigned and signed DIV, divide by zero and an unknown divisor. No native execution or proprietary fixtures. Exit: toolkit gates pass; a game's path-summary requests close only after their own cases pass against the adopted pin.
+
+## Evidenced indirect dispatch and relocated pointer inventories
+
+Tooling batch. Outcome: ownership, bounds and incoming walks follow explicitly
+evidenced segmented16 indirect-jump tables; a bounded pointer inventory separates
+exact loaded pairs from aliases resolving to the same canonical file target.
+Evidence: existing Dark Sun CONFIG-092/101/111/114/128 findings identify indirect
+dispatch stops and pointer representations outside call-only queries. Original
+acceptance configurations and reports remain local, never fixtures.
+Jump declarations name a computed near-jump instruction, bounded numeric table
+layout, mapping/count evidence and explicit exhaustiveness. Targets come from
+source words, never invented register values. Partial tables retain unresolved
+routes. Supplied indirect edges never prove overlapping instruction boundaries,
+affect path execution or establish callee effects. Reports retain assumptions.
+Pointer queries inspect declared MZ/FBOV segment words and a bounded preceding
+offset field; retain raw, loaded, descriptor and trampoline identities, unresolved
+mappings, positive controls and caps. Adjacent words are candidates, not proof of
+runtime pointer use. No computed or unrelocated pointer completeness claim.
+Synthetic tests: dispatch ownership/incoming controls, partial tables, malformed
+layouts/targets, false boundaries, alias pairs, descriptor tokens, failed controls,
+truncation and unresolved pairs. Exit: reporter, bridge, documentation and policy
+gates plus .NET build/tests pass; open upstream PR. Game gaps stay open until
+reviewed adoption and whole source-case acceptance. No original content in Git.
