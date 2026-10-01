@@ -247,7 +247,7 @@ Rules for every iteration:
 | Phase | Status | Date | Evidence |
 |---|---|---|---|
 | 0 freeze and baseline | done | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
-| 1 pypcode spike | in progress | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54), 4 (#55), 5 (#56) and 6 (#57) answered |
+| 1 pypcode spike | in progress | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54), 4 (#55), 5 (#56), 6 (#57) and 7 (PR pending) answered |
 | 2 semantics seam | not started | | |
 | 3 pypcode backend | not started | | |
 | 4 parity on recorded cases | not started | | |
@@ -361,6 +361,14 @@ Unicorn 2.1.4 and Capstone 5.0.7 on Python 3.14 (Windows). Each answer names its
    0xFFFF). The `conversion` event keeps `decoderMnemonic` and `mnemonicWidthMismatch` from
    Capstone's mnemonic, and takes `effectiveOperandBits` from the output width, which removes the
    prefix arithmetic the handwritten backend does.
+7. **Unicorn as the oracle: go.** (`Question7UnicornOracle`) Unicorn's `UC_MODE_16` runs
+   real-mode bytes with segment registers set by the test: with code at 1000:0010, ES 2000 and
+   DS 3000, `mov ax, es:[di]` reads linear 0x20004 and `rep movsb` copies from DS:SI to ES:DI. The
+   resulting AX, CX, SI, DI and memory equal the spike interpreter's. EFLAGS is readable for flag
+   checks, and `UC_MODE_32` covers PE32. The oracle maps the whole first megabyte, so it needs no
+   model of the program's layout beyond the synthetic bytes a test writes.
+
+No question was a no-go, so the Miasm evaluation under decision 8 does not start.
 
 ### Groups moved
 
