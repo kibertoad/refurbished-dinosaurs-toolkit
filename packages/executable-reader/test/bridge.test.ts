@@ -52,8 +52,15 @@ test("source loader derives relocation membership and far return frames", (t) =>
 
 test("return flow bridge keeps full-width failures and declared roles", (t) => {
   const { dir, config } = fixture(t);
-  const returnContracts = [{entry: 80, register: "ax", failures: [65535],
-    encodings: [{value: 65535, role: "failure", evidence: "synthetic result encoding"}], evidence: "synthetic far result"}];
+  const returnContracts = [
+    {
+      entry: 80,
+      register: "ax",
+      failures: [65535],
+      encodings: [{ value: 65535, role: "failure", evidence: "synthetic result encoding" }],
+      evidence: "synthetic far result",
+    },
+  ];
   writeFileSync(join(dir, "config.json"), JSON.stringify({ ...config, returnContracts }));
   const r = run(["returns", join(dir, "config.json")]);
   const f = r.paths[0].returnFlows.results[0];
