@@ -226,6 +226,48 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(len(r["confirmed"]), 2)
         self.assertNotEqual(r["confirmed"][0]["provenance"]["resolvedSegment"], r["confirmed"][1]["provenance"]["resolvedSegment"])
 
+    def test_target_reports_near_mapping_and_unverified_boundary(self):
+        c = Code().branch("e8", "callee").emit("c3").label("data").branch("e8", "callee").label("callee").emit("c3")
+        data = c.bytes()
+        cfg = configuration(data, query={"site": 0})
+        r = run_report(data, cfg, "target")
+        self.assertEqual((r["boundary"], r["canonicalTarget"], r["loadedAddress"]), ("entry-path instruction", 7, "1000:0007"))
+        self.assertEqual(r["target"]["citation"], "1000:0007")
+        cfg["query"]["site"] = 4
+        self.assertIn("unverified", run_report(data, cfg, "target")["boundary"])
+
+    def test_target_keeps_an_instruction_limit_stop_beside_an_unverified_boundary(self):
+        c = Code().branch("e8", "a").emit("c3").label("a").branch("e8", "b").emit("c3").label("b").emit("c3")
+        data = c.bytes()
+        r = run_report(data, configuration(data, query={"site": 4}, instructionLimit=1), "target")
+        self.assertIn("instruction limit", r["boundary"])
+        self.assertFalse(r["walkComplete"])
+        self.assertTrue(any(g["reason"] == "instruction limit" for g in r["gaps"]))
+        self.assertTrue(run_report(data, configuration(data, query={"site": 4}), "target")["walkComplete"])
+
+    def test_target_assigns_no_target_when_the_source_loader_could_not_resolve_it(self):
+        data = bytes.fromhex("9a 05 00 00 00 c3")
+        cfg = configuration(data, query={"site": 0}, relocations=[{"site": 3, "raw": 0, "segment": 0x1000, "evidence": "synthetic",
+                                                                    "targetError": "Segmented address is outside the resident load image"}])
+        r = run_report(data, cfg, "target")
+        self.assertEqual((r["relocated"], r["canonicalTarget"], r["target"]), (True, None, None))
+        self.assertIn("outside the resident", r["targetError"])
+
+    def test_target_marks_supplied_relocation_metadata_and_analyzer_identity(self):
+        data = bytes.fromhex("9a 05 00 00 00 c3")
+        cfg = configuration(data, query={"site": 0, "analyzerAddress": {"segment": 0x1000, "offset": 5, "evidence": "synthetic"}},
+                            relocations=[{"site": 3, "segment": 0x1000, "evidence": "synthetic supplied pair"}])
+        r = run_report(data, cfg, "target")
+        self.assertEqual((r["kind"], r["canonicalTarget"], r["loadedAddress"]), ("MZ relocation", 5, "1000:0005"))
+        self.assertIn("supplied", r["mappingProvenance"])
+        self.assertEqual(r["analyzer"]["matches"], ["loaded address", "canonical target"])
+        cfg["relocations"] = []
+        unrelocated = run_report(data, cfg, "target")
+        self.assertEqual((unrelocated["relocated"], unrelocated["target"]), (False, None))
+        cfg["query"]["site"] = 5
+        with self.assertRaisesRegex(ValueError, "direct call or jump"):
+            run_report(data, cfg, "target")
+
     def test_dispatch_normalization_and_rejection(self):
         c = Code().emit("83 e0 7f 83 f8 02").branch("73", "reject").emit("89 c3 d1 e3").label("dispatch").emit("ff 27").label("reject").emit("c3")
         c.label("table").emit("20 00 30 00")

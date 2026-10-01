@@ -54,7 +54,7 @@ test("CLI keeps capped and partial incoming searches explicit", t => {
 });
 
 
-test("FBOV source preserves shifted descriptor and verified trampoline selection", t => {
+function overlayFixture(t) {
   const dir = mkdtempSync(join(tmpdir(), "bounded-overlay-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const data = Buffer.alloc(592), w = (p, n) => data.writeUInt16LE(n, p), d = (p, n) => data.writeUInt32LE(n, p);
@@ -72,6 +72,11 @@ test("FBOV source preserves shifted descriptor and verified trampoline selection
       { name: "resident", start: 80, end: 86, ip: 16, segment: 4096, entries: [80], evidence: "synthetic resident code" },
       { name: "overlay", start: 528, end: 560, ip: 0, segment: 8192, entries: [528, 532], evidence: "synthetic overlay view" }
     ] };
+  return { dir, data, config };
+}
+
+test("FBOV source preserves shifted descriptor and verified trampoline selection", t => {
+  const { dir, config } = overlayFixture(t);
   const prepared = prepare(config, dir);
   const fixup = prepared.relocations.find(r => r.site === 535);
   assert.equal(fixup.raw, 8); assert.equal(fixup.descriptor, 1); assert.equal(fixup.target, 528);
@@ -94,4 +99,65 @@ test("instruction operand CLI uses source relocation and rejects partial word qu
   assert.equal(result.loadedAddress,"1000:0010");assert.equal(result.relocation.evidence,"source MZ relocation");
   cfg.query.operandSite=66;writeFileSync(path,JSON.stringify(cfg));
   assert.throws(()=>run(["operand",path]),/complete 16-bit immediate/);
+});
+
+
+test("target report keeps the raw word, relocation, descriptor and trampoline of one far call", t => {
+  const { dir, config } = overlayFixture(t);
+  const path = join(dir, "config.json");
+  const query = site => writeFileSync(path, JSON.stringify({ ...config, query: { site } }));
+  query(80);
+  const resident = run(["target", path]);
+  assert.equal(resident.boundary, "entry-path instruction");
+  assert.equal(resident.rawOperand, "000C:0020");
+  assert.equal(resident.kind, "MZ relocation");
+  assert.equal(resident.loadedAddress, "100C:0020");
+  assert.equal(resident.trampoline, 288);
+  assert.equal(resident.canonicalTarget, 528);
+  assert.equal(resident.target.citation, "+0x00000210");
+  query(532);
+  const overlay = run(["target", path]);
+  assert.equal(overlay.kind, "FBOV fixup");
+  assert.equal(overlay.storedWord, 8);
+  assert.equal(overlay.descriptor, 1);
+  assert.equal(overlay.descriptorSegment, 12);
+  assert.equal(overlay.loadedAddress, "100C:0020");
+  assert.equal(overlay.canonicalTarget, 528);
+  assert.deepEqual(overlay.formatTables.counts, { relocations: 1, descriptors: 2, overlays: 1, fixups: 1, trampolines: 1 });
+});
+
+test("target report assigns no target to an unrelocated far call and flags a raw analyzer address", t => {
+  const { dir, data, config } = overlayFixture(t);
+  data.writeUInt16LE(0, 6);
+  writeFileSync(join(dir, "source.bin"), data);
+  const path = join(dir, "config.json");
+  writeFileSync(path, JSON.stringify({ ...config, sha256: createHash("sha256").update(data).digest("hex"),
+    query: { site: 80, analyzerAddress: { segment: 12, offset: 32, evidence: "synthetic analyzer listing" } } }));
+  const result = run(["target", path]);
+  assert.equal(result.relocated, false);
+  assert.equal(result.target, null);
+  assert.equal(result.canonicalTarget, null);
+  assert.deepEqual(result.analyzer.matches, ["raw operand"]);
+  assert.match(result.analyzer.interpretation, /unrelocated/);
+});
+
+test("target report keeps a disagreeing analyzer address beside the derived chain", t => {
+  const { dir, config } = overlayFixture(t);
+  const path = join(dir, "config.json");
+  writeFileSync(path, JSON.stringify({ ...config, query: { site: 532, analyzerAddress: { segment: 0x2000, offset: 0x40, evidence: "synthetic analyzer listing" } } }));
+  const disagree = run(["target", path]);
+  assert.equal(disagree.analyzer.disagrees, true);
+  assert.equal(disagree.canonicalTarget, 528);
+  writeFileSync(path, JSON.stringify({ ...config, query: { site: 532, analyzerAddress: { segment: 0x2000, offset: 0, evidence: "synthetic analyzer listing" } } }));
+  assert.deepEqual(run(["target", path]).analyzer.matches, ["canonical target"]);
+});
+
+test("format controls reject tables whose counts differ before any query", t => {
+  const { dir, config } = overlayFixture(t);
+  assert.equal(prepare({ ...config, formatControls: { overlays: 1, fixups: 1, trampolines: 1 } }, dir).formatTables.controls.overlays, 1);
+  assert.throws(() => prepare({ ...config, formatControls: { fixups: 2 } }, dir), /fixups: expected 2, source tables yield 1/);
+  assert.throws(() => prepare({ ...config, formatControls: { segments: 1 } }, dir), /Unknown format control/);
+  assert.throws(() => prepare({ ...config, targetSelector: { descriptor: 0, trampoline: 288 } }, dir), /resident/);
+  assert.throws(() => prepare({ ...config, sourceKind: "synthetic-raw", formatControls: { fixups: 1 } }, dir), /only to mz sources/);
+  assert.throws(() => prepare({ ...config, formatTables: { counts: {} } }, dir), /cannot be supplied/);
 });

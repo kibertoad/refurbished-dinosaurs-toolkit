@@ -92,6 +92,24 @@ export function readMz(bytes, loadSegment = 0x1000) {
   }
   return { header, end, loadSegment, ranges, relocations, overlays, descriptors, address, resolveOperand, bytes };
 }
+// Counts the format's own tables yield. A build's known counts act as positive controls: a
+// loader that reads the wrong descriptor flag or clips a table fails here, before any query.
+export function formatCounts(image) {
+  return { relocations: image.relocations.size, descriptors: image.descriptors.length, overlays: image.overlays.length,
+    fixups: image.overlays.reduce((n, o) => n + o.fixups.size, 0), trampolines: image.overlays.reduce((n, o) => n + o.trampolines.length, 0) };
+}
+export function checkFormatControls(image, expected) {
+  if (!expected || typeof expected !== "object" || Array.isArray(expected)) throw new Error("formatControls must be an object of expected counts");
+  const actual = formatCounts(image), names = Object.keys(actual);
+  const unknown = Object.keys(expected).filter((k) => !names.includes(k));
+  if (unknown.length) throw new Error(`Unknown format control: ${unknown.join(", ")}`);
+  if (!Object.keys(expected).length) throw new Error("formatControls names no count");
+  for (const [name, count] of Object.entries(expected)) {
+    if (!Number.isSafeInteger(count) || count < 0) throw new Error(`Format control ${name} must be a non-negative integer`);
+    if (actual[name] !== count) throw new Error(`Format control ${name}: expected ${count}, source tables yield ${actual[name]}; no query runs on these tables`);
+  }
+  return expected;
+}
 export function incomingCalls(image, target, { limit = 100, controls = [] } = {}) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 10000) throw new Error("Result limit must be 1..10000");
   if (!Number.isSafeInteger(target) || !image.ranges.some((r) => target >= r.start && target < r.end)) throw new Error("Target is outside mapped ranges");
@@ -101,7 +119,9 @@ export function incomingCalls(image, target, { limit = 100, controls = [] } = {}
   for (const operand of operands) {
     const site = operand - 3;
     const range = image.ranges.find((r) => site >= r.start && site + 5 <= r.end);
-    if (!range || image.bytes[site] !== 0x9A) continue;
+    if (image.bytes[site] !== 0x9A) continue;
+    // A far-call byte whose instruction would leave every mapped range is reported, never silently dropped.
+    if (!range) { unresolved.push({ callSite: hex(site), reason: "far-call candidate is not inside one mapped range" }); continue; }
     let resolved;
     // A call byte before a relocated data word is common; one bad candidate must not abort the search.
     try { resolved = image.resolveOperand(operand, image.bytes.readUInt16LE(site + 1)); }
@@ -115,5 +135,6 @@ export function incomingCalls(image, target, { limit = 100, controls = [] } = {}
   return { target: hex(target), matches: matches.slice(0, limit), total: matches.length, truncated: matches.length > limit, unresolved,
     controls: controls.map((c) => ({ callSite: hex(c), canonicalTarget: scanned.get(c) })), searched: "all declared MZ segment relocations and FBOV fixups",
     exclusions: ["near calls", "computed calls", "unrelocated pointers", "instruction-boundary verification", "candidates listed as unresolved"],
-    negative: matches.length ? null : controls.length ? "No matching declared candidates in this domain" : "No candidates; no positive control supplied" };
+    negative: matches.length ? null : unresolved.length ? "Not usable: unresolved candidates remain unchecked against the target"
+      : controls.length ? "No matching declared candidates in this domain" : "No candidates; no positive control supplied" };
 }
