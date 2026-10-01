@@ -675,6 +675,15 @@ class ReporterTests(unittest.TestCase):
         self.assertTrue(incoming["confirmed"][0]["overlappingTarget"])
         self.assertIn("independently verified",incoming["confirmed"][0]["boundaryEvidence"])
 
+    def test_overlapping_entry_cannot_prove_itself_through_its_own_path(self):
+        # Declared entry 1 (jmp 5) overlaps mov ax at 0; the only edge back to 1 is the jmp at 5, reached only from 1.
+        data = bytes.fromhex("b8 eb 02 c3 00 eb fa")
+        cfg = configuration(data, target=1)
+        cfg["regions"][0]["entries"] = [0, 1]
+        r = run_report(data, cfg, "incoming")
+        self.assertEqual({g["site"] for g in r["gaps"] if "overlapping" in g["reason"]}, {0, 1})
+        self.assertFalse(any(e.get("overlappingTarget") for e in r["confirmed"]))
+
     def test_local_iret_requires_saved_frame_and_unmodified_return(self):
         code=Code().emit("0e").branch("e8","iret").emit("c3").label("iret").emit("cf")
         result=report(code,registers={"ss":0x9000,"sp":0x8000})
@@ -709,6 +718,8 @@ class ReporterTests(unittest.TestCase):
                 ("b8 34 12 c3",{"site":0,"operandSite":2}),
                 ("66 b8 34 12 00 00 c3",{"site":0,"operandSite":2})):
             with self.assertRaises(ValueError):report(code,"operand",query=query)
+        for query in ([0,1],"site"):
+            with self.assertRaisesRegex(ValueError,"object"):report("b8 34 12 c3","operand",query=query)
 
 if __name__ == "__main__":
     unittest.main()
