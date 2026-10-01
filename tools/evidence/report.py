@@ -12,7 +12,7 @@ def main():
     from x86.image import read_source
     from x86.reports import run_report
     if len(sys.argv) != 3:
-        raise ValueError("Usage: report.py <operand|operand-candidates|target|bounds|owner|trace|uses|arguments|effects|returns|memory|incoming|guards|allocation|dispatch> <config.json|->")
+        raise ValueError("Usage: report.py <operand|operand-candidates|target|bounds|owner|callees|trace|uses|arguments|effects|returns|memory|incoming|guards|allocation|dispatch> <config.json|->")
     command, config_path = sys.argv[1:]
     reject_derived = False
     if config_path == "-":

@@ -265,6 +265,25 @@ test('owner reports source-derived exported entries and rejects supplied export 
 });
 
 
+test("callee graph through the source bridge keeps a reused node distinct from recursion", t => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  data.set([0xe8, 4, 0, 0xe8, 1, 0, 0xc3, 0xc7, 0x06, 0x20, 0, 1, 0, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const cfg = { ...config, sha256: createHash("sha256").update(data).digest("hex"),
+    regions: [{ ...config.regions[0], entries: [64, 71] }], controls: { sharedSites: [67], writeSites: [71] } };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  const r = run(["callees", join(dir, "config.json")]);
+  assert.deepEqual(r.edges.map(e => e.classification), ["newNode", "sharedNodeReuse"]);
+  const summary = r.calleeSummaries.find(s => s.entry === 71), node = r.nodes.find(n => n.entry === 71);
+  assert.ok(r.edges.every(e => e.calleeSummary === 71));
+  assert.deepEqual(summary.entries, [71]);
+  assert.equal(summary.counts.writeObservations, 1);
+  assert.ok(node.memoryObservations.some(o => o.site === 71 && o.access.includes("write")));
+  assert.equal(summary.effectComplete, false);
+  assert.equal(r.completeWithinDeclaredGraph, true);
+});
+
 test("operand candidates preserve prefixed widths and reject interior starts through the source bridge", t => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);
