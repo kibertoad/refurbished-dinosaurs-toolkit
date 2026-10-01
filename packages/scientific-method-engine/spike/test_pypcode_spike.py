@@ -282,6 +282,12 @@ class Question4BranchPrecision(unittest.TestCase):
         self.assertEqual(self.branch(["3d0500"], "7c03", {"AX": const(3, 16)}).number, 1)
         self.assertEqual(self.branch(["3d0500"], "7703", {"AX": const(3, 16)}).number, 0)
 
+    def test_parity_and_inc_dec_flags_resolve_beyond_predicate(self):
+        # 3 - 3 = 0 has even parity; INC of 0xFFFF sets ZF; DEC of 1 sets ZF.
+        self.assertEqual(self.branch(["3d0300"], "7a03", {"AX": const(3, 16)}).number, 1)
+        self.assertEqual(self.branch(["40"], "7403", {"AX": const(0xFFFF, 16)}).number, 1)
+        self.assertEqual(self.branch(["48"], "7403", {"AX": const(1, 16)}).number, 1)
+
     def test_unknown_compare_stays_unresolved_and_names_its_operands(self):
         condition = self.branch(["39d8"], "7403")
         self.assertIsNone(condition.number)
