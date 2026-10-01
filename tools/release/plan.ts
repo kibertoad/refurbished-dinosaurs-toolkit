@@ -38,11 +38,11 @@ export const PACKAGES: ReleasedPackage[] = [
     tagPrefix: "scientific-method-engine@",
   },
   {
-    // Toad.Discovery.Core and Toad.Discovery.LegacyFormats share one version and one tag.
-    name: "toad-discovery",
+    // ScientificMethod.Core and ScientificMethod.LegacyFormats share one version and one tag.
+    name: "scientific-method-dotnet",
     ecosystem: "nuget",
     paths: ["packages/dotnet/", "global.json"],
-    tagPrefix: "toad-discovery@",
+    tagPrefix: "scientific-method-dotnet@",
   },
 ];
 

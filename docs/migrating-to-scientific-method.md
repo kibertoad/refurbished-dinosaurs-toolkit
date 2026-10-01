@@ -158,14 +158,19 @@ directories to `-scriptPath`, separated by `;`.
 
 ## 5. .NET readers
 
+The .NET libraries are published as `ScientificMethod.Core` and `ScientificMethod.LegacyFormats`.
+A restoration that built the toolkit's `Toad.Discovery.*` projects from a copy of the source
+deletes the copy, references the packages, and replaces `Toad.Discovery.` with `ScientificMethod.`
+in its `using` directives. Type names are unchanged.
+
 enemy-reinfestation's original-content source, WAVE reader and indexed PNG writer moved into the
-NuGet packages. Reference `Toad.Discovery.LegacyFormats` (it brings in Core) and replace them:
+NuGet packages. Reference `ScientificMethod.LegacyFormats` (it brings in Core) and replace them:
 
 | Local type | Package type |
 |---|---|
-| `EnemyReinfestation.Resources.OriginalContentSource` | `Toad.Discovery.LegacyFormats.OriginalContentSource` |
-| `EnemyReinfestation.Resources.WavePcm16Reader`, `WavePcm16` | `Toad.Discovery.LegacyFormats.WavePcm16Reader`, `WavePcm16` |
-| `EnemyReinfestation.Resources.IndexedPngWriter` | `Toad.Discovery.Core.Imaging.IndexedPngWriter` |
+| `EnemyReinfestation.Resources.OriginalContentSource` | `ScientificMethod.LegacyFormats.OriginalContentSource` |
+| `EnemyReinfestation.Resources.WavePcm16Reader`, `WavePcm16` | `ScientificMethod.LegacyFormats.WavePcm16Reader`, `WavePcm16` |
+| `EnemyReinfestation.Resources.IndexedPngWriter` | `ScientificMethod.Core.Imaging.IndexedPngWriter` |
 
 `IndexedPngWriter.Write` takes an `IndexedPalette` (256 RGB triples) in place of a list of
 `RgbColor`. Build one with `new IndexedPalette(rgb)` from a 768-byte array, or with

@@ -1,6 +1,6 @@
 # Legacy format packages
 
-`Toad.Discovery.LegacyFormats` contains format knowledge that is independent of a
+`ScientificMethod.LegacyFormats` contains format knowledge that is independent of a
 specific game and defensively rejects truncated, excessive, or out-of-bounds data.
 
 - `RawIndexedImageDecoder` and `PcxDecoder` produce indexed images and RGBA buffers.

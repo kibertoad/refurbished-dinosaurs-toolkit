@@ -12,8 +12,8 @@ packages/
   executable-reader/         npm   @scientific-method/executable-reader   TypeScript
   standard-checker/          npm   @scientific-method/standard-checker    TypeScript
   scientific-method-engine/  PyPI  scientific-method-engine               Python
-  dotnet/                    NuGet Toad.Discovery.Core,
-                                   Toad.Discovery.LegacyFormats            C#
+  dotnet/                    NuGet ScientificMethod.Core,
+                                   ScientificMethod.LegacyFormats            C#
 actions/    composite GitHub Actions, consumed by commit SHA
 tools/      repository-level scripts (Verify-Repository.ps1, release planning)
 schemas/    JSON schemas for asset and repository-policy contracts
@@ -69,7 +69,7 @@ request and compiles Kaitai definitions. Its command is `standard-checker`. It d
 executables or evidence reports. The `actions/check-documentation` composite action runs it in CI.
 See [the documentation standard check](documentation-standard-check.md).
 
-### Toad.Discovery.Core and Toad.Discovery.LegacyFormats
+### ScientificMethod.Core and ScientificMethod.LegacyFormats
 
 Dependency-free .NET libraries for the restored games themselves. Core holds asset fingerprints,
 manifests, staged installation, content locations, diagnostics, deterministic validation, safe

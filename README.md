@@ -15,7 +15,7 @@ versions and keep no copies. See [the architecture](docs/architecture.md).
 | [`@scientific-method/executable-reader`](packages/executable-reader) | npm | Reads hash-checked MZ/FBOV originals and runs the bounded instruction reports (`scientific-method`). |
 | [`scientific-method-engine`](packages/scientific-method-engine) | PyPI | Instruction analysis behind the reports, and the shared Ghidra headless scripts. |
 | [`@scientific-method/standard-checker`](packages/standard-checker) | npm | The documentation standard check and index generator (`standard-checker`). |
-| [`Toad.Discovery.Core`, `Toad.Discovery.LegacyFormats`](packages/dotnet) | NuGet | .NET primitives for asset installation and bounded legacy format readers. |
+| [`ScientificMethod.Core`, `ScientificMethod.LegacyFormats`](packages/dotnet) | NuGet | .NET primitives for asset installation and bounded legacy format readers. |
 
 Used in place from this repository:
 
@@ -38,8 +38,8 @@ pnpm install
 pnpm run typecheck; pnpm run lint; pnpm run format:check; pnpm run test
 python -m pip install -e packages/scientific-method-engine
 python -B -m unittest discover -s packages/scientific-method-engine/tests -p 'test*.py'
-dotnet build packages/dotnet/Toad.DiscoveryCenter.slnx
-dotnet test --project packages/dotnet/Toad.Discovery.Core.Tests/Toad.Discovery.Core.Tests.csproj
+dotnet build packages/dotnet/ScientificMethod.slnx
+dotnet test --project packages/dotnet/ScientificMethod.Core.Tests/ScientificMethod.Core.Tests.csproj
 ./tools/Verify-Repository.ps1
 ```
 
