@@ -61,6 +61,56 @@ def events(result, kind):
     return [e for path in result["paths"] for e in path["events"] if e["kind"] == kind]
 
 
+
+class OperandCandidateTests(unittest.TestCase):
+    def test_prefix_width_and_overlap_candidates_do_not_invent_a_second_use(self):
+        data = bytes.fromhex("66 83 3e f6 02 00 c3")
+        cfg = configuration(data, query={"offset": 0x2f6}, controls=[0])
+        r = run_report(data, cfg, "operand-candidates")
+        actual = next(x for x in r["candidates"] if x["site"] == 0)
+        stripped = next(x for x in r["candidates"] if x["site"] == 1)
+        self.assertEqual((actual["width"], actual["prefixes"], actual["countedAsUse"]), (4, [0x66], True))
+        self.assertEqual((stripped["width"], stripped["classification"], stripped["countedAsUse"]), (2, "rejectedOverlap", False))
+        self.assertEqual(r["counts"]["verifiedMemoryUses"], 1)
+        self.assertTrue(any(len(g["members"]) >= 2 for g in r["overlapGroups"]))
+        cfg["controls"] = [1]
+        with self.assertRaisesRegex(ValueError, "positive control"):
+            run_report(data, cfg, "operand-candidates")
+
+    def test_truncated_groups_and_region_scan_coverage_remain_explicit(self):
+        data = bytes.fromhex("66 66 83 3e f6 02 00 c3")
+        cfg = configuration(data, query={"offset": 0x2f6}, limit=2)
+        r = run_report(data, cfg, "operand-candidates")
+        self.assertTrue(r["truncated"])
+        self.assertTrue(r["overlapGroups"])
+        self.assertTrue(all(not g["completeWithinSearch"] for g in r["overlapGroups"]))
+        self.assertEqual(sum(r["counts"].values()), 3)
+        cfg["scanLimit"] = 1
+        r = run_report(data, cfg, "operand-candidates")
+        self.assertEqual(r["regionCoverage"][0]["unsearched"], [{"start": 1, "end": len(data)}])
+        self.assertTrue(r["partialSearch"])
+
+    def test_candidate_inside_addition_and_following_jump_is_rejected(self):
+        data = bytes.fromhex("05 c7 06 eb 5e eb 00 c3")
+        r = run_report(data, configuration(data, query={"offset": 0x5eeb}), "operand-candidates")
+        row = next(x for x in r["candidates"] if x["site"] == 1)
+        self.assertEqual(row["classification"], "rejectedOverlap")
+        self.assertFalse(row["countedAsUse"])
+        self.assertGreaterEqual(len(row["overlapsVerified"]), 2)
+
+    def test_ambiguous_prefix_entries_remain_unresolved_and_caps_remain_partial(self):
+        data = bytes.fromhex("66 83 3e f6 02 00 c3")
+        cfg = configuration(data, query={"offset": 0x2f6})
+        cfg["regions"][0]["entries"] = [0, 1]
+        r = run_report(data, cfg, "operand-candidates")
+        self.assertTrue(any(x["classification"] == "unresolvedBoundary" for x in r["candidates"]))
+        cfg["regions"][0]["entries"] = [0]
+        cfg["limit"] = 1
+        self.assertTrue(run_report(data, cfg, "operand-candidates")["truncated"])
+        cfg["scanLimit"] = 1
+        self.assertTrue(run_report(data, cfg, "operand-candidates")["partialSearch"])
+
+
 class ReporterTests(unittest.TestCase):
     def test_register_parts_preserve_neighbor(self):
         r = report("b8 34 12 b0 00 c3")

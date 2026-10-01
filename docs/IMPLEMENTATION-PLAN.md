@@ -150,3 +150,16 @@ owners cannot be joined. Synthetic adjacent-entry, gap, overlap and export
 controls plus configured source acceptance prove the fields. No code bytes,
 original content or game claims enter Git. Exit: reporter, policy, build and
 .NET gates pass and a reviewable shared PR is opened.
+
+## Explicit overlapping operand candidate inventory
+
+Tooling outcome: inventory literal displacement/immediate candidates with their
+prefixes, operand widths, entry-path classification and overlapping byte spans.
+Evidence: locally decodable stripped prefixes and starts inside preceding
+instructions can invent memory writes. Acceptance: only verified memory operand
+starts count as uses; raw and contested starts remain separate. Scan/result caps,
+partial coverage and omitted overlap members remain explicit. Controls require
+known verified memory sites. Synthetic prefix/interior/ambiguous/capped fixtures
+and configured recorded rejected-candidate controls prove the behavior. No
+proprietary fixtures, runtime access or game claims. Exit: shared reporter and
+canonical toolkit gates pass; publish a reviewable PR before adopted closure.
