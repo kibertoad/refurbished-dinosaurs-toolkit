@@ -8,7 +8,7 @@ from . import PREPARED_PROTOCOL
 CONFIG_LIMIT = 1024 * 1024
 PREPARED_CONFIG_LIMIT = 16 * 1024 * 1024
 USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bounds|owner|callees|trace|uses|arguments|"
-         "effects|returns|memory|incoming|guards|allocation|dispatch> <config.json|->\n"
+         "effects|returns|memory|incoming|call-order|guards|allocation|dispatch> <config.json|->\n"
          "       scientific-method-engine ghidra-scripts")
 
 

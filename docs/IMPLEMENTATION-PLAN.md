@@ -192,3 +192,19 @@ field offsets and erased-value controls plus FND-CONFIG-145 source cases prove
 behavior. Preserve stopped/conditional reports. No source behavior claims or
 proprietary content. Exit: reporter/toolkit gates and source controls pass,
 upstream reviewable PR; adopted closure requires reviewed merge and rerun.
+
+## Guarded caller-local order alongside flat incoming coverage
+
+Tooling outcome: keep the flat incoming inventory and group verified calls by
+containing established entry, necessary local branch guards and CFG order.
+Acceptance: prove sequences by reachable continuations rather than address order,
+with each call dominating the next and the next following it on every route;
+branch alternatives cannot reach each other in the complete declared caller CFG.
+A guard is recorded from its conditional edge, with adjacent CMP/TEST context
+only when that producer is unambiguous. Cleanup is observed after an assumed
+return, never proof of return success, restored state or callee effects. Boundary,
+entry, result, instruction and analysis caps leave ordering unread. Synthetic
+reversed-address sequences, alternatives, shared guards, cleanup, overlapping
+entries and all caps plus FND-CONFIG-119's seven-call source case prove behavior.
+No original bytes/configs or game claims committed. Exit: full toolkit gates and
+source controls pass, publish a reviewable PR before adopted closure.
