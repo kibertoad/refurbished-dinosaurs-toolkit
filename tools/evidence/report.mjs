@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { readMz, formatCounts, checkFormatControls } from "./legacy-image.mjs";
+import { pointerInventory } from "./pointer-inventory.mjs";
 
 export function prepare(config, base) {
   if (!config || typeof config.source !== "string") throw new Error("Source path required");
@@ -76,6 +77,13 @@ export function run(args) {
   if (!command || !file || extra.length) throw new Error("Usage: node tools/evidence/report.mjs <command> <local-config.json>");
   if (statSync(file).size > 1024 * 1024) throw new Error("Config exceeds 1 MiB");
   const config = prepare(JSON.parse(readFileSync(file, "utf8")), dirname(resolve(file)));
+  if (command === "pointers") {
+    const stat = statSync(config.source);
+    if (!stat.isFile() || stat.size > 256 * 1024 * 1024) throw new Error("Pointer source exceeds 256 MiB");
+    const bytes = readFileSync(config.source);
+    if (createHash("sha256").update(bytes).digest("hex") !== config.sha256) throw new Error("Pointer source baseline changed");
+    return pointerInventory(bytes, config);
+  }
   const python = process.env.EVIDENCE_PYTHON || "python";
   const child = spawnSync(python, ["-B", resolve(dirname(fileURLToPath(import.meta.url)), "report.py"), command, "-"],
     { input: JSON.stringify(config), encoding: "utf8", maxBuffer: MAX_REPORT_MIB * 1024 * 1024, timeout: 120000 });

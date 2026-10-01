@@ -446,3 +446,46 @@ which are warnings only. An optional
 `analyzerFunction` (`start`, `evidence`) says whether the analyzer's function is
 among the owners, whether its body reaches the site, whether it is contested,
 and which of its returns come before the site.
+
+## Evidenced indirect jump tables
+
+CFG discovery commands (`bounds`, `owner`, `incoming`, and entry-path queries)
+accept `indirectJumps` for segmented16 computed near word jumps. Each declaration
+names `site`, consumer/mapping `evidence`, an explicit boolean `exhaustive`, and
+`table: { start, count, stride, fieldOffset, evidence }`. The target field is a
+little-endian word; `fieldOffset` defaults to zero. Counts are 1..256, declarations
+are limited to 256 and every target must resolve inside a declared code mapping.
+Table evidence must justify the layout/count; consumer evidence must connect the
+jump's register or memory operand to those words and account for every producer
+and index gate. `exhaustive: true` asserts that complete reading; the reporter
+does not infer it. Use false while any producer/route remains unread.
+
+The CFG follows each source-derived word and retains the full declaration in
+`indirectJumpDeclarations`. Bounds retain the consumption assumption in
+`assumedContinuations`; partial tables retain a gap and unresolved transfer.
+Unused declarations do not establish reachability. These supplied edges cannot
+prove overlapping instruction starts. They are CFG evidence inputs, not register
+assignments or path execution: `trace`, effects, arguments and other path reports
+still stop at unresolved computed transfers. No indirect-call effects are modeled.
+A true exhaustive flag is not independently validated behavior or native reachability.
+
+## Relocated pointer-pair inventory
+
+Run `node tools/evidence/report.mjs pointers <config.json>` through the ordinary
+hash-guarded MZ/FBOV loader. `query: { segment, offset }` names a loaded resident
+address or overlay trampoline, not a raw stored segment; an optional `target`
+must agree with the canonical source-derived destination. Regions are optional
+because this inventories relocation tables, not decoded instructions.
+
+Every declared MZ relocation and FBOV fixup with a preceding offset word in the
+same source range is considered. `exactPair` contains loaded segment:offset
+matches; `aliasedTarget` contains other pairs resolving to the same file target,
+including distinct trampoline aliases. Rows retain raw/loaded identities,
+descriptor metadata and canonical trampoline destinations. They are adjacent
+word-pair candidates: this does not prove the original uses them as pointers.
+`unresolved` retains out-of-range mappings and incomplete pairs. `limit` (1..10000)
+caps matching and unresolved rows together, with full counts and `truncated`.
+`controls` names known segment-operand file offsets to any resolved target;
+missing or unresolved controls fail. A controlled zero result is usable only
+within these representations and only without unresolved/capped rows. Computed
+and unrelocated pointers, instruction ownership and runtime use remain excluded.

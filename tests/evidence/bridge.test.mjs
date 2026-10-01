@@ -174,3 +174,46 @@ test("overlay regions carry their overlay bounds so a narrower incoming search i
   writeFileSync(path, JSON.stringify({ ...narrow, regions: config.regions }));
   assert.equal(run(["incoming", path]).partialSearch, false);
 });
+
+test('pointer inventory separates exact loaded pairs, aliases and unresolved mappings', t => {
+  const dir = mkdtempSync(join(tmpdir(), 'pointer-inventory-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const data = Buffer.alloc(512), w = (p,n) => data.writeUInt16LE(n,p);
+  data.write('MZ'); w(4,1); w(8,4); w(6,3); w(24,28);
+  for (const [table,site] of [[28,82],[32,98],[36,114]]) { w(table,site-64); w(table+2,0); }
+  w(80,32); w(82,1); w(96,48); w(98,0); w(112,0); w(114,50);
+  const path = join(dir,'config.json');
+  const config = { source:join(dir,'source.bin'), sourceKind:'mz',
+    sha256:createHash('sha256').update(data).digest('hex'), query:{segment:4097,offset:32}, controls:[82], limit:100 };
+  writeFileSync(config.source,data); writeFileSync(path,JSON.stringify(config));
+  const r = run(['pointers',path]);
+  assert.equal(r.target,112); assert.equal(r.counts.exactPair,1); assert.equal(r.counts.aliasedTarget,1);
+  assert.equal(r.exactPair[0].segmentOperandSite,82); assert.equal(r.aliasedTarget[0].segmentOperandSite,98);
+  assert.equal(r.exactPair[0].raw,1); assert.equal(r.aliasedTarget[0].raw,0);
+  assert.equal(r.counts.unresolved,1); assert.equal(r.negativeUsable,false);
+  writeFileSync(path,JSON.stringify({...config,limit:1}));
+  const capped=run(['pointers',path]); assert.equal(capped.truncated,true);
+  assert.equal(capped.exactPair.length+capped.aliasedTarget.length+capped.unresolved.length,1);
+  writeFileSync(path,JSON.stringify({...config,controls:[83]}));
+  assert.throws(()=>run(['pointers',path]),/positive control/);
+  writeFileSync(path,JSON.stringify({...config,query:{segment:4097,offset:33}}));
+  assert.equal(run(['pointers',path]).negativeUsable,false);
+  w(6,2); writeFileSync(config.source,data); config.sha256=createHash('sha256').update(data).digest('hex');
+  writeFileSync(path,JSON.stringify({...config,query:{segment:4097,offset:33}}));
+  const negative=run(['pointers',path]); assert.equal(negative.negativeUsable,true);
+  assert.equal(negative.counts.exactPair+negative.counts.aliasedTarget,0);
+  writeFileSync(path,JSON.stringify({...config,formatControls:{relocations:3}}));
+  assert.throws(()=>run(['pointers',path]),/Format control/);
+});
+
+test('pointer inventory retains FBOV descriptor tokens and canonical trampolines', t => {
+  const {dir,config}=overlayFixture(t),path=join(dir,'pointer.json');
+  writeFileSync(path,JSON.stringify({...config,query:{segment:4108,offset:32},controls:[83,535]}));
+  const r=run(['pointers',path]);
+  assert.equal(r.target,528); assert.equal(r.exactPair.length,2);
+  const overlay=r.exactPair.find(p=>p.segmentOperandSite===535);
+  assert.equal(overlay.raw,8); assert.equal(overlay.descriptor,1);
+  assert.equal(Number(overlay.trampoline),288); assert.equal(Number(overlay.canonicalTarget),528);
+  writeFileSync(path,JSON.stringify({...config,sourceKind:'synthetic-raw',query:{segment:4108,offset:32}}));
+  assert.throws(()=>run(['pointers',path]),/requires source-derived/);
+});

@@ -78,7 +78,7 @@ def walk(image, entries, limit=10000):
     pending, seen, gaps, edges = list(entries), {}, [], []
     # Decoded successors of each instruction, so a proof can be checked for independence below.
     # A call's return site is reached only if the callee returns, so it never proves an overlapping start.
-    successors, returns = {}, set()
+    successors, returns, supplied_edges = {}, set(), set()
     while pending:
         at = pending.pop()
         if at in seen:
@@ -95,6 +95,20 @@ def walk(image, entries, limit=10000):
         m, following = base_mnemonic(ins), at + ins.size
         if unsupported_transfer(image, ins):
             gaps.append({"site": at, "reason": "unsupported control-transfer frame encoding"})
+            continue
+        declaration = image.indirect_jumps.get(at)
+        if declaration is not None:
+            for row in declaration["rows"]:
+                target = row["target"]
+                edges.append({"site": at, "target": target, "kind": "jmp",
+                              "provenance": {"encoding": "declared indirect jump table", **declaration}})
+                pending.append(target)
+                following_sites.append(target)
+                supplied_edges.add((at, target))
+            if not declaration["exhaustive"]:
+                gaps.append({"site": at, "reason": "indirect jump table is not declared exhaustive"})
+                edges.append({"site": at, "target": None, "kind": "jmp",
+                              "provenance": {"reason": "indirect jump table is not declared exhaustive"}})
             continue
         if m in RETURNS:
             continue
@@ -155,7 +169,8 @@ def walk(image, entries, limit=10000):
         while frontier:
             at = frontier.pop()
             for target in successors[at]:
-                if ((at, target) not in returns and target in seen and target not in verified
+                if ((at, target) not in returns and (at, target) not in supplied_edges
+                        and target in seen and target not in verified
                         and target not in rejected and independent(at, target)):
                     verified.add(target)
                     frontier.append(target)

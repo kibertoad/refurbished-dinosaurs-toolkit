@@ -664,6 +664,19 @@ def body(image, entry, limit=10000):
             pending.append(following)
             continue
         if m in ("jmp", "ljmp"):
+            declaration = image.indirect_jumps.get(at)
+            if declaration is not None:
+                assumed.append({"site": at, "assumption": "indirect jump consumes the declared source table",
+                                "declaration": declaration})
+                for target in sorted(set(row["target"] for row in declaration["rows"])):
+                    if leaves(at, target):
+                        exits.append({"site": at, "kind": "tail transfer", "target": target,
+                                      "mapping": "declared indirect jump table"})
+                    else:
+                        pending.append(target)
+                if not declaration["exhaustive"]:
+                    gaps.append({"site": at, "reason": "indirect jump table is not declared exhaustive"})
+                continue
             target, provenance = call_target(image, at, ins)
             if target is None:
                 exits.append({"site": at, "kind": "unresolved jump", "reason": provenance.get("reason")})
@@ -868,4 +881,4 @@ def run_report(data, config, command):
     return {"instructionModel": {"bits": image.bits, "addressModel": "flat32" if image.flat else "segmented16",
                                  "flatAssumption": "CS/DS/ES/SS bases zero; FS/GS bases unknown" if image.flat else None},
             "sourceMapping": image.config.get("peMetadata"), "formatTables": image.config.get("formatTables"),
-            "declaredRegions": image.regions, **result}
+            "declaredRegions": image.regions, "indirectJumpDeclarations": list(image.indirect_jumps.values()), **result}
