@@ -29,7 +29,7 @@ The check expects these at the root it is given (the repository root by default)
 
 The check writes `PARITY.md`. An empty directory needs a `.gitkeep` so that git keeps it.
 
-`tests/documentation-standard/valid/` is the smallest layout that passes and can be copied as a
+`packages/standard-checker/test/valid/` is the smallest layout that passes and can be copied as a
 starting point.
 
 ### 2. Pick the toolkit commit

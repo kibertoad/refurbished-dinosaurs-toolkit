@@ -22,6 +22,9 @@ public class RecoverCitedFunctions extends GhidraScript {
                 "Expected an address/CSV file and optional zero-based CSV column.");
         }
         int column = arguments.length == 2 ? Integer.parseInt(arguments[1]) : 0;
+        if (column < 0) {
+            throw new IllegalArgumentException("The CSV column is zero-based and cannot be negative.");
+        }
 
         int recovered = 0;
         int alreadyDefined = 0;
@@ -36,10 +39,11 @@ public class RecoverCitedFunctions extends GhidraScript {
                 }
                 if (line.contains(",")) {
                     String[] fields = line.split(",", -1);
-                    if (column >= fields.length || !fields[column].matches("(?i)[0-9a-f]{8}")) {
+                    // A CSV written as "a, b" pads its fields; the padding is not part of the address.
+                    if (column >= fields.length || !fields[column].strip().matches("(?i)[0-9a-f]{8}")) {
                         continue;
                     }
-                    line = fields[column];
+                    line = fields[column].strip();
                 }
                 if (!line.matches("(?i)[0-9a-f]{8}")) {
                     continue;

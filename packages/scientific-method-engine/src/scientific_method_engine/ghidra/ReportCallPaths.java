@@ -5,6 +5,7 @@ import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
+import ghidra.program.model.listing.InstructionIterator;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -62,9 +63,12 @@ public class ReportCallPaths extends GhidraScript {
         if (monitor.isCancelled() || depth >= depthLimit
             || visitedEdges >= MAX_VISITED_EDGES || reportedPaths >= MAX_PATHS) return;
 
-        Instruction instruction = currentProgram.getListing()
-            .getInstructionAt(current.getEntryPoint());
-        while (instruction != null && current.getBody().contains(instruction.getAddress())) {
+        // Every instruction of the body, including code before the entry and after a gap, which a
+        // walk forward from the entry would stop short of.
+        InstructionIterator instructions = currentProgram.getListing()
+            .getInstructions(current.getBody(), true);
+        while (instructions.hasNext()) {
+            Instruction instruction = instructions.next();
             if (instruction.getFlowType().isCall()) {
                 for (Address destination : instruction.getFlows()) {
                     visitedEdges++;
@@ -85,7 +89,6 @@ public class ReportCallPaths extends GhidraScript {
                     if (visitedEdges >= MAX_VISITED_EDGES || reportedPaths >= MAX_PATHS) return;
                 }
             }
-            instruction = instruction.getNext();
         }
     }
 

@@ -27,7 +27,7 @@ public static class IndexedPngWriter
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(palette);
         if (!output.CanWrite) throw new ArgumentException("PNG output must be writable.", nameof(output));
-        if (width == 0 || height == 0 || pixels.Length != checked(width * height))
+        if (width == 0 || height == 0 || pixels.Length != (long)width * height)
             throw new ArgumentException("Indexed image dimensions do not match its pixels.", nameof(pixels));
         if (palette.Rgb is null || palette.Rgb.Length != IndexedPalette.ByteSize)
             throw new ArgumentException("Indexed PNG output requires exactly 256 colors.", nameof(palette));

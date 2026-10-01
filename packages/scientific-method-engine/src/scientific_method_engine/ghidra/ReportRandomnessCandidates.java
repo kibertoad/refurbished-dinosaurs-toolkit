@@ -56,8 +56,8 @@ public class ReportRandomnessCandidates extends GhidraScript {
         }
 
         if (matches == 0) println("No randomness or timing candidates matched.");
-        else if (matches == MAX_MATCHES) {
-            println("Output capped at " + MAX_MATCHES + " candidate symbols.");
+        else if (matches == MAX_MATCHES && symbols.hasNext()) {
+            println("Output capped at " + MAX_MATCHES + " candidate symbols; later symbols were not scanned.");
         }
     }
 

@@ -26,10 +26,14 @@ public class ReportFilePatternInMemory extends GhidraScript {
         }
 
         File executable = new File(currentProgram.getExecutablePath());
+        if (!executable.isFile()) {
+            printerr("Executable path unavailable: " + currentProgram.getExecutablePath());
+            return;
+        }
         byte[] fileBytes = Files.readAllBytes(executable.toPath());
-        long fileOffset = Long.decode(arguments[0]);
+        long fileOffset = parseHex(arguments[0]);
         int length = arguments.length > 1 ? Integer.decode(arguments[1]) : 8;
-        if (fileOffset < 0 || fileOffset + length > fileBytes.length) {
+        if (fileOffset < 0 || length < 1 || fileOffset + length > fileBytes.length) {
             printerr("File offset out of range.");
             return;
         }
@@ -68,13 +72,24 @@ public class ReportFilePatternInMemory extends GhidraScript {
                 println("  no incoming references");
             }
 
-            cursor = found.add(1);
+            // next() is null past the last address, which ends the search.
+            cursor = found.next();
             matches++;
         }
 
         if (matches == 0) {
             println("Pattern not found in loaded memory.");
         }
+    }
+
+    // The offset is hex with or without 0x, as for ReportMemoryBlockForFileOffset; Long.decode alone
+    // would read a bare 76640 as decimal and a leading zero as octal.
+    private static long parseHex(String argument) {
+        String normalized = argument.trim();
+        if (normalized.startsWith("0x") || normalized.startsWith("0X")) {
+            normalized = normalized.substring(2);
+        }
+        return Long.parseLong(normalized, 16);
     }
 
     private static String toHex(byte[] bytes) {

@@ -60,7 +60,7 @@ public class ReportCallsToRange extends GhidraScript {
 
         if (matches == 0) {
             println("No resolved call/jump targets in range.");
-        } else if (matches == MAX_MATCHES) {
+        } else if (matches == MAX_MATCHES && instructions.hasNext()) {
             println("Output capped at " + MAX_MATCHES + " matches.");
         }
     }

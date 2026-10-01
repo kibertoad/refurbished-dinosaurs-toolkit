@@ -1,16 +1,17 @@
-// Locates a file-offset byte pattern in Ghidra memory and prints nearby instructions.
+// Maps file offsets to loaded addresses and their memory blocks, and prints nearby instructions.
 // @category Restoration
 
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.Listing;
 import ghidra.program.model.mem.Memory;
-import ghidra.program.model.mem.MemoryAccessException;
+import ghidra.program.model.mem.MemoryBlock;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.file.Files;
+import java.util.List;
 
 public class ReportMemoryBlockForFileOffset extends GhidraScript {
     private static final int PATTERN_BYTES = 12;
@@ -46,30 +47,42 @@ public class ReportMemoryBlockForFileOffset extends GhidraScript {
             println("===== file offset " + argument + " =====");
             println("Pattern: " + toHex(pattern));
 
-            Address found = memory.findBytes(memory.getMinAddress(), pattern, null, true, monitor);
-            if (found == null) {
-                println("Pattern not found in loaded memory.");
-                continue;
+            // The loader's own file-byte mapping is exact. Without one (some loaders keep no
+            // FileBytes), fall back to the first place the bytes occur, and say when that is ambiguous.
+            List<Address> mapped = memory.locateAddressesForFileOffset(fileOffset);
+            if (mapped.isEmpty()) {
+                Address found = memory.findBytes(memory.getMinAddress(), pattern, null, true, monitor);
+                if (found == null) {
+                    println("Pattern not found in loaded memory.");
+                    continue;
+                }
+                Address after = found.next();
+                if (after != null && memory.findBytes(after, pattern, null, true, monitor) != null) {
+                    println("Pattern occurs more than once; the first match may not be this offset.");
+                }
+                mapped = List.of(found);
             }
 
-            println("Mapped address: " + found);
-            Instruction instruction = listing.getInstructionContaining(found);
-            if (instruction == null) {
-                println("No instruction at mapped address.");
-                continue;
-            }
+            for (Address address : mapped) {
+                MemoryBlock block = memory.getBlock(address);
+                println("Mapped address: " + address
+                    + (block == null ? "" : " in block " + block.getName()));
+                Instruction instruction = listing.getInstructionContaining(address);
+                if (instruction == null) {
+                    println("No instruction at mapped address.");
+                    continue;
+                }
 
-            println("===== " + instruction.getAddress()
-                + (listing.getFunctionContaining(instruction.getAddress()) == null
-                    ? ""
-                    : " in " + listing.getFunctionContaining(instruction.getAddress()).getEntryPoint()
-                        + " " + listing.getFunctionContaining(instruction.getAddress()).getName())
-                + " =====");
-            Instruction cursor = instruction;
-            for (int count = 0; count < FOLLOW_INSTRUCTIONS; count++) {
-                if (cursor == null) break;
-                println(cursor.getAddress() + "  " + cursor);
-                cursor = cursor.getNext();
+                Function function = listing.getFunctionContaining(instruction.getAddress());
+                println("===== " + instruction.getAddress()
+                    + (function == null ? "" : " in " + function.getEntryPoint() + " " + function.getName())
+                    + " =====");
+                Instruction cursor = instruction;
+                for (int count = 0; count < FOLLOW_INSTRUCTIONS; count++) {
+                    if (cursor == null) break;
+                    println(cursor.getAddress() + "  " + cursor);
+                    cursor = cursor.getNext();
+                }
             }
         }
     }

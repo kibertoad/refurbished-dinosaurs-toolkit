@@ -36,7 +36,7 @@ public class ReportReferences extends GhidraScript {
             }
 
             if (count == 0) println("No references found.");
-            else if (count == MAX_REFERENCES) println("Output capped at " + MAX_REFERENCES + " references.");
+            else if (count == MAX_REFERENCES && references.hasNext()) println("Output capped at " + MAX_REFERENCES + " references.");
         }
     }
 }
