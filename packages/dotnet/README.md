@@ -44,7 +44,8 @@ on an undocumented public member.
 
 | Types | Reads |
 |---|---|
-| `OriginalContentSource` | An installed directory or a `.iso` image behind one file listing and `OpenRead`. |
+| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image or a cue/bin raw disc image behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660` and `OpenCueBin` take it explicitly. |
+| `CueBinSheet`, `CueBinTrack` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order and the data track's end. |
 | `CueSheet`, `RawMode1Image`, `Iso9660` | Cue/bin raw disc images and the ISO 9660 file system on their data track. |
 | `CddaWave` | A CD audio track of a raw image, written out as WAVE. |
 | `WavePcm16Reader` | 16-bit mono or stereo PCM WAVE files. |

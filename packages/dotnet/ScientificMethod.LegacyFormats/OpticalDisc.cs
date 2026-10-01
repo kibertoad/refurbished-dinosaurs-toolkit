@@ -8,36 +8,44 @@ namespace ScientificMethod.LegacyFormats;
 /// <param name="Number">The track number.</param>
 /// <param name="Mode">The track mode as written, such as <c>MODE1/2352</c> or <c>AUDIO</c>.</param>
 /// <param name="StartSector">The sector of the track's <c>INDEX 01</c>, at 75 sectors per second.</param>
-public sealed record CueTrack(int Number, string Mode, int StartSector);
+public sealed record CueTrack(int Number, string Mode, int StartSector)
+{
+    /// <summary>The sector of the track's <c>INDEX 00</c>, where its pregap begins, or <see langword="null"/> without one.</summary>
+    public int? PregapSector { get; init; }
+}
 
 /// <summary>Reads the tracks of a <c>.cue</c> file for a single-file raw disc image.</summary>
 public static class CueSheet
 {
-    /// <summary>The number of sectors in the leading data track: the start sector of track 2.</summary>
+    /// <summary>
+    /// The number of sectors in the leading data track: where track 2 begins, at its <c>INDEX 00</c>
+    /// pregap when it has one, since the pregap is stored in the image ahead of the track's audio.
+    /// </summary>
     /// <exception cref="InvalidDataException">The first track is not <c>MODE1</c> or there is no second track.</exception>
     public static int DataTrackSectors(IEnumerable<string> lines)
     {
         var tracks = Tracks(lines);
         if (tracks.Length < 2 || !tracks[0].Mode.StartsWith("MODE1", StringComparison.OrdinalIgnoreCase))
             throw new InvalidDataException("Cue sheet does not begin with a MODE1 data track followed by another track.");
-        return tracks[1].StartSector;
+        return tracks[1].PregapSector ?? tracks[1].StartSector;
     }
 
-    /// <summary>Every track that has an <c>INDEX 01</c>, in file order.</summary>
+    /// <summary>Every track that has an <c>INDEX 01</c>, in file order, with its <c>INDEX 00</c> if it has one.</summary>
     /// <exception cref="InvalidDataException">No track has an index.</exception>
     public static CueTrack[] Tracks(IEnumerable<string> lines)
     {
         var result = new List<CueTrack>();
-        var number = 0; var mode = "";
+        var number = 0; var mode = ""; int? pregap = null;
         foreach (var line in lines)
         {
             var track = Regex.Match(line, @"^\s*TRACK\s+(\d+)\s+(\S+)", RegexOptions.IgnoreCase);
-            if (track.Success) { number = int.Parse(track.Groups[1].Value); mode = track.Groups[2].Value; continue; }
-            var index = Regex.Match(line, @"INDEX\s+01\s+(\d+):(\d+):(\d+)", RegexOptions.IgnoreCase);
+            if (track.Success) { number = int.Parse(track.Groups[1].Value); mode = track.Groups[2].Value; pregap = null; continue; }
+            var index = Regex.Match(line, @"INDEX\s+0([01])\s+(\d+):(\d+):(\d+)", RegexOptions.IgnoreCase);
             if (number > 0 && index.Success)
             {
-                var sector = checked((int.Parse(index.Groups[1].Value) * 60 + int.Parse(index.Groups[2].Value)) * 75 + int.Parse(index.Groups[3].Value));
-                result.Add(new(number, mode, sector)); number = 0;
+                var sector = checked((int.Parse(index.Groups[2].Value) * 60 + int.Parse(index.Groups[3].Value)) * 75 + int.Parse(index.Groups[4].Value));
+                if (index.Groups[1].Value == "0") { pregap = sector; continue; }
+                result.Add(new(number, mode, sector) { PregapSector = pregap }); number = 0;
             }
         }
         if (result.Count == 0) throw new InvalidDataException("Cue sheet contains no indexed tracks.");
@@ -129,7 +137,7 @@ public sealed record IsoFile(string Path, uint Extent, uint Size);
 
 /// <summary>
 /// Lists and reads the files of an ISO 9660 file system on a <see cref="RawMode1Image"/>. For
-/// <c>.iso</c> files or directories, use <see cref="OriginalContentSource.Open"/>.
+/// <c>.iso</c> files, cue/bin pairs or directories, use <see cref="OriginalContentSource.Open(string)"/>.
 /// </summary>
 public sealed class Iso9660
 {
