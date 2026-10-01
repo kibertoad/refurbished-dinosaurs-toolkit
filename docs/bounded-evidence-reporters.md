@@ -69,6 +69,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal | this section |
 | `uses` | accesses to one memory offset from every established entry | this section |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
+| `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
 | `dispatch` | the target of each input through a switch's jump table | this section, [jump tables](#evidenced-indirect-jump-tables) |
 | `allocation` | allocation requests, returned pointers and later writes | this section |
 | `operand` | the target an instruction-owned segment operand names | [segment operand query](#instruction-owned-segment-operand-query) |
@@ -611,6 +612,7 @@ formations remain explicit per path/event and refuse storage merging. Candidate
 lists are present only when non-empty. A complete
 or stopped trace never promotes a modeled association to runtime state evidence.
 
+## Guarded caller-local call order
 
 `call-order` keeps the ordinary `incoming` report and adds caller groups for its
 confirmed target calls. Every declared entry is boundary-checked, and shared or
