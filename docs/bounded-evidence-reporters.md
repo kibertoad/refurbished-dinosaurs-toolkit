@@ -449,7 +449,7 @@ and which of its returns come before the site.
 
 ## Evidenced indirect jump tables
 
-CFG discovery commands (`bounds`, `owner`, `incoming`, and entry-path queries)
+CFG discovery commands (`bounds`, `owner`, `callees`, `incoming`, and entry-path queries)
 accept `indirectJumps` for segmented16 computed near word jumps. Each declaration
 names `site`, consumer/mapping `evidence`, an explicit boolean `exhaustive`, and
 `table: { start, count, stride, fieldOffset, evidence }`. The target field is a
@@ -515,7 +515,6 @@ universal ownership; continuation assumptions stay explicit. The Node source
 loader derives export metadata from hash-guarded MZ/FBOV tables and rejects a
 caller-supplied copy. Body-byte size is never treated as a contiguous end.
 
-
 `callees` derives a bounded graph from `entry` and established region entries.
 Targets without an established entry remain unresolved. An edge back into the
 active traversal path is `recursivePath`; reaching an already read node outside
@@ -536,4 +535,6 @@ Omitted edges and capped/incomplete bodies remain dependencies;
 
 Declared entries left unread remain in `uncheckedEntries`; no memory or cycle
 boundary is usable until all declared entries have been checked for conflicts.
-A shared-node positive control also requires usable caller/callee boundaries.
+A shared-node positive control also requires usable caller/callee boundaries
+and no limit-omitted route beneath the reused node, which could lead back into
+the active path.

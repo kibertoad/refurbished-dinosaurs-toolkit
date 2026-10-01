@@ -122,6 +122,29 @@ class CalleeGraphTests(unittest.TestCase):
         self.assertTrue(all(not n["boundaryUsable"] for n in r["nodes"]))
         self.assertFalse(r["completeWithinDeclaredGraph"])
 
+    def test_shared_tail_instruction_is_not_a_cross_entry_conflict(self):
+        c = Code().label("root").branch("e8", "a").branch("e8", "b").emit("c3")
+        c.label("a").emit("90").label("b").emit("c3")
+        r = self.graph(c, ["root", "a", "b"])
+        self.assertTrue(all(n["boundaryUsable"] and not n["contestedBy"] for n in r["nodes"]))
+        self.assertTrue(r["completeWithinDeclaredGraph"])
+
+    def test_every_summary_reaching_a_downgraded_back_edge_keeps_its_dependency(self):
+        data = bytes.fromhex("e8 01 00 c3 e8 f9 ff ff e0")
+        cfg = configuration(data)
+        cfg["regions"][0]["entries"] = [0, 4]
+        r = run_report(data, cfg, "callees")
+        for e in r["edges"]:
+            reasons = [d["reason"] for d in e["calleeSummary"]["dependencies"]]
+            self.assertEqual(reasons.count("cycle path has an incomplete or contested body"), 1)
+
+    def test_reuse_over_a_limit_omitted_route_is_not_a_shared_control(self):
+        c = Code().label("root").branch("e8", "x").branch("e8", "y").emit("c3")
+        c.label("x").branch("e8", "y").emit("c3")
+        c.label("y").branch("e8", "x").emit("c3")
+        with self.assertRaisesRegex(ValueError, "positive control"):
+            self.graph(c, ["root", "x", "y"], depthLimit=2, controls={"sharedSites": [c.labels["y"]]})
+
 
 class ReporterTests(unittest.TestCase):
     def test_register_parts_preserve_neighbor(self):

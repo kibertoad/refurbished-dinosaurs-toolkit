@@ -13,6 +13,11 @@ def entries(image):
     return sorted(set(at for r in image.regions for at in r["entries"]))
 
 
+def memory_width(ins, operand):
+    # Capstone reports the LDS/LES source as a word, but the load reads the full selector:offset pointer.
+    return 2 + ins.operands[0].size if ins.mnemonic in ("lds", "les") else operand.size
+
+
 def search_coverage(image, spans):
     """How much of each complete segment, overlay or section the searched byte spans cover.
 
@@ -282,8 +287,7 @@ def uses(image, config):
                 segment_value, offset_value = state.address(ins, operand)
             except StopPath as error:
                 gaps.append({"site": at, "reason": str(error)}); continue
-            # Capstone reports the LDS/LES source as a word, but the load reads the full selector:offset pointer.
-            size = 2 + ins.operands[0].size if ins.mnemonic in ("lds", "les") else operand.size
+            size = memory_width(ins, operand)
             off = offset_value.number
             overlaps = off is not None and max(offset, off) < min(offset + width, off + size)
             if off is not None and not overlaps:
@@ -745,7 +749,7 @@ def callees(image, config):
                 if operand.type != X86_OP_MEM or ins.mnemonic == "lea" or not operand.access:
                     continue
                 observations.append({"entry": entry, "site": site, "operandIndex": index,
-                                     "width": 2 + ins.operands[0].size if ins.mnemonic in ("lds", "les") else operand.size,
+                                     "width": memory_width(ins, operand),
                                      "access": [name for flag, name in ((CS_AC_READ, "read"), (CS_AC_WRITE, "write")) if operand.access & flag],
                                      "segmentRegister": segment_register(ins, operand.mem),
                                      "displacement": operand.mem.disp,
@@ -774,17 +778,10 @@ def callees(image, config):
                 edge["classification"] = "newNode"
                 visit(target, path + [target])
     visit(root, [root])
-    # A decoded instruction in another entry's bytes cannot verify ownership/effects.
-    active = []
-    spans = sorted((at, at + ins.size, entry) for entry, n in nodes.items() for at, ins in n["body"]["instructions"].items())
-    for start, end, entry in spans:
-        active = [(a, z, e) for a, z, e in active if z > start]
-        for other_start, other_end, other_entry in active:
-            if other_entry != entry:
-                for own, other in ((entry, other_entry), (other_entry, entry)):
-                    if other not in nodes[own]["contestedBy"]:
-                        nodes[own]["contestedBy"].append(other)
-        active.append((start, end, entry))
+    # A decoded instruction partly overlapping another entry's cannot verify ownership/effects;
+    # an identical instruction both bodies reach (a shared tail) is not a conflict.
+    for entry, rows in _cross_entry_overlaps({entry: n["body"] for entry, n in nodes.items()}).items():
+        nodes[entry]["contestedBy"] = sorted(set(r["entry"] for r in rows))
     unchecked = sorted(established - nodes.keys())
     for entry, n in nodes.items():
         n["boundaryUsable"] = n["body"]["complete"] and not n["contestedBy"] and not unchecked
@@ -792,34 +789,46 @@ def callees(image, config):
         if unchecked:
             n["dependencies"].append({"reason": "declared entries not checked for boundary conflicts", "entries": unchecked})
         if n["contestedBy"]:
-            n["dependencies"].append({"reason": "cross-entry instruction overlap", "entries": sorted(n["contestedBy"])})
+            n["dependencies"].append({"reason": "cross-entry instruction overlap", "entries": n["contestedBy"]})
         for observation in n["memoryObservations"]:
             observation["boundaryUsable"] = n["boundaryUsable"]
+    # Every edge's own dependencies are final before any summary copies them.
+    outgoing = {}
     for edge in edges:
+        outgoing.setdefault(edge["caller"], []).append(edge)
         edge["boundaryUsable"] = nodes[edge["caller"]]["boundaryUsable"] and edge["target"] in nodes and nodes[edge["target"]]["boundaryUsable"]
         if edge["classification"] == "recursivePath" and any(not nodes[e]["boundaryUsable"] for e in edge["cyclePath"]):
             edge["classification"] = "unresolvedBackEdge"
             edge["dependencies"].append({"reason": "cycle path has an incomplete or contested body"})
-        todo, reached = [edge["target"]], set()
-        while todo:
-            at = todo.pop()
-            if at in reached or at not in nodes:
-                continue
-            reached.add(at)
-            todo.extend(e["target"] for e in edges if e["caller"] == at)
+    reach = {}
+    for edge in edges:
+        if edge["target"] not in reach:
+            todo, reached = [edge["target"]], set()
+            while todo:
+                at = todo.pop()
+                if at in reached or at not in nodes:
+                    continue
+                reached.add(at)
+                todo.extend(e["target"] for e in outgoing.get(at, []))
+            reach[edge["target"]] = sorted(reached)
+        reached = reach[edge["target"]]
         edge["calleeSummary"] = {
-            "entries": sorted(reached),
-            "memoryObservations": [o for e in sorted(reached) for o in nodes[e]["memoryObservations"]],
-            "assumptions": [{"entry": e, **a} for e in sorted(reached) for a in nodes[e]["body"]["assumedContinuations"]],
-            "dependencies": edge["dependencies"] + [{"entry": e, **d} for e in sorted(reached) for d in nodes[e]["dependencies"]]
-                            + [{"caller": e["caller"], "site": e["site"], **d} for e in edges if e["caller"] in reached for d in e["dependencies"]]
+            "entries": reached,
+            "memoryObservations": [o for e in reached for o in nodes[e]["memoryObservations"]],
+            "assumptions": [{"entry": e, **a} for e in reached for a in nodes[e]["body"]["assumedContinuations"]],
+            "dependencies": edge["dependencies"] + [{"entry": e, **d} for e in reached for d in nodes[e]["dependencies"]]
+                            + [{"caller": e["caller"], "site": e["site"], **d} for at in reached for e in outgoing.get(at, [])
+                               if e is not edge for d in e["dependencies"]]
                             + [d for d in omitted if d["entry"] in reached],
             "effectComplete": False,
             "interpretation": "explicit memory observations and unread dependencies, never a read-only or callee-effect guarantee"}
+    # A limit-omitted route under a reused node may lead back into the active path, so such reuse is no shared-node control.
+    capped = {"depth limit", "node limit", "edge limit; route not traversed"}
     controls = config.get("controls", {})
     if not isinstance(controls, dict) or set(controls) - {"sharedSites", "recursiveSites", "writeSites"}:
         raise ValueError("Invalid callee controls")
-    known = {"sharedSites": {e["site"] for e in edges if e["classification"] == "sharedNodeReuse" and e["boundaryUsable"]},
+    known = {"sharedSites": {e["site"] for e in edges if e["classification"] == "sharedNodeReuse" and e["boundaryUsable"]
+                             and not any(d.get("reason") in capped for d in e["calleeSummary"]["dependencies"])},
              "recursiveSites": {e["site"] for e in edges if e["classification"] == "recursivePath"},
              "writeSites": {o["site"] for n in nodes.values() for o in n["memoryObservations"] if o["boundaryUsable"] and "write" in o["access"]}}
     for kind, sites in controls.items():
