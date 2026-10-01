@@ -66,7 +66,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | Command | Reports | Described in |
 |---|---|---|
 | `trace` | ordered effects and every return along bounded paths from `entry` | this section |
-| `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal | this section |
+| `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies) |
 | `uses` | accesses to one memory offset from every established entry | this section |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
 | `dispatch` | the target of each input through a switch's jump table | this section, [jump tables](#evidenced-indirect-jump-tables) |
