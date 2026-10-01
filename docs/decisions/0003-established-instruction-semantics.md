@@ -246,7 +246,7 @@ Rules for every iteration:
 
 | Phase | Status | Date | Evidence |
 |---|---|---|---|
-| 0 freeze and baseline | not started | | |
+| 0 freeze and baseline | in progress | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48) |
 | 1 pypcode spike | not started | | |
 | 2 semantics seam | not started | | |
 | 3 pypcode backend | not started | | |
