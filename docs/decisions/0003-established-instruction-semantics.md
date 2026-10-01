@@ -247,7 +247,7 @@ Rules for every iteration:
 | Phase | Status | Date | Evidence |
 |---|---|---|---|
 | 0 freeze and baseline | done | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
-| 1 pypcode spike | in progress | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54) and 4 (#55) answered |
+| 1 pypcode spike | in progress | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54), 4 (#55) and 5 (#56) answered |
 | 2 semantics seam | not started | | |
 | 3 pypcode backend | not started | | |
 | 4 parity on recorded cases | not started | | |
@@ -343,6 +343,16 @@ Unicorn 2.1.4 and Capstone 5.0.7 on Python 3.14 (Windows). Each answer names its
    to different expressions, so the key must be the flag producer and condition, as
    `BRANCH_CONDITIONS` keys it today), and the `branch` event fields (`flagProducer`, `operation`,
    `left`, `right`), which stay evidence-layer records of the last flag-writing instruction.
+5. **Repeated string operations: go.** (`Question5RepeatedStrings`) `rep movsb` lifts as one
+   iteration: `INT_EQUAL CX, 0` and a `CBRANCH` to the next instruction (the exit), `CX = CX - 1`,
+   the body (destination address `segment(ES, DI)`, DI and SI stepped by `1 - 2 * DF`, `LOAD`
+   from `segment(DS, SI)` or the override, `STORE`), and a `BRANCH` back to the instruction itself.
+   The interpreter treats the exit `CBRANCH` and the backward `BRANCH` as the loop and charges each
+   pass to `stringIterations`, so a counted `rep movsb` copies its bytes and leaves CX at zero, an
+   exhausted budget stops the path, and an unknown count reaches an unresolved exit. The evidence
+   layer keeps rejecting an unknown count, an unresolved DF and an exhausted budget before the body
+   runs, as `string_effect` does now. The body reads before it writes, so the `read` and `write`
+   events keep their order.
 
 ### Groups moved
 
