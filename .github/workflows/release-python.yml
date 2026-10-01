@@ -3,7 +3,8 @@ name: Release Python package
 # When a pull request that changed packages/scientific-method-engine merges with a release:major,
 # release:minor or release:patch label, publishes the next version to PyPI through trusted
 # publishing (OIDC) and creates the scientific-method-engine@<version> tag and GitHub release.
-# The version comes from the latest such tag plus the label's bump.
+# The version comes from the latest such tag plus the largest bump among the pull requests merged
+# since that tag.
 on:
   push:
     branches:
@@ -11,6 +12,9 @@ on:
     paths:
       - packages/scientific-method-engine/**
 
+# One release at a time. GitHub replaces a pending run when another is queued, which loses nothing:
+# the plan covers every pull request merged since the latest release tag, not only the one that
+# started the run.
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
@@ -37,9 +41,8 @@ jobs:
         with:
           node-version: 24.x
       - id: plan
-        run: node tools/release/plan.ts release pypi "$BEFORE" "$AFTER"
+        run: node tools/release/plan.ts release pypi "$AFTER"
         env:
-          BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.sha }}
           GITHUB_TOKEN: ${{ github.token }}
 

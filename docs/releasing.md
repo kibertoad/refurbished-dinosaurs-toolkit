@@ -29,11 +29,21 @@ The workflow runs only when a push changes `.changeset/`, an npm package or the 
    `release:patch` or `release:skip`. `release-label.yml` fails the pull request otherwise. The
    paths are listed in `tools/release/plan.ts`.
 2. When it merges, `release-python.yml` or `release-dotnet.yml` starts because its paths changed.
-   Its plan job looks up the merged pull request's label. `release:skip` ends the run.
-3. Otherwise the next version is the package's latest tag (`scientific-method-engine@X.Y.Z` or
-   `toad-discovery@X.Y.Z`, `0.0.0` when there is none) bumped by the label. The publish job
-   writes that version into the build, tests, publishes, then creates the tag and a GitHub release
-   with the built files attached.
+   Its plan job lists every pull request merged into the package's paths since the package's
+   latest tag (`scientific-method-engine@X.Y.Z` or `toad-discovery@X.Y.Z`; all of history when
+   there is none) and reads their labels. When all of them carry `release:skip`, the run ends.
+3. Otherwise the next version is the latest tag's version (`0.0.0` when there is none) bumped by
+   the largest of those labels. The publish job writes that version into the build, tests,
+   publishes, then creates the tag and a GitHub release with the built files attached.
+
+Only one release run per workflow goes at a time, and GitHub drops a waiting run when another
+queues behind it. Nothing is lost that way: the run that goes ahead plans from all the pull
+requests merged since the latest tag, including the dropped run's. For the same reason a
+`release:skip` merge can publish a release that an earlier pull request asked for, if that earlier
+release did not happen.
+
+If a merged pull request has no release label (or more than one), the plan job fails and names
+it. Fix the labels on the merged pull request and re-run the workflow.
 
 The committed versions (`0.0.0` in `pyproject.toml` and `Directory.Build.props`) are placeholders.
 

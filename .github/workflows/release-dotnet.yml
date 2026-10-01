@@ -4,7 +4,7 @@ name: Release NuGet packages
 # release:minor or release:patch label, publishes Toad.Discovery.Core and
 # Toad.Discovery.LegacyFormats at the next shared version to nuget.org through trusted publishing
 # (OIDC) and creates the toad-discovery@<version> tag and GitHub release. The version comes from
-# the latest such tag plus the label's bump.
+# the latest such tag plus the largest bump among the pull requests merged since that tag.
 on:
   push:
     branches:
@@ -13,6 +13,9 @@ on:
       - packages/dotnet/**
       - global.json
 
+# One release at a time. GitHub replaces a pending run when another is queued, which loses nothing:
+# the plan covers every pull request merged since the latest release tag, not only the one that
+# started the run.
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: false
@@ -39,9 +42,8 @@ jobs:
         with:
           node-version: 24.x
       - id: plan
-        run: node tools/release/plan.ts release nuget "$BEFORE" "$AFTER"
+        run: node tools/release/plan.ts release nuget "$AFTER"
         env:
-          BEFORE: ${{ github.event.before }}
           AFTER: ${{ github.sha }}
           GITHUB_TOKEN: ${{ github.token }}
 

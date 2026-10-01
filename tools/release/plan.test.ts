@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PACKAGES, bump, latestVersion, releaseLabel, setPyprojectVersion, touched } from "./plan.ts";
+import { PACKAGES, bump, combinedBump, latestVersion, releaseLabel, setPyprojectVersion, touched } from "./plan.ts";
 
 const engine = PACKAGES.find((p) => p.name === "scientific-method-engine")!;
 const dotnet = PACKAGES.find((p) => p.name === "toad-discovery")!;
@@ -40,4 +40,26 @@ test("bumps reset the lower parts", () => {
 test("the pyproject version is written over the 0.0.0 placeholder only", () => {
   assert.equal(setPyprojectVersion('[project]\nversion = "0.0.0"\n', "1.4.0"), '[project]\nversion = "1.4.0"\n');
   assert.throws(() => setPyprojectVersion('[project]\nversion = "1.0.0"\n', "1.4.0"), /placeholder/);
+});
+
+test("the release takes the largest bump among the pull requests merged since the last tag", () => {
+  const pulls = (...labels: string[][]) => labels.map((l, i) => ({ number: i + 1, labels: l }));
+  assert.deepEqual(combinedBump(pulls(["release:major"], ["release:patch"], ["release:skip"])), {
+    bump: "major",
+    errors: [],
+  });
+  assert.deepEqual(combinedBump(pulls(["release:patch"], ["bug", "release:minor"])), { bump: "minor", errors: [] });
+  assert.deepEqual(combinedBump(pulls(["release:skip"], ["release:skip"])), { bump: null, errors: [] });
+  assert.deepEqual(combinedBump([]), { bump: null, errors: [] });
+});
+
+test("pull requests without exactly one release label are reported, not skipped", () => {
+  const result = combinedBump([
+    { number: 7, labels: ["release:patch"] },
+    { number: 8, labels: ["bug"] },
+    { number: 9, labels: ["release:minor", "release:major"] },
+  ]);
+  assert.equal(result.errors.length, 2);
+  assert.match(result.errors[0]!, /^#8: .*found none/);
+  assert.match(result.errors[1]!, /^#9: .*found release:minor, release:major/);
 });
