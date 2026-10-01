@@ -22,7 +22,7 @@ needed a copy round in every consumer.
    - `scientific-method-engine` (PyPI): instruction analysis and the shared Ghidra scripts.
    - `@scientific-method/standard-checker` (npm): the dinorefurb Documentation Standard check,
      command `standard-checker`.
-   - `Toad.Discovery.Core` and `Toad.Discovery.LegacyFormats` (NuGet), released together.
+   - `ScientificMethod.Core` and `ScientificMethod.LegacyFormats` (NuGet), released together.
 
    The `scientific-method` names cover the evidence tooling and the standard's checker and are
    independent of any one restoration. The `@scientific-method` npm organization exists; PyPI has

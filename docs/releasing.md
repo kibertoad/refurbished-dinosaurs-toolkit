@@ -21,7 +21,7 @@ The workflow runs only when a push changes `.changeset/`, an npm package or the 
 
 ## PyPI and NuGet: release labels
 
-`scientific-method-engine` (PyPI), and `Toad.Discovery.Core` with `Toad.Discovery.LegacyFormats`
+`scientific-method-engine` (PyPI), and `ScientificMethod.Core` with `ScientificMethod.LegacyFormats`
 (NuGet, one shared version).
 
 1. A pull request that changes `packages/scientific-method-engine/`, `packages/dotnet/` or
@@ -30,7 +30,7 @@ The workflow runs only when a push changes `.changeset/`, an npm package or the 
    paths are listed in `tools/release/plan.ts`.
 2. When it merges, `release-python.yml` or `release-dotnet.yml` starts because its paths changed.
    Its plan job lists every pull request merged into the package's paths since the package's
-   latest tag (`scientific-method-engine@X.Y.Z` or `toad-discovery@X.Y.Z`; all of history when
+   latest tag (`scientific-method-engine@X.Y.Z` or `scientific-method-dotnet@X.Y.Z`; all of history when
    there is none) and reads their labels. When all of them carry `release:skip`, the run ends.
 3. Otherwise the next version is the latest tag's version (`0.0.0` when there is none) bumped by
    the largest of those labels. The publish job writes that version into the build, tests,
@@ -83,5 +83,5 @@ the upload skips the existing version, and the tag and release are created.
 - On nuget.org, under Trusted Publishing, add a policy for repository owner `kibertoad`,
   repository `refurbished-dinosaurs-toolkit` and workflow file `release-dotnet.yml`, owned by the
   `NUGET_USER` account.
-- The package IDs `Toad.Discovery.Core` and `Toad.Discovery.LegacyFormats` are created by the
+- The package IDs `ScientificMethod.Core` and `ScientificMethod.LegacyFormats` are created by the
   first push.

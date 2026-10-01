@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="ScientificMethod.Core/ScientificMethod.Core.csproj" />
+    <Project Path="ScientificMethod.LegacyFormats/ScientificMethod.LegacyFormats.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="ScientificMethod.Core.Tests/ScientificMethod.Core.Tests.csproj" />
+  </Folder>
+</Solution>

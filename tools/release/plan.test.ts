@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { PACKAGES, bump, combinedBump, latestVersion, releaseLabel, setPyprojectVersion, touched } from "./plan.ts";
 
 const engine = PACKAGES.find((p) => p.name === "scientific-method-engine")!;
-const dotnet = PACKAGES.find((p) => p.name === "toad-discovery")!;
+const dotnet = PACKAGES.find((p) => p.name === "scientific-method-dotnet")!;
 
 test("a package is touched by a file under its path prefix or by an exact file path", () => {
   assert.ok(touched(engine, ["packages/scientific-method-engine/src/scientific_method_engine/cli.py"]));
@@ -21,7 +21,7 @@ test("exactly one release label is required", () => {
 
 test("the latest version compares numerically and ignores other packages' tags", () => {
   const tags = [
-    "toad-discovery@9.0.0",
+    "scientific-method-dotnet@9.0.0",
     "scientific-method-engine@0.9.0",
     "scientific-method-engine@0.10.0",
     "scientific-method-engine@1.0.0-rc.1",

@@ -10,7 +10,7 @@ the generalized result belongs.
 | Source ownership | Verified installed asset pack, repaired graphics, catalog generation | Verified mixed-mode disc/archive content, decoded media, repair/uninstall, read-only inspector | Core manifests/verifier/staging/idempotent writes/manifest-scoped uninstall plus template importer and inspector |
 | Runtime content | Adjacent assets with per-user fallback | Package/user-content/current-directory resolution | `RestorationPaths` |
 | Failure UX | Console, Windows dialog, local startup log, import guidance | Same pattern with separate state/content roots | `StartupFailure` |
-| Standard legacy formats | BMP RLE8 and Smacker assets | PCX/raw indexed images, palettes, Smacker, CUE/CDDA, raw Mode 1 and ISO-9660 | `Toad.Discovery.LegacyFormats` with bounded readers and synthetic tests |
+| Standard legacy formats | BMP RLE8 and Smacker assets | PCX/raw indexed images, palettes, Smacker, CUE/CDDA, raw Mode 1 and ISO-9660 | `ScientificMethod.LegacyFormats` with bounded readers and synthetic tests |
 | Engine/game formats | Chaos PX containers and header repair | Dynamix GOB/RES/CSF/HAT, executable fixups, scenes, conversations, action trees, sound banks | Kept downstream until another real consumer proves a stable shared contract |
 | Determinism | Commands, events, MSVC-style seeded resolution, replay, JSON state diff | Platform-independent campaign and battle rules, executable specs | RNG/state-diff primitives, playbook, parity/rules templates, and template Core boundary |
 | Save/settings | Atomic native saves and replay format | Per-user versioned settings and campaign save slots | Atomic file/settings helpers plus native-save/replay design template |
