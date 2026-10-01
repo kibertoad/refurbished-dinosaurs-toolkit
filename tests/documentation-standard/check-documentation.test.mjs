@@ -1122,3 +1122,100 @@ test("a code range needs a code location in its own file, not only elsewhere", (
   assert.equal(result.status, 1, result.output);
   assert.match(result.output, /FND-SCORE-001 has no code location in GAME\.EXE of BLD-EXAMPLE-1\.0, so it cannot establish a code range there/);
 });
+
+// Addresses in code comments. establishByReading records 0x00401000..0x00401010 in FND-SCORE-001,
+// which RULE-SCORE-001 cites as evidence.
+const IMAGE = ["--images", "0x00400000..0x00410000"];
+function withCode(root, name, text) {
+  mkdirSync(join(root, "src"), { recursive: true });
+  writeFileSync(join(root, "src", name), text);
+}
+
+for (const [comment, ok, why] of [
+  ["// FND-SCORE-001: the handler at 0x00401004 adds one.\n", true, "cites the finding that records it"],
+  ["// RULE-SCORE-001: the handler at 0x00401004 adds one.\n", true, "cites a rule whose evidence records it"],
+  ["// FND-SCORE-001: the handler 0x00401000..0x00401010 adds one.\n", true, "gives the recorded range, whose end is half-open"],
+  ["// FND-SCORE-001: the handler at fn_00401004 adds one.\n", true, "names a recorded address"],
+  ["// FND-SCORE-001: the handler at 0x00401010 adds one.\n", false, "gives the end of a half-open range as an address"],
+  ["// The handler at 0x00401004 adds one.\n", false, "cites nothing"],
+  ["// SRC-MANUAL: the handler at 0x00401004 adds one.\n", false, "cites an entry that does not record it"],
+  ["/* FND-SCORE-001 */\n// the handler at 0x00401004 adds one.\n", true, "cites the finding in the block above"],
+  ["// FND-SCORE-001\n\n// the handler at 0x00401004 adds one.\n", false, "cites the finding in a block a blank line away"],
+  ["var x = 1; // the handler at 0x00401004 adds one\n           // (FND-SCORE-001).\n", true, "trails code and cites the finding in an aligned line below"],
+  ["var x = 1; // the handler at 0x00401004 adds one\n// FND-SCORE-001.\n", false, "trails code; the line below does not start in its column"],
+  ["/*\n * The handler at 0x00401004 adds one.\n * FND-SCORE-001\n */\n", true, "is in a block comment that cites the finding"],
+  ["var s = \"// the handler at 0x00401004\";\n", true, "is inside a string, not a comment"],
+  ["var s = @\"C:\\\"; // the handler at 0x00401004 (FND-SCORE-001)\n", true, "trails a verbatim string"],
+  ["var s = \"\"\"\n  // the handler at 0x00401004\n  \"\"\";\n", true, "is inside a raw string"],
+  ["// The colour 0x00FF00FF is not an address.\n", true, "is a value outside the image"],
+  ["var x = 1; // FND-SCORE-001:\n           // the handler at 0x00401004 adds one.\n", true, "continues a trailing comment that cites the finding"],
+  ["var x = 1; /* FND-SCORE-001:\n   the handler at 0x00401004 adds one. */\n", true, "continues a block comment begun after code that cites the finding"],
+  ["// FND-SCORE-001: 0x00401010, past 0x00401000..0x00401010.\n", false, "gives the end of a range also as an address"],
+  ["// FND-SCORE-001: 0x003FF000..0x00400000.\n", true, "gives a range that ends where the image begins"],
+]) test(`a code comment that ${why} ${ok ? "passes" : "fails"}`, (t) => {
+  const root = broken(t, (r) => { establishByReading(r); withCode(r, "Game.cs", comment); });
+  const result = run(root, ...IMAGE);
+  assert.equal(result.status, ok ? 0 : 1, result.output);
+  if (!ok) assert.match(result.output, /src\/Game\.cs: line \d+ gives (?:0x|fn_)004010[0-9A-F]{2}, but .*cite the finding that records it/);
+});
+
+test("JavaScript comments are read, and a template literal is not a comment", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    withCode(r, "a.mjs", "const s = `\n// the handler at 0x00401004\n`;\n");
+    withCode(r, "b.ts", "// the handler at 0x00401004\n");
+  });
+  const result = run(root, ...IMAGE);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /src\/b\.ts: line 1 gives 0x00401004/);
+  assert.doesNotMatch(result.output, /a\.mjs/);
+});
+
+test("without --images only neutral names are checked", (t) => {
+  const root = broken(t, (r) => { establishByReading(r); withCode(r, "Game.cs", "// The handler at 0x00401004 adds one.\n// So does g_00401008.\n"); });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /line 2 gives g_00401008, but the comment cites no entry that records it/);
+  assert.doesNotMatch(result.output, /0x00401004/);
+});
+
+test("a range larger than --max-range records nothing inside it", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "The handler adds 1", "The code section is 0x00401000..0x00480000. The handler adds 1");
+    withCode(r, "Game.cs", "// FND-SCORE-001: the table at 0x00420000.\n");
+  });
+  const result = run(root, "--images", "0x00400000..0x00500000");
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /line 1 gives 0x00420000, but neither FND-SCORE-001 nor the evidence it cites records it/);
+  const wider = run(root, "--images", "0x00400000..0x00500000", "--max-range", "0x80000");
+  assert.equal(wider.status, 0, wider.output);
+});
+
+test("a range larger than --max-range still records its two ends", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "The handler adds 1", "The code section is 0x00401000..0x00480000. The handler adds 1");
+    withCode(r, "Game.cs", "// FND-SCORE-001: the code section is 0x00401000..0x00480000.\n");
+  });
+  const result = run(root, "--images", "0x00400000..0x00500000");
+  assert.equal(result.status, 0, result.output);
+});
+
+test("a regular expression literal is not read as a string or a comment", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    withCode(r, "a.mjs", "const slashes = /^\\/*$/;\nconst handler = 0x00401004;\nconst y = 1; // */\n");
+    withCode(r, "b.mjs", "const tick = /`/;\n// the handler at 0x00401004\nconst z = `x`;\n");
+    withCode(r, "c.mjs", "const half = (a) / 2; // the handler at 0x00401004 (FND-SCORE-001)\n");
+  });
+  const result = run(root, ...IMAGE);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /src\/b\.mjs: line 2 gives 0x00401004/);
+  assert.doesNotMatch(result.output, /a\.mjs|c\.mjs/);
+});
+
+for (const [option, value] of [["--images", "0x00400000"], ["--images", "0x00500000..0x00400000"], ["--max-range", "big"]]) test(`${option} ${value} is refused`, () => {
+  const result = run(fixture, option, value);
+  assert.equal(result.status, 2, result.output);
+});

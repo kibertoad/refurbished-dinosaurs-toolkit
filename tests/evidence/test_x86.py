@@ -268,6 +268,108 @@ class ReporterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "direct call or jump"):
             run_report(data, cfg, "target")
 
+    def test_bounds_follow_every_exit_past_a_hole(self):
+        c = Code().emit("85 c0").branch("74", "second").emit("c3 cc").label("second").emit("b8 01 00 c3")
+        data = c.bytes()
+        r = run_report(data, configuration(data, analyzerFunction={"start": 0, "bodyBytes": 9, "evidence": "synthetic analyzer size"}), "bounds")
+        self.assertEqual([e["site"] for e in r["exits"]], [4, 9])
+        self.assertEqual(r["holes"], [{"start": 5, "end": 6}])
+        self.assertEqual((r["coveredBytes"], r["span"], r["complete"]), (9, {"start": 0, "end": 10}, True))
+        self.assertTrue(r["analyzer"]["bodyBytesMatch"])
+        self.assertEqual([e["site"] for e in r["analyzer"]["exitsAtOrBeyond"]], [9])
+
+    def test_bounds_end_at_tail_transfer_and_list_call_assumptions(self):
+        c = Code().branch("e8", "other").branch("e9", "other").label("other").emit("c3")
+        data = c.bytes(); cfg = configuration(data)
+        cfg["regions"][0]["entries"] = [0, 6]
+        r = run_report(data, cfg, "bounds")
+        self.assertEqual(r["exits"], [{"site": 3, "kind": "tail transfer", "target": 6}])
+        self.assertEqual([a["site"] for a in r["assumedContinuations"]], [0])
+        self.assertEqual(r["calls"][0]["target"], 6)
+
+    def test_owner_rejects_an_analyzer_function_that_returns_before_the_site(self):
+        c = Code().emit("b8 00 00 c3").label("handler").branch("e8", "callee").emit("c3").label("callee").emit("c3")
+        data = c.bytes(); cfg = configuration(data, query={"site": 4}, analyzerFunction={"start": 0, "evidence": "synthetic analyzer function"})
+        cfg["regions"][0]["entries"] = [0, 4, 8]
+        r = run_report(data, cfg, "owner")
+        self.assertEqual([o["entry"] for o in r["owners"]], [4])
+        self.assertFalse(r["analyzer"]["agrees"])
+        self.assertFalse(r["analyzer"]["reachesSite"])
+        self.assertEqual([e["site"] for e in r["analyzer"]["exitsBeforeSiteByAddress"]], [3])
+
+    def test_owner_reports_shared_tails_and_interior_sites(self):
+        data = bytes.fromhex("b8 00 00 b8 01 00 c3")
+        cfg = configuration(data, query={"site": 3})
+        cfg["regions"][0]["entries"] = [0, 3]
+        r = run_report(data, cfg, "owner")
+        self.assertTrue(r["shared"])
+        self.assertEqual([o["entry"] for o in r["owners"]], [0, 3])
+        self.assertEqual(run_report(data, cfg, "bounds")["sharedEntries"], [3])
+        cfg["query"]["site"] = 4
+        interior = run_report(data, cfg, "owner")
+        self.assertEqual(interior["owners"], [])
+        self.assertEqual(len(interior["insideOtherInstructions"]), 2)
+
+    def test_bounds_read_prefixed_returns_ports_and_conditional_tail_transfers(self):
+        # F3 C3 decodes as "repz ret" and F3 6C as "rep insb"; neither may fall through into the next entry.
+        data = bytes.fromhex("f3 6c 74 01 f3 c3 c3")
+        cfg = configuration(data)
+        cfg["regions"][0]["entries"] = [0, 5]
+        r = run_report(data, cfg, "bounds")
+        self.assertEqual(r["exits"], [{"site": 2, "kind": "tail transfer", "target": 5, "conditional": True},
+                                      {"site": 4, "kind": "near return", "cleanupBytes": 0}])
+        self.assertEqual([a["site"] for a in r["assumedContinuations"]], [0])
+        self.assertEqual(r["sharedEntries"], [])
+        cfg["instructionLimit"] = "many"
+        with self.assertRaisesRegex(ValueError, "instruction limit"):
+            run_report(data, cfg, "bounds")
+
+    def test_owner_does_not_call_a_site_unowned_past_a_gap_or_entry_limit(self):
+        data = bytes.fromhex("ff e0 c3 90 c3")
+        cfg = configuration(data, query={"site": 3}, analyzerFunction={"start": 3, "evidence": "synthetic analyzer function"})
+        cfg["regions"][0]["entries"] = [0, 2, 3]
+        r = run_report(data, cfg, "owner")
+        self.assertEqual([o["entry"] for o in r["owners"]], [3])
+        self.assertTrue(r["analyzer"]["agrees"])
+        cfg["entryLimit"] = 2
+        limited = run_report(data, cfg, "owner")
+        self.assertEqual(limited["owners"], [])
+        self.assertEqual([e["entry"] for e in limited["incompleteEntries"]], [0])
+        self.assertTrue(limited["verdict"].startswith("unresolved"))
+        self.assertTrue(limited["analyzer"]["agrees"])
+
+    def test_owner_leaves_a_site_unresolved_when_owners_decode_overlapping_instructions(self):
+        # Entry 0 decodes "mov ax, 0xc390" over bytes 0..2; entry 1 decodes "nop; ret" inside it.
+        data = bytes.fromhex("b8 90 c3 c3")
+        cfg = configuration(data, query={"site": 3}, analyzerFunction={"start": 0, "evidence": "synthetic analyzer function"})
+        cfg["regions"][0]["entries"] = [0, 1]
+        r = run_report(data, cfg, "owner")
+        self.assertEqual([o["entry"] for o in r["owners"]], [0])
+        self.assertEqual(r["owners"][0]["contestedBy"], [{"entry": 1, "site": 0, "otherSite": 1},
+                                                         {"entry": 1, "site": 0, "otherSite": 2}])
+        self.assertEqual(r["contestedOwners"], [0])
+        self.assertTrue(r["verdict"].startswith("unresolved"))
+        self.assertTrue(r["analyzer"]["contested"])
+        cfg["regions"][0]["entries"] = [0]
+        alone = run_report(data, cfg, "owner")
+        self.assertEqual((alone["owners"][0]["contestedBy"], alone["contestedOwners"]), ([], []))
+        self.assertEqual(alone["verdict"], "one established entry reaches this site")
+
+    def test_walk_reads_prefixed_returns_ports_and_jumps(self):
+        # "repz ret" and "rep insb" end the walk, "bnd jmp" is followed like a plain jmp, and int1 is a boundary.
+        def run(code):
+            data = bytes.fromhex(code)
+            return walk(Image(data, configuration(data)), [0])
+        seen, gaps, _, _, _ = run("f3 c3 cc")
+        self.assertEqual((sorted(seen), gaps), ([0], []))
+        _, gaps, _, _, _ = run("f3 6c cc")
+        self.assertEqual(gaps, [{"site": 0, "reason": "hardware or interrupt boundary"}])
+        seen, gaps, edges, _, _ = run("f2 e9 01 00 cc c3")
+        self.assertEqual((sorted(seen), gaps), ([0, 5], []))
+        self.assertEqual((edges[0]["kind"], edges[0]["target"]), ("jmp", 5))
+        _, gaps, _, _, _ = run("f1 c3")
+        self.assertEqual(gaps, [{"site": 0, "reason": "hardware or interrupt boundary"}])
+
     def test_dispatch_normalization_and_rejection(self):
         c = Code().emit("83 e0 7f 83 f8 02").branch("73", "reject").emit("89 c3 d1 e3").label("dispatch").emit("ff 27").label("reject").emit("c3")
         c.label("table").emit("20 00 30 00")

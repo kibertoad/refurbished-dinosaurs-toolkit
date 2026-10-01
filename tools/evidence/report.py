@@ -12,7 +12,7 @@ def main():
     from x86.image import read_source
     from x86.reports import run_report
     if len(sys.argv) != 3:
-        raise ValueError("Usage: report.py <operand|target|trace|uses|arguments|effects|returns|memory|incoming|guards|allocation|dispatch> <config.json|->")
+        raise ValueError("Usage: report.py <operand|target|bounds|owner|trace|uses|arguments|effects|returns|memory|incoming|guards|allocation|dispatch> <config.json|->")
     command, config_path = sys.argv[1:]
     if config_path == "-":
         # The Node loader caps its input at 1 MiB, then adds every source relocation.
