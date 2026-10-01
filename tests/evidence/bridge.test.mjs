@@ -275,8 +275,12 @@ test("callee graph through the source bridge keeps a reused node distinct from r
   writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
   const r = run(["callees", join(dir, "config.json")]);
   assert.deepEqual(r.edges.map(e => e.classification), ["newNode", "sharedNodeReuse"]);
-  assert.ok(r.edges.every(e => e.calleeSummary.memoryObservations.some(o => o.site === 71 && o.access.includes("write"))));
-  assert.ok(r.edges.every(e => !e.calleeSummary.effectComplete));
+  const summary = r.calleeSummaries.find(s => s.entry === 71), node = r.nodes.find(n => n.entry === 71);
+  assert.ok(r.edges.every(e => e.calleeSummary === 71));
+  assert.deepEqual(summary.entries, [71]);
+  assert.equal(summary.counts.writeObservations, 1);
+  assert.ok(node.memoryObservations.some(o => o.site === 71 && o.access.includes("write")));
+  assert.equal(summary.effectComplete, false);
   assert.equal(r.completeWithinDeclaredGraph, true);
 });
 

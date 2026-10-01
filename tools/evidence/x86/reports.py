@@ -856,7 +856,7 @@ def callees(image, config):
         raise ValueError("Invalid callee controls")
     nodes, edges, omitted = {}, [], []
 
-    def visit(entry, path):
+    def read(entry):
         b = body(image, entry, instruction_limit)
         observations = []
         for site, ins in sorted(b["instructions"].items()):
@@ -873,27 +873,58 @@ def callees(image, config):
                                      "indexRegister": ins.reg_name(operand.mem.index) or None,
                                      "interpretation": "explicit operand reached in conditional entry CFG; effective address and runtime execution unresolved"})
         nodes[entry] = {"entry": entry, "body": b, "memoryObservations": observations, "contestedBy": []}
+        return b
+
+    # Breadth-first reading gives every node its shortest depth, so depth/node/edge limits do not depend on
+    # which caller happened to be read first. paths holds each admitted node's tree path from the root.
+    paths, queue = {root: [root]}, [root]
+    for entry in queue:
+        b, path = read(entry), paths[entry]
         routes = b["calls"] + [e | {"encoding": "tail transfer"} for e in b["exits"] if e["kind"] == "tail transfer"]
         for route in sorted(routes, key=lambda r: (r["site"], -1 if r.get("target") is None else r["target"])):
             if len(edges) >= edge_limit:
-                omitted.append({"entry": entry, "site": route["site"], "reason": "edge limit; route not traversed"})
+                omitted.append({"id": len(omitted), "entry": entry, "site": route["site"], "reason": "edge limit; route not traversed"})
                 continue
             target = route.get("target")
-            edge = {"caller": entry, "site": route["site"], "target": target, "kind": route["encoding"],
+            edge = {"id": len(edges), "caller": entry, "site": route["site"], "target": target, "kind": route["encoding"],
                     "path": path, "classification": "unresolved", "dependencies": []}
             edges.append(edge)
             if target is None or target not in established:
                 edge["dependencies"].append({"reason": route.get("reason") or "target is not an established entry"})
-            elif target in path:
-                edge.update(classification="recursivePath", cyclePath=path[path.index(target):] + [target])
-            elif target in nodes:
-                edge["classification"] = "sharedNodeReuse"
-            elif len(path) >= depth_limit or len(nodes) >= node_limit:
+            elif target in paths:
+                edge["classification"] = None  # recursivePath or sharedNodeReuse, once the read graph is known
+            elif len(path) >= depth_limit or len(paths) >= node_limit:
                 edge["dependencies"].append({"reason": "depth limit" if len(path) >= depth_limit else "node limit"})
             else:
                 edge["classification"] = "newNode"
-                visit(target, path + [target])
-    visit(root, [root])
+                paths[target] = path + [target]
+                queue.append(target)
+    outgoing = {}
+    for edge in edges:
+        outgoing.setdefault(edge["caller"], []).append(edge)
+
+    def walk(start):
+        """Shortest-route predecessors of every read node reachable from start."""
+        previous, todo = {start: None}, [start]
+        for at in todo:
+            for e in outgoing.get(at, []):
+                if e["target"] in nodes and e["target"] not in previous:
+                    previous[e["target"]] = at
+                    todo.append(e["target"])
+        return previous
+    reach = {entry: walk(entry) for entry in nodes}
+    # A non-tree edge closes a cycle exactly when its target reaches its caller; this is independent of read order.
+    for edge in edges:
+        if edge["classification"] is None:
+            previous = reach[edge["target"]]
+            if edge["caller"] in previous:
+                cycle, at = [], edge["caller"]
+                while at is not None:
+                    cycle.append(at)
+                    at = previous[at]
+                edge.update(classification="recursivePath", cyclePath=cycle[::-1] + [edge["target"]])
+            else:
+                edge["classification"] = "sharedNodeReuse"
     # A decoded instruction partly overlapping another entry's cannot verify ownership/effects;
     # an identical instruction both bodies reach (a shared tail) is not a conflict.
     for entry, rows in _cross_entry_overlaps({entry: n["body"] for entry, n in nodes.items()}).items():
@@ -908,45 +939,44 @@ def callees(image, config):
             n["dependencies"].append({"reason": "cross-entry instruction overlap", "entries": n["contestedBy"]})
         for observation in n["memoryObservations"]:
             observation["boundaryUsable"] = n["boundaryUsable"]
-    # Every edge's own dependencies are final before any summary copies them.
-    outgoing = {}
+    # Every edge's own dependencies are final before any summary refers to them.
     for edge in edges:
-        outgoing.setdefault(edge["caller"], []).append(edge)
         edge["boundaryUsable"] = nodes[edge["caller"]]["boundaryUsable"] and edge["target"] in nodes and nodes[edge["target"]]["boundaryUsable"]
         if edge["classification"] == "recursivePath" and any(not nodes[e]["boundaryUsable"] for e in edge["cyclePath"]):
             edge["classification"] = "unresolvedBackEdge"
             edge["dependencies"].append({"reason": "cycle path has an incomplete or contested body"})
-    reach = {}
-    for edge in edges:
-        if edge["target"] not in reach:
-            todo, reached = [edge["target"]], set()
-            while todo:
-                at = todo.pop()
-                if at in reached or at not in nodes:
-                    continue
-                reached.add(at)
-                todo.extend(e["target"] for e in outgoing.get(at, []))
-            reach[edge["target"]] = sorted(reached)
-        reached = reach[edge["target"]]
-        edge["calleeSummary"] = {
-            "entries": reached,
-            "memoryObservations": [o for e in reached for o in nodes[e]["memoryObservations"]],
-            "assumptions": [{"entry": e, **a} for e in reached for a in nodes[e]["body"]["assumedContinuations"]],
-            "dependencies": edge["dependencies"] + [{"entry": e, **d} for e in reached for d in nodes[e]["dependencies"]]
-                            + [{"caller": e["caller"], "site": e["site"], **d} for at in reached for e in outgoing.get(at, [])
-                               if e is not edge for d in e["dependencies"]]
-                            + [d for d in omitted if d["entry"] in reached],
+    # One summary per read node, shared by reference by every edge into it, keeps output linear in the graph
+    # while each caller still retains the callee's observations, assumptions and dependencies through it.
+    summaries = {}
+    for entry in sorted(nodes):
+        reached = sorted(reach[entry])
+        observations = [o for at in reached for o in nodes[at]["memoryObservations"]]
+        summaries[entry] = {
+            "entry": entry, "entries": reached,
+            "dependencyEntries": [at for at in reached if nodes[at]["dependencies"]],
+            "dependencyEdges": [e["id"] for at in reached for e in outgoing.get(at, []) if e["dependencies"]],
+            "omittedRoutes": [o["id"] for o in omitted if o["entry"] in reach[entry]],
+            "counts": {"memoryObservations": len(observations),
+                       "writeObservations": sum("write" in o["access"] for o in observations),
+                       "assumptions": sum(len(nodes[at]["body"]["assumedContinuations"]) for at in reached)},
             "effectComplete": False,
-            "interpretation": "explicit memory observations and unread dependencies, never a read-only or callee-effect guarantee"}
+            "interpretation": "references to the explicit memory observations, continuation assumptions and unread dependencies "
+                              "of every reached node; never a read-only or callee-effect guarantee"}
+    for edge in edges:
+        edge["calleeSummary"] = edge["target"] if edge["target"] in summaries else None
     # A reused node that reaches the active path, or whose reached bodies were capped or are unusable, may lead
     # back into the active path, so such reuse is no shared-node control.
-    capped = {"depth limit", "node limit", "edge limit; route not traversed", "instruction limit"}
+    capped = {"depth limit", "node limit", "instruction limit"}
 
     def shared_control(e):
-        reached = e["calleeSummary"]["entries"]
-        return (e["classification"] == "sharedNodeReuse" and e["boundaryUsable"]
-                and not set(e["path"]) & set(reached) and all(nodes[at]["boundaryUsable"] for at in reached)
-                and not any(d.get("reason") in capped for d in e["calleeSummary"]["dependencies"]))
+        if e["classification"] != "sharedNodeReuse":
+            return False
+        s = summaries[e["target"]]
+        return (e["boundaryUsable"]
+                and not set(e["path"]) & set(s["entries"]) and all(nodes[at]["boundaryUsable"] for at in s["entries"])
+                and not s["omittedRoutes"]
+                and not any(d.get("reason") in capped for at in s["entries"] for d in nodes[at]["dependencies"])
+                and not any(d.get("reason") in capped for i in s["dependencyEdges"] for d in edges[i]["dependencies"]))
     known = {"sharedSites": {e["site"] for e in edges if shared_control(e)},
              "recursiveSites": {e["site"] for e in edges if e["classification"] == "recursivePath"},
              "writeSites": {o["site"] for n in nodes.values() for o in n["memoryObservations"] if o["boundaryUsable"] and "write" in o["access"]}}
@@ -954,10 +984,13 @@ def callees(image, config):
         if not isinstance(sites, list) or len(sites) > 256 or any(type(at) is not int or at not in known[kind] for at in sites):
             raise ValueError("Callee positive control missed: " + kind)
     return {"root": root, "nodes": [{k: v for k, v in n.items() if k != "body"} | {"body": _body_report(n["body"])} for n in nodes.values()],
-            "edges": edges, "omittedRoutes": omitted, "uncheckedEntries": unchecked, "controls": controls,
+            "edges": edges, "calleeSummaries": list(summaries.values()), "omittedRoutes": omitted, "uncheckedEntries": unchecked,
+            "controls": controls,
             "completeWithinDeclaredGraph": not omitted and all(n["boundaryUsable"] for n in nodes.values()) and not any(e["dependencies"] for e in edges),
             "exclusions": ["implicit memory effects", "computed/unestablished targets", "argument-sensitive effects", "runtime reachability"],
-            "interpretation": "A recursivePath is an entry-CFG edge back into the active traversal path; sharedNodeReuse is a previously read node outside that path. Neither proves runtime recursion."}
+            "interpretation": "Nodes are read breadth-first; path is the shortest read route to the caller. A recursivePath is a "
+                              "non-tree entry-CFG edge whose target reaches its caller; sharedNodeReuse is a previously read node "
+                              "that does not. Neither proves runtime recursion."}
 
 
 def _body_report(b):

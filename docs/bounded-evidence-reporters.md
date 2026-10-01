@@ -515,17 +515,24 @@ universal ownership; continuation assumptions stay explicit. The Node source
 loader derives export metadata from hash-guarded MZ/FBOV tables and rejects a
 caller-supplied copy. Body-byte size is never treated as a contiguous end.
 
-`callees` derives a bounded graph from `entry` and established region entries.
-Targets without an established entry remain unresolved. An edge back into the
-active traversal path is `recursivePath`; reaching an already read node outside
-that path is `sharedNodeReuse`. These describe conditional entry-CFG structure,
-never runtime recursion. Incomplete or cross-entry contested cycle paths become
-`unresolvedBackEdge`. Calls and established tail transfers retain their kind.
-Each edge's `calleeSummary` retains reachable explicit memory observations,
-continuation assumptions and unread dependencies, including shared nodes;
-`effectComplete` is always false because implicit, argument-sensitive and runtime
-effects are excluded. A missing write is never a read-only claim. Width/access,
-segment register and unresolved base/index operands accompany observations.
+`callees` derives a bounded graph from `entry` and established region entries,
+read breadth-first so each node gets its shortest depth and `path` (the shortest
+read route to the caller) regardless of call order. Targets without an
+established entry remain unresolved. A non-tree edge whose target reaches its
+caller closes a cycle and is `recursivePath`, with `cyclePath` the shortest such
+route; any other edge to an already read node is `sharedNodeReuse`. These
+describe conditional entry-CFG structure, never runtime recursion. Incomplete or
+cross-entry contested cycle paths become `unresolvedBackEdge`. Calls and
+established tail transfers retain their kind. Each read node has one entry in
+`calleeSummaries`; every edge into it names that entry in `calleeSummary`, so
+each caller retains the node's reachable `entries` (whose explicit memory
+observations and continuation assumptions are listed on the nodes), the
+`dependencyEntries`, `dependencyEdges` (edge ids) and `omittedRoutes` (route
+ids) that remain unread, and observation/assumption counts, with output linear
+in the graph. `effectComplete` is always false because implicit,
+argument-sensitive and runtime effects are excluded. A missing write is never a
+read-only claim. Width/access, segment register and unresolved base/index
+operands accompany observations.
 `nodeLimit` (1..128, default 64), `edgeLimit` (1..2048, default 512), `depthLimit`
 (1..128, default 16) and `instructionLimit` (1..100000 per body) bound work.
 Omitted edges and capped/incomplete bodies remain dependencies;

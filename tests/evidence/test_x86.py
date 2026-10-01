@@ -77,10 +77,15 @@ class CalleeGraphTests(unittest.TestCase):
         self.assertFalse(any(e["classification"] == "recursivePath" for e in r["edges"]))
         common = [e for e in r["edges"] if e["target"] == c.labels["common"]]
         self.assertEqual([e["classification"] for e in common], ["newNode", "sharedNodeReuse"])
+        summaries = {s["entry"]: s for s in r["calleeSummaries"]}
+        nodes = {n["entry"]: n for n in r["nodes"]}
         for e in common:
-            self.assertTrue(any("write" in o["access"] for o in e["calleeSummary"]["memoryObservations"]))
-            self.assertTrue(e["calleeSummary"]["dependencies"])
-            self.assertFalse(e["calleeSummary"]["effectComplete"])
+            s = summaries[e["calleeSummary"]]
+            observations = [o for at in s["entries"] for o in nodes[at]["memoryObservations"]]
+            self.assertTrue(any("write" in o["access"] for o in observations))
+            self.assertEqual(s["counts"]["writeObservations"], 1)
+            self.assertTrue(any(r["edges"][i]["target"] is None for i in s["dependencyEdges"]))
+            self.assertFalse(s["effectComplete"])
         self.assertFalse(r["completeWithinDeclaredGraph"])
 
     def test_cycle_is_only_an_edge_back_into_the_active_path(self):
@@ -134,9 +139,11 @@ class CalleeGraphTests(unittest.TestCase):
         cfg = configuration(data)
         cfg["regions"][0]["entries"] = [0, 4]
         r = run_report(data, cfg, "callees")
+        back = next(e for e in r["edges"] if e["classification"] == "unresolvedBackEdge")
+        self.assertEqual([d["reason"] for d in back["dependencies"]].count("cycle path has an incomplete or contested body"), 1)
+        summaries = {s["entry"]: s for s in r["calleeSummaries"]}
         for e in r["edges"]:
-            reasons = [d["reason"] for d in e["calleeSummary"]["dependencies"]]
-            self.assertEqual(reasons.count("cycle path has an incomplete or contested body"), 1)
+            self.assertIn(back["id"], summaries[e["calleeSummary"]]["dependencyEdges"])
 
     def test_reuse_over_a_limit_omitted_route_is_not_a_shared_control(self):
         c = Code().label("root").branch("e8", "x").branch("e8", "y").emit("c3")
@@ -145,13 +152,13 @@ class CalleeGraphTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "positive control"):
             self.graph(c, ["root", "x", "y"], depthLimit=2, controls={"sharedSites": [c.labels["y"]]})
 
-    def test_reuse_of_a_node_reaching_the_active_path_is_not_a_shared_control(self):
+    def test_edge_closing_a_cycle_off_the_tree_path_is_recursion_not_reuse(self):
         c = Code().label("root").branch("e8", "x").emit("c3")
         c.label("x").branch("e8", "y").branch("e8", "z").emit("c3")
         c.label("y").branch("e8", "x").emit("c3")
         c.label("z").branch("e8", "y").emit("c3")
         r = self.graph(c, ["root", "x", "y", "z"])
-        self.assertEqual([e["classification"] for e in r["edges"] if e["caller"] == c.labels["z"]], ["sharedNodeReuse"])
+        self.assertEqual([e["classification"] for e in r["edges"] if e["caller"] == c.labels["z"]], ["recursivePath"])
         with self.assertRaisesRegex(ValueError, "positive control"):
             self.graph(c, ["root", "x", "y", "z"], controls={"sharedSites": [c.labels["z"]]})
 
@@ -163,6 +170,39 @@ class CalleeGraphTests(unittest.TestCase):
         c.label("deep").emit("90 90 90 90").branch("e8", "b").emit("c3")
         with self.assertRaisesRegex(ValueError, "positive control"):
             self.graph(c, ["root", "a", "b", "common", "deep"], instructionLimit=3, controls={"sharedSites": [c.labels["b"]]})
+
+    def test_classification_and_depth_limits_do_not_depend_on_read_order(self):
+        c = Code().label("root").branch("e8", "a").branch("e8", "t").emit("c3")
+        c.label("a").branch("e8", "t").emit("c3")
+        c.label("t").branch("e8", "u").emit("c3")
+        c.label("u").emit("c3")
+        r = self.graph(c, ["root", "a", "t", "u"], depthLimit=3, controls={"sharedSites": [c.labels["a"]]})
+        self.assertTrue(r["completeWithinDeclaredGraph"])
+        self.assertEqual(next(n for n in r["edges"] if n["target"] == c.labels["u"])["path"], [0, c.labels["t"]])
+
+    def test_both_edges_of_a_cycle_between_siblings_are_recursion(self):
+        c = Code().label("root").branch("e8", "x").branch("e8", "y").emit("c3")
+        c.label("x").branch("e8", "y").emit("c3")
+        c.label("y").branch("e8", "x").emit("c3")
+        r = self.graph(c, ["root", "x", "y"])
+        self.assertEqual([e["classification"] for e in r["edges"]], ["newNode", "newNode", "recursivePath", "recursivePath"])
+        self.assertEqual(r["edges"][2]["cyclePath"], [c.labels["y"], c.labels["x"], c.labels["y"]])
+
+    def test_each_node_has_one_summary_shared_by_every_caller(self):
+        c = Code().label("root")
+        names = [f"c{i}" for i in range(8)]
+        for n in names:
+            c.branch("e8", n)
+        c.emit("c3")
+        for n in names:
+            c.label(n).branch("e8", "leaf").emit("c3")
+        c.label("leaf").emit("c7 06 20 00 01 00 c3")
+        r = self.graph(c, ["root", *names, "leaf"])
+        self.assertEqual(len(r["calleeSummaries"]), len(r["nodes"]))
+        into = [e for e in r["edges"] if e["target"] == c.labels["leaf"]]
+        self.assertEqual(len(into), 8)
+        self.assertTrue(all(e["calleeSummary"] == c.labels["leaf"] for e in into))
+        self.assertNotIn("memoryObservations", r["calleeSummaries"][0])
 
     def test_x87_stores_are_write_observations(self):
         data = bytes.fromhex("d9 1e 20 00 d9 3e 22 00 dd 26 24 00 c3")
