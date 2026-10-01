@@ -475,6 +475,21 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(r["contestedOwners"], [0])
         self.assertTrue(r["verdict"].startswith("unresolved"))
         self.assertTrue(r["analyzer"]["contested"])
+        cfg["regions"][0]["entries"] = [0, 1]
+        cfg["entryLimit"] = 1
+        limited = run_report(data, cfg, "owner")
+        self.assertEqual(limited["owners"][0]["contestedBy"], [])
+        self.assertFalse(limited["owners"][0]["boundaryCheck"]["joinableWithinModel"])
+        cfg.update(query={"site": 2}, analyzerFunction={"start": 1, "evidence": "synthetic unchecked entry"})
+        unchecked = run_report(data, cfg, "owner")
+        self.assertTrue(unchecked["analyzer"]["reachesSite"])
+        self.assertFalse(unchecked["analyzer"]["boundaryCheck"]["joinableWithinModel"])
+        cfg.update(query={"site": 3}, analyzerFunction={"start": 0, "evidence": "synthetic analyzer function"})
+        del cfg["entryLimit"]
+        cfg["overlayExports"] = [{"descriptor": 1}]
+        with self.assertRaisesRegex(ValueError, "integer entry"):
+            run_report(data, cfg, "owner")
+        del cfg["overlayExports"]
         cfg["regions"][0]["entries"] = [0]
         alone = run_report(data, cfg, "owner")
         self.assertEqual((alone["owners"][0]["contestedBy"], alone["contestedOwners"]), ([], []))
@@ -826,6 +841,11 @@ class ReporterTests(unittest.TestCase):
             result = subprocess.run(args, capture_output=True, text=True)
             self.assertEqual(result.returncode, 1)
             self.assertIn("baseline", result.stderr)
+            cfg["sha256"] = hashlib.sha256(data).hexdigest(); cfg["overlayExports"] = []
+            path.write_text(json.dumps(cfg))
+            result = subprocess.run(args, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("source-derived", result.stderr)
 
 
 

@@ -14,6 +14,7 @@ def main():
     if len(sys.argv) != 3:
         raise ValueError("Usage: report.py <operand|target|bounds|owner|trace|uses|arguments|effects|returns|memory|incoming|guards|allocation|dispatch> <config.json|->")
     command, config_path = sys.argv[1:]
+    reject_derived = False
     if config_path == "-":
         # The Node loader caps its input at 1 MiB, then adds every source relocation.
         limit, label = PREPARED_CONFIG_LIMIT, "Prepared config exceeds 16 MiB"
@@ -25,11 +26,15 @@ def main():
         if path.stat().st_size > limit:
             raise ValueError(label)
         text, base = path.read_text(encoding="utf-8"), path.parent
+        reject_derived = True
     if len(text.encode("utf-8")) > limit:
         raise ValueError(label)
     config = json.loads(text)
     if not isinstance(config, dict):
         raise ValueError("Config must be an object")
+    if reject_derived and "overlayExports" in config:
+        # Only the Node MZ/FBOV loader (stdin mode) derives overlay exports from source tables.
+        raise ValueError("overlayExports is source-derived and cannot be supplied")
     data, identity = read_source(config, base)
     result = run_report(data, config, command)
     print(json.dumps({"schema": "bounded-x86-v1", "decoder": "capstone 5.0.7", "sourceIdentity": identity,
