@@ -514,3 +514,18 @@ overlaps unknown and refuses the join). It does not establish player reachabilit
 universal ownership; continuation assumptions stay explicit. The Node source
 loader derives export metadata from hash-guarded MZ/FBOV tables and rejects a
 caller-supplied copy. Body-byte size is never treated as a contiguous end.
+
+`operand-candidates` scans explicitly declared region starts for an encoded
+memory displacement or immediate matching `query.offset`; implicit operands and
+relative branch targets are not encoded literals and never match. It retains prefixes,
+operand widths/access, segment-register choice and byte spans. Entry-based
+instruction starts, rejected overlapping decodes and unresolved boundaries stay
+separate; only verified memory operand starts count as uses of that literal
+representation. `overlapGroups` groups returned intersecting candidate spans;
+truncated output marks groups incomplete. `overlapsVerified` also names reached
+instructions intersected by an apparent candidate that starts before a read or
+crosses a following jump. Known memory sites can be supplied as `controls`;
+a raw or contested candidate fails that control. `scanLimit`, `limit`, coverage
+and partial-search flags bound the inventory. Implicit/computed uses, segment
+alias proofs and runtime reachability are excluded; counts never prove their
+absence or promote a candidate to original behavior.
