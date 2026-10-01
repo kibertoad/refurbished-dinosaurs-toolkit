@@ -36,8 +36,33 @@ CONTESTED_REASON = "reached only through a rejected overlapping start"
 def unsupported_transfer(image, ins):
     """Operand-size overrides and flat-model far transfers fall outside the frame model."""
     m = ins.mnemonic
-    return ((0x66 in ins.prefix and (m in ("call", "lcall", "ret", "retf", "jmp", "ljmp") or m.startswith("j")))
+    return ((0x66 in ins.prefix and (m in ("call", "lcall", "ret", "retf", "jmp", "ljmp") or m.startswith(("j", "loop"))))
             or (image.flat and m in ("lcall", "ljmp", "retf")))
+
+
+def counter_branch(state, ins):
+    """JCXZ/JECXZ and the LOOP family: CX (ECX with a 32-bit address size) decides the branch, with ZF for LOOPE/LOOPNE."""
+    m = ins.mnemonic
+    counter = "ecx" if ins.addr_size == 4 else "cx"
+    if m.startswith("loop"):
+        # LOOP decrements the counter without changing any flag.
+        state.setreg(counter, op("sub", state.reg(counter), const(1, 32 if counter == "ecx" else 16), state.at), state.at)
+    count = state.reg(counter)
+    info = {"predicate": m, "counter": counter, "count": count.report()}
+    if m in ("jcxz", "jecxz"):
+        answer = None if count.number is None else count.number == 0
+        return answer, info, repr(("counter-zero", count.term))
+    nonzero = None if count.number is None else count.number != 0
+    zero_flag = None
+    if m != "loop":
+        zero_flag, flag_info = predicate(state, "je")
+        info["zeroFlag"] = flag_info
+        if zero_flag is not None and m in ("loopne", "loopnz"):
+            zero_flag = not zero_flag
+    parts = [nonzero] if m == "loop" else [nonzero, zero_flag]
+    answer = False if False in parts else None if None in parts else True
+    flags = state.flags if state.flags is not None else ("unresolved", state.flag_epoch)
+    return answer, info, repr((m, count.term) if m == "loop" else (m, count.term, flags))
 
 
 def walk(image, entries, limit=10000):
@@ -215,6 +240,8 @@ def trace(image, config):
     string_limit = integer(config.get("stringIterations", 4096), 0, 65536, "string iteration budget")
     total_limit = integer(config.get("totalSteps", 20000), 1, 100000, "totalSteps")
     checkpoints = set(config.get("checkpoints", []))
+    # How often one path may pass the same instruction; a loop with a known bound needs it raised.
+    visit_limit = integer(config.get("visitLimit", 4), 1, 4096, "visitLimit")
 
     def string_step(s, ins, count):
         # Reserve iterations only when they fit, so a rejected request never drains the shared budget.
@@ -245,15 +272,15 @@ def trace(image, config):
                 state.steps += 1
                 state.path.append(at)
                 state.visits[at] = state.visits.get(at, 0) + 1
-                if state.visits[at] > 4:
-                    raise StopPath("repeated instruction; bounded loop reading required")
+                if state.visits[at] > visit_limit:
+                    raise StopPath(f"instruction repeated more than {visit_limit} times; raise visitLimit or read the loop's bound")
                 if at in checkpoints:
                     state.event("checkpoint", registers=snapshot(state))
                 m, following = ins.mnemonic, at + ins.size
                 is_string = string_instruction(ins)
                 if (0xf2 in ins.prefix or 0xf3 in ins.prefix) and not is_string:
                     raise StopPath("repeat prefix requires a separate bounded string-operation reading")
-                if 0x66 in ins.prefix and (m in ("call", "lcall", "ret", "retf", "jmp", "ljmp") or m.startswith("j")):
+                if 0x66 in ins.prefix and (m in ("call", "lcall", "ret", "retf", "jmp", "ljmp") or m.startswith(("j", "loop"))):
                     raise StopPath("Operand-size control transfer override is outside the selected frame model")
                 if image.flat and m in ("lcall", "ljmp"):
                     raise StopPath("Far transfer is outside the PE32 flat model")
@@ -447,13 +474,19 @@ def trace(image, config):
                         state.setreg("cs", const(target_region["segment"], 16, at), at)
                     state.at = target
                     continue
-                if m.startswith("j"):
-                    if m in ("jcxz", "jecxz"):
-                        raise StopPath("counter branch not supported")
+                if m.startswith("j") or m.startswith("loop"):
                     target, _ = call_target(image, at, ins)
-                    answer, info = predicate(state, m)
-                    condition, negated = BRANCH_CONDITIONS.get(m, (m, False))
-                    key = repr((condition, state.flags if state.flags is not None else ("unresolved", state.flag_epoch)))
+                    if m in ("jcxz", "jecxz") or m.startswith("loop"):
+                        answer, info, key = counter_branch(state, ins)
+                        negated = False
+                    else:
+                        answer, info = predicate(state, m)
+                        condition, negated = BRANCH_CONDITIONS.get(m, (m, False))
+                        if condition == "c":
+                            # CF can outlive its producer (INC/DEC, CLC/STC, shifts), so key it by its own value.
+                            key = repr((condition, state.carry_value().term))
+                        else:
+                            key = repr((condition, state.flags if state.flags is not None else ("unresolved", state.flag_epoch)))
                     if answer is None and key in state.assumptions:
                         answer = state.assumptions[key] != negated
                     choices = [answer] if answer is not None else [False, True]
