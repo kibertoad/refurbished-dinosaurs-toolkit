@@ -50,6 +50,21 @@ test("source loader derives relocation membership and far return frames", (t) =>
   assert.ok(report.paths[0].events.some((e: Report) => e.kind === "call-return"));
 });
 
+test("return flow bridge keeps full-width failures and declared roles", (t) => {
+  const { dir, config } = fixture(t);
+  const returnContracts = [{entry: 80, register: "ax", failures: [65535],
+    encodings: [{value: 65535, role: "failure", evidence: "synthetic result encoding"}], evidence: "synthetic far result"}];
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ ...config, returnContracts }));
+  const r = run(["returns", join(dir, "config.json")]);
+  const f = r.paths[0].returnFlows.results[0];
+  assert.equal(f.callerEntry, 64);
+  assert.equal(f.resultContract.value.bits, 16);
+  assert.equal(f.resultContract.matchesFailureEncoding, true);
+  assert.equal(f.resultContract.matchingRoles[0].role, "failure");
+  assert.equal(f.successEstablished, false);
+  assert.equal(r.returnFlowAnalysis.capped, false);
+});
+
 test("source loader rejects mapping and identity conflicts", (t) => {
   const { dir, config } = fixture(t);
   assert.throws(() => prepare({ ...config, sha256: "0".repeat(64) }, dir), /baseline/);
