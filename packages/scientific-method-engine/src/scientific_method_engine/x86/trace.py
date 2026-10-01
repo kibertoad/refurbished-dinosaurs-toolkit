@@ -2,24 +2,10 @@
 from copy import deepcopy
 from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
 from .image import integer
-from .machine import (State, StopPath, ordinary, predicate, REGISTERS, ALIASES, string_instruction, string_count,
-                      string_effect, check_string_form)
+from .machine import (State, StopPath, ordinary, predicate, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
+                      string_count, string_effect, check_string_form)
 from .values import const, unknown, sources, op, Value
 from .result_flow import validate_contracts, result_contracts
-
-# Synonymous and complementary branches on one flag producer share a single assumption.
-BRANCH_CONDITIONS = {}
-for names, condition in ((("je", "jz"), "z"), (("jb", "jc", "jnae"), "c"), (("jbe", "jna"), "be"),
-                         (("jl", "jnge"), "l"), (("jle", "jng"), "le"), (("js",), "s"),
-                         (("jo",), "o"), (("jp", "jpe"), "p")):
-    for name in names:
-        BRANCH_CONDITIONS[name] = (condition, False)
-for names, condition in ((("jne", "jnz"), "z"), (("jae", "jnb", "jnc"), "c"), (("ja", "jnbe"), "be"),
-                         (("jge", "jnl"), "l"), (("jg", "jnle"), "le"), (("jns",), "s"),
-                         (("jno",), "o"), (("jnp", "jpo"), "p")):
-    for name in names:
-        BRANCH_CONDITIONS[name] = (condition, True)
-
 
 def call_target(image, site, ins):
     if ins.mnemonic in ("lcall", "ljmp"):
@@ -388,7 +374,7 @@ def trace(image, config):
                             created += 1
                             for r in REGISTERS:
                                 if r not in model.get("preserves", []) and r not in ("esp", "cs"):
-                                    child.regs[r] = unknown(f"modeled-call:{at}:{r}", ALIASES[r][2], at)
+                                    child.setreg(r, unknown(f"modeled-call:{at}:{r}", ALIASES[r][2]), at)
                             child.clear_memory()
                             child.forget_flags()
                             child.direction_flag = unknown(f"modeled-call:{at}:DF:{child.flag_serial}", 1, at)

@@ -299,7 +299,9 @@ def uses(image, config):
             if state is None:
                 # Registers are unknown here; name them for this operand site so no entry value is implied.
                 state = State(at, image, {})
-                state.regs.update({r: unknown(f"CFG-operand:{at}:{r}", ALIASES[r][2]) for r in REGISTERS if r != "cs"})
+                for r in REGISTERS:
+                    if r != "cs":
+                        state.setreg(r, unknown(f"CFG-operand:{at}:{r}", ALIASES[r][2]), None)
             try:
                 segment_value, offset_value, segment_name = state.address(ins, operand)
             except StopPath as error:
@@ -1186,11 +1188,13 @@ def _run_report(image, config, command):
     if command != "trace":
         kinds = {"arguments": ("address-formation", "read", "call", "call-return"), "effects": ("address-formation", "write", "call", "call-return", "return", "branch", "string-operation",
                              "flag-assumption", "flag-write", "flags-save", "flags-restore", "local-iret"),
-                 "returns": ("return", "call-return", "value-transfer", "conversion", "read", "compare", "branch", "write"),
+                 "returns": ("return", "call-return", "compare", "branch", "write"),
                  "guards": ("compare", "branch", "read", "write", "call", "call-return"),
                  "memory": ("read", "write", "address-formation")}[command]
         for path in report["paths"]:
-            path["events"] = [e for e in path["events"] if e["kind"] in kinds or
+            # Returns keep the transfers, conversions and reads that depend on a declared result.
+            consumed = {c["order"] for f in path.get("returnFlows", {}).get("results", ()) for c in f["consumers"]}
+            path["events"] = [e for e in path["events"] if e["kind"] in kinds or e["order"] in consumed or
                               (command == "effects" and e["kind"] == "read" and (e.get("nearPointerAccessCandidates") or e.get("nearPointerArgumentCandidates")))]
     return report
 

@@ -1,6 +1,6 @@
 """Declared result roles and bounded producer dependencies across caller continuations."""
 from .image import integer
-from .machine import ALIASES
+from .machine import ALIASES, BRANCH_CONDITIONS
 from .values import result_marker
 
 
@@ -54,9 +54,8 @@ def result_contracts(state, contracts, entry):
     return rows
 
 
-# Sign and overflow tests read the operand as a signed value.
-SIGNED = {"jl", "jnge", "jle", "jng", "jg", "jnle", "jge", "jnl", "js", "jns", "jo", "jno"}
-UNSIGNED = {"jb", "jc", "jnae", "jbe", "jna", "ja", "jnbe", "jae", "jnb", "jnc"}
+# Sign and overflow tests read the operand as a signed value; carry tests as unsigned.
+DOMAINS = {"l": "signed", "le": "signed", "s": "signed", "o": "signed", "c": "unsigned", "be": "unsigned"}
 
 
 VALUE_FIELDS = ("sourceValue", "resultValue", "destinationContainerValue", "result", "value", "left", "right", "carry", "count")
@@ -115,7 +114,8 @@ def return_flows(report, config):
                     row.update(values=values, dependentValueFields=list(dependent), returnWidthRelationships=widths,
                                relationship="producer dependency only; not value or storage identity")
                     if later["kind"] == "branch":
-                        row["predicateDomain"] = "signed" if later.get("predicate") in SIGNED else "unsigned" if later.get("predicate") in UNSIGNED else "flags/equality"
+                        condition = BRANCH_CONDITIONS.get(later.get("predicate"), (None,))[0]
+                        row["predicateDomain"] = DOMAINS.get(condition, "flags/equality")
                     consumers.append(row)
                 flows.append({"originOrder": event["order"], "originSite": event["site"], "calleeEntry": contract["entry"],
                               "callSite": event.get("callSite"), "callerEntry": event.get("callerEntry"),

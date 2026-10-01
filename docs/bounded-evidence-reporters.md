@@ -613,9 +613,12 @@ or stopped trace never promotes a modeled association to runtime state evidence.
 
 ## Return widths, declared encodings and caller dependencies
 
-`returns` retains value-transfer events (register names, source/destination bits,
+`returns` retains stores, compares, exact branch predicates, returns and call
+returns, plus the value-transfer events (register names, source/destination bits,
 MOV/MOVZX/MOVSX conversion and containing-register value after sibling-byte
-writes), implicit sign extensions, reads, stores and exact branch predicates. Optional
+writes), implicit sign extensions and reads that depend on a declared result.
+Value-transfer events are recorded only when the query declares
+`returnContracts`, so other commands and queries keep their event order. Optional
 `returnContracts` has at most 256 unique entry/register declarations with evidence,
 width-bounded `failures`, and optional `encodings` rows with value, role and their
 own evidence. Raw field roles and failure encodings are separate; matching either
@@ -630,9 +633,10 @@ consumption independently of a same-width byte MOV. Each declared result is
 tagged with its own origin: values derived from it list that return event's
 `order` in `resultOrigins`, which stays out of `producers`. Other values written
 by the same return or call model (the popped SP, clobbered registers) and later
-executions of the same return are separate origins. Partial-register writes keep
-the containing register's earlier origins, so a byte or word overwrite of the
-result does not end the dependency. This ancestry is only a dependency candidate:
+executions of the same return are separate origins. Registers keep producers per
+byte: a write replaces the origins of the bytes it stores and keeps the others, so
+`mov ax,5` ends a word result's dependency while `mov al,5` leaves AH dependent.
+This ancestry is only a dependency candidate:
 a derived value or alias is never unchanged value or storage identity. Unknown
 expressions remain unknown; coincident constants without a shared origin are not
 linked. Both predicate operands are retained; `dependentValueFields` marks which

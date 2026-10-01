@@ -193,6 +193,25 @@ class ReturnFlowTests(unittest.TestCase):
         self.assertTrue(all(f["consumerScanComplete"] for f in r["paths"][0]["returnFlows"]["results"]))
         self.assertTrue(r["paths"][0]["returnFlows"]["complete"])
 
+    def test_overwriting_the_result_register_ends_the_dependency_byte_by_byte(self):
+        # mov ax,5 replaces both result bytes; mov al,5 leaves AH, so the word compare still depends on it.
+        for overwrite, dependent in (("b8 05 00", False), ("b0 05", True)):
+            c = Code().branch("e8", "callee").emit(overwrite + " 83 f8 03 c3").label("callee").emit("b8 ff ff c3")
+            rows = self.flow(c, [self.contract(c.labels["callee"], failures=[65535])])["paths"][0]["returnFlows"]["results"][0]["consumers"]
+            self.assertEqual(any(e["kind"] == "compare" for e in rows), dependent)
+        r = report("b8 01 00 b0 02 c3")
+        self.assertEqual(r["paths"][0]["registers"]["ah"]["producers"], [0])
+        self.assertEqual(r["paths"][0]["registers"]["ax"]["producers"], [0, 3])
+
+    def test_value_transfers_are_recorded_only_for_declared_results(self):
+        c = Code().branch("e8", "callee").emit("89 c3 89 d1 8b 16 20 00 c3").label("callee").emit("b8 ff ff c3")
+        self.assertEqual(events(report(c), "value-transfer"), [])
+        r = self.flow(c, [self.contract(c.labels["callee"])], registers={"ds": 8192})
+        consumers = r["paths"][0]["returnFlows"]["results"][0]["consumers"]
+        self.assertEqual([e["site"] for e in consumers if e["kind"] == "value-transfer"], [3])
+        # Transfers and reads that do not depend on the result stay out of the returns events.
+        self.assertEqual([e["site"] for e in r["paths"][0]["events"] if e["kind"] in ("value-transfer", "read")], [3])
+
     def test_invalid_unreachable_contracts_are_rejected(self):
         for bad in (self.contract(0, failures=[65536]), self.contract(0, encodings=[{"value": 1, "role": "failure"}]),
                     self.contract(0, "fpu"), self.contract(0, ["ax"]), self.contract(0, evidence="")):

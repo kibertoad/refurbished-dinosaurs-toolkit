@@ -41,6 +41,8 @@ class State:
         self.sp, self.bp = ("esp", "ebp") if self.flat else ("sp", "bp")
         self.at = entry
         self.regs = {r: unknown("initial:" + r, ALIASES[r][2]) for r in REGISTERS}
+        # Producers per register byte, so a partial write replaces only the bytes it stores.
+        self.reg_sources = {r: [()] * (ALIASES[r][2] // 8) for r in REGISTERS}
         self.regs["esp"] = resize(unknown("entry:sp", self.bits), 32)
         self.setreg(self.sp, unknown("entry:sp", self.bits), None)
         self.segment_bases = {r: const(0, 32) if r in ("cs", "ds", "es", "ss") else unknown("initial-base:" + r, 32)
@@ -55,6 +57,8 @@ class State:
         self.memory_groups = {}
         self.memory_epoch = 0
         self.events = []
+        # Value transfers are recorded only for queries that trace declared return results.
+        self.value_transfers = bool(config.get("returnContracts"))
         self.guards = []
         self.assumptions = {}
         self.flags = None
@@ -134,7 +138,8 @@ class State:
 
     def reg(self, name):
         root, low, bits = alias(name)
-        return extract(self.regs[root], low, bits)
+        value = extract(self.regs[root], low, bits)
+        return Value(bits, value.term, tuple(sorted(set().union(*self.reg_sources[root][low // 8:(low + bits) // 8]))))
 
     def setreg(self, name, value, site):
         root, low, bits = alias(name)
@@ -147,6 +152,7 @@ class State:
             chunks = [extract(old, n, 8) for n in range(0, old.bits, 8)]
             chunks[low // 8:(low + bits) // 8] = [extract(value, n, 8) for n in range(0, bits, 8)]
             self.regs[root] = join(chunks)
+        self.reg_sources[root][low // 8:(low + bits) // 8] = [value.sources] * (bits // 8)
 
     def event(self, kind, **fields):
         event = {"kind": kind, "site": self.at, "entry": self.frames[-1]["entry"],
@@ -287,6 +293,19 @@ class State:
         return value
 
 
+# Synonymous and complementary branches on one flag producer share a single assumption.
+BRANCH_CONDITIONS = {}
+for names, condition in ((("je", "jz"), "z"), (("jb", "jc", "jnae"), "c"), (("jbe", "jna"), "be"),
+                         (("jl", "jnge"), "l"), (("jle", "jng"), "le"), (("js",), "s"),
+                         (("jo",), "o"), (("jp", "jpe"), "p")):
+    for name in names:
+        BRANCH_CONDITIONS[name] = (condition, False)
+for names, condition in ((("jne", "jnz"), "z"), (("jae", "jnb", "jnc"), "c"), (("ja", "jnbe"), "be"),
+                         (("jge", "jnl"), "l"), (("jg", "jnle"), "le"), (("jns",), "s"),
+                         (("jno",), "o"), (("jnp", "jpo"), "p")):
+    for name in names:
+        BRANCH_CONDITIONS[name] = (condition, True)
+
 CARRY_BRANCHES = {"jb": True, "jc": True, "jnae": True, "jae": False, "jnb": False, "jnc": False}
 # Branches taken when CF or OF is set; logic operations clear both whatever their operands.
 CLEARED_BY_LOGIC = {**CARRY_BRANCHES, "jo": True, "jno": False}
@@ -363,6 +382,9 @@ def ordinary(state, ins, image):
         value = state.get(ins, operands[1], image)
         result = resize(value, operands[0].size * 8, signed=m == "movsx")
         state.put(ins, operands[0], result)
+        if not state.value_transfers:
+            return
+
         def location(operand):
             return {"kind": "register", "register": ins.reg_name(operand.reg)} if operand.type == X86_OP_REG else {"kind": "memory"} if operand.type == X86_OP_MEM else {"kind": "immediate"}
         destination_container = ALIASES[ins.reg_name(operands[0].reg)][0] if operands[0].type == X86_OP_REG else None
