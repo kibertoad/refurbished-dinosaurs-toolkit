@@ -413,5 +413,22 @@ class PEReporterTests(unittest.TestCase):
 
 
 
+
+    def test_flat_string_width_and_saved_flags(self):
+        result=report('b8 44 33 22 11 b9 02 00 00 00 bf 00 20 40 00 fc f3 ab c3')
+        self.assertTrue(result['completeWithinModel'])
+        self.assertEqual([e['width'] for e in events(result,'write')],[4,4])
+        self.assertEqual(result['paths'][0]['registers']['edi']['value'],DATA_VA+8)
+        result=report('fd 9c fc 9d aa c3',registers={'esp':0x800000,'edi':DATA_VA})
+        self.assertTrue(events(result,'flags-restore')[0]['intactLocalSnapshot'])
+        self.assertEqual(events(result,'flags-restore')[0]['width'],4)
+        self.assertEqual(result['paths'][0]['registers']['edi']['value'],DATA_VA-1)
+
+
+    def test_flat_iret_is_not_a_local_real_mode_frame(self):
+        result=report('cf')
+        self.assertFalse(result['completeWithinModel'])
+        self.assertIn('segmented16',result['paths'][0]['stop'])
+
 if __name__ == '__main__':
     unittest.main()

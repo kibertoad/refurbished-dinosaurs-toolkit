@@ -51,23 +51,64 @@ class State:
                 raise ValueError("Invalid initial register value")
             self.setreg(r, const(n, ALIASES[r][2]), None)
         self.memory = {}
+        # Keys grouped by (segment, base) so a write scans only groups that can alias it.
+        self.memory_groups = {}
         self.memory_epoch = 0
         self.events = []
         self.guards = []
         self.assumptions = {}
         self.flags = None
+        self.flag_serial = 0
         self.flag_epoch = 0
+        self.direction_flag = unknown("initial:DF", 1)
+        self.interrupt_flag = unknown("initial:IF", 1)
+        self.saved_flags = {}
         self.unknown_flag_site = None
         self.frames = [{"entry": entry, "sp": self.reg(self.sp), "returnBytes": config.get("returnBytes", 4 if self.flat else 2)}]
         self.steps = 0
         self.visits = {}
         self.path = []
         self.conditional = []
+        flags = config.get("flags", {})
+        if not isinstance(flags, dict) or set(flags) - {"direction"}:
+            raise ValueError("Only an explicit starting direction flag is supported")
+        if "direction" in flags:
+            if type(flags["direction"]) is not int or flags["direction"] not in (0, 1):
+                raise ValueError("Starting direction flag must be zero or one")
+            self.direction_flag = const(flags["direction"], 1)
+            self.event("flag-assumption", flag="DF", value=self.direction_flag.report(),
+                       evidence="explicit query starting hypothesis, not native state")
 
     def forget_flags(self):
         self.flags = None
-        self.flag_epoch += 1
+        self.flag_serial += 1
+        self.flag_epoch = self.flag_serial
         self.unknown_flag_site = self.at
+
+    def save_flags(self, bits):
+        word = unknown(f"saved-flags:{self.at}:{len(self.events)}", bits, self.at)
+        self.saved_flags[(bits, word.term)] = (self.flags, self.flag_epoch, self.unknown_flag_site,
+                                      self.direction_flag, self.interrupt_flag)
+        self.push(word)
+        self.event("flags-save", width=bits // 8, value=word.report(),
+                   direction=self.direction_flag.report(), interrupt=self.interrupt_flag.report())
+
+    def restore_flags(self, bits):
+        word = self.pop(bits // 8)
+        saved = self.saved_flags.get((bits, word.term))
+        if saved is None:
+            self.forget_flags()
+            self.direction_flag = extract(word, 10, 1)
+            self.interrupt_flag = extract(word, 9, 1)
+        else:
+            self.flags, self.flag_epoch, self.unknown_flag_site, self.direction_flag, self.interrupt_flag = saved
+        self.event("flags-restore", width=bits // 8, value=word.report(), intactLocalSnapshot=saved is not None,
+                   direction=self.direction_flag.report(), interrupt=self.interrupt_flag.report())
+
+    def clear_memory(self):
+        self.memory.clear()
+        self.memory_groups.clear()
+        self.memory_epoch += 1
 
     def reg(self, name):
         root, low, bits = alias(name)
@@ -102,11 +143,19 @@ class State:
         base, delta = address_parts(offset)
         return segment.term, base, delta
 
-    def access(self, segment, offset, width, write=None, role=None):
+    def keys(self, segment, offset, width):
         if offset.number is not None and offset.number + width > 1 << self.bits:
             raise StopPath("Memory access crosses the address boundary")
         seg, base, delta = self.location(segment, offset)
-        keys = [(seg, base, (delta + i) if seg == ("linear",) else (delta + i) % (1 << self.bits)) for i in range(width)]
+        return seg, base, delta, [(seg, base, (delta + i) if seg == ("linear",) else (delta + i) % (1 << self.bits)) for i in range(width)]
+
+    def peek(self, segment, offset, width):
+        """Inspect modeled memory without reporting an access the program never performed."""
+        _, _, _, keys = self.keys(segment, offset, width)
+        return join([self.memory.get(key, unknown(f"memory:{self.memory_epoch}:{key}", 8, self.at)) for key in keys])
+
+    def access(self, segment, offset, width, write=None, role=None):
+        seg, base, delta, keys = self.keys(segment, offset, width)
         uncertain = []
         if write is not None:
             write = Value(write.bits, write.term, sources(write, site=self.at))
@@ -121,16 +170,22 @@ class State:
                 return None
             # A concrete write covers every byte it stores, not only its first byte.
             written = (keys[0][2], keys[-1][2] + 1) if seg == ("linear",) else domain(keys[0])
-            for key in list(self.memory):
-                if key not in keys and (key[0], key[1]) != (seg, base):
+            for group, members in list(self.memory_groups.items()):
+                if group == (seg, base):
+                    continue
+                for key in list(members):
                     # Different symbolic segments/bases may alias. Concrete linear locations do not.
                     a, b = domain(key), written
                     disjoint = a is not None and b is not None and (a[1] <= b[0] or b[1] <= a[0])
                     if not disjoint:
                         uncertain.append(key)
                         del self.memory[key]
+                        members.discard(key)
+                if not members:
+                    del self.memory_groups[group]
             for i, key in enumerate(keys):
                 self.memory[key] = extract(write, i * 8, 8)
+            self.memory_groups.setdefault((seg, base), set()).update(keys)
             value = write
             missing = []
         else:
@@ -252,6 +307,19 @@ def predicate(state, mnemonic):
 
 def ordinary(state, ins, image):
     m, operands = ins.mnemonic, ins.operands
+    if m in ("cld", "std", "cli", "sti"):
+        value = const(1 if m in ("std", "sti") else 0, 1, state.at)
+        flag = "DF" if m in ("cld", "std") else "IF"
+        if flag == "DF": state.direction_flag = value
+        else: state.interrupt_flag = value
+        state.event("flag-write", flag=flag, value=value.report(),
+                    interpretation="local flag effect only; interrupts and timing are not simulated")
+        return
+    if m in ("pushf", "pushfd", "popf", "popfd"):
+        bits = 32 if (0x66 in ins.prefix) != state.flat else 16
+        if m.startswith("push"): state.save_flags(bits)
+        else: state.restore_flags(bits)
+        return
     if m == "nop":
         return
     if m in ("mov", "movzx", "movsx"):
@@ -358,3 +426,54 @@ def ordinary(state, ins, image):
                     mnemonicWidthMismatch=m != ("cdq" if wide else "cwd"), result=value.report())
         return
     raise StopPath("Unsupported instruction semantics: " + m)
+
+
+def string_instruction(ins):
+    # Match the one-byte opcode, not the last encoded byte: SSE MOVSD (F2 0F 10 /r) can end in A5.
+    return ins.opcode[0] in (0xA4, 0xA5, 0xAA, 0xAB, 0xAC, 0xAD) and ins.opcode[1] == 0
+
+
+def string_count(state, ins):
+    return state.reg("ecx" if state.flat else "cx") if 0xF3 in ins.prefix else const(1, state.bits)
+
+
+def check_string_form(state, ins):
+    if ins.addr_size != state.bits // 8:
+        raise StopPath("Address-size override on string operation is outside the selected model")
+    if 0xF2 in ins.prefix:
+        raise StopPath("REPNE string form is not supported")
+
+
+def string_effect(state, ins, count, remaining):
+    """Apply a string form already accepted by check_string_form with its string_count."""
+    width = 1 if ins.opcode[0] % 2 == 0 else (4 if (0x66 in ins.prefix) != state.flat else 2)
+    operation = ins.mnemonic.split()[-1][:4]
+    state.event("string-operation", operation=operation, width=width, repetitions=count.report(),
+                direction=state.direction_flag.report(), repeat=0xF3 in ins.prefix,
+                interpretation="bounded memory effects only, not pixels or native input coverage")
+    if count.number is None:
+        raise StopPath("String repetition count unresolved; a bounded producer is required")
+    if count.number > remaining:
+        raise StopPath("String iteration budget exhausted; remaining effects unresolved")
+    if count.number == 0:
+        return 0
+    if state.direction_flag.number is None:
+        raise StopPath("Direction flag unresolved; conditional string paths required")
+    # MOVS/LODS decode their source as the second memory operand, carrying any segment override.
+    source_name = segment_register(ins, ins.operands[1].mem) if operation in ("movs", "lods") else None
+    si, di = ("esi", "edi") if state.flat else ("si", "di")
+    delta = -width if state.direction_flag.number else width
+    for _ in range(count.number):
+        if operation in ("movs", "lods"):
+            value = state.access(state.segment(source_name), state.reg(si), width, role="string-source")
+            state.setreg(si, op("add", state.reg(si), const(delta, state.bits), state.at), state.at)
+        else:
+            value = state.reg({1:"al",2:"ax",4:"eax"}[width])
+        if operation in ("movs", "stos"):
+            state.access(state.segment("es"), state.reg(di), width, value, role="string-destination")
+            state.setreg(di, op("add", state.reg(di), const(delta, state.bits), state.at), state.at)
+        else:
+            state.setreg({1:"al",2:"ax",4:"eax"}[width], value, state.at)
+    if 0xF3 in ins.prefix:
+        state.setreg("ecx" if state.flat else "cx", const(0, state.bits, state.at), state.at)
+    return count.number

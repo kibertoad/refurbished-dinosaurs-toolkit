@@ -253,3 +253,63 @@ no universal call-completeness or native-reachability claim. PE indirect imports
 IAT trampolines, stored callables, exception dispatch and computed targets remain
 unresolved rather than guessed. This initial model implements bounded reports,
 not a solver, loader emulator or whole-program analysis.
+
+
+## Bounded string effects and saved flags
+
+MOVS/STOS/LODS report sequential memory accesses in segmented16 and flat32,
+with operand widths, source overrides, fixed ES destination and modular pointers.
+REP requires a concrete count. `stringIterations` bounds the entire query
+(default 4096, maximum 65536), including reserved iterations of paths that stop.
+Zero count touches no memory and needs no direction assumption. Address-size
+changes and REPNE forms stop with explicit gaps.
+
+DF begins unknown. CLD/STD establish local values; otherwise string effects fork
+conditional forward/backward cases tied to that producer. Optional
+`flags: { "direction": 0 }` (or 1) is a reported starting hypothesis, never native
+state evidence. PUSHF/POPF and their effective 32-bit forms restore arithmetic,
+direction and interrupt provenance only when the complete saved word remains
+intact in local memory. Corrupted words leave arithmetic predicates unresolved;
+DF/IF are extracted from the replacement word. CLI/STI have local flag effects
+only. Unknown returning call models invalidate DF/IF as well as arithmetic flags.
+
+These are memory effects, not pixels, timing or interrupt observations. External IRET,
+interrupt scheduling and hardware presentation remain unsupported. A stopped
+prefix does not establish the behavior of the full caller or helper.
+
+
+## Explicit overlapping entries and local flag-return frames
+
+A direct control-flow edge from an independently verified instruction can prove
+an interior target as an alternate reachable start. Reports retain that edge's
+`overlappingTarget` and `boundaryEvidence`, decode the other continuation too,
+and continue to reject conflicting declared entries and operand-byte raw hits
+without such an edge. This does not prove native reachability or arbitrary
+self-modifying instruction layouts.
+
+An unprefixed segmented16 IRET is modeled only inside a traced push-CS/near-call
+frame built above a locally saved FLAGS word. Stack balance, continuation IP and
+CS are checked; FLAGS consumption uses the same intact/corrupt snapshot rules as
+POPF. This permits a local procedure's encoded flag-restoring continuation;
+it does not simulate an interrupt, privilege transition, asynchronous activity
+or hardware. Root/external IRET, PE32 IRET and unsupported prefixes stop with
+a named gap. Unknown stack aliases can invalidate the frame and stop the path;
+a supplied nonaliasing stack is a query hypothesis, not observed native state.
+
+
+## Instruction-owned segment operand query
+
+`operand` takes `query: { site, operandSite, targetOffset }` (file offsets for
+sites, a 16-bit field offset for targetOffset). It verifies an entry-path MOV or
+PUSH owns that complete 16-bit immediate, then reports instruction/operand
+locations, destination representation, raw token and source-derived MZ/FBOV
+membership. Declared mappings name the descriptor and mapped segment/address;
+undeclared words stay explicitly raw. Wrong widths, partial words, conflicting
+boundaries and mismatched source words fail. Traversal gaps remain separate;
+this query never establishes native reachability, pointer use or a caller's
+argument grouping. Use the ordinary hash-guarded source loader, not supplied
+relocation guesses. The original ten commands remain available.
+
+Effect summaries retain string-operation and flag write/assumption/save/restore
+and local-IRET events alongside ordered writes, so the direction provenance is
+visible in an effects query as well as a full trace.

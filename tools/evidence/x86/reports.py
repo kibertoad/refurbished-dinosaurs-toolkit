@@ -1,6 +1,6 @@
 """Focused reports derived from instruction paths and explicit source bounds."""
 from capstone import CS_AC_READ, CS_AC_WRITE
-from capstone.x86 import X86_OP_MEM
+from capstone.x86 import X86_OP_MEM, X86_OP_REG
 from .machine import State, StopPath, REGISTERS, ALIASES, segment_register
 from .values import unknown
 from .image import Image, integer
@@ -67,6 +67,10 @@ def incoming(image, config):
             hits.append(row)
         elif resolved is None:
             partial.append(row)
+    for edge in edges:
+        if edge.get("overlappingTarget") and edge["site"] in scanned:
+            scanned[edge["site"]]["overlappingTarget"] = True
+            scanned[edge["site"]]["boundaryEvidence"] = edge["boundaryEvidence"]
     hits.sort(key=lambda row: row["site"])
     controls = config.get("controls", [])
     if not isinstance(controls, list) or len(controls) > 256:
@@ -118,6 +122,8 @@ def uses(image, config):
     matches, unresolved, unique = [], [], set()
     # Trace each established entry independently; never decode a whole segment as one stream.
     remaining = integer(config.get("totalSteps", 20000), 1, 100000, "totalSteps")
+    # One string iteration budget spans every traced entry, as totalSteps does.
+    string_remaining = integer(config.get("stringIterations", 4096), 0, 65536, "string iteration budget")
     entry_limit = integer(config.get("entryLimit", 64), 1, 256, "entryLimit")
     # CFG points where value propagation stopped (or never started), with why; operands after them are inventoried below.
     stops = {}
@@ -128,8 +134,9 @@ def uses(image, config):
             for root in established[index:]:
                 stops.setdefault(root, "entry not traced: entry or total instruction budget exhausted")
             break
-        report = trace(image, {**config, "entry": at, "totalSteps": remaining})
+        report = trace(image, {**config, "entry": at, "totalSteps": remaining, "stringIterations": string_remaining})
         remaining -= report["stepsUsed"]
+        string_remaining -= report["stringIterationsUsed"]
         if not report["completeWithinModel"]:
             gaps.append({"entry": at, "reason": "incomplete path effects", "stops": list({p["stop"] for p in report["paths"] if p["stop"]})})
         for p in report["paths"]:
@@ -399,7 +406,47 @@ def allocations(report, config):
     return {"allocations": results, "paths": report["paths"], "gaps": report["gaps"], "completeWithinModel": report["completeWithinModel"]}
 
 
+def operand_provenance(image, config):
+    query = config.get("query", {})
+    if not isinstance(query, dict):
+        raise ValueError("Operand query must be an object")
+    site = integer(query.get("site"), 0, len(image.data)-1, "instruction site")
+    word_site = integer(query.get("operandSite"), 0, len(image.data)-2, "segment operand site")
+    offset = integer(query.get("targetOffset", 0), 0, 65535, "target offset")
+    if image.flat:
+        raise ValueError("Segment relocation operands require the segmented16 model")
+    seen, gaps, _, _ = walk(image, entries(image), config.get("instructionLimit", 10000))
+    ins = seen.get(site)
+    if ins is None:
+        raise ValueError("Operand instruction is not a verified entry-path boundary")
+    if ins.mnemonic not in ("mov", "push") or ins.imm_size != 2 or site + ins.imm_offset != word_site:
+        raise ValueError("Selected word is not the complete 16-bit immediate of a supported MOV/PUSH")
+    raw = int.from_bytes(image.data[word_site:word_site+2], "little")
+    fixup = image.fixups.get(word_site)
+    destination = ins.operands[0]
+    kind = "pushed word" if ins.mnemonic == "push" else ("stored word" if destination.type == X86_OP_MEM else "register immediate")
+    result = {"instructionSite":site, "operandSite":word_site, "mnemonic":ins.mnemonic,
+              "instructionSize":ins.size, "immediateWidth":2, "representation":kind,
+              "destinationRegister":ins.reg_name(destination.reg) if destination.type == X86_OP_REG else None,
+              "raw":raw, "rawToken":f"{raw:04X}", "relocated":fixup is not None,
+              "boundaryEvidence":"decoded from established entries", "gaps":gaps,
+              "nativeReachability":"unconfirmed"}
+    if fixup:
+        if "raw" not in fixup:
+            raise ValueError("Relocation lacks its source raw word; use the hash-guarded source loader")
+        if fixup["raw"] != raw:
+            raise ValueError("Relocation raw word disagrees with the selected operand")
+        result.update({"relocation":fixup, "descriptor":fixup.get("descriptor"),
+                       "canonicalMappedSegment":fixup["segment"],
+                       "loadedAddress":f"{fixup['segment']:04X}:{offset:04X}"})
+    else:
+        result["reason"] = "No declared relocation or fixup; raw operand does not establish a segment"
+    return result
+
+
 def _run_report(image, config, command):
+    if command == "operand":
+        return operand_provenance(image, config)
     if command == "incoming":
         return incoming(image, config)
     if command == "uses":
@@ -419,7 +466,8 @@ def _run_report(image, config, command):
     if command == "allocation":
         return allocations(report, config)
     if command != "trace":
-        kinds = {"arguments": ("read", "call", "call-return"), "effects": ("write", "call", "call-return", "return", "branch"),
+        kinds = {"arguments": ("read", "call", "call-return"), "effects": ("write", "call", "call-return", "return", "branch", "string-operation",
+                             "flag-assumption", "flag-write", "flags-save", "flags-restore", "local-iret"),
                  "returns": ("return", "call-return", "compare", "branch", "write"),
                  "guards": ("compare", "branch", "read", "write", "call", "call-return"),
                  "memory": ("read", "write", "address-formation")}[command]

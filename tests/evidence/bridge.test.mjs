@@ -80,3 +80,18 @@ test("FBOV source preserves shifted descriptor and verified trampoline selection
   assert.deepEqual(result.sections.residentRelocatedFar, [80]);
   assert.deepEqual(result.sections.overlayFixupFar, [532]);
 });
+
+
+test("instruction operand CLI uses source relocation and rejects partial word queries", t => {
+  const {dir,data,config}=fixture(t);
+  data.set([0xb8,0,0,0x8e,0xc0,0xc3],64);
+  data.writeUInt16LE(1,28);
+  writeFileSync(join(dir,"source.bin"),data);
+  const cfg={...config,sha256:createHash("sha256").update(data).digest("hex"),query:{site:64,operandSite:65,targetOffset:16}};
+  const path=join(dir,"config.json");writeFileSync(path,JSON.stringify(cfg));
+  const result=run(["operand",path]);
+  assert.equal(result.instructionSite,64);assert.equal(result.operandSite,65);
+  assert.equal(result.loadedAddress,"1000:0010");assert.equal(result.relocation.evidence,"source MZ relocation");
+  cfg.query.operandSite=66;writeFileSync(path,JSON.stringify(cfg));
+  assert.throws(()=>run(["operand",path]),/complete 16-bit immediate/);
+});
