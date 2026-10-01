@@ -226,7 +226,6 @@ test('pointer inventory retains FBOV descriptor tokens and canonical trampolines
   assert.throws(()=>run(['pointers',path]),/requires source-derived/);
 });
 
-
 test('pointer exclusions remain bounded and do not qualify overflow or partial output', t => {
   const dir=mkdtempSync(join(tmpdir(),'pointer-exclusions-'));
   t.after(()=>rmSync(dir,{recursive:true,force:true}));
@@ -242,4 +241,7 @@ test('pointer exclusions remain bounded and do not qualify overflow or partial o
   assert(r.excluded.slice(1).every(x=>x.candidateFileOffset>=x.residentBounds.end));
   const capped=execute({...config,limit:2});assert.equal(capped.truncated,true);assert.equal(capped.excluded.length,2);assert.equal(capped.negativeUsable,false);
   w(114,0xF000);const overflow=execute(config);assert.equal(overflow.counts.unresolved,1);assert.equal(overflow.negativeUsable,false);
+  // FEFF+0100 = FFFF:0010 is linear 100000h; with A20 wrap it can alias the low image, so it is not excluded.
+  w(112,0x10);w(114,0xFEFF);const wrapped=execute({...config,loadSegment:256,query:{segment:257,offset:33}});
+  assert.equal(wrapped.counts.unresolved,1);assert.equal(wrapped.counts.excluded,2);assert.equal(wrapped.negativeUsable,false);
 });
