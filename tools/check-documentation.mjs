@@ -21,7 +21,7 @@
 //                       comment gives must be recorded in an entry the comment cites (default: none,
 //                       so only fn_ and g_ names are checked)
 //   --max-range <bytes> the largest address range an entry can record an address by; a larger one,
-//                       such as a whole section, records nothing inside it (default: 0x10000)
+//                       such as a whole section, records only its two ends (default: 0x10000)
 //   --data-dirs <dirs>  comma-separated top-level directories of the original's data; a path into
 //                       one of them must name a file of some build with its exact case (default:
 //                       the top-level directories of the files the build entries list)
@@ -1740,10 +1740,11 @@ function walk(dir, fn) {
 // Comments are found by reading .cs, .ts, .js and .mjs files as code, so `//` inside a string is
 // not a comment and `/* … */` is. A comment block is a run of consecutive lines that hold only
 // comment; a comment that trails code also takes the block above it and the comment lines below
-// it that start in the same column. An entry records an address written in its locations or its
-// text, singly or inside a half-open range, in either case. A range of more than --max-range bytes
-// describes a section or a whole table, not a place, and records nothing inside it: it would
-// otherwise vouch for every address in the program on behalf of each entry that cites it.
+// it that start in the same column, and a comment-only line among those finds the same block. An
+// entry records an address written in its locations or its text, singly or inside a half-open
+// range, in either case. A range of more than --max-range bytes describes a section or a whole
+// table, not a place, and records only its two ends, nothing inside it: it would otherwise vouch
+// for every address in the program on behalf of each entry that cites it.
 //
 // A neutral name is always an address. A plain 0x value is one only inside an image that --images
 // gives, so colours, masks and offsets in the same notation are left alone; without --images only
@@ -1762,7 +1763,10 @@ function walk(dir, fn) {
       const text = [e.body, ...asList(e.meta.locations).map((loc) => (loc && typeof loc === "object" && "address" in loc ? String(loc.address) : ""))].join("\n");
       for (const [, low, high] of text.matchAll(RANGE_RE)) {
         const range = high === undefined ? [parseInt(low, 16), parseInt(low, 16) + 1] : [parseInt(low, 16), parseInt(high, 16)];
-        if (range[1] > range[0] && range[1] - range[0] <= maxRange) ranges.push(range);
+        if (range[1] <= range[0]) continue;
+        // A larger range records only its two ends, which the entry writes out.
+        if (range[1] - range[0] <= maxRange) ranges.push(range);
+        else ranges.push([range[0], range[0] + 1], [range[1] - 1, range[1]]);
       }
     }
     recorded.set(id, ranges);
@@ -1773,26 +1777,39 @@ function walk(dir, fn) {
     if (!/\.(cs|ts|js|mjs)$/.test(file)) continue;
     const lines = codeComments(text, !file.endsWith(".cs"));
     const commentOnly = (k) => k >= 0 && k < lines.length && !lines[k].code && lines[k].comments.length > 0;
+    // For each comment-only line that continues the comment trailing code on a line above (the
+    // rest of a /* … */ begun there, or a comment line starting in its column), that line.
+    const trails = [];
+    for (let k = 0; k < lines.length; k++) {
+      const t = k === 0 ? -1 : lines[k - 1].code ? (lines[k - 1].comments.length ? k - 1 : -1) : trails[k - 1];
+      const head = lines[k].comments[0];
+      trails[k] = commentOnly(k) && t >= 0 && (head.continued || head.column === lines[t].comments.at(-1).column) ? t : -1;
+    }
+    const blocks = new Map(); // "first,last" -> the entries the block cites, and those within reach
     for (let i = 0; i < lines.length; i++) {
       const own = lines[i].comments.map((c) => c.text).join("\n");
       const addresses = new Map();
       for (const m of own.matchAll(ADDRESS_RE)) {
-        const value = parseInt(m[2], 16);
-        if (m[1] === "0x" && !inImage(value)) continue;
         // The end of a half-open range is one byte past the last address it covers.
         const rangeEnd = m.index >= 2 && own.slice(m.index - 2, m.index) === "..";
-        addresses.set(m[0], rangeEnd ? value - 1 : value);
+        const value = parseInt(m[2], 16) - (rangeEnd ? 1 : 0);
+        if (m[1] === "0x" && !inImage(value)) continue;
+        addresses.set(`${m[0]}@${value}`, [m[0], value]);
       }
       if (!addresses.size) continue;
-      let first = i, last = i;
-      while (commentOnly(first - 1)) first--;
-      const at = lines[i].comments[0].column;
-      const continues = commentOnly(i) ? commentOnly : (k) => commentOnly(k) && lines[k].comments[0].column === at;
-      while (continues(last + 1)) last++;
-      const block = lines.slice(first, last + 1).flatMap((l) => l.comments.map((c) => c.text)).join("\n");
-      const cited = idsIn(block).filter((x) => entries.has(x));
-      const scope = reach(cited);
-      for (const [address, value] of addresses) {
+      // A line with code, or one continuing the comment that trails it, belongs to that comment.
+      const t = lines[i].code ? i : trails[i];
+      let first = t >= 0 ? t : i, last = first;
+      while (first > 0 && (commentOnly(first - 1) || lines[first].comments[0]?.continued)) first--;
+      while (t >= 0 ? trails[last + 1] === t : commentOnly(last + 1)) last++;
+      const key = `${first},${last}`;
+      if (!blocks.has(key)) {
+        const block = lines.slice(first, last + 1).flatMap((l) => l.comments.map((c) => c.text)).join("\n");
+        const cited = idsIn(block).filter((x) => entries.has(x));
+        blocks.set(key, { cited, scope: reach(cited) });
+      }
+      const { cited, scope } = blocks.get(key);
+      for (const [address, value] of addresses.values()) {
         if (scope.some((x) => rangesOf(x).some(([low, high]) => value >= low && value < high))) continue;
         problem(file, `line ${i + 1} gives ${address}, but ${cited.length ? `neither ${cited.join(", ")} nor the evidence ${cited.length === 1 ? "it cites" : "they cite"} records it` : "the comment cites no entry that records it"}; cite the finding that records it, or record it in a new one`);
       }
@@ -1805,7 +1822,8 @@ function walk(dir, fn) {
 // String and character literals are skipped (regular, verbatim, interpolated and raw in C#;
 // template literals in JavaScript), so a `//` inside one starts no comment. An interpolation hole is
 // read as part of its string, which is enough to find comments. A JavaScript regular expression
-// literal is read as code.
+// literal is skipped too, so a quote or a `/*` inside one starts nothing; a `/` is read as one
+// where a value can begin. The lines of a `/* … */` after its first are marked continued.
 function codeComments(source, javascript) {
   const text = source.replace(/\r\n?/g, "\n");
   const lines = [{ code: false, comments: [] }];
@@ -1816,7 +1834,24 @@ function codeComments(source, javascript) {
       if (text[i] === "\n") { lines.push({ code: false, comments: [] }); column = 0; } else column++;
     }
   };
-  const addComment = (from, to, col) => line().comments.push({ column: col, text: text.slice(from, to) });
+  const addComment = (from, to, col, continued = false) => line().comments.push({ column: col, text: text.slice(from, to), continued });
+  let lastCode = -1; // the index of the last character read as code
+  // A JavaScript `/` starts a regular expression unless it follows a value, where it divides.
+  const regexMayStart = () => {
+    const before = text.slice(Math.max(0, lastCode - 11), lastCode + 1);
+    return lastCode < 0 || !/[\w$)\]}]$/.test(before) || /(?<![\w$])(?:return|typeof|case|do|else|in|of|new|delete|void|throw|instanceof|yield|await)$/.test(before);
+  };
+  // Past the closing `/` of the regular expression literal at i, if it closes on its line.
+  const regexEnd = () => {
+    let inClass = false;
+    for (let j = i + 1; j < text.length && text[j] !== "\n"; j++) {
+      if (text[j] === "\\") { if (text[j + 1] === "\n") return -1; j++; }
+      else if (text[j] === "[") inClass = true;
+      else if (text[j] === "]") inClass = false;
+      else if (text[j] === "/" && !inClass) return j + 1;
+    }
+    return -1;
+  };
   // i is past the opening quote(s); stops past the closing one(s). A regular string ends at the
   // line when it is not closed.
   const skipString = (end, escapes, multiline) => {
@@ -1844,12 +1879,13 @@ function codeComments(source, javascript) {
     if (text.startsWith("/*", i)) {
       const close = text.indexOf("*/", i + 2);
       const end = close < 0 ? text.length : close + 2;
-      let from = i, col = column;
+      let from = i, col = column, continued = false;
       while (i < end) {
         const nl = text.indexOf("\n", i);
-        if (nl < 0 || nl >= end) { addComment(from, end, col); advance(end); break; }
-        addComment(from, nl, col);
+        if (nl < 0 || nl >= end) { addComment(from, end, col, continued); advance(end); break; }
+        addComment(from, nl, col, continued);
         advance(nl + 1);
+        continued = true;
         while (i < end && (text[i] === " " || text[i] === "\t")) advance(i + 1);
         from = i; col = column;
       }
@@ -1857,9 +1893,12 @@ function codeComments(source, javascript) {
     }
     line().code = true;
     if (javascript) {
-      if (c === '"' || c === "'") { advance(i + 1); skipString(c, true, false); continue; }
-      if (c === "`") { advance(i + 1); skipString("`", true, true); continue; }
-      advance(i + 1);
+      const regex = c === "/" && regexMayStart() ? regexEnd() : -1;
+      if (regex >= 0) advance(regex);
+      else if (c === '"' || c === "'") { advance(i + 1); skipString(c, true, false); }
+      else if (c === "`") { advance(i + 1); skipString("`", true, true); }
+      else advance(i + 1);
+      lastCode = i - 1;
       continue;
     }
     const prefix = /^(?:\$+@?|@\$*)?(?=")/.exec(text.slice(i, i + 4))?.[0] ?? null;

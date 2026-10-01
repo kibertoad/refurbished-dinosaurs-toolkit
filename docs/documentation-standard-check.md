@@ -114,7 +114,8 @@ records nothing.
 - **Which comments.** `//` and `/* … */` comments in `.cs`, `.ts`, `.js` and `.mjs` files of the
   code and reference directories. Text inside a string literal is not a comment. A comment block
   is a run of consecutive comment-only lines. A comment that trails code also takes the comment
-  lines above it and the comment lines below it that start in its column.
+  lines above it and the comment lines below it that start in its column, or that continue its
+  `/* … */`, and each of those lines is read with the whole of that block.
 - **Which addresses.** A neutral name, `fn_` or `g_` followed by eight hex digits, is always an
   address. A plain `0x` value of eight hex digits is one only inside an image given by `images`,
   so colours, masks and offsets are left alone. Without `images`, only neutral names are checked.
@@ -122,8 +123,8 @@ records nothing.
   not checked.
 - **What records an address.** The address written in the entry's `locations` or text, alone or
   inside a range, in either case. A range larger than `max-range` (64 KiB by default), such as a
-  whole section, records nothing inside it; otherwise every finding that gives the extent of the
-  code section would vouch for any address in the program.
+  whole section, records only its two ends, nothing inside it; otherwise every finding that gives
+  the extent of the code section would vouch for any address in the program.
 
 Take the image's base and size from the finding that records them, for example a PE's
 `ImageBase` and `SizeOfImage`:

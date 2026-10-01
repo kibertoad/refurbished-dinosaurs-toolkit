@@ -1148,6 +1148,10 @@ for (const [comment, ok, why] of [
   ["var s = @\"C:\\\"; // the handler at 0x00401004 (FND-SCORE-001)\n", true, "trails a verbatim string"],
   ["var s = \"\"\"\n  // the handler at 0x00401004\n  \"\"\";\n", true, "is inside a raw string"],
   ["// The colour 0x00FF00FF is not an address.\n", true, "is a value outside the image"],
+  ["var x = 1; // FND-SCORE-001:\n           // the handler at 0x00401004 adds one.\n", true, "continues a trailing comment that cites the finding"],
+  ["var x = 1; /* FND-SCORE-001:\n   the handler at 0x00401004 adds one. */\n", true, "continues a block comment begun after code that cites the finding"],
+  ["// FND-SCORE-001: 0x00401010, past 0x00401000..0x00401010.\n", false, "gives the end of a range also as an address"],
+  ["// FND-SCORE-001: 0x003FF000..0x00400000.\n", true, "gives a range that ends where the image begins"],
 ]) test(`a code comment that ${why} ${ok ? "passes" : "fails"}`, (t) => {
   const root = broken(t, (r) => { establishByReading(r); withCode(r, "Game.cs", comment); });
   const result = run(root, ...IMAGE);
@@ -1186,6 +1190,29 @@ test("a range larger than --max-range records nothing inside it", (t) => {
   assert.match(result.output, /line 1 gives 0x00420000, but neither FND-SCORE-001 nor the evidence it cites records it/);
   const wider = run(root, "--images", "0x00400000..0x00500000", "--max-range", "0x80000");
   assert.equal(wider.status, 0, wider.output);
+});
+
+test("a range larger than --max-range still records its two ends", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "The handler adds 1", "The code section is 0x00401000..0x00480000. The handler adds 1");
+    withCode(r, "Game.cs", "// FND-SCORE-001: the code section is 0x00401000..0x00480000.\n");
+  });
+  const result = run(root, "--images", "0x00400000..0x00500000");
+  assert.equal(result.status, 0, result.output);
+});
+
+test("a regular expression literal is not read as a string or a comment", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    withCode(r, "a.mjs", "const slashes = /^\\/*$/;\nconst handler = 0x00401004;\nconst y = 1; // */\n");
+    withCode(r, "b.mjs", "const tick = /`/;\n// the handler at 0x00401004\nconst z = `x`;\n");
+    withCode(r, "c.mjs", "const half = (a) / 2; // the handler at 0x00401004 (FND-SCORE-001)\n");
+  });
+  const result = run(root, ...IMAGE);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /src\/b\.mjs: line 2 gives 0x00401004/);
+  assert.doesNotMatch(result.output, /a\.mjs|c\.mjs/);
 });
 
 for (const [option, value] of [["--images", "0x00400000"], ["--images", "0x00500000..0x00400000"], ["--max-range", "big"]]) test(`${option} ${value} is refused`, () => {
