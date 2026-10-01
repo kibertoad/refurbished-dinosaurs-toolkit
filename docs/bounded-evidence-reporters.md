@@ -66,7 +66,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | Command | Reports | Described in |
 |---|---|---|
 | `trace` | ordered effects and every return along bounded paths from `entry` | this section |
-| `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal | this section |
+| `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies) |
 | `uses` | accesses to one memory offset from every established entry | this section |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
@@ -611,6 +611,48 @@ the most recent formations on each path and evicting the oldest; evicted
 formations remain explicit per path/event and refuse storage merging. Candidate
 lists are present only when non-empty. A complete
 or stopped trace never promotes a modeled association to runtime state evidence.
+
+## Return widths, declared encodings and caller dependencies
+
+`returns` retains stores, compares, exact branch predicates, returns and call
+returns, plus the value-transfer events (register names, source/destination bits,
+MOV/MOVZX/MOVSX conversion and containing-register value after sibling-byte
+writes), implicit sign extensions and reads that depend on a declared result.
+Value-transfer events are recorded only when the query declares
+`returnContracts`, so other commands and queries keep their event order. Optional
+`returnContracts` has at most 256 unique entry/register declarations with evidence,
+width-bounded `failures`, and optional `encodings` rows with value, role and their
+own evidence. Raw field roles and failure encodings are separate; matching either
+is a static contract comparison, never live occurrence or successful setup.
+Known encoding lists are never assumed exhaustive. All
+declarations, including unreachable ones, are validated before tracing.
+
+Each path's `returnFlows` records the callee result width/value/known encodings,
+caller entry/call site, conditional model marker and later producer-dependent
+transfers, stores and predicates. Return-width relationships expose low-byte
+consumption independently of a same-width byte MOV. Each declared result is
+tagged with its own origin: values derived from it list that return event's
+`order` in `resultOrigins`, which stays out of `producers`. Other values written
+by the same return or call model (the popped SP, clobbered registers) and later
+executions of the same return are separate origins. Registers keep producers per
+byte: a write replaces the origins of the bytes it stores and keeps the others, so
+`mov ax,5` ends a word result's dependency while `mov al,5` leaves AH dependent.
+This ancestry is only a dependency candidate:
+a derived value or alias is never unchanged value or storage identity. Unknown
+expressions remain unknown; coincident constants without a shared origin are not
+linked. Both predicate operands are retained; `dependentValueFields` marks which
+depend on the result. Sign and overflow branches are in the signed domain.
+Nothing normalizes a nonzero check into success or proves resource
+contents/extent.
+
+`returnFlowLimit` (default 128, maximum 1024), `returnConsumerLimit` (default 256,
+maximum 10000) and `returnFlowAnalysisLimit` (default one million, maximum ten
+million inspections across paths) cap summaries and report omissions/incompleteness.
+A result whose scan the analysis limit cut short has `consumerScanComplete: false`.
+Stopped paths and trace path/step/depth caps also prevent complete summaries.
+Call models remain conditional with unknown memory effects and declared register
+assumptions; return-contract metadata supplies no call behavior. Original-game
+runtime and player-visible effects require separate evidence.
 
 ## Guarded caller-local call order
 

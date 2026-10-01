@@ -2,23 +2,10 @@
 from copy import deepcopy
 from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
 from .image import integer
-from .machine import (State, StopPath, ordinary, predicate, REGISTERS, ALIASES, string_instruction, string_count,
-                      string_effect, check_string_form)
+from .machine import (State, StopPath, ordinary, predicate, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
+                      string_count, string_effect, check_string_form)
 from .values import const, unknown, sources, op, Value
-
-# Synonymous and complementary branches on one flag producer share a single assumption.
-BRANCH_CONDITIONS = {}
-for names, condition in ((("je", "jz"), "z"), (("jb", "jc", "jnae"), "c"), (("jbe", "jna"), "be"),
-                         (("jl", "jnge"), "l"), (("jle", "jng"), "le"), (("js",), "s"),
-                         (("jo",), "o"), (("jp", "jpe"), "p")):
-    for name in names:
-        BRANCH_CONDITIONS[name] = (condition, False)
-for names, condition in ((("jne", "jnz"), "z"), (("jae", "jnb", "jnc"), "c"), (("ja", "jnbe"), "be"),
-                         (("jge", "jnl"), "l"), (("jg", "jnle"), "le"), (("jns",), "s"),
-                         (("jno",), "o"), (("jnp", "jpo"), "p")):
-    for name in names:
-        BRANCH_CONDITIONS[name] = (condition, True)
-
+from .result_flow import validate_contracts, result_contracts
 
 def call_target(image, site, ins):
     if ins.mnemonic in ("lcall", "ljmp"):
@@ -237,6 +224,7 @@ def trace(image, config):
     integer(config.get("returnBytes", image.bits // 8), 2, 4, "returnBytes")
     if config.get("returnBytes", image.bits // 8) not in ((4,) if image.flat else (2, 4)):
         raise ValueError("returnBytes must agree with the selected near/far frame model")
+    contracts = validate_contracts(config, image)
     models = config.get("callModels", [])
     if not isinstance(models, list) or len(models) > 64:
         raise ValueError("At most 64 explicit call models")
@@ -386,7 +374,7 @@ def trace(image, config):
                             created += 1
                             for r in REGISTERS:
                                 if r not in model.get("preserves", []) and r not in ("esp", "cs"):
-                                    child.regs[r] = unknown(f"modeled-call:{at}:{r}", ALIASES[r][2], at)
+                                    child.setreg(r, unknown(f"modeled-call:{at}:{r}", ALIASES[r][2]), at)
                             child.clear_memory()
                             child.forget_flags()
                             child.direction_flag = unknown(f"modeled-call:{at}:DF:{child.flag_serial}", 1, at)
@@ -395,7 +383,8 @@ def trace(image, config):
                                 child.setreg(r, const(n, ALIASES[r][2], at), at)
                             child.conditional.append({"site": at, "evidence": model["evidence"],
                                                       "assumption": "call returns with balanced stack; memory effects unresolved"})
-                            child.event("call-return", callSite=at, registers=snapshot(child), modeled=True,
+                            child.event("call-return", callSite=at, callerEntry=state.frames[-1]["entry"],
+                                        resultContracts=result_contracts(child, contracts, target), registers=snapshot(child), modeled=True,
                                         unknownMemoryEffects=True)
                             child.at = following
                             pending.append(child)
@@ -451,21 +440,10 @@ def trace(image, config):
                     if image.flat and m == "retf":
                         raise StopPath("Far return is outside the PE32 flat model")
                     frame = state.frames[-1]
-                    roles = []
-                    for contract in config.get("returnContracts", []):
-                        if contract.get("entry") != frame["entry"]:
-                            continue
-                        register = contract.get("register")
-                        if register not in ALIASES or not contract.get("evidence"):
-                            raise ValueError("Return contract requires register and evidence")
-                        value = state.reg(register)
-                        failures = contract.get("failures", [])
-                        if not isinstance(failures, list) or len(failures) > 256 or any(type(n) is not int or not 0 <= n < 1 << value.bits for n in failures):
-                            raise ValueError("Failure encodings must fit the consumed return width")
-                        roles.append({"register": register, "value": value.report(), "failureEncodings": failures,
-                                      "matchesFailureEncoding": None if value.number is None else value.number in failures,
-                                      "evidence": contract["evidence"]})
-                    state.event("return", registers=snapshot(state), cleanupBytes=ins.operands[0].imm if ins.operands else 0, resultContracts=roles)
+                    roles = result_contracts(state, contracts, frame["entry"])
+                    state.event("return", registers=snapshot(state), cleanupBytes=ins.operands[0].imm if ins.operands else 0,
+                                resultContracts=roles, callSite=frame.get("callSite"),
+                                callerEntry=state.frames[-2]["entry"] if len(state.frames) > 1 else None)
                     # The entry frame gets the same width and balance checks as a traced call.
                     expected = 4 if m == "retf" else image.bits // 8
                     if expected != frame["returnBytes"] or state.reg(state.sp).term != frame["sp"].term:

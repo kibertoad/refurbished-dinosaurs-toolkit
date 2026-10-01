@@ -1,7 +1,7 @@
 """Path-specific instruction effects. Unsupported semantics stop the path."""
 from copy import deepcopy
 from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
-from .values import Value, const, unknown, op, extract, join, resize, sources, address_parts
+from .values import Value, const, unknown, op, extract, join, resize, sources, address_parts, producers
 
 REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "cs", "ds", "es", "ss", "fs", "gs")
 ALIASES = {}
@@ -41,6 +41,8 @@ class State:
         self.sp, self.bp = ("esp", "ebp") if self.flat else ("sp", "bp")
         self.at = entry
         self.regs = {r: unknown("initial:" + r, ALIASES[r][2]) for r in REGISTERS}
+        # Producers per register byte, so a partial write replaces only the bytes it stores.
+        self.reg_sources = {r: [()] * (ALIASES[r][2] // 8) for r in REGISTERS}
         self.regs["esp"] = resize(unknown("entry:sp", self.bits), 32)
         self.setreg(self.sp, unknown("entry:sp", self.bits), None)
         self.segment_bases = {r: const(0, 32) if r in ("cs", "ds", "es", "ss") else unknown("initial-base:" + r, 32)
@@ -55,6 +57,8 @@ class State:
         self.memory_groups = {}
         self.memory_epoch = 0
         self.events = []
+        # Value transfers are recorded only for queries that trace declared return results.
+        self.value_transfers = bool(config.get("returnContracts"))
         self.guards = []
         self.assumptions = {}
         self.flags = None
@@ -134,7 +138,8 @@ class State:
 
     def reg(self, name):
         root, low, bits = alias(name)
-        return extract(self.regs[root], low, bits)
+        value = extract(self.regs[root], low, bits)
+        return Value(bits, value.term, tuple(sorted(set().union(*self.reg_sources[root][low // 8:(low + bits) // 8]))))
 
     def setreg(self, name, value, site):
         root, low, bits = alias(name)
@@ -147,6 +152,7 @@ class State:
             chunks = [extract(old, n, 8) for n in range(0, old.bits, 8)]
             chunks[low // 8:(low + bits) // 8] = [extract(value, n, 8) for n in range(0, bits, 8)]
             self.regs[root] = join(chunks)
+        self.reg_sources[root][low // 8:(low + bits) // 8] = [value.sources] * (bits // 8)
 
     def event(self, kind, **fields):
         event = {"kind": kind, "site": self.at, "entry": self.frames[-1]["entry"],
@@ -225,7 +231,7 @@ class State:
         event = self.event("write" if write is not None else "read", segment=segment.report(), offset=offset.report(),
                            width=width, effectiveSegmentRegister=addressing_register, segmentInterpretation="base" if self.flat else "selector-paragraph", interval={"segment": seg, "base": base, "start": delta, "end": delta + width},
                            value=value.report(), missingByteProducers=missing,
-                           byteProducers=[{"index": i, "producers": list(self.memory[key].sources) if key in self.memory else []} for i, key in enumerate(keys)],
+                           byteProducers=[{"index": i, "producers": producers(self.memory[key]) if key in self.memory else []} for i, key in enumerate(keys)],
                            guards=deepcopy(relevant), role=role,
                            uncertainAliasesInvalidated=len(uncertain))
         f = self.frames[-1]
@@ -234,7 +240,7 @@ class State:
         relative = (mem_delta - stack_delta) % (1 << self.bits)
         if write is None and segment.term == self.segment("ss").term and mem_base == stack_base and f["returnBytes"] <= relative < 1 << (self.bits - 1):
             event["argument"] = {"offsetFromEntrySP": relative, "width": width, "returnFrameBytes": f["returnBytes"],
-                                 "pushProducers": list(value.sources), "grouping": role or "consumed width only"}
+                                 "pushProducers": producers(value), "grouping": role or "consumed width only"}
         return value
 
     def address(self, ins, operand):
@@ -286,6 +292,19 @@ class State:
         self.setreg(self.sp, op("add", self.reg(self.sp), const(size, self.bits), self.at), self.at)
         return value
 
+
+# Synonymous and complementary branches on one flag producer share a single assumption.
+BRANCH_CONDITIONS = {}
+for names, condition in ((("je", "jz"), "z"), (("jb", "jc", "jnae"), "c"), (("jbe", "jna"), "be"),
+                         (("jl", "jnge"), "l"), (("jle", "jng"), "le"), (("js",), "s"),
+                         (("jo",), "o"), (("jp", "jpe"), "p")):
+    for name in names:
+        BRANCH_CONDITIONS[name] = (condition, False)
+for names, condition in ((("jne", "jnz"), "z"), (("jae", "jnb", "jnc"), "c"), (("ja", "jnbe"), "be"),
+                         (("jge", "jnl"), "l"), (("jg", "jnle"), "le"), (("jns",), "s"),
+                         (("jno",), "o"), (("jnp", "jpo"), "p")):
+    for name in names:
+        BRANCH_CONDITIONS[name] = (condition, True)
 
 CARRY_BRANCHES = {"jb": True, "jc": True, "jnae": True, "jae": False, "jnb": False, "jnc": False}
 # Branches taken when CF or OF is set; logic operations clear both whatever their operands.
@@ -361,7 +380,18 @@ def ordinary(state, ins, image):
         if state.flat and operands[0].type == X86_OP_REG and ins.reg_name(operands[0].reg) in state.segment_bases:
             raise StopPath("Segment selector assignment requires a descriptor model")
         value = state.get(ins, operands[1], image)
-        state.put(ins, operands[0], resize(value, operands[0].size * 8, signed=m == "movsx"))
+        result = resize(value, operands[0].size * 8, signed=m == "movsx")
+        state.put(ins, operands[0], result)
+        if not state.value_transfers:
+            return
+
+        def location(operand):
+            return {"kind": "register", "register": ins.reg_name(operand.reg)} if operand.type == X86_OP_REG else {"kind": "memory"} if operand.type == X86_OP_MEM else {"kind": "immediate"}
+        destination_container = ALIASES[ins.reg_name(operands[0].reg)][0] if operands[0].type == X86_OP_REG else None
+        state.event("value-transfer", operation=m, source=location(operands[1]), destination=location(operands[0]),
+                    destinationContainer=destination_container, destinationContainerValue=state.reg(destination_container).report() if destination_container else None,
+                    sourceBits=value.bits, destinationBits=result.bits, sourceValue=value.report(), resultValue=result.report(),
+                    conversion="truncate" if result.bits < value.bits else "signExtend" if m == "movsx" else "zeroExtend" if result.bits > value.bits else "sameWidth")
         return
     if m == "xchg":
         values = [state.get(ins, operand, image) for operand in operands]
@@ -445,21 +475,25 @@ def ordinary(state, ins, image):
         # The prefix toggles the mode's default operand size (16-bit real mode, 32-bit flat).
         wide = (0x66 in ins.prefix) != state.flat
         source, destination = ("ax", "eax") if wide else ("al", "ax")
-        value = resize(state.reg(source), 32 if wide else 16, True)
+        source_value = state.reg(source)
+        value = resize(source_value, 32 if wide else 16, True)
         state.setreg(destination, value, state.at)
         state.event("conversion", sourceRegister=source, destinationRegister=destination,
                     effectiveOperandBits=32 if wide else 16, decoderMnemonic=m,
-                    mnemonicWidthMismatch=m != ("cwde" if wide else "cbw"), result=value.report())
+                    mnemonicWidthMismatch=m != ("cwde" if wide else "cbw"), result=value.report(),
+                    sourceValue=source_value.report(), sourceBits=source_value.bits, destinationBits=value.bits, conversion="signExtend")
         return
     if m in ("cwd", "cdq"):
         wide = (0x66 in ins.prefix) != state.flat
         source, destination = ("eax", "edx") if wide else ("ax", "dx")
         bits = 32 if wide else 16
-        value = resize(extract(state.reg(source), bits-1, 1), bits, signed=True)
+        source_value = state.reg(source)
+        value = resize(extract(source_value, bits-1, 1), bits, signed=True)
         state.setreg(destination, value, state.at)
         state.event("conversion", sourceRegister=source, destinationRegister=destination,
                     effectiveOperandBits=bits, decoderMnemonic=m,
-                    mnemonicWidthMismatch=m != ("cdq" if wide else "cwd"), result=value.report())
+                    mnemonicWidthMismatch=m != ("cdq" if wide else "cwd"), result=value.report(),
+                    sourceValue=source_value.report(), sourceBits=source_value.bits, destinationBits=value.bits, conversion="signFillHighHalf")
         return
     if m in ("clc", "stc", "cmc"):
         if m == "cmc":

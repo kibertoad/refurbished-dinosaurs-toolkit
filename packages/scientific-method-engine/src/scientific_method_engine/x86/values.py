@@ -22,8 +22,26 @@ class Value:
         return self.term[1] if self.term[0] == "constant" else None
 
     def report(self):
-        return {"bits": self.bits, "expression": self.term, "value": self.number,
-                "producers": list(self.sources)}
+        row = {"bits": self.bits, "expression": self.term, "value": self.number, "producers": producers(self)}
+        origins = result_origins(self)
+        if origins:
+            row["resultOrigins"] = origins
+        return row
+
+
+def result_marker(order):
+    """A source tag naming the return event at ``order``; instruction sites are never negative."""
+    return -order - 1
+
+
+def producers(v):
+    """The instruction sites among a value's sources, without return-result markers."""
+    return [s for s in v.sources if s >= 0]
+
+
+def result_origins(v):
+    """The event orders of the declared return results a value depends on."""
+    return sorted(-s - 1 for s in v.sources if s < 0)
 
 
 def const(n, bits, site=None):

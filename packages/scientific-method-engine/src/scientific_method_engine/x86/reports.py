@@ -5,6 +5,7 @@ from capstone import CS_AC_READ, CS_AC_WRITE
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 from .machine import State, StopPath, REGISTERS, ALIASES, segment_register
 from .values import unknown
+from .result_flow import return_flows
 from .image import Image, integer
 from .trace import (trace, walk, call_target, unsupported_transfer, uncovered, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
                     RETURNS, INTERRUPTS, PORTS)
@@ -298,7 +299,9 @@ def uses(image, config):
             if state is None:
                 # Registers are unknown here; name them for this operand site so no entry value is implied.
                 state = State(at, image, {})
-                state.regs.update({r: unknown(f"CFG-operand:{at}:{r}", ALIASES[r][2]) for r in REGISTERS if r != "cs"})
+                for r in REGISTERS:
+                    if r != "cs":
+                        state.setreg(r, unknown(f"CFG-operand:{at}:{r}", ALIASES[r][2]), None)
             try:
                 segment_value, offset_value, segment_name = state.address(ins, operand)
             except StopPath as error:
@@ -1376,6 +1379,8 @@ def _run_report(image, config, command):
         report = near_pointer_provenance(report, config)
     if command == "allocation":
         return allocations(report, config)
+    if command == "returns":
+        report = return_flows(report, config)
     if command != "trace":
         kinds = {"arguments": ("address-formation", "read", "call", "call-return"), "effects": ("address-formation", "write", "call", "call-return", "return", "branch", "string-operation",
                              "flag-assumption", "flag-write", "flags-save", "flags-restore", "local-iret"),
@@ -1383,7 +1388,9 @@ def _run_report(image, config, command):
                  "guards": ("compare", "branch", "read", "write", "call", "call-return"),
                  "memory": ("read", "write", "address-formation")}[command]
         for path in report["paths"]:
-            path["events"] = [e for e in path["events"] if e["kind"] in kinds or
+            # Returns keep the transfers, conversions and reads that depend on a declared result.
+            consumed = {c["order"] for f in path.get("returnFlows", {}).get("results", ()) for c in f["consumers"]}
+            path["events"] = [e for e in path["events"] if e["kind"] in kinds or e["order"] in consumed or
                               (command == "effects" and e["kind"] == "read" and (e.get("nearPointerAccessCandidates") or e.get("nearPointerArgumentCandidates")))]
     return report
 

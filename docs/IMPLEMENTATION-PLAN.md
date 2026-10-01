@@ -193,6 +193,23 @@ behavior. Preserve stopped/conditional reports. No source behavior claims or
 proprietary content. Exit: reporter/toolkit gates and source controls pass,
 upstream reviewable PR; adopted closure requires reviewed merge and rerun.
 
+## Width-preserving return flow at each caller
+
+Tooling outcome: return reports retain declared result registers, full-width
+encodings and roles, and show the actual caller transfers, stores and predicates
+that depend on those results. Evidence: recorded configured initializer failure
+words, low-byte retention, explicit full-word normalization and raw dimension
+consumers require distinct contracts. Acceptance: no nonzero branch establishes
+success; preserve truncation, zero/sign extension, stored widths and signedness
+of each predicate. Producer ancestry is only dependency evidence, never identity
+or accepted contents. Unknown values, aliases, models, stopped paths and caps
+remain explicit. Validate all declarations before tracing, including unreachable
+ones. Synthetic nested callers, byte/word stores, sign/zero extensions, full-word
+comparison, raw-field roles, unrelated coincident values and caps plus configured
+FND-CONFIG-156/157/190 source controls prove behavior. No original fixtures or
+game claims in Git. Exit: full toolkit gates and source controls pass and a
+reviewable upstream PR is published; closure requires reviewed adoption/rerun.
+
 ## Guarded caller-local order alongside flat incoming coverage
 
 Tooling outcome: keep the flat incoming inventory and group verified calls by

@@ -62,6 +62,163 @@ def events(result, kind):
     return [e for path in result["paths"] for e in path["events"] if e["kind"] == kind]
 
 
+class ReturnFlowTests(unittest.TestCase):
+    def flow(self, code, contracts, **extra):
+        return report(code, "returns", returnContracts=contracts, **extra)
+
+    def contract(self, entry, register="ax", **extra):
+        return {"entry": entry, "register": register, "evidence": "synthetic result contract", **extra}
+
+    def test_nested_failure_word_byte_store_zero_extension_and_nonzero_gate(self):
+        c = Code().branch("e8", "wrapper").emit("0f b6 c0 85 c0").branch("74", "zero").emit("c3")
+        c.label("zero").emit("c3").label("wrapper").branch("e8", "callee").emit("a2 20 00 a0 20 00 c3")
+        c.label("callee").emit("b8 ff ff c3")
+        r = self.flow(c, [self.contract(c.labels["callee"], failures=[65535]), self.contract(c.labels["wrapper"], "al")], registers={"ds": 8192, "ss": 8192, "sp": 32768})
+        self.assertTrue(r["completeWithinModel"])
+        rows = r["paths"][0]["returnFlows"]["results"]
+        failure = next(f for f in rows if f["calleeEntry"] == c.labels["callee"])
+        self.assertTrue(failure["resultContract"]["matchesFailureEncoding"])
+        self.assertEqual(failure["callerEntry"], c.labels["wrapper"])
+        store = next(e for e in failure["consumers"] if e["kind"] == "write")
+        self.assertEqual(store["width"], 1)
+        self.assertEqual(store["values"]["value"]["value"], 255)
+        self.assertEqual(store["returnWidthRelationships"]["value"], "narrower")
+        extension = next(e for e in failure["consumers"] if e.get("conversion") == "zeroExtend")
+        self.assertEqual((extension["sourceBits"], extension["destinationBits"]), (8, 16))
+        branch = next(e for e in failure["consumers"] if e["kind"] == "branch")
+        self.assertEqual((branch["predicate"], branch["taken"], branch["values"]["left"]["value"]), ("je", False, 255))
+        self.assertFalse(failure["successEstablished"])
+
+    def test_full_word_failure_normalization(self):
+        c = Code().branch("e8", "callee").emit("83 f8 ff").branch("74", "bad").emit("b0 01 c3")
+        c.label("bad").emit("b0 00 c3").label("callee").emit("b8 ff ff c3")
+        r = self.flow(c, [self.contract(c.labels["callee"], failures=[65535]), self.contract(0, "al")])
+        f = r["paths"][0]["returnFlows"]["results"][0]
+        branch = next(e for e in f["consumers"] if e["kind"] == "branch")
+        self.assertEqual((branch["values"]["left"]["bits"], branch["taken"]), (16, True))
+        self.assertEqual(branch["values"]["right"]["value"], 65535)
+        self.assertNotIn("right", branch["dependentValueFields"])
+        self.assertEqual(r["paths"][0]["registers"]["al"]["value"], 0)
+
+    def test_signed_consumer_and_raw_field_role_remain_distinct(self):
+        c = Code().branch("e8", "callee").emit("83 f8 01").branch("7c", "reject").emit("c3")
+        c.label("reject").emit("c3").label("callee").emit("b8 00 80 c3")
+        encoding = {"value": 32768, "role": "raw field", "evidence": "synthetic field contract"}
+        r = self.flow(c, [self.contract(c.labels["callee"], failures=[65535], encodings=[encoding])])
+        f = r["paths"][0]["returnFlows"]["results"][0]
+        self.assertFalse(f["resultContract"]["matchesFailureEncoding"])
+        self.assertEqual(f["resultContract"]["matchingRoles"], [encoding])
+        branch = next(e for e in f["consumers"] if e["kind"] == "branch")
+        self.assertEqual((branch["predicateDomain"], branch["taken"]), ("signed", True))
+
+    def test_sign_extension_and_unrelated_equal_constant(self):
+        c = Code().branch("e8", "callee").emit("0f be d0 bb ff ff 83 fb ff c3")
+        c.label("callee").emit("b0 ff c3")
+        r = self.flow(c, [self.contract(c.labels["callee"], "al", failures=[255])])
+        consumers = r["paths"][0]["returnFlows"]["results"][0]["consumers"]
+        extension = next(e for e in consumers if e.get("conversion") == "signExtend")
+        self.assertEqual(extension["values"]["resultValue"]["value"], 65535)
+        self.assertFalse(any(e["kind"] == "compare" for e in consumers))
+
+    def test_implicit_sign_extension_retains_effective_widths(self):
+        c = Code().branch("e8", "callee").emit("98 99 c3").label("callee").emit("b0 ff c3")
+        r = self.flow(c, [self.contract(c.labels["callee"], "al", failures=[255])])
+        rows = r["paths"][0]["returnFlows"]["results"][0]["consumers"]
+        conversions = [e for e in rows if e["kind"] == "conversion"]
+        self.assertEqual([e["conversion"] for e in conversions], ["signExtend", "signFillHighHalf"])
+        self.assertEqual((conversions[0]["sourceBits"], conversions[0]["destinationBits"]), (8, 16))
+
+    def test_sibling_high_byte_zeroing_is_retained_before_word_zero_gate(self):
+        c = Code().branch("e8", "callee").emit("b4 00 09 c0").branch("75", "nonzero").emit("c3")
+        c.label("nonzero").emit("c3").label("callee").emit("b0 ff c3")
+        r = self.flow(c, [self.contract(c.labels["callee"], "al", failures=[255])])
+        rows = r["paths"][0]["returnFlows"]["results"][0]["consumers"]
+        write = next(e for e in rows if e["kind"] == "value-transfer")
+        self.assertEqual(write["destination"]["register"], "ah")
+        self.assertEqual(write["values"]["sourceValue"]["value"], 0)
+        self.assertIn("destinationContainerValue", write["dependentValueFields"])
+        branch = next(e for e in rows if e["kind"] == "branch")
+        self.assertEqual((branch["operation"], branch["predicate"], branch["taken"], branch["values"]["left"]["value"]), ("or", "jne", True, 255))
+
+    def test_models_stops_and_all_summary_caps_remain_explicit(self):
+        c = Code().branch("e8", "callee").emit("a2 20 00 85 c0").branch("74", "end").emit("90")
+        c.label("end").emit("c3").label("callee").emit("b8 ff ff c3")
+        contracts = [self.contract(c.labels["callee"], failures=[65535]), self.contract(0)]
+        for extra in ({"returnFlowLimit": 1}, {"returnConsumerLimit": 1}, {"returnFlowAnalysisLimit": 1}, {"maxSteps": 2}, {"maxDepth": 1}):
+            r = self.flow(c, contracts, **extra)
+            self.assertFalse(r["paths"][0]["returnFlows"]["complete"])
+        r = self.flow(c, contracts, callModels=[{"site": 0, "evidence": "synthetic conditional case", "cases": [{"registers": {"ax": 65535}}]}])
+        f = r["paths"][0]["returnFlows"]["results"][0]
+        self.assertTrue(f["conditionalModel"])
+        self.assertTrue(r["paths"][0]["conditionalModels"])
+
+    def test_values_sharing_only_the_return_or_call_site_are_not_dependent(self):
+        # The return pops SP at its own site; a call model clobbers BX at the call site.
+        c = Code().branch("e8", "callee").emit("89 e5 39 e9 89 d9 c3").label("callee").emit("b8 ff ff c3")
+        contracts = [self.contract(c.labels["callee"])]
+        r = self.flow(c, contracts, registers={"ss": 8192, "sp": 32768})
+        self.assertEqual(r["paths"][0]["returnFlows"]["results"][0]["consumers"], [])
+        r = self.flow(c, contracts, callModels=[{"site": 0, "evidence": "synthetic conditional case", "cases": [{"registers": {"ax": 1}}]}])
+        f = r["paths"][0]["returnFlows"]["results"][0]
+        self.assertTrue(f["conditionalModel"])
+        self.assertEqual(f["consumers"], [])
+        self.assertNotIn(0, r["paths"][0]["registers"]["sp"].get("resultOrigins", []))
+
+    def test_each_execution_of_one_return_is_a_separate_origin(self):
+        c = Code().branch("e8", "callee").emit("89 c3").branch("e8", "callee").emit("89 c1 c3")
+        c.label("callee").emit("66 b8 ff ff 00 00 c3")
+        rows = self.flow(c, [self.contract(c.labels["callee"])])["paths"][0]["returnFlows"]["results"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([[e["site"] for e in f["consumers"]] for f in rows], [[3], [8]])
+        self.assertEqual(rows[0]["resultContract"]["value"]["resultOrigins"], [rows[0]["originOrder"]])
+        self.assertTrue(all(isinstance(p, int) and p >= 0 for p in rows[0]["resultContract"]["value"]["producers"]))
+
+    def test_sign_flag_gate_is_a_signed_predicate(self):
+        c = Code().branch("e8", "callee").emit("85 c0").branch("78", "negative").emit("c3")
+        c.label("negative").emit("c3").label("callee").emit("b8 ff ff c3")
+        rows = self.flow(c, [self.contract(c.labels["callee"], failures=[65535])])["paths"][0]["returnFlows"]["results"][0]["consumers"]
+        branch = next(e for e in rows if e["kind"] == "branch")
+        self.assertEqual((branch["predicate"], branch["predicateDomain"], branch["taken"]), ("js", "signed", True))
+
+    def test_analysis_cap_marks_the_truncated_flow(self):
+        c = Code().branch("e8", "callee").emit("a2 20 00 85 c0").branch("74", "end").emit("90")
+        c.label("end").emit("c3").label("callee").emit("b8 ff ff c3")
+        r = self.flow(c, [self.contract(c.labels["callee"], failures=[65535]), self.contract(0)], returnFlowAnalysisLimit=1)
+        flows = r["paths"][0]["returnFlows"]
+        self.assertTrue(r["returnFlowAnalysis"]["capped"])
+        self.assertFalse(flows["results"][0]["consumerScanComplete"])
+        self.assertEqual(flows["resultsOmitted"], 1)
+        self.assertFalse(flows["complete"])
+        r = self.flow(c, [self.contract(c.labels["callee"], failures=[65535]), self.contract(0)])
+        self.assertTrue(all(f["consumerScanComplete"] for f in r["paths"][0]["returnFlows"]["results"]))
+        self.assertTrue(r["paths"][0]["returnFlows"]["complete"])
+
+    def test_overwriting_the_result_register_ends_the_dependency_byte_by_byte(self):
+        # mov ax,5 replaces both result bytes; mov al,5 leaves AH, so the word compare still depends on it.
+        for overwrite, dependent in (("b8 05 00", False), ("b0 05", True)):
+            c = Code().branch("e8", "callee").emit(overwrite + " 83 f8 03 c3").label("callee").emit("b8 ff ff c3")
+            rows = self.flow(c, [self.contract(c.labels["callee"], failures=[65535])])["paths"][0]["returnFlows"]["results"][0]["consumers"]
+            self.assertEqual(any(e["kind"] == "compare" for e in rows), dependent)
+        r = report("b8 01 00 b0 02 c3")
+        self.assertEqual(r["paths"][0]["registers"]["ah"]["producers"], [0])
+        self.assertEqual(r["paths"][0]["registers"]["ax"]["producers"], [0, 3])
+
+    def test_value_transfers_are_recorded_only_for_declared_results(self):
+        c = Code().branch("e8", "callee").emit("89 c3 89 d1 8b 16 20 00 c3").label("callee").emit("b8 ff ff c3")
+        self.assertEqual(events(report(c), "value-transfer"), [])
+        r = self.flow(c, [self.contract(c.labels["callee"])], registers={"ds": 8192})
+        consumers = r["paths"][0]["returnFlows"]["results"][0]["consumers"]
+        self.assertEqual([e["site"] for e in consumers if e["kind"] == "value-transfer"], [3])
+        # Transfers and reads that do not depend on the result stay out of the returns events.
+        self.assertEqual([e["site"] for e in r["paths"][0]["events"] if e["kind"] in ("value-transfer", "read")], [3])
+
+    def test_invalid_unreachable_contracts_are_rejected(self):
+        for bad in (self.contract(0, failures=[65536]), self.contract(0, encodings=[{"value": 1, "role": "failure"}]),
+                    self.contract(0, "fpu"), self.contract(0, ["ax"]), self.contract(0, evidence="")):
+            with self.assertRaises(ValueError):
+                self.flow(Code().emit("eb fe c3"), [bad], maxSteps=1)
+
+
 class CalleeGraphTests(unittest.TestCase):
     def graph(self, code, names, **extra):
         data = code.bytes()
