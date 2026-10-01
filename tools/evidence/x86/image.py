@@ -69,6 +69,22 @@ class Image:
                 raise ValueError("Each region needs 1..4096 established entry offsets")
             for at in entries:
                 integer(at, r["start"], r["end"] - 1, "entry")
+            container = r.get("container")
+            if container is not None:
+                # The complete overlay or segment that holds this region, as the Node loader supplies it.
+                if not isinstance(container, dict) or not isinstance(container.get("view"), str) or not container["view"]:
+                    raise ValueError("A region container needs view, start and end")
+                integer(container.get("start"), 0, r["start"], "container start")
+                integer(container.get("end"), r["end"], len(data), "container end")
+        self.segments = config.get("segments", [])
+        if not isinstance(self.segments, list) or len(self.segments) > 256:
+            raise ValueError("segments must be a list of at most 256 declared segment bounds")
+        for d in self.segments:
+            if (not isinstance(d, dict) or not isinstance(d.get("name"), str) or not d["name"]
+                    or not isinstance(d.get("evidence"), str) or not d["evidence"].strip()):
+                raise ValueError("Each declared segment needs name, start, end and evidence")
+            integer(d.get("start"), 0, len(data), "segment start")
+            integer(d.get("end"), d["start"] + 1, len(data), "segment end")
         for i, r in enumerate(self.regions):
             for s in self.regions[i + 1:]:
                 if max(r["start"], s["start"]) < min(r["end"], s["end"]):

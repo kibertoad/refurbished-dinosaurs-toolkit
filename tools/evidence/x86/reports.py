@@ -1,61 +1,48 @@
 """Focused reports derived from instruction paths and explicit source bounds."""
+from bisect import bisect_right
 from capstone import CS_AC_READ, CS_AC_WRITE
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 from .machine import State, StopPath, REGISTERS, ALIASES, segment_register
 from .values import unknown
 from .image import Image, integer
-from .trace import trace, walk, call_target, unsupported_transfer, OVERLAP_REASON, CONTESTED_REASON
+from .trace import trace, walk, call_target, unsupported_transfer, uncovered, OVERLAP_REASON, CONTESTED_REASON
 
 
 def entries(image):
     return sorted(set(at for r in image.regions for at in r["entries"]))
 
 
-def search_coverage(image, scans):
-    """How much of each complete segment, overlay or section the searched regions cover."""
+def search_coverage(image, spans):
+    """How much of each complete segment, overlay or section the searched byte spans cover.
+
+    spans maps each searched region name to the (start, end) bytes the scan actually read."""
     sections = (image.config.get("peMetadata") or {}).get("sections", [])
-    declared = image.config.get("segments", [])
-    if not isinstance(declared, list) or len(declared) > 256:
-        raise ValueError("segments must be a list of at most 256 declared segment bounds")
-    for d in declared:
-        if not isinstance(d, dict) or not d.get("name") or not d.get("evidence"):
-            raise ValueError("Each declared segment needs name, start, end and evidence")
-        integer(d.get("start"), 0, len(image.data), "segment start")
-        integer(d.get("end"), d["start"] + 1, len(image.data), "segment end")
-    containers = {}
+    containers, alone = {}, []
     for r in image.regions:
-        if r["name"] not in scans:
+        if r["name"] not in spans:
             continue
-        container = r.get("container")
-        segment = next((d for d in declared if d["start"] <= r["start"] and r["end"] <= d["end"]), None)
-        if container is None and segment is not None:
-            container = {"view": "segment " + segment["name"], "start": segment["start"], "end": segment["end"]}
-        if container is None:
-            section = next((s for s in sections if s["rawStart"] <= r["start"] and r["end"] <= s["rawStart"] + s["loadedRawSize"]), None)
+        holders = [r["container"]] if r.get("container") else [
+            {"view": "segment " + d["name"], "start": d["start"], "end": d["end"]}
+            for d in image.segments if d["start"] < r["end"] and r["start"] < d["end"]]
+        if not holders:
+            section = next((s for s in sections if s["index"] == r.get("sectionIndex")), None)
             if section is not None:
-                container = {"view": "section " + section["name"], "start": section["rawStart"], "end": section["rawStart"] + section["loadedRawSize"]}
-        key = None if container is None else (container["view"], container["start"], container["end"])
-        containers.setdefault(key, []).append(r)
+                holders = [{"view": "section " + section["name"], "start": section["rawStart"],
+                            "end": section["rawStart"] + section["loadedRawSize"]}]
+        if not holders:
+            alone.append(r["name"])
+        for c in holders:
+            containers.setdefault((c["view"], c["start"], c["end"]), []).append(r["name"])
     rows = []
-    for key, regions in containers.items():
-        names = [r["name"] for r in regions]
-        if key is None:
-            rows.append({"container": None, "regions": names, "partial": False,
-                         "meaning": "no overlay, section or declared segment contains these regions; the search covers them only"})
-            continue
-        view, start, end = key
-        spans = sorted((r["start"], r["end"]) for r in regions)
-        missing, cursor = [], start
-        for a, b in spans:
-            if a > cursor:
-                missing.append({"start": cursor, "end": a})
-            cursor = max(cursor, b)
-        if cursor < end:
-            missing.append({"start": cursor, "end": end})
+    for (view, start, end), names in containers.items():
+        missing = uncovered(start, end, [spans[name] for name in names])
         rows.append({"container": {"view": view, "start": start, "end": end}, "regions": names, "unsearched": missing,
                      "partial": bool(missing),
                      "meaning": "partial search: callers in the unsearched ranges are not covered" if missing else
                                 "the searched regions cover the complete container"})
+    if alone:
+        rows.append({"container": None, "regions": alone, "partial": False,
+                     "meaning": "no overlay, section or declared segment contains these regions; the search covers them only"})
     return rows
 
 
@@ -75,15 +62,17 @@ def incoming(image, config):
     if not isinstance(scans, list) or not scans or len(set(scans)) != len(scans):
         raise ValueError("searchRegions must be unique region names")
     scan_limit = integer(config.get("scanLimit", 65536), 1, 1048576, "scanLimit")
-    scanned_bytes = 0
+    scanned_bytes, read = 0, {}
     for name in scans:
         r = next((r for r in image.regions if r["name"] == name), None)
         if r is None:
             raise ValueError("Unknown search region")
+        read[name] = (r["start"], r["end"])
         # Scan the entire declared region, including sites after the target returns.
         for at in range(r["start"], r["end"]):
             if scanned_bytes >= scan_limit:
                 gaps.append({"region": name, "unsearchedStart": at, "end": r["end"], "reason": "raw scan limit"})
+                read[name] = (r["start"], at)
                 break
             scanned_bytes += 1
             if image.data[at] not in (0xe8, 0x9a):
@@ -144,19 +133,27 @@ def incoming(image, config):
     }
     # Say where each unverified row sits, so a reader knows whether a route to it is still unread
     # (undecoded bytes, perhaps behind a computed transfer) or whether it is bytes of another instruction.
-    reached = sorted((at, at + ins.size) for at, ins in {**seen, **contested}.items())
+    # Undecoded ranges exclude only established instructions, so contested starts are checked first.
+    holes = sorted(undecoded, key=lambda u: u["start"])
+    hole_starts = [u["start"] for u in holes]
     for row in candidates + disputed + partial:
-        if row["site"] in seen:
+        site = row["site"]
+        if site in seen:
             continue
-        inside = next((start for start, end in reached if start < row["site"] < end), None)
-        hole = next((u for u in undecoded if u["start"] <= row["site"] < u["end"]), None)
-        row["position"] = ({"insideInstruction": inside, "meaning": "bytes of a reached instruction; a call here needs an overlapping start"}
-                           if inside is not None else
-                           {"undecodedRange": hole, "meaning": "no established path reaches these bytes; an unread or computed route may"}
-                           if hole is not None else {"meaning": "start of a contested instruction"})
-    transfers = [{"site": e["site"], "kind": e["kind"], "reason": e["provenance"].get("reason")}
+        if site in contested:
+            row["position"] = {"meaning": "start of a contested instruction"}
+            continue
+        # An x86 instruction is at most 15 bytes, so only the starts just before the site can hold it.
+        inside = next((at for at in range(max(site - 14, 0), site) if at in seen and site < at + seen[at].size), None)
+        if inside is not None:
+            row["position"] = {"insideInstruction": inside, "meaning": "bytes of a reached instruction; a call here needs an overlapping start"}
+            continue
+        i = bisect_right(hole_starts, site) - 1
+        if i >= 0 and site < holes[i]["end"]:
+            row["position"] = {"undecodedRange": holes[i], "meaning": "no established path reaches these bytes; an unread or computed route may"}
+    transfers = [{"site": e["site"], "kind": e["kind"], "reason": e["provenance"].get("reason", "target outside declared regions")}
                  for e in edges if e["target"] is None and image.region(e["site"])["name"] in scans]
-    coverage = search_coverage(image, scans)
+    coverage = search_coverage(image, read)
     partial_scope = any(c["partial"] for c in coverage)
     return {"target": target, "sections": {k: v[:limit] for k, v in sections.items()}, "confirmed": bounded(hits), "candidates": bounded(candidates),
             "contested": bounded(disputed), "unresolved": bounded(partial),

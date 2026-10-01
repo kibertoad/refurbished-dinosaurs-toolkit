@@ -154,16 +154,24 @@ def walk(image, entries, limit=10000):
     intervals = sorted((at, at + ins.size) for at, ins in seen.items())
     undecoded = []
     for r in image.regions:
-        cursor = r["start"]
-        for start, end in intervals:
-            if start < r["start"] or start >= r["end"]:
-                continue
-            if start > cursor:
-                undecoded.append({"start": cursor, "end": start, "region": r["name"]})
-            cursor = max(cursor, end)
-        if cursor < r["end"]:
-            undecoded.append({"start": cursor, "end": r["end"], "region": r["name"]})
+        inside = [(start, end) for start, end in intervals if r["start"] <= start < r["end"]]
+        undecoded.extend({**hole, "region": r["name"]} for hole in uncovered(r["start"], r["end"], inside))
     return seen, gaps, edges, undecoded, contested
+
+
+def uncovered(start, end, spans):
+    """The ranges of start..end that no span covers; spans are clipped to the bounds."""
+    missing, cursor = [], start
+    for a, b in sorted(spans):
+        a, b = max(a, start), min(b, end)
+        if a >= b:
+            continue
+        if a > cursor:
+            missing.append({"start": cursor, "end": a})
+        cursor = max(cursor, b)
+    if cursor < end:
+        missing.append({"start": cursor, "end": end})
+    return missing
 
 
 def snapshot(state):

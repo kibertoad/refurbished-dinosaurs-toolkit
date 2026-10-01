@@ -124,7 +124,9 @@ report covers only the declared domain.
 the overlay's code (the Node loader passes each overlay region's bounds), the PE
 section, or a segment the query declares in `segments` (`name`, `start`, `end`,
 `evidence`), which is how a resident segment's bounds from the build's code
-ranges reach the report. A domain the searched regions do not cover lists its
+ranges reach the report. A declared segment counts when it overlaps a searched
+region, even if the region crosses its bounds. A domain the bytes actually scanned
+do not cover (including bytes a `scanLimit` stopped short of) lists its
 `unsearched` ranges and sets `partialSearch`, which makes `negativeUsable` false.
 Regions with no known domain are reported as covering only themselves. Each
 unverified candidate carries a `position`: inside a reached instruction (bytes
