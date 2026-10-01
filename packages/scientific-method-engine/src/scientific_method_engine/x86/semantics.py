@@ -7,6 +7,7 @@ transfer. A backend changes a ``State`` only through its public methods: ``get``
 (``set_flags``, ``forget_flags``, ``carry``, ``carry_value``, ``save_flags``, ``restore_flags``,
 ``direction_flag`` and ``interrupt_flag``).
 """
+from contextlib import contextmanager
 from typing import Protocol
 
 
@@ -38,10 +39,11 @@ class Backend(Protocol):
 
 _backends = {}
 _default = None
+_selected = None
 
 
 def register(backend, default=False):
-    """Make ``backend`` selectable by its name; the first default registered is used by new states."""
+    """Make ``backend`` selectable by its name. The default backend serves every report."""
     global _default
     _backends[backend.name] = backend
     if default or _default is None:
@@ -49,5 +51,25 @@ def register(backend, default=False):
 
 
 def current():
-    """The backend a new ``State`` uses."""
-    return _backends[_default]
+    """The backend a new ``State`` uses: the default unless a test selected another."""
+    return _backends[_selected or _default]
+
+
+def names():
+    """The registered backends' names, the default first."""
+    return [_default] + sorted(name for name in _backends if name != _default)
+
+
+@contextmanager
+def selected(name):
+    """Make states created inside the block use the backend ``name``.
+
+    Differential tests use this to run one case on each backend. Reports and the CLI never select
+    a backend; they use the default.
+    """
+    global _selected
+    previous, _selected = _selected, _backends[name].name
+    try:
+        yield _backends[name]
+    finally:
+        _selected = previous

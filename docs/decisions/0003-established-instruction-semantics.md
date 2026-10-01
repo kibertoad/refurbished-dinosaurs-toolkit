@@ -248,7 +248,7 @@ Rules for every iteration:
 |---|---|---|---|
 | 0 freeze and baseline | done | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
 | 1 pypcode spike | done | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54), 4 (#55), 5 (#56), 6 (#57) and 7 (#58) answered |
-| 2 semantics seam | in progress | 2026-10-02 | step 1 done: `x86/semantics.py` defines `Backend` (`ordinary`, `condition`, `string_iteration`); `trace.py` and `State.carry_value` call the backend a `State` holds; 210 engine tests pass unchanged (PR pending); step 2 done: `ordinary`, `predicate`, `shift_carry`, `CARRY_BRANCHES`, `CLEARED_BY_LOGIC` and the string iteration body moved to `x86/handwritten.py`, the registered default backend; 210 engine tests pass unchanged (PR pending) |
+| 2 semantics seam | done | 2026-10-02 | see [Semantics seam](#semantics-seam) |
 | 3 pypcode backend | not started | | |
 | 4 parity on recorded cases | not started | | |
 | 5 cutover | not started | | |
@@ -369,6 +369,27 @@ Unicorn 2.1.4 and Capstone 5.0.7 on Python 3.14 (Windows). Each answer names its
    model of the program's layout beyond the synthetic bytes a test writes.
 
 No question was a no-go, so the Miasm evaluation under decision 8 does not start.
+
+### Semantics seam
+
+Done 2026-10-02, release label `release:skip`.
+
+1. `x86/semantics.py` defines `Backend` with `ordinary`, `condition` and `string_iteration`. Each
+   `State` holds the backend it was created with, and `trace.py`, `counter_branch` and
+   `State.carry_value` call it. `string_effect` keeps its checks and its event in the evidence
+   layer and calls `string_iteration` once per counted iteration.
+2. `x86/handwritten.py` holds `ordinary`, `predicate`, `shift_carry`, `CARRY_BRANCHES`,
+   `CLEARED_BY_LOGIC` and the string iteration body, registered as the default backend.
+   `BRANCH_CONDITIONS` stays in `machine.py`, because assumption keys and `result_flow` use it.
+3. `semantics.selected(name)` switches the backend for states created inside a block; only tests
+   call it. `tests/differential.py` exports a `run_report` that runs a case on every registered
+   backend and fails with `BackendDifference` on any report or error difference. `test_x86.py`,
+   `test_pe.py` and `test_dispatch.py` (and `test_effect_order.py` through `test_x86.report`)
+   take `run_report` from it, so every case that builds a report runs on every backend. The CLI
+   tests run the default backend only. `test_differential.py` covers the helper.
+
+Exit evidence: the 210 existing engine tests and the reader bridge tests pass unchanged; with one
+backend registered no report can differ.
 
 ### Groups moved
 

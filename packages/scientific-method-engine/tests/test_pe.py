@@ -18,7 +18,7 @@ ENGINE_ENV = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(SRC)
 READER = SRC.parents[1] / "executable-reader" / "bin" / "scientific-method.ts"
 from scientific_method_engine.x86.image import Image
 from scientific_method_engine.x86.pe import pe32
-from scientific_method_engine.x86.reports import run_report
+from differential import run_report
 
 BASE, CODE_VA, DATA_VA = 0x400000, 0x401000, 0x402000
 CODE_RAW, DATA_RAW = 0x200, 0x400
