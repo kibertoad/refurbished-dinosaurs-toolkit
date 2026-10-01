@@ -43,7 +43,8 @@ def walk(image, entries, limit=10000):
     integer(limit, 1, 100000, "instruction limit")
     pending, seen, gaps, edges = list(entries), {}, [], []
     # Decoded successors of each instruction, so a proof can be checked for independence below.
-    successors = {}
+    # A call's return site is reached only if the callee returns, so it never proves an overlapping start.
+    successors, returns = {}, set()
     while pending:
         at = pending.pop()
         if at in seen:
@@ -76,6 +77,8 @@ def walk(image, entries, limit=10000):
         if m in ("int", "int3", "into", "hlt", "in", "out", "insb", "insw", "outsb", "outsw"):
             gaps.append({"site": at, "reason": "hardware or interrupt boundary"})
             continue
+        if m in ("call", "lcall") and following not in following_sites:
+            returns.add((at, following))
         pending.append(following)
         following_sites.append(following)
     # An entry into another instruction is not a verified boundary. Retain both
@@ -88,31 +91,35 @@ def walk(image, entries, limit=10000):
             pairs.append((a, start))
         active.append((start, end))
     # A start is verified when it overlaps nothing, or when a verified instruction
-    # reaches it by a direct edge or by falling through. Each proving step must be
-    # reachable from the entries without passing through the start it proves, so
-    # raw candidates and conflicting declared entries never prove themselves.
-    # Rejected starts are excluded and the proof repeated until nothing changes.
-    rejected = set()
+    # reaches it by a direct edge or by falling through (other than a call's return
+    # site). Each proving step must be reachable from the entries without passing
+    # through the start it proves, so raw candidates and conflicting declared
+    # entries never prove themselves. Rejected starts are excluded and the proof
+    # repeated until nothing changes.
+    rejected, reach = set(), {}
 
     def independent(site, inner):
-        stack, visited = [x for x in entries if x != inner and x not in rejected], set()
-        while stack:
-            at = stack.pop()
-            if at == site:
-                return True
-            if at in visited or at == inner or at in rejected or at not in successors:
-                continue
-            visited.add(at)
-            stack.extend(successors[at])
-        return False
+        # Instructions reachable from the entries without passing through inner or a rejected start.
+        if inner not in reach:
+            stack, visited = [x for x in entries if x != inner and x not in rejected], set()
+            while stack:
+                at = stack.pop()
+                if at in visited or at == inner or at in rejected or at not in successors:
+                    continue
+                visited.add(at)
+                stack.extend(successors[at])
+            reach[inner] = visited
+        return site in reach[inner]
 
     while True:
+        reach.clear()
         verified = {at for at in seen if at not in conflicts and at not in rejected}
         frontier = list(verified)
         while frontier:
             at = frontier.pop()
             for target in successors[at]:
-                if target in seen and target not in verified and target not in rejected and independent(at, target):
+                if ((at, target) not in returns and target in seen and target not in verified
+                        and target not in rejected and independent(at, target)):
                     verified.add(target)
                     frontier.append(target)
         unresolved = {at for pair in pairs if pair[1] not in verified for at in pair}

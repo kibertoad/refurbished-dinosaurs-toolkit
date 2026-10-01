@@ -286,9 +286,10 @@ an interior target as an alternate reachable start. Reports retain that edge's
 and continue to reject conflicting declared entries and operand-byte raw hits
 without such an edge. A proven start also proves the instructions it falls
 through to or directly reaches, so an interior helper longer than one
-instruction keeps its boundaries. Every proving step must be reachable from
-the entries without passing through the start it proves. This does not prove native reachability or arbitrary
-self-modifying instruction layouts.
+instruction keeps its boundaries. A call's return site is not proven this way,
+because the callee might not return. Every proving step must be reachable from
+the entries without passing through the start it proves. This does not prove
+native reachability or arbitrary self-modifying instruction layouts.
 
 An unprefixed segmented16 IRET is modeled only inside a traced push-CS/near-call
 frame built above a locally saved FLAGS word. Stack balance, continuation IP and

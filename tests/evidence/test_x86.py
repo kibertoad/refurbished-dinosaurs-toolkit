@@ -699,6 +699,18 @@ class ReporterTests(unittest.TestCase):
         cfg["regions"][0]["entries"]=[0,1]
         result=run_report(data,cfg,"incoming")
         self.assertEqual({g["site"] for g in result["gaps"] if "overlapping" in g["reason"]},{0,1,2})
+        # A call reached only through a rejected entry proves nothing once that entry is rejected.
+        data=bytes.fromhex("b8 eb 08 90 c7 06 00 02 90 c3 c3 e8 fa ff c3")
+        cfg=configuration(data,target=8)
+        cfg["regions"][0]["entries"]=[0,1]
+        result=run_report(data,cfg,"incoming")
+        self.assertEqual({g["site"] for g in result["gaps"] if "overlapping" in g["reason"]},{0,1,4,8,9})
+
+    def test_call_return_site_does_not_prove_an_overlapping_start(self):
+        # The helper jumps into the call's rel16 and never returns, so the RET after the call is never a start.
+        code=Code().emit("90").label("call").emit("e8 05 00 c3 90 90 90 90").label("helper").emit("eb f8")
+        result=report(code,"incoming",target=code.labels["helper"])
+        self.assertEqual({g["site"] for g in result["gaps"] if "overlapping" in g["reason"]},{1,3,4})
 
     def test_local_iret_requires_saved_frame_and_unmodified_return(self):
         code=Code().emit("0e").branch("e8","iret").emit("c3").label("iret").emit("cf")
