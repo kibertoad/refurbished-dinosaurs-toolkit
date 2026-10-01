@@ -502,3 +502,14 @@ records the arithmetic and image bounds. Only an uncapped, positively controlled
 zero inventory without unresolved mappings sets `negativeUsable`; it covers the
 declared representation alone and never establishes runtime pointer use or
 universal absence.
+
+Owner reports include `checkedEntries` with traversed ranges, completeness,
+entry evidence, continuation assumptions and source-derived overlay exports.
+Owners retain descriptor/trampoline/code-container provenance. The analyzer
+hypothesis reports its actual traversed span and ranges even when it fails to
+reach the queried instruction. `boundaryCheck.joinableWithinModel` requires
+an instruction start reached by a complete owner traversal without cross-entry
+conflicts. It does not establish player reachability, callee effects or
+universal ownership; continuation assumptions stay explicit. The Node source
+loader derives export metadata from hash-guarded MZ/FBOV tables and rejects a
+caller-supplied copy. Body-byte size is never treated as a contiguous end.

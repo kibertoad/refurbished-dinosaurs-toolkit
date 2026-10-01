@@ -247,3 +247,17 @@ test('pointer exclusions remain bounded and do not qualify overflow or partial o
   w(112,0x10);w(114,0xFEFF);const wrapped=execute({...config,loadSegment:256,query:{segment:257,offset:33}});
   assert.equal(wrapped.counts.unresolved,1);assert.equal(wrapped.counts.excluded,2);assert.equal(wrapped.negativeUsable,false);
 });
+
+
+test('owner reports source-derived exported entries and rejects supplied export metadata', t => {
+  const {dir,config}=overlayFixture(t),path=join(dir,'owner.json');
+  writeFileSync(path,JSON.stringify({...config,query:{site:528},analyzerFunction:{start:532,evidence:'synthetic mistaken neighboring function'}}));
+  const r=run(['owner',path]);
+  const owner=r.owners.find(o=>o.entry===528);
+  assert.deepEqual(owner.ranges,[{start:528,end:529}]);
+  assert.equal(owner.boundaryCheck.joinableWithinModel,true);
+  assert.deepEqual(owner.overlayExports,[{descriptor:1,trampoline:288,entry:528,codeRange:{start:528,end:560},evidence:'source FBOV descriptor/trampoline'}]);
+  assert.equal(r.analyzer.agrees,false);assert.deepEqual(r.analyzer.span,{start:532,end:538});
+  assert.equal(r.checkedEntries.find(e=>e.entry===528).entryEvidence,'synthetic overlay view');
+  assert.throws(()=>prepare({...config,overlayExports:[]},dir),/source-derived/);
+});
