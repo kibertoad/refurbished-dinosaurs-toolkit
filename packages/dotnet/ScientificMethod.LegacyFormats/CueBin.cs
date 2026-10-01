@@ -24,9 +24,12 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
 
     // Source-generated and non-backtracking: a cue sheet is untrusted input, and these patterns mix
     // \s+ with \S+ in a way a backtracking engine can be made to walk quadratically.
-    [GeneratedRegex("^\\s*FILE\\s+(?:\"(?<quoted>[^\"]+)\"|(?<plain>\\S+))\\s+\\S+\\s*$",
+    [GeneratedRegex("^\\s*FILE\\s+(?:\"(?<quoted>[^\"]+)\"|(?<plain>\\S+))\\s+(?<type>\\S+)\\s*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking)]
     private static partial Regex FilePattern();
+    [GeneratedRegex("^\\s*(?:FILE|TRACK|INDEX)(?:\\s|$)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking)]
+    private static partial Regex LayoutCommandPattern();
     [GeneratedRegex("^\\s*TRACK\\s+(?<number>\\d+)\\s+(?<type>\\S+)\\s*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking)]
     private static partial Regex TrackPattern();
@@ -59,10 +62,11 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     }
 
     /// <summary>
-    /// Parses a cue sheet. It must name exactly one <c>FILE</c> by a safe relative path, number its
-    /// 1 to 99 tracks consecutively from 1, begin with a <c>MODE1/2352</c> track followed only by
-    /// <c>AUDIO</c> tracks, give each track an <c>INDEX 01</c> no earlier than its <c>INDEX 00</c>, and
-    /// keep track starts in order.
+    /// Parses a cue sheet. It must name exactly one <c>BINARY</c> <c>FILE</c> by a safe relative path,
+    /// number its 1 to 99 tracks consecutively from 1, begin with a <c>MODE1/2352</c> track whose
+    /// <c>INDEX 01</c> is at <c>00:00:00</c> followed only by <c>AUDIO</c> tracks, give each track an
+    /// <c>INDEX 01</c>, and keep every index in order, within a track and across tracks. A
+    /// <c>FILE</c>, <c>TRACK</c> or <c>INDEX</c> line it cannot read is rejected, not skipped.
     /// </summary>
     /// <exception cref="InvalidDataException">The text breaks one of these rules or a timestamp is invalid.</exception>
     public static CueBinSheet Parse(string text)
@@ -79,6 +83,8 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
             {
                 if (referencedFile is not null)
                     throw new InvalidDataException("Multi-file cue sheets are not supported.");
+                if (!file.Groups["type"].Value.Equals("BINARY", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException($"Unsupported cue FILE type {Truncate(file.Groups["type"].Value)}; expected BINARY.");
                 referencedFile = file.Groups["quoted"].Success
                     ? file.Groups["quoted"].Value : file.Groups["plain"].Value;
                 continue;
@@ -94,7 +100,14 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
             }
 
             var index = IndexPattern().Match(line);
-            if (!index.Success) continue;
+            if (!index.Success)
+            {
+                // A FILE, TRACK or INDEX line the patterns above cannot read changes the layout;
+                // skipping it would read the image against the wrong tracks or file.
+                if (LayoutCommandPattern().IsMatch(line))
+                    throw new InvalidDataException($"Unsupported cue line: {Truncate(line.Trim())}");
+                continue;
+            }
             if (tracks.Count == 0) throw new InvalidDataException("Cue INDEX appears before TRACK.");
             if (!int.TryParse(index.Groups["number"].Value, out var indexNumber) ||
                 !int.TryParse(index.Groups["minute"].Value, out var minute) ||
@@ -129,20 +142,28 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
                 throw new InvalidDataException("Cue track numbers must be consecutive and start at 1.");
             if (!indices.TryGetValue(1, out var start))
                 throw new InvalidDataException($"Track {number:D2} has no INDEX 01.");
-            if (indices.TryGetValue(0, out var pregap))
-            {
-                if (pregap > start) throw new InvalidDataException($"Track {number:D2} has INDEX 00 after INDEX 01.");
-                start = pregap;
-            }
-            if (start < previous) throw new InvalidDataException("Cue track indices are not in order.");
+            if (indices.TryGetValue(0, out var pregap) && pregap > start)
+                throw new InvalidDataException($"Track {number:D2} has INDEX 00 after INDEX 01.");
+            // The data track's user data is read from the first sector of the BIN, so its
+            // INDEX 01 must be there; a stored pregap ahead of it would be read as the volume.
+            if (offset == 0 && start != 0)
+                throw new InvalidDataException("Track 01 INDEX 01 must be at 00:00:00.");
             if (offset > 0 && type != "AUDIO")
                 throw new InvalidDataException($"Unsupported non-audio track {number:D2}: {type}.");
-            previous = start;
+            // Every index of a track must follow every index of the track before it, and the
+            // indices of one track must rise with their numbers.
+            foreach (var (_, sector) in indices.OrderBy(entry => entry.Key))
+            {
+                if (sector < previous) throw new InvalidDataException("Cue track indices are not in order.");
+                previous = sector;
+            }
         }
 
         return new(referencedFile, tracks.Select(track =>
             new CueBinTrack(track.Number, track.Type, track.Indices)).ToArray());
     }
+
+    private static string Truncate(string value) => value.Length <= 80 ? value : value[..80] + "...";
 
     /// <summary>
     /// Checks that <paramref name="path"/> is a whole number of raw sectors and that every index of
@@ -192,9 +213,17 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
         var cues = Enumerate(directory, ".cue");
         cuePath ??= MatchStem(binPath, cues) ?? Single(cues, "cue sheet");
         var sheet = Load(cuePath);
-        binPath ??= ResolveReference(directory, sheet.ReferencedFile)
-                    ?? MatchStem(cuePath, Enumerate(directory, ".bin"))
-                    ?? Single(Enumerate(directory, ".bin"), "BIN image");
+        var referenced = ResolveReference(directory, sheet.ReferencedFile);
+        // A sheet found for a given BIN must not describe another BIN that is present.
+        if (binPath is not null && referenced is not null && !string.Equals(referenced, binPath,
+                OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException(
+                $"Cue sheet {Path.GetFileName(cuePath)} describes {sheet.ReferencedFile}, not {Path.GetFileName(binPath)}.");
+        if (binPath is null)
+        {
+            var bins = Enumerate(directory, ".bin");
+            binPath = referenced ?? MatchStem(cuePath, bins) ?? Single(bins, "BIN image");
+        }
         return (cuePath, binPath, sheet);
     }
 
@@ -241,6 +270,7 @@ internal sealed class RawMode1UserDataStream(Stream source, long sectorCount) : 
     private static ReadOnlySpan<byte> SyncPattern =>
         [0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00];
     private readonly byte[] sector = new byte[CueBinSheet.RawSectorSize];
+    private long sectorIndex = -1;
     private long position;
 
     public override bool CanRead => true;
@@ -286,8 +316,11 @@ internal sealed class RawMode1UserDataStream(Stream source, long sectorCount) : 
         base.Dispose(disposing);
     }
 
+    // Keeps the last sector read, so small sequential reads do not read and check it again.
     private void ReadRawSector(long index)
     {
+        if (index == sectorIndex) return;
+        sectorIndex = -1;
         source.Position = checked(index * CueBinSheet.RawSectorSize);
         source.ReadExactly(sector);
         if (!sector.AsSpan(0, SyncPattern.Length).SequenceEqual(SyncPattern))
@@ -296,6 +329,7 @@ internal sealed class RawMode1UserDataStream(Stream source, long sectorCount) : 
         if (sector[15] != 1)
             throw new InvalidDataException(
                 $"Sector {index} is mode {sector[15]}, but the cue sheet declares MODE1/2352.");
+        sectorIndex = index;
     }
 
     private long ValidatePosition(long value) => value >= 0 && value <= Length

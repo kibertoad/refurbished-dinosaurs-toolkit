@@ -100,19 +100,23 @@ public abstract class OriginalContentSource : IDisposable
         if (!File.Exists(fullPath)) throw new FileNotFoundException("ISO image does not exist.", fullPath);
         return new Iso9660ContentSource(
             () => new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read),
-            new FileInfo(fullPath).Length, ContentSourceKinds.Iso9660, null);
+            ContentSourceKinds.Iso9660, null);
     }
 
     /// <summary>
     /// Opens the ISO 9660 volume on the data track of a cue/bin raw disc image. <paramref name="path"/>
     /// is the <c>.cue</c> file, the <c>.bin</c> file, or the directory holding them; the other file is
     /// the one the sheet's <c>FILE</c> names, else the one with the same name, else the only one there.
+    /// A sheet found for a given <c>.bin</c> must not name a different BIN that is present.
     /// The sheet is checked as <see cref="CueBinSheet.Parse"/> and <see cref="CueBinSheet.ValidateBin"/>
     /// describe, the data track ends where the second track's pregap or audio begins, every raw sector
     /// read is checked to be MODE1, and the volume is checked as <see cref="OpenIso9660"/> describes.
     /// </summary>
-    /// <exception cref="FileNotFoundException">The path, or a file the sheet needs, does not exist.</exception>
-    /// <exception cref="InvalidDataException">The sheet, image or volume is not valid, or the files are ambiguous.</exception>
+    /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
+    /// <exception cref="InvalidDataException">
+    /// The sheet, image or volume is not valid, the input is not a directory or a <c>.cue</c> or <c>.bin</c>
+    /// file, a sheet or BIN cannot be found next to the other, or the files are ambiguous.
+    /// </exception>
     public static OriginalContentSource OpenCueBin(string path)
     {
         var (_, binPath, sheet) = CueBinSheet.Resolve(path);
@@ -124,7 +128,7 @@ public abstract class OriginalContentSource : IDisposable
         return new Iso9660ContentSource(
             () => new RawMode1UserDataStream(
                 new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read), dataSectors),
-            checked(dataSectors * 2048), ContentSourceKinds.CueBin, sheet);
+            ContentSourceKinds.CueBin, sheet);
     }
 
     internal static string NormalizeRelative(string path)
@@ -163,7 +167,7 @@ internal sealed class DirectoryContentSource : OriginalContentSource
             .OrderBy(entry => entry.Path, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
-    public override string Kind => "directory";
+    public override string Kind => ContentSourceKinds.Directory;
     public override string? Label => null;
     public override IReadOnlyList<ContentSourceEntry> Files { get; }
 
@@ -197,18 +201,17 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     private const uint MaximumDirectoryBytes = 64 * 1024 * 1024;
 
     private readonly Func<Stream> openImage;
-    private readonly long imageLength;
     private readonly long volumeLength;
     private readonly Dictionary<string, IsoEntry> files = new(StringComparer.OrdinalIgnoreCase);
 
-    // openImage returns a new seekable stream of 2048-byte sectors each time; imageLength is its length.
-    public Iso9660ContentSource(Func<Stream> openImage, long imageLength, string kind, CueBinSheet? cue)
+    // openImage returns a new seekable stream of 2048-byte sectors each time.
+    public Iso9660ContentSource(Func<Stream> openImage, string kind, CueBinSheet? cue)
     {
         this.openImage = openImage;
-        this.imageLength = imageLength;
         Kind = kind;
         Cue = cue;
         using var stream = openImage();
+        var imageLength = stream.Length;
         if (imageLength < 18L * SectorSize)
             throw new InvalidDataException("Source is too small to be an ISO9660 image.");
 

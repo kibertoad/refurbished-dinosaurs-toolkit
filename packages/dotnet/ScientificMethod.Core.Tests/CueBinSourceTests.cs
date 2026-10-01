@@ -137,7 +137,14 @@ public sealed class CueBinSourceTests
     [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nINDEX 01 00:00:01\n")]
     [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nTRACK 03 AUDIO\nINDEX 01 00:01:00\n")]
     [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nTRACK 02 MODE1/2352\nINDEX 01 00:01:00\n")]
-    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:02:00\nTRACK 02 AUDIO\nINDEX 01 00:01:00\n")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nTRACK 02 AUDIO\nINDEX 01 00:02:00\nTRACK 03 AUDIO\nINDEX 01 00:01:00\n")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 00 00:00:00\nINDEX 01 00:02:00\n")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nINDEX 02 00:05:00\nTRACK 02 AUDIO\nINDEX 00 00:03:00\nINDEX 01 00:06:00\n")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nTRACK 02 AUDIO\nINDEX 01 00:04:00\nINDEX 02 00:03:00\n")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nFILE track 2.bin BINARY\nTRACK 02 AUDIO\nINDEX 01 00:01:00\n")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nTRACK 02 AUDIO COPY\nINDEX 02 00:01:00\n")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nINDEX 02 00:01\n")]
+    [InlineData("FILE a.wav WAVE\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n")]
     [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nTRACK 02 AUDIO\nINDEX 00 00:04:00\nINDEX 01 00:02:00\n")]
     public void CueParserRejectsUnsupportedSheets(string text) =>
         Assert.Throws<InvalidDataException>(() => CueBinSheet.Parse(text));
@@ -155,6 +162,52 @@ public sealed class CueBinSourceTests
         Assert.Equal(2250, sheet.DataTrackSectors);
         Assert.Null(CueBinSheet.Parse(SingleTrackCue).DataTrackSectors);
         Assert.Throws<InvalidDataException>(() => CueBinSheet.Parse(new string(' ', CueBinSheet.MaximumCueLength + 1)));
+    }
+
+    [Fact]
+    public void CueParserAcceptsADataTrackWithAZeroLengthPregap()
+    {
+        var sheet = CueBinSheet.Parse(
+            "FILE game.bin binary\nTRACK 01 MODE1/2352\nINDEX 00 00:00:00\nINDEX 01 00:00:00\nPREGAP 00:02:00\n");
+        Assert.Equal(0, sheet.Tracks[0].Indices[0]);
+    }
+
+    [Fact]
+    public async Task CueBinSourceRejectsASheetThatDescribesAnotherBin()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var image = ToRaw(OriginalContentSourceTests.BuildIso([1]));
+            await File.WriteAllBytesAsync(Path.Combine(root, "disc1.bin"), image, TestContext.Current.CancellationToken);
+            await File.WriteAllBytesAsync(Path.Combine(root, "disc2.bin"), image, TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(Path.Combine(root, "disc2.cue"),
+                SingleTrackCue.Replace("game.bin", "disc2.bin", StringComparison.Ordinal), TestContext.Current.CancellationToken);
+
+            var failure = Assert.Throws<InvalidDataException>(
+                () => OriginalContentSource.OpenCueBin(Path.Combine(root, "disc1.bin")));
+            Assert.Contains("disc2.bin", failure.Message, StringComparison.Ordinal);
+            using var source = OriginalContentSource.OpenCueBin(Path.Combine(root, "disc2.bin"));
+            Assert.Equal("disc2.bin", source.Cue?.ReferencedFile);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task CueBinSourceReadsAFileOneByteAtATime()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var payload = new byte[] { 9, 8, 7, 6, 5 };
+            await WriteAsync(root, ToRaw(OriginalContentSourceTests.BuildIso(payload)), SingleTrackCue);
+            using var source = OriginalContentSource.OpenCueBin(root);
+            using var stream = source.OpenRead("EI/TEST.BIN");
+            var actual = new List<byte>();
+            for (var value = stream.ReadByte(); value >= 0; value = stream.ReadByte()) actual.Add((byte)value);
+            Assert.Equal(payload, actual);
+        }
+        finally { Directory.Delete(root, true); }
     }
 
     [Fact]
