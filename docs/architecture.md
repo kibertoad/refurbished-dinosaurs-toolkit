@@ -75,8 +75,8 @@ Dependency-free .NET libraries for the restored games themselves. Core holds ass
 manifests, staged installation, content locations, diagnostics, deterministic validation, safe
 persistence, viewport math, indexed palettes and an indexed PNG writer. LegacyFormats holds
 bounded PCX, BMP RLE8, Smacker, CUE/CDDA, raw Mode 1, ISO-9660 and 16-bit PCM WAVE readers, and
-`OriginalContentSource`, which reads the original from a directory or an `.iso` image through one
-interface. LegacyFormats references Core, so the two are built, versioned and published together.
+`OriginalContentSource`, which reads the original from a directory, an `.iso` image or a cue/bin
+raw disc image through one interface. LegacyFormats references Core, so the two are built, versioned and published together.
 Every public member has XML documentation, and the build fails without it.
 
 ## The reader-engine contract

@@ -176,6 +176,23 @@ NuGet packages. Reference `ScientificMethod.LegacyFormats` (it brings in Core) a
 `RgbColor`. Build one with `new IndexedPalette(rgb)` from a 768-byte array, or with
 `IndexedPaletteDecoder.Decode` from palette bytes stored in the original.
 
+Repositories created from the template carry their own cue/bin-capable source in
+`Restoration.Resources` (`OriginalContentSource`, `SourceKinds`, `SourceEntry`, `CueSheet`). From
+`ScientificMethod.LegacyFormats` 0.2.0 the package reads the same three kinds and checks cue sheets
+the same way:
+
+| Local type | Package type |
+|---|---|
+| `OriginalContentSource.Open(path, kind)` | `OriginalContentSource.Open(path, kind)` |
+| `SourceKinds.Directory`, `Iso9660`, `CueBin`, `IsSupported` | `ContentSourceKinds.Directory`, `Iso9660`, `CueBin`, `IsSupported` |
+| `SourceEntry` | `ContentSourceEntry` |
+| `CueSheet` (record), `CueTrack` | `CueBinSheet`, `CueBinTrack` (`DataTrackSectors` is an `int?`) |
+
+The package's `CueSheet` is the older line-based reader that `CddaWave` and `RawMode1Image` use;
+it is not the local `CueSheet` record. The package's ISO 9660 reader is slightly stricter than the
+template's: it checks every extent against the volume size the image declares rather than the
+file's length, and refuses a volume smaller than 18 sectors.
+
 ## 6. Verify
 
 - No file under `tools/evidence/x86-reporter/`, `vendor/check-documentation.mjs`, `x86-lock.json`

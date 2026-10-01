@@ -8,16 +8,33 @@ namespace ScientificMethod.LegacyFormats;
 /// <param name="Size">The file's size in bytes.</param>
 public sealed record ContentSourceEntry(string Path, long Size);
 
+/// <summary>The kinds of <see cref="OriginalContentSource"/>, as <see cref="OriginalContentSource.Kind"/> gives them.</summary>
+public static class ContentSourceKinds
+{
+    /// <summary>An installed directory.</summary>
+    public const string Directory = "directory";
+    /// <summary>An ISO 9660 image with 2048-byte sectors, such as a <c>.iso</c> file.</summary>
+    public const string Iso9660 = "iso9660";
+    /// <summary>A <c>.cue</c> sheet and the raw <c>.bin</c> image with 2352-byte sectors it describes.</summary>
+    public const string CueBin = "cue-bin";
+
+    /// <summary>Whether <paramref name="kind"/> is one of the kinds above.</summary>
+    public static bool IsSupported(string kind) => kind is Directory or Iso9660 or CueBin;
+}
+
 /// <summary>
-/// Read access to the user's original files, from an installed directory or an ISO 9660 image, behind
-/// one interface. Paths are relative with <c>/</c> or <c>\</c> separators and match ignoring case.
+/// Read access to the user's original files, from an installed directory, an ISO 9660 image or a
+/// cue/bin raw disc image, behind one interface. Paths are relative with <c>/</c> or <c>\</c>
+/// separators and match ignoring case.
 /// </summary>
 public abstract class OriginalContentSource : IDisposable
 {
-    /// <summary><c>directory</c> or <c>iso9660</c>.</summary>
+    /// <summary>One of <see cref="ContentSourceKinds"/>.</summary>
     public abstract string Kind { get; }
     /// <summary>The ISO volume identifier, or <see langword="null"/> for a directory.</summary>
     public abstract string? Label { get; }
+    /// <summary>The cue sheet of a <see cref="ContentSourceKinds.CueBin"/> source, otherwise <see langword="null"/>.</summary>
+    public virtual CueBinSheet? Cue => null;
     /// <summary>Every file, sorted by path ignoring case.</summary>
     public abstract IReadOnlyList<ContentSourceEntry> Files { get; }
     /// <summary>Looks up a file.</summary>
@@ -31,19 +48,83 @@ public abstract class OriginalContentSource : IDisposable
     public abstract void Dispose();
 
     /// <summary>
-    /// Opens <paramref name="path"/> as a directory source when it is a directory, and as an ISO 9660
-    /// image (2048-byte sectors) when it is a file. An image is checked when opened: block size, volume
-    /// size against the file, both-endian fields agreeing, and every directory and file extent inside the
-    /// volume.
+    /// Opens <paramref name="path"/> as a directory source when it is a directory, as a cue/bin image
+    /// (see <see cref="OpenCueBin"/>) when it is a <c>.cue</c> file, and as an ISO 9660 image (see
+    /// <see cref="OpenIso9660"/>) when it is any other file.
     /// </summary>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
-    /// <exception cref="InvalidDataException">The image is not a valid ISO 9660 volume.</exception>
+    /// <exception cref="InvalidDataException">The image is not a valid volume of its kind.</exception>
     public static OriginalContentSource Open(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         if (Directory.Exists(path)) return new DirectoryContentSource(path);
-        if (File.Exists(path)) return new Iso9660ContentSource(path);
+        if (File.Exists(path))
+            return Path.GetExtension(path).Equals(".cue", StringComparison.OrdinalIgnoreCase)
+                ? OpenCueBin(path) : OpenIso9660(path);
         throw new FileNotFoundException("Original-content source does not exist.", path);
+    }
+
+    /// <summary>Opens <paramref name="path"/> as the kind of source a manifest declares.</summary>
+    /// <param name="path">The directory, image or cue/bin path.</param>
+    /// <param name="kind">One of <see cref="ContentSourceKinds"/>.</param>
+    /// <exception cref="InvalidDataException"><paramref name="kind"/> is unsupported, or the image is not a valid volume of that kind.</exception>
+    /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
+    public static OriginalContentSource Open(string path, string kind) => kind switch
+    {
+        ContentSourceKinds.Directory => OpenDirectory(path),
+        ContentSourceKinds.Iso9660 => OpenIso9660(path),
+        ContentSourceKinds.CueBin => OpenCueBin(path),
+        _ => throw new InvalidDataException($"Unsupported original-content source kind '{kind}'.")
+    };
+
+    /// <summary>Opens an installed directory. Reparse points are skipped.</summary>
+    /// <exception cref="FileNotFoundException">The directory does not exist.</exception>
+    public static OriginalContentSource OpenDirectory(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        if (!Directory.Exists(path)) throw new FileNotFoundException("Source directory does not exist.", path);
+        return new DirectoryContentSource(path);
+    }
+
+    /// <summary>
+    /// Opens an ISO 9660 image with 2048-byte sectors. It is checked when opened: block size, volume size
+    /// against the file, both-endian fields agreeing, and every directory and file extent inside the
+    /// volume.
+    /// </summary>
+    /// <exception cref="FileNotFoundException">The file does not exist.</exception>
+    /// <exception cref="InvalidDataException">The image is not a valid ISO 9660 volume.</exception>
+    public static OriginalContentSource OpenIso9660(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var fullPath = Path.GetFullPath(path);
+        if (!File.Exists(fullPath)) throw new FileNotFoundException("ISO image does not exist.", fullPath);
+        return new Iso9660ContentSource(
+            () => new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read),
+            new FileInfo(fullPath).Length, ContentSourceKinds.Iso9660, null);
+    }
+
+    /// <summary>
+    /// Opens the ISO 9660 volume on the data track of a cue/bin raw disc image. <paramref name="path"/>
+    /// is the <c>.cue</c> file, the <c>.bin</c> file, or the directory holding them; the other file is
+    /// the one the sheet's <c>FILE</c> names, else the one with the same name, else the only one there.
+    /// The sheet is checked as <see cref="CueBinSheet.Parse"/> and <see cref="CueBinSheet.ValidateBin"/>
+    /// describe, the data track ends where the second track's pregap or audio begins, every raw sector
+    /// read is checked to be MODE1, and the volume is checked as <see cref="OpenIso9660"/> describes.
+    /// </summary>
+    /// <exception cref="FileNotFoundException">The path, or a file the sheet needs, does not exist.</exception>
+    /// <exception cref="InvalidDataException">The sheet, image or volume is not valid, or the files are ambiguous.</exception>
+    public static OriginalContentSource OpenCueBin(string path)
+    {
+        var (_, binPath, sheet) = CueBinSheet.Resolve(path);
+        sheet.ValidateBin(binPath);
+        var sectors = new FileInfo(binPath).Length / CueBinSheet.RawSectorSize;
+        long dataSectors = sheet.DataTrackSectors ?? sectors;
+        if (dataSectors <= 16 || dataSectors > sectors)
+            throw new InvalidDataException("Cue data track does not hold an ISO 9660 volume inside the BIN image.");
+        return new Iso9660ContentSource(
+            () => new RawMode1UserDataStream(
+                new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read), dataSectors),
+            checked(dataSectors * 2048), ContentSourceKinds.CueBin, sheet);
     }
 
     internal static string NormalizeRelative(string path)
@@ -115,16 +196,19 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     private const int MaximumEntries = 100_000;
     private const uint MaximumDirectoryBytes = 64 * 1024 * 1024;
 
-    private readonly string imagePath;
+    private readonly Func<Stream> openImage;
     private readonly long imageLength;
     private readonly long volumeLength;
     private readonly Dictionary<string, IsoEntry> files = new(StringComparer.OrdinalIgnoreCase);
 
-    public Iso9660ContentSource(string path)
+    // openImage returns a new seekable stream of 2048-byte sectors each time; imageLength is its length.
+    public Iso9660ContentSource(Func<Stream> openImage, long imageLength, string kind, CueBinSheet? cue)
     {
-        imagePath = Path.GetFullPath(path);
-        using var stream = new FileStream(imagePath, FileMode.Open, FileAccess.Read, FileShare.Read);
-        imageLength = stream.Length;
+        this.openImage = openImage;
+        this.imageLength = imageLength;
+        Kind = kind;
+        Cue = cue;
+        using var stream = openImage();
         if (imageLength < 18L * SectorSize)
             throw new InvalidDataException("Source is too small to be an ISO9660 image.");
 
@@ -144,8 +228,9 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
             .OrderBy(entry => entry.Path, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
-    public override string Kind => "iso9660";
+    public override string Kind { get; }
     public override string? Label { get; }
+    public override CueBinSheet? Cue { get; }
     public override IReadOnlyList<ContentSourceEntry> Files { get; }
 
     public override bool TryGetFile(string relativePath, out ContentSourceEntry? entry)
@@ -163,7 +248,7 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     {
         if (!files.TryGetValue(OriginalContentSource.NormalizeRelative(relativePath), out var value))
             throw new FileNotFoundException("Source file was not found in the ISO image.", relativePath);
-        return new ExtentReadStream(imagePath, checked((long)value.Extent * SectorSize), value.Entry.Size);
+        return new ExtentReadStream(openImage(), checked((long)value.Extent * SectorSize), value.Entry.Size);
     }
 
     public override void Dispose() { }
@@ -272,14 +357,16 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
         var separator = identifier.LastIndexOf(';');
         var name = separator >= 0 ? identifier[..separator] : identifier;
         name = name.TrimEnd('.');
-        if (string.IsNullOrWhiteSpace(name) || name.Contains('/') || name.Contains('\\') || name.Contains('\0'))
+        // ':' would name an alternate data stream on Windows once a caller writes the file out.
+        if (string.IsNullOrWhiteSpace(name) || name.Contains('/') || name.Contains('\\') || name.Contains(':') ||
+            name.Any(char.IsControl))
             throw new InvalidDataException($"Invalid ISO9660 identifier '{identifier}'.");
         return name;
     }
 
     private static string? DecodeIdentifier(ReadOnlySpan<byte> bytes)
     {
-        var value = Encoding.ASCII.GetString(bytes).TrimEnd(' ');
+        var value = Encoding.ASCII.GetString(bytes).TrimEnd(' ', '\0');
         return value.Length == 0 ? null : value;
     }
 
@@ -301,14 +388,15 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
 
 internal sealed class ExtentReadStream : Stream
 {
-    private readonly FileStream stream;
     private readonly long start;
     private readonly long length;
     private long position;
 
-    public ExtentReadStream(string path, long start, long length)
+    private readonly Stream stream;
+
+    public ExtentReadStream(Stream stream, long start, long length)
     {
-        stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        this.stream = stream;
         this.start = start;
         this.length = length;
         stream.Position = start;

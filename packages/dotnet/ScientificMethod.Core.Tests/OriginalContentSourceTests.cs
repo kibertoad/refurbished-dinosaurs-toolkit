@@ -131,7 +131,35 @@ public sealed class OriginalContentSourceTests
         }
     }
 
-    private static byte[] BuildIso(byte[] payload)
+    [Theory]
+    [InlineData((byte)':')]
+    [InlineData((byte)0x07)]
+    public async Task Iso9660SourceRejectsFileNamesUnsafeOnDisk(byte character)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"toad-iso-name-{Guid.NewGuid():N}.iso");
+        var image = BuildIso([1]);
+        image[image.AsSpan().IndexOf("TEST.BIN;1"u8) + 2] = character;
+        await File.WriteAllBytesAsync(path, image, TestContext.Current.CancellationToken);
+        try { Assert.Throws<InvalidDataException>(() => OriginalContentSource.Open(path)); }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task Iso9660SourceTrimsNulPaddingFromTheLabel()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"toad-iso-label-{Guid.NewGuid():N}.iso");
+        var image = BuildIso([1]);
+        image.AsSpan(16 * SectorSize + 40 + "SYNTHETIC_EI".Length, 32 - "SYNTHETIC_EI".Length).Clear();
+        await File.WriteAllBytesAsync(path, image, TestContext.Current.CancellationToken);
+        try
+        {
+            using var source = OriginalContentSource.Open(path);
+            Assert.Equal("SYNTHETIC_EI", source.Label);
+        }
+        finally { File.Delete(path); }
+    }
+
+    internal static byte[] BuildIso(byte[] payload)
     {
         const int rootSector = 20;
         const int gameSector = 21;
