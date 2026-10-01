@@ -99,8 +99,8 @@ reports enter the repository.
 
 ## Phases
 
-Each phase lists its steps and an exit condition a run can check. Phases run in order. Within a
-phase, one iteration takes one step.
+Each phase lists its steps and an exit condition a run can check. Phases run in order. One
+iteration takes one phase and lands it as one PR, except where phase 3 says otherwise.
 
 ### Phase 0: freeze and baseline
 
@@ -154,7 +154,7 @@ dependencies. Implement the p-code interpreter over `Value` (`COPY`, `LOAD`, `ST
 arithmetic and logic, `INT_ZEXT`, `INT_SEXT`, `SUBPIECE`, `PIECE`, carries and borrows, boolean
 operations, `CBRANCH` for conditions). Unsupported p-code stops the path with the op's name.
 
-Then move the groups in this order, one per iteration:
+Then move the groups in this order:
 
 | Group | Mnemonics |
 |---|---|
@@ -171,8 +171,10 @@ Then move the groups in this order, one per iteration:
 | string operations | `movs`, `stos`, `lods`, `cmps`, `scas` with and without `rep` |
 
 A group moves when its differential run meets [Acceptance](#acceptance). Each moved group's
-instructions use pypcode by default. Each group is its own PR: `release:patch` when no report
-changes, `release:minor` when an extended class appears.
+instructions use pypcode by default. Phase 3 may land as several PRs, so groups that pass do not
+wait for a blocked one: the interpreter and dependencies first, then the moved groups in one or
+more PRs. Each PR carries `release:patch` when no report changes and `release:minor` when an
+extended class appears.
 
 Exit: every group is moved, and the full differential run has no disagreement and no stricter
 difference without a recorded follow-up.
@@ -213,15 +215,17 @@ the engine README catalog.
 
 A recurring run does the following, once per iteration:
 
-1. Read Progress. Take the first phase not marked done and its first step not marked done.
+1. Read Progress. Take the first phase not marked done. If its PR is open, wait for it to merge.
 2. If Blockers has an open entry for that phase, stop and report the blocker.
 3. Check the phase's exit condition. If it already holds, mark the phase done with the date and
-   commit, and go to step 1.
-4. Do the step on a branch named `tooling/semantics-<phase>-<step>`, branched from `main`.
+   go to step 1.
+4. Do the phase's steps on one branch named `tooling/semantics-<phase>`, branched from `main`,
+   with a commit per step. A phase 3 PR adds a suffix naming its groups.
 5. Run the gates from `AGENTS.md`. A step is done only when they pass.
-6. Update Progress in the same change: the step's status, the date, and the evidence (test names,
-   class counts, the PR).
-7. Open the PR with the release label from the phase. Do not merge it.
+6. Update Progress in the same change: each step's status, the date, and the evidence (test names,
+   class counts). Mark the phase done when its exit condition holds.
+7. Open one PR against `main` with the release label from the phase. Do not merge it. The next
+   phase branches from `main` after the maintainer merges it.
 8. Stop when a step needs a human: a no-go in phase 1, a disagreement Unicorn cannot settle, a
    stricter case to accept, or a `release:major` label. Write it under Blockers first.
 
