@@ -246,13 +246,46 @@ Rules for every iteration:
 
 | Phase | Status | Date | Evidence |
 |---|---|---|---|
-| 0 freeze and baseline | in progress | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49) |
+| 0 freeze and baseline | in progress | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (PR pending) |
 | 1 pypcode spike | not started | | |
 | 2 semantics seam | not started | | |
 | 3 pypcode backend | not started | | |
 | 4 parity on recorded cases | not started | | |
 | 5 cutover | not started | | |
 | 6 Ghidra callee cross-check | not started | | |
+
+### Handwritten baseline
+
+Recorded 2026-10-02 from `x86/machine.py`. The mnemonics `ordinary()` interprets, by phase 3
+group:
+
+| Group | Handwritten mnemonics |
+|---|---|
+| data movement | `mov`, `movzx`, `movsx`, `xchg`, `nop` |
+| address forms | `lea`, `lds`, `les` |
+| stack | `push`, `pop`, `leave`, `pushf`, `pushfd`, `popf`, `popfd` |
+| compare | `cmp`, `test` |
+| arithmetic and logic | `add`, `sub`, `and`, `or`, `xor`, `inc`, `dec`, `not`, `neg` |
+| carry chain | `adc`, `sbb`, `clc`, `stc`, `cmc` |
+| shifts and rotates | `shl`, `sal`, `shr`, `sar`, `rol`, `ror`, `rcl`, `rcr` |
+| multiply and divide | `mul`, `imul` (one, two and three operands), `div`, `idiv` |
+| conversions | `cbw`, `cwde`, `cwd`, `cdq` |
+| flags and direction | `cld`, `std`, `cli`, `sti` |
+
+Semantics outside `ordinary()`:
+
+- Branch conditions: `predicate`, `BRANCH_CONDITIONS`, `CARRY_BRANCHES` and `CLEARED_BY_LOGIC`
+  decide `je`/`jz`, `jne`/`jnz`, `jb`/`jc`/`jnae`, `jae`/`jnb`/`jnc`, `jbe`/`jna`, `ja`/`jnbe`,
+  `jl`/`jnge`, `jge`/`jnl`, `jle`/`jng`, `jg`/`jnle`, `js`, `jns`, `jo`, `jno`. `jp`/`jpe` and
+  `jnp`/`jpo` have condition keys but `predicate` never resolves them. They belong to the compare
+  group.
+- Shift carries: `shift_carry` sets CF after `shl`, `sal`, `shr` and `sar`.
+- String operations: `string_effect` applies `movs`, `stos` and `lods` (bytes, words and
+  doublewords, with or without `rep`). `string_instruction` rejects `cmps` and `scas`, and
+  `check_string_form` stops `repne`. In the string group, `cmps` and `scas` can only be extended
+  cases.
+- Counter branches in `trace.py`: `loop`, `loope`, `loopne` decrement CX or ECX, and `jcxz`,
+  `jecxz` test it. These stay with the control transfers under decision 1.
 
 ### Spike answers
 
