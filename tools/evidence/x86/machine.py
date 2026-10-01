@@ -103,8 +103,7 @@ class State:
         else:
             self.flags, self.flag_epoch, self.unknown_flag_site, self.direction_flag, self.interrupt_flag = saved
         self.event("flags-restore", width=bits // 8, value=word.report(), intactLocalSnapshot=saved is not None,
-                   direction=self.direction_flag.report(), interrupt=self.interrupt_flag.report(),
-                   arithmeticProducerRestored=saved is not None)
+                   direction=self.direction_flag.report(), interrupt=self.interrupt_flag.report())
 
     def clear_memory(self):
         self.memory.clear()
