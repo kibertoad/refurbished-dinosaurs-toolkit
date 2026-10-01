@@ -51,6 +51,8 @@ class DispatchTests(unittest.TestCase):
         r = run_report(data, config, "bounds")
         self.assertFalse(r["complete"])
         self.assertIn("not declared exhaustive", r["gaps"][0]["reason"])
+        self.assertIn({"site": 0, "kind": "unresolved jump", "reason": "indirect jump table is not declared exhaustive"},
+                      r["exits"])
         r = run_report(data, {**config, "target": 24, "controls": [8]}, "incoming")
         self.assertFalse(r["negativeUsable"])
 

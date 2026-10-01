@@ -192,9 +192,10 @@ def walk(image, entries, limit=10000):
         del seen[at]
     # Mark each direct edge from a surviving site that proves a surviving overlapping start.
     overlapping = {inner for _, inner in pairs} - unresolved
+    # Supplied table edges never prove a boundary, even to a start another edge proves.
     for e in edges:
         if (e["target"] in overlapping and e["site"] in seen and e["site"] in verified
-                and independent(e["site"], e["target"])):
+                and (e["site"], e["target"]) not in supplied_edges and independent(e["site"], e["target"])):
             e["overlappingTarget"] = True
             e["boundaryEvidence"] = "direct edge from an independently verified instruction"
     for at in sorted(unresolved):

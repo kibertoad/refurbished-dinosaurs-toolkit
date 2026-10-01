@@ -98,6 +98,19 @@ export function formatCounts(image) {
   return { relocations: image.relocations.size, descriptors: image.descriptors.length, overlays: image.overlays.length,
     fixups: image.overlays.reduce((n, o) => n + o.fixups.size, 0), trampolines: image.overlays.reduce((n, o) => n + o.trampolines.length, 0) };
 }
+// The canonical overlay entry a descriptor/trampoline selector names; a supplied target must agree.
+export function selectedTarget(image, { descriptor, trampoline }, target) {
+  const declared = image.descriptors[descriptor];
+  if (declared && !(declared.flags & 2))
+    throw new Error(`Descriptor ${descriptor} is resident (flags 0x${declared.flags.toString(16).toUpperCase().padStart(4, "0")} lack the overlay bit); select an overlay descriptor`);
+  const overlay = image.overlays.find((o) => o.descriptor === descriptor);
+  const entry = overlay?.trampolines.find((t) => t.site === trampoline);
+  if (!entry) throw new Error("Target selector is not a declared overlay trampoline");
+  if (target != null && target !== entry.target) throw new Error("Target disagrees with descriptor/trampoline");
+  return entry.target;
+}
+// Every declared segment operand: MZ relocations, then FBOV fixups.
+export const segmentOperands = (image) => [...image.relocations, ...image.overlays.flatMap((o) => [...o.fixups])];
 export function checkFormatControls(image, expected) {
   if (!expected || typeof expected !== "object" || Array.isArray(expected)) throw new Error("formatControls must be an object of expected counts");
   const actual = formatCounts(image), names = Object.keys(actual);
@@ -113,7 +126,7 @@ export function checkFormatControls(image, expected) {
 export function incomingCalls(image, target, { limit = 100, controls = [] } = {}) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 10000) throw new Error("Result limit must be 1..10000");
   if (!Number.isSafeInteger(target) || !image.ranges.some((r) => target >= r.start && target < r.end)) throw new Error("Target is outside mapped ranges");
-  const operands = [...image.relocations, ...image.overlays.flatMap((o) => [...o.fixups])];
+  const operands = segmentOperands(image);
   // Scanned far-call sites and their canonical targets; controls are checked against this.
   const scanned = new Map(), matches = [], unresolved = [];
   for (const operand of operands) {

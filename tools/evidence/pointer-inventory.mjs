@@ -1,5 +1,5 @@
 // Numeric relocated-pair candidates only; this does not establish runtime pointer use.
-import { readMz, formatCounts, checkFormatControls } from './legacy-image.mjs';
+import { readMz, formatCounts, checkFormatControls, segmentOperands, selectedTarget } from './legacy-image.mjs';
 
 export function pointerInventory(bytes, config) {
   if (config.sourceKind !== 'mz') throw new Error('Pointer inventory requires source-derived MZ/FBOV tables');
@@ -11,14 +11,15 @@ export function pointerInventory(bytes, config) {
   const queryFile = image.address(query.segment, query.offset);
   const trampolines = image.overlays.flatMap(o => o.trampolines);
   const target = trampolines.find(t => t.site === queryFile)?.target ?? queryFile;
-  if (config.target !== undefined && config.target !== target) throw new Error('Pointer query disagrees with canonical target');
+  const supplied = config.targetSelector ? selectedTarget(image, config.targetSelector, config.target) : config.target;
+  if (supplied != null && supplied !== target) throw new Error('Pointer query disagrees with canonical target');
   const limit = config.limit ?? 100;
   if (!Number.isInteger(limit) || limit < 1 || limit > 10000) throw new Error('Pointer result limit must be 1..10000');
   const controls = config.controls ?? [];
   if (!Array.isArray(controls) || controls.length > 256 || controls.some(n => !Number.isSafeInteger(n)))
     throw new Error('Pointer controls must be at most 256 segment-operand offsets');
   const exactPair = [], aliasedTarget = [], unresolved = [], inspected = new Map();
-  for (const site of [...image.relocations, ...image.overlays.flatMap(o => [...o.fixups])]) {
+  for (const site of segmentOperands(image)) {
     const range = image.ranges.find(r => site - 2 >= r.start && site + 2 <= r.end);
     if (!range) { unresolved.push({ site, reason: 'preceding offset and segment word do not lie in one source range' }); continue; }
     const offset = bytes.readUInt16LE(site - 2), rawSegment = bytes.readUInt16LE(site);

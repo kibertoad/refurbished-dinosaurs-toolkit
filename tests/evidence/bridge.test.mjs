@@ -204,6 +204,12 @@ test('pointer inventory separates exact loaded pairs, aliases and unresolved map
   assert.equal(negative.counts.exactPair+negative.counts.aliasedTarget,0);
   writeFileSync(path,JSON.stringify({...config,formatControls:{relocations:3}}));
   assert.throws(()=>run(['pointers',path]),/Format control/);
+  // A pair whose loaded segment would pass FFFF is one unresolved row, not a failed inventory.
+  w(6,3); w(114,0xF000); writeFileSync(config.source,data); config.sha256=createHash('sha256').update(data).digest('hex');
+  writeFileSync(path,JSON.stringify(config));
+  const overflow=run(['pointers',path]);
+  assert.equal(overflow.counts.exactPair,1); assert.equal(overflow.negativeUsable,false);
+  assert.ok(overflow.unresolved.some(u=>u.site===114&&/FFFF/.test(u.reason)));
 });
 
 test('pointer inventory retains FBOV descriptor tokens and canonical trampolines', t => {
