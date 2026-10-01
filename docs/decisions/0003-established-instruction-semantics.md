@@ -247,7 +247,7 @@ Rules for every iteration:
 | Phase | Status | Date | Evidence |
 |---|---|---|---|
 | 0 freeze and baseline | done | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
-| 1 pypcode spike | in progress | 2026-10-02 | questions 1 (#52) and 2 (#53) answered |
+| 1 pypcode spike | in progress | 2026-10-02 | questions 1 (#52), 2 (#53) and 3 (#54) answered |
 | 2 semantics seam | not started | | |
 | 3 pypcode backend | not started | | |
 | 4 parity on recorded cases | not started | | |
@@ -317,6 +317,14 @@ Unicorn 2.1.4 and Capstone 5.0.7 on Python 3.14 (Windows). Each answer names its
    drop the write, because CS comes from the declared region; any other write to a segment register
    inside an ordinary instruction stops the path. `x86:LE:32:default` emits no segment operation,
    and the flat model keeps taking segment bases from the evidence layer.
+3. **Arbitrary starts and prefixes: go, with a length check.** (`Question3ArbitraryStarts`)
+   Translation starts at whatever byte it is given, so an overlapping start lifts the inner
+   instruction (`b8 cd 21` lifts `mov ax` at its first byte and `int 21h` at its second). Operand
+   size, segment and repeat prefixes all lift. SLEIGH reads past the end of a short buffer as if it
+   held zero bytes: a lone `66` lifts as `66 00 00` (`add`). The engine therefore lifts exactly the
+   bytes Capstone decoded and stops the path when the IMARK length differs from Capstone's size.
+   Undefined opcodes such as `ud2` lift as a user operation; the interpreter stops on every user
+   operation except `segment`.
 
 ### Groups moved
 
