@@ -54,6 +54,7 @@ offsets alone never establish storage identity.
 ## Commands
 
 All commands return JSON with the input fingerprint and schema `bounded-x86-v1`.
+`target` is described under [Call-target provenance](#call-target-provenance).
 `trace` follows direct calls and local branches, records ordered effects and keeps
 each return separately. `arguments`, `effects`, `returns`, `memory` and `guards`
 select the relevant events from the same traversal. Event order numbers refer to
@@ -325,3 +326,43 @@ relocation guesses. The original ten commands remain available.
 Effect summaries retain string-operation and flag write/assumption/save/restore
 and local-IRET events alongside ordered writes, so the direction provenance is
 visible in an effects query as well as a full trace.
+
+
+## Call-target provenance
+
+`target` takes `query: { site }`, the file offset of one direct call or jump.
+It decodes the instruction there and says whether that boundary is on an
+established entry path, reached only through a rejected start, or a raw byte
+candidate. A relative transfer reports its loaded target and the declared
+mapping that turns it into a file offset. A `ptr16:16` far transfer reports the
+raw offset and segment words (`rawOperand`), the operand site and whether a
+source relocation or FBOV fixup covers the segment word. With one, it adds the
+load segment, the resolved segment and `loadedAddress`. For an FBOV fixup it
+also gives the stored word, the descriptor index decoded from it (the stored
+word shifted right by three), the stored low bits, the descriptor's segment and
+flags, and the resident trampoline the loaded address names. `canonicalTarget`
+is the file offset the transfer reaches, through the trampoline when there is
+one, and `target.citation` is how the standard cites it: `segment:offset` for
+resident code and `+0x` with the file offset for overlay code, with the overlay's
+declared analysis view beside it. A far word nothing relocates gets
+`relocated: false` and no target; its raw words are not a loaded address.
+
+An optional `query.analyzerAddress` (`segment`, `offset`, `evidence`) records
+the address an analyzer shows for the same transfer. The report lists which
+derived identities it equals (`raw operand`, `loaded address`, `canonical
+target`) and sets `disagrees` when it equals none. One equal only to the raw
+operand names unrelocated bytes. The analyzer address never replaces the
+derived chain.
+
+## Format-table controls
+
+The MZ/FBOV loader validates the descriptor overlay flag, header trap, payload,
+code, fixup and trampoline bounds and fixup operand membership while it reads
+the tables. Every report carries `formatTables`, the load segment and the counts
+the tables yield: `relocations`, `descriptors`, `overlays`, `fixups` and
+`trampolines`. An optional `formatControls` object names the counts a build is
+known to have, and any difference fails the query before it runs, so a misread
+table cannot quietly shrink a search. A `targetSelector` that names a resident
+descriptor fails with that descriptor's flags. The lightweight `incomingCalls`
+inventory lists a far-call candidate whose instruction would leave every mapped
+range under `unresolved` instead of skipping it.

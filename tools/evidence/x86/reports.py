@@ -1,6 +1,6 @@
 """Focused reports derived from instruction paths and explicit source bounds."""
 from capstone import CS_AC_READ, CS_AC_WRITE
-from capstone.x86 import X86_OP_MEM, X86_OP_REG
+from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 from .machine import State, StopPath, REGISTERS, ALIASES, segment_register
 from .values import unknown
 from .image import Image, integer
@@ -451,9 +451,107 @@ def operand_provenance(image, config):
     return result
 
 
+def _segmented(segment, offset):
+    return f"{segment:04X}:{offset:04X}"
+
+
+def _citation(image, target):
+    """How the standard cites a canonical file offset: resident code by mapped address, overlay code by file offset."""
+    region = image.region(target)
+    if region is None:
+        return {"fileOffset": target, "region": None, "citation": None,
+                "reason": "canonical target is outside the declared regions"}
+    ip = (region["ip"] + target - region["start"]) & image.mask
+    if image.flat:
+        return {"fileOffset": target, "region": region["name"], "citation": f"{ip:08X}", "form": "preferred-base virtual address"}
+    if region.get("resident", False):
+        return {"fileOffset": target, "region": region["name"], "citation": _segmented(region["segment"], ip),
+                "form": "resident load-image address"}
+    return {"fileOffset": target, "region": region["name"], "citation": f"+0x{target:08X}",
+            "form": "file offset; prefix the path the build entry gives",
+            "analysisView": _segmented(region["segment"], ip)}
+
+
+def call_target_report(image, config):
+    """One direct transfer: the raw operand, its relocation or fixup chain and the address it may be cited by."""
+    query = config.get("query", {})
+    if not isinstance(query, dict):
+        raise ValueError("Target query must be an object")
+    site = integer(query.get("site"), 0, len(image.data) - 1, "call site")
+    ins = image.decode(site)
+    if ins is None or ins.mnemonic not in ("call", "lcall", "jmp", "ljmp") or not ins.operands or ins.operands[0].type != X86_OP_IMM:
+        raise ValueError("Target site must decode as a direct call or jump inside a declared region")
+    if unsupported_transfer(image, ins):
+        raise ValueError("Operand-size or far control transfer is outside the selected frame model")
+    seen, gaps, _, _, contested = walk(image, entries(image), config.get("instructionLimit", 10000))
+    boundary = ("entry-path instruction" if site in seen else CONTESTED_REASON if site in contested
+                else "raw byte candidate; instruction boundary unverified")
+    result = {"site": site, "mnemonic": ins.mnemonic, "size": ins.size, "boundary": boundary,
+              "nativeReachability": "unconfirmed"}
+    region = image.region(site)
+    if ins.mnemonic in ("call", "jmp"):
+        loaded = ins.operands[0].imm & image.mask
+        target = image.near_target(site, loaded)
+        result.update({"encoding": "relative", "loadedTarget": loaded,
+                       "loadedAddress": f"{loaded:08X}" if image.flat else _segmented(region["segment"], loaded),
+                       "relocated": None, "relocation": "relative transfers carry no relocation",
+                       "mapping": "source PE section table" if image.config.get("peMetadata") else f"declared mapping of region {region['name']}",
+                       "canonicalTarget": target, "target": None if target is None else _citation(image, target)})
+    else:
+        if ins.size != 5 or image.data[site] not in (0x9a, 0xea):
+            raise ValueError("Only the ptr16:16 far transfer encoding is supported")
+        raw_offset = int.from_bytes(image.data[site + 1:site + 3], "little")
+        raw_segment = int.from_bytes(image.data[site + 3:site + 5], "little")
+        result.update({"encoding": "ptr16:16", "operandSite": site + 3, "rawOffset": raw_offset, "rawSegment": raw_segment,
+                       "rawOperand": _segmented(raw_segment, raw_offset)})
+        fixup = image.fixups.get(site + 3)
+        if fixup is None:
+            result.update({"relocated": False, "canonicalTarget": None, "target": None,
+                           "reason": "no relocation or fixup covers the segment word; the raw operand is not a loaded address and no target is assigned"})
+        else:
+            if "raw" in fixup and fixup["raw"] != raw_segment:
+                raise ValueError("Relocation raw word disagrees with the encoded segment operand")
+            overlay = fixup.get("descriptor") is not None
+            result.update({"relocated": True, "kind": "FBOV fixup" if overlay else "MZ relocation", "evidence": fixup["evidence"],
+                           "loadSegment": fixup.get("loadSegment"), "resolvedSegment": fixup["segment"],
+                           "loadedAddress": _segmented(fixup["segment"], raw_offset)})
+            if overlay:
+                result.update({"storedWord": raw_segment, "descriptor": fixup["descriptor"], "storedLowBits": raw_segment & 7,
+                               "descriptorSegment": fixup.get("descriptorSegment"), "descriptorFlags": fixup.get("descriptorFlags"),
+                               "note": "the stored word is the descriptor index shifted left by three; it is neither the index nor a segment"})
+            else:
+                result["note"] = "the raw word is relative to the load image; the loader adds the load segment"
+            for name in ("loadedTarget", "trampoline", "targetError"):
+                if fixup.get(name) is not None:
+                    result[name] = fixup[name]
+            if "raw" not in fixup:
+                result["mappingProvenance"] = "relocation metadata supplied by the caller, not read from the source"
+            target, _ = image.far_target(site, ins)
+            result["canonicalTarget"] = target
+            result["target"] = None if target is None else _citation(image, target)
+    analyzer = query.get("analyzerAddress")
+    if analyzer is not None:
+        if not isinstance(analyzer, dict) or not analyzer.get("evidence"):
+            raise ValueError("analyzerAddress needs segment, offset and evidence")
+        shown = _segmented(integer(analyzer.get("segment"), 0, 65535, "analyzer segment"),
+                           integer(analyzer.get("offset"), 0, 65535, "analyzer offset"))
+        cited = result.get("target") or {}
+        identities = {"raw operand": result.get("rawOperand"), "loaded address": result.get("loadedAddress"),
+                      "canonical target": cited.get("analysisView") or cited.get("citation")}
+        matched = [name for name, value in identities.items() if value == shown]
+        result["analyzer"] = {"address": shown, "evidence": analyzer["evidence"], "matches": matched, "disagrees": not matched,
+                              "interpretation": ("equal only to the raw operand, which names unrelocated bytes"
+                                                 if matched == ["raw operand"] else
+                                                 "kept beside the derived chain; it never replaces the relocation, descriptor or trampoline identities")}
+    result["gaps"] = [g for g in gaps if g.get("site") == site]
+    return result
+
+
 def _run_report(image, config, command):
     if command == "operand":
         return operand_provenance(image, config)
+    if command == "target":
+        return call_target_report(image, config)
     if command == "incoming":
         return incoming(image, config)
     if command == "uses":
@@ -488,4 +586,5 @@ def run_report(data, config, command):
     result = _run_report(image, image.config, command)
     return {"instructionModel": {"bits": image.bits, "addressModel": "flat32" if image.flat else "segmented16",
                                  "flatAssumption": "CS/DS/ES/SS bases zero; FS/GS bases unknown" if image.flat else None},
-            "sourceMapping": image.config.get("peMetadata"), "declaredRegions": image.regions, **result}
+            "sourceMapping": image.config.get("peMetadata"), "formatTables": image.config.get("formatTables"),
+            "declaredRegions": image.regions, **result}
