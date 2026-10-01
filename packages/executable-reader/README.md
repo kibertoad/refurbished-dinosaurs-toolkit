@@ -76,6 +76,10 @@ import { pointerInventory } from "@scientific-method/executable-reader/pointer-i
 
 Each export carries a doc comment with its exact checks and errors.
 
+Engine `effects` reports retain ordered effect-path summaries through the prepared
+bridge, including writes before returning-service failures and explicit unknown
+child effects. A local restoration witness never claims external transactionality.
+
 ## Licence
 
 MIT. `NOTICE.md` records the template code the MZ/FBOV loader is adapted from.
