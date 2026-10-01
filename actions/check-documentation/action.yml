@@ -13,6 +13,14 @@ inputs:
     description: Comma-separated directories whose files may cite spec and deviation IDs but whose PLACEHOLDER comments do not count.
     required: false
     default: ""
+  images:
+    description: Comma-separated half-open address ranges of the original's flat 32-bit images, such as 0x00400000..0x004C9000. A 0x value inside one that a code comment gives must be recorded in an entry the comment cites. Empty checks only fn_ and g_ names.
+    required: false
+    default: ""
+  max-range:
+    description: The largest address range, in bytes, by which an entry records an address. Empty uses 0x10000.
+    required: false
+    default: ""
   data-dirs:
     description: Comma-separated top-level directories of the original's data. Empty derives them from the build entries.
     required: false
@@ -63,11 +71,15 @@ runs:
         DOC_ROOT: ${{ inputs.root }}
         DOC_CODE: ${{ inputs.code }}
         DOC_REFERENCES: ${{ inputs.references }}
+        DOC_IMAGES: ${{ inputs.images }}
+        DOC_MAX_RANGE: ${{ inputs.max-range }}
         DOC_DATA_DIRS: ${{ inputs.data-dirs }}
         DOC_BASE: ${{ inputs.base }}
       run: |
         set -euo pipefail
         args=(--root "$DOC_ROOT" --check --code "$DOC_CODE" --references "$DOC_REFERENCES")
+        if [ -n "$DOC_IMAGES" ]; then args+=(--images "$DOC_IMAGES"); fi
+        if [ -n "$DOC_MAX_RANGE" ]; then args+=(--max-range "$DOC_MAX_RANGE"); fi
         if [ -n "$DOC_DATA_DIRS" ]; then args+=(--data-dirs "$DOC_DATA_DIRS"); fi
         if [ -n "$DOC_BASE" ]; then args+=(--base "$DOC_BASE"); fi
         node "$GITHUB_ACTION_PATH/../../tools/check-documentation.mjs" "${args[@]}"
