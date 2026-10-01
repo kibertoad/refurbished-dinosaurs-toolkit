@@ -2,7 +2,7 @@
 from copy import deepcopy
 from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
 from .image import integer
-from .machine import (State, StopPath, ordinary, predicate, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
+from .machine import (State, StopPath, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
                       string_count, string_effect, check_string_form)
 from .values import const, unknown, sources, op, Value
 from .result_flow import validate_contracts, result_contracts
@@ -50,7 +50,7 @@ def counter_branch(state, ins):
     nonzero = None if count.number is None else count.number != 0
     zero_flag = None
     if m != "loop":
-        zero_flag, flag_info = predicate(state, "je")
+        zero_flag, flag_info = state.semantics.condition(state, "je")
         info["zeroFlag"] = flag_info
         if zero_flag is not None and m in ("loopne", "loopnz"):
             zero_flag = not zero_flag
@@ -482,7 +482,7 @@ def trace(image, config):
                         answer, info, key = counter_branch(state, ins)
                         negated = False
                     else:
-                        answer, info = predicate(state, m)
+                        answer, info = state.semantics.condition(state, m)
                         condition, negated = BRANCH_CONDITIONS.get(m, (m, False))
                         if condition == "c":
                             # CF can outlive its producer (INC/DEC, CLC/STC, shifts), so key it by its own value.
@@ -515,7 +515,7 @@ def trace(image, config):
                             pending.append(child)
                             created += 1
                     continue
-                ordinary(state, ins, image)
+                state.semantics.ordinary(state, ins, image)
                 state.at = following
         except StopPath as error:
             finish(state, str(error))

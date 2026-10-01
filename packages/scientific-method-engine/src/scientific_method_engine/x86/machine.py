@@ -2,6 +2,7 @@
 from copy import deepcopy
 from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
 from .values import Value, const, unknown, op, extract, join, resize, sources, address_parts, producers
+from . import semantics
 
 REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "cs", "ds", "es", "ss", "fs", "gs")
 ALIASES = {}
@@ -38,6 +39,7 @@ def alias(name):
 class State:
     def __init__(self, entry, image, config):
         self.bits, self.flat, self.mask = image.bits, image.flat, image.mask
+        self.semantics = semantics.current()
         self.sp, self.bp = ("esp", "ebp") if self.flat else ("sp", "bp")
         self.at = entry
         self.regs = {r: unknown("initial:" + r, ALIASES[r][2]) for r in REGISTERS}
@@ -117,7 +119,7 @@ class State:
     def carry_value(self):
         """CF as a one-bit value: from the last comparable flag producer, an explicit carry, or unknown."""
         if self.flags is not None:
-            answer, _ = predicate(self, "jb")
+            answer, _ = self.semantics.condition(self, "jb")
             if answer is not None:
                 return const(int(answer), 1, self.flags[3])
             # Name the carry by its producer's operands, so every reading of one comparison shares an assumption.
@@ -675,19 +677,45 @@ def string_effect(state, ins, count, remaining):
         raise StopPath("Direction flag unresolved; conditional string paths required")
     # MOVS/LODS decode their source as the second memory operand, carrying any segment override.
     source_name = segment_register(ins, ins.operands[1].mem) if operation in ("movs", "lods") else None
-    si, di = ("esi", "edi") if state.flat else ("si", "di")
     delta = -width if state.direction_flag.number else width
     for _ in range(count.number):
-        if operation in ("movs", "lods"):
-            value = state.access(state.segment(source_name), state.reg(si), width, role="string-source", addressing_register=source_name)
-            state.setreg(si, op("add", state.reg(si), const(delta, state.bits), state.at), state.at)
-        else:
-            value = state.reg({1:"al",2:"ax",4:"eax"}[width])
-        if operation in ("movs", "stos"):
-            state.access(state.segment("es"), state.reg(di), width, value, role="string-destination", addressing_register="es")
-            state.setreg(di, op("add", state.reg(di), const(delta, state.bits), state.at), state.at)
-        else:
-            state.setreg({1:"al",2:"ax",4:"eax"}[width], value, state.at)
+        state.semantics.string_iteration(state, ins, operation, width, source_name, delta)
     if 0xF3 in ins.prefix:
         state.setreg("ecx" if state.flat else "cx", const(0, state.bits, state.at), state.at)
     return count.number
+
+
+def string_iteration(state, ins, operation, width, source_name, delta):
+    si, di = ("esi", "edi") if state.flat else ("si", "di")
+    if operation in ("movs", "lods"):
+        value = state.access(state.segment(source_name), state.reg(si), width, role="string-source", addressing_register=source_name)
+        state.setreg(si, op("add", state.reg(si), const(delta, state.bits), state.at), state.at)
+    else:
+        value = state.reg({1:"al",2:"ax",4:"eax"}[width])
+    if operation in ("movs", "stos"):
+        state.access(state.segment("es"), state.reg(di), width, value, role="string-destination", addressing_register="es")
+        state.setreg(di, op("add", state.reg(di), const(delta, state.bits), state.at), state.at)
+    else:
+        state.setreg({1:"al",2:"ax",4:"eax"}[width], value, state.at)
+
+
+class Handwritten:
+    """The handwritten semantics backend: ``ordinary``, ``predicate`` and ``string_iteration``."""
+
+    name = "handwritten"
+
+    def ordinary(self, state, ins, image):
+        ordinary(state, ins, image)
+
+    def condition(self, state, mnemonic):
+        return predicate(state, mnemonic)
+
+    def string_iteration(self, state, ins, operation, width, source_segment, delta):
+        string_iteration(state, ins, operation, width, source_segment, delta)
+
+    def __deepcopy__(self, memo):
+        # Backends hold no path state, so every copied path shares one.
+        return self
+
+
+semantics.register(Handwritten(), default=True)
