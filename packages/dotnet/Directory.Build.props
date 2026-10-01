@@ -8,9 +8,9 @@
     <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900</WarningsNotAsErrors>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
   </PropertyGroup>
-  <!-- Package metadata shared by Toad.Discovery.Core and Toad.Discovery.LegacyFormats, which are
+  <!-- Package metadata shared by ScientificMethod.Core and ScientificMethod.LegacyFormats, which are
        released together under one version. The committed version is a placeholder: the release
-       workflow passes -p:Version from the toad-discovery@ tag it creates. -->
+       workflow passes -p:Version from the scientific-method-dotnet@ tag it creates. -->
   <PropertyGroup>
     <Version>0.0.0</Version>
     <Authors>kibertoad</Authors>

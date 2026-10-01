@@ -1,24 +1,24 @@
-# Toad.Discovery
+# ScientificMethod .NET libraries
 
 .NET libraries for clean-room restorations of legally owned games, from the
 [refurbished-dinosaurs-toolkit](https://github.com/kibertoad/refurbished-dinosaurs-toolkit).
 
-- `Toad.Discovery.Core`: dependency-free building blocks for importing, installing and checking
+- `ScientificMethod.Core`: dependency-free building blocks for importing, installing and checking
   content from the user's original, plus deterministic randomness, state comparison and display
   helpers.
-- `Toad.Discovery.LegacyFormats`: bounded readers for file formats common in 1990s games.
+- `ScientificMethod.LegacyFormats`: bounded readers for file formats common in 1990s games.
 
 Both packages are released together and always share a version.
 
 ```powershell
-dotnet add package Toad.Discovery.Core
-dotnet add package Toad.Discovery.LegacyFormats
+dotnet add package ScientificMethod.Core
+dotnet add package ScientificMethod.LegacyFormats
 ```
 
 Every public type and member carries XML documentation, which IDEs show on hover. The build fails
 on an undocumented public member.
 
-## Toad.Discovery.Core
+## ScientificMethod.Core
 
 | Namespace | Types | Use |
 |---|---|---|
@@ -40,7 +40,7 @@ on an undocumented public member.
 | `Presentation` | `ViewportScaler`, `FixedWidthText` | Fit a fixed resolution into a window and map the mouse back; word-wrap fixed-width text. |
 | `Validation` | `JsonStateDiffer` | List value differences between a reference capture of game state and a restoration's. |
 
-## Toad.Discovery.LegacyFormats
+## ScientificMethod.LegacyFormats
 
 | Types | Reads |
 |---|---|
@@ -60,6 +60,6 @@ Readers reject malformed input with `InvalidDataException`.
 From the repository root:
 
 ```powershell
-dotnet build packages/dotnet/Toad.DiscoveryCenter.slnx
-dotnet test --project packages/dotnet/Toad.Discovery.Core.Tests/Toad.Discovery.Core.Tests.csproj
+dotnet build packages/dotnet/ScientificMethod.slnx
+dotnet test --project packages/dotnet/ScientificMethod.Core.Tests/ScientificMethod.Core.Tests.csproj
 ```

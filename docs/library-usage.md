@@ -1,10 +1,10 @@
 # Library usage
 
-`Toad.Discovery.Core` intentionally has no MonoGame dependency. Add it to Resources,
+`ScientificMethod.Core` intentionally has no MonoGame dependency. Add it to Resources,
 Import, or Game as needed after publishing the package to the chosen NuGet feed.
 
 ```xml
-<PackageReference Include="Toad.Discovery.Core" Version="0.1.0" />
+<PackageReference Include="ScientificMethod.Core" Version="0.1.0" />
 ```
 
 Use `AssetManifest` and `AssetVerifier` to identify supported editions. Let the
@@ -22,5 +22,5 @@ Do not put format decoders into this package merely because they are old-game re
 A decoder belongs here only when its contract has multiple restoration consumers and
 can be tested without proprietary fixtures.
 
-Generic legacy media and disc formats live in `Toad.Discovery.LegacyFormats`, a
+Generic legacy media and disc formats live in `ScientificMethod.LegacyFormats`, a
 separate package so modern or non-media restorations do not acquire irrelevant APIs.
