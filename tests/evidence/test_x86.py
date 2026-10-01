@@ -322,6 +322,56 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual([c["site"] for c in r["candidates"]], [4])
         self.assertEqual(r["candidates"][0]["position"]["insideInstruction"], 0)
 
+    def test_shift_and_rotate_through_carry_build_a_double_word(self):
+        r = report("b8 00 80 ba 01 00 d1 e0 d1 d2 c3")
+        regs = r["paths"][0]["registers"]
+        self.assertEqual((regs["ax"]["value"], regs["dx"]["value"]), (0, 3))
+        symbolic = report("d1 e0 d1 d2 c3")
+        self.assertIsNone(symbolic["paths"][0]["registers"]["dx"]["value"])
+        self.assertEqual(events(symbolic, "arithmetic")[-1]["operation"], "rcl")
+
+    def test_add_with_carry_propagates_a_concrete_carry(self):
+        r = report("b8 01 00 ba 05 00 05 ff ff 83 d2 00 c3")
+        regs = r["paths"][0]["registers"]
+        self.assertEqual((regs["ax"]["value"], regs["dx"]["value"]), (0, 6))
+        self.assertEqual(events(r, "arithmetic")[-1]["carryOut"]["value"], 0)
+
+    def test_carry_branches_follow_explicit_carry_and_survive_inc(self):
+        self.assertEqual(len(report("f9 40 72 01 c3 c3")["paths"]), 1)
+        self.assertEqual(len(report("d0 e0 72 01 c3 c3")["paths"]), 2)
+        self.assertEqual(len(report("b0 80 d0 e0 72 01 c3 c3")["paths"]), 1)
+        self.assertEqual(len(report("f9 9c f8 9d 72 01 c3 c3")["paths"]), 1)
+
+    def test_neg_not_and_rotate_without_carry(self):
+        r = report("b8 05 00 f7 d8 72 01 c3 c3")
+        self.assertEqual(len(r["paths"]), 1)
+        self.assertEqual(r["paths"][0]["registers"]["ax"]["value"], 0xfffb)
+        self.assertEqual(report("b0 81 d0 c0 c3")["paths"][0]["registers"]["al"]["value"], 3)
+        self.assertEqual(report("b8 0f 00 f7 d0 c3")["paths"][0]["registers"]["ax"]["value"], 0xfff0)
+
+    def test_loop_counts_down_and_visit_limit_is_explicit(self):
+        r = report("b9 03 00 31 c0 40 e2 fd c3")
+        self.assertTrue(r["completeWithinModel"])
+        self.assertEqual(r["paths"][0]["registers"]["ax"]["value"], 3)
+        stopped = report("b9 0a 00 31 c0 40 e2 fd c3")
+        self.assertIn("visitLimit", stopped["paths"][0]["stop"])
+        raised = report("b9 0a 00 31 c0 40 e2 fd c3", visitLimit=16)
+        self.assertEqual(raised["paths"][0]["registers"]["ax"]["value"], 10)
+        self.assertEqual(len(report("e3 01 c3 c3")["paths"]), 2)
+        self.assertEqual(len(report("31 c9 e3 01 c3 c3")["paths"]), 1)
+
+    def test_mul_and_div_keep_both_halves_and_divide_errors(self):
+        r = report("b8 34 12 bb 00 01 f7 e3 72 01 c3 c3")
+        regs = r["paths"][0]["registers"]
+        self.assertEqual((regs["ax"]["value"], regs["dx"]["value"], len(r["paths"])), (0x3400, 0x12, 1))
+        q = report("b8 64 00 31 d2 bb 07 00 f7 f3 c3")["paths"][0]["registers"]
+        self.assertEqual((q["ax"]["value"], q["dx"]["value"]), (14, 2))
+        signed = report("b8 9c ff ba ff ff bb 07 00 f7 fb c3")["paths"][0]["registers"]
+        self.assertEqual((signed["ax"]["value"], signed["dx"]["value"]), (0xfff2, 0xfffe))
+        self.assertIn("divide by zero", report("b8 01 00 31 d2 31 db f7 f3 c3")["paths"][0]["stop"])
+        unknown_divisor = report("f7 f3 c3")
+        self.assertEqual(unknown_divisor["paths"][0]["conditionalModels"][0]["assumption"], "no divide error")
+
     def test_dispatch_normalization_and_rejection(self):
         c = Code().emit("83 e0 7f 83 f8 02").branch("73", "reject").emit("89 c3 d1 e3").label("dispatch").emit("ff 27").label("reject").emit("c3")
         c.label("table").emit("20 00 30 00")

@@ -58,6 +58,8 @@ class State:
         self.guards = []
         self.assumptions = {}
         self.flags = None
+        # CF when an instruction sets it without leaving a comparable flag producer; None defers to flags.
+        self.carry = None
         self.flag_serial = 0
         self.flag_epoch = 0
         self.direction_flag = unknown("initial:DF", 1)
@@ -79,8 +81,10 @@ class State:
             self.event("flag-assumption", flag="DF", value=self.direction_flag.report(),
                        evidence="explicit query starting hypothesis, not native state")
 
-    def forget_flags(self):
+    def forget_flags(self, keep_carry=False):
+        carry = self.carry_value() if keep_carry else None
         self.flags = None
+        self.carry = carry
         self.flag_serial += 1
         self.flag_epoch = self.flag_serial
         self.unknown_flag_site = self.at
@@ -88,7 +92,7 @@ class State:
     def save_flags(self, bits):
         word = unknown(f"saved-flags:{self.at}:{len(self.events)}", bits, self.at)
         self.saved_flags[(bits, word.term)] = (self.flags, self.flag_epoch, self.unknown_flag_site,
-                                      self.direction_flag, self.interrupt_flag)
+                                      self.direction_flag, self.interrupt_flag, self.carry)
         self.push(word)
         self.event("flags-save", width=bits // 8, value=word.report(),
                    direction=self.direction_flag.report(), interrupt=self.interrupt_flag.report())
@@ -98,12 +102,28 @@ class State:
         saved = self.saved_flags.get((bits, word.term))
         if saved is None:
             self.forget_flags()
+            self.carry = extract(word, 0, 1)
             self.direction_flag = extract(word, 10, 1)
             self.interrupt_flag = extract(word, 9, 1)
         else:
-            self.flags, self.flag_epoch, self.unknown_flag_site, self.direction_flag, self.interrupt_flag = saved
+            self.flags, self.flag_epoch, self.unknown_flag_site, self.direction_flag, self.interrupt_flag, self.carry = saved
         self.event("flags-restore", width=bits // 8, value=word.report(), intactLocalSnapshot=saved is not None,
                    direction=self.direction_flag.report(), interrupt=self.interrupt_flag.report())
+
+    def carry_value(self):
+        """CF as a one-bit value: from the last comparable flag producer, an explicit carry, or unknown."""
+        if self.flags is not None:
+            answer, _ = predicate(self, "jb")
+            if answer is not None:
+                return const(int(answer), 1, self.flags[3])
+            return unknown(f"carry:{self.flags[3]}:{self.flag_epoch}", 1, self.flags[3])
+        if self.carry is not None:
+            return self.carry
+        return unknown(f"carry:unresolved:{self.flag_epoch}", 1, self.unknown_flag_site)
+
+    def set_flags(self, a, b, operation):
+        self.flags = (a, b, operation, self.at)
+        self.carry = None
 
     def clear_memory(self):
         self.memory.clear()
@@ -264,8 +284,16 @@ class State:
         return value
 
 
+CARRY_BRANCHES = {"jb": True, "jc": True, "jnae": True, "jae": False, "jnb": False, "jnc": False}
+
+
 def predicate(state, mnemonic):
     flags = state.flags
+    if flags is None and state.carry is not None and mnemonic in CARRY_BRANCHES:
+        info = {"predicate": mnemonic, "flag": "CF", "carry": state.carry.report()}
+        if state.carry.number is None:
+            return None, {**info, "reason": "carry unresolved"}
+        return bool(state.carry.number) == CARRY_BRANCHES[mnemonic], info
     if flags is None:
         return None, {"predicate": mnemonic, "reason": "flag producer unresolved",
                       "flagProducer": state.unknown_flag_site, "flagGeneration": state.flag_epoch}
@@ -383,7 +411,7 @@ def ordinary(state, ins, image):
         return
     if m in ("cmp", "test"):
         a, b = (state.get(ins, o, image) for o in operands)
-        state.flags = (a, resize(b, a.bits), m, state.at)
+        state.set_flags(a, resize(b, a.bits), m)
         state.event("compare", operation=m, left=a.report(), right=b.report())
         return
     if m in ("add", "sub", "and", "or", "xor", "shl", "sal", "shr", "sar"):
@@ -392,17 +420,17 @@ def ordinary(state, ins, image):
         result = op("shl" if m == "sal" else m, a, b, state.at)
         state.put(ins, operands[0], result)
         if m in ("add", "sub", "and", "or", "xor"):
-            state.flags = (a, b, m, state.at)
+            state.set_flags(a, b, m)
         else:
-            state.forget_flags()
+            shift_carry(state, m, a, b)
         state.event("arithmetic", operation=m, left=a.report(), right=b.report(), result=result.report(), modulus=1 << a.bits)
         return
     if m in ("inc", "dec"):
         a = state.get(ins, operands[0], image)
         result = op("add" if m == "inc" else "sub", a, const(1, a.bits), state.at)
         state.put(ins, operands[0], result)
-        # Carry is preserved; don't claim a full flag producer without modeling it.
-        state.forget_flags()
+        # Carry is preserved; the other flags are not modeled for INC/DEC.
+        state.forget_flags(keep_carry=True)
         return
     if m in ("cbw", "cwde"):
         # Capstone 5 names these inconsistently in 16-bit mode. Use effective size.
@@ -425,7 +453,140 @@ def ordinary(state, ins, image):
                     effectiveOperandBits=bits, decoderMnemonic=m,
                     mnemonicWidthMismatch=m != ("cdq" if wide else "cwd"), result=value.report())
         return
+    if m in ("clc", "stc", "cmc"):
+        if m == "cmc":
+            value = op("xor", state.carry_value(), const(1, 1), state.at)
+        else:
+            value = const(int(m == "stc"), 1, state.at)
+        state.forget_flags(keep_carry=True)
+        state.carry = value
+        state.event("flag-write", flag="CF", value=value.report(), interpretation="local carry effect")
+        return
+    if m in ("not", "neg"):
+        a = state.get(ins, operands[0], image)
+        if m == "not":
+            state.put(ins, operands[0], op("xor", a, const((1 << a.bits) - 1, a.bits), state.at))
+            return
+        result = op("sub", const(0, a.bits), a, state.at)
+        state.put(ins, operands[0], result)
+        state.set_flags(const(0, a.bits, state.at), a, "sub")
+        state.event("arithmetic", operation="neg", left=a.report(), result=result.report(), modulus=1 << a.bits)
+        return
+    if m in ("adc", "sbb"):
+        a, b = (state.get(ins, o, image) for o in operands)
+        b = resize(b, a.bits)
+        carry = state.carry_value()
+        name = "add" if m == "adc" else "sub"
+        result = op(name, op(name, a, b, state.at), resize(carry, a.bits), state.at)
+        state.put(ins, operands[0], result)
+        state.forget_flags()
+        if None not in (a.number, b.number, carry.number):
+            raw = a.number + b.number + carry.number if m == "adc" else a.number - b.number - carry.number
+            state.carry = const(int(raw < 0 or raw >= 1 << a.bits), 1, state.at)
+        else:
+            state.carry = unknown(f"carry:{state.at}:{state.flag_serial}", 1, state.at)
+        state.event("arithmetic", operation=m, left=a.report(), right=b.report(), carryIn=carry.report(),
+                    result=result.report(), carryOut=state.carry.report(), modulus=1 << a.bits)
+        return
+    if m in ("rol", "ror", "rcl", "rcr"):
+        a = state.get(ins, operands[0], image)
+        count = state.get(ins, operands[1], image) if len(operands) > 1 else const(1, 8)
+        if count.number is None:
+            raise StopPath("rotate count unresolved")
+        n = count.number & 31
+        n %= a.bits + 1 if m in ("rcl", "rcr") else a.bits
+        if n == 0:
+            return  # The value and flags are unchanged.
+        value, carry = a, state.carry_value()
+        top = a.bits - 1
+        for _ in range(n):
+            if m in ("rol", "rcl"):
+                out = extract(value, top, 1)
+                low = out if m == "rol" else carry
+                value = op("or", op("shl", value, const(1, a.bits)), resize(low, a.bits), state.at)
+            else:
+                out = extract(value, 0, 1)
+                high = out if m == "ror" else carry
+                value = op("or", op("shr", value, const(1, a.bits)), op("shl", resize(high, a.bits), const(top, a.bits)), state.at)
+            carry = out
+        state.put(ins, operands[0], value)
+        state.forget_flags()
+        state.carry = Value(1, carry.term, sources(carry, site=state.at))
+        state.event("arithmetic", operation=m, left=a.report(), count=n, result=value.report(),
+                    carryOut=state.carry.report(), modulus=1 << a.bits)
+        return
+    if m in ("mul", "imul") and len(operands) == 1:
+        source = state.get(ins, operands[0], image)
+        bits = source.bits
+        low_reg, high_reg = {8: ("al", "ah"), 16: ("ax", "dx"), 32: ("eax", "edx")}[bits]
+        signed = m == "imul"
+        multiplicand = state.reg(low_reg)
+        product = op("mul", resize(multiplicand, 2 * bits, signed), resize(source, 2 * bits, signed), state.at)
+        low = extract(product, 0, bits)
+        if bits == 8:
+            state.setreg("ax", product, state.at)
+        else:
+            state.setreg(low_reg, low, state.at)
+            state.setreg(high_reg, extract(product, bits, bits), state.at)
+        state.forget_flags()
+        if product.number is None:
+            state.carry = unknown(f"carry:{state.at}:{state.flag_serial}", 1, state.at)
+        else:
+            # CF and OF say whether the high half carries information beyond the low half.
+            state.carry = const(int(resize(low, 2 * bits, signed).number != product.number), 1, state.at)
+        state.event("arithmetic", operation=m, left=multiplicand.report(), right=source.report(),
+                    result=product.report(), resultBits=2 * bits, carryOut=state.carry.report())
+        return
+    if m in ("div", "idiv"):
+        divisor = state.get(ins, operands[0], image)
+        bits = divisor.bits
+        signed = m == "idiv"
+        if bits == 8:
+            dividend = state.reg("ax")
+        else:
+            dividend = join([state.reg({16: "ax", 32: "eax"}[bits]), state.reg({16: "dx", 32: "edx"}[bits])])
+        quotient_reg, remainder_reg = {8: ("al", "ah"), 16: ("ax", "dx"), 32: ("eax", "edx")}[bits]
+        fault = None
+        if None not in (dividend.number, divisor.number):
+            x, y = dividend.number, divisor.number
+            if signed:
+                x -= (x >> (2 * bits - 1)) << (2 * bits)
+                y -= (y >> (bits - 1)) << bits
+            if y == 0:
+                raise StopPath("divide by zero raises interrupt 0; its handler is not modeled")
+            q = abs(x) // abs(y) * (1 if (x < 0) == (y < 0) else -1)
+            r = x - q * y
+            if not ((-(1 << (bits - 1)) <= q < 1 << (bits - 1)) if signed else q < 1 << bits):
+                raise StopPath("divide overflow raises interrupt 0; its handler is not modeled")
+            quotient, remainder = const(q, bits, state.at), const(r, bits, state.at)
+        else:
+            wide = resize(divisor, 2 * bits, signed)
+            origin = sources(dividend, divisor, site=state.at)
+            quotient = extract(Value(2 * bits, ("sdiv" if signed else "udiv", dividend.term, wide.term), origin), 0, bits)
+            remainder = extract(Value(2 * bits, ("smod" if signed else "umod", dividend.term, wide.term), origin), 0, bits)
+            fault = "possible divide error (interrupt 0) unresolved; this path assumes none"
+            state.conditional.append({"site": state.at, "assumption": "no divide error"})
+        state.setreg(quotient_reg, quotient, state.at)
+        state.setreg(remainder_reg, remainder, state.at)
+        state.forget_flags()
+        state.event("arithmetic", operation=m, dividend=dividend.report(), divisor=divisor.report(),
+                    quotient=quotient.report(), remainder=remainder.report(), fault=fault)
+        return
     raise StopPath("Unsupported instruction semantics: " + m)
+
+
+def shift_carry(state, m, a, count):
+    """CF after SHL/SHR/SAR: the last bit shifted out, when the count is known."""
+    n = None if count.number is None else count.number & 31
+    if n == 0:
+        return  # A zero count leaves every flag unchanged.
+    state.forget_flags()
+    if n is None or n > a.bits:
+        state.carry = unknown(f"carry:{state.at}:{state.flag_serial}", 1, state.at)
+    elif m in ("shl", "sal"):
+        state.carry = Value(1, extract(a, a.bits - n, 1).term, sources(a, site=state.at))
+    else:
+        state.carry = Value(1, extract(a, min(n, a.bits) - 1, 1).term, sources(a, site=state.at))
 
 
 def string_instruction(ins):
