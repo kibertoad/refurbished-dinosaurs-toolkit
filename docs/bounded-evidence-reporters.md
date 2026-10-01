@@ -331,7 +331,10 @@ the entries without passing through the start it proves. Once rejection settles,
 only instructions reachable from the accepted starts remain established; the
 rest of what rejected starts reached is returned as contested, so a call is
 never confirmed while its proof is refused. This does not prove native
-reachability or arbitrary self-modifying instruction layouts.
+reachability or arbitrary self-modifying instruction layouts. The entry-path
+walk and `bounds` share one reading of returns, interrupts (including `int1`) and
+port accesses (including `insd`/`outsd`), and repeat and BND prefixes hide none
+of them or any jump.
 
 An unprefixed segmented16 IRET is modeled only inside a traced push-CS/near-call
 frame built above a locally saved FLAGS word. Stack balance, continuation IP and
@@ -378,14 +381,18 @@ is the file offset the transfer reaches, through the trampoline when there is
 one, and `target.citation` is how the standard cites it: `segment:offset` for
 resident code and `+0x` with the file offset for overlay code, with the overlay's
 declared analysis view beside it. A far word nothing relocates gets
-`relocated: false` and no target; its raw words are not a loaded address.
+`relocated: false` and no target; its raw words are not a loaded address. A
+relocated word whose loaded address the source loader could not resolve keeps
+`targetError` and also gets no target. When the entry walk stops at its
+instruction limit, `walkComplete` is false, the limit gap is listed and an
+unseen boundary says so.
 
 An optional `query.analyzerAddress` (`segment`, `offset`, `evidence`) records
 the address an analyzer shows for the same transfer. The report lists which
 derived identities it equals (`raw operand`, `loaded address`, `canonical
 target`) and sets `disagrees` when it equals none. One equal only to the raw
 operand names unrelocated bytes. The analyzer address never replaces the
-derived chain.
+derived chain. It needs the segmented16 model.
 
 ## Format-table controls
 
@@ -395,10 +402,12 @@ the tables. Every report carries `formatTables`, the load segment and the counts
 the tables yield: `relocations`, `descriptors`, `overlays`, `fixups` and
 `trampolines`. An optional `formatControls` object names the counts a build is
 known to have, and any difference fails the query before it runs, so a misread
-table cannot quietly shrink a search. A `targetSelector` that names a resident
+table cannot quietly shrink a search. Other source kinds reject
+`formatControls`, and no config may supply `formatTables` itself. A `targetSelector` that names a resident
 descriptor fails with that descriptor's flags. The lightweight `incomingCalls`
 inventory lists a far-call candidate whose instruction would leave every mapped
-range under `unresolved` instead of skipping it.
+range under `unresolved` instead of skipping it, and gives no negative result
+while any candidate is unresolved.
 
 ## Function bounds and site ownership
 
@@ -427,9 +436,13 @@ an instruction containing the site, marks a site several entries reach as
 `shared`, and checks at most `entryLimit` entries (default 64, maximum 256),
 reporting the rest as unchecked. Entries whose bodies stopped at a gap without
 reaching the site are listed under `incompleteEntries`, and while any entry is
-unchecked or incomplete a site with no owner is `unresolved`, not `unowned`. For
+unchecked or incomplete a site with no owner is `unresolved`, not `unowned`.
+Each owner's `contestedBy` lists instructions of other checked entries' bodies
+that partly overlap its own; at least one side is misdecoded, so while any owner
+is contested (`contestedOwners`) the site is `unresolved`. This does not decide
+which side is right and is narrower than the entry-path walk's proof. For
 each owner it lists the exits that lie between the entry and the site by address,
 which are warnings only. An optional
 `analyzerFunction` (`start`, `evidence`) says whether the analyzer's function is
-among the owners, whether its body reaches the site, and which of its returns
-come before the site.
+among the owners, whether its body reaches the site, whether it is contested,
+and which of its returns come before the site.

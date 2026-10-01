@@ -5,7 +5,8 @@ from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 from .machine import State, StopPath, REGISTERS, ALIASES, segment_register
 from .values import unknown
 from .image import Image, integer
-from .trace import trace, walk, call_target, unsupported_transfer, uncovered, OVERLAP_REASON, CONTESTED_REASON
+from .trace import (trace, walk, call_target, unsupported_transfer, uncovered, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
+                    RETURNS, INTERRUPTS, PORTS)
 
 
 def entries(image):
@@ -545,13 +546,21 @@ def call_target_report(image, config):
         raise ValueError("Target site must decode as a direct call or jump inside a declared region")
     if unsupported_transfer(image, ins):
         raise ValueError("Operand-size or far control transfer is outside the selected frame model")
+    far = ins.mnemonic in ("lcall", "ljmp")
+    if far:
+        target, provenance = image.far_target(site, ins)
+        if "rawSegment" not in provenance:
+            raise ValueError("Only the ptr16:16 far transfer encoding is supported")
     seen, gaps, _, _, contested = walk(image, entries(image), config.get("instructionLimit", 10000))
+    # A walk stopped by its instruction limit leaves later boundaries unverified, not disproved.
+    truncated = any(g.get("reason") == "instruction limit" for g in gaps)
     boundary = ("entry-path instruction" if site in seen else CONTESTED_REASON if site in contested
-                else "raw byte candidate; instruction boundary unverified")
+                else "raw byte candidate; instruction boundary unverified"
+                + ("; the entry walk stopped at its instruction limit" if truncated else ""))
     result = {"site": site, "mnemonic": ins.mnemonic, "size": ins.size, "boundary": boundary,
               "nativeReachability": "unconfirmed"}
     region = image.region(site)
-    if ins.mnemonic in ("call", "jmp"):
+    if not far:
         loaded = ins.operands[0].imm & image.mask
         target = image.near_target(site, loaded)
         result.update({"encoding": "relative", "loadedTarget": loaded,
@@ -560,13 +569,10 @@ def call_target_report(image, config):
                        "mapping": "source PE section table" if image.config.get("peMetadata") else f"declared mapping of region {region['name']}",
                        "canonicalTarget": target, "target": None if target is None else _citation(image, target)})
     else:
-        if ins.size != 5 or image.data[site] not in (0x9a, 0xea):
-            raise ValueError("Only the ptr16:16 far transfer encoding is supported")
-        raw_offset = int.from_bytes(image.data[site + 1:site + 3], "little")
-        raw_segment = int.from_bytes(image.data[site + 3:site + 5], "little")
+        raw_offset, raw_segment = provenance["offset"], provenance["rawSegment"]
         result.update({"encoding": "ptr16:16", "operandSite": site + 3, "rawOffset": raw_offset, "rawSegment": raw_segment,
                        "rawOperand": _segmented(raw_segment, raw_offset)})
-        fixup = image.fixups.get(site + 3)
+        fixup = provenance.get("relocation")
         if fixup is None:
             result.update({"relocated": False, "canonicalTarget": None, "target": None,
                            "reason": "no relocation or fixup covers the segment word; the raw operand is not a loaded address and no target is assigned"})
@@ -588,13 +594,18 @@ def call_target_report(image, config):
                     result[name] = fixup[name]
             if "raw" not in fixup:
                 result["mappingProvenance"] = "relocation metadata supplied by the caller, not read from the source"
-            target, _ = image.far_target(site, ins)
+            if fixup.get("targetError") is not None:
+                # The source loader could not resolve the loaded address; a declared analysis view must not stand in for it.
+                target = None
+                result["reason"] = "the source loader could not resolve the loaded address; no target is assigned"
             result["canonicalTarget"] = target
             result["target"] = None if target is None else _citation(image, target)
     analyzer = query.get("analyzerAddress")
     if analyzer is not None:
         if not isinstance(analyzer, dict) or not analyzer.get("evidence"):
             raise ValueError("analyzerAddress needs segment, offset and evidence")
+        if image.flat:
+            raise ValueError("analyzerAddress compares segment:offset identities and needs the segmented16 model")
         shown = _segmented(integer(analyzer.get("segment"), 0, 65535, "analyzer segment"),
                            integer(analyzer.get("offset"), 0, 65535, "analyzer offset"))
         cited = result.get("target") or {}
@@ -605,13 +616,9 @@ def call_target_report(image, config):
                               "interpretation": ("equal only to the raw operand, which names unrelocated bytes"
                                                  if matched == ["raw operand"] else
                                                  "kept beside the derived chain; it never replaces the relocation, descriptor or trampoline identities")}
-    result["gaps"] = [g for g in gaps if g.get("site") == site]
+    result["gaps"] = [g for g in gaps if g.get("site") == site or g.get("reason") == "instruction limit"]
+    result["walkComplete"] = not truncated
     return result
-
-
-RETURNS = {"ret": "near return", "retf": "far return", "iret": "interrupt return", "iretd": "interrupt return"}
-INTERRUPTS = ("int", "int1", "int3", "into")
-PORTS = ("in", "out", "insb", "insw", "insd", "outsb", "outsw", "outsd")
 
 
 def body(image, entry, limit=10000):
@@ -641,8 +648,7 @@ def body(image, entry, limit=10000):
         seen[at] = ins
         if at != entry and at in established:
             shared.add(at)
-        # Capstone names REP/REPNE/BND prefixes in the mnemonic ("repz ret", "rep insb", "bnd jmp").
-        m, following = ins.mnemonic.split()[-1], at + ins.size
+        m, following = base_mnemonic(ins), at + ins.size
         if unsupported_transfer(image, ins):
             gaps.append({"site": at, "reason": "unsupported control-transfer frame encoding"})
             continue
@@ -738,6 +744,29 @@ def bounds(image, config):
     return result
 
 
+def _cross_entry_overlaps(bodies):
+    """For each entry, the instructions of other entries' bodies that partly overlap one of its own.
+
+    An overlap inside one body is already a gap of that body, so only pairs from different entries count.
+    """
+    starts = {}
+    for entry, b in bodies.items():
+        for at, ins in b["instructions"].items():
+            starts.setdefault(at, (at + ins.size, set()))[1].add(entry)
+    conflicts, active = {}, []
+    for start in sorted(starts):
+        end, holders = starts[start]
+        active = [a for a in active if starts[a][0] > start]
+        for a in active:
+            for first in starts[a][1]:
+                for second in holders:
+                    if first != second:
+                        conflicts.setdefault(first, []).append({"entry": second, "site": a, "otherSite": start})
+                        conflicts.setdefault(second, []).append({"entry": first, "site": start, "otherSite": a})
+        active.append(start)
+    return {entry: sorted(rows, key=lambda r: (r["site"], r["entry"], r["otherSite"])) for entry, rows in conflicts.items()}
+
+
 def owner(image, config):
     query = config.get("query", {})
     if not isinstance(query, dict):
@@ -765,14 +794,22 @@ def owner(image, config):
         if b["gaps"]:
             # A body that stopped at a gap may still reach the site beyond it.
             incomplete.append({"entry": entry, "gaps": b["gaps"]})
-    if owners:
+    # Two checked bodies that decode overlapping instructions cannot both be right. Which one
+    # is misdecoded is not decided here; an owner on either side only leaves the site unresolved.
+    conflicts = _cross_entry_overlaps(bodies)
+    for o in owners:
+        o["contestedBy"] = conflicts.get(o["entry"], [])
+    contested = [o["entry"] for o in owners if o["contestedBy"]]
+    if contested:
+        verdict = "unresolved: an owner's body overlaps instructions another checked entry decodes"
+    elif owners:
         verdict = "shared by several entries" if len(owners) > 1 else "one established entry reaches this site"
     elif gaps or incomplete:
         verdict = "unresolved: no checked body reaches this site, but some entries were unchecked or their bodies stopped at a gap"
     else:
         verdict = "unowned: no established entry reaches this site"
     result = {"site": site, "owners": owners, "insideOtherInstructions": inside, "incompleteEntries": incomplete, "gaps": gaps,
-              "shared": len(owners) > 1, "verdict": verdict,
+              "contestedOwners": contested, "shared": len(owners) > 1, "verdict": verdict,
               "interpretation": "ownership is reachability from established entries without entering callees; a return or "
                                 "prologue between an entry and the site by address is a warning, never a boundary"}
     if claim is not None:
@@ -780,7 +817,7 @@ def owner(image, config):
         reaches = None if hypothesis is None else site in hypothesis["instructions"]
         result["analyzer"] = {
             "start": start, "evidence": claim["evidence"], "established": start in established,
-            "agrees": start in established and bool(reaches),
+            "agrees": start in established and bool(reaches), "contested": start in contested,
             "reachesSite": reaches,
             "exitsBeforeSiteByAddress": [] if hypothesis is None else [e for e in hypothesis["exits"] if start <= e["site"] < site],
             "interpretation": "disagreement means the analyzer's function and the established entries assign this site differently"}

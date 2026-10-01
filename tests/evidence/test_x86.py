@@ -236,6 +236,23 @@ class ReporterTests(unittest.TestCase):
         cfg["query"]["site"] = 4
         self.assertIn("unverified", run_report(data, cfg, "target")["boundary"])
 
+    def test_target_keeps_an_instruction_limit_stop_beside_an_unverified_boundary(self):
+        c = Code().branch("e8", "a").emit("c3").label("a").branch("e8", "b").emit("c3").label("b").emit("c3")
+        data = c.bytes()
+        r = run_report(data, configuration(data, query={"site": 4}, instructionLimit=1), "target")
+        self.assertIn("instruction limit", r["boundary"])
+        self.assertFalse(r["walkComplete"])
+        self.assertTrue(any(g["reason"] == "instruction limit" for g in r["gaps"]))
+        self.assertTrue(run_report(data, configuration(data, query={"site": 4}), "target")["walkComplete"])
+
+    def test_target_assigns_no_target_when_the_source_loader_could_not_resolve_it(self):
+        data = bytes.fromhex("9a 05 00 00 00 c3")
+        cfg = configuration(data, query={"site": 0}, relocations=[{"site": 3, "raw": 0, "segment": 0x1000, "evidence": "synthetic",
+                                                                    "targetError": "Segmented address is outside the resident load image"}])
+        r = run_report(data, cfg, "target")
+        self.assertEqual((r["relocated"], r["canonicalTarget"], r["target"]), (True, None, None))
+        self.assertIn("outside the resident", r["targetError"])
+
     def test_target_marks_supplied_relocation_metadata_and_analyzer_identity(self):
         data = bytes.fromhex("9a 05 00 00 00 c3")
         cfg = configuration(data, query={"site": 0, "analyzerAddress": {"segment": 0x1000, "offset": 5, "evidence": "synthetic"}},
@@ -438,6 +455,38 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual([e["entry"] for e in limited["incompleteEntries"]], [0])
         self.assertTrue(limited["verdict"].startswith("unresolved"))
         self.assertTrue(limited["analyzer"]["agrees"])
+
+    def test_owner_leaves_a_site_unresolved_when_owners_decode_overlapping_instructions(self):
+        # Entry 0 decodes "mov ax, 0xc390" over bytes 0..2; entry 1 decodes "nop; ret" inside it.
+        data = bytes.fromhex("b8 90 c3 c3")
+        cfg = configuration(data, query={"site": 3}, analyzerFunction={"start": 0, "evidence": "synthetic analyzer function"})
+        cfg["regions"][0]["entries"] = [0, 1]
+        r = run_report(data, cfg, "owner")
+        self.assertEqual([o["entry"] for o in r["owners"]], [0])
+        self.assertEqual(r["owners"][0]["contestedBy"], [{"entry": 1, "site": 0, "otherSite": 1},
+                                                         {"entry": 1, "site": 0, "otherSite": 2}])
+        self.assertEqual(r["contestedOwners"], [0])
+        self.assertTrue(r["verdict"].startswith("unresolved"))
+        self.assertTrue(r["analyzer"]["contested"])
+        cfg["regions"][0]["entries"] = [0]
+        alone = run_report(data, cfg, "owner")
+        self.assertEqual((alone["owners"][0]["contestedBy"], alone["contestedOwners"]), ([], []))
+        self.assertEqual(alone["verdict"], "one established entry reaches this site")
+
+    def test_walk_reads_prefixed_returns_ports_and_jumps(self):
+        # "repz ret" and "rep insb" end the walk, "bnd jmp" is followed like a plain jmp, and int1 is a boundary.
+        def run(code):
+            data = bytes.fromhex(code)
+            return walk(Image(data, configuration(data)), [0])
+        seen, gaps, _, _, _ = run("f3 c3 cc")
+        self.assertEqual((sorted(seen), gaps), ([0], []))
+        _, gaps, _, _, _ = run("f3 6c cc")
+        self.assertEqual(gaps, [{"site": 0, "reason": "hardware or interrupt boundary"}])
+        seen, gaps, edges, _, _ = run("f2 e9 01 00 cc c3")
+        self.assertEqual((sorted(seen), gaps), ([0, 5], []))
+        self.assertEqual((edges[0]["kind"], edges[0]["target"]), ("jmp", 5))
+        _, gaps, _, _, _ = run("f1 c3")
+        self.assertEqual(gaps, [{"site": 0, "reason": "hardware or interrupt boundary"}])
 
     def test_dispatch_normalization_and_rejection(self):
         c = Code().emit("83 e0 7f 83 f8 02").branch("73", "reject").emit("89 c3 d1 e3").label("dispatch").emit("ff 27").label("reject").emit("c3")

@@ -30,12 +30,20 @@ def call_target(image, site, ins):
 
 
 OVERLAP_REASON = "overlapping entry-path instructions; boundary unresolved"
+RETURNS = {"ret": "near return", "retf": "far return", "iret": "interrupt return", "iretd": "interrupt return"}
+INTERRUPTS = ("int", "int1", "int3", "into")
+PORTS = ("in", "out", "insb", "insw", "insd", "outsb", "outsw", "outsd")
+
+
+def base_mnemonic(ins):
+    # Capstone names REP/REPNE/BND prefixes in the mnemonic ("repz ret", "rep insb", "bnd jmp").
+    return ins.mnemonic.split()[-1]
 CONTESTED_REASON = "reached only through a rejected overlapping start"
 
 
 def unsupported_transfer(image, ins):
     """Operand-size overrides and flat-model far transfers fall outside the frame model."""
-    m = ins.mnemonic
+    m = base_mnemonic(ins)
     return ((0x66 in ins.prefix and (m in ("call", "lcall", "ret", "retf", "jmp", "ljmp") or m.startswith(("j", "loop"))))
             or (image.flat and m in ("lcall", "ljmp", "retf")))
 
@@ -84,11 +92,11 @@ def walk(image, entries, limit=10000):
             continue
         seen[at] = ins
         successors[at] = following_sites = []
-        m, following = ins.mnemonic, at + ins.size
+        m, following = base_mnemonic(ins), at + ins.size
         if unsupported_transfer(image, ins):
             gaps.append({"site": at, "reason": "unsupported control-transfer frame encoding"})
             continue
-        if m in ("ret", "retf", "iret", "iretd"):
+        if m in RETURNS:
             continue
         if m in ("call", "lcall", "jmp", "ljmp") or m.startswith("j") or m.startswith("loop"):
             target, provenance = call_target(image, at, ins)
@@ -100,7 +108,7 @@ def walk(image, entries, limit=10000):
                 following_sites.append(target)
             if m in ("jmp", "ljmp"):
                 continue
-        if m in ("int", "int3", "into", "hlt", "in", "out", "insb", "insw", "outsb", "outsw"):
+        if m in INTERRUPTS or m == "hlt" or m in PORTS:
             gaps.append({"site": at, "reason": "hardware or interrupt boundary"})
             continue
         if m in ("call", "lcall") and following not in following_sites:

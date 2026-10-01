@@ -92,6 +92,8 @@ Most restorations need no inputs. Set one when the defaults do not match the rep
 | `root` | `.` | Workspace-relative path of the directory holding `spec/`, `parity/` and `deviations/`. |
 | `code` | `src,tests,tools` | Directories whose files may cite spec and deviation IDs and hold `PLACEHOLDER:` comments. |
 | `references` | empty | Directories whose files may cite IDs but whose `PLACEHOLDER:` comments do not count against parity. |
+| `images` | empty | Half-open address ranges of the original's flat 32-bit images, such as `0x00400000..0x004C9000`. See below. |
+| `max-range` | `0x10000` | The largest address range by which an entry records an address. |
 | `data-dirs` | from the build entries | Top-level directories of the original's data. A path into one must name a build file with its exact case. |
 | `base` | fork point | Ref whose IDs, areas and deviations must still exist. |
 | `kaitai-version` | `0.11` | Compiler release to install, or empty to skip the install. With no `.ksy` file the install is skipped anyway. |
@@ -100,6 +102,41 @@ Most restorations need no inputs. Set one when the defaults do not match the rep
 The code directories are scanned for `.cs`, `.ts`, `.mjs`, `.js`, `.ps1`, `.fs`, `.md` and `.json`
 files, skipping `bin`, `obj`, `node_modules`, `.git` and `artifacts`. Every spec or deviation ID
 they cite must exist and not be superseded.
+
+### Addresses in code comments
+
+An address of the original that a comment in the code gives must be recorded in an entry the
+comment cites, or in an entry that one of those cites as `evidence`. Citing a rule whose finding
+records the address is enough. Without this, a comment can cite an existing finding that says
+nothing about the address it gives, and the citation check still passes. A superseded entry
+records nothing.
+
+- **Which comments.** `//` and `/* … */` comments in `.cs`, `.ts`, `.js` and `.mjs` files of the
+  code and reference directories. Text inside a string literal is not a comment. A comment block
+  is a run of consecutive comment-only lines. A comment that trails code also takes the comment
+  lines above it and the comment lines below it that start in its column, or that continue its
+  `/* … */`, and each of those lines is read with the whole of that block.
+- **Which addresses.** A neutral name, `fn_` or `g_` followed by eight hex digits, is always an
+  address. A plain `0x` value of eight hex digits is one only inside an image given by `images`,
+  so colours, masks and offsets are left alone. Without `images`, only neutral names are checked.
+  The end of a half-open range (`..0x…`) stands for the byte before it. Segmented addresses are
+  not checked.
+- **What records an address.** The address written in the entry's `locations` or text, alone or
+  inside a range, in either case. A range larger than `max-range` (64 KiB by default), such as a
+  whole section, records only its two ends, nothing inside it; otherwise every finding that gives
+  the extent of the code section would vouch for any address in the program.
+
+Take the image's base and size from the finding that records them, for example a PE's
+`ImageBase` and `SizeOfImage`:
+
+```yaml
+      - uses: kibertoad/refurbished-dinosaurs-toolkit/actions/check-documentation@<sha>
+        with:
+          images: 0x00400000..0x004C9000
+```
+
+When a comment fails, cite the finding that records the address. When no finding does, write
+one in the same change.
 
 With `kaitai-version: ""` and no compiler on the runner, the `.ksy` definitions are not compiled
 and the check only prints a warning, so leave the install on unless the restoration has no binary
@@ -149,6 +186,11 @@ A build entry written before the Code ranges section existed fails with a missin
 `## Code ranges` after Other files, with `None.` where no finding locates code by offset, or with
 one row per code range where one does.
 
+Before the check on addresses in code comments, a comment could give an address its citation does
+not record. On upgrading, a comment that names an address `fn_…` or `g_…` without citing an entry
+that records it fails. Set `images` to check plain `0x` addresses as well, and fix each failure
+by citing the finding that records the address, or by writing one.
+
 ## Using setup-kaitai on its own
 
 `actions/setup-kaitai` installs the compiler without running the check, for a workflow that
@@ -173,7 +215,7 @@ node check-documentation.mjs --help     # every option
 ```
 
 Run it from the restoration's root or pass `--root`. The command-line options match the action's
-inputs: `--code`, `--references`, `--data-dirs` and `--base`, plus `--no-ksy` to skip compiling
+inputs: `--code`, `--references`, `--images`, `--max-range`, `--data-dirs` and `--base`, plus `--no-ksy` to skip compiling
 and `--glossary <path>` to accept the terms of a draft term file or a directory of them. Set `KSC` to the compiler's
 launcher, or put `kaitai-struct-compiler` on `PATH`, to compile the `.ksy` definitions.
 
