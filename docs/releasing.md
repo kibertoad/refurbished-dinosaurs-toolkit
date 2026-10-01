@@ -42,6 +42,12 @@ requests merged since the latest tag, including the dropped run's. For the same 
 `release:skip` merge can publish a release that an earlier pull request asked for, if that earlier
 release did not happen.
 
+The plan finds each commit's pull request through the GitHub API, which links a merge commit to
+its pull request a little after the merge. While a commit is less than three minutes old (by its
+committer date, which GitHub sets to the merge time), the plan asks again instead of reading an
+empty answer as a direct push. A commit pushed to `main` without a pull request does not affect
+the version.
+
 If a merged pull request has no release label (or more than one), the plan job fails and names
 it. Fix the labels on the merged pull request and re-run the workflow.
 

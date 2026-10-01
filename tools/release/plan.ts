@@ -13,8 +13,9 @@
 //     their release labels. Writes `release`, `package`, `version` and `tag` to GITHUB_OUTPUT.
 //     Because the plan does not depend on which push started the run, a release run that the
 //     workflow's concurrency group cancels while pending loses nothing: the next run covers its
-//     pull requests too. Needs GITHUB_TOKEN and GITHUB_REPOSITORY, the full history and the
-//     package's tags fetched.
+//     pull requests too. A commit that GitHub links to no pull request is retried until it is
+//     PULL_LINK_SETTLE_MS old, so a fresh merge is not mistaken for a direct push. Needs
+//     GITHUB_TOKEN and GITHUB_REPOSITORY, the full history and the package's tags fetched.
 //
 //   node tools/release/plan.ts set-version <pyproject.toml> <version>
 //     Writes the version into a pyproject.toml whose committed version is the 0.0.0 placeholder.
@@ -141,6 +142,31 @@ function check(base: string, head: string): void {
   }
 }
 
+// How long after a commit's committer date GitHub may still report no pull request for it. GitHub
+// links a merge commit to its pull request asynchronously, so a lookup made seconds after the
+// merge can come back empty. A commit older than this with no pull request was pushed directly.
+export const PULL_LINK_SETTLE_MS = 3 * 60 * 1000;
+const PULL_LINK_RETRY_MS = 15 * 1000;
+
+// The merged pull request a commit came from, or null when the commit is older than
+// PULL_LINK_SETTLE_MS and GitHub still lists none. While the commit is younger, an empty answer
+// is retried, because it may only mean that GitHub has not linked the merge yet.
+export async function resolveMergedPull(
+  sha: string,
+  committedAt: number,
+  lookup: (sha: string) => Promise<MergedPull | null>,
+  clock: { now: () => number; sleep: (ms: number) => Promise<void> },
+): Promise<MergedPull | null> {
+  for (;;) {
+    const pull = await lookup(sha);
+    if (pull) return pull;
+    const wait = committedAt + PULL_LINK_SETTLE_MS - clock.now();
+    if (wait <= 0) return null;
+    console.log(`${sha} has no merged pull request yet; asking again in case GitHub has not linked it.`);
+    await clock.sleep(Math.min(wait, PULL_LINK_RETRY_MS));
+  }
+}
+
 async function mergedPull(sha: string): Promise<MergedPull | null> {
   const repo = process.env.GITHUB_REPOSITORY,
     token = process.env.GITHUB_TOKEN;
@@ -158,6 +184,11 @@ async function mergedPull(sha: string): Promise<MergedPull | null> {
   return merged ? { number: merged.number, labels: merged.labels.map((l) => l.name) } : null;
 }
 
+const realClock = {
+  now: () => Date.now(),
+  sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+};
+
 async function release(ecosystem: string, head: string): Promise<void> {
   const none = { release: "false", package: "", version: "", tag: "" };
   const packages = PACKAGES.filter((p) => p.ecosystem === ecosystem);
@@ -169,14 +200,15 @@ async function release(ecosystem: string, head: string): Promise<void> {
   // The commits on main's first-parent line since the release that changed the package: squash
   // and rebase merges, and the merge commits of merged pull requests.
   const range = latestTag ? `${latestTag}..${head}` : head;
-  const commits = git("log", "--first-parent", "--reverse", "--format=%H", range, "--", ...pkg.paths)
+  const commits = git("log", "--first-parent", "--reverse", "--format=%H %ct", range, "--", ...pkg.paths)
     .split("\n")
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((line) => line.split(" ") as [string, string]);
   const pulls = new Map<number, MergedPull>();
-  for (const sha of commits) {
-    const pull = await mergedPull(sha);
+  for (const [sha, committedSeconds] of commits) {
+    const pull = await resolveMergedPull(sha, Number(committedSeconds) * 1000, mergedPull, realClock);
     if (pull) pulls.set(pull.number, pull);
-    else console.log(`${sha} was not merged from a pull request; it does not affect the version.`);
+    else console.log(`${sha} was pushed without a pull request; it does not affect the version.`);
   }
   const since = latestTag ?? "the first release";
   const { bump: kind, errors } = combinedBump([...pulls.values()]);

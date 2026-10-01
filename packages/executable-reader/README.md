@@ -30,8 +30,8 @@ or `synthetic-raw` for test data. The report is printed as JSON. On failure the 
 `Evidence report: <reason>` to stderr and exits with 1.
 
 Commands: `trace`, `arguments`, `effects`, `returns`, `memory`, `guards`, `uses`, `incoming`,
-`dispatch`, `allocation`, `operand`, `operand-candidates`, `target`, `bounds`, `owner`, `callees` and
-`pointers`. Their inputs, outputs and limits are in
+`call-order`, `dispatch`, `allocation`, `operand`, `operand-candidates`, `target`, `bounds`,
+`owner`, `callees` and `pointers`. Their inputs, outputs and limits are in
 [the bounded evidence reporter guide](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md).
 `pointers` runs entirely in Node; every other command runs in the engine.
 
