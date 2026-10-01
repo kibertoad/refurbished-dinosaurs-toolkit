@@ -145,6 +145,31 @@ class CalleeGraphTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "positive control"):
             self.graph(c, ["root", "x", "y"], depthLimit=2, controls={"sharedSites": [c.labels["y"]]})
 
+    def test_reuse_of_a_node_reaching_the_active_path_is_not_a_shared_control(self):
+        c = Code().label("root").branch("e8", "x").emit("c3")
+        c.label("x").branch("e8", "y").branch("e8", "z").emit("c3")
+        c.label("y").branch("e8", "x").emit("c3")
+        c.label("z").branch("e8", "y").emit("c3")
+        r = self.graph(c, ["root", "x", "y", "z"])
+        self.assertEqual([e["classification"] for e in r["edges"] if e["caller"] == c.labels["z"]], ["sharedNodeReuse"])
+        with self.assertRaisesRegex(ValueError, "positive control"):
+            self.graph(c, ["root", "x", "y", "z"], controls={"sharedSites": [c.labels["z"]]})
+
+    def test_reuse_over_an_instruction_capped_body_is_not_a_shared_control(self):
+        c = Code().label("root").branch("e8", "a").branch("e8", "b").emit("c3")
+        c.label("a").branch("e8", "common").emit("c3")
+        c.label("b").branch("e8", "common").emit("c3")
+        c.label("common").branch("e8", "deep").emit("c3")
+        c.label("deep").emit("90 90 90 90").branch("e8", "b").emit("c3")
+        with self.assertRaisesRegex(ValueError, "positive control"):
+            self.graph(c, ["root", "a", "b", "common", "deep"], instructionLimit=3, controls={"sharedSites": [c.labels["b"]]})
+
+    def test_x87_stores_are_write_observations(self):
+        data = bytes.fromhex("d9 1e 20 00 d9 3e 22 00 dd 26 24 00 c3")
+        cfg = configuration(data, controls={"writeSites": [0, 4]})
+        r = run_report(data, cfg, "callees")
+        self.assertEqual([o["access"] for o in r["nodes"][0]["memoryObservations"]], [["write"], ["write"], ["read"]])
+
 
 class ReporterTests(unittest.TestCase):
     def test_register_parts_preserve_neighbor(self):

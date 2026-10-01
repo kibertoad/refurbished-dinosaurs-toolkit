@@ -535,6 +535,8 @@ Omitted edges and capped/incomplete bodies remain dependencies;
 
 Declared entries left unread remain in `uncheckedEntries`; no memory or cycle
 boundary is usable until all declared entries have been checked for conflicts.
-A shared-node positive control also requires usable caller/callee boundaries
-and no limit-omitted route beneath the reused node, which could lead back into
-the active path.
+A shared-node positive control also requires usable caller/callee boundaries,
+usable bodies for every node the reused node reaches, no reached node on the
+active path, and no limit-omitted or instruction-capped route beneath the reused
+node, any of which could lead back into the active path. x87 stores and loads
+take their access direction from the mnemonic, since Capstone misreports some.

@@ -18,6 +18,21 @@ def memory_width(ins, operand):
     return 2 + ins.operands[0].size if ins.mnemonic in ("lds", "les") else operand.size
 
 
+# Capstone reports several x87 stores (fst, fstp m32/m64, fist, fistp m16/m32, fnstcw) as reads and frstor
+# as a write; for these the mnemonic, not Capstone's access flags, fixes the direction.
+X87_MEMORY_STORES = {"fst", "fstp", "fist", "fistp", "fisttp", "fbstp", "fnstcw", "fstcw", "fnstsw", "fstsw",
+                     "fnstenv", "fstenv", "fnsave", "fsave"}
+X87_MEMORY_LOADS = {"fldcw", "fldenv", "frstor"}
+
+
+def memory_access(ins, operand):
+    if ins.mnemonic in X87_MEMORY_STORES:
+        return ["write"]
+    if ins.mnemonic in X87_MEMORY_LOADS:
+        return ["read"]
+    return [name for flag, name in ((CS_AC_READ, "read"), (CS_AC_WRITE, "write")) if operand.access & flag]
+
+
 def search_coverage(image, spans):
     """How much of each complete segment, overlay or section the searched byte spans cover.
 
@@ -739,6 +754,9 @@ def callees(image, config):
     edge_limit = integer(config.get("edgeLimit", 512), 1, 2048, "callee edge limit")
     depth_limit = integer(config.get("depthLimit", 16), 1, 128, "callee depth limit")
     instruction_limit = integer(config.get("instructionLimit", 10000), 1, 100000, "instruction limit")
+    controls = config.get("controls", {})
+    if not isinstance(controls, dict) or set(controls) - {"sharedSites", "recursiveSites", "writeSites"}:
+        raise ValueError("Invalid callee controls")
     nodes, edges, omitted = {}, [], []
 
     def visit(entry, path):
@@ -746,11 +764,12 @@ def callees(image, config):
         observations = []
         for site, ins in sorted(b["instructions"].items()):
             for index, operand in enumerate(ins.operands):
-                if operand.type != X86_OP_MEM or ins.mnemonic == "lea" or not operand.access:
+                access = memory_access(ins, operand) if operand.type == X86_OP_MEM and ins.mnemonic != "lea" else []
+                if not access:
                     continue
                 observations.append({"entry": entry, "site": site, "operandIndex": index,
                                      "width": memory_width(ins, operand),
-                                     "access": [name for flag, name in ((CS_AC_READ, "read"), (CS_AC_WRITE, "write")) if operand.access & flag],
+                                     "access": access,
                                      "segmentRegister": segment_register(ins, operand.mem),
                                      "displacement": operand.mem.disp,
                                      "baseRegister": ins.reg_name(operand.mem.base) or None,
@@ -758,7 +777,7 @@ def callees(image, config):
                                      "interpretation": "explicit operand reached in conditional entry CFG; effective address and runtime execution unresolved"})
         nodes[entry] = {"entry": entry, "body": b, "memoryObservations": observations, "contestedBy": []}
         routes = b["calls"] + [e | {"encoding": "tail transfer"} for e in b["exits"] if e["kind"] == "tail transfer"]
-        for route in sorted(routes, key=lambda r: (r["site"], r.get("target") or -1)):
+        for route in sorted(routes, key=lambda r: (r["site"], -1 if r.get("target") is None else r["target"])):
             if len(edges) >= edge_limit:
                 omitted.append({"entry": entry, "site": route["site"], "reason": "edge limit; route not traversed"})
                 continue
@@ -822,13 +841,16 @@ def callees(image, config):
                             + [d for d in omitted if d["entry"] in reached],
             "effectComplete": False,
             "interpretation": "explicit memory observations and unread dependencies, never a read-only or callee-effect guarantee"}
-    # A limit-omitted route under a reused node may lead back into the active path, so such reuse is no shared-node control.
-    capped = {"depth limit", "node limit", "edge limit; route not traversed"}
-    controls = config.get("controls", {})
-    if not isinstance(controls, dict) or set(controls) - {"sharedSites", "recursiveSites", "writeSites"}:
-        raise ValueError("Invalid callee controls")
-    known = {"sharedSites": {e["site"] for e in edges if e["classification"] == "sharedNodeReuse" and e["boundaryUsable"]
-                             and not any(d.get("reason") in capped for d in e["calleeSummary"]["dependencies"])},
+    # A reused node that reaches the active path, or whose reached bodies were capped or are unusable, may lead
+    # back into the active path, so such reuse is no shared-node control.
+    capped = {"depth limit", "node limit", "edge limit; route not traversed", "instruction limit"}
+
+    def shared_control(e):
+        reached = e["calleeSummary"]["entries"]
+        return (e["classification"] == "sharedNodeReuse" and e["boundaryUsable"]
+                and not set(e["path"]) & set(reached) and all(nodes[at]["boundaryUsable"] for at in reached)
+                and not any(d.get("reason") in capped for d in e["calleeSummary"]["dependencies"]))
+    known = {"sharedSites": {e["site"] for e in edges if shared_control(e)},
              "recursiveSites": {e["site"] for e in edges if e["classification"] == "recursivePath"},
              "writeSites": {o["site"] for n in nodes.values() for o in n["memoryObservations"] if o["boundaryUsable"] and "write" in o["access"]}}
     for kind, sites in controls.items():
