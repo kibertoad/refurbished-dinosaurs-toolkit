@@ -388,6 +388,29 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(report("ba 05 00 21 d8 83 d2 00 c3")["paths"][0]["registers"]["dx"]["value"], 5)
         self.assertIn("Operand-size", report("b9 02 00 66 e2 fd c3")["paths"][0]["stop"])
 
+    def test_incoming_coverage_counts_straddled_segments_scan_limits_and_contested_starts(self):
+        data = bytes.fromhex("e8 01 00 c3 c3 e8 fc ff c3")
+        cfg = configuration(data, target=4, controls=[5], segments=[{"name": "code", "start": 0, "end": 6, "evidence": "synthetic segment"}])
+        cfg["regions"] = [{**cfg["regions"][0], "name": "first", "end": 5, "entries": [0]},
+                          {**cfg["regions"][0], "name": "second", "start": 5, "ip": 5, "entries": [5]}]
+        cfg["searchRegions"] = ["second"]
+        straddle = run_report(data, cfg, "incoming")
+        self.assertEqual(straddle["coverage"][0]["unsearched"], [{"start": 0, "end": 5}])
+        self.assertTrue(straddle["partialSearch"])
+        cfg.update(searchRegions=["first", "second"], controls=[0], scanLimit=7)
+        limited = run_report(data, cfg, "incoming")
+        self.assertEqual(limited["coverage"][0]["unsearched"], [])
+        self.assertEqual(run_report(data, {**cfg, "scanLimit": 3}, "incoming")["coverage"][0]["unsearched"], [{"start": 3, "end": 6}])
+        for bad in ([{"name": 5, "start": 0, "end": 6, "evidence": "x"}], [{"name": "code", "start": 0, "end": 6}]):
+            with self.assertRaises(ValueError):
+                run_report(data, {**cfg, "segments": bad}, "incoming")
+        with self.assertRaises(ValueError):
+            run_report(data, {**cfg, "regions": [{**cfg["regions"][0], "container": {"view": "overlay", "start": 1, "end": 9}}, cfg["regions"][1]]}, "incoming")
+        contested = bytes.fromhex("b8 90 90 e8 04 00 c7 06 00 02 90 c3 c3")
+        cfg = configuration(contested, target=10, controls=[])
+        cfg["regions"][0]["entries"] = [0, 1]
+        self.assertEqual(run_report(contested, cfg, "incoming")["contested"][0]["position"]["meaning"], "start of a contested instruction")
+
     def test_dispatch_normalization_and_rejection(self):
         c = Code().emit("83 e0 7f 83 f8 02").branch("73", "reject").emit("89 c3 d1 e3").label("dispatch").emit("ff 27").label("reject").emit("c3")
         c.label("table").emit("20 00 30 00")
