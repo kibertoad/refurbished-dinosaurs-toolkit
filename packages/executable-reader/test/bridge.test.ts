@@ -554,3 +554,31 @@ test("near-pointer arguments and DS dereferences retain caller SS provenance thr
     assert.equal(link.mayMergeStorage, false);
   }
 });
+
+test("effects preserves pre-service writes and unknown returning-service effects through preparation", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(9, 28);
+  data.set([0xc7, 0x06, 0x20, 0, 1, 0, 0x9a, 0x10, 0, 0, 0, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const query = {
+    ...config,
+    sha256: createHash("sha256").update(data).digest("hex"),
+    callModels: [
+      { site: 70, returnBytes: 4, evidence: "synthetic returning service failure", cases: [{ registers: { ax: 1 } }] },
+    ],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const result = run(["effects", join(dir, "config.json")]);
+  const path = result.effectOrdering.paths[0];
+  assert.equal(path.returned, true);
+  assert.equal(path.calls[0].writesBeforeCount, 1);
+  assert.equal(path.calls[0].status, "modeled-return");
+  assert.equal(path.calls[0].unknownEffects, true);
+  assert.equal(path.effectCompleteWithinModel, false);
+  assert.match(path.transactionality, /not established/);
+  const stopped = { ...query, maxSteps: 1 };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(stopped));
+  const incomplete = run(["effects", join(dir, "config.json")]).effectOrdering;
+  assert.equal(incomplete.allPathsRead, false);
+  assert.equal(incomplete.paths[0].stop.writesBeforeCount, 1);
+});

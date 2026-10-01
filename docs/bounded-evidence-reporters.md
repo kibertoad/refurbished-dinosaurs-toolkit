@@ -610,3 +610,39 @@ the most recent formations on each path and evicting the oldest; evicted
 formations remain explicit per path/event and refuse storage merging. Candidate
 lists are present only when non-empty. A complete
 or stopped trace never promotes a modeled association to runtime state evidence.
+
+
+## Ordered effect-path summaries
+
+`effects` also returns `effectOrdering.paths`, one summary per traced path. Its
+`timeline` retains read/write, call/return, arithmetic/compare and branch
+provenance with entry, depth and original event order. `writeOrders` indexes all
+writes, including stack and child writes. Each call's `writesBeforeCount` is a
+prefix length of that list, not a claim that the call succeeded. Call statuses
+separate traced returns, conditional modeled returns and unresolved/stopped
+requests. Modeled services and nested unknown effects remain explicitly unknown;
+continuations never establish process survival or successful resource contents.
+
+A `stop` names its boundary and the preceding write prefix. Ports, interrupts,
+unsupported instructions and limits leave subsequent work unread. `allPathsRead`
+is the existing bounded traversal result, under every explicit model/assumption;
+`effectCompleteWithinModel` additionally rejects unknown service effects on that
+path. Neither field confirms native execution, timing or hardware behavior.
+
+`localRestorationWitnesses` identifies a prior read and a later write with equal
+complete storage and value expressions, with a write to that exact storage in
+between. Segment/base expression and access width must match. Each witness names
+the unknown-effect count between its read and restore. The `pathReturned` flag keeps a witnessed prefix on a stopped path separate
+from a completed return path. A bypass has no witness;
+a partial-width write, another segment/field or changed value is not a restore.
+A witness only describes the local storage value. It never proves that aliases,
+other fields, files, resources or external services were rolled back.
+`transactionality` remains explicitly unestablished for every path. Result codes
+and a common return cannot turn these distinct paths into one effect contract.
+
+No new prepared inputs or instruction semantics are introduced. Existing step,
+path, visit, call-depth and string budgets bound the summaries. Write prefixes
+avoid quadratic per-call copies. Acceptance includes early bypasses, child writes,
+mutations before modeled failure, last comparison provenance, restore/bypass and
+wrong segment/width/value controls, ports, nonvacuous caps and real reader/engine
+integration. Request closure still needs the requester's complete source cases.

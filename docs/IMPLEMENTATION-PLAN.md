@@ -192,3 +192,27 @@ field offsets and erased-value controls plus FND-CONFIG-145 source cases prove
 behavior. Preserve stopped/conditional reports. No source behavior claims or
 proprietary content. Exit: reporter/toolkit gates and source controls pass,
 upstream reviewable PR; adopted closure requires reviewed merge and rerun.
+
+
+## Ordered effect paths and restoration witnesses
+
+Tooling outcome: existing effects reports summarize each bounded return or stopped
+path as an ordered timeline of writes, local/traced calls, assumed service
+returns, branch predicates and hardware boundaries. Preserve entry/depth/order,
+child writes and the last recorded flag producer; a later common return never
+merges distinct path contracts. Summaries name writes already made before each
+unread/conditional service, retain unknown child effects separately, and never
+infer rollback or transactionality from a result encoding. Explicit restoration
+witnesses must demonstrate matching pre-call read and post-call write storage,
+width and value provenance on a completed path, with intervening unknown effects
+remaining visible; partial restoration never becomes a transactional claim.
+
+Synthetic acceptance: early bypass vs shared return, mutations before service
+failure, traced child mutation, unrelated predicate producers, per-path snapshot
+restore/bypass, different segment/width/value rejection, incomplete paths and
+nonvacuous controls. A real prepared-reader integration case verifies delivery.
+No proprietary data or game constants in this repository. Source request acceptance
+stays in the restoration: verify every cited case and preserve pending contracts.
+Exit: canonical package gates and local source controls pass; publish a reviewed
+candidate. Request closure requires merged registry delivery and complete adopted
+source reruns. Several slices may be required; no first slice narrows that exit.

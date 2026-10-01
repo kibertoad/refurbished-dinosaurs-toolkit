@@ -96,3 +96,8 @@ Commands, inputs, limits and acceptance rules are in
 [the bounded evidence reporter guide](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md).
 The reader and engine check that they speak the same prepared-config protocol and refuse to run
 otherwise.
+
+The `effects` command additionally emits path-local `effectOrdering` timelines,
+pre-call write prefixes and bounded local restoration witnesses. Unknown modeled
+or nested service effects stay separate; no return code establishes rollback or
+transactionality. See [the full contract](../../docs/bounded-evidence-reporters.md#ordered-effect-path-summaries).

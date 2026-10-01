@@ -5,6 +5,7 @@ from capstone import CS_AC_READ, CS_AC_WRITE
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 from .machine import State, StopPath, REGISTERS, ALIASES, segment_register
 from .values import unknown
+from .effect_order import effect_ordering
 from .image import Image, integer
 from .trace import (trace, walk, call_target, unsupported_transfer, uncovered, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
                     RETURNS, INTERRUPTS, PORTS)
@@ -1180,6 +1181,8 @@ def _run_report(image, config, command):
         report = near_pointer_provenance(report, config)
     if command == "allocation":
         return allocations(report, config)
+    if command == "effects":
+        report = effect_ordering(report)
     if command != "trace":
         kinds = {"arguments": ("address-formation", "read", "call", "call-return"), "effects": ("address-formation", "write", "call", "call-return", "return", "branch", "string-operation",
                              "flag-assumption", "flag-write", "flags-save", "flags-restore", "local-iret"),
