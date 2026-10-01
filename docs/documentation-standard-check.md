@@ -287,9 +287,14 @@ A location in an executable may also give `kind: code` (the default) or `kind: f
 `file-data` location names executable headers, container tables, a packer's header or other
 shipped bytes that are read as data, so it gives an `offset` into the shipped file in any
 executable format, never an `address`, and needs no Code ranges row. Bytes that exist only once
-a packed file is unpacked are addressed in the unpacked file like code; the checker cannot tell
-whether an offset points into compressed data, so review catches that. The checker fails any
-other kind, an address on a `file-data` location, and any `kind` on a location in a `data` or
+a packed file is unpacked and are not in its load image, such as the relocation table an
+unpacker writes, are located with `kind: file-data`, `unpacked: true` and an offset into the
+unpacked form, which the checker bounds by that form's `size` in the manifest. Other bytes that
+exist only once the file is unpacked are addressed in the unpacked file like code; the checker
+cannot tell whether a shipped-file offset points into compressed data, or whether a `file-data`
+location in fact names code, so review catches both. The checker fails any other kind, an
+address on a `file-data` location, `unpacked` with any value but `true`, on a location that is
+not `file-data` or in a file that is not packed, and any `kind` on a location in a `data` or
 `cdda` file, which holds no code to tell apart.
 
 ### Code ranges
@@ -302,8 +307,9 @@ the overlay or bank number needed to read that range or `-`, and the ID of the f
 shows the range holds code. The checker fails a row whose file is not in the manifest or is not
 MZ (after unpacking; no other format holds code located by offset), whose range is malformed,
 empty or outside the file, whose overlay is neither a number nor `-`, or whose finding does not
-exist, does not list the build or is superseded. It also fails a row whose finding locates only
-file data, either in all its locations or in all its locations in that file of that build.
+exist, does not list the build or is superseded. It also fails a row whose finding has no
+location in that file of that build other than a `file-data` one, which includes a finding with
+no locations at all: such a finding shows no code in the row's range.
 
 An `offset` into an executable (an MZ file, or a packed file whose unpacked form is MZ) must lie
 wholly inside one row for that file. Adjacent rows are not joined, so a range that crosses from

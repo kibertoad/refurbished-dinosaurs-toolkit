@@ -1029,7 +1029,7 @@ for (const format of ["MZ", "COM", "NE", "PE", "LE", "LX", "ELF"]) test(`explici
 for (const [location, error] of [
   ['kind: file-data\n    offset: "0x0000..0x0401"', /outside the shipped file/],
   ['kind: file-data\n    offset: "0x0020..0x0020"', /is empty/],
-  ['kind: file-data\n    address: 0x00401000', /shipped-file offset, not an address/],
+  ['kind: file-data\n    address: 0x00401000', /gives a file offset, not an address/],
   ['kind: file-data', /a location gives an address or an offset/],
   ['kind: header\n    offset: "0x0000..0x0040"', /kind must be code or file-data/],
   ['kind: code\n    offset: "0x0000..0x0040"', /a PE executable is located by address/],
@@ -1063,7 +1063,51 @@ test("a file-data-only finding cannot establish overlay code ranges", (t) => {
   });
   const result = run(root);
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /locates only file data, which cannot establish a code range/);
+  assert.match(result.output, /FND-SCORE-001 has no code location in GAME\.EXE of BLD-EXAMPLE-1\.0, so it cannot establish a code range there/);
+});
+
+// The original location is GAME.EXE at 1000:0000..1000:0010 once asMz has run.
+const mzLocation = "locations:\n  - build: BLD-EXAMPLE-1.0\n    file: GAME.EXE\n    address: 1000:0000..1000:0010";
+for (const [label, locations] of [
+  ["no locations at all", "locations: []"],
+  ["only a location in another file", 'locations:\n  - build: BLD-EXAMPLE-1.0\n    file: DATA/SCORES.BIN\n    offset: "0x00..0x02"'],
+]) test(`a Code ranges row fails when its finding has ${label}`, (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    asMz(r);
+    codeRanges(r, [["GAME.EXE", "0x0100..0x0200", "-", "FND-SCORE-001"]]);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", mzLocation, locations);
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /Code ranges row GAME\.EXE 0x0100\.\.0x0200: FND-SCORE-001 has no code location in GAME\.EXE of BLD-EXAMPLE-1\.0/);
+});
+
+for (const [location, error] of [
+  ['kind: file-data\n    unpacked: true\n    offset: "0x0400..0x0800"', null],
+  ['kind: file-data\n    unpacked: true\n    offset: "0x0F00..0x1001"', /offset 0x0F00\.\.0x1001 is outside the unpacked form of GAME\.EXE \(4096 bytes\)/],
+  ['kind: file-data\n    offset: "0x0400..0x0800"', /outside the shipped file GAME\.EXE/],
+  ['unpacked: true\n    offset: "0x0400..0x0800"', /unpacked: true only with kind: file-data/],
+  ['kind: file-data\n    unpacked: false\n    offset: "0x0000..0x0040"', /gives unpacked: true or leaves it out/],
+]) test(`a location into the unpacked form of a packed file: ${location}`, (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    packAs("MZ")(r);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", location);
+  });
+  const result = run(root);
+  assert.equal(result.status, error ? 1 : 0, result.output);
+  if (error) assert.match(result.output, error);
+});
+
+test("unpacked: true fails on a file that is not packed", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010", 'kind: file-data\n    unpacked: true\n    offset: "0x0000..0x0040"');
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /gives unpacked: true, but GAME\.EXE is not packed/);
 });
 
 test("a code range needs a code location in its own file, not only elsewhere", (t) => {
@@ -1076,5 +1120,5 @@ test("a code range needs a code location in its own file, not only elsewhere", (
   });
   const result = run(root);
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /locates only file data, which cannot establish a code range/);
+  assert.match(result.output, /FND-SCORE-001 has no code location in GAME\.EXE of BLD-EXAMPLE-1\.0, so it cannot establish a code range there/);
 });
