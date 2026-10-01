@@ -30,6 +30,7 @@ def call_target(image, site, ins):
 
 
 OVERLAP_REASON = "overlapping entry-path instructions; boundary unresolved"
+CONTESTED_REASON = "reached only through a rejected overlapping start"
 
 
 def unsupported_transfer(image, ins):
@@ -98,7 +99,7 @@ def walk(image, entries, limit=10000):
     # repeated until nothing changes.
     rejected, reach = set(), {}
 
-    def independent(site, inner):
+    def reachable(inner=None):
         # Instructions reachable from the entries without passing through inner or a rejected start.
         if inner not in reach:
             stack, visited = [x for x in entries if x != inner and x not in rejected], set()
@@ -109,7 +110,10 @@ def walk(image, entries, limit=10000):
                 visited.add(at)
                 stack.extend(successors[at])
             reach[inner] = visited
-        return site in reach[inner]
+        return reach[inner]
+
+    def independent(site, inner):
+        return site in reachable(inner)
 
     while True:
         reach.clear()
@@ -126,15 +130,27 @@ def walk(image, entries, limit=10000):
         if unresolved <= rejected:
             break
         rejected |= unresolved
-    # Mark each direct edge that proves a surviving overlapping start.
+    # Only what the accepted starts reach is established. An instruction reached only
+    # through a rejected start leaves seen with it, so no report confirms what the proof
+    # above refused to count; it is returned as contested instead of being lost.
+    # The reach cache still holds the final rejected set, as the last pass added nothing.
+    established = reachable()
+    contested = {}
+    for at in sorted(seen):
+        if at in established:
+            continue
+        if at not in unresolved:
+            contested[at] = seen[at]
+        del seen[at]
+    # Mark each direct edge from a surviving site that proves a surviving overlapping start.
     overlapping = {inner for _, inner in pairs} - unresolved
     for e in edges:
-        if e["target"] in overlapping and e["site"] in verified and independent(e["site"], e["target"]):
+        if (e["target"] in overlapping and e["site"] in seen and e["site"] in verified
+                and independent(e["site"], e["target"])):
             e["overlappingTarget"] = True
             e["boundaryEvidence"] = "direct edge from an independently verified instruction"
     for at in sorted(unresolved):
         gaps.append({"site": at, "reason": OVERLAP_REASON})
-        del seen[at]
     intervals = sorted((at, at + ins.size) for at, ins in seen.items())
     undecoded = []
     for r in image.regions:
@@ -147,7 +163,7 @@ def walk(image, entries, limit=10000):
             cursor = max(cursor, end)
         if cursor < r["end"]:
             undecoded.append({"start": cursor, "end": r["end"], "region": r["name"]})
-    return seen, gaps, edges, undecoded
+    return seen, gaps, edges, undecoded, contested
 
 
 def snapshot(state):

@@ -14,7 +14,7 @@ if not (TOOLS / "x86").exists():
 sys.path.insert(0, str(TOOLS))
 from x86.image import Image
 from x86.reports import run_report
-from x86.trace import trace
+from x86.trace import trace, walk, OVERLAP_REASON, CONTESTED_REASON
 from x86.values import const, unknown, op, extract, resize
 
 
@@ -711,6 +711,48 @@ class ReporterTests(unittest.TestCase):
         code=Code().emit("90").label("call").emit("e8 05 00 c3 90 90 90 90").label("helper").emit("eb f8")
         result=report(code,"incoming",target=code.labels["helper"])
         self.assertEqual({g["site"] for g in result["gaps"] if "overlapping" in g["reason"]},{1,3,4})
+
+    def test_call_reached_only_through_rejected_start_is_contested_not_confirmed(self):
+        # Entries 0 (mov ax) and 1 (nop) conflict; the call at 3 is reached from both but from no accepted start.
+        data=bytes.fromhex("b8 90 90 e8 04 00 c7 06 00 02 90 c3 c3")
+        cfg=configuration(data,target=10,controls=[])
+        cfg["regions"][0]["entries"]=[0,1]
+        result=run_report(data,cfg,"incoming")
+        self.assertEqual(result["confirmed"],[])
+        self.assertEqual([(e["site"],e["classification"]) for e in result["contested"]],[(3,CONTESTED_REASON)])
+        self.assertEqual(result["counts"]["contested"],1)
+        self.assertFalse(result["negativeUsable"])
+        # No confirmed call vouches for a callee the proof left as gaps.
+        overlap={g["site"] for g in result["gaps"] if g["reason"]==OVERLAP_REASON}
+        self.assertEqual(overlap,{0,1,2,6,10,11})
+        self.assertFalse(any(e["target"] in overlap for e in result["confirmed"]))
+        seen,_,_,undecoded,contested=walk(Image(data,cfg),[0,1])
+        self.assertEqual((sorted(seen),sorted(contested)),([],[3,12]))
+        self.assertEqual(undecoded,[{"start":0,"end":len(data),"region":"synthetic"}])
+
+    def test_jump_target_of_rejected_entry_is_contested(self):
+        # Entry 1 (jmp 5) overlaps entry 0 (mov ax); the self-call at 5 is reached only through entry 1.
+        data=bytes.fromhex("b8 eb 02 c3 90 e8 fd ff")
+        cfg=configuration(data,target=5)
+        cfg["regions"][0]["entries"]=[0,1]
+        result=run_report(data,cfg,"incoming")
+        self.assertEqual(result["confirmed"],[])
+        self.assertEqual([e["site"] for e in result["contested"]],[5])
+        self.assertEqual(result["sections"]["relative"],[])
+        limited=run_report(data,{**cfg,"limit":1,"controls":[]},"incoming")
+        self.assertEqual(len(limited["contested"]),1)
+
+    def test_pruned_instruction_cannot_keep_proving_an_overlapping_start(self):
+        # The jmp at 5 is the only proof of the nop at 11 inside entry 7's MOV immediate; it is
+        # reached only through rejected entry 1, so 11 fails, which in turn rejects entry 7.
+        data=bytes.fromhex("b8 eb 02 c3 90 eb 04 c7 06 00 02 90 c3 c3 c3")
+        cfg=configuration(data)
+        cfg["regions"][0]["entries"]=[0,1,7,14]
+        seen,gaps,edges,_,contested=walk(Image(data,cfg),[0,1,7,14])
+        self.assertEqual({g["site"] for g in gaps if g["reason"]==OVERLAP_REASON},{0,1,7,11,12})
+        self.assertEqual(sorted(seen),[14])
+        self.assertEqual(sorted(contested),[3,5,13])
+        self.assertFalse(any(e.get("overlappingTarget") for e in edges))
 
     def test_local_iret_requires_saved_frame_and_unmodified_return(self):
         code=Code().emit("0e").branch("e8","iret").emit("c3").label("iret").emit("cf")
