@@ -1,6 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PACKAGES, bump, combinedBump, latestVersion, releaseLabel, setPyprojectVersion, touched } from "./plan.ts";
+import {
+  PACKAGES,
+  PULL_LINK_SETTLE_MS,
+  bump,
+  combinedBump,
+  latestVersion,
+  releaseLabel,
+  resolveMergedPull,
+  setPyprojectVersion,
+  touched,
+} from "./plan.ts";
 
 const engine = PACKAGES.find((p) => p.name === "scientific-method-engine")!;
 const dotnet = PACKAGES.find((p) => p.name === "scientific-method-dotnet")!;
@@ -62,4 +72,37 @@ test("pull requests without exactly one release label are reported, not skipped"
   assert.equal(result.errors.length, 2);
   assert.match(result.errors[0]!, /^#8: .*found none/);
   assert.match(result.errors[1]!, /^#9: .*found release:minor, release:major/);
+});
+
+// A clock that advances only when the planner sleeps, and a lookup that answers from a list.
+function fakeGitHub(answers: Array<{ number: number; labels: string[] } | null>, start: number) {
+  let now = start;
+  const asked: number[] = [];
+  return {
+    asked,
+    lookup: async () => {
+      asked.push(now);
+      return answers.length > 1 ? answers.shift()! : answers[0]!;
+    },
+    clock: { now: () => now, sleep: async (ms: number) => void (now += ms) },
+  };
+}
+
+test("a fresh merge commit that GitHub has not linked yet is asked about again", async () => {
+  const pull = { number: 12, labels: ["release:major"] };
+  const github = fakeGitHub([null, null, pull], 1_000_000);
+  assert.deepEqual(await resolveMergedPull("abc", 1_000_000, github.lookup, github.clock), pull);
+  assert.equal(github.asked.length, 3);
+});
+
+test("a commit with no pull request counts as a direct push only once it is past the settle time", async () => {
+  const committedAt = 1_000_000;
+  const github = fakeGitHub([null], committedAt + 1000);
+  assert.equal(await resolveMergedPull("abc", committedAt, github.lookup, github.clock), null);
+  assert.ok(github.asked.length > 1);
+  assert.ok(github.asked.at(-1)! >= committedAt + PULL_LINK_SETTLE_MS);
+
+  const old = fakeGitHub([null], committedAt + PULL_LINK_SETTLE_MS);
+  assert.equal(await resolveMergedPull("abc", committedAt, old.lookup, old.clock), null);
+  assert.equal(old.asked.length, 1);
 });
