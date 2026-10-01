@@ -637,12 +637,11 @@ for (const [id, e] of entries) {
     if (ids.length !== 1 || kindOf(ids[0]) !== "FND" || finding !== ids[0]) problem(e.file, `${at}: the finding column holds the ID of one finding`);
     else if (cited && !asList(cited.meta.builds).includes(id)) problem(e.file, `${at}: ${ids[0]} does not list ${id}`);
     else if (cited?.meta.status === "superseded") problem(e.file, `${at}: cites ${ids[0]}, which is superseded`);
-    // A finding that locates only file data, either at all or in this file of this build, shows
-    // no code there.
-    const locs = asList(cited?.meta.locations);
-    const code = locs.filter((loc) => loc?.kind !== "file-data");
-    const here = (loc) => loc?.build === id && loc?.file === path;
-    if (cited && locs.length > 0 && (code.length === 0 || (locs.some(here) && !code.some(here)))) problem(e.file, `${at}: ${ids[0]} locates only file data, which cannot establish a code range`);
+    // The finding shows code in this file of this build, so it has a location there that is not
+    // file data. One with no locations there, or only file data there, shows no code in the row.
+    else if (cited && !asList(cited.meta.locations).some((loc) => loc?.build === id && loc?.file === path && loc?.kind !== "file-data")) {
+      problem(e.file, `${at}: ${ids[0]} has no code location in ${path} of ${id}, so it cannot establish a code range there`);
+    }
     const parsed = checkOffset(e.file, range, bf);
     if (parsed) ranges.push({ file: path, start: parsed[0], end: parsed[1] });
   }
@@ -756,14 +755,16 @@ function parseOffset(value) {
 }
 // An offset is into the shipped file bf, so the bytes it covers lie within bf.size. Returns the
 // parsed range when it is well formed.
-function checkOffset(file, value, bf) {
+// `bf` is the file the offset is into, given as { path, size }: the shipped file, or the unpacked
+// form of a packed one.
+function checkOffset(file, value, bf, what = "shipped file") {
   const range = parseOffset(value);
   if (!range) { problem(file, `offset ${value} must be 0x followed by at least two upper-case hex digits, or a range of two`); return null; }
   const [start, end] = range;
   if (start > end) { problem(file, "offset range is reversed"); return null; }
   if (start === end) { problem(file, `offset range ${value} is empty; a range is half-open`); return null; }
   if (Number.isSafeInteger(bf.size) && bf.size >= 0 && end > BigInt(bf.size)) {
-    problem(file, `offset ${value} is outside the shipped file ${bf.path} (${bf.size} bytes)`);
+    problem(file, `offset ${value} is outside the ${what} ${bf.path} (${bf.size} bytes)`);
     return null;
   }
   return range;
@@ -839,7 +840,13 @@ for (const [id, e] of entries) {
       if (loc.kind !== undefined && !locationRule(format)?.address) problem(file, `location kind ${loc.kind} in ${loc.file}: a ${format} file is not an executable, so its locations give no kind`);
       else if (loc.kind !== undefined && loc.kind !== "code" && loc.kind !== "file-data") problem(file, `location kind ${loc.kind} in ${loc.file}: kind must be code or file-data when given`);
       const fileData = loc.kind === "file-data";
-      if (fileData && "address" in loc) problem(file, `a file-data location in ${loc.file} gives a shipped-file offset, not an address`);
+      if (fileData && "address" in loc) problem(file, `a file-data location in ${loc.file} gives a file offset, not an address`);
+      // A file-data location in a packed file may name bytes that exist only once it is unpacked,
+      // such as the relocation table an unpacker writes, by an offset into the unpacked form.
+      const intoUnpacked = loc.unpacked === true;
+      if ("unpacked" in loc && !intoUnpacked) problem(file, `a location in ${loc.file} gives unpacked: true or leaves it out`);
+      else if (intoUnpacked && !fileData) problem(file, `a location in ${loc.file} gives unpacked: true only with kind: file-data`);
+      else if (intoUnpacked && !bf.packer) problem(file, `a location in ${loc.file} gives unpacked: true, but ${loc.file} is not packed`);
       if ("address" in loc && "offset" in loc) problem(file, "a location gives address or offset, not both");
       if ("address" in loc) { if (!fileData) checkAddress(file, loc.address, format); }
       else if ("offset" in loc) {
@@ -850,7 +857,9 @@ for (const [id, e] of entries) {
         // or PE code cannot use offsets for code the loader maps.
         const rule = locationRule(format);
         if (!fileData && rule && !rule.offset) problem(file, `location in ${loc.file} gives an offset; a ${format} executable is located by address (only MZ overlay code uses offsets)`);
-        const range = checkOffset(file, loc.offset, bf);
+        const range = intoUnpacked && bf.packer
+          ? checkOffset(file, loc.offset, { path: bf.path, size: Number(bf.unpacked?.size) }, "unpacked form of")
+          : checkOffset(file, loc.offset, bf);
         // An offset into an executable locates overlay code, so it lies wholly inside one row of
         // the build's Code ranges. Adjacent rows are not joined: a range that crosses from one
         // into the next, such as into another bank, fails.
