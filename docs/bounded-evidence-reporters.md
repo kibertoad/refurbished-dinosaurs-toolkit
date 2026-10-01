@@ -514,3 +514,26 @@ overlaps unknown and refuses the join). It does not establish player reachabilit
 universal ownership; continuation assumptions stay explicit. The Node source
 loader derives export metadata from hash-guarded MZ/FBOV tables and rejects a
 caller-supplied copy. Body-byte size is never treated as a contiguous end.
+
+
+`callees` derives a bounded graph from `entry` and established region entries.
+Targets without an established entry remain unresolved. An edge back into the
+active traversal path is `recursivePath`; reaching an already read node outside
+that path is `sharedNodeReuse`. These describe conditional entry-CFG structure,
+never runtime recursion. Incomplete or cross-entry contested cycle paths become
+`unresolvedBackEdge`. Calls and established tail transfers retain their kind.
+Each edge's `calleeSummary` retains reachable explicit memory observations,
+continuation assumptions and unread dependencies, including shared nodes;
+`effectComplete` is always false because implicit, argument-sensitive and runtime
+effects are excluded. A missing write is never a read-only claim. Width/access,
+segment register and unresolved base/index operands accompany observations.
+`nodeLimit` (1..128, default 64), `edgeLimit` (1..2048, default 512), `depthLimit`
+(1..128, default 16) and `instructionLimit` (1..100000 per body) bound work.
+Omitted edges and capped/incomplete bodies remain dependencies;
+`completeWithinDeclaredGraph` qualifies only the declared conditional graph.
+`controls` may name known `sharedSites`, `recursiveSites` and explicit verified
+`writeSites`; a wrong classification or contested write fails the report.
+
+Declared entries left unread remain in `uncheckedEntries`; no memory or cycle
+boundary is usable until all declared entries have been checked for conflicts.
+A shared-node positive control also requires usable caller/callee boundaries.

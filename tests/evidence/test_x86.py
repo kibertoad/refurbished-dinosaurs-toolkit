@@ -61,6 +61,68 @@ def events(result, kind):
     return [e for path in result["paths"] for e in path["events"] if e["kind"] == kind]
 
 
+class CalleeGraphTests(unittest.TestCase):
+    def graph(self, code, names, **extra):
+        data = code.bytes()
+        cfg = configuration(data, **extra)
+        cfg["regions"][0]["entries"] = [code.labels[n] for n in names]
+        return run_report(data, cfg, "callees")
+
+    def test_diamond_reuse_retains_conditional_writes_and_unresolved_calls_at_each_caller(self):
+        c = Code().label("root").branch("e8", "a").branch("e8", "b").emit("c3")
+        c.label("a").branch("e8", "common").emit("c3")
+        c.label("b").branch("e8", "common").emit("c3")
+        c.label("common").branch("74", "skip").emit("c7 06 20 00 01 00").label("skip").emit("ff d3 c3")
+        r = self.graph(c, ["root", "a", "b", "common"], controls={"sharedSites": [c.labels["b"]], "writeSites": [c.labels["common"] + 2]})
+        self.assertFalse(any(e["classification"] == "recursivePath" for e in r["edges"]))
+        common = [e for e in r["edges"] if e["target"] == c.labels["common"]]
+        self.assertEqual([e["classification"] for e in common], ["newNode", "sharedNodeReuse"])
+        for e in common:
+            self.assertTrue(any("write" in o["access"] for o in e["calleeSummary"]["memoryObservations"]))
+            self.assertTrue(e["calleeSummary"]["dependencies"])
+            self.assertFalse(e["calleeSummary"]["effectComplete"])
+        self.assertFalse(r["completeWithinDeclaredGraph"])
+
+    def test_cycle_is_only_an_edge_back_into_the_active_path(self):
+        c = Code().label("root").branch("e8", "a").emit("c3")
+        c.label("a").branch("e8", "root").emit("c3")
+        r = self.graph(c, ["root", "a"], controls={"recursiveSites": [c.labels["a"]]})
+        cycles = [e for e in r["edges"] if e["classification"] == "recursivePath"]
+        self.assertEqual(cycles[0]["cyclePath"], [0, c.labels["a"], 0])
+        self.assertTrue(r["completeWithinDeclaredGraph"])
+        with self.assertRaisesRegex(ValueError, "positive control"):
+            self.graph(c, ["root", "a"], controls={"sharedSites": [c.labels["a"]]})
+
+    def test_limits_and_unestablished_targets_remain_dependencies(self):
+        c = Code().label("root").branch("e8", "a").branch("e8", "b").emit("c3")
+        c.label("a").emit("c3").label("b").emit("c3")
+        for options in ({"depthLimit": 1}, {"nodeLimit": 1}, {"edgeLimit": 1}, {"instructionLimit": 1}):
+            r = self.graph(c, ["root", "a", "b"], **options)
+            self.assertFalse(r["completeWithinDeclaredGraph"])
+        r = self.graph(c, ["root"])
+        self.assertTrue(all(e["classification"] == "unresolved" for e in r["edges"]))
+
+    def test_unread_declared_entry_blocks_boundary_and_write_controls(self):
+        data = bytes.fromhex("c7 06 20 00 01 00 c3 90 c3")
+        cfg = configuration(data)
+        cfg["regions"][0]["entries"] = [0, 7]
+        r = run_report(data, cfg, "callees")
+        self.assertEqual(r["uncheckedEntries"], [7])
+        self.assertFalse(r["nodes"][0]["boundaryUsable"])
+        cfg["controls"] = {"writeSites": [0]}
+        with self.assertRaisesRegex(ValueError, "positive control"):
+            run_report(data, cfg, "callees")
+
+    def test_cross_entry_overlap_cannot_verify_a_cycle_or_write(self):
+        data = bytes.fromhex("66 90 e8 fc ff c3")
+        cfg = configuration(data)
+        cfg["regions"][0]["entries"] = [0, 1]
+        r = run_report(data, cfg, "callees")
+        self.assertTrue(any(e["classification"] == "unresolvedBackEdge" for e in r["edges"]))
+        self.assertTrue(all(not n["boundaryUsable"] for n in r["nodes"]))
+        self.assertFalse(r["completeWithinDeclaredGraph"])
+
+
 class ReporterTests(unittest.TestCase):
     def test_register_parts_preserve_neighbor(self):
         r = report("b8 34 12 b0 00 c3")

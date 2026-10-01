@@ -263,3 +263,19 @@ test('owner reports source-derived exported entries and rejects supplied export 
   assert.deepEqual(r.checkedEntries.find(e=>e.entry===532).overlayExports,[]);
   assert.throws(()=>prepare({...config,overlayExports:[]},dir),/source-derived/);
 });
+
+
+test("callee graph through the source bridge keeps a reused node distinct from recursion", t => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  data.set([0xe8, 4, 0, 0xe8, 1, 0, 0xc3, 0xc7, 0x06, 0x20, 0, 1, 0, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const cfg = { ...config, sha256: createHash("sha256").update(data).digest("hex"),
+    regions: [{ ...config.regions[0], entries: [64, 71] }], controls: { sharedSites: [67], writeSites: [71] } };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  const r = run(["callees", join(dir, "config.json")]);
+  assert.deepEqual(r.edges.map(e => e.classification), ["newNode", "sharedNodeReuse"]);
+  assert.ok(r.edges.every(e => e.calleeSummary.memoryObservations.some(o => o.site === 71 && o.access.includes("write"))));
+  assert.ok(r.edges.every(e => !e.calleeSummary.effectComplete));
+  assert.equal(r.completeWithinDeclaredGraph, true);
+});
