@@ -155,7 +155,7 @@ def trace(image, config):
     created = 1
     total_steps = 0
     total_string_steps = 0
-    string_limit = integer(config.get("stringIterations", 4096), 1, 65536, "string iteration budget")
+    string_limit = integer(config.get("stringIterations", 4096), 0, 65536, "string iteration budget")
     total_limit = integer(config.get("totalSteps", 20000), 1, 100000, "totalSteps")
     checkpoints = set(config.get("checkpoints", []))
 
@@ -165,7 +165,7 @@ def trace(image, config):
         remaining = string_limit - total_string_steps
         if count.number is not None and count.number <= remaining:
             total_string_steps += count.number
-        string_effect(s, ins, remaining)
+        string_effect(s, ins, count, remaining)
 
     def finish(s, reason=None, returned=False):
         outputs.append({"returned": returned, "stop": reason, "stopSite": None if returned else s.at, "steps": s.steps,
@@ -212,22 +212,26 @@ def trace(image, config):
                             state.event("flag-assumption", flag="DF", value=state.direction_flag.report(), producer=direction.report(),
                                         evidence="conditional outcome of one unresolved direction producer")
                         else:
+                            # Like a branch, the last case reuses this state, so a path limit never drops it.
                             for choice in (0, 1):
-                                if created >= max_paths:
-                                    global_gaps.append({"site": at, "reason": "path limit at unknown direction flag"})
-                                    break
-                                child = deepcopy(state); created += 1
+                                if choice == 0:
+                                    if created >= max_paths:
+                                        global_gaps.append({"site": at, "reason": "path limit at unknown direction flag"})
+                                        continue
+                                    child = deepcopy(state); created += 1
+                                else:
+                                    child = state
                                 child.assumptions[key] = choice
                                 child.direction_flag = const(choice, 1, at)
                                 child.event("flag-assumption", flag="DF", value=child.direction_flag.report(), producer=direction.report(),
                                             evidence="conditional outcome of one unresolved direction producer")
-                                try:
-                                    string_step(child, ins, count)
-                                    child.at = following
-                                    pending.append(child)
-                                except StopPath as error:
-                                    finish(child, str(error))
-                            break
+                                if child is not state:
+                                    try:
+                                        string_step(child, ins, count)
+                                        child.at = following
+                                        pending.append(child)
+                                    except StopPath as error:
+                                        finish(child, str(error))
                     string_step(state, ins, count)
                     state.at = following
                     continue
@@ -275,8 +279,7 @@ def trace(image, config):
                             for r in REGISTERS:
                                 if r not in model.get("preserves", []) and r not in ("esp", "cs"):
                                     child.regs[r] = unknown(f"modeled-call:{at}:{r}", ALIASES[r][2], at)
-                            child.memory.clear()
-                            child.memory_epoch += 1
+                            child.clear_memory()
                             child.forget_flags()
                             child.direction_flag = unknown(f"modeled-call:{at}:DF:{child.flag_serial}", 1, at)
                             child.interrupt_flag = unknown(f"modeled-call:{at}:IF:{child.flag_serial}", 1, at)
@@ -426,5 +429,5 @@ def trace(image, config):
             finish(state, str(error))
     return {"paths": outputs, "gaps": global_gaps,
             "completeWithinModel": not global_gaps and bool(outputs) and all(p["returned"] for p in outputs),
-            "nativeReachability": "unconfirmed", "stepsUsed": total_steps,
+            "nativeReachability": "unconfirmed", "stepsUsed": total_steps, "stringIterationsUsed": total_string_steps,
             "limits": {"steps": max_steps, "paths": max_paths, "depth": max_depth}}

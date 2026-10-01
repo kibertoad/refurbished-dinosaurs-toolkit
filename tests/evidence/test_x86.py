@@ -597,6 +597,20 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(len(result["paths"]),1)
         self.assertFalse(events(result,"flag-assumption"))
 
+    def test_direction_split_at_path_limit_keeps_the_current_path(self):
+        result=report("b9 03 00 bf 00 01 f3 aa c3",registers={"es":0x2000},maxPaths=1)
+        self.assertEqual(len(result["paths"]),1)
+        self.assertTrue(result["paths"][0]["returned"])
+        self.assertEqual(result["gaps"][0]["reason"],"path limit at unknown direction flag")
+        self.assertEqual(result["stringIterationsUsed"],3)
+
+    def test_sse_movsd_is_not_a_string_operation(self):
+        # The modrm/displacement ends in A5; it must not fabricate a string copy.
+        result=report("f2 0f 10 46 a5 c3",flags={"direction":0})
+        self.assertFalse(result["completeWithinModel"])
+        self.assertFalse(events(result,"string-operation"))
+        self.assertFalse(events(result,"write"))
+
     def test_local_flags_frame_check_reports_no_read(self):
         result=report("0e e8 01 00 c3 cb","memory",registers={"ss":0x9000,"sp":0x8000})
         self.assertTrue(result["completeWithinModel"])

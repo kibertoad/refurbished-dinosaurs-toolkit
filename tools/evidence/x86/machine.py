@@ -51,6 +51,8 @@ class State:
                 raise ValueError("Invalid initial register value")
             self.setreg(r, const(n, ALIASES[r][2]), None)
         self.memory = {}
+        # Keys grouped by (segment, base) so a write scans only groups that can alias it.
+        self.memory_groups = {}
         self.memory_epoch = 0
         self.events = []
         self.guards = []
@@ -103,6 +105,11 @@ class State:
         self.event("flags-restore", width=bits // 8, value=word.report(), intactLocalSnapshot=saved is not None,
                    direction=self.direction_flag.report(), interrupt=self.interrupt_flag.report(),
                    arithmeticProducerRestored=saved is not None)
+
+    def clear_memory(self):
+        self.memory.clear()
+        self.memory_groups.clear()
+        self.memory_epoch += 1
 
     def reg(self, name):
         root, low, bits = alias(name)
@@ -164,16 +171,22 @@ class State:
                 return None
             # A concrete write covers every byte it stores, not only its first byte.
             written = (keys[0][2], keys[-1][2] + 1) if seg == ("linear",) else domain(keys[0])
-            for key in list(self.memory):
-                if key not in keys and (key[0], key[1]) != (seg, base):
+            for group, members in list(self.memory_groups.items()):
+                if group == (seg, base):
+                    continue
+                for key in list(members):
                     # Different symbolic segments/bases may alias. Concrete linear locations do not.
                     a, b = domain(key), written
                     disjoint = a is not None and b is not None and (a[1] <= b[0] or b[1] <= a[0])
                     if not disjoint:
                         uncertain.append(key)
                         del self.memory[key]
+                        members.discard(key)
+                if not members:
+                    del self.memory_groups[group]
             for i, key in enumerate(keys):
                 self.memory[key] = extract(write, i * 8, 8)
+            self.memory_groups.setdefault((seg, base), set()).update(keys)
             value = write
             missing = []
         else:
@@ -417,8 +430,8 @@ def ordinary(state, ins, image):
 
 
 def string_instruction(ins):
-    return bool(ins.bytes) and ins.bytes[-1] in (0xA4, 0xA5, 0xAA, 0xAB, 0xAC, 0xAD) and ins.mnemonic.split()[-1] in (
-        "movsb", "movsw", "movsd", "stosb", "stosw", "stosd", "lodsb", "lodsw", "lodsd")
+    # Match the one-byte opcode, not the last encoded byte: SSE MOVSD (F2 0F 10 /r) can end in A5.
+    return ins.opcode[0] in (0xA4, 0xA5, 0xAA, 0xAB, 0xAC, 0xAD) and ins.opcode[1] == 0
 
 
 def string_count(state, ins):
@@ -432,10 +445,9 @@ def check_string_form(state, ins):
         raise StopPath("REPNE string form is not supported")
 
 
-def string_effect(state, ins, remaining):
-    check_string_form(state, ins)
-    count = string_count(state, ins)
-    width = 1 if ins.bytes[-1] % 2 == 0 else (4 if (0x66 in ins.prefix) != state.flat else 2)
+def string_effect(state, ins, count, remaining):
+    """Apply a string form already accepted by check_string_form with its string_count."""
+    width = 1 if ins.opcode[0] % 2 == 0 else (4 if (0x66 in ins.prefix) != state.flat else 2)
     operation = ins.mnemonic.split()[-1][:4]
     state.event("string-operation", operation=operation, width=width, repetitions=count.report(),
                 direction=state.direction_flag.report(), repeat=0xF3 in ins.prefix,
@@ -448,7 +460,8 @@ def string_effect(state, ins, remaining):
         return 0
     if state.direction_flag.number is None:
         raise StopPath("Direction flag unresolved; conditional string paths required")
-    source_name = next((name for prefix, name in ((0x26,"es"),(0x2e,"cs"),(0x36,"ss"),(0x3e,"ds"),(0x64,"fs"),(0x65,"gs")) if prefix in ins.prefix), "ds")
+    # MOVS/LODS decode their source as the second memory operand, carrying any segment override.
+    source_name = segment_register(ins, ins.operands[1].mem) if operation in ("movs", "lods") else None
     si, di = ("esi", "edi") if state.flat else ("si", "di")
     delta = -width if state.direction_flag.number else width
     for _ in range(count.number):

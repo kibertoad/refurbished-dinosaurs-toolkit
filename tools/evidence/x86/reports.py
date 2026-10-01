@@ -122,6 +122,8 @@ def uses(image, config):
     matches, unresolved, unique = [], [], set()
     # Trace each established entry independently; never decode a whole segment as one stream.
     remaining = integer(config.get("totalSteps", 20000), 1, 100000, "totalSteps")
+    # One string iteration budget spans every traced entry, as totalSteps does.
+    string_remaining = integer(config.get("stringIterations", 4096), 0, 65536, "string iteration budget")
     entry_limit = integer(config.get("entryLimit", 64), 1, 256, "entryLimit")
     # CFG points where value propagation stopped (or never started), with why; operands after them are inventoried below.
     stops = {}
@@ -132,8 +134,9 @@ def uses(image, config):
             for root in established[index:]:
                 stops.setdefault(root, "entry not traced: entry or total instruction budget exhausted")
             break
-        report = trace(image, {**config, "entry": at, "totalSteps": remaining})
+        report = trace(image, {**config, "entry": at, "totalSteps": remaining, "stringIterations": string_remaining})
         remaining -= report["stepsUsed"]
+        string_remaining -= report["stringIterationsUsed"]
         if not report["completeWithinModel"]:
             gaps.append({"entry": at, "reason": "incomplete path effects", "stops": list({p["stop"] for p in report["paths"] if p["stop"]})})
         for p in report["paths"]:
