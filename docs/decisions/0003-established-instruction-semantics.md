@@ -248,7 +248,7 @@ Rules for every iteration:
 |---|---|---|---|
 | 0 freeze and baseline | done | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
 | 1 pypcode spike | done | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54), 4 (#55), 5 (#56), 6 (#57) and 7 (#58) answered |
-| 2 semantics seam | in progress | 2026-10-02 | step 1 done: `x86/semantics.py` defines `Backend` (`ordinary`, `condition`, `string_iteration`); `trace.py` and `State.carry_value` call the backend a `State` holds; 210 engine tests pass unchanged (PR pending) |
+| 2 semantics seam | in progress | 2026-10-02 | step 1 done: `x86/semantics.py` defines `Backend` (`ordinary`, `condition`, `string_iteration`); `trace.py` and `State.carry_value` call the backend a `State` holds; 210 engine tests pass unchanged (PR pending); step 2 done: `ordinary`, `predicate`, `shift_carry`, `CARRY_BRANCHES`, `CLEARED_BY_LOGIC` and the string iteration body moved to `x86/handwritten.py`, the registered default backend; 210 engine tests pass unchanged (PR pending) |
 | 3 pypcode backend | not started | | |
 | 4 parity on recorded cases | not started | | |
 | 5 cutover | not started | | |
