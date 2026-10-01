@@ -293,6 +293,35 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(interior["owners"], [])
         self.assertEqual(len(interior["insideOtherInstructions"]), 2)
 
+    def test_incoming_labels_a_search_of_part_of_a_declared_segment_partial(self):
+        data = bytes.fromhex("e8 01 00 c3 c3 e8 fc ff c3")
+        cfg = configuration(data, target=4, controls=[0], segments=[{"name": "code", "start": 0, "end": 9, "evidence": "synthetic segment"}])
+        cfg["regions"] = [{**cfg["regions"][0], "name": "first", "end": 5, "entries": [0]},
+                          {**cfg["regions"][0], "name": "second", "start": 5, "ip": 5, "entries": [5]}]
+        cfg["searchRegions"] = ["first"]
+        narrow = run_report(data, cfg, "incoming")
+        self.assertTrue(narrow["partialSearch"])
+        self.assertEqual(narrow["coverage"][0]["unsearched"], [{"start": 5, "end": 9}])
+        self.assertFalse(narrow["negativeUsable"])
+        cfg["searchRegions"] = ["first", "second"]
+        whole = run_report(data, cfg, "incoming")
+        self.assertFalse(whole["partialSearch"])
+        self.assertEqual([h["site"] for h in whole["confirmed"]], [0, 5])
+
+    def test_incoming_says_where_each_unverified_candidate_sits(self):
+        hidden = bytes.fromhex("ff e0 e8 01 00 c3 c3")
+        cfg = configuration(hidden, target=6)
+        cfg["regions"][0]["entries"] = [0, 6]
+        r = run_report(hidden, cfg, "incoming")
+        self.assertEqual(r["candidates"][0]["position"]["undecodedRange"], {"start": 2, "end": 6, "region": "synthetic"})
+        self.assertEqual(r["unresolvedTransfers"], [{"site": 0, "kind": "jmp", "reason": "computed transfer remains unresolved"}])
+        embedded = bytes.fromhex("c7 06 00 02 e8 03 00 c3 c3 cc c3")
+        cfg = configuration(embedded, target=10)
+        cfg["regions"][0]["entries"] = [0, 10]
+        r = run_report(embedded, cfg, "incoming")
+        self.assertEqual([c["site"] for c in r["candidates"]], [4])
+        self.assertEqual(r["candidates"][0]["position"]["insideInstruction"], 0)
+
     def test_dispatch_normalization_and_rejection(self):
         c = Code().emit("83 e0 7f 83 f8 02").branch("73", "reject").emit("89 c3 d1 e3").label("dispatch").emit("ff 27").label("reject").emit("c3")
         c.label("table").emit("20 00 30 00")

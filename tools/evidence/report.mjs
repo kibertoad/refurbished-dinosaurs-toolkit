@@ -59,6 +59,8 @@ export function prepare(config, base) {
     } else {
       region.resident = false;
       // Overlay analysis segments are supplied explicitly; no fixed runtime segment is inferred.
+      // The overlay's code is the complete domain a relative call inside it can come from.
+      region.container = { view: container.view, start: container.start, end: container.end };
     }
   }
   return { ...config, source, relocations, formatTables };

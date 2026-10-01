@@ -120,6 +120,19 @@ counted in `counts.contested`, shares the result `limit`, and makes
 unrelocated far calls and prefix-started raw candidates are excluded. Even a zero
 report covers only the declared domain.
 
+`coverage` groups the searched regions by the complete domain that holds them:
+the overlay's code (the Node loader passes each overlay region's bounds), the PE
+section, or a segment the query declares in `segments` (`name`, `start`, `end`,
+`evidence`), which is how a resident segment's bounds from the build's code
+ranges reach the report. A domain the searched regions do not cover lists its
+`unsearched` ranges and sets `partialSearch`, which makes `negativeUsable` false.
+Regions with no known domain are reported as covering only themselves. Each
+unverified candidate carries a `position`: inside a reached instruction (bytes
+of that instruction, so a call there needs an overlapping start) or in an
+undecoded range that no established path reaches. `unresolvedTransfers` lists
+the computed jumps and calls in the searched regions, the routes that may reach
+those undecoded bytes.
+
 `dispatch` adds `dispatch.site`, `inputRegister`, `indexRegister`, up to 256 numeric
 `inputs`, `indexEvidence`, and `table` with `start`, `count`, `stride`, `width`,
 `countEvidence`, `offset` and `mappingEvidence`. `offset` is the encoded memory
