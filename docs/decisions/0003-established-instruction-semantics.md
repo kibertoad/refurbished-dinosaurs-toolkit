@@ -247,7 +247,7 @@ Rules for every iteration:
 | Phase | Status | Date | Evidence |
 |---|---|---|---|
 | 0 freeze and baseline | done | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
-| 1 pypcode spike | in progress | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54) and 4 (PR pending) answered |
+| 1 pypcode spike | in progress | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54) and 4 (#55) answered |
 | 2 semantics seam | not started | | |
 | 3 pypcode backend | not started | | |
 | 4 parity on recorded cases | not started | | |
