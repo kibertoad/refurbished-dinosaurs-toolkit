@@ -547,11 +547,175 @@ def call_target_report(image, config):
     return result
 
 
+RETURNS = {"ret": "near return", "retf": "far return", "iret": "interrupt return", "iretd": "interrupt return"}
+PORTS = ("in", "out", "insb", "insw", "insd", "outsb", "outsw", "outsd")
+
+
+def body(image, entry, limit=10000):
+    """Every instruction one entry reaches without entering a callee, and every way out of it.
+
+    Calls, interrupts and port accesses are followed to the next instruction, and each such
+    continuation is listed as an assumption. A direct jump to another established entry or
+    another region, and every far jump, ends the body as a tail transfer.
+    """
+    established = set(entries(image))
+    pending, seen, exits, calls, gaps, assumed, shared = [entry], {}, [], [], [], [], set()
+    while pending:
+        at = pending.pop()
+        if at in seen:
+            continue
+        if len(seen) >= limit:
+            gaps.append({"site": at, "reason": "instruction limit"})
+            break
+        ins = image.decode(at)
+        if ins is None:
+            gaps.append({"site": at, "reason": "undecoded or unmapped edge"})
+            continue
+        seen[at] = ins
+        if at != entry and at in established:
+            shared.add(at)
+        m, following = ins.mnemonic, at + ins.size
+        if unsupported_transfer(image, ins):
+            gaps.append({"site": at, "reason": "unsupported control-transfer frame encoding"})
+            continue
+        if m in RETURNS:
+            exits.append({"site": at, "kind": RETURNS[m], "cleanupBytes": ins.operands[0].imm if ins.operands else 0})
+            continue
+        if m == "hlt":
+            exits.append({"site": at, "kind": "halt"})
+            continue
+        if m in ("int", "int3", "into") or m in PORTS:
+            assumed.append({"site": at, "assumption": ("the interrupt returns to the next instruction" if m.startswith("int")
+                                                      else "the port access continues to the next instruction")})
+            pending.append(following)
+            continue
+        if m in ("jmp", "ljmp"):
+            target, provenance = call_target(image, at, ins)
+            if target is None:
+                exits.append({"site": at, "kind": "unresolved jump", "reason": provenance.get("reason")})
+                gaps.append({"site": at, "reason": "jump target unresolved; the body may continue elsewhere"})
+            elif m == "ljmp" or (target in established and target != entry) or image.region(target) is not image.region(at):
+                exits.append({"site": at, "kind": "tail transfer", "target": target})
+            else:
+                pending.append(target)
+            continue
+        if m in ("call", "lcall"):
+            target, provenance = call_target(image, at, ins)
+            calls.append({"site": at, "target": target, "encoding": m,
+                          **({} if target is not None else {"reason": provenance.get("reason")})})
+            assumed.append({"site": at, "assumption": "the callee returns to the next instruction"})
+            pending.append(following)
+            continue
+        if m.startswith("j") or m.startswith("loop"):
+            target, provenance = call_target(image, at, ins)
+            if target is None:
+                gaps.append({"site": at, "reason": provenance.get("reason", "branch target outside declared regions")})
+            else:
+                pending.append(target)
+        pending.append(following)
+    intervals = sorted((at, at + ins.size) for at, ins in seen.items())
+    runs, overlaps = [], []
+    for start, end in intervals:
+        if runs and start < runs[-1][1]:
+            overlaps.append(start)
+        if runs and start <= runs[-1][1]:
+            runs[-1][1] = max(runs[-1][1], end)
+        else:
+            runs.append([start, end])
+    for at in overlaps:
+        gaps.append({"site": at, "reason": OVERLAP_REASON})
+    holes = [{"start": a[1], "end": b[0]} for a, b in zip(runs, runs[1:])]
+    covered = sum(end - start for start, end in runs)
+    return {"entry": entry, "instructions": seen, "intervals": [{"start": a, "end": b} for a, b in runs], "holes": holes,
+            "span": {"start": runs[0][0], "end": runs[-1][1]} if runs else None, "coveredBytes": covered,
+            "exits": sorted(exits, key=lambda e: e["site"]), "calls": sorted(calls, key=lambda c: c["site"]),
+            "assumedContinuations": sorted(assumed, key=lambda a: a["site"]), "sharedEntries": sorted(shared),
+            "gaps": gaps, "complete": bool(exits) and not gaps}
+
+
+def _body_report(b):
+    return {k: v for k, v in b.items() if k != "instructions"} | {"instructionCount": len(b["instructions"])}
+
+
+def _analyzer_function(config):
+    claim = config.get("analyzerFunction")
+    if claim is None:
+        return None
+    if not isinstance(claim, dict) or not claim.get("evidence"):
+        raise ValueError("analyzerFunction needs start and evidence")
+    return claim
+
+
+def bounds(image, config):
+    entry = integer(config.get("entry"), 0, len(image.data) - 1, "entry")
+    if entry not in entries(image):
+        raise ValueError("Bounds entry must be an established region entry")
+    b = body(image, entry, config.get("instructionLimit", 10000))
+    result = _body_report(b)
+    claim = _analyzer_function(config)
+    if claim is not None:
+        start = integer(claim.get("start"), 0, len(image.data) - 1, "analyzer start")
+        size = integer(claim.get("bodyBytes"), 1, len(image.data), "analyzer body bytes")
+        end = start + size
+        result["analyzer"] = {
+            "start": start, "bodyBytes": size, "evidence": claim["evidence"], "startMatches": start == entry,
+            "bodyBytesMatch": size == b["coveredBytes"], "startPlusBodyBytes": end,
+            "exitsAtOrBeyond": [e for e in b["exits"] if e["site"] >= end],
+            "instructionsAtOrBeyond": sorted(at for at in b["instructions"] if at >= end),
+            "interpretation": "an analyzer size counts body bytes; start plus size is not an end address unless the body is one contiguous run"}
+    result["interpretation"] = ("complete means every reached path ends in a listed exit within the declared regions and the "
+                                "listed continuation assumptions; it is not a complete reading under the standard")
+    return result
+
+
+def owner(image, config):
+    query = config.get("query", {})
+    if not isinstance(query, dict):
+        raise ValueError("Owner query must be an object")
+    site = integer(query.get("site"), 0, len(image.data) - 1, "owner site")
+    if image.region(site) is None:
+        raise ValueError("Owner site is outside declared code")
+    entry_limit = integer(config.get("entryLimit", 64), 1, 256, "entryLimit")
+    established = entries(image)
+    owners, inside, gaps = [], [], []
+    for index, entry in enumerate(established):
+        if index >= entry_limit:
+            gaps.append({"entries": established[index:], "reason": "entry limit; these entries were not checked"})
+            break
+        b = body(image, entry, config.get("instructionLimit", 10000))
+        if site in b["instructions"]:
+            owners.append({"entry": entry, "complete": b["complete"], "span": b["span"],
+                           "exitsBeforeSiteByAddress": [e for e in b["exits"] if e["site"] < site]})
+        elif any(at < site < at + ins.size for at, ins in b["instructions"].items()):
+            inside.append({"entry": entry, "reason": "the site is inside an instruction this entry reaches, not at its start"})
+    result = {"site": site, "owners": owners, "insideOtherInstructions": inside, "gaps": gaps,
+              "shared": len(owners) > 1,
+              "verdict": ("unowned: no established entry reaches this site" if not owners else
+                          "shared by several entries" if len(owners) > 1 else "one established entry reaches this site"),
+              "interpretation": "ownership is reachability from established entries without entering callees; a return or "
+                                "prologue between an entry and the site by address is a warning, never a boundary"}
+    claim = _analyzer_function(config)
+    if claim is not None:
+        start = integer(claim.get("start"), 0, len(image.data) - 1, "analyzer start")
+        hypothesis = body(image, start, config.get("instructionLimit", 10000)) if image.region(start) else None
+        result["analyzer"] = {
+            "start": start, "evidence": claim["evidence"], "established": start in established,
+            "agrees": any(o["entry"] == start for o in owners),
+            "reachesSite": None if hypothesis is None else site in hypothesis["instructions"],
+            "exitsBeforeSiteByAddress": [] if hypothesis is None else [e for e in hypothesis["exits"] if start <= e["site"] < site],
+            "interpretation": "disagreement means the analyzer's function and the established entries assign this site differently"}
+    return result
+
+
 def _run_report(image, config, command):
     if command == "operand":
         return operand_provenance(image, config)
     if command == "target":
         return call_target_report(image, config)
+    if command == "bounds":
+        return bounds(image, config)
+    if command == "owner":
+        return owner(image, config)
     if command == "incoming":
         return incoming(image, config)
     if command == "uses":

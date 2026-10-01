@@ -54,7 +54,8 @@ offsets alone never establish storage identity.
 ## Commands
 
 All commands return JSON with the input fingerprint and schema `bounded-x86-v1`.
-`target` is described under [Call-target provenance](#call-target-provenance).
+`target` is described under [Call-target provenance](#call-target-provenance), and `bounds`
+and `owner` under [Function bounds and site ownership](#function-bounds-and-site-ownership).
 `trace` follows direct calls and local branches, records ordered effects and keeps
 each return separately. `arguments`, `effects`, `returns`, `memory` and `guards`
 select the relevant events from the same traversal. Event order numbers refer to
@@ -366,3 +367,33 @@ table cannot quietly shrink a search. A `targetSelector` that names a resident
 descriptor fails with that descriptor's flags. The lightweight `incomingCalls`
 inventory lists a far-call candidate whose instruction would leave every mapped
 range under `unresolved` instead of skipping it.
+
+
+## Function bounds and site ownership
+
+`bounds` takes an established `entry`. It follows every conditional branch,
+direct jump and fall-through from that entry without entering callees, and
+reports `intervals` (the contiguous runs of reached instruction bytes), `holes`
+between them, `span`, `coveredBytes`, every `exit` (near, far and interrupt
+returns, halts, tail transfers and unresolved jumps) and every call. A direct
+jump to another established entry or region, or any far jump, is a tail
+transfer. Calls, interrupts and port accesses continue at the next
+instruction, and each such continuation is listed in `assumedContinuations`.
+`sharedEntries` lists other established entries the body runs into.
+`complete` means every path ended in a listed exit with no gap; it is not a
+complete reading under the standard.
+
+An optional `analyzerFunction` (`start`, `bodyBytes`, `evidence`) compares an
+analyzer's function with the reached body. `bodyBytes` is a count of body bytes.
+The report gives `startPlusBodyBytes` and lists the exits and instructions at or
+beyond it, so a size added to a start cannot silently cut off a later return.
+
+`owner` takes `query: { site }` and reports which established entries reach the
+site as an instruction start, under the same rules. It lists entries that reach
+an instruction containing the site, marks a site several entries reach as
+`shared`, and checks at most `entryLimit` entries (default 64, maximum 256),
+reporting the rest as unchecked. For each owner it lists the returns that lie
+before the site by address, which are warnings only. An optional
+`analyzerFunction` (`start`, `evidence`) says whether the analyzer's function is
+among the owners, whether its body reaches the site, and which of its returns
+come before the site.
