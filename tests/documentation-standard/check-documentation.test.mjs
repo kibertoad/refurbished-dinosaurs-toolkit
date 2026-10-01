@@ -1043,6 +1043,17 @@ for (const [location, error] of [
   assert.match(result.output, error);
 });
 
+for (const kind of ["file-data", "code"]) test(`a data-file location gives no kind: ${kind}`, (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    replaceIn(r, "spec/findings/FND-SCORE-001.md", "address: 0x00401000..0x00401010",
+      `address: 0x00401000..0x00401010\n  - build: BLD-EXAMPLE-1.0\n    file: DATA/SCORES.BIN\n    kind: ${kind}\n    offset: "0x00..0x02"`);
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, new RegExp(`location kind ${kind} in DATA/SCORES\\.BIN: a data file is not an executable, so its locations give no kind`));
+});
+
 test("a file-data-only finding cannot establish overlay code ranges", (t) => {
   const root = broken(t, (r) => {
     establishByReading(r);

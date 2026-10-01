@@ -283,10 +283,14 @@ MZ executables accept offsets because overlay code sits outside the load image a
 address. The other executable formats map their code through the loader, so their code always
 has an address and an offset into them fails.
 
-A location may also give `kind: code` (the default) or `kind: file-data`. A `file-data` location
-names executable headers, container tables or other shipped bytes that are not code, so it
-gives an `offset` into the shipped file in any format, never an `address`, and needs no Code
-ranges row. The checker fails any other kind, and an address on a `file-data` location.
+A location in an executable may also give `kind: code` (the default) or `kind: file-data`. A
+`file-data` location names executable headers, container tables, a packer's header or other
+shipped bytes that are read as data, so it gives an `offset` into the shipped file in any
+executable format, never an `address`, and needs no Code ranges row. Bytes that exist only once
+a packed file is unpacked are addressed in the unpacked file like code; the checker cannot tell
+whether an offset points into compressed data, so review catches that. The checker fails any
+other kind, an address on a `file-data` location, and any `kind` on a location in a `data` or
+`cdda` file, which holds no code to tell apart.
 
 ### Code ranges
 

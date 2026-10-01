@@ -835,7 +835,9 @@ for (const [id, e] of entries) {
       const bf = files.find((f) => f.path === loc.file);
       if (!bf) { problem(file, `location file ${loc.file} is not in the files of ${loc.build}`); continue; }
       const format = bf.unpacked?.format ?? bf.format;
-      if (loc.kind !== undefined && loc.kind !== "code" && loc.kind !== "file-data") problem(file, `location kind ${loc.kind} in ${loc.file}: kind must be code or file-data when given`);
+      // kind tells code from data within an executable; a data file holds no code to tell apart.
+      if (loc.kind !== undefined && !locationRule(format)?.address) problem(file, `location kind ${loc.kind} in ${loc.file}: a ${format} file is not an executable, so its locations give no kind`);
+      else if (loc.kind !== undefined && loc.kind !== "code" && loc.kind !== "file-data") problem(file, `location kind ${loc.kind} in ${loc.file}: kind must be code or file-data when given`);
       const fileData = loc.kind === "file-data";
       if (fileData && "address" in loc) problem(file, `a file-data location in ${loc.file} gives a shipped-file offset, not an address`);
       if ("address" in loc && "offset" in loc) problem(file, "a location gives address or offset, not both");
