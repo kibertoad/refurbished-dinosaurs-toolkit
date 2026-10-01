@@ -247,7 +247,7 @@ Rules for every iteration:
 | Phase | Status | Date | Evidence |
 |---|---|---|---|
 | 0 freeze and baseline | done | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
-| 1 pypcode spike | in progress | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54), 4 (#55) and 5 (#56) answered |
+| 1 pypcode spike | in progress | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54), 4 (#55), 5 (#56) and 6 (PR pending) answered |
 | 2 semantics seam | not started | | |
 | 3 pypcode backend | not started | | |
 | 4 parity on recorded cases | not started | | |
@@ -353,6 +353,14 @@ Unicorn 2.1.4 and Capstone 5.0.7 on Python 3.14 (Windows). Each answer names its
    layer keeps rejecting an unknown count, an unresolved DF and an exhausted budget before the body
    runs, as `string_effect` does now. The body reads before it writes, so the `read` and `write`
    events keep their order.
+6. **Operand-size overrides and conversions: go.** (`Question6Widths`) The output varnode carries
+   the effective width in both modes. In real mode `cbw` writes AX from AL, `66 cbw` writes EAX
+   from AX, `cwd` writes DX and `66 cwd` writes EDX (`INT_SEXT` then `SUBPIECE` of the high
+   half), and `66 mov eax, imm32` writes EAX. In flat mode the same bytes give the opposite widths.
+   The values match the handwritten results (`cbw` of 0x80 is 0xFF80, `cwd` of 0x8000 gives DX
+   0xFFFF). The `conversion` event keeps `decoderMnemonic` and `mnemonicWidthMismatch` from
+   Capstone's mnemonic, and takes `effectiveOperandBits` from the output width, which removes the
+   prefix arithmetic the handwritten backend does.
 
 ### Groups moved
 
