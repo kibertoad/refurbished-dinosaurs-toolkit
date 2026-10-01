@@ -100,4 +100,4 @@ otherwise.
 The `effects` command additionally emits path-local `effectOrdering` timelines,
 pre-call write prefixes and bounded local restoration witnesses. Unknown modeled
 or nested service effects stay separate; no return code establishes rollback or
-transactionality. See [the full contract](../../docs/bounded-evidence-reporters.md#ordered-effect-path-summaries).
+transactionality. See [the full contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#ordered-effect-path-summaries).

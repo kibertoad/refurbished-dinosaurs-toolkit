@@ -65,6 +65,23 @@ class EffectOrderTests(unittest.TestCase):
                      "a1 20 00 c7 06 20 00 02 00 26 a3 20 00 c3"]:  # other segment
             self.assertFalse(self.paths(report(code, "effects"))[0]["localRestorationWitnesses"])
 
+    def test_equal_value_without_read_provenance_is_not_a_restore(self):
+        # An independent immediate store equals the value read earlier.
+        p = self.paths(report("c7 06 20 00 00 00 83 3e 20 00 00 c7 06 20 00 05 00 c7 06 20 00 00 00 c3", "effects"))[0]
+        self.assertFalse(p["localRestorationWitnesses"])
+        # A loop re-pushes the same return address into a stack slot another call overwrote.
+        c = Code().emit("b9 02 00").label("top").branch("e8", "a").branch("e8", "b").emit("49").branch("75", "top").emit("c3")
+        c.label("a").emit("c3").label("b").emit("c3")
+        r = report(c, "effects", registers={"ss": 0x3000, "sp": 0xff00})
+        self.assertTrue(any(p["returned"] for p in self.paths(r)))
+        self.assertFalse([w for p in self.paths(r) for w in p["localRestorationWitnesses"]])
+
+    def test_timeline_keeps_flag_assumptions_that_split_paths(self):
+        r = report("b9 02 00 f3 a4 c3", "effects")
+        self.assertEqual(len(self.paths(r)), 2)
+        values = sorted(next(e for e in p["timeline"] if e["kind"] == "flag-assumption")["value"]["value"] for p in self.paths(r))
+        self.assertEqual(values, [0, 1])
+
     def test_restore_prefix_is_not_a_completed_return(self):
         p = self.paths(report("a1 20 00 c7 06 20 00 02 00 a3 20 00 ee", "effects"))[0]
         self.assertTrue(p["localRestorationWitnesses"])

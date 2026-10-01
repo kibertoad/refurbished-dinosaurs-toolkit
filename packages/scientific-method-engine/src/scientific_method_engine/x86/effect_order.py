@@ -1,9 +1,8 @@
 """Ordered, path-local effect evidence; no transactional or native-execution claims."""
-import json
 from bisect import bisect_right
 
 
-KINDS = {"read", "write", "call", "call-return", "return", "branch", "compare",
+KINDS = {"read", "write", "call", "call-return", "return", "branch", "compare", "flag-assumption",
          "arithmetic", "value-transfer", "conversion", "flag-write", "flags-save", "flags-restore", "local-iret", "string-operation"}
 
 
@@ -12,9 +11,9 @@ def _storage(event):
     # and the complete access width; a narrower restore is a separate access.
     if not all(k in event for k in ("segment", "offset", "width")):
         return None
-    return json.dumps([event["segment"].get("expression"),
-                       event["offset"].get("expression"), event["width"],
-                       event.get("segmentInterpretation")], sort_keys=True)
+    # Terms are hashable tuples; compare them directly instead of serializing each access.
+    return (event["segment"].get("expression"), event["offset"].get("expression"), event["width"],
+            event.get("segmentInterpretation"))
 
 
 def effect_ordering(report):
@@ -39,11 +38,14 @@ def effect_ordering(report):
             if kind == "read":
                 key = _storage(event)
                 if key is not None:
-                    snapshots.setdefault(key, {})[json.dumps(event["value"].get("expression"), sort_keys=True)] = event
+                    snapshots.setdefault(key, {})[event["value"].get("expression")] = event
             elif kind == "write":
                 key = _storage(event)
-                original = snapshots.get(key, {}).get(json.dumps(event["value"].get("expression"), sort_keys=True))
-                if original is not None and last_write.get(key, -1) > original["order"]:
+                original = snapshots.get(key, {}).get(event["value"].get("expression"))
+                # An equal expression alone is not a restore: an independent constant store or a
+                # re-pushed return address can match it. The written value must derive from the read.
+                if (original is not None and last_write.get(key, -1) > original["order"]
+                        and original["site"] in event["value"].get("producers", ())):
                     witnesses.append({"readOrder": original["order"], "restoreOrder": event["order"],
                                       "entry": event["entry"], "width": event["width"],
                                       "pathReturned": path["returned"],

@@ -33,7 +33,10 @@ jobs:
       # The event payload holds the labels as they were when the event fired, and a re-run reuses
       # that payload. Read the labels the pull request has now.
       - id: labels
-        run: echo "names=$(gh api "repos/$REPO/pulls/$PR" --jq '[.labels[].name]')" >> "$GITHUB_OUTPUT"
+        # A separate assignment lets a failed API call fail the step instead of passing an empty list.
+        run: |
+          names=$(gh api "repos/$REPO/pulls/$PR" --jq '[.labels[].name]')
+          echo "names=$names" >> "$GITHUB_OUTPUT"
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
