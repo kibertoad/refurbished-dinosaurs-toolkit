@@ -293,6 +293,34 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(interior["owners"], [])
         self.assertEqual(len(interior["insideOtherInstructions"]), 2)
 
+    def test_bounds_read_prefixed_returns_ports_and_conditional_tail_transfers(self):
+        # F3 C3 decodes as "repz ret" and F3 6C as "rep insb"; neither may fall through into the next entry.
+        data = bytes.fromhex("f3 6c 74 01 f3 c3 c3")
+        cfg = configuration(data)
+        cfg["regions"][0]["entries"] = [0, 5]
+        r = run_report(data, cfg, "bounds")
+        self.assertEqual(r["exits"], [{"site": 2, "kind": "tail transfer", "target": 5, "conditional": True},
+                                      {"site": 4, "kind": "near return", "cleanupBytes": 0}])
+        self.assertEqual([a["site"] for a in r["assumedContinuations"]], [0])
+        self.assertEqual(r["sharedEntries"], [])
+        cfg["instructionLimit"] = "many"
+        with self.assertRaisesRegex(ValueError, "instruction limit"):
+            run_report(data, cfg, "bounds")
+
+    def test_owner_does_not_call_a_site_unowned_past_a_gap_or_entry_limit(self):
+        data = bytes.fromhex("ff e0 c3 90 c3")
+        cfg = configuration(data, query={"site": 3}, analyzerFunction={"start": 3, "evidence": "synthetic analyzer function"})
+        cfg["regions"][0]["entries"] = [0, 2, 3]
+        r = run_report(data, cfg, "owner")
+        self.assertEqual([o["entry"] for o in r["owners"]], [3])
+        self.assertTrue(r["analyzer"]["agrees"])
+        cfg["entryLimit"] = 2
+        limited = run_report(data, cfg, "owner")
+        self.assertEqual(limited["owners"], [])
+        self.assertEqual([e["entry"] for e in limited["incompleteEntries"]], [0])
+        self.assertTrue(limited["verdict"].startswith("unresolved"))
+        self.assertTrue(limited["analyzer"]["agrees"])
+
     def test_dispatch_normalization_and_rejection(self):
         c = Code().emit("83 e0 7f 83 f8 02").branch("73", "reject").emit("89 c3 d1 e3").label("dispatch").emit("ff 27").label("reject").emit("c3")
         c.label("table").emit("20 00 30 00")

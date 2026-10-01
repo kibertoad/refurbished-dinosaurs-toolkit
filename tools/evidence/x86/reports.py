@@ -548,6 +548,7 @@ def call_target_report(image, config):
 
 
 RETURNS = {"ret": "near return", "retf": "far return", "iret": "interrupt return", "iretd": "interrupt return"}
+INTERRUPTS = ("int", "int1", "int3", "into")
 PORTS = ("in", "out", "insb", "insw", "insd", "outsb", "outsw", "outsd")
 
 
@@ -555,11 +556,15 @@ def body(image, entry, limit=10000):
     """Every instruction one entry reaches without entering a callee, and every way out of it.
 
     Calls, interrupts and port accesses are followed to the next instruction, and each such
-    continuation is listed as an assumption. A direct jump to another established entry or
-    another region, and every far jump, ends the body as a tail transfer.
+    continuation is listed as an assumption. A direct jump or conditional branch to another
+    established entry or another region, and every far jump, is a tail transfer.
     """
+    integer(limit, 1, 100000, "instruction limit")
     established = set(entries(image))
     pending, seen, exits, calls, gaps, assumed, shared = [entry], {}, [], [], [], [], set()
+
+    def leaves(at, target):
+        return (target in established and target != entry) or image.region(target) is not image.region(at)
     while pending:
         at = pending.pop()
         if at in seen:
@@ -574,7 +579,8 @@ def body(image, entry, limit=10000):
         seen[at] = ins
         if at != entry and at in established:
             shared.add(at)
-        m, following = ins.mnemonic, at + ins.size
+        # Capstone names REP/REPNE/BND prefixes in the mnemonic ("repz ret", "rep insb", "bnd jmp").
+        m, following = ins.mnemonic.split()[-1], at + ins.size
         if unsupported_transfer(image, ins):
             gaps.append({"site": at, "reason": "unsupported control-transfer frame encoding"})
             continue
@@ -584,8 +590,8 @@ def body(image, entry, limit=10000):
         if m == "hlt":
             exits.append({"site": at, "kind": "halt"})
             continue
-        if m in ("int", "int3", "into") or m in PORTS:
-            assumed.append({"site": at, "assumption": ("the interrupt returns to the next instruction" if m.startswith("int")
+        if m in INTERRUPTS or m in PORTS:
+            assumed.append({"site": at, "assumption": ("the interrupt returns to the next instruction" if m in INTERRUPTS
                                                       else "the port access continues to the next instruction")})
             pending.append(following)
             continue
@@ -594,7 +600,7 @@ def body(image, entry, limit=10000):
             if target is None:
                 exits.append({"site": at, "kind": "unresolved jump", "reason": provenance.get("reason")})
                 gaps.append({"site": at, "reason": "jump target unresolved; the body may continue elsewhere"})
-            elif m == "ljmp" or (target in established and target != entry) or image.region(target) is not image.region(at):
+            elif m == "ljmp" or leaves(at, target):
                 exits.append({"site": at, "kind": "tail transfer", "target": target})
             else:
                 pending.append(target)
@@ -610,6 +616,8 @@ def body(image, entry, limit=10000):
             target, provenance = call_target(image, at, ins)
             if target is None:
                 gaps.append({"site": at, "reason": provenance.get("reason", "branch target outside declared regions")})
+            elif leaves(at, target):
+                exits.append({"site": at, "kind": "tail transfer", "target": target, "conditional": True})
             else:
                 pending.append(target)
         pending.append(following)
@@ -676,32 +684,42 @@ def owner(image, config):
     if image.region(site) is None:
         raise ValueError("Owner site is outside declared code")
     entry_limit = integer(config.get("entryLimit", 64), 1, 256, "entryLimit")
+    limit = config.get("instructionLimit", 10000)
+    claim = _analyzer_function(config)
+    start = None if claim is None else integer(claim.get("start"), 0, len(image.data) - 1, "analyzer start")
     established = entries(image)
-    owners, inside, gaps = [], [], []
+    bodies, owners, inside, incomplete, gaps = {}, [], [], [], []
     for index, entry in enumerate(established):
         if index >= entry_limit:
             gaps.append({"entries": established[index:], "reason": "entry limit; these entries were not checked"})
             break
-        b = body(image, entry, config.get("instructionLimit", 10000))
+        b = bodies[entry] = body(image, entry, limit)
         if site in b["instructions"]:
             owners.append({"entry": entry, "complete": b["complete"], "span": b["span"],
-                           "exitsBeforeSiteByAddress": [e for e in b["exits"] if e["site"] < site]})
-        elif any(at < site < at + ins.size for at, ins in b["instructions"].items()):
+                           "exitsBeforeSiteByAddress": [e for e in b["exits"] if entry <= e["site"] < site]})
+            continue
+        if any(at < site < at + ins.size for at, ins in b["instructions"].items()):
             inside.append({"entry": entry, "reason": "the site is inside an instruction this entry reaches, not at its start"})
-    result = {"site": site, "owners": owners, "insideOtherInstructions": inside, "gaps": gaps,
-              "shared": len(owners) > 1,
-              "verdict": ("unowned: no established entry reaches this site" if not owners else
-                          "shared by several entries" if len(owners) > 1 else "one established entry reaches this site"),
+        if b["gaps"]:
+            # A body that stopped at a gap may still reach the site beyond it.
+            incomplete.append({"entry": entry, "gaps": b["gaps"]})
+    if owners:
+        verdict = "shared by several entries" if len(owners) > 1 else "one established entry reaches this site"
+    elif gaps or incomplete:
+        verdict = "unresolved: no checked body reaches this site, but some entries were unchecked or their bodies stopped at a gap"
+    else:
+        verdict = "unowned: no established entry reaches this site"
+    result = {"site": site, "owners": owners, "insideOtherInstructions": inside, "incompleteEntries": incomplete, "gaps": gaps,
+              "shared": len(owners) > 1, "verdict": verdict,
               "interpretation": "ownership is reachability from established entries without entering callees; a return or "
                                 "prologue between an entry and the site by address is a warning, never a boundary"}
-    claim = _analyzer_function(config)
     if claim is not None:
-        start = integer(claim.get("start"), 0, len(image.data) - 1, "analyzer start")
-        hypothesis = body(image, start, config.get("instructionLimit", 10000)) if image.region(start) else None
+        hypothesis = bodies.get(start) or (body(image, start, limit) if image.region(start) else None)
+        reaches = None if hypothesis is None else site in hypothesis["instructions"]
         result["analyzer"] = {
             "start": start, "evidence": claim["evidence"], "established": start in established,
-            "agrees": any(o["entry"] == start for o in owners),
-            "reachesSite": None if hypothesis is None else site in hypothesis["instructions"],
+            "agrees": start in established and bool(reaches),
+            "reachesSite": reaches,
             "exitsBeforeSiteByAddress": [] if hypothesis is None else [e for e in hypothesis["exits"] if start <= e["site"] < site],
             "interpretation": "disagreement means the analyzer's function and the established entries assign this site differently"}
     return result
