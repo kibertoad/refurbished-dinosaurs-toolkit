@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>Toad.Discovery.LegacyFormats</PackageId>
+    <Description>Bounded decoders for file formats commonly found in legacy games.</Description>
+    <PackageTags>game-restoration;pcx;smacker;rle8;iso9660</PackageTags>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Toad.Discovery.Core/Toad.Discovery.Core.csproj" />
+  </ItemGroup>
+</Project>

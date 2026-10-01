@@ -1,0 +1,32 @@
+{
+  "name": "@scientific-method/standard-checker",
+  "version": "0.0.0",
+  "description": "Checks a restoration's spec/, parity/ and deviations/ against version 1 of the dinorefurb documentation standard.",
+  "type": "module",
+  "license": "MIT",
+  "author": "kibertoad",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kibertoad/refurbished-dinosaurs-toolkit.git",
+    "directory": "packages/standard-checker"
+  },
+  "bin": {
+    "standard-checker": "dist/standard-checker.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "pnpm run build",
+    "test": "node --test \"test/*.test.ts\""
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

@@ -1,0 +1,81 @@
+name: Release npm packages
+
+# Changesets opens a "Release Packages" pull request that applies the pending changesets to the
+# package versions and changelogs. The workflow merges it, and the run it dispatches publishes
+# every package whose version is not on npm yet, through npm trusted publishing (OIDC) with
+# provenance. No npm token is stored.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .changeset/**
+      - packages/executable-reader/**
+      - packages/standard-checker/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - tsconfig.base.json
+  repository_dispatch:
+    types:
+      - release
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.x
+          registry-url: "https://registry.npmjs.org"
+          cache: "pnpm"
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Copy the licence into the packages
+        run: |
+          cp LICENSE packages/executable-reader/LICENSE
+          cp LICENSE packages/standard-checker/LICENSE
+
+      - name: Create Release Pull Request or Publish
+        id: changesets
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          publish-script: pnpm run ci:publish
+          pr-title: "Release Packages"
+          commit-message: "chore: update versions"
+
+      - name: Auto-merge Changesets PR
+        if: steps.changesets.outputs.has-changesets == 'true'
+        run: |
+          gh pr merge --squash --admin "$PR_NUMBER"
+          gh api --method POST /repos/$REPO/dispatches -f 'event_type=release'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.changesets.outputs.pr-number }}

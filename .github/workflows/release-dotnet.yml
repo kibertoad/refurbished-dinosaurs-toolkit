@@ -1,0 +1,89 @@
+name: Release NuGet packages
+
+# When a pull request that changed packages/dotnet or global.json merges with a release:major,
+# release:minor or release:patch label, publishes Toad.Discovery.Core and
+# Toad.Discovery.LegacyFormats at the next shared version to nuget.org through trusted publishing
+# (OIDC) and creates the toad-discovery@<version> tag and GitHub release. The version comes from
+# the latest such tag plus the label's bump.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - packages/dotnet/**
+      - global.json
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.x
+      - id: plan
+        run: node tools/release/plan.ts release nuget "$BEFORE" "$AFTER"
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+  publish:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: nuget
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Build and test
+        run: |
+          dotnet build packages/dotnet/Toad.DiscoveryCenter.slnx -c Release -p:Version="$VERSION" -v minimal
+          dotnet test --project packages/dotnet/Toad.Discovery.Core.Tests/Toad.Discovery.Core.Tests.csproj -c Release --no-build --no-progress
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+      - name: Pack
+        run: dotnet pack packages/dotnet/Toad.DiscoveryCenter.slnx -c Release --no-build -p:Version="$VERSION" --output artifacts
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+      - name: NuGet login
+        id: login
+        uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+        with:
+          user: ${{ vars.NUGET_USER }}
+      - name: Push to nuget.org
+        # A rerun after a failed release step finds the version already pushed.
+        run: dotnet nuget push "artifacts/*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+      - name: Tag and create the GitHub release
+        run: gh release create "$TAG" artifacts/*.nupkg --target "$GITHUB_SHA" --title "$TAG" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.plan.outputs.tag }}

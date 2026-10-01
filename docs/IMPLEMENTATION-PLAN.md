@@ -151,6 +151,20 @@ controls plus configured source acceptance prove the fields. No code bytes,
 original content or game claims enter Git. Exit: reporter, policy, build and
 .NET gates pass and a reviewable shared PR is opened.
 
+## Bounded callee graph and per-caller effect dependencies
+
+Tooling outcome: distinguish reuse of a previously read callee from an edge back
+into the current traversal path. Derive nodes from declared established entries
+and reached instructions; never invent a body for an unestablished target.
+Acceptance: each call retains the shared node's explicit memory observations,
+continuation assumptions and unresolved dependencies; no shared-node shortcut
+can assert read-only behavior. Explicit node/edge/depth/instruction limits keep
+omitted work unresolved. Cross-entry overlaps cannot verify effects or cycles.
+Synthetic diamond, true recursion, conditional writes, unresolved calls and caps
+plus recorded configured source controls prove the distinction. No original
+bytes/configs or gameplay claims in Git. Exit: complete toolkit gates and source
+controls pass, publish upstream PR; adopted closure requires reviewed delivery.
+
 ## Explicit overlapping operand candidate inventory
 
 Tooling outcome: inventory literal displacement/immediate candidates with their
@@ -163,3 +177,18 @@ known verified memory sites. Synthetic prefix/interior/ambiguous/capped fixtures
 and configured recorded rejected-candidate controls prove the behavior. No
 proprietary fixtures, runtime access or game claims. Exit: shared reporter and
 canonical toolkit gates pass; publish a reviewable PR before adopted closure.
+
+## Caller-formed near-pointer segment provenance
+
+Tooling outcome: argument and effect reports retain LEA address formation and
+associate consumed near-pointer values and later dereferences with the caller's
+addressing segment. LEA never binds a segment; DS/SS equality must come from
+propagated segment state before storage can be merged. Acceptance: retain segment
+register defaults, segment expressions/producers, offset relation and unresolved
+aliasing across parameter reads; derived offsets require an affine symbolic
+relation, unrelated producer ancestry never proves pointer identity. Synthetic
+stack-pointer pass/dereference, explicit DS=SS, differing segments, rebinding,
+field offsets and erased-value controls plus FND-CONFIG-145 source cases prove
+behavior. Preserve stopped/conditional reports. No source behavior claims or
+proprietary content. Exit: reporter/toolkit gates and source controls pass,
+upstream reviewable PR; adopted closure requires reviewed merge and rerun.

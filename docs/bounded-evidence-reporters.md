@@ -1,23 +1,30 @@
 # Bounded instruction reports
 
-Run `python -m pip install -r tools/evidence/requirements.txt` once in the Python
-environment used for research. Python 3.10 or later, Capstone 5.0.7 and Node 22 or
-later are required. `EVIDENCE_PYTHON` selects another Python executable.
+The reports come from two published packages built in this repository's `packages/`:
+`@scientific-method/executable-reader` on npm reads and hash-checks the original and runs the
+reports, and `scientific-method-engine` on PyPI decodes the instructions. Run
+`python -m pip install scientific-method-engine` once in the Python environment used for
+research, and add the reader to the project (`pnpm add -D @scientific-method/executable-reader`).
+Python 3.10 or later and Node 22 or later are required; the engine pins Capstone 5.0.7.
+`EVIDENCE_PYTHON` selects another Python executable. The reader refuses an engine whose
+prepared-config protocol differs from its own, so upgrade the two together.
+See [moving from the vendored reporters](migrating-to-scientific-method.md).
 Reports and their configurations stay in `GAME_DIR` and are not committed.
 For example, from PowerShell with `GAME_DIR` set to the owned game's directory:
 
 ```powershell
-node tools/evidence/report.mjs trace "$env:GAME_DIR/analysis/query.json"
+pnpm exec scientific-method trace "$env:GAME_DIR/analysis/query.json"
 ```
 
 Save redirected output under `GAME_DIR` too. The reporter does not run the
 original program, invoke DOSBox or change a spec status.
 
 The input names a hash-checked source and evidenced code regions. For MZ/FBOV,
-the Node entry point derives relocation membership and canonical trampoline
-targets from the source. The Python entry point is a lower-level interface for
+the reader derives relocation membership and canonical trampoline
+targets from the source. The engine's own command line
+(`python -m scientific_method_engine <command> <config.json>`) is a lower-level interface for
 synthetic data or already checked mappings. Its relocation metadata is supplied
-input, not independently verified evidence. Use the Node entry point for originals.
+input, not independently verified evidence. Use the reader for originals.
 
 ```json
 {
@@ -53,7 +60,30 @@ offsets alone never establish storage identity.
 
 ## Commands
 
-All commands return JSON with the input fingerprint and schema `bounded-x86-v1`.
+Run each command as `scientific-method <command> <config.json>` (the reader) or, for synthetic
+and PE32 inputs only, `python -m scientific_method_engine <command> <config.json>` (the engine).
+
+| Command | Reports | Described in |
+|---|---|---|
+| `trace` | ordered effects and every return along bounded paths from `entry` | this section |
+| `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal | this section |
+| `uses` | accesses to one memory offset from every established entry | this section |
+| `incoming` | calls that reach a canonical target, with search coverage | this section |
+| `dispatch` | the target of each input through a switch's jump table | this section, [jump tables](#evidenced-indirect-jump-tables) |
+| `allocation` | allocation requests, returned pointers and later writes | this section |
+| `operand` | the target an instruction-owned segment operand names | [segment operand query](#instruction-owned-segment-operand-query) |
+| `operand-candidates` | encoded displacements and immediates equal to an offset | [function bounds](#function-bounds-and-site-ownership) |
+| `target` | call-target provenance of one call site | [call-target provenance](#call-target-provenance) |
+| `bounds` | the instruction extent reached from one entry | [function bounds](#function-bounds-and-site-ownership) |
+| `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
+| `callees` | the bounded call graph below an entry, with recursion and shared callees | [function bounds](#function-bounds-and-site-ownership) |
+| `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
+
+The engine also has `scientific-method-engine ghidra-scripts`, which prints the directory of the
+packaged Ghidra scripts (see the engine's README for the list).
+
+All engine commands return JSON with the input fingerprint and schema `bounded-x86-v1`;
+`pointers` returns its own inventory object, described in its section.
 `target` is described under [Call-target provenance](#call-target-provenance), and `bounds`
 and `owner` under [Function bounds and site ownership](#function-bounds-and-site-ownership).
 `trace` follows direct calls and local branches, records ordered effects and keeps
@@ -209,12 +239,12 @@ under the documentation standard.
 
 ## Acceptance and propagation
 
-Run `python -B -m unittest discover -s tests/evidence -p 'test*.py'` and
-`node --test tests/evidence/bridge.test.mjs`. The fixtures are entirely synthetic. The paired segment test reads distinct
+Run `python -B -m unittest discover -s tests -p 'test*.py'` in
+`packages/scientific-method-engine` and `pnpm --filter @scientific-method/executable-reader test`. The fixtures are entirely synthetic. The paired segment test reads distinct
 values through the same BP-derived BX offset before and after `push ss; pop ds`;
 the incoming-call test places a caller at a higher address than the target's code.
-The template vendors an exact pinned copy; refine the toolkit source and update
-the template's copy and digest record together. The website describes acceptance
+Restorations depend on released versions of the two packages; refine the reporters here and
+release them (see [releasing](releasing.md)). The website describes acceptance
 contracts, while these executable tests establish delivered reporter behavior.
 A reporter need not support every query. Each supported query must meet its
 contract, with unsupported cases and remaining limits stated separately. A
@@ -449,7 +479,7 @@ and which of its returns come before the site.
 
 ## Evidenced indirect jump tables
 
-CFG discovery commands (`bounds`, `owner`, `incoming`, and entry-path queries)
+CFG discovery commands (`bounds`, `owner`, `callees`, `incoming`, and entry-path queries)
 accept `indirectJumps` for segmented16 computed near word jumps. Each declaration
 names `site`, consumer/mapping `evidence`, an explicit boolean `exhaustive`, and
 `table: { start, count, stride, fieldOffset, evidence }`. The target field is a
@@ -471,7 +501,7 @@ A true exhaustive flag is not independently validated behavior or native reachab
 
 ## Relocated pointer-pair inventory
 
-Run `node tools/evidence/report.mjs pointers <config.json>` through the ordinary
+Run `scientific-method pointers <config.json>` through the ordinary
 hash-guarded MZ/FBOV loader. `query: { segment, offset }` names a loaded resident
 address or overlay trampoline, not a raw stored segment; an optional `target`
 must agree with the canonical source-derived destination. Regions are optional
@@ -515,6 +545,39 @@ universal ownership; continuation assumptions stay explicit. The Node source
 loader derives export metadata from hash-guarded MZ/FBOV tables and rejects a
 caller-supplied copy. Body-byte size is never treated as a contiguous end.
 
+`callees` derives a bounded graph from `entry` and established region entries,
+read breadth-first so each node gets its shortest depth and `path` (the shortest
+read route to the caller) regardless of call order. Targets without an
+established entry remain unresolved. A non-tree edge whose target reaches its
+caller closes a cycle and is `recursivePath`, with `cyclePath` the shortest such
+route; any other edge to an already read node is `sharedNodeReuse`. These
+describe conditional entry-CFG structure, never runtime recursion. Incomplete or
+cross-entry contested cycle paths become `unresolvedBackEdge`. Calls and
+established tail transfers retain their kind. Each read node has one entry in
+`calleeSummaries`; every edge into it names that entry in `calleeSummary`, so
+each caller retains the node's reachable `entries` (whose explicit memory
+observations and continuation assumptions are listed on the nodes), the
+`dependencyEntries`, `dependencyEdges` (edge ids) and `omittedRoutes` (route
+ids) that remain unread, and observation/assumption counts, with output linear
+in the graph. `effectComplete` is always false because implicit,
+argument-sensitive and runtime effects are excluded. A missing write is never a
+read-only claim. Width/access, segment register and unresolved base/index
+operands accompany observations.
+`nodeLimit` (1..128, default 64), `edgeLimit` (1..2048, default 512), `depthLimit`
+(1..128, default 16) and `instructionLimit` (1..100000 per body) bound work.
+Omitted edges and capped/incomplete bodies remain dependencies;
+`completeWithinDeclaredGraph` qualifies only the declared conditional graph.
+`controls` may name known `sharedSites`, `recursiveSites` and explicit verified
+`writeSites`; a wrong classification or contested write fails the report.
+
+Declared entries left unread remain in `uncheckedEntries`; no memory or cycle
+boundary is usable until all declared entries have been checked for conflicts.
+A shared-node positive control also requires usable caller/callee boundaries,
+usable bodies for every node the reused node reaches, no reached node on the
+active path, and no limit-omitted or instruction-capped route beneath the reused
+node, any of which could lead back into the active path. x87 stores and loads
+take their access direction from the mnemonic, since Capstone misreports some.
+
 `operand-candidates` scans explicitly declared region starts for an encoded
 memory displacement or immediate matching `query.offset`; implicit operands and
 relative branch targets are not encoded literals and never match. It retains prefixes,
@@ -529,3 +592,21 @@ a raw or contested candidate fails that control. `scanLimit`, `limit`, coverage
 and partial-search flags bound the inventory. Implicit/computed uses, segment
 alias proofs and runtime reachability are excluded; counts never prove their
 absence or promote a candidate to original behavior.
+
+
+Argument and effect reports retain LEA `address-formation` events with the
+addressing segment register and its propagated value/producers. LEA's default
+segment never binds a near pointer. Consumed stack parameter reads add
+`nearPointerArgumentCandidates`; matching dereference offsets add
+`nearPointerAccessCandidates`, keeping formation and dereference segments,
+register choices, producers and offset relations together. Effect reports also
+retain these pointer-related reads. Only matching propagated segment expressions
+and identical or affine symbolic offsets permit `mayMergeStorage` within the
+model. Unknown segments remain unresolved possible aliases; producer ancestry
+alone never proves pointer identity. Concrete distinct segment values are labeled
+`differentWithinModel`, not a universal nonalias claim for arbitrary offsets.
+`pointerFormationLimit` (1..1024, default 128) bounds associations by keeping
+the most recent formations on each path and evicting the oldest; evicted
+formations remain explicit per path/event and refuse storage merging. Candidate
+lists are present only when non-empty. A complete
+or stopped trace never promotes a modeled association to runtime state evidence.
