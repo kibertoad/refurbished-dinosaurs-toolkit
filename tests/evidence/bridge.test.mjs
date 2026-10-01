@@ -299,3 +299,21 @@ test("operand candidates preserve prefixed widths and reject interior starts thr
   writeFileSync(join(dir, "config.json"), JSON.stringify({ ...cfg, controls: [65] }));
   assert.throws(() => run(["operand-candidates", join(dir, "config.json")]), /positive control/);
 });
+
+
+test("near-pointer arguments and DS dereferences retain caller SS provenance through the source bridge", t => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  data.set([0x55,0x89,0xe5,0x83,0xec,4,0x8d,0x46,0xfc,0x50,0xe8,8,0,0x83,0xc4,2,0x83,0xc4,4,0x5d,0xc3,
+            0x55,0x89,0xe5,0x8b,0x5e,4,0x8b,0x17,0x89,0x07,0x5d,0xc3],64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const cfg = { ...config, sha256: createHash("sha256").update(data).digest("hex"), regions: [{ ...config.regions[0], end: 97 }] };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  for (const command of ["arguments", "effects"]) {
+    const r = run([command, join(dir, "config.json")]), events = r.paths.flatMap(p => p.events);
+    assert.ok(events.some(e => e.kind === "address-formation" && e.addressingSegmentRegister === "ss"));
+    assert.ok(events.some(e => e.nearPointerArgumentCandidates?.length));
+    const link = events.flatMap(e => e.nearPointerAccessCandidates ?? []).find(c => c.dereferenceSegmentRegister === "ds" && c.offsetRelation === "sameOffset");
+    assert.ok(link); assert.equal(link.segmentRelationship, "unresolved"); assert.equal(link.mayMergeStorage, false);
+  }
+});

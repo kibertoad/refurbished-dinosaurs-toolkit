@@ -176,7 +176,7 @@ class State:
         _, _, _, keys = self.keys(segment, offset, width)
         return join([self.memory.get(key, unknown(f"memory:{self.memory_epoch}:{key}", 8, self.at)) for key in keys])
 
-    def access(self, segment, offset, width, write=None, role=None):
+    def access(self, segment, offset, width, write=None, role=None, addressing_register=None):
         seg, base, delta, keys = self.keys(segment, offset, width)
         uncertain = []
         if write is not None:
@@ -223,7 +223,7 @@ class State:
                                  "samePointerValue": same,
                                  "assessment": "same expression; inspect predicate polarity" if same else "checked value differs from this access"})
         event = self.event("write" if write is not None else "read", segment=segment.report(), offset=offset.report(),
-                           width=width, segmentInterpretation="base" if self.flat else "selector-paragraph", interval={"segment": seg, "base": base, "start": delta, "end": delta + width},
+                           width=width, effectiveSegmentRegister=addressing_register, segmentInterpretation="base" if self.flat else "selector-paragraph", interval={"segment": seg, "base": base, "start": delta, "end": delta + width},
                            value=value.report(), missingByteProducers=missing,
                            byteProducers=[{"index": i, "producers": list(self.memory[key].sources) if key in self.memory else []} for i, key in enumerate(keys)],
                            guards=deepcopy(relevant), role=role,
@@ -249,7 +249,8 @@ class State:
         if index:
             index_value = op("mul", self.reg(index), const(mem.scale, self.bits), self.at)
             offset = op("add", offset, index_value, self.at)
-        return self.segment(segment_register(ins, mem)), offset
+        register = segment_register(ins, mem)
+        return self.segment(register), offset, register
 
     def get(self, ins, operand, image):
         if operand.type == X86_OP_REG:
@@ -262,26 +263,26 @@ class State:
                 self.event("relocated-immediate", provenance=fixup, value=value.report())
             return value
         if operand.type == X86_OP_MEM:
-            segment, offset = self.address(ins, operand)
-            return self.access(segment, offset, operand.size)
+            segment, offset, register = self.address(ins, operand)
+            return self.access(segment, offset, operand.size, addressing_register=register)
         raise StopPath("Unsupported operand")
 
     def put(self, ins, operand, value):
         if operand.type == X86_OP_REG:
             self.setreg(ins.reg_name(operand.reg), value, self.at)
         elif operand.type == X86_OP_MEM:
-            segment, offset = self.address(ins, operand)
-            self.access(segment, offset, operand.size, resize(value, operand.size * 8))
+            segment, offset, register = self.address(ins, operand)
+            self.access(segment, offset, operand.size, resize(value, operand.size * 8), addressing_register=register)
         else:
             raise StopPath("Unsupported destination")
 
     def push(self, value):
         size = value.bits // 8
         self.setreg(self.sp, op("sub", self.reg(self.sp), const(size, self.bits), self.at), self.at)
-        self.access(self.segment("ss"), self.reg(self.sp), size, value, role="push")
+        self.access(self.segment("ss"), self.reg(self.sp), size, value, role="push", addressing_register="ss")
 
     def pop(self, size):
-        value = self.access(self.segment("ss"), self.reg(self.sp), size, role="pop")
+        value = self.access(self.segment("ss"), self.reg(self.sp), size, role="pop", addressing_register="ss")
         self.setreg(self.sp, op("add", self.reg(self.sp), const(size, self.bits), self.at), self.at)
         return value
 
@@ -370,8 +371,8 @@ def ordinary(state, ins, image):
             if addresses[index] is None:
                 state.put(ins, operand, value)
             else:
-                segment, offset = addresses[index]
-                state.access(segment, offset, operand.size, resize(value, operand.size * 8))
+                segment, offset, register = addresses[index]
+                state.access(segment, offset, operand.size, resize(value, operand.size * 8), addressing_register=register)
         return
     if m == "imul" and len(operands) in (2, 3):
         left, right = (state.get(ins, operand, image) for operand in (operands if len(operands) == 2 else operands[1:]))
@@ -384,18 +385,19 @@ def ordinary(state, ins, image):
                     result=result.report(), modulus=1 << left.bits, flags="unresolved signed-product overflow")
         return
     if m == "lea":
-        segment, offset = state.address(ins, operands[1])
+        segment, offset, register = state.address(ins, operands[1])
         state.put(ins, operands[0], offset)
         state.event("address-formation", value=offset.report(), addressingSegment=segment.report(),
+                    addressingSegmentRegister=register, destinationRegister=ins.reg_name(operands[0].reg),
                     note="LEA does not access memory; this addressing default does not bind a later dereference")
         return
     if m in ("lds", "les"):
         if state.flat:
             raise StopPath("Descriptor loads are outside the PE32 flat model")
-        segment, offset = state.address(ins, operands[1])
+        segment, offset, register = state.address(ins, operands[1])
         if operands[0].size != 2:
             raise StopPath("Only 16:16 pointer loads are supported")
-        value = state.access(segment, offset, 4, role="far-pointer")
+        value = state.access(segment, offset, 4, role="far-pointer", addressing_register=register)
         state.put(ins, operands[0], extract(value, 0, 16))
         state.setreg("ds" if m == "lds" else "es", extract(value, 16, 16), state.at)
         return
@@ -643,12 +645,12 @@ def string_effect(state, ins, count, remaining):
     delta = -width if state.direction_flag.number else width
     for _ in range(count.number):
         if operation in ("movs", "lods"):
-            value = state.access(state.segment(source_name), state.reg(si), width, role="string-source")
+            value = state.access(state.segment(source_name), state.reg(si), width, role="string-source", addressing_register=source_name)
             state.setreg(si, op("add", state.reg(si), const(delta, state.bits), state.at), state.at)
         else:
             value = state.reg({1:"al",2:"ax",4:"eax"}[width])
         if operation in ("movs", "stos"):
-            state.access(state.segment("es"), state.reg(di), width, value, role="string-destination")
+            state.access(state.segment("es"), state.reg(di), width, value, role="string-destination", addressing_register="es")
             state.setreg(di, op("add", state.reg(di), const(delta, state.bits), state.at), state.at)
         else:
             state.setreg({1:"al",2:"ax",4:"eax"}[width], value, state.at)

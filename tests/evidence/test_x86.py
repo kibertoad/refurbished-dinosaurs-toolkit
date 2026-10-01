@@ -274,6 +274,80 @@ class OperandCandidateTests(unittest.TestCase):
         self.assertTrue(run_report(data, cfg, "operand-candidates")["partialSearch"])
 
 
+class NearPointerSegmentTests(unittest.TestCase):
+    def caller(self, before="", helper="", **extra):
+        c = Code().emit("55 89 e5 83 ec 04 " + before + " 8d 46 fc 50").branch("e8", "callee").emit("83 c4 02 83 c4 04 5d c3")
+        c.label("callee").emit("55 89 e5 8b 5e 04 " + helper + " 89 07 5d c3")
+        return c, configuration(c.bytes(), **extra)
+
+    def test_argument_and_effect_reports_retain_ss_formation_and_unresolved_ds_alias(self):
+        c, cfg = self.caller()
+        a = run_report(c.bytes(), cfg, "arguments")
+        self.assertTrue(events(a, "address-formation"))
+        args = [e for e in events(a, "read") if e.get("nearPointerArgumentCandidates")]
+        self.assertTrue(args)
+        self.assertEqual(args[0]["nearPointerArgumentCandidates"][0]["formationSegmentRegister"], "ss")
+        e = run_report(c.bytes(), cfg, "effects")
+        access = next(x for x in events(e, "write") if x.get("nearPointerAccessCandidates"))
+        candidate = access["nearPointerAccessCandidates"][0]
+        self.assertEqual(access["effectiveSegmentRegister"], "ds")
+        self.assertEqual(candidate["segmentRelationship"], "unresolved")
+        self.assertFalse(candidate["mayMergeStorage"])
+
+    def test_effect_report_retains_pointer_parameter_reads_and_dereference_reads(self):
+        c, cfg = self.caller(helper="8b 17")
+        r = run_report(c.bytes(), cfg, "effects")
+        self.assertTrue(any(e.get("nearPointerArgumentCandidates") for e in events(r, "read")))
+        self.assertTrue(any(e.get("nearPointerAccessCandidates") for e in events(r, "read")))
+
+    def test_propagated_ds_ss_equality_and_affine_field_offset_can_merge_within_model(self):
+        c, cfg = self.caller(before="16 1f", helper="83 c3 02")
+        r = run_report(c.bytes(), cfg, "effects")
+        links = [p for e in events(r, "write") for p in e.get("nearPointerAccessCandidates", [])]
+        self.assertTrue(any(p["mayMergeStorage"] and p["segmentRelationship"] == "sameWithinModel" and p["offsetRelation"] == "affineFieldOffset" and p["offsetDeltaModulo"] == 2 for p in links))
+        self.assertTrue(any(p["dereferenceSegment"]["producers"] for p in links))
+
+    def test_distinct_and_rebound_segments_never_merge(self):
+        for before, helper in (("", ""), ("16 1f", "b8 00 20 8e d8")):
+            c, cfg = self.caller(before=before, helper=helper, registers={"ss": 0x3000, "ds": 0x2000})
+            r = run_report(c.bytes(), cfg, "effects")
+            links = [p for e in events(r, "write") for p in e.get("nearPointerAccessCandidates", [])]
+            self.assertTrue(links)
+            self.assertTrue(all(p["segmentRelationship"] == "differentWithinModel" and not p["mayMergeStorage"] for p in links))
+
+    def test_erased_value_producer_ancestry_does_not_prove_pointer_identity(self):
+        c, cfg = self.caller(before="16 1f", helper="31 db")
+        r = run_report(c.bytes(), cfg, "effects")
+        links = [p for e in events(r, "write") for p in e.get("nearPointerAccessCandidates", [])]
+        self.assertTrue(links)
+        self.assertTrue(all(p["offsetRelation"] == "producerOnly" and not p["mayMergeStorage"] for p in links))
+
+    def test_formation_caps_prevent_storage_merging(self):
+        # An earlier unrelated LEA is evicted; the pointer's own, newer LEA stays linkable.
+        c, cfg = self.caller(before="16 1f 8d 56 fe", pointerFormationLimit=1)
+        r = run_report(c.bytes(), cfg, "effects")
+        self.assertTrue(all(p["nearPointerProvenance"]["formationsOmitted"] for p in r["paths"]))
+        links = [p for e in events(r, "write") for p in e.get("nearPointerAccessCandidates", [])]
+        self.assertTrue(links)
+        self.assertTrue(all(p["segmentRelationship"] == "sameWithinModel" and not p["mayMergeStorage"] for p in links))
+        args = [e for e in events(run_report(c.bytes(), cfg, "arguments"), "read") if e.get("argument")]
+        self.assertTrue(any(e.get("nearPointerArgumentCandidates") for e in args))
+
+    def test_argument_reads_without_formation_links_omit_candidate_key(self):
+        c, cfg = self.caller(helper="8b 4e 06")
+        args = [e for e in events(run_report(c.bytes(), cfg, "arguments"), "read") if e.get("argument")]
+        linked = [e for e in args if "nearPointerArgumentCandidates" in e]
+        self.assertTrue(linked and len(linked) < len(args))
+        self.assertTrue(all(e["nearPointerArgumentCandidates"] for e in linked))
+
+    def test_string_destination_retains_es_dereference_register(self):
+        c, cfg = self.caller(before="16 07", helper="8b 7e 04 fc ab")
+        r = run_report(c.bytes(), cfg, "effects")
+        links = [p for e in events(r, "write") if e["role"] == "string-destination" for p in e.get("nearPointerAccessCandidates", [])]
+        self.assertTrue(links)
+        self.assertTrue(all(p["dereferenceSegmentRegister"] == "es" and p["segmentRelationship"] == "sameWithinModel" for p in links))
+
+
 class ReporterTests(unittest.TestCase):
     def test_register_parts_preserve_neighbor(self):
         r = report("b8 34 12 b0 00 c3")
