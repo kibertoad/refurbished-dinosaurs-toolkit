@@ -247,7 +247,7 @@ Rules for every iteration:
 | Phase | Status | Date | Evidence |
 |---|---|---|---|
 | 0 freeze and baseline | done | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
-| 1 pypcode spike | in progress | 2026-10-02 | question 1 answered (#52) |
+| 1 pypcode spike | in progress | 2026-10-02 | questions 1 (#52) and 2 (#53) answered |
 | 2 semantics seam | not started | | |
 | 3 pypcode backend | not started | | |
 | 4 parity on recorded cases | not started | | |
@@ -289,8 +289,9 @@ Semantics outside `ordinary()`:
 
 ### Spike answers
 
-Spike code ran outside the repository on synthetic bytes, with pypcode 4.0.0, Unicorn 2.1.4 and
-Capstone 5.0.7 on Python 3.14 (Windows).
+The spike tests are `packages/scientific-method-engine/spike/test_pypcode_spike.py` on the
+unmerged branch `scratch/semantics-spike`. They use synthetic bytes only and ran with pypcode 4.0.0,
+Unicorn 2.1.4 and Capstone 5.0.7 on Python 3.14 (Windows). Each answer names its test class.
 
 1. **Wheels and licenses: go, with pypcode 4.0.0 and Python 3.12 or later.** pypcode 4.0.0 carries
    Ghidra 12.1's SLEIGH files, the version the shipped Ghidra scripts compile against. It publishes
@@ -305,6 +306,17 @@ Capstone 5.0.7 on Python 3.14 (Windows).
    (CPython 3.7 and later) for the same three platforms. The wheels bundle the Unicorn core, which is
    GPLv2, so Unicorn may only be a test dependency: it is installed to run the tests and never
    ships with or is imported by the published package (decision 4).
+2. **Real-mode addressing: go.** (`Question2RealModeAddressing`) `x86:LE:16:Real Mode` lifts
+   `mov ax, [bp+2]` as `INT_ADD BP, 2` followed by the user operation `segment(SS, offset)`, and
+   `mov ax, es:[di]` as `segment(ES, DI)`. The segment operation's second input names the segment
+   register and its third input is the offset, so the interpreter evaluates the offset over `Value`
+   and compares the register with `segment_register()` from Capstone; the two agree on defaults,
+   overrides and repeated prefixes (both take the last segment prefix). One idiom needs handling: a
+   `cs:` override makes SLEIGH write CS from the instruction address (`CS = (inst_next >> 4) &
+   0xf000`) before the segment operation. The interpreter must recognise that exact sequence and
+   drop the write, because CS comes from the declared region; any other write to a segment register
+   inside an ordinary instruction stops the path. `x86:LE:32:default` emits no segment operation,
+   and the flat model keeps taking segment bases from the evidence layer.
 
 ### Groups moved
 
