@@ -248,3 +248,22 @@ stays in the restoration: verify every cited case and preserve pending contracts
 Exit: canonical package gates and local source controls pass; publish a reviewed
 candidate. Request closure requires merged registry delivery and complete adopted
 source reruns. Several slices may be required; no first slice narrows that exit.
+
+## Conditional table-target effect continuations
+
+A downstream linked-child effect case is stopped by an evidenced computed jump even though
+CFG discovery retains its source target table. Plan shared tooling work without
+new instruction semantics: retain the original unresolved path, and add separate
+conditional continuation paths for declared near-word targets. Preserve prefix
+writes, stack/child state and target-selection/table-content assumptions. A
+return on one conditional route proves neither selection nor whole-call coverage.
+Reject contested/overlapping target starts and contradictory concrete operands;
+partial tables retain missing routes. Existing path/step/visit/total budgets apply
+to all continuations. Inputs and prepared protocol remain unchanged; no guessed
+selector, table contents or game-specific dispatch enters the engine.
+Acceptance: synthetic prefix mutation and child-result exits, duplicate targets,
+partial declarations, concrete mismatch, overlapping targets, loops and nonvacuous
+budgets plus a real prepared-reader synthetic case pass. Local full-entry source
+acceptance must retain unread inputs and native reachability. Exit: upstream PR,
+merged registry delivery and the complete cited restoration controls; a candidate
+alone cannot close the downstream request. No gameplay or spec claim changes.

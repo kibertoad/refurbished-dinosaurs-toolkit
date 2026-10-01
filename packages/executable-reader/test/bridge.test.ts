@@ -627,3 +627,39 @@ test("effects preserves pre-service writes and unknown returning-service effects
   assert.equal(incomplete.allPathsRead, false);
   assert.equal(incomplete.paths[0].stop.writesBeforeCount, 1);
 });
+
+test("effects retains stopped dispatch beside separate conditional table paths", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  data.set([0xc7, 0x06, 0x20, 0, 1, 0, 0xff, 0xe3], 64);
+  data.set([0xc7, 0x06, 0x22, 0, 2, 0, 0xc3], 80);
+  data[96] = 0xc3;
+  data.writeUInt16LE(16, 112);
+  data.writeUInt16LE(32, 114);
+  writeFileSync(join(dir, "source.bin"), data);
+  const query = {
+    ...config,
+    sha256: createHash("sha256").update(data).digest("hex"),
+    regions: [{ ...config.regions[0]!, end: 104 }],
+    indirectJumps: [
+      {
+        site: 70,
+        exhaustive: true,
+        evidence: "synthetic BX consumer",
+        table: { start: 112, count: 2, stride: 2, evidence: "synthetic two-target word table" },
+      },
+    ],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const r = run(["effects", join(dir, "config.json")]);
+  assert.equal(r.completeWithinModel, false);
+  assert.equal(r.paths[0].returned, false);
+  assert.equal(r.declaredContinuationPaths.length, 2);
+  assert.ok(r.declaredContinuationPaths.every((p: Report) => p.returned && p.declaredJumpAssumptions.length));
+  assert.deepEqual(r.effectOrdering.declaredContinuationPaths.map((p: Report) => p.writeOrders.length).sort(), [1, 2]);
+  assert.ok(r.effectOrdering.declaredContinuationPaths.every((p: Report) => !p.effectCompleteWithinModel));
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ ...query, maxPaths: 1 }));
+  const capped = run(["effects", join(dir, "config.json")]);
+  assert.equal(capped.declaredContinuationPaths.length, 0);
+  assert.ok(capped.gaps.some((g: Report) => g.reason === "path limit"));
+});

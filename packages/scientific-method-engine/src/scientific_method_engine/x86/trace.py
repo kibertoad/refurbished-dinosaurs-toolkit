@@ -215,6 +215,7 @@ def snapshot(state):
 
 
 def trace(image, config):
+    """Trace bounded paths, preserving declared-table continuations as separate conditional evidence."""
     entry = integer(config.get("entry"), 0, len(image.data) - 1, "entry")
     if not any(entry in r["entries"] for r in image.regions):
         raise ValueError("Trace entry must be an established region entry")
@@ -246,6 +247,9 @@ def trace(image, config):
                 if r not in ALIASES or type(n) is not int or not 0 <= n < 1 << ALIASES[r][2]:
                     raise ValueError("Invalid model register")
     pending, outputs, global_gaps = [State(entry, image, config)], [], []
+    conditional_outputs = []
+    boundary_cache = {}
+    boundary_budget = integer(config.get("instructionLimit", 10000), 1, 100000, "instruction limit")
     created = 1
     total_steps = 0
     total_string_steps = 0
@@ -264,9 +268,72 @@ def trace(image, config):
         string_effect(s, ins, count, remaining)
 
     def finish(s, reason=None, returned=False):
-        outputs.append({"returned": returned, "stop": reason, "stopSite": None if returned else s.at, "steps": s.steps,
-                        "instructionPath": s.path, "guards": s.guards, "events": s.events,
-                        "registers": snapshot(s), "conditionalModels": s.conditional})
+        path = {"returned": returned, "stop": reason, "stopSite": None if returned else s.at, "steps": s.steps,
+                "instructionPath": s.path, "guards": s.guards, "events": s.events,
+                "registers": snapshot(s), "conditionalModels": s.conditional}
+        assumptions = getattr(s, "declared_jump_assumptions", [])
+        if assumptions:
+            path["declaredJumpAssumptions"] = assumptions
+            conditional_outputs.append(path)
+        else:
+            outputs.append(path)
+
+    def declared_continuations(s, ins):
+        # This is evidence-layer branching, not instruction execution or a selector assignment.
+        nonlocal created, boundary_budget
+        declaration = image.indirect_jumps.get(s.at)
+        if declaration is None:
+            return
+        root_entry = s.frames[-1]["entry"]
+        if root_entry not in boundary_cache:
+            if boundary_budget < 1:
+                global_gaps.append({"site": s.at, "reason": "conditional table boundary instruction limit"})
+                return
+            seen, _, _, undecoded, contested = walk(image, [root_entry], boundary_budget)
+            boundary_budget -= max(1, len(seen) + len(undecoded) + len(contested))
+            boundary_cache[root_entry] = seen
+        seen = boundary_cache[root_entry]
+        value = s.get(ins, ins.operands[0], image)
+        groups = {}
+        address = s.address(ins, ins.operands[0]) if ins.operands[0].type == X86_OP_MEM else None
+        region = image.region(s.at)
+        choice_key = repr(value.term)
+        previous = getattr(s, "declared_jump_choices", {}).get(choice_key)
+        for row in declaration["rows"]:
+            if address is not None:
+                segment, offset, _ = address
+                row_offset = region["ip"] + row["operandSite"] - region["start"]
+                if segment.number is not None and offset.number is not None:
+                    if not 0 <= row_offset <= 65534 or segment.number * 16 + offset.number != region["segment"] * 16 + row_offset:
+                        continue
+            if value.number is not None and value.number != row["rawOffset"]:
+                continue
+            if previous is not None and row["rawOffset"] not in previous:
+                continue
+            groups.setdefault(row["target"], []).append(row)
+        for target, rows in groups.items():
+            if target not in seen:
+                global_gaps.append({"site": s.at, "target": target,
+                                    "reason": "conditional table target boundary is unresolved or instruction-limited"})
+                continue
+            if created >= max_paths:
+                global_gaps.append({"site": s.at, "reason": "path limit"})
+                break
+            child = deepcopy(s)
+            child.declared_jump_choices = {**getattr(child, "declared_jump_choices", {}),
+                                          choice_key: {r["rawOffset"] for r in rows}}
+            assumption = {"site": s.at, "target": target, "tableIndices": [r["index"] for r in rows],
+                          "operandSites": [r["operandSite"] for r in rows], "exhaustive": declaration["exhaustive"],
+                          "evidence": declaration["evidence"], "tableEvidence": declaration["table"]["evidence"],
+                          "operand": value.report(),
+                          "operandAddress": None if address is None else
+                              {"segment": address[0].report(), "offset": address[1].report(), "segmentRegister": address[2]},
+                          "meaning": "conditional target choice from source table; selector, live table contents and reachability unverified"}
+            child.declared_jump_assumptions = [*getattr(child, "declared_jump_assumptions", []), assumption]
+            child.event("declared-jump-continuation", **{k: v for k, v in assumption.items() if k != "site"})
+            child.at = target
+            pending.append(child)
+            created += 1
 
     while pending:
         state = pending.pop()
@@ -468,6 +535,7 @@ def trace(image, config):
                 if m in ("jmp", "ljmp"):
                     target, provenance = call_target(image, at, ins)
                     if target is None:
+                        declared_continuations(state, ins)
                         raise StopPath("unresolved jump: " + provenance.get("reason", "outside mapped code"))
                     if m == "ljmp":
                         target_region = image.region(target)
@@ -519,7 +587,7 @@ def trace(image, config):
                 state.at = following
         except StopPath as error:
             finish(state, str(error))
-    return {"paths": outputs, "gaps": global_gaps,
+    return {"paths": outputs, "declaredContinuationPaths": conditional_outputs, "gaps": global_gaps,
             "completeWithinModel": not global_gaps and bool(outputs) and all(p["returned"] for p in outputs),
             "nativeReachability": "unconfirmed", "stepsUsed": total_steps, "stringIterationsUsed": total_string_steps,
             "limits": {"steps": max_steps, "paths": max_paths, "depth": max_depth}}
