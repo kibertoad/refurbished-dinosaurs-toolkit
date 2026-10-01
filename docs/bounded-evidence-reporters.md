@@ -509,7 +509,8 @@ Owners retain descriptor/trampoline/code-container provenance. The analyzer
 hypothesis reports its actual traversed span and ranges even when it fails to
 reach the queried instruction. `boundaryCheck.joinableWithinModel` requires
 an instruction start reached by a complete owner traversal without cross-entry
-conflicts. It does not establish player reachability, callee effects or
+conflicts, with every established entry checked (an entry-limit gap leaves
+overlaps unknown and refuses the join). It does not establish player reachability, callee effects or
 universal ownership; continuation assumptions stay explicit. The Node source
 loader derives export metadata from hash-guarded MZ/FBOV tables and rejects a
 caller-supplied copy. Body-byte size is never treated as a contiguous end.

@@ -259,5 +259,7 @@ test('owner reports source-derived exported entries and rejects supplied export 
   assert.deepEqual(owner.overlayExports,[{descriptor:1,trampoline:288,entry:528,codeRange:{start:528,end:560},evidence:'source FBOV descriptor/trampoline'}]);
   assert.equal(r.analyzer.agrees,false);assert.deepEqual(r.analyzer.span,{start:532,end:538});
   assert.equal(r.checkedEntries.find(e=>e.entry===528).entryEvidence,'synthetic overlay view');
+  assert.deepEqual(r.checkedEntries.find(e=>e.entry===532).container,{view:'overlay-1',start:528,end:560});
+  assert.deepEqual(r.checkedEntries.find(e=>e.entry===532).overlayExports,[]);
   assert.throws(()=>prepare({...config,overlayExports:[]},dir),/source-derived/);
 });

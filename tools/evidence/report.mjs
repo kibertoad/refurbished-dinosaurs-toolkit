@@ -16,7 +16,7 @@ function readVerifiedSource(config, base) {
   const bytes = readFileSync(source);
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   if (sha256 !== config.sha256) throw new Error("Source SHA-256 differs from supplied baseline");
-  // Format-table counts are derived from MZ/FBOV source tables only; a supplied copy would read as loader output.
+  // Overlay exports and format-table counts are derived from MZ/FBOV source tables only; a supplied copy would read as loader output.
   if (config.overlayExports !== undefined) throw new Error("overlayExports is source-derived and cannot be supplied");
   if (config.formatTables !== undefined) throw new Error("formatTables is derived by the MZ loader and cannot be supplied");
   return { source, bytes };
