@@ -299,7 +299,10 @@ the entries without passing through the start it proves. Once rejection settles,
 only instructions reachable from the accepted starts remain established; the
 rest of what rejected starts reached is returned as contested, so a call is
 never confirmed while its proof is refused. This does not prove native
-reachability or arbitrary self-modifying instruction layouts.
+reachability or arbitrary self-modifying instruction layouts. The entry-path
+walk and `bounds` share one reading of returns, interrupts (including `int1`) and
+port accesses (including `insd`/`outsd`), and repeat and BND prefixes hide none
+of them or any jump.
 
 An unprefixed segmented16 IRET is modeled only inside a traced push-CS/near-call
 frame built above a locally saved FLAGS word. Stack balance, continuation IP and
@@ -395,9 +398,13 @@ an instruction containing the site, marks a site several entries reach as
 `shared`, and checks at most `entryLimit` entries (default 64, maximum 256),
 reporting the rest as unchecked. Entries whose bodies stopped at a gap without
 reaching the site are listed under `incompleteEntries`, and while any entry is
-unchecked or incomplete a site with no owner is `unresolved`, not `unowned`. For
+unchecked or incomplete a site with no owner is `unresolved`, not `unowned`.
+Each owner's `contestedBy` lists instructions of other checked entries' bodies
+that partly overlap its own; at least one side is misdecoded, so while any owner
+is contested (`contestedOwners`) the site is `unresolved`. This does not decide
+which side is right and is narrower than the entry-path walk's proof. For
 each owner it lists the exits that lie between the entry and the site by address,
 which are warnings only. An optional
 `analyzerFunction` (`start`, `evidence`) says whether the analyzer's function is
-among the owners, whether its body reaches the site, and which of its returns
-come before the site.
+among the owners, whether its body reaches the site, whether it is contested,
+and which of its returns come before the site.

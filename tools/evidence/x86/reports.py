@@ -4,7 +4,8 @@ from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 from .machine import State, StopPath, REGISTERS, ALIASES, segment_register
 from .values import unknown
 from .image import Image, integer
-from .trace import trace, walk, call_target, unsupported_transfer, OVERLAP_REASON, CONTESTED_REASON
+from .trace import (trace, walk, call_target, unsupported_transfer, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
+                    RETURNS, INTERRUPTS, PORTS)
 
 
 def entries(image):
@@ -547,11 +548,6 @@ def call_target_report(image, config):
     return result
 
 
-RETURNS = {"ret": "near return", "retf": "far return", "iret": "interrupt return", "iretd": "interrupt return"}
-INTERRUPTS = ("int", "int1", "int3", "into")
-PORTS = ("in", "out", "insb", "insw", "insd", "outsb", "outsw", "outsd")
-
-
 def body(image, entry, limit=10000):
     """Every instruction one entry reaches without entering a callee, and every way out of it.
 
@@ -579,8 +575,7 @@ def body(image, entry, limit=10000):
         seen[at] = ins
         if at != entry and at in established:
             shared.add(at)
-        # Capstone names REP/REPNE/BND prefixes in the mnemonic ("repz ret", "rep insb", "bnd jmp").
-        m, following = ins.mnemonic.split()[-1], at + ins.size
+        m, following = base_mnemonic(ins), at + ins.size
         if unsupported_transfer(image, ins):
             gaps.append({"site": at, "reason": "unsupported control-transfer frame encoding"})
             continue
@@ -676,6 +671,29 @@ def bounds(image, config):
     return result
 
 
+def _cross_entry_overlaps(bodies):
+    """For each entry, the instructions of other entries' bodies that partly overlap one of its own.
+
+    An overlap inside one body is already a gap of that body, so only pairs from different entries count.
+    """
+    starts = {}
+    for entry, b in bodies.items():
+        for at, ins in b["instructions"].items():
+            starts.setdefault(at, (at + ins.size, set()))[1].add(entry)
+    conflicts, active = {}, []
+    for start in sorted(starts):
+        end, holders = starts[start]
+        active = [a for a in active if starts[a][0] > start]
+        for a in active:
+            for first in starts[a][1]:
+                for second in holders:
+                    if first != second:
+                        conflicts.setdefault(first, []).append({"entry": second, "site": a, "otherSite": start})
+                        conflicts.setdefault(second, []).append({"entry": first, "site": start, "otherSite": a})
+        active.append(start)
+    return {entry: sorted(rows, key=lambda r: (r["site"], r["entry"], r["otherSite"])) for entry, rows in conflicts.items()}
+
+
 def owner(image, config):
     query = config.get("query", {})
     if not isinstance(query, dict):
@@ -703,14 +721,22 @@ def owner(image, config):
         if b["gaps"]:
             # A body that stopped at a gap may still reach the site beyond it.
             incomplete.append({"entry": entry, "gaps": b["gaps"]})
-    if owners:
+    # Two checked bodies that decode overlapping instructions cannot both be right. Which one
+    # is misdecoded is not decided here; an owner on either side only leaves the site unresolved.
+    conflicts = _cross_entry_overlaps(bodies)
+    for o in owners:
+        o["contestedBy"] = conflicts.get(o["entry"], [])
+    contested = [o["entry"] for o in owners if o["contestedBy"]]
+    if contested:
+        verdict = "unresolved: an owner's body overlaps instructions another checked entry decodes"
+    elif owners:
         verdict = "shared by several entries" if len(owners) > 1 else "one established entry reaches this site"
     elif gaps or incomplete:
         verdict = "unresolved: no checked body reaches this site, but some entries were unchecked or their bodies stopped at a gap"
     else:
         verdict = "unowned: no established entry reaches this site"
     result = {"site": site, "owners": owners, "insideOtherInstructions": inside, "incompleteEntries": incomplete, "gaps": gaps,
-              "shared": len(owners) > 1, "verdict": verdict,
+              "contestedOwners": contested, "shared": len(owners) > 1, "verdict": verdict,
               "interpretation": "ownership is reachability from established entries without entering callees; a return or "
                                 "prologue between an entry and the site by address is a warning, never a boundary"}
     if claim is not None:
@@ -718,7 +744,7 @@ def owner(image, config):
         reaches = None if hypothesis is None else site in hypothesis["instructions"]
         result["analyzer"] = {
             "start": start, "evidence": claim["evidence"], "established": start in established,
-            "agrees": start in established and bool(reaches),
+            "agrees": start in established and bool(reaches), "contested": start in contested,
             "reachesSite": reaches,
             "exitsBeforeSiteByAddress": [] if hypothesis is None else [e for e in hypothesis["exits"] if start <= e["site"] < site],
             "interpretation": "disagreement means the analyzer's function and the established entries assign this site differently"}

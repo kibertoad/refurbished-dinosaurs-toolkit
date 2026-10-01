@@ -321,6 +321,38 @@ class ReporterTests(unittest.TestCase):
         self.assertTrue(limited["verdict"].startswith("unresolved"))
         self.assertTrue(limited["analyzer"]["agrees"])
 
+    def test_owner_leaves_a_site_unresolved_when_owners_decode_overlapping_instructions(self):
+        # Entry 0 decodes "mov ax, 0xc390" over bytes 0..2; entry 1 decodes "nop; ret" inside it.
+        data = bytes.fromhex("b8 90 c3 c3")
+        cfg = configuration(data, query={"site": 3}, analyzerFunction={"start": 0, "evidence": "synthetic analyzer function"})
+        cfg["regions"][0]["entries"] = [0, 1]
+        r = run_report(data, cfg, "owner")
+        self.assertEqual([o["entry"] for o in r["owners"]], [0])
+        self.assertEqual(r["owners"][0]["contestedBy"], [{"entry": 1, "site": 0, "otherSite": 1},
+                                                         {"entry": 1, "site": 0, "otherSite": 2}])
+        self.assertEqual(r["contestedOwners"], [0])
+        self.assertTrue(r["verdict"].startswith("unresolved"))
+        self.assertTrue(r["analyzer"]["contested"])
+        cfg["regions"][0]["entries"] = [0]
+        alone = run_report(data, cfg, "owner")
+        self.assertEqual((alone["owners"][0]["contestedBy"], alone["contestedOwners"]), ([], []))
+        self.assertEqual(alone["verdict"], "one established entry reaches this site")
+
+    def test_walk_reads_prefixed_returns_ports_and_jumps(self):
+        # "repz ret" and "rep insb" end the walk, "bnd jmp" is followed like a plain jmp, and int1 is a boundary.
+        def run(code):
+            data = bytes.fromhex(code)
+            return walk(Image(data, configuration(data)), [0])
+        seen, gaps, _, _, _ = run("f3 c3 cc")
+        self.assertEqual((sorted(seen), gaps), ([0], []))
+        _, gaps, _, _, _ = run("f3 6c cc")
+        self.assertEqual(gaps, [{"site": 0, "reason": "hardware or interrupt boundary"}])
+        seen, gaps, edges, _, _ = run("f2 e9 01 00 cc c3")
+        self.assertEqual((sorted(seen), gaps), ([0, 5], []))
+        self.assertEqual((edges[0]["kind"], edges[0]["target"]), ("jmp", 5))
+        _, gaps, _, _, _ = run("f1 c3")
+        self.assertEqual(gaps, [{"site": 0, "reason": "hardware or interrupt boundary"}])
+
     def test_dispatch_normalization_and_rejection(self):
         c = Code().emit("83 e0 7f 83 f8 02").branch("73", "reject").emit("89 c3 d1 e3").label("dispatch").emit("ff 27").label("reject").emit("c3")
         c.label("table").emit("20 00 30 00")
