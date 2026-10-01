@@ -408,6 +408,8 @@ def allocations(report, config):
 
 def operand_provenance(image, config):
     query = config.get("query", {})
+    if not isinstance(query, dict):
+        raise ValueError("Operand query must be an object")
     site = integer(query.get("site"), 0, len(image.data)-1, "instruction site")
     word_site = integer(query.get("operandSite"), 0, len(image.data)-2, "segment operand site")
     offset = integer(query.get("targetOffset", 0), 0, 65535, "target offset")

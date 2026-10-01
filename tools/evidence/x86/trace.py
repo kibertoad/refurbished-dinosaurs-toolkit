@@ -42,6 +42,8 @@ def unsupported_transfer(image, ins):
 def walk(image, entries, limit=10000):
     integer(limit, 1, 100000, "instruction limit")
     pending, seen, gaps, edges = list(entries), {}, [], []
+    # Decoded successors of each instruction, so a proof can be checked for independence below.
+    successors = {}
     while pending:
         at = pending.pop()
         if at in seen:
@@ -54,6 +56,7 @@ def walk(image, entries, limit=10000):
             gaps.append({"site": at, "reason": "undecoded or unmapped edge"})
             continue
         seen[at] = ins
+        successors[at] = following_sites = []
         m, following = ins.mnemonic, at + ins.size
         if unsupported_transfer(image, ins):
             gaps.append({"site": at, "reason": "unsupported control-transfer frame encoding"})
@@ -67,12 +70,14 @@ def walk(image, entries, limit=10000):
                 gaps.append({"site": at, "reason": provenance.get("reason", "target outside declared regions")})
             else:
                 pending.append(target)
+                following_sites.append(target)
             if m in ("jmp", "ljmp"):
                 continue
         if m in ("int", "int3", "into", "hlt", "in", "out", "insb", "insw", "outsb", "outsw"):
             gaps.append({"site": at, "reason": "hardware or interrupt boundary"})
             continue
         pending.append(following)
+        following_sites.append(following)
     # An entry into another instruction is not a verified boundary. Retain both
     # interpretations as gaps rather than choosing whichever was visited first.
     active, conflicts, pairs = [], set(), []
@@ -85,9 +90,22 @@ def walk(image, entries, limit=10000):
     # Only an encoded edge whose own boundary is independent of every conflict
     # proves the interior start. Raw candidates and conflicting declared entries
     # never supply this proof.
+    def independent(site, inner):
+        # The proving edge must be reachable from the entries without passing through the start it proves.
+        stack, visited = [x for x in entries if x != inner], set()
+        while stack:
+            at = stack.pop()
+            if at == site:
+                return True
+            if at in visited or at == inner or at not in successors:
+                continue
+            visited.add(at)
+            stack.extend(successors[at])
+        return False
+
     proofs = {}
     for e in edges:
-        if e["target"] is not None and e["site"] not in conflicts:
+        if e["target"] is not None and e["site"] not in conflicts and independent(e["site"], e["target"]):
             proofs.setdefault(e["target"], []).append(e)
     unresolved = set()
     for outer, inner in pairs:
