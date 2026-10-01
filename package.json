@@ -1,0 +1,26 @@
+{
+  "name": "refurbished-dinosaurs-toolkit",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.8.1",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm -r run test",
+    "lint": "oxlint --deny-warnings packages tools",
+    "format": "oxfmt \"packages/*/src/**/*.ts\" \"packages/*/test/*.ts\" \"packages/*/bin/*.ts\" \"tools/**/*.ts\"",
+    "format:check": "oxfmt --check \"packages/*/src/**/*.ts\" \"packages/*/test/*.ts\" \"packages/*/bin/*.ts\" \"tools/**/*.ts\"",
+    "changeset": "changeset",
+    "ci:publish": "changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "3.0.3",
+    "@types/node": "24.19.0",
+    "oxfmt": "0.71.0",
+    "oxlint": "1.86.0",
+    "typescript": "7.0.2"
+  }
+}

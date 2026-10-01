@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "scientific-method-engine"
+# The release workflow writes the published version from the package's release tag.
+version = "0.0.0"
+description = "Bounded instruction-derived x86 evidence reports for segmented MZ/FBOV and PE32/i386 code."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "kibertoad" }]
+dependencies = ["capstone==5.0.7"]
+
+[project.scripts]
+scientific-method-engine = "scientific_method_engine.cli:run"
+
+[project.urls]
+Source = "https://github.com/kibertoad/refurbished-dinosaurs-toolkit/tree/main/packages/scientific-method-engine"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/scientific_method_engine"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "pyproject.toml"]

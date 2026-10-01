@@ -13,3 +13,8 @@ __pycache__/
 *.pyc
 .venv/
 analysis/original/
+node_modules/
+dist/
+packages/*/LICENSE
+# The reader's command-line entry point is source, unlike .NET build output.
+!packages/executable-reader/bin/

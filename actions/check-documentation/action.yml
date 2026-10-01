@@ -65,6 +65,20 @@ runs:
       env:
         KSC_VERSION: ${{ inputs.kaitai-version }}
       run: bash "$GITHUB_ACTION_PATH/../setup-kaitai/install.sh"
+    # Installing Node changes PATH for the caller's later steps too, so keep the caller's Node when
+    # it already runs TypeScript (22.18 and later strip types by default).
+    - name: Look for a Node that runs TypeScript
+      id: node
+      shell: bash
+      run: |
+        if command -v node > /dev/null && node -e 'process.exit(process.features.typescript ? 0 : 1)' 2> /dev/null; then
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+        fi
+    - name: Set up Node
+      if: steps.node.outputs.ready != 'true'
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: 24.x
     - name: Check documentation
       shell: bash
       env:
@@ -82,4 +96,5 @@ runs:
         if [ -n "$DOC_MAX_RANGE" ]; then args+=(--max-range "$DOC_MAX_RANGE"); fi
         if [ -n "$DOC_DATA_DIRS" ]; then args+=(--data-dirs "$DOC_DATA_DIRS"); fi
         if [ -n "$DOC_BASE" ]; then args+=(--base "$DOC_BASE"); fi
-        node "$GITHUB_ACTION_PATH/../../tools/check-documentation.mjs" "${args[@]}"
+        # Node runs the TypeScript source directly; it imports only Node built-ins.
+        node "$GITHUB_ACTION_PATH/../../packages/standard-checker/src/standard-checker.ts" "${args[@]}"

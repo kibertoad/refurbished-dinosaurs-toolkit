@@ -1,0 +1,3 @@
+packages:
+  - packages/executable-reader
+  - packages/standard-checker
