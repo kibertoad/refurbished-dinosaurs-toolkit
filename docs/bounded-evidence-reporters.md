@@ -284,7 +284,10 @@ A direct control-flow edge from an independently verified instruction can prove
 an interior target as an alternate reachable start. Reports retain that edge's
 `overlappingTarget` and `boundaryEvidence`, decode the other continuation too,
 and continue to reject conflicting declared entries and operand-byte raw hits
-without such an edge. This does not prove native reachability or arbitrary
+without such an edge. A proven start also proves the instructions it falls
+through to or directly reaches, so an interior helper longer than one
+instruction keeps its boundaries. Every proving step must be reachable from
+the entries without passing through the start it proves. This does not prove native reachability or arbitrary
 self-modifying instruction layouts.
 
 An unprefixed segmented16 IRET is modeled only inside a traced push-CS/near-call

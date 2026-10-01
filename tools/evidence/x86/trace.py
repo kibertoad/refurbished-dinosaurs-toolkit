@@ -87,36 +87,44 @@ def walk(image, entries, limit=10000):
             conflicts.update((a, start))
             pairs.append((a, start))
         active.append((start, end))
-    # Only an encoded edge whose own boundary is independent of every conflict
-    # proves the interior start. Raw candidates and conflicting declared entries
-    # never supply this proof.
+    # A start is verified when it overlaps nothing, or when a verified instruction
+    # reaches it by a direct edge or by falling through. Each proving step must be
+    # reachable from the entries without passing through the start it proves, so
+    # raw candidates and conflicting declared entries never prove themselves.
+    # Rejected starts are excluded and the proof repeated until nothing changes.
+    rejected = set()
+
     def independent(site, inner):
-        # The proving edge must be reachable from the entries without passing through the start it proves.
-        stack, visited = [x for x in entries if x != inner], set()
+        stack, visited = [x for x in entries if x != inner and x not in rejected], set()
         while stack:
             at = stack.pop()
             if at == site:
                 return True
-            if at in visited or at == inner or at not in successors:
+            if at in visited or at == inner or at in rejected or at not in successors:
                 continue
             visited.add(at)
             stack.extend(successors[at])
         return False
 
-    proofs = {}
+    while True:
+        verified = {at for at in seen if at not in conflicts and at not in rejected}
+        frontier = list(verified)
+        while frontier:
+            at = frontier.pop()
+            for target in successors[at]:
+                if target in seen and target not in verified and target not in rejected and independent(at, target):
+                    verified.add(target)
+                    frontier.append(target)
+        unresolved = {at for pair in pairs if pair[1] not in verified for at in pair}
+        if unresolved <= rejected:
+            break
+        rejected |= unresolved
+    # Mark each direct edge that proves a surviving overlapping start.
+    overlapping = {inner for _, inner in pairs} - unresolved
     for e in edges:
-        if e["target"] is not None and e["site"] not in conflicts and independent(e["site"], e["target"]):
-            proofs.setdefault(e["target"], []).append(e)
-    unresolved = set()
-    for outer, inner in pairs:
-        if inner not in proofs:
-            unresolved.update((outer, inner))
-    # Mark every proving edge, but only once its target survives every other conflict.
-    for _, inner in pairs:
-        if inner not in unresolved:
-            for e in proofs[inner]:
-                e["overlappingTarget"] = True
-                e["boundaryEvidence"] = "direct edge from an independently verified instruction"
+        if e["target"] in overlapping and e["site"] in verified and independent(e["site"], e["target"]):
+            e["overlappingTarget"] = True
+            e["boundaryEvidence"] = "direct edge from an independently verified instruction"
     for at in sorted(unresolved):
         gaps.append({"site": at, "reason": OVERLAP_REASON})
         del seen[at]

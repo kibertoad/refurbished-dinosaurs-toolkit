@@ -684,6 +684,22 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual({g["site"] for g in r["gaps"] if "overlapping" in g["reason"]}, {0, 1})
         self.assertFalse(any(e.get("overlappingTarget") for e in r["confirmed"]))
 
+    def test_proven_overlapping_start_carries_its_proof_through_fall_through(self):
+        # The call proves helper (nop); the IRET after it is still inside the MOV immediate and has no edge of its own.
+        code=Code().emit("9c c7 06 00 02").label("helper").emit("90 cf 0e").label("call").branch("e8","helper").emit("c3")
+        incoming=report(code,"incoming",target=code.labels["helper"])
+        self.assertFalse(any("overlapping" in g["reason"] for g in incoming["gaps"]))
+        self.assertEqual([e["site"] for e in incoming["confirmed"]],[code.labels["call"]])
+        self.assertTrue(incoming["confirmed"][0]["overlappingTarget"])
+        operand=report(code,"operand",query={"site":1,"operandSite":5})
+        self.assertEqual(operand["rawToken"],"CF90")
+        # Fall-through from a conflicting declared entry proves nothing.
+        data=bytes.fromhex("b8 90 90 c3")
+        cfg=configuration(data,target=3)
+        cfg["regions"][0]["entries"]=[0,1]
+        result=run_report(data,cfg,"incoming")
+        self.assertEqual({g["site"] for g in result["gaps"] if "overlapping" in g["reason"]},{0,1,2})
+
     def test_local_iret_requires_saved_frame_and_unmodified_return(self):
         code=Code().emit("0e").branch("e8","iret").emit("c3").label("iret").emit("cf")
         result=report(code,registers={"ss":0x9000,"sp":0x8000})
