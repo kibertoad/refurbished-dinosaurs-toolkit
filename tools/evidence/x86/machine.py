@@ -371,7 +371,7 @@ def ordinary(state, ins, image):
                 state.put(ins, operand, value)
             else:
                 segment, offset = addresses[index]
-                state.access(segment, offset, operand.size, resize(value, operand.size * 8))
+                state.access(segment, offset, operand.size, resize(value, operand.size * 8), addressing_register=segment_register(ins, operand.mem))
         return
     if m == "imul" and len(operands) in (2, 3):
         left, right = (state.get(ins, operand, image) for operand in (operands if len(operands) == 2 else operands[1:]))
@@ -396,7 +396,7 @@ def ordinary(state, ins, image):
         segment, offset = state.address(ins, operands[1])
         if operands[0].size != 2:
             raise StopPath("Only 16:16 pointer loads are supported")
-        value = state.access(segment, offset, 4, role="far-pointer")
+        value = state.access(segment, offset, 4, role="far-pointer", addressing_register=segment_register(ins, operands[1].mem))
         state.put(ins, operands[0], extract(value, 0, 16))
         state.setreg("ds" if m == "lds" else "es", extract(value, 16, 16), state.at)
         return
@@ -644,12 +644,12 @@ def string_effect(state, ins, count, remaining):
     delta = -width if state.direction_flag.number else width
     for _ in range(count.number):
         if operation in ("movs", "lods"):
-            value = state.access(state.segment(source_name), state.reg(si), width, role="string-source")
+            value = state.access(state.segment(source_name), state.reg(si), width, role="string-source", addressing_register=source_name)
             state.setreg(si, op("add", state.reg(si), const(delta, state.bits), state.at), state.at)
         else:
             value = state.reg({1:"al",2:"ax",4:"eax"}[width])
         if operation in ("movs", "stos"):
-            state.access(state.segment("es"), state.reg(di), width, value, role="string-destination")
+            state.access(state.segment("es"), state.reg(di), width, value, role="string-destination", addressing_register="es")
             state.setreg(di, op("add", state.reg(di), const(delta, state.bits), state.at), state.at)
         else:
             state.setreg({1:"al",2:"ax",4:"eax"}[width], value, state.at)

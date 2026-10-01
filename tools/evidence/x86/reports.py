@@ -1002,7 +1002,9 @@ def _run_report(image, config, command):
                 if a.get(field):
                     checkpoints.add(a[field]["site"])
         config = {**config, "checkpoints": sorted(checkpoints)}
-    report = near_pointer_provenance(trace(image, config), config)
+    report = trace(image, config)
+    if command in ("arguments", "effects"):
+        report = near_pointer_provenance(report, config)
     if command == "allocation":
         return allocations(report, config)
     if command != "trace":
@@ -1017,39 +1019,44 @@ def _run_report(image, config, command):
     return report
 
 
+def _formation_links(formations, value):
+    """Relate one offset/value to the retained LEA formations that produced it."""
+    matched = sorted((f for site in value["producers"] for f in formations.get(site, ())), key=lambda f: f["order"])
+    results = []
+    for formed in matched:
+        original = formed["value"]
+        if original["bits"] != value["bits"]:
+            continue
+        a, b = original["expression"], value["expression"]
+        ab, ad = (a[1], a[2]) if a[0] == "offset" else (a, 0)
+        bb, bd = (b[1], b[2]) if b[0] == "offset" else (b, 0)
+        relation = "sameOffset" if a == b else "affineFieldOffset" if ab == bb and ab[0] != "constant" else "producerOnly"
+        delta = (bd - ad) % (1 << value["bits"]) if relation != "producerOnly" else None
+        results.append({"formationSite": formed["site"], "formationOrder": formed["order"],
+                        "formationValue": original, "formationAddressingSegment": formed["addressingSegment"],
+                        "formationSegmentRegister": formed.get("addressingSegmentRegister"),
+                        "offsetRelation": relation, "offsetDeltaModulo": delta,
+                        "note": "LEA addressing default is not a segment binding"})
+    return results
+
+
 def near_pointer_provenance(report, config):
     limit = integer(config.get("pointerFormationLimit", 128), 1, 1024, "pointer formation limit")
     for path in report["paths"]:
-        formations, omitted = [], 0
-        for order, event in enumerate(path["events"]):
+        formations, retained, omitted = {}, 0, 0
+        for event in path["events"]:
             if event["kind"] == "address-formation":
-                if len(formations) >= limit:
+                if retained >= limit:
                     omitted += 1
                 else:
-                    formations.append((order, event))
+                    formations.setdefault(event["site"], []).append(event)
+                    retained += 1
                 continue
             if event["kind"] not in ("read", "write"):
                 continue
-            def links(value):
-                results = []
-                for formed_order, formed in formations:
-                    original = formed["value"]
-                    if formed["site"] not in value["producers"] or original["bits"] != value["bits"]:
-                        continue
-                    a, b = original["expression"], value["expression"]
-                    ab, ad = (a[1], a[2]) if a[0] == "offset" else (a, 0)
-                    bb, bd = (b[1], b[2]) if b[0] == "offset" else (b, 0)
-                    relation = "sameOffset" if a == b else "affineFieldOffset" if ab == bb and ab[0] != "constant" else "producerOnly"
-                    delta = (bd - ad) % (1 << value["bits"]) if relation != "producerOnly" else None
-                    results.append({"formationSite": formed["site"], "formationOrder": formed_order,
-                                    "formationValue": original, "formationAddressingSegment": formed["addressingSegment"],
-                                    "formationSegmentRegister": formed.get("addressingSegmentRegister"),
-                                    "offsetRelation": relation, "offsetDeltaModulo": delta,
-                                    "note": "LEA addressing default is not a segment binding"})
-                return results
             if event.get("argument"):
-                event["nearPointerArgumentCandidates"] = links(event["value"])
-            accesses = links(event["offset"])
+                event["nearPointerArgumentCandidates"] = _formation_links(formations, event["value"])
+            accesses = _formation_links(formations, event["offset"])
             for candidate in accesses:
                 formed_segment, accessed_segment = candidate["formationAddressingSegment"], event["segment"]
                 relation = ("sameWithinModel" if formed_segment["bits"] == accessed_segment["bits"] and formed_segment["expression"] == accessed_segment["expression"] else
