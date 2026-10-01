@@ -69,6 +69,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies) |
 | `uses` | accesses to one memory offset from every established entry | this section |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
+| `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
 | `dispatch` | the target of each input through a switch's jump table | this section, [jump tables](#evidenced-indirect-jump-tables) |
 | `allocation` | allocation requests, returned pointers and later writes | this section |
 | `operand` | the target an instruction-owned segment operand names | [segment operand query](#instruction-owned-segment-operand-query) |
@@ -652,3 +653,31 @@ Stopped paths and trace path/step/depth caps also prevent complete summaries.
 Call models remain conditional with unknown memory effects and declared register
 assumptions; return-contract metadata supplies no call behavior. Original-game
 runtime and player-visible effects require separate evidence.
+
+## Guarded caller-local call order
+
+`call-order` keeps the ordinary `incoming` report and adds caller groups for its
+confirmed target calls. Every declared entry is boundary-checked, and shared or
+contested ownership remains unread. `necessaryGuards` are conditional CFG edges
+whose removal prevents reaching that call; an adjacent CMP/TEST is described
+only when it is the branch's sole predecessor, the branch is not the entry, and
+the branch tests flags (never for JCXZ/JECXZ or the LOOP family). The guard
+describes the tested operand/width and segment choice, never a preserved value
+across callee effects. Groups with the same necessary guards report `sequence`,
+`branchAlternatives` or `unread`; sequence order is derived from continuation
+reachability, not file addresses. A `sequence` also needs each call to dominate
+the next and the next to follow it on every route within the visit; a call
+reached around another or skippable after it leaves the group `unread`. Within
+guarded loops it covers one visit past the shared guard edges, with
+`mayRepeatAcrossGuardVisits` retaining recurrence; it is `null` when a capped or
+unusable read found no cycle. Pair `relations` describe the whole caller CFG and
+remain unread for cyclic order. Calls also describe immediate positive ADD
+SP/ESP cleanup after an assumed return; other cleanup remains unread and callee
+effects/return success/state restoration always remain a gap. `entryLimit`
+(1..256, default 64), the incoming result/scan limits, per-body
+`instructionLimit`, and `analysisLimit` (1..10000000, default 1000000 per
+caller) bound work. Limits retain unread ordering, omitted entries and flat
+coverage. `orderControls` names known entry/kind/sites groups (sequence sites in
+order, alternatives in any order); false sequences/alternatives fail rather than
+overriding the CFG. No runtime execution, input-feasibility or universal
+incoming coverage claim is made.
