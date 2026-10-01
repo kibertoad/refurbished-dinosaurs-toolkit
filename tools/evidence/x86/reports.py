@@ -4,7 +4,7 @@ from capstone.x86 import X86_OP_MEM, X86_OP_REG
 from .machine import State, StopPath, REGISTERS, ALIASES, segment_register
 from .values import unknown
 from .image import Image, integer
-from .trace import trace, walk, call_target, unsupported_transfer, OVERLAP_REASON
+from .trace import trace, walk, call_target, unsupported_transfer, OVERLAP_REASON, CONTESTED_REASON
 
 
 def entries(image):
@@ -16,8 +16,13 @@ def incoming(image, config):
     if image.region(target) is None:
         raise ValueError("Incoming target is outside declared code")
     limit = integer(config.get("limit", 100), 1, 10000, "result limit")
-    seen, gaps, edges, undecoded = walk(image, entries(image), config.get("instructionLimit", 10000))
-    hits, candidates, scanned, partial = [], [], {}, []
+    seen, gaps, edges, undecoded, contested = walk(image, entries(image), config.get("instructionLimit", 10000))
+    hits, candidates, scanned, partial, disputed = [], [], {}, [], []
+
+    def classify(at):
+        if at in seen:
+            return "entry-path instruction"
+        return CONTESTED_REASON if at in contested else "raw byte candidate"
     scans = config.get("searchRegions", [r["name"] for r in image.regions])
     if not isinstance(scans, list) or not scans or len(set(scans)) != len(scans):
         raise ValueError("searchRegions must be unique region names")
@@ -39,16 +44,14 @@ def incoming(image, config):
             if ins is None or ins.mnemonic not in ("call", "lcall"):
                 continue
             resolved, provenance = call_target(image, at, ins)
-            verified = at in seen
             row = {"site": at, "target": resolved, "encoding": ins.mnemonic,
-                   "classification": "entry-path instruction" if verified else "raw byte candidate",
-                   "provenance": provenance, "region": name}
+                   "classification": classify(at), "provenance": provenance, "region": name}
             scanned[at] = row
             if resolved == target:
-                (hits if verified else candidates).append(row)
+                (hits if at in seen else disputed if at in contested else candidates).append(row)
             elif resolved is None:
                 partial.append(row)
-    for at, ins in seen.items():
+    for at, ins in sorted({**seen, **contested}.items()):
         if at in scanned or ins.mnemonic not in ("call", "lcall"):
             continue
         region = image.region(at)
@@ -61,10 +64,10 @@ def incoming(image, config):
             continue
         resolved, provenance = call_target(image, at, ins)
         row = {"site": at, "target": resolved, "encoding": ins.mnemonic,
-               "classification": "entry-path instruction", "provenance": provenance, "region": region["name"]}
+               "classification": classify(at), "provenance": provenance, "region": region["name"]}
         scanned[at] = row
         if resolved == target:
-            hits.append(row)
+            (hits if at in seen else disputed).append(row)
         elif resolved is None:
             partial.append(row)
     for edge in edges:
@@ -72,13 +75,14 @@ def incoming(image, config):
             scanned[edge["site"]]["overlappingTarget"] = True
             scanned[edge["site"]]["boundaryEvidence"] = edge["boundaryEvidence"]
     hits.sort(key=lambda row: row["site"])
+    disputed.sort(key=lambda row: row["site"])
     controls = config.get("controls", [])
     if not isinstance(controls, list) or len(controls) > 256:
         raise ValueError("Invalid positive controls")
     for at in controls:
         if type(at) is not int or at not in scanned or at not in seen or scanned[at]["target"] is None:
             raise ValueError(f"Positive control {at} missed or not verified")
-    truncated = len(hits) + len(candidates) + len(partial) > limit
+    truncated = len(hits) + len(candidates) + len(disputed) + len(partial) > limit
     budget = limit
     def bounded(rows):
         nonlocal budget
@@ -91,12 +95,13 @@ def incoming(image, config):
         "relative": [h["site"] for h in hits if h["encoding"] == "call"],
     }
     return {"target": target, "sections": {k: v[:limit] for k, v in sections.items()}, "confirmed": bounded(hits), "candidates": bounded(candidates),
-            "unresolved": bounded(partial), "counts": {"confirmed": len(hits), "candidates": len(candidates), "unresolved": len(partial)},
+            "contested": bounded(disputed), "unresolved": bounded(partial),
+            "counts": {"confirmed": len(hits), "candidates": len(candidates), "contested": len(disputed), "unresolved": len(partial)},
             "truncated": truncated, "controls": [scanned[at] for at in controls],
             "searched": [r for r in image.regions if r["name"] in scans], "undecodedRanges": undecoded, "gaps": gaps,
-            "negativeUsable": bool(controls) and not (hits or candidates or partial or gaps or truncated or undecoded),
+            "negativeUsable": bool(controls) and not (hits or candidates or disputed or partial or gaps or truncated or undecoded),
             "exclusions": ["computed call targets", "unrelocated far calls", "undeclared mappings", "prefix-started raw candidates off the entry path"],
-            "scope": "All bytes of declared search regions; verified calls follow established entries. Never proves universal absence."}
+            "scope": "All bytes of declared search regions; verified calls are reachable from accepted starts. Never proves universal absence."}
 
 
 def uses(image, config):
@@ -117,8 +122,9 @@ def uses(image, config):
     if not isinstance(controls, list) or len(controls) > 256:
         raise ValueError("Invalid positive controls")
     result_limit = integer(config.get("limit", 100), 1, 10000, "result limit")
-    seen, gaps, _, undecoded = walk(image, entries(image), config.get("instructionLimit", 10000))
-    overlaps = {g["site"] for g in gaps if g.get("reason") == OVERLAP_REASON}
+    seen, gaps, _, undecoded, contested = walk(image, entries(image), config.get("instructionLimit", 10000))
+    # A site reached only through a rejected start is as unverified as the start itself.
+    unverified = {g["site"] for g in gaps if g.get("reason") == OVERLAP_REASON} | set(contested)
     matches, unresolved, unique = [], [], set()
     # Trace each established entry independently; never decode a whole segment as one stream.
     remaining = integer(config.get("totalSteps", 20000), 1, 100000, "totalSteps")
@@ -152,7 +158,7 @@ def uses(image, config):
                 if e["site"] not in seen:
                     key = (e["site"], e["kind"], "unverified-boundary")
                     if key not in unique:
-                        classification = ("unverified overlapping instruction path" if e["site"] in overlaps
+                        classification = ("unverified overlapping instruction path" if e["site"] in unverified
                                           else "outside the bounded entry walk")
                         unresolved.append({**e, "classification": classification}); unique.add(key)
                     continue
@@ -180,7 +186,7 @@ def uses(image, config):
     # reading one callee later shows exactly which accesses depended on it.
     reported = {(e["site"], e["kind"]) for e in matches + unresolved}
     instruction_limit = config.get("instructionLimit", 10000)
-    after_stop, stop_gaps, _, _ = walk(image, list(stops), instruction_limit) if stops else ({}, [], None, None)
+    after_stop, stop_gaps, _, _, _ = walk(image, list(stops), instruction_limit) if stops else ({}, [], None, None, None)
     gaps.extend(g for g in stop_gaps if g["reason"] == "instruction limit")
     # A call past a stop was never traced either, so code after it also depends on it returning.
     starts = [(root, root, reason) for root, reason in stops.items()]
@@ -188,7 +194,7 @@ def uses(image, config):
                for at, ins in after_stop.items() if ins.mnemonic in ("call", "lcall") and at not in stops]
     depends = {}
     for site, start, reason in sorted(starts):
-        reached, _, _, _ = walk(image, [start], instruction_limit)
+        reached, _, _, _, _ = walk(image, [start], instruction_limit)
         for at in reached:
             depends.setdefault(at, []).append({"site": site, "reason": reason})
     conditional = []
@@ -226,11 +232,12 @@ def uses(image, config):
                                     "value": unknown(f"CFG-operand:{at}", size * 8).report(),
                                     "effectiveSegmentRegister": segment_register(ins, operand.mem),
                                     "address": "overlaps query" if overlaps and segment is None else "possible alias",
-                                    "classification": "entry-CFG operand past a stop; values and callee effects unresolved",
+                                    "classification": ("unverified overlapping instruction path" if at in unverified else
+                                                       "entry-CFG operand past a stop; values and callee effects unresolved"),
                                     "dependsOn": depends.get(at, []),
                                     "reachability": "conditional on encoded branch outcomes and on execution continuing past every named stop"})
     # A control proves the search reaches a known use, which an operand found past a stop still shows.
-    found = matches + [e for e in conditional if e["address"] == "overlaps query"]
+    found = matches + [e for e in conditional if e["address"] == "overlaps query" and e["site"] not in unverified]
     for at in controls:
         if type(at) is not int or not any(e["site"] == at for e in found):
             raise ValueError(f"Positive variable-use control {at} missed; negative result rejected")
@@ -415,7 +422,7 @@ def operand_provenance(image, config):
     offset = integer(query.get("targetOffset", 0), 0, 65535, "target offset")
     if image.flat:
         raise ValueError("Segment relocation operands require the segmented16 model")
-    seen, gaps, _, _ = walk(image, entries(image), config.get("instructionLimit", 10000))
+    seen, gaps, _, _, _ = walk(image, entries(image), config.get("instructionLimit", 10000))
     ins = seen.get(site)
     if ins is None:
         raise ValueError("Operand instruction is not a verified entry-path boundary")

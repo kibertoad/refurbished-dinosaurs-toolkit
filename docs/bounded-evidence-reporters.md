@@ -111,9 +111,12 @@ The reporter scans every byte of the named `searchRegions` (all regions by
 default), including callers placed at higher addresses than the target's code. It separates relative
 calls, resident relocations and overlay fixups, preserves encoded descriptor
 words and resolved addresses, and distinguishes raw candidates from entry-path
-instructions. Aliases resolve by canonical target. Computed calls, unrelocated
-far calls and prefix-started raw candidates are excluded. Even a zero report
-covers only the declared domain.
+instructions. `confirmed` holds only calls reachable from accepted starts; a call
+reached only through a rejected overlapping start is listed under `contested`,
+counted in `counts.contested`, shares the result `limit`, and makes
+`negativeUsable` false. Aliases resolve by canonical target. Computed calls,
+unrelocated far calls and prefix-started raw candidates are excluded. Even a zero
+report covers only the declared domain.
 
 `dispatch` adds `dispatch.site`, `inputRegister`, `indexRegister`, up to 256 numeric
 `inputs`, `indexEvidence`, and `table` with `start`, `count`, `stride`, `width`,
@@ -245,7 +248,9 @@ limits are negative cases. The legacy 16-bit suite remains mandatory.
 
 Incoming queries follow established instruction entries, retaining overlaps as
 explicit unresolved boundary gaps. A raw E8 candidate inside another instruction
-is never a confirmed hit. The raw scan covers all selected declared regions,
+is never a confirmed hit. Confirmed means reachable from accepted starts: code
+reached only through a rejected start, including a call's return site, is
+`contested`, never confirmed, and `uses` reports its accesses as unverified. The raw scan covers all selected declared regions,
 including later callers; reached prefixed and indirect calls are also reported.
 Unknown calls have explicit gaps and fallthrough assumes they return. Narrower
 regions and exhausted budgets are partial scope, even with zero hits. There is
@@ -284,8 +289,15 @@ A direct control-flow edge from an independently verified instruction can prove
 an interior target as an alternate reachable start. Reports retain that edge's
 `overlappingTarget` and `boundaryEvidence`, decode the other continuation too,
 and continue to reject conflicting declared entries and operand-byte raw hits
-without such an edge. This does not prove native reachability or arbitrary
-self-modifying instruction layouts.
+without such an edge. A proven start also proves the instructions it falls
+through to or directly reaches, so an interior helper longer than one
+instruction keeps its boundaries. A call's return site is not proven this way,
+because the callee might not return. Every proving step must be reachable from
+the entries without passing through the start it proves. Once rejection settles,
+only instructions reachable from the accepted starts remain established; the
+rest of what rejected starts reached is returned as contested, so a call is
+never confirmed while its proof is refused. This does not prove native
+reachability or arbitrary self-modifying instruction layouts.
 
 An unprefixed segmented16 IRET is modeled only inside a traced push-CS/near-call
 frame built above a locally saved FLAGS word. Stack balance, continuation IP and
