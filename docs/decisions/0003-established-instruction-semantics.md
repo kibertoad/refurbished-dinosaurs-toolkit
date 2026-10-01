@@ -246,17 +246,129 @@ Rules for every iteration:
 
 | Phase | Status | Date | Evidence |
 |---|---|---|---|
-| 0 freeze and baseline | not started | | |
-| 1 pypcode spike | not started | | |
+| 0 freeze and baseline | done | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
+| 1 pypcode spike | done | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54), 4 (#55), 5 (#56), 6 (#57) and 7 (#58) answered |
 | 2 semantics seam | not started | | |
 | 3 pypcode backend | not started | | |
 | 4 parity on recorded cases | not started | | |
 | 5 cutover | not started | | |
 | 6 Ghidra callee cross-check | not started | | |
 
+### Handwritten baseline
+
+Recorded 2026-10-02 from `x86/machine.py`. The mnemonics `ordinary()` interprets, by phase 3
+group:
+
+| Group | Handwritten mnemonics |
+|---|---|
+| data movement | `mov`, `movzx`, `movsx`, `xchg`, `nop` |
+| address forms | `lea`, `lds`, `les` |
+| stack | `push`, `pop`, `leave`, `pushf`, `pushfd`, `popf`, `popfd` |
+| compare | `cmp`, `test` |
+| arithmetic and logic | `add`, `sub`, `and`, `or`, `xor`, `inc`, `dec`, `not`, `neg` |
+| carry chain | `adc`, `sbb`, `clc`, `stc`, `cmc` |
+| shifts and rotates | `shl`, `sal`, `shr`, `sar`, `rol`, `ror`, `rcl`, `rcr` |
+| multiply and divide | `mul`, `imul` (one, two and three operands), `div`, `idiv` |
+| conversions | `cbw`, `cwde`, `cwd`, `cdq` |
+| flags and direction | `cld`, `std`, `cli`, `sti` |
+
+Semantics outside `ordinary()`:
+
+- Branch conditions: `predicate`, `BRANCH_CONDITIONS`, `CARRY_BRANCHES` and `CLEARED_BY_LOGIC`
+  decide `je`/`jz`, `jne`/`jnz`, `jb`/`jc`/`jnae`, `jae`/`jnb`/`jnc`, `jbe`/`jna`, `ja`/`jnbe`,
+  `jl`/`jnge`, `jge`/`jnl`, `jle`/`jng`, `jg`/`jnle`, `js`, `jns`, `jo`, `jno`. `jp`/`jpe` and
+  `jnp`/`jpo` have condition keys but `predicate` never resolves them. They belong to the compare
+  group.
+- Shift carries: `shift_carry` sets CF after `shl`, `sal`, `shr` and `sar`.
+- String operations: `string_effect` applies `movs`, `stos` and `lods` (bytes, words and
+  doublewords, with or without `rep`). `string_instruction` rejects `cmps` and `scas`, and
+  `check_string_form` stops `repne`. In the string group, `cmps` and `scas` can only be extended
+  cases.
+- Counter branches in `trace.py`: `loop`, `loope`, `loopne` decrement CX or ECX, and `jcxz`,
+  `jecxz` test it. These stay with the control transfers under decision 1.
+
 ### Spike answers
 
-None yet.
+The spike tests are `packages/scientific-method-engine/spike/test_pypcode_spike.py` on the
+unmerged branch `scratch/semantics-spike`. They use synthetic bytes only and ran with pypcode 4.0.0,
+Unicorn 2.1.4 and Capstone 5.0.7 on Python 3.14 (Windows). Each answer names its test class.
+
+1. **Wheels and licenses: go, with pypcode 4.0.0 and Python 3.12 or later.** pypcode 4.0.0 carries
+   Ghidra 12.1's SLEIGH files, the version the shipped Ghidra scripts compile against. It publishes
+   wheels for CPython 3.12, 3.13 and 3.14 on Windows (x86-64), Linux (x86-64 and aarch64,
+   manylinux 2.28) and macOS (x86-64 and arm64), and requires Python 3.12. The last release with
+   3.10 and 3.11 wheels, 3.3.3, predates Ghidra 12. Its x86 SLEIGH files differ from 4.0.0 only in
+   VMX prefix constraints and SSE4a encodings the engine never interprets. The maintainer chose
+   4.0.0, so phase 3 raises the engine's `requires-python` from `>=3.10` to `>=3.12`; CI already
+   runs 3.12, and Python 3.10 reaches end of life in October 2026. pypcode is BSD-2-Clause, and
+   the SLEIGH library and processor files it bundles are Apache-2.0 with Ghidra's NOTICE, a
+   permissive combination the MIT-licensed engine may depend on. Unicorn 2.1.4 ships abi3 wheels
+   (CPython 3.7 and later) for the same three platforms. The wheels bundle the Unicorn core, which is
+   GPLv2, so Unicorn may only be a test dependency: it is installed to run the tests and never
+   ships with or is imported by the published package (decision 4).
+2. **Real-mode addressing: go.** (`Question2RealModeAddressing`) `x86:LE:16:Real Mode` lifts
+   `mov ax, [bp+2]` as `INT_ADD BP, 2` followed by the user operation `segment(SS, offset)`, and
+   `mov ax, es:[di]` as `segment(ES, DI)`. The segment operation's second input names the segment
+   register and its third input is the offset, so the interpreter evaluates the offset over `Value`
+   and compares the register with `segment_register()` from Capstone; the two agree on defaults,
+   overrides and repeated prefixes (both take the last segment prefix). One idiom needs handling: a
+   `cs:` override makes SLEIGH write CS from the instruction address (`CS = (inst_next >> 4) &
+   0xf000`) before the segment operation. The interpreter must recognise that exact sequence and
+   drop the write, because CS comes from the declared region; any other write to a segment register
+   inside an ordinary instruction stops the path. `x86:LE:32:default` emits no segment operation,
+   and the flat model keeps taking segment bases from the evidence layer.
+3. **Arbitrary starts and prefixes: go, with a length check.** (`Question3ArbitraryStarts`)
+   Translation starts at whatever byte it is given, so an overlapping start lifts the inner
+   instruction (`b8 cd 21` lifts `mov ax` at its first byte and `int 21h` at its second). Operand
+   size, segment and repeat prefixes all lift. SLEIGH reads past the end of a short buffer as if it
+   held zero bytes: a lone `66` lifts as `66 00 00` (`add`). The engine therefore lifts exactly the
+   bytes Capstone decoded and stops the path when the IMARK length differs from Capstone's size.
+   Undefined opcodes such as `ud2` lift as a user operation; the interpreter stops on every user
+   operation except `segment`.
+4. **Flags and branch precision: go, with term rules and canonical keys.**
+   (`Question4BranchPrecision`) Each flag is a one-byte register (`CF`, `ZF`, `SF`, `OF`, `PF`,
+   `AF`, `DF`) written by its own p-code op: `cmp` emits `INT_LESS` for CF, `INT_SBORROW` for OF
+   and `INT_EQUAL`/`INT_SLESS` on the difference for ZF and SF. Logic operations `COPY 0` into CF
+   and OF, `clc`/`stc` copy a constant, and `cmc` is `INT_EQUAL CF, 0`. A conditional branch is a
+   `CBRANCH` on a boolean expression over flags (`jl` is `INT_NOTEQUAL OF, SF`; `jg` is
+   `BOOL_AND (BOOL_NEGATE ZF), (INT_EQUAL OF, SF)`). With four term rules the interpreter matches
+   `predicate`: `INT_SUB x, x` is 0 (already in `values.op`), `INT_EQUAL x, x` is 1, `INT_LESS`,
+   `INT_SLESS` and `INT_SBORROW` of `x, x` are 0, and `BOOL_AND`/`BOOL_OR` with a known deciding
+   operand are that operand. The spike resolves every condition after `cmp ax, ax`, `xor ax, ax`
+   and `sub ax, ax` with AX unknown, CF and OF after `test`, `and`, `or` and `xor`, carry after
+   `clc`, `stc` and `cmc`, and concrete comparisons. It leaves `je` after `cmp ax, bx` unresolved.
+   It also resolves `jp`/`jnp` and the flags `inc`/`dec` set, which `predicate` does not; those
+   are extended cases. Two things the interpreter has to supply that p-code does not: assumption
+   keys that make synonymous and complementary branches share one assumption (`jle` and `jg` lift
+   to different expressions, so the key must be the flag producer and condition, as
+   `BRANCH_CONDITIONS` keys it today), and the `branch` event fields (`flagProducer`, `operation`,
+   `left`, `right`), which stay evidence-layer records of the last flag-writing instruction.
+5. **Repeated string operations: go.** (`Question5RepeatedStrings`) `rep movsb` lifts as one
+   iteration: `INT_EQUAL CX, 0` and a `CBRANCH` to the next instruction (the exit), `CX = CX - 1`,
+   the body (destination address `segment(ES, DI)`, DI and SI stepped by `1 - 2 * DF`, `LOAD`
+   from `segment(DS, SI)` or the override, `STORE`), and a `BRANCH` back to the instruction itself.
+   The interpreter treats the exit `CBRANCH` and the backward `BRANCH` as the loop and charges each
+   pass to `stringIterations`, so a counted `rep movsb` copies its bytes and leaves CX at zero, an
+   exhausted budget stops the path, and an unknown count reaches an unresolved exit. The evidence
+   layer keeps rejecting an unknown count, an unresolved DF and an exhausted budget before the body
+   runs, as `string_effect` does now. The body reads before it writes, so the `read` and `write`
+   events keep their order.
+6. **Operand-size overrides and conversions: go.** (`Question6Widths`) The output varnode carries
+   the effective width in both modes. In real mode `cbw` writes AX from AL, `66 cbw` writes EAX
+   from AX, `cwd` writes DX and `66 cwd` writes EDX (`INT_SEXT` then `SUBPIECE` of the high
+   half), and `66 mov eax, imm32` writes EAX. In flat mode the same bytes give the opposite widths.
+   The values match the handwritten results (`cbw` of 0x80 is 0xFF80, `cwd` of 0x8000 gives DX
+   0xFFFF). The `conversion` event keeps `decoderMnemonic` and `mnemonicWidthMismatch` from
+   Capstone's mnemonic, and takes `effectiveOperandBits` from the output width, which removes the
+   prefix arithmetic the handwritten backend does.
+7. **Unicorn as the oracle: go.** (`Question7UnicornOracle`) Unicorn's `UC_MODE_16` runs
+   real-mode bytes with segment registers set by the test: with code at 1000:0010, ES 2000 and
+   DS 3000, `mov ax, es:[di]` reads linear 0x20004 and `rep movsb` copies from DS:SI to ES:DI. The
+   resulting AX, CX, SI, DI and memory equal the spike interpreter's. EFLAGS is readable for flag
+   checks, and `UC_MODE_32` covers PE32. The oracle maps the whole first megabyte, so it needs no
+   model of the program's layout beyond the synthetic bytes a test writes.
+
+No question was a no-go, so the Miasm evaluation under decision 8 does not start.
 
 ### Groups moved
 
