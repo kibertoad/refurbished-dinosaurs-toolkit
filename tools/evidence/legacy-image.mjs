@@ -108,7 +108,7 @@ export function checkFormatControls(image, expected) {
     if (!Number.isSafeInteger(count) || count < 0) throw new Error(`Format control ${name} must be a non-negative integer`);
     if (actual[name] !== count) throw new Error(`Format control ${name}: expected ${count}, source tables yield ${actual[name]}; no query runs on these tables`);
   }
-  return { expected, actual };
+  return expected;
 }
 export function incomingCalls(image, target, { limit = 100, controls = [] } = {}) {
   if (!Number.isInteger(limit) || limit < 1 || limit > 10000) throw new Error("Result limit must be 1..10000");
@@ -135,5 +135,6 @@ export function incomingCalls(image, target, { limit = 100, controls = [] } = {}
   return { target: hex(target), matches: matches.slice(0, limit), total: matches.length, truncated: matches.length > limit, unresolved,
     controls: controls.map((c) => ({ callSite: hex(c), canonicalTarget: scanned.get(c) })), searched: "all declared MZ segment relocations and FBOV fixups",
     exclusions: ["near calls", "computed calls", "unrelocated pointers", "instruction-boundary verification", "candidates listed as unresolved"],
-    negative: matches.length ? null : controls.length ? "No matching declared candidates in this domain" : "No candidates; no positive control supplied" };
+    negative: matches.length ? null : unresolved.length ? "Not usable: unresolved candidates remain unchecked against the target"
+      : controls.length ? "No matching declared candidates in this domain" : "No candidates; no positive control supplied" };
 }

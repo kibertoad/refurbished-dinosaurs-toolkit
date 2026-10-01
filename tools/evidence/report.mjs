@@ -14,13 +14,16 @@ export function prepare(config, base) {
   const bytes = readFileSync(source);
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   if (sha256 !== config.sha256) throw new Error("Source SHA-256 differs from supplied baseline");
+  // Format-table counts are derived from MZ/FBOV source tables only; a supplied copy would read as loader output.
+  if (config.formatTables !== undefined) throw new Error("formatTables is derived by the MZ loader and cannot be supplied");
+  if (config.sourceKind !== "mz" && config.formatControls !== undefined) throw new Error("formatControls apply only to mz sources");
   if (config.sourceKind === "synthetic-raw") return { ...config, source };
   // PE parsing and mapping validation are performed by the Python source loader.
   if (config.sourceKind === "pe32") return { ...config, source };
   if (config.sourceKind !== "mz") throw new Error("sourceKind must be mz, pe32 or synthetic-raw; other loaders are unsupported");
   const image = readMz(bytes, config.loadSegment);
   const formatTables = { loadSegment: image.loadSegment, counts: formatCounts(image),
-    controls: config.formatControls === undefined ? "none supplied" : checkFormatControls(image, config.formatControls).expected };
+    controls: config.formatControls === undefined ? "none supplied" : checkFormatControls(image, config.formatControls) };
   if (config.targetSelector) {
     const { descriptor, trampoline } = config.targetSelector;
     const declared = image.descriptors[descriptor];
@@ -45,7 +48,7 @@ export function prepare(config, base) {
       try {
         const resolved = image.resolveOperand(site, bytes.readUInt16LE(site - 2));
         Object.assign(result, { target: Number(resolved.canonicalTarget), loadedTarget: Number(resolved.fileOffset),
-          loadedAddress: resolved.loadedAddress, trampoline: resolved.trampoline === null ? null : Number(resolved.trampoline) });
+          trampoline: resolved.trampoline === null ? null : Number(resolved.trampoline) });
       } catch (error) { result.targetError = error.message; /* The Python report retains the unresolved target. */ }
     }
     return result;

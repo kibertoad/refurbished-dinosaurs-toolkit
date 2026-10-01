@@ -236,6 +236,23 @@ class ReporterTests(unittest.TestCase):
         cfg["query"]["site"] = 4
         self.assertIn("unverified", run_report(data, cfg, "target")["boundary"])
 
+    def test_target_keeps_an_instruction_limit_stop_beside_an_unverified_boundary(self):
+        c = Code().branch("e8", "a").emit("c3").label("a").branch("e8", "b").emit("c3").label("b").emit("c3")
+        data = c.bytes()
+        r = run_report(data, configuration(data, query={"site": 4}, instructionLimit=1), "target")
+        self.assertIn("instruction limit", r["boundary"])
+        self.assertFalse(r["walkComplete"])
+        self.assertTrue(any(g["reason"] == "instruction limit" for g in r["gaps"]))
+        self.assertTrue(run_report(data, configuration(data, query={"site": 4}), "target")["walkComplete"])
+
+    def test_target_assigns_no_target_when_the_source_loader_could_not_resolve_it(self):
+        data = bytes.fromhex("9a 05 00 00 00 c3")
+        cfg = configuration(data, query={"site": 0}, relocations=[{"site": 3, "raw": 0, "segment": 0x1000, "evidence": "synthetic",
+                                                                    "targetError": "Segmented address is outside the resident load image"}])
+        r = run_report(data, cfg, "target")
+        self.assertEqual((r["relocated"], r["canonicalTarget"], r["target"]), (True, None, None))
+        self.assertIn("outside the resident", r["targetError"])
+
     def test_target_marks_supplied_relocation_metadata_and_analyzer_identity(self):
         data = bytes.fromhex("9a 05 00 00 00 c3")
         cfg = configuration(data, query={"site": 0, "analyzerAddress": {"segment": 0x1000, "offset": 5, "evidence": "synthetic"}},
