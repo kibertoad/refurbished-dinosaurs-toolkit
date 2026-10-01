@@ -238,6 +238,8 @@ test('pointer exclusions remain bounded and do not qualify overflow or partial o
   const execute=c=>{writeFileSync(source,data);writeFileSync(path,JSON.stringify({...c,sha256:createHash('sha256').update(data).digest('hex')}));return run(['pointers',path]);};
   const r=execute(config);assert.equal(r.counts.excluded,3);assert.equal(r.counts.unresolved,0);assert.equal(r.negativeUsable,true);
   assert.equal(r.excluded[0].classification,'outside declared adjacent-pair representation');
+  assert.deepEqual([r.excluded[0].offsetSite,r.excluded[0].offsetWordRange,r.excluded[0].segmentWordRange],[62,null,'resident']);
+  assert.equal(r.excluded[0].rawSegment,undefined);
   assert(r.excluded.slice(1).every(x=>x.candidateFileOffset>=x.residentBounds.end));
   const capped=execute({...config,limit:2});assert.equal(capped.truncated,true);assert.equal(capped.excluded.length,2);assert.equal(capped.negativeUsable,false);
   w(114,0xF000);const overflow=execute(config);assert.equal(overflow.counts.unresolved,1);assert.equal(overflow.negativeUsable,false);

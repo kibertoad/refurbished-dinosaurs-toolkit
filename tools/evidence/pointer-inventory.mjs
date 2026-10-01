@@ -21,7 +21,14 @@ export function pointerInventory(bytes, config) {
   const exactPair = [], aliasedTarget = [], unresolved = [], excluded = [], inspected = new Map();
   for (const site of segmentOperands(image)) {
     const range = image.ranges.find(r => site - 2 >= r.start && site + 2 <= r.end);
-    if (!range) { excluded.push({ site, reason: 'preceding offset and segment word do not lie in one source range', classification: 'outside declared adjacent-pair representation' }); continue; }
+    if (!range) {
+      // Record where each word lies, not a decoded pointer: the pair is outside the representation.
+      const holder = start => image.ranges.find(r => start >= r.start && start + 2 <= r.end)?.view ?? null;
+      excluded.push({ site, offsetSite: site - 2, offsetWordRange: holder(site - 2), segmentWordRange: holder(site),
+        reason: 'preceding offset and segment word do not lie in one source range',
+        classification: 'outside declared adjacent-pair representation' });
+      continue;
+    }
     const offset = bytes.readUInt16LE(site - 2), rawSegment = bytes.readUInt16LE(site);
     // Every inventoried site is a declared MZ relocation or an FBOV fixup (segmentOperands).
     const descriptor = image.relocations.has(site) ? null : rawSegment >>> 3;
