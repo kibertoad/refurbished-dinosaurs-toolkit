@@ -116,7 +116,9 @@ class State:
             answer, _ = predicate(self, "jb")
             if answer is not None:
                 return const(int(answer), 1, self.flags[3])
-            return unknown(f"carry:{self.flags[3]}:{self.flag_epoch}", 1, self.flags[3])
+            # Name the carry by its producer's operands, so every reading of one comparison shares an assumption.
+            a, b, operation, site = self.flags
+            return unknown(f"carry:{site}:{(operation, a.term, b.term)!r}", 1, site)
         if self.carry is not None:
             return self.carry
         return unknown(f"carry:unresolved:{self.flag_epoch}", 1, self.unknown_flag_site)
@@ -285,6 +287,8 @@ class State:
 
 
 CARRY_BRANCHES = {"jb": True, "jc": True, "jnae": True, "jae": False, "jnb": False, "jnc": False}
+# Branches taken when CF or OF is set; logic operations clear both whatever their operands.
+CLEARED_BY_LOGIC = {**CARRY_BRANCHES, "jo": True, "jno": False}
 
 
 def predicate(state, mnemonic):
@@ -305,6 +309,8 @@ def predicate(state, mnemonic):
     elif operation in ("cmp", "sub", "xor") and a.term == b.term:
         # Any value compared with, subtracted from or XORed with itself yields zero.
         x = y = 0
+    elif operation in ("test", "and", "or", "xor") and mnemonic in CLEARED_BY_LOGIC:
+        return not CLEARED_BY_LOGIC[mnemonic], info
     else:
         return None, info
     bits = a.bits
@@ -458,7 +464,7 @@ def ordinary(state, ins, image):
             value = op("xor", state.carry_value(), const(1, 1), state.at)
         else:
             value = const(int(m == "stc"), 1, state.at)
-        state.forget_flags(keep_carry=True)
+        state.forget_flags()
         state.carry = value
         state.event("flag-write", flag="CF", value=value.report(), interpretation="local carry effect")
         return
@@ -493,27 +499,38 @@ def ordinary(state, ins, image):
         count = state.get(ins, operands[1], image) if len(operands) > 1 else const(1, 8)
         if count.number is None:
             raise StopPath("rotate count unresolved")
-        n = count.number & 31
-        n %= a.bits + 1 if m in ("rcl", "rcr") else a.bits
-        if n == 0:
+        masked = count.number & 31
+        if masked == 0:
             return  # The value and flags are unchanged.
-        value, carry = a, state.carry_value()
-        top = a.bits - 1
-        for _ in range(n):
-            if m in ("rol", "rcl"):
-                out = extract(value, top, 1)
-                low = out if m == "rol" else carry
-                value = op("or", op("shl", value, const(1, a.bits)), resize(low, a.bits), state.at)
-            else:
-                out = extract(value, 0, 1)
-                high = out if m == "ror" else carry
-                value = op("or", op("shr", value, const(1, a.bits)), op("shl", resize(high, a.bits), const(top, a.bits)), state.at)
-            carry = out
+        bits = a.bits
+        through = m in ("rcl", "rcr")
+        n = masked % (bits + 1 if through else bits)
+        if through and n == 0:
+            # A full rotation through CF restores the value and CF; OF is undefined.
+            state.forget_flags(keep_carry=True)
+            return
+        carry_in = resize(state.carry_value(), bits)
+        # Each form is an OR of shifted copies (positive shifts left), built once so the
+        # expression does not repeat the operand for every bit rotated.
+        parts = {"rol": [(a, n), (a, n - bits)],
+                 "ror": [(a, -n), (a, bits - n)],
+                 "rcl": [(a, n), (carry_in, n - 1), (a, n - bits - 1)],
+                 "rcr": [(a, -n), (carry_in, bits - n), (a, bits + 1 - n)]}[m]
+        value = None
+        for part, shift in parts:
+            if abs(shift) >= bits:
+                continue  # Every bit leaves the operand; op() would mask the count instead.
+            if shift:
+                part = op("shl" if shift > 0 else "shr", part, const(abs(shift), bits), state.at)
+            value = part if value is None else op("or", value, part, state.at)
+        # CF is the last bit rotated out: the result's low bit for ROL/RCL and its high bit for ROR/RCR.
+        out = {"rol": (bits - n) % bits, "ror": (n - 1) % bits, "rcl": bits - n, "rcr": n - 1}[m]
+        carry = extract(a, out, 1)
         state.put(ins, operands[0], value)
         state.forget_flags()
         state.carry = Value(1, carry.term, sources(carry, site=state.at))
         state.event("arithmetic", operation=m, left=a.report(), count=n, result=value.report(),
-                    carryOut=state.carry.report(), modulus=1 << a.bits)
+                    carryOut=state.carry.report(), modulus=1 << bits)
         return
     if m in ("mul", "imul") and len(operands) == 1:
         source = state.get(ins, operands[0], image)
@@ -547,13 +564,13 @@ def ordinary(state, ins, image):
             dividend = join([state.reg({16: "ax", 32: "eax"}[bits]), state.reg({16: "dx", 32: "edx"}[bits])])
         quotient_reg, remainder_reg = {8: ("al", "ah"), 16: ("ax", "dx"), 32: ("eax", "edx")}[bits]
         fault = None
+        if divisor.number == 0:
+            raise StopPath("divide by zero raises interrupt 0; its handler is not modeled")
         if None not in (dividend.number, divisor.number):
             x, y = dividend.number, divisor.number
             if signed:
                 x -= (x >> (2 * bits - 1)) << (2 * bits)
                 y -= (y >> (bits - 1)) << bits
-            if y == 0:
-                raise StopPath("divide by zero raises interrupt 0; its handler is not modeled")
             q = abs(x) // abs(y) * (1 if (x < 0) == (y < 0) else -1)
             r = x - q * y
             if not ((-(1 << (bits - 1)) <= q < 1 << (bits - 1)) if signed else q < 1 << bits):
@@ -586,7 +603,7 @@ def shift_carry(state, m, a, count):
     elif m in ("shl", "sal"):
         state.carry = Value(1, extract(a, a.bits - n, 1).term, sources(a, site=state.at))
     else:
-        state.carry = Value(1, extract(a, min(n, a.bits) - 1, 1).term, sources(a, site=state.at))
+        state.carry = Value(1, extract(a, n - 1, 1).term, sources(a, site=state.at))
 
 
 def string_instruction(ins):

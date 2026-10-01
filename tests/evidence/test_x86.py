@@ -372,6 +372,22 @@ class ReporterTests(unittest.TestCase):
         unknown_divisor = report("f7 f3 c3")
         self.assertEqual(unknown_divisor["paths"][0]["conditionalModels"][0]["assumption"], "no divide error")
 
+    def test_carry_review_regressions(self):
+        # A wide rotate of an unknown value stays a bounded expression.
+        self.assertIsNone(report("c1 c0 08 c3")["paths"][0]["stop"])
+        self.assertIsNone(report("c1 d0 0c c3")["paths"][0]["stop"])
+        # ROL by the operand width keeps the value but still sets CF from its low bit.
+        r = report("f9 b8 00 00 c1 c0 10 72 01 c3 c3")
+        self.assertFalse(events(r, "branch")[0]["taken"])
+        # A known zero divisor stops even when the dividend is unknown.
+        self.assertIn("divide by zero", report("31 db f7 f3 c3")["paths"][0]["stop"])
+        # One unknown carry decides both branches around INC.
+        self.assertEqual(len(report("d1 e8 72 00 43 72 00 c3")["paths"]), 2)
+        self.assertEqual(len(report("39 d8 72 00 43 72 00 c3")["paths"]), 2)
+        # Logic operations clear CF whatever their operands.
+        self.assertEqual(report("ba 05 00 21 d8 83 d2 00 c3")["paths"][0]["registers"]["dx"]["value"], 5)
+        self.assertIn("Operand-size", report("b9 02 00 66 e2 fd c3")["paths"][0]["stop"])
+
     def test_dispatch_normalization_and_rejection(self):
         c = Code().emit("83 e0 7f 83 f8 02").branch("73", "reject").emit("89 c3 d1 e3").label("dispatch").emit("ff 27").label("reject").emit("c3")
         c.label("table").emit("20 00 30 00")

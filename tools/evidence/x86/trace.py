@@ -36,7 +36,7 @@ CONTESTED_REASON = "reached only through a rejected overlapping start"
 def unsupported_transfer(image, ins):
     """Operand-size overrides and flat-model far transfers fall outside the frame model."""
     m = ins.mnemonic
-    return ((0x66 in ins.prefix and (m in ("call", "lcall", "ret", "retf", "jmp", "ljmp") or m.startswith("j")))
+    return ((0x66 in ins.prefix and (m in ("call", "lcall", "ret", "retf", "jmp", "ljmp") or m.startswith(("j", "loop"))))
             or (image.flat and m in ("lcall", "ljmp", "retf")))
 
 
@@ -272,7 +272,7 @@ def trace(image, config):
                 is_string = string_instruction(ins)
                 if (0xf2 in ins.prefix or 0xf3 in ins.prefix) and not is_string:
                     raise StopPath("repeat prefix requires a separate bounded string-operation reading")
-                if 0x66 in ins.prefix and (m in ("call", "lcall", "ret", "retf", "jmp", "ljmp") or m.startswith("j")):
+                if 0x66 in ins.prefix and (m in ("call", "lcall", "ret", "retf", "jmp", "ljmp") or m.startswith(("j", "loop"))):
                     raise StopPath("Operand-size control transfer override is outside the selected frame model")
                 if image.flat and m in ("lcall", "ljmp"):
                     raise StopPath("Far transfer is outside the PE32 flat model")
@@ -474,7 +474,11 @@ def trace(image, config):
                     else:
                         answer, info = predicate(state, m)
                         condition, negated = BRANCH_CONDITIONS.get(m, (m, False))
-                        key = repr((condition, state.flags if state.flags is not None else ("unresolved", state.flag_epoch)))
+                        if condition == "c":
+                            # CF can outlive its producer (INC/DEC, CLC/STC, shifts), so key it by its own value.
+                            key = repr((condition, state.carry_value().term))
+                        else:
+                            key = repr((condition, state.flags if state.flags is not None else ("unresolved", state.flag_epoch)))
                     if answer is None and key in state.assumptions:
                         answer = state.assumptions[key] != negated
                     choices = [answer] if answer is not None else [False, True]
