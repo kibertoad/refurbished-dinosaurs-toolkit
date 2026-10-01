@@ -247,7 +247,7 @@ Rules for every iteration:
 | Phase | Status | Date | Evidence |
 |---|---|---|---|
 | 0 freeze and baseline | done | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
-| 1 pypcode spike | in progress | 2026-10-02 | questions 1 (#52), 2 (#53) and 3 (#54) answered |
+| 1 pypcode spike | in progress | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54) and 4 (#55) answered |
 | 2 semantics seam | not started | | |
 | 3 pypcode backend | not started | | |
 | 4 parity on recorded cases | not started | | |
@@ -325,6 +325,24 @@ Unicorn 2.1.4 and Capstone 5.0.7 on Python 3.14 (Windows). Each answer names its
    bytes Capstone decoded and stops the path when the IMARK length differs from Capstone's size.
    Undefined opcodes such as `ud2` lift as a user operation; the interpreter stops on every user
    operation except `segment`.
+4. **Flags and branch precision: go, with term rules and canonical keys.**
+   (`Question4BranchPrecision`) Each flag is a one-byte register (`CF`, `ZF`, `SF`, `OF`, `PF`,
+   `AF`, `DF`) written by its own p-code op: `cmp` emits `INT_LESS` for CF, `INT_SBORROW` for OF
+   and `INT_EQUAL`/`INT_SLESS` on the difference for ZF and SF. Logic operations `COPY 0` into CF
+   and OF, `clc`/`stc` copy a constant, and `cmc` is `INT_EQUAL CF, 0`. A conditional branch is a
+   `CBRANCH` on a boolean expression over flags (`jl` is `INT_NOTEQUAL OF, SF`; `jg` is
+   `BOOL_AND (BOOL_NEGATE ZF), (INT_EQUAL OF, SF)`). With four term rules the interpreter matches
+   `predicate`: `INT_SUB x, x` is 0 (already in `values.op`), `INT_EQUAL x, x` is 1, `INT_LESS`,
+   `INT_SLESS` and `INT_SBORROW` of `x, x` are 0, and `BOOL_AND`/`BOOL_OR` with a known deciding
+   operand are that operand. The spike resolves every condition after `cmp ax, ax`, `xor ax, ax`
+   and `sub ax, ax` with AX unknown, CF and OF after `test`, `and`, `or` and `xor`, carry after
+   `clc`, `stc` and `cmc`, and concrete comparisons. It leaves `je` after `cmp ax, bx` unresolved.
+   It also resolves `jp`/`jnp` and the flags `inc`/`dec` set, which `predicate` does not; those
+   are extended cases. Two things the interpreter has to supply that p-code does not: assumption
+   keys that make synonymous and complementary branches share one assumption (`jle` and `jg` lift
+   to different expressions, so the key must be the flag producer and condition, as
+   `BRANCH_CONDITIONS` keys it today), and the `branch` event fields (`flagProducer`, `operation`,
+   `left`, `right`), which stay evidence-layer records of the last flag-writing instruction.
 
 ### Groups moved
 
