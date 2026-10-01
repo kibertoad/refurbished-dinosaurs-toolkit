@@ -25,6 +25,11 @@ This repository publishes the shared tooling that clean-room game restorations c
   controls fails when a control is missed.
 - Migrate cleanly. A rename or removal ships without aliases or shims, with a major release label or
   changeset and an entry in [the migration guide](docs/migrating-to-scientific-method.md).
+- No new handwritten instruction semantics in the engine
+  ([ADR 0003](docs/decisions/0003-established-instruction-semantics.md), decision 6). A change may
+  not add a mnemonic, flag rule or value computation to the handwritten backend in
+  `packages/scientific-method-engine/src/scientific_method_engine/x86/`. A reporter that needs one
+  waits for the pypcode backend or adds it there. Provenance and report fields may still change.
 - The reader and engine agree on `PREPARED_PROTOCOL` (`packages/executable-reader/src/report.ts`
   and `scientific_method_engine/__init__.py`). A change to the shape of a prepared config increments
   both in the same PR and releases both packages.
