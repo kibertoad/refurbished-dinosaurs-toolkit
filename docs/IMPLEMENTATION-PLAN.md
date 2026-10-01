@@ -133,3 +133,7 @@ layouts/targets, false boundaries, alias pairs, descriptor tokens, failed contro
 truncation and unresolved pairs. Exit: reporter, bridge, documentation and policy
 gates plus .NET build/tests pass; open upstream PR. Game gaps stay open until
 reviewed adoption and whole source-case acceptance. No original content in Git.
+
+## Target-specific relocated-pointer exclusion accounting
+
+Tooling outcome: distinguish pairs that provably lie outside the declared representation or load image from mappings that remain unresolved. Evidence: the resolver's source-derived image boundaries and checked nonwrapping segmented arithmetic; never caller-supplied exclusions. Acceptance: retain every exclusion, reason and arithmetic, count all results toward the cap, preserve overflow as unresolved, and permit only controlled uncapped zero results with no unresolved mappings to qualify the stated representation. Synthetic controls cover crossing boundaries, out-of-image pairs, loaded-segment overflow, aliases and capped exclusions. No runtime-use or universal-absence claim. Exit: all shared reporter and canonical toolkit checks pass.

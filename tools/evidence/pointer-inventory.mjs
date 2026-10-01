@@ -18,11 +18,27 @@ export function pointerInventory(bytes, config) {
   const controls = config.controls ?? [];
   if (!Array.isArray(controls) || controls.length > 256 || controls.some(n => !Number.isSafeInteger(n)))
     throw new Error('Pointer controls must be at most 256 segment-operand offsets');
-  const exactPair = [], aliasedTarget = [], unresolved = [], inspected = new Map();
+  const exactPair = [], aliasedTarget = [], unresolved = [], excluded = [], inspected = new Map();
   for (const site of segmentOperands(image)) {
     const range = image.ranges.find(r => site - 2 >= r.start && site + 2 <= r.end);
-    if (!range) { unresolved.push({ site, reason: 'preceding offset and segment word do not lie in one source range' }); continue; }
+    if (!range) { excluded.push({ site, reason: 'preceding offset and segment word do not lie in one source range', classification: 'outside declared adjacent-pair representation' }); continue; }
     const offset = bytes.readUInt16LE(site - 2), rawSegment = bytes.readUInt16LE(site);
+    const owner = image.overlays.find(o => o.fixups.has(site));
+    const descriptor = image.relocations.has(site) ? null : owner ? rawSegment >>> 3 : null;
+    const relativeSegment = descriptor === null ? rawSegment : image.descriptors[descriptor].segment;
+    const candidateLoadedSegment = image.loadSegment + relativeSegment;
+    const candidateFileOffset = image.header + relativeSegment * 16 + offset;
+    // A checked nonwrapping address outside the resident image cannot name the
+    // valid query target or any resident trampoline. Keep it as an exclusion,
+    // never as a resolved pointer or as evidence about runtime/computed use.
+    if (candidateLoadedSegment <= 65535 && (candidateFileOffset < image.header || candidateFileOffset >= image.end)) {
+      excluded.push({ site, offsetSite: site - 2, rawSegment, offset, descriptor,
+        loadedSegment: candidateLoadedSegment, candidateFileOffset,
+        residentBounds: { start: image.header, end: image.end }, sourceRange: range.view,
+        reason: 'nonwrapping adjacent pair lies outside the resident load image',
+        classification: 'outside declared file-target domain' });
+      continue;
+    }
     let resolved;
     try { resolved = image.resolveOperand(site, offset); }
     catch (error) { unresolved.push({ site, rawSegment, offset, reason: error.message }); continue; }
@@ -39,14 +55,14 @@ export function pointerInventory(bytes, config) {
     (exact ? exactPair : aliasedTarget).push(row);
   }
   for (const site of controls) if (!inspected.has(site)) throw new Error(`Pointer positive control ${site} missed or unresolved`);
-  const total = exactPair.length + aliasedTarget.length + unresolved.length;
+  const total = exactPair.length + aliasedTarget.length + unresolved.length + excluded.length;
   let remaining = limit;
   const bounded = rows => { const output = rows.slice(0, remaining); remaining -= output.length; return output; };
-  return { target, query, exactPair: bounded(exactPair), aliasedTarget: bounded(aliasedTarget), unresolved: bounded(unresolved),
-    counts: { exactPair: exactPair.length, aliasedTarget: aliasedTarget.length, unresolved: unresolved.length, inspected: inspected.size },
+  return { target, query, exactPair: bounded(exactPair), aliasedTarget: bounded(aliasedTarget), unresolved: bounded(unresolved), excluded: bounded(excluded),
+    counts: { exactPair: exactPair.length, aliasedTarget: aliasedTarget.length, unresolved: unresolved.length, excluded: excluded.length, inspected: inspected.size },
     truncated: total > limit, controls: controls.map(site => ({ site, canonicalTarget: Number(inspected.get(site).canonicalTarget) })),
     formatTables: { loadSegment: image.loadSegment, counts: formatCounts(image) },
-    negativeUsable: controls.length > 0 && total === 0,
+    negativeUsable: controls.length > 0 && exactPair.length + aliasedTarget.length + unresolved.length === 0 && total <= limit,
     searched: 'every declared MZ relocation and FBOV fixup whose preceding offset word lies in the same source range',
     exclusions: ['computed pointers', 'unrelocated pairs', 'runtime pointer use', 'instruction ownership'],
     scope: 'source-declared adjacent word representations only; never proves universal absence' };

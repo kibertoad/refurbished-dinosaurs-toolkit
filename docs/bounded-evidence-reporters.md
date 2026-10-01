@@ -489,3 +489,6 @@ caps matching and unresolved rows together, with full counts and `truncated`.
 missing or unresolved controls fail. A controlled zero result is usable only
 within these representations and only without unresolved/capped rows. Computed
 and unrelocated pointers, instruction ownership and runtime use remain excluded.
+
+
+Pointer reports retain `excluded` rows separately from unresolved mappings. A pair crossing its declared source range is outside the adjacent-pair representation. A nonwrapping address arithmetically outside the resident image cannot name the valid query target or a resident trampoline; its row records the arithmetic and image bounds. Loaded-segment overflow remains unresolved. Exclusions count toward the result cap. Only an uncapped, positively controlled zero inventory without unresolved mappings sets `negativeUsable`; it covers the declared representation alone and never establishes runtime pointer use or universal absence.
