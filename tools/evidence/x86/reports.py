@@ -816,6 +816,22 @@ def owner(image, config):
     conflicts = _cross_entry_overlaps(bodies)
     for o in owners:
         o["contestedBy"] = conflicts.get(o["entry"], [])
+    checked = []
+    for entry, b in bodies.items():
+        region = image.region(entry)
+        checked.append({"entry": entry, "span": b["span"], "ranges": b["intervals"],
+                        "complete": b["complete"], "gaps": b["gaps"],
+                        "assumedContinuations": b["assumedContinuations"],
+                        "entryEvidence": region.get("evidence") if region else None,
+                        "overlayExports": [e for e in config.get("overlayExports", []) if e["entry"] == entry]})
+    for o in owners:
+        b = bodies[o["entry"]]
+        o["ranges"] = b["intervals"]
+        o["assumedContinuations"] = b["assumedContinuations"]
+        o["overlayExports"] = [e for e in config.get("overlayExports", []) if e["entry"] == o["entry"]]
+        o["boundaryCheck"] = {"performed": True, "instructionStartReached": True,
+                              "joinableWithinModel": b["complete"] and not o["contestedBy"],
+                              "meaning": "entry-path instruction under complete bounded traversal and no cross-entry overlap; not player reachability"}
     contested = [o["entry"] for o in owners if o["contestedBy"]]
     if contested:
         verdict = "unresolved: an owner's body overlaps instructions another checked entry decodes"
@@ -825,7 +841,7 @@ def owner(image, config):
         verdict = "unresolved: no checked body reaches this site, but some entries were unchecked or their bodies stopped at a gap"
     else:
         verdict = "unowned: no established entry reaches this site"
-    result = {"site": site, "owners": owners, "insideOtherInstructions": inside, "incompleteEntries": incomplete, "gaps": gaps,
+    result = {"site": site, "checkedEntries": checked, "owners": owners, "insideOtherInstructions": inside, "incompleteEntries": incomplete, "gaps": gaps,
               "contestedOwners": contested, "shared": len(owners) > 1, "verdict": verdict,
               "interpretation": "ownership is reachability from established entries without entering callees; a return or "
                                 "prologue between an entry and the site by address is a warning, never a boundary"}
@@ -836,6 +852,14 @@ def owner(image, config):
             "start": start, "evidence": claim["evidence"], "established": start in established,
             "agrees": start in established and bool(reaches), "contested": start in contested,
             "reachesSite": reaches,
+            "boundaryCheck": {"performed": hypothesis is not None, "instructionStartReached": reaches,
+                              "joinableWithinModel": bool(hypothesis and hypothesis["complete"] and reaches
+                                                          and start in established and not conflicts.get(start))},
+            "span": None if hypothesis is None else hypothesis["span"],
+            "ranges": [] if hypothesis is None else hypothesis["intervals"],
+            "complete": False if hypothesis is None else hypothesis["complete"],
+            "gaps": [] if hypothesis is None else hypothesis["gaps"],
+            "assumedContinuations": [] if hypothesis is None else hypothesis["assumedContinuations"],
             "exitsBeforeSiteByAddress": [] if hypothesis is None else [e for e in hypothesis["exits"] if start <= e["site"] < site],
             "interpretation": "disagreement means the analyzer's function and the established entries assign this site differently"}
     return result

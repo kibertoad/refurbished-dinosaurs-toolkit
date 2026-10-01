@@ -17,6 +17,7 @@ function readVerifiedSource(config, base) {
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   if (sha256 !== config.sha256) throw new Error("Source SHA-256 differs from supplied baseline");
   // Format-table counts are derived from MZ/FBOV source tables only; a supplied copy would read as loader output.
+  if (config.overlayExports !== undefined) throw new Error("overlayExports is source-derived and cannot be supplied");
   if (config.formatTables !== undefined) throw new Error("formatTables is derived by the MZ loader and cannot be supplied");
   return { source, bytes };
 }
@@ -63,7 +64,10 @@ export function prepare(config, base) {
       region.container = { view: container.view, start: container.start, end: container.end };
     }
   }
-  return { ...config, source, relocations, formatTables };
+  const overlayExports = image.overlays.flatMap(o => o.trampolines.map(t => ({
+    descriptor: o.descriptor, trampoline: t.site, entry: t.target,
+    codeRange: { start: o.start, end: o.end }, evidence: 'source FBOV descriptor/trampoline' })));
+  return { ...config, source, relocations, formatTables, overlayExports };
 }
 
 const MAX_REPORT_MIB = 32;

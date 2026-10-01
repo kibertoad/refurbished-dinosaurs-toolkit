@@ -137,3 +137,16 @@ reviewed adoption and whole source-case acceptance. No original content in Git.
 ## Target-specific relocated-pointer exclusion accounting
 
 Tooling outcome: distinguish pairs that provably lie outside the declared representation or load image from mappings that remain unresolved. Evidence: the resolver's source-derived image boundaries and checked nonwrapping segmented arithmetic; never caller-supplied exclusions. Acceptance: retain every exclusion, reason and arithmetic, count all results toward the cap, preserve overflow as unresolved, and permit only controlled uncapped zero results with no unresolved mappings to qualify the stated representation. Synthetic controls cover crossing boundaries, out-of-image pairs, loaded-segment overflow, aliases and capped exclusions. No runtime-use or universal-absence claim. Exit: all shared reporter and canonical toolkit checks pass.
+
+## Bounded ownership ranges and export provenance
+
+Tooling outcome: owner reports show every checked entry's traversed ranges,
+source-derived overlay exports, analyzer hypothesis ranges and an explicit
+joinable boundary verdict. Evidence: an adjacent setup return and dispatched
+handler can disagree with an analyzer listing. Acceptance: exports derive only
+from hash-guarded MZ/FBOV tables; caller-supplied export metadata is rejected.
+Ranges are reached bytes, never start plus body size. Incomplete or contested
+owners cannot be joined. Synthetic adjacent-entry, gap, overlap and export
+controls plus configured source acceptance prove the fields. No code bytes,
+original content or game claims enter Git. Exit: reporter, policy, build and
+.NET gates pass and a reviewable shared PR is opened.
