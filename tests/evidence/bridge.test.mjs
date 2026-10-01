@@ -158,4 +158,6 @@ test("format controls reject tables whose counts differ before any query", t => 
   assert.throws(() => prepare({ ...config, formatControls: { fixups: 2 } }, dir), /fixups: expected 2, source tables yield 1/);
   assert.throws(() => prepare({ ...config, formatControls: { segments: 1 } }, dir), /Unknown format control/);
   assert.throws(() => prepare({ ...config, targetSelector: { descriptor: 0, trampoline: 288 } }, dir), /resident/);
+  assert.throws(() => prepare({ ...config, sourceKind: "synthetic-raw", formatControls: { fixups: 1 } }, dir), /only to mz sources/);
+  assert.throws(() => prepare({ ...config, formatTables: { counts: {} } }, dir), /cannot be supplied/);
 });

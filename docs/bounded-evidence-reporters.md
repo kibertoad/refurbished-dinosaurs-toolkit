@@ -349,14 +349,18 @@ is the file offset the transfer reaches, through the trampoline when there is
 one, and `target.citation` is how the standard cites it: `segment:offset` for
 resident code and `+0x` with the file offset for overlay code, with the overlay's
 declared analysis view beside it. A far word nothing relocates gets
-`relocated: false` and no target; its raw words are not a loaded address.
+`relocated: false` and no target; its raw words are not a loaded address. A
+relocated word whose loaded address the source loader could not resolve keeps
+`targetError` and also gets no target. When the entry walk stops at its
+instruction limit, `walkComplete` is false, the limit gap is listed and an
+unseen boundary says so.
 
 An optional `query.analyzerAddress` (`segment`, `offset`, `evidence`) records
 the address an analyzer shows for the same transfer. The report lists which
 derived identities it equals (`raw operand`, `loaded address`, `canonical
 target`) and sets `disagrees` when it equals none. One equal only to the raw
 operand names unrelocated bytes. The analyzer address never replaces the
-derived chain.
+derived chain. It needs the segmented16 model.
 
 ## Format-table controls
 
@@ -366,10 +370,12 @@ the tables. Every report carries `formatTables`, the load segment and the counts
 the tables yield: `relocations`, `descriptors`, `overlays`, `fixups` and
 `trampolines`. An optional `formatControls` object names the counts a build is
 known to have, and any difference fails the query before it runs, so a misread
-table cannot quietly shrink a search. A `targetSelector` that names a resident
+table cannot quietly shrink a search. Other source kinds reject
+`formatControls`, and no config may supply `formatTables` itself. A `targetSelector` that names a resident
 descriptor fails with that descriptor's flags. The lightweight `incomingCalls`
 inventory lists a far-call candidate whose instruction would leave every mapped
-range under `unresolved` instead of skipping it.
+range under `unresolved` instead of skipping it, and gives no negative result
+while any candidate is unresolved.
 
 ## Function bounds and site ownership
 
