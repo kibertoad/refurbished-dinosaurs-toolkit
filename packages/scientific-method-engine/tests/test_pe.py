@@ -18,7 +18,7 @@ ENGINE_ENV = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(SRC)
 READER = SRC.parents[1] / "executable-reader" / "bin" / "scientific-method.ts"
 from scientific_method_engine.x86.image import Image
 from scientific_method_engine.x86.pe import pe32
-from differential import accepted, run_report
+from scientific_method_engine.x86.reports import run_report
 
 BASE, CODE_VA, DATA_VA = 0x400000, 0x401000, 0x402000
 CODE_RAW, DATA_RAW = 0x200, 0x400
@@ -80,8 +80,7 @@ def events(result, kind):
 class PEReporterTests(unittest.TestCase):
     def test_cmps_with_one_address_for_both_operands(self):
         # ESI = EDI: both CMPSB loads match both operands, and each operand takes one of them.
-        with accepted('extended', 'the handwritten backend stops on CMPS'):
-            r = report('fc be 00 20 40 00 bf 00 20 40 00 c6 06 61 a6 74 01 c3 c3')
+        r = report('fc be 00 20 40 00 bf 00 20 40 00 c6 06 61 a6 74 01 c3 c3')
         path, = r['paths']
         self.assertTrue(path['returned'], path['stop'])
         self.assertEqual((path['registers']['esi']['value'], path['registers']['edi']['value']), (DATA_VA + 1,) * 2)

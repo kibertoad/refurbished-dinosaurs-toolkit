@@ -5,7 +5,6 @@ from oracle import STACK, check, configuration, run_report
 
 DATA = {"ds": 0x3000, "es": 0x4000}
 SAME = {"ds": 0x4000, "es": 0x4000}
-STRING_COMPARE = "the handwritten backend stops on CMPS and SCAS"
 
 
 class DataMovement(unittest.TestCase):
@@ -40,9 +39,9 @@ class Stack(unittest.TestCase):
 
 
 class Compare(unittest.TestCase):
-    def branch(self, setup, jcc, extended=None):
+    def branch(self, setup, jcc):
         # cx = 2 when the branch is taken, 1 when not.
-        check(self, setup + jcc + "04 b90100 c3 b90200 c3", resolved=("cx",), extended=extended)
+        check(self, setup + jcc + "04 b90100 c3 b90200 c3", resolved=("cx",))
 
     def test_signed_and_unsigned_conditions(self):
         for setup in ("b80300 bb0500 39d8", "b8fdff bb0500 39d8", "b80500 bb0500 39d8", "b80080 bbff7f 39d8"):
@@ -54,13 +53,29 @@ class Compare(unittest.TestCase):
         for setup in ("b80f00 a80f", "b80300 3d0300", "b80100 3d0300"):
             for jcc in ("74", "75", "7a", "7b", "72", "70"):
                 with self.subTest(setup=setup, jcc=jcc):
-                    # The handwritten predicate never resolves PF; p-code computes it.
-                    self.branch(setup, jcc, extended="parity flag from p-code" if jcc in ("7a", "7b") else None)
+                    self.branch(setup, jcc)
 
     def test_same_register_compare_resolves_with_unknown_input(self):
         for jcc in ("74", "72", "7c", "7f", "70"):
             with self.subTest(jcc=jcc):
                 check(self, "39c0" + jcc + "04 b90100 c3 b90200 c3", registers={"ax": 0x1234}, resolved=("cx",))
+
+    def test_branches_after_a_comparison_name_how_they_were_decided(self):
+        # cmp ax, 3 with AX = 3: p-code decides JE and JP, and the event keeps the comparison record.
+        for jcc in ("74", "7a"):
+            with self.subTest(jcc=jcc):
+                result = check(self, "b80300 3d0300" + jcc + "04 b90100 c3 b90200 c3", resolved=("cx",))
+                branch, = [e for e in result["paths"][0]["events"] if e["kind"] == "branch"]
+                self.assertEqual((branch["operation"], branch["decidedBy"]), ("cmp", "p-code flags"))
+                self.assertNotIn("reason", branch)
+        # With AX unknown the comparison decides nothing: both arms run and each says why.
+        data = bytes.fromhex("3d0300 7401 90 c3".replace(" ", ""))
+        result = run_report(data, configuration(data, dict(STACK)), "trace")
+        branches = [e for path in result["paths"] for e in path["events"] if e["kind"] == "branch"]
+        self.assertEqual(sorted(e["taken"] for e in branches), [False, True])
+        for e in branches:
+            self.assertEqual((e["operation"], e["reason"]), ("cmp", "flags unresolved"))
+            self.assertNotIn("decidedBy", e)
 
 
 class ArithmeticAndLogic(unittest.TestCase):
@@ -69,18 +84,17 @@ class ArithmeticAndLogic(unittest.TestCase):
               resolved=("ax", "bx", "cx", "dx"))
 
     def test_counted_loop_exits_on_decrement_flags(self):
-        # inc ax; dec cx; jnz back: the handwritten backend forgets DEC's flags and splits.
-        result = check(self, "b90300 b80000 40 49 75fc c3", resolved=("ax", "cx"),
-                       extended="DEC flags from p-code resolve the loop exit")
+        # inc ax; dec cx; jnz back: DEC's flags decide each exit, so the loop runs as one path.
+        result = check(self, "b90300 b80000 40 49 75fc c3", resolved=("ax", "cx"))
         branches = [e for e in result["paths"][0]["events"] if e["kind"] == "branch"]
         self.assertEqual([e["taken"] for e in branches], [True, True, False])
-        # A branch p-code decided does not keep the handwritten backend's reason for not deciding it.
+        # No comparison record exists, so the branch says p-code flags decided it.
         for e in branches:
             self.assertNotIn("reason", e)
             self.assertEqual((e["decidedBy"], e["flagProducer"]), ("p-code flags", 7))
 
     def test_undecided_branch_keeps_the_reason(self):
-        # inc ax; jnz: AX is unknown, so neither backend decides the branch and both arms run.
+        # inc ax; jnz: AX is unknown, so the engine does not decide the branch and both arms run.
         data = bytes.fromhex("40 7501 90 c3".replace(" ", ""))
         result = run_report(data, configuration(data, dict(STACK)), "trace")
         branches = [e for path in result["paths"] for e in path["events"] if e["kind"] == "branch"]
@@ -129,8 +143,7 @@ class ShiftsAndRotates(unittest.TestCase):
     def test_double_word_shift_from_a_zero_high_half(self):
         # DX starts at zero; RCL carries AX's unknown top bits into it. The second RCL shifts out
         # DX's bit 15, which is still zero; ADC moves that carry into BX for Unicorn to check.
-        result = check(self, "b90100 31d2 d1e0 d1d2 d1e0 d1d2 bb0000 11db c3", resolved=("cx", "bx"),
-                       extended="a rotate's carry out folded from the operand's known bits")
+        result = check(self, "b90100 31d2 d1e0 d1d2 d1e0 d1d2 bb0000 11db c3", resolved=("cx", "bx"))
         self.assertEqual(result["paths"][0]["registers"]["dx"]["expression"][0], "or")
 
     def test_memory_operands(self):
@@ -194,16 +207,16 @@ class StringOperations(unittest.TestCase):
 
     def test_repne_scas_finds_a_terminator(self):
         check(self, "fc bf1000 c7056162 c6450200 b000 b9ffff f2ae c3", registers=SAME,
-              resolved=("cx", "di"), extended=STRING_COMPARE)
+              resolved=("cx", "di"))
 
     def test_repe_cmps_stops_at_the_first_difference(self):
         # SI's byte is below DI's at the difference, so JB takes the branch: BX = 2.
         check(self, "fc be1000 bf2000 c7046162 c6440263 c7056162 c6450264 b90500 f3a6 7204 bb0100 c3 bb0200 c3",
-              registers=SAME, resolved=("cx", "si", "di", "bx"), extended=STRING_COMPARE)
+              registers=SAME, resolved=("cx", "si", "di", "bx"))
 
     def test_repe_cmps_runs_out_of_count_and_single_forms(self):
         check(self, "fc be1000 bf2000 c7046162 c7056162 b90200 f3a6 be1000 bf2000 a7 b86162 bf2000 af 7504 bb0100 c3 bb0200 c3",
-              registers=SAME, resolved=("cx", "si", "di", "bx"), extended=STRING_COMPARE)
+              registers=SAME, resolved=("cx", "si", "di", "bx"))
 
     def test_cmps_with_equal_source_and_destination_offsets(self):
         # SI = DI = 0x10. In different segments 'a' < 'b' takes JB (BX = 2); in one segment the second
@@ -211,7 +224,7 @@ class StringOperations(unittest.TestCase):
         code = "fc be1000 bf1000 c60461 26c60562 a6 7204 bb0100 c3 bb0200 c3"
         for registers in (DATA, SAME):
             with self.subTest(registers=registers):
-                check(self, code, registers=registers, resolved=("si", "di", "bx"), extended=STRING_COMPARE)
+                check(self, code, registers=registers, resolved=("si", "di", "bx"))
 
     def test_backward_steps(self):
         check(self, "fd bf0a00 b0aa b90400 f3aa be0700 ac c3", registers={**DATA, "ds": 0x4000},

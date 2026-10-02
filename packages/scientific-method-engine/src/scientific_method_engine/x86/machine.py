@@ -1,8 +1,7 @@
-"""Path state for the evidence layer. Instruction semantics come from the backend a State holds (semantics.py)."""
+"""Path state for the evidence layer. Instruction semantics come from pypcode (pcode_backend.py)."""
 from copy import deepcopy
 from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
 from .values import Value, const, unknown, op, extract, join, resize, sources, address_parts, producers
-from . import semantics
 
 REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "cs", "ds", "es", "ss", "fs", "gs")
 ALIASES = {}
@@ -39,7 +38,10 @@ def alias(name):
 class State:
     def __init__(self, entry, image, config):
         self.bits, self.flat, self.mask = image.bits, image.flat, image.mask
-        self.semantics = semantics.current()
+        # Imported here: the backend imports this module, so a module-level import would make the
+        # import order matter.
+        from .pcode_backend import BACKEND
+        self.semantics = BACKEND
         self.sp, self.bp = ("esp", "ebp") if self.flat else ("sp", "bp")
         self.at = entry
         self.regs = {r: unknown("initial:" + r, ALIASES[r][2]) for r in REGISTERS}
@@ -64,7 +66,8 @@ class State:
         self.guards = []
         self.assumptions = {}
         self.flags = None
-        # Arithmetic flags as values when the last flag-writing instruction ran on p-code; None otherwise.
+        # Arithmetic flags as values from the last flag-writing instruction's p-code; None when no
+        # instruction computed them yet or the last one forgot them.
         self.flag_values = None
         # CF when an instruction sets it without leaving a comparable flag producer; None defers to flags.
         self.carry = None
@@ -123,9 +126,10 @@ class State:
     def carry_value(self):
         """CF as a one-bit value: from the last comparable flag producer, an explicit carry, or unknown."""
         if self.flags is not None:
-            answer, _ = self.semantics.condition(self, "jb")
-            if answer is not None:
-                return const(int(answer), 1, self.flags[3])
+            if self.flag_values is not None and "CF" in self.flag_values:
+                answer, _ = self.semantics.condition(self, "jb")
+                if answer is not None:
+                    return const(int(answer), 1, self.flags[3])
             # Name the carry by its producer's operands, so every reading of one comparison shares an assumption.
             a, b, operation, site = self.flags
             return unknown(f"carry:{site}:{(operation, a.term, b.term)!r}", 1, site)
@@ -367,11 +371,10 @@ def string_effect(state, ins, count, remaining, charge=None):
     # any segment override.
     source_name = (segment_register(ins, ins.operands[1].mem) if operation in ("movs", "lods") else
                    segment_register(ins, ins.operands[0].mem) if operation == "cmps" else None)
-    delta = -width if state.direction_flag.number else width
     counter = "ecx" if state.flat else "cx"
     if not compare or not repeated(ins):
         for _ in range(count.number):
-            state.semantics.string_iteration(state, ins, operation, width, source_name, delta)
+            state.semantics.string_iteration(state, ins, operation, width, source_name)
         if repeated(ins):
             state.setreg(counter, const(0, state.bits, state.at), state.at)
         return count.number
@@ -381,7 +384,7 @@ def string_effect(state, ins, count, remaining, charge=None):
             raise StopPath("String iteration budget exhausted; remaining effects unresolved")
         if charge is not None:
             charge(1)
-        holds = state.semantics.string_iteration(state, ins, operation, width, source_name, delta)
+        holds = state.semantics.string_iteration(state, ins, operation, width, source_name)
         iterations += 1
         outcomes.append(holds)
         if iterations == count.number:
@@ -398,7 +401,3 @@ def string_effect(state, ins, count, remaining, charge=None):
     state.event("string-compare-exit", iterations=iterations, exit=reason, counter=state.reg(counter).report())
     return iterations
 
-
-# The handwritten backend registers itself as the default; it imports names defined above.
-from . import handwritten  # noqa: E402,F401
-from . import pcode_backend  # noqa: E402,F401

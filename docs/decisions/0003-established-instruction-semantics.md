@@ -264,7 +264,7 @@ Rules for every iteration:
 | 2 semantics seam | done | 2026-10-02 | #62; see [Semantics seam](#semantics-seam) |
 | 3 pypcode backend | done | 2026-10-02 | #64; see [Groups moved](#groups-moved) |
 | 4 parity on recorded cases | done | 2026-10-02 | #65; see [Parity on recorded cases](#parity-on-recorded-cases) |
-| 5 cutover | not started | | |
+| 5 cutover | done | 2026-10-02 | #66; see [Cutover](#cutover) |
 | 6 Ghidra callee cross-check | not started | | |
 
 ### Handwritten baseline
@@ -510,6 +510,42 @@ Each listed fix has a synthetic oracle test in `test_oracle.py`. The synthetic d
 them: 479 identical, 19 extended, 0 stricter, 0 disagreement. The extended cases are the ones listed
 under phase 3 and `test_oracle.ShiftsAndRotates.test_double_word_shift_from_a_zero_high_half`,
 where the second RCL's carry out folds to zero from DX's known top bit.
+
+### Cutover
+
+Done 2026-10-02.
+
+1. `x86/handwritten.py` (`ordinary`, `predicate`, `shift_carry`, `CARRY_BRANCHES`,
+   `CLEARED_BY_LOGIC`, the string iteration body) and `x86/semantics.py` (the backend registry and
+   `selected`) are deleted. Every `State` uses `pcode_backend.BACKEND`. A mnemonic without a handler
+   stops the path with `Unsupported instruction semantics`, as before.
+   - Branch conditions come from p-code alone. The `branch` event fields come from the evidence
+     layer's flag-producer record: `flagProducer`, `operation`, `left` and `right` after a
+     comparison; `flag` and `carry` for a CF-only branch on a carry the evidence layer tracks; and
+     `flagProducer` and `flagGeneration` after a producer with no comparable record.
+   - Every decided branch carries `decidedBy: "p-code flags"`, and every undecided one a `reason`
+     (`flag producer unresolved`, `carry unresolved` or `flags unresolved`). In 0.7.0
+     `decidedBy` marked a branch the handwritten predicate left open, so a branch after a
+     comparison it decided had neither field. That rule cannot survive the cutover: telling which
+     branches a comparison record decides needs the handwritten flag rules this phase deletes.
+     Marking every p-code decision keeps `decidedBy` on each event that had it in 0.7.0 and adds it
+     to the rest, and the new `flags unresolved` reason gives an undecided branch after a
+     comparison the reason it lacked.
+   - `BRANCH_CONDITIONS` stays in `machine.py`. It is the assumption key table spike answer 4
+     called for (synonymous and complementary branches share one assumption), and `result_flow`
+     uses it. It computes no flag.
+2. `tests/differential.py` and `tests/test_differential.py` are deleted. The test modules call the
+   engine's `run_report`, and `tests/oracle.py` keeps the Unicorn oracle cases on the one backend.
+3. Reports name their semantics in a new header field, `instructionSemantics`, beside `decoder`.
+   The reporter guide documents it and `AGENTS.md` states the rule that replaces decision 6. The
+   header names the Capstone and pypcode versions the engine loaded. Branch events gain
+   `decidedBy` and `reason` where they lacked them; no event loses a field, so the migration guide
+   has no entry for this phase.
+4. ADR 0002's open item is marked resolved.
+
+The release label is `release:minor`: the header gains a field, and no supported import
+(`x86.pe.pe32`, `x86.image.read_source`) changes. `x86.handwritten` and `x86.semantics` shipped in
+0.7.0 as internal modules, which the package README excludes from the supported imports.
 
 ### Blockers
 

@@ -196,7 +196,8 @@ SLEIGH specification for x86, lifted to p-code by pypcode and evaluated over the
 terms ([ADR 0003](decisions/0003-established-instruction-semantics.md)). Segment attribution,
 memory accesses, producers and every control transfer stay with the engine. A p-code memory access
 that does not match the decoded operand, an unsupported p-code operation and a decode length that
-differs from Capstone's stop the path.
+differs from Capstone's stop the path. Every report names both in `decoder` and
+`instructionSemantics`.
 
 The decoder supports 16-bit addressing and a bounded subset of ordinary integer
 operations: MOV/MOVZX/MOVSX, XCHG, low-result two/three-operand IMUL (flags unresolved),
@@ -206,14 +207,15 @@ INC/DEC and effective-size sign extension. It follows direct near/far
 calls, jumps, common conditional branches, JCXZ, the LOOP family and balanced
 returns. Unsupported instructions, repeat prefixes, 32-bit control transfers,
 indirect targets, hardware accesses and recursion/loop limits stop the affected
-path. A branch the comparable producer cannot decide (after INC/DEC, shifts,
-rotates or multiplies, PF for JP/JNP, or a comparison with unknown operands) is
-decided from the flags p-code computed when they are known. Its branch event then
-carries `decidedBy: "p-code flags"` and has no `reason`. After a producer with no
-comparable record it carries the producer's `flagProducer` site and
-`flagGeneration`, without `operation`, `left` and `right`; after a comparable
-producer it keeps that producer's `operation`, `left` and `right`. Unknown branch
-conditions are explored both ways.
+path. Branch conditions are decided from the flags p-code computed. A decided
+branch event carries `decidedBy: "p-code flags"` and has no `reason`. An undecided
+one carries a `reason`: `flag producer unresolved`, `carry unresolved` for a
+CF-only branch on an unknown carry, or `flags unresolved` when the flags the
+condition reads are unknown. After a comparable producer (CMP, TEST, CMPS, SCAS,
+ADD, SUB, NEG or logic) the event keeps its `flagProducer`, `operation`, `left` and `right`. After a
+producer with no comparable record (INC/DEC, shifts, rotates, multiplies) it
+carries the producer's `flagProducer` site and `flagGeneration` instead. Unknown
+branch conditions are explored both ways.
 
 CF is tracked on its own where an instruction sets it without leaving a
 comparable producer. Shifts with a known count carry the last bit shifted out,

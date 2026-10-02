@@ -3,10 +3,16 @@ import json
 import sys
 from pathlib import Path
 
+import capstone
+import pypcode
+
 from . import PREPARED_PROTOCOL
 
 CONFIG_LIMIT = 1024 * 1024
 PREPARED_CONFIG_LIMIT = 16 * 1024 * 1024
+# The header names the decoder and instruction semantics that actually ran, not the pins in pyproject.toml.
+DECODER = "capstone " + capstone.__version__
+INSTRUCTION_SEMANTICS = f"pypcode {pypcode.__version__} (Ghidra SLEIGH x86)"
 USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bounds|owner|callees|trace|uses|arguments|"
          "effects|returns|memory|incoming|call-order|guards|allocation|dispatch> <config.json|->\n"
          "effects includes ordered path writes/calls and local restoration witnesses; transactionality remains unestablished.\n"
@@ -60,7 +66,8 @@ def main(argv):
         raise ValueError("preparedProtocol is set by the reader and cannot be supplied")
     data, identity = read_source(config, base)
     result = run_report(data, config, command)
-    print(json.dumps({"schema": "bounded-x86-v1", "decoder": "capstone 5.0.7", "sourceIdentity": identity,
+    print(json.dumps({"schema": "bounded-x86-v1", "decoder": DECODER,
+                      "instructionSemantics": INSTRUCTION_SEMANTICS, "sourceIdentity": identity,
                       "status": "Conditional static report; never promotes an evidence entry", **result}, indent=2))
 
 
