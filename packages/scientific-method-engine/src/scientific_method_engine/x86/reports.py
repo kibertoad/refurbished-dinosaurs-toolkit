@@ -1088,9 +1088,11 @@ def _ghidra_cross_check(export, nodes, outgoing, omitted):
         for g in theirs:
             if g["site"] is not None and _ghidra_key(g) in read:
                 continue
-            if g["site"] in interrupts and g["target"] is None and g["targetAddress"] is None:
+            if g["site"] in interrupts and _ghidra_key(g)[1] is None:
+                # Ghidra ends the function at a terminator flow (INT1, INT3); the engine assumed the interrupt returns.
                 rows.append({"caller": caller, "site": g["site"], "target": None, "siteAddress": g["siteAddress"],
-                             "ghidraFlow": g["flow"], "result": "interrupt", "engineEdge": None})
+                             "targetAddress": None, "ghidraFlow": g["flow"], "result": "interrupt", "engineEdge": None,
+                             "ghidraFallsThrough": "TERMINATOR" not in g["flow"]})
                 continue
             # Ghidra's edge is evidence the engine did not check; it never becomes an engine edge.
             rows.append({"caller": caller, "site": g["site"], "target": g["target"], "siteAddress": g["siteAddress"],
@@ -1104,14 +1106,15 @@ def _ghidra_cross_check(export, nodes, outgoing, omitted):
     # A site agrees only when every edge either analysis read there agrees.
     disputed = {r["site"] for r in rows if r["result"] != "agreement"}
     return {"comparedCallers": compared, "edges": rows, "counts": counts, "notCompared": not_compared,
-            "agreed": not counts["engineOnly"] and not counts["ghidraOnly"] and not any(not_compared.values()),
+            "agreed": (not counts["engineOnly"] and not counts["ghidraOnly"] and not any(not_compared.values())
+                       and all(r["ghidraFallsThrough"] for r in rows if r["result"] == "interrupt")),
             "agreementSites": {r["site"] for r in rows if r["result"] == "agreement"} - disputed,
             "interpretation": "Edges of each caller that both the engine and the Ghidra export read, matched by site and target "
                               "file offset; an unresolved call matches an unresolved call at its site, and a Ghidra target without a file offset "
                               "matches no engine edge. An interrupt row is Ghidra's targetless call at an instruction the engine read as an "
-                              "interrupt and assumed to return; it does not count against agreed. A ghidraOnly edge is Ghidra's claim: the "
-                              "engine did not check it and never adds it to its graph. Agreement means both analyses read the edge, not that "
-                              "it executes."}
+                              "interrupt and assumed to return; it counts against agreed only when Ghidra's flow ends the function there. "
+                              "A ghidraOnly edge is Ghidra's claim: the engine did not check it and never adds it to its graph. Agreement "
+                              "means both analyses read the edge, not that it executes."}
 
 
 # These branches test CX/ECX (LOOPE/LOOPNE also ZF), so an adjacent CMP/TEST never describes their predicate.

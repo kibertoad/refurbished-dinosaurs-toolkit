@@ -615,6 +615,7 @@ test("the Ghidra cross-check reports an interrupt Ghidra lifts to a call as an i
     ],
   );
   assert.equal(check.counts.interrupt, 1);
+  assert.equal(check.edges[1].ghidraFallsThrough, true);
   assert.equal(check.agreed, true);
 });
 

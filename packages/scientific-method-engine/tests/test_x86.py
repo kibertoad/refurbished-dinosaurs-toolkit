@@ -437,33 +437,55 @@ class GhidraCrossCheckTests(unittest.TestCase):
             run_report(data, cfg, "callees")
 
     def test_interrupts_ghidra_lifts_to_targetless_calls_do_not_break_agreement(self):
-        # int 21h; into; int3; int1; call 10; ret; ret. Ghidra's SLEIGH lifts each interrupt to a computed call
-        # with no target; the engine assumes each returns to the next instruction and has no edge there.
-        data = bytes.fromhex("cd 21 ce cc f1 e8 01 00 c3 c3")
-        interrupts = [(0, None, "COMPUTED_CALL"), (2, None, "CONDITIONAL_COMPUTED_CALL"), (3, None, "COMPUTED_CALL_TERMINATOR"),
-                      (4, None, "COMPUTED_CALL_TERMINATOR")]
-        cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: interrupts + [(5, 9, "UNCONDITIONAL_CALL")], 9: []}),
-                            controls={"ghidraAgreementSites": [5]})
-        cfg["regions"][0]["entries"] = [0, 9]
+        # int 21h; into; call 8; ret; ret. Ghidra's SLEIGH lifts each interrupt to a computed call with no
+        # target; the engine assumes each returns to the next instruction and has no edge there.
+        data = bytes.fromhex("cd 21 ce e8 01 00 c3 c3")
+        edges = [(0, None, "COMPUTED_CALL"), (2, None, "CONDITIONAL_COMPUTED_CALL"), (3, 7, "UNCONDITIONAL_CALL")]
+        cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: edges, 7: []}), controls={"ghidraAgreementSites": [3]})
+        cfg["regions"][0]["entries"] = [0, 7]
         r = run_report(data, cfg, "callees")
         check = r["ghidraCrossCheck"]
         self.assertTrue(check["agreed"])
-        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 4})
-        self.assertEqual(sorted(e["site"] for e in check["edges"] if e["result"] == "interrupt"), [0, 2, 3, 4])
-        self.assertEqual([e["site"] for e in r["edges"]], [5])
+        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 2})
+        rows = [e for e in check["edges"] if e["result"] == "interrupt"]
+        self.assertEqual([(e["site"], e["ghidraFallsThrough"]) for e in rows], [(0, True), (2, True)])
+        self.assertEqual([e["site"] for e in r["edges"]], [3])
         # An interrupt site is never an agreement site.
         cfg["controls"] = {"ghidraAgreementSites": [0]}
         with self.assertRaisesRegex(ValueError, "positive control missed: ghidraAgreementSites"):
             run_report(data, cfg, "callees")
 
-    def test_a_ghidra_target_at_an_interrupt_or_a_targetless_call_elsewhere_stays_ghidra_only(self):
-        # int 21h; nop; call 6... Ghidra resolves the interrupt to an address, and claims a call at the nop.
-        data = bytes.fromhex("cd 21 90 e8 00 00 c3")
-        export = ghidra_export(data, {0: [(0, 6, "COMPUTED_CALL"), (2, None, "COMPUTED_CALL"), (3, 6, "UNCONDITIONAL_CALL")], 6: []})
-        cfg = configuration(data, ghidraCallEdges=export)
-        cfg["regions"][0]["entries"] = [0, 6]
+    def test_an_interrupt_ghidra_ends_the_function_at_leaves_the_graphs_disagreeing(self):
+        # int3; call 5; ret; ret, and the same with int1. Ghidra ends the function at the interrupt, so its export
+        # stops there, while the engine assumes the interrupt returns and reads the call after it.
+        for opcode in ("cc", "f1"):
+            with self.subTest(opcode=opcode):
+                data = bytes.fromhex(opcode + " e8 01 00 c3 c3")
+                cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: [(0, None, "COMPUTED_CALL_TERMINATOR")], 5: []}))
+                cfg["regions"][0]["entries"] = [0, 5]
+                check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
+                self.assertEqual(sorted((e["site"], e["result"]) for e in check["edges"]), [(0, "interrupt"), (1, "engineOnly")])
+                self.assertFalse(next(e for e in check["edges"] if e["result"] == "interrupt")["ghidraFallsThrough"])
+                self.assertFalse(check["agreed"])
+        # With nothing after it, the terminator alone still keeps agreed false: the analyses disagree on the extent.
+        data = bytes.fromhex("cc c3")
+        cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: [(0, None, "COMPUTED_CALL_TERMINATOR")]}))
         check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
-        self.assertEqual(sorted((e["site"], e["result"]) for e in check["edges"]), [(0, "ghidraOnly"), (2, "ghidraOnly"), (3, "agreement")])
+        self.assertEqual(check["counts"], {"agreement": 0, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 1})
+        self.assertFalse(check["agreed"])
+
+    def test_a_ghidra_target_at_an_interrupt_or_a_targetless_call_elsewhere_stays_ghidra_only(self):
+        # int 21h; int 10h; nop; call 8; ret. Ghidra resolves the first interrupt to a file offset and the second to an
+        # address without file bytes, and claims a call at the nop.
+        data = bytes.fromhex("cd 21 cd 10 90 e8 00 00 c3")
+        export = ghidra_export(data, {0: [(0, 8, "COMPUTED_CALL"), (2, None, "COMPUTED_CALL"), (4, None, "COMPUTED_CALL"),
+                                          (5, 8, "UNCONDITIONAL_CALL")], 8: []})
+        export["functions"][0]["edges"][1]["targetAddress"] = "0000:0040"
+        cfg = configuration(data, ghidraCallEdges=export)
+        cfg["regions"][0]["entries"] = [0, 8]
+        check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
+        self.assertEqual(sorted((e["site"], e["result"]) for e in check["edges"]),
+                         [(0, "ghidraOnly"), (2, "ghidraOnly"), (4, "ghidraOnly"), (5, "agreement")])
         self.assertFalse(check["agreed"])
 
     def test_routes_the_edge_limit_omitted_are_not_compared(self):
