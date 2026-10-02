@@ -823,3 +823,37 @@ test("nested modeled services retain child writes but cannot preserve ancestor r
   assert.equal(pathCapped.effectOrdering.allPathsRead, false);
   assert.ok(pathCapped.gaps.some((g: Report) => g.site === 83 && g.reason === "path limit at modeled call"));
 });
+
+test("relational controls pass through preparation and fail, hold or stay undecided in the engine", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(20, 28);
+  // test ax,ax; jz read; mov word [22h],5; read: mov ax,[22h]; ret
+  data.set([0x85, 0xc0, 0x74, 0x06, 0xc7, 0x06, 0x22, 0, 5, 0, 0xa1, 0x22, 0, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const writer = (writers: unknown[]) => ({
+    name: "cleanup slot",
+    kind: "lastWriter",
+    at: { site: 74, event: "read" },
+    writers,
+  });
+  const query = (extra: Record<string, unknown>) => {
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({
+        ...config,
+        sha256: createHash("sha256").update(data).digest("hex"),
+        registers: { ds: 0x2000, ss: 0x3000, sp: 0xff00 },
+        ...extra,
+      }),
+    );
+    return join(dir, "config.json");
+  };
+  const held = run(["memory", query({ relationalControls: [writer([68, "entryState"])] })]).relationalControls;
+  assert.equal(held.allHeld, true);
+  const edges = held.controls[0].paths.map((p: Report) => p.occurrences[0].bytes[0]);
+  assert.deepEqual(edges.map((b: Report) => b.writer?.site ?? b.unwritten.cause).sort(), [68, "no write on this path"]);
+  assert.throws(() => run(["memory", query({ relationalControls: [writer([68])] })]), /cleanup slot violated/);
+  const stopped = run(["memory", query({ relationalControls: [writer([68, "entryState"])], maxSteps: 2 })]);
+  assert.equal(stopped.relationalControls.controls[0].verdict, "undecided");
+  assert.equal(stopped.relationalControls.allHeld, false);
+});
