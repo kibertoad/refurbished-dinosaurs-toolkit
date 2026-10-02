@@ -16,6 +16,7 @@ INSTRUCTION_SEMANTICS = f"pypcode {pypcode.__version__} (Ghidra SLEIGH x86)"
 USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bounds|owner|callees|trace|uses|arguments|"
          "effects|returns|memory|incoming|call-order|guards|allocation|dispatch> <config.json|->\n"
          "effects includes ordered path writes/calls and local restoration witnesses; transactionality remains unestablished.\n"
+         "callees compares its edges with an ExportCallEdges.java export given as ghidraCallEdges.\n"
          "Declared table continuations are separate conditional paths; ordinary computed transfers remain stopped.\n"
          "       scientific-method-engine ghidra-scripts")
 

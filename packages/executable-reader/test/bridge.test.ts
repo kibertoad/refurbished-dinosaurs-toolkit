@@ -516,6 +516,59 @@ test("callee graph through the source bridge keeps a reused node distinct from r
   assert.equal(r.completeWithinDeclaredGraph, true);
 });
 
+test("callee graph through the source bridge compares its edges with a Ghidra export", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // call 71; call 71; ret; at 71: ret
+  data.set([0xe8, 4, 0, 0xe8, 1, 0, 0xc3, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const sha256 = createHash("sha256").update(data).digest("hex");
+  const edge = (site: number, target: number | null, flow: string) => ({
+    site,
+    siteAddress: `1000:${site.toString(16)}`,
+    target,
+    targetAddress: target === null ? null : `1000:${target.toString(16)}`,
+    flow,
+  });
+  const cfg = {
+    ...config,
+    sha256,
+    regions: [{ ...config.regions[0]!, entries: [64, 71] }],
+    controls: { ghidraAgreementSites: [64] },
+    ghidraCallEdges: {
+      format: "scientific-method-ghidra-call-edges",
+      version: 1,
+      sha256,
+      functionLimit: 8,
+      missingEntries: [],
+      unreadFunctions: [],
+      functions: [
+        {
+          entry: 64,
+          address: "1000:0040",
+          edges: [edge(64, 71, "UNCONDITIONAL_CALL"), edge(69, null, "COMPUTED_CALL")],
+        },
+        { entry: 71, address: "1000:0047", edges: [] },
+      ],
+    },
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  const check = run(["callees", join(dir, "config.json")]).ghidraCrossCheck;
+  assert.deepEqual(
+    check.edges.map((e: Report) => [e.site, e.result]),
+    [
+      [64, "agreement"],
+      [67, "engineOnly"],
+      [69, "ghidraOnly"],
+    ],
+  );
+  assert.equal(check.edges[2].checked, false);
+  assert.equal(check.agreed, false);
+  cfg.controls = { ghidraAgreementSites: [67] };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  assert.throws(() => run(["callees", join(dir, "config.json")]), /ghidraAgreementSites/);
+});
+
 test("operand candidates preserve prefixed widths and reject interior starts through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);

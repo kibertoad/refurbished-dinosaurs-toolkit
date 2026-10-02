@@ -68,6 +68,7 @@ Exporting for comparison (each writes one file and refuses to overwrite where no
 |---|---|---|
 | `ExportBoundedFlow` | entry, instruction limit (1..10000), output path under `analysis/original/` | instruction metadata of one bounded flow as JSON |
 | `ExportFunctionInventory` | output TSV path (must not exist) | every function's start and body size |
+| `ExportCallEdges` | output JSON path (must not exist), function limit (1..128), one or more function entries | the call and tail-jump edges of the functions Ghidra reaches breadth-first from the entries, with file offsets, as the `ghidraCallEdges` input of `callees` |
 | `ExportFunctionFingerprints` | output TSV path | per-function and per-instruction fingerprints with addresses normalized, for matching functions across versions |
 
 Repairing the analysis (these change the Ghidra program, so run them before reports and keep the

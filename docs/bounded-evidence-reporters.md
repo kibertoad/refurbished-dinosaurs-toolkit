@@ -78,7 +78,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `target` | call-target provenance of one call site | [call-target provenance](#call-target-provenance) |
 | `bounds` | the instruction extent reached from one entry | [function bounds](#function-bounds-and-site-ownership) |
 | `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
-| `callees` | the bounded call graph below an entry, with recursion and shared callees | [function bounds](#function-bounds-and-site-ownership) |
+| `callees` | the bounded call graph below an entry, with recursion and shared callees, optionally compared with Ghidra's edges | [function bounds](#function-bounds-and-site-ownership) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 
 The engine also has `scientific-method-engine ghidra-scripts`, which prints the directory of the
@@ -623,6 +623,31 @@ usable bodies for every node the reused node reaches, no reached node on the
 active path, and no limit-omitted or instruction-capped route beneath the reused
 node, any of which could lead back into the active path. x87 stores and loads
 take their access direction from the mnemonic, since Capstone misreports some.
+
+`ghidraCallEdges` takes the JSON that the packaged `ExportCallEdges.java` writes. Run it with an
+output path, a function limit (1..128) and the entries to start from. Ghidra walks breadth first
+from those entries through its call targets and its jumps to other functions' entry points. The
+export records each function's edges as file offsets. It is accepted only when its `sha256` equals
+the source's. It can hold at most 128 functions and 8192 edges, and every offset must lie inside the
+source. Paste the export into the config as the value of `ghidraCallEdges`. The command then reports
+`ghidraCrossCheck`. For each caller that both the engine read and the export lists
+(`comparedCallers`), every edge is matched on site and target:
+
+- `agreement`: both have the edge. An unresolved call matches an unresolved call at the same site.
+  A Ghidra target address without a file offset, such as an import, matches no engine edge.
+- `engineOnly`: only the engine has it.
+- `ghidraOnly`: only Ghidra has it. It carries `checked: false` and the id of any engine edge at the
+  same site. The engine's graph, classifications and summaries never take it in.
+
+`notCompared` lists the engine callers missing from the export, exported callers the engine did not
+read, exported functions without a file offset, and the `omittedRoutes` ids of compared callers
+(`omittedEngineRoutes`), which the edge limit kept out of the graph. It also passes on the export's
+`missingEntries` (requested addresses with no function) and `unreadFunctions` (functions the limit
+cut off). `agreed` is true only when every compared edge agrees and nothing is left uncompared.
+Agreement means both analyses read the edge, never that it executes. A `ghidraAgreementSites`
+control lists call sites that must agree, and fails the report otherwise. A site agrees only when
+every edge either side read there agrees. Requires
+`ghidraCallEdges`. Keep exports and cross-check reports of a real program in its `GAME_DIR`.
 
 `operand-candidates` scans explicitly declared region starts for an encoded
 memory displacement or immediate matching `query.offset`; implicit operands and
