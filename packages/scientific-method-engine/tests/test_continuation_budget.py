@@ -1,0 +1,155 @@
+"""Declared-table continuations spend their own budget and never change the ordinary paths."""
+import json
+import unittest
+import test_dispatch  # noqa: F401  (puts the engine sources on sys.path)
+from scientific_method_engine.x86.image import Image
+from scientific_method_engine.x86.reports import run_report
+from scientific_method_engine.x86.trace import trace
+
+RETURN_ONE = bytes.fromhex("b8 01 00 c3")
+SPIN = bytes.fromhex("eb fe")
+COPY_TWO = bytes.fromhex("b9 02 00 fc f3 a4 c3")
+
+
+def fan_out(stages, targets=(RETURN_ONE, bytes.fromhex("b8 02 00 c3"))):
+    """Build a function whose first branch reaches a declared table jump and whose other
+    branch forks on `stages` independent unknown bytes, so ordinary routes number 2**stages."""
+    code = bytearray(bytes.fromhex("72 00"))
+    for i in range(stages):
+        address = 0x100 + i
+        code += bytes([0x80, 0x3E, address & 0xFF, address >> 8, 0x00, 0x74, 0x00])
+    code += b"\xc3"
+    dispatcher = len(code)
+    code[1] = dispatcher - 2
+    code += bytes.fromhex("ff e3")
+    starts = []
+    for target in targets:
+        starts.append(len(code))
+        code += target
+    end = len(code)
+    table = len(code)
+    for start in starts:
+        code += start.to_bytes(2, "little")
+    config = {"entry": 0, "registers": {"ds": 0x2000, "es": 0x3000, "si": 0x10, "di": 0x20},
+              "regions": [{"name": "code", "start": 0, "end": end, "segment": 4096, "ip": 0,
+                           "entries": [0], "evidence": "constructed mappings"}],
+              "indirectJumps": [{"site": dispatcher, "evidence": "constructed BX consumer", "exhaustive": True,
+                                 "table": {"start": table, "count": len(targets), "stride": 2,
+                                           "evidence": "constructed words"}}]}
+    return bytes(code), config, dispatcher
+
+
+def ordinary(report):
+    """Everything a report says about ordinary paths."""
+    return json.dumps({"paths": report["paths"], "stepsUsed": report["stepsUsed"],
+                       "stringIterationsUsed": report["stringIterationsUsed"],
+                       "gaps": [g for g in report["gaps"] if "route" not in g]}, sort_keys=True)
+
+
+class ContinuationBudgetTests(unittest.TestCase):
+    def test_continuations_run_after_ordinary_paths_spend_the_shared_budget(self):
+        data, config, dispatcher = fan_out(4)
+        r = run_report(data, {**config, "maxPaths": 8}, "effects")
+        self.assertEqual(len(r["paths"]), 8)
+        self.assertTrue(any(g["reason"] == "path limit" and "route" not in g for g in r["gaps"]))
+        routes = r["declaredContinuationPaths"]
+        self.assertEqual(sorted(p["registers"]["ax"]["value"] for p in routes), [1, 2])
+        self.assertTrue(all(p["returned"] and p["declaredJumpAssumptions"][0]["site"] == dispatcher for p in routes))
+        self.assertEqual(r["limits"]["paths"], 8)
+        self.assertEqual(r["limits"]["continuation"],
+                         {"paths": 8, "totalSteps": 20000, "maxSteps": 512, "visitLimit": 4, "stringIterations": 4096})
+        self.assertEqual(r["continuationStepsUsed"], 4)
+        self.assertFalse(r["completeWithinModel"])
+        self.assertTrue(all(not p["effectCompleteWithinModel"] for p in r["effectOrdering"]["declaredContinuationPaths"]))
+
+    def test_ordinary_paths_are_identical_whatever_the_continuations_spend(self):
+        data, config, _ = fan_out(4)
+        config = {**config, "maxPaths": 8}
+        baseline = run_report(data, {k: v for k, v in config.items() if k != "indirectJumps"}, "trace")
+        unread = trace(Image(data, config), Image(data, config).config, continue_declared_jumps=False)
+        self.assertEqual(ordinary(unread), ordinary(baseline))
+        for budget in ({}, {"paths": 0}, {"paths": 1}, {"paths": 256, "totalSteps": 100000, "maxSteps": 10000,
+                                                          "visitLimit": 4096, "stringIterations": 65536},
+                       {"totalSteps": 1}, {"maxSteps": 1}):
+            r = run_report(data, {**config, "continuationBudget": budget}, "trace")
+            self.assertEqual(ordinary(r), ordinary(baseline), budget)
+
+    def test_raising_the_continuation_budget_leaves_the_ordinary_report_size_alone(self):
+        data, config, _ = fan_out(6)
+        small = run_report(data, {**config, "maxPaths": 4}, "trace")
+        large = run_report(data, {**config, "maxPaths": 4, "continuationBudget": {"paths": 256}}, "trace")
+        self.assertEqual(len(large["paths"]), 4)
+        self.assertEqual(ordinary(large), ordinary(small))
+        self.assertEqual(len(large["declaredContinuationPaths"]), 2)
+
+    def test_path_limit_is_a_continuation_gap(self):
+        data, config, dispatcher = fan_out(2)
+        r = run_report(data, {**config, "continuationBudget": {"paths": 0}}, "trace")
+        self.assertFalse(r["declaredContinuationPaths"])
+        self.assertIn({"site": dispatcher, "reason": "path limit", "route": "declaredContinuation"}, r["gaps"])
+        self.assertFalse(r["completeWithinModel"])
+        r = run_report(data, {**config, "continuationBudget": {"paths": 1}}, "trace")
+        self.assertEqual(len(r["declaredContinuationPaths"]), 1)
+        self.assertIn({"site": dispatcher, "reason": "path limit", "route": "declaredContinuation"}, r["gaps"])
+
+    def test_forks_inside_a_continuation_spend_its_paths(self):
+        fork = bytes.fromhex("80 3e 00 02 00 74 00 c3")
+        data, config, _ = fan_out(2, targets=(fork,))
+        r = run_report(data, {**config, "continuationBudget": {"paths": 1}}, "trace")
+        self.assertEqual(len(r["declaredContinuationPaths"]), 1)
+        gaps = [g for g in r["gaps"] if g.get("route") == "declaredContinuation"]
+        self.assertEqual([g["reason"] for g in gaps], ["path limit"])
+        r = run_report(data, {**config, "continuationBudget": {"paths": 2}}, "trace")
+        self.assertEqual(len(r["declaredContinuationPaths"]), 2)
+        self.assertFalse(any(g.get("route") for g in r["gaps"]))
+
+    def test_total_and_per_path_step_limits_stop_continuations(self):
+        data, config, _ = fan_out(2)
+        r = run_report(data, {**config, "continuationBudget": {"totalSteps": 1}}, "trace")
+        # Each route needs two instructions, so the one budgeted step stops both.
+        self.assertEqual([p["stop"] for p in r["declaredContinuationPaths"]],
+                         ["continuation instruction budget exhausted"] * 2)
+        self.assertEqual(r["continuationStepsUsed"], 1)
+        r = run_report(data, {**config, "continuationBudget": {"maxSteps": 1}}, "trace")
+        self.assertTrue(all(p["stop"] == "continuation step limit; loop progress unresolved"
+                            for p in r["declaredContinuationPaths"]))
+        self.assertFalse(any(p["returned"] for p in r["declaredContinuationPaths"]))
+        self.assertFalse(r["completeWithinModel"])
+
+    def test_continuation_steps_count_from_the_declared_jump(self):
+        # The ordinary prefix takes three steps; maxSteps 3 would leave a whole-path count no room.
+        data, config, _ = fan_out(2)
+        r = run_report(data, {**config, "maxSteps": 3}, "trace")
+        self.assertTrue(all(p["returned"] for p in r["declaredContinuationPaths"]))
+        self.assertTrue(all(p["steps"] == 4 for p in r["declaredContinuationPaths"]))
+
+    def test_visit_limit_counts_repeats_after_the_declared_jump(self):
+        data, config, _ = fan_out(2, targets=(SPIN,))
+        r = run_report(data, {**config, "visitLimit": 2, "continuationBudget": {"visitLimit": 3}}, "trace")
+        (route,) = r["declaredContinuationPaths"]
+        self.assertEqual(route["stop"], "instruction repeated more than 3 times after the declared jump; "
+                                        "raise continuationBudget.visitLimit or read the loop's bound")
+        self.assertEqual(route["instructionPath"].count(route["stopSite"]), 4)
+        self.assertFalse(r["completeWithinModel"])
+
+    def test_string_iteration_limit_stops_a_continuation(self):
+        data, config, _ = fan_out(2, targets=(COPY_TWO,))
+        r = run_report(data, config, "trace")
+        self.assertTrue(r["declaredContinuationPaths"][0]["returned"])
+        self.assertEqual(r["continuationStringIterationsUsed"], 2)
+        self.assertEqual(r["stringIterationsUsed"], 0)
+        r = run_report(data, {**config, "stringIterations": 0, "continuationBudget": {"stringIterations": 1}}, "trace")
+        (route,) = r["declaredContinuationPaths"]
+        self.assertFalse(route["returned"])
+        self.assertIn("String iteration budget exhausted", route["stop"])
+
+    def test_invalid_budgets_are_rejected(self):
+        data, config, _ = fan_out(1)
+        for budget in ([], {"path": 1}, {"paths": 257}, {"paths": -1}, {"totalSteps": 0}, {"maxSteps": 10001},
+                       {"visitLimit": 0}, {"stringIterations": 65537}, {"paths": True}, {"paths": 1.5}):
+            with self.assertRaises(ValueError, msg=budget):
+                run_report(data, {**config, "continuationBudget": budget}, "trace")
+
+
+if __name__ == "__main__":
+    unittest.main()

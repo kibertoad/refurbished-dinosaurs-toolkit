@@ -214,13 +214,31 @@ def snapshot(state):
     return {name: state.reg(name).report() for name in ALIASES}
 
 
+CONTINUATION_BUDGET_RANGES = {"paths": (0, 256), "totalSteps": (1, 100000), "maxSteps": (1, 10000),
+                              "visitLimit": (1, 4096), "stringIterations": (0, 65536)}
+
+
+def validate_continuation_budget(config):
+    """Return the fields a config sets in continuationBudget, rejecting unknown keys and out-of-range values."""
+    budget = config.get("continuationBudget", {})
+    if not isinstance(budget, dict):
+        raise ValueError("continuationBudget must be an object")
+    unknown_keys = sorted(set(budget) - set(CONTINUATION_BUDGET_RANGES))
+    if unknown_keys:
+        raise ValueError("continuationBudget accepts only " + ", ".join(CONTINUATION_BUDGET_RANGES)
+                         + "; unknown: " + ", ".join(unknown_keys))
+    return {key: integer(value, *CONTINUATION_BUDGET_RANGES[key], "continuationBudget." + key)
+            for key, value in budget.items()}
+
+
 def trace(image, config, continue_declared_jumps=True):
     """Trace bounded paths, preserving declared-table continuations as separate conditional evidence.
 
     Ordinary paths run first. A path stopped at a declared indirect jump is then
-    continued once per surviving table target, so the continuations never take
-    budget from an ordinary path. Callers that read only ordinary paths pass
-    continue_declared_jumps=False.
+    continued once per surviving table target. Continuations spend their own
+    continuationBudget, so ordinary paths are the same with or without them, and
+    what the ordinary paths spend never leaves the continuations without budget.
+    Callers that read only ordinary paths pass continue_declared_jumps=False.
     """
     entry = integer(config.get("entry"), 0, len(image.data) - 1, "entry")
     if not any(entry in r["entries"] for r in image.regions):
@@ -252,6 +270,7 @@ def trace(image, config, continue_declared_jumps=True):
             for r, n in case.get("registers", {}).items():
                 if r not in ALIASES or type(n) is not int or not 0 <= n < 1 << ALIASES[r][2]:
                     raise ValueError("Invalid model register")
+    explicit_continuation_budget = validate_continuation_budget(config)
     pending, outputs, global_gaps = [State(entry, image, config)], [], []
     conditional_outputs = []
     # States stopped at a declared jump site, continued after the ordinary paths.
@@ -266,6 +285,14 @@ def trace(image, config, continue_declared_jumps=True):
     checkpoints = set(config.get("checkpoints", []))
     # How often one path may pass the same instruction; a loop with a known bound needs it raised.
     visit_limit = integer(config.get("visitLimit", 4), 1, 4096, "visitLimit")
+    # An unset field takes the value of the matching ordinary input.
+    continuation_budget = {"paths": max_paths, "totalSteps": total_limit, "maxSteps": max_steps,
+                           "visitLimit": visit_limit, "stringIterations": string_limit, **explicit_continuation_budget}
+    ordinary_max_paths = max_paths
+    # Set once every ordinary path has finished. From then on every traced state is a continuation.
+    continuing = False
+    ordinary_steps = ordinary_string_steps = 0
+    first_continuation_gap = None
 
     def charge(n):
         nonlocal total_string_steps
@@ -359,6 +386,9 @@ def trace(image, config, continue_declared_jumps=True):
                               {"segment": address[0].report(), "offset": address[1].report(), "segmentRegister": address[2]},
                           "meaning": "conditional target choice from source table; selector, live table contents and reachability unverified"}
             child.declared_jump_assumptions = [*getattr(child, "declared_jump_assumptions", []), assumption]
+            if not hasattr(child, "continuation_steps"):
+                # Per-path continuation limits count from the first declared jump the path continues past.
+                child.continuation_steps, child.continuation_visits = 0, {}
             child.event("declared-jump-continuation", **{k: v for k, v in assumption.items() if k != "site"})
             child.at = target
             pending.append(child)
@@ -366,15 +396,30 @@ def trace(image, config, continue_declared_jumps=True):
 
     while pending or deferred:
         if not pending:
+            if not continuing:
+                # Ordinary tracing is over. Its counters are final, and continuations start on their own budget.
+                continuing = True
+                ordinary_steps, ordinary_string_steps = total_steps, total_string_steps
+                created = total_steps = total_string_steps = 0
+                max_paths = continuation_budget["paths"]
+                total_limit = continuation_budget["totalSteps"]
+                string_limit = continuation_budget["stringIterations"]
+                first_continuation_gap = len(global_gaps)
             declared_continuations(deferred.pop(0))
             continue
         state = pending.pop()
         try:
             while True:
-                if state.steps >= max_steps:
-                    raise StopPath("step limit; loop progress unresolved")
-                if total_steps >= total_limit:
-                    raise StopPath("total instruction budget exhausted")
+                if continuing:
+                    if state.continuation_steps >= continuation_budget["maxSteps"]:
+                        raise StopPath("continuation step limit; loop progress unresolved")
+                    if total_steps >= total_limit:
+                        raise StopPath("continuation instruction budget exhausted")
+                else:
+                    if state.steps >= max_steps:
+                        raise StopPath("step limit; loop progress unresolved")
+                    if total_steps >= total_limit:
+                        raise StopPath("total instruction budget exhausted")
                 total_steps += 1
                 at = state.at
                 ins = image.decode(at)
@@ -383,7 +428,13 @@ def trace(image, config, continue_declared_jumps=True):
                 state.steps += 1
                 state.path.append(at)
                 state.visits[at] = state.visits.get(at, 0) + 1
-                if state.visits[at] > visit_limit:
+                if continuing:
+                    state.continuation_steps += 1
+                    state.continuation_visits[at] = state.continuation_visits.get(at, 0) + 1
+                    if state.continuation_visits[at] > continuation_budget["visitLimit"]:
+                        raise StopPath(f"instruction repeated more than {continuation_budget['visitLimit']} times after "
+                                       "the declared jump; raise continuationBudget.visitLimit or read the loop's bound")
+                elif state.visits[at] > visit_limit:
                     raise StopPath(f"instruction repeated more than {visit_limit} times; raise visitLimit or read the loop's bound")
                 if at in checkpoints:
                     state.event("checkpoint", registers=snapshot(state))
@@ -622,7 +673,16 @@ def trace(image, config, continue_declared_jumps=True):
                 state.at = following
         except StopPath as error:
             finish(state, str(error))
+    if continuing:
+        continuation_steps, continuation_string_steps = total_steps, total_string_steps
+        for gap in global_gaps[first_continuation_gap:]:
+            gap["route"] = "declaredContinuation"
+    else:
+        ordinary_steps, ordinary_string_steps = total_steps, total_string_steps
+        continuation_steps = continuation_string_steps = 0
     return {"paths": outputs, "declaredContinuationPaths": conditional_outputs, "gaps": global_gaps,
             "completeWithinModel": not global_gaps and bool(outputs) and all(p["returned"] for p in outputs),
-            "nativeReachability": "unconfirmed", "stepsUsed": total_steps, "stringIterationsUsed": total_string_steps,
-            "limits": {"steps": max_steps, "paths": max_paths, "depth": max_depth}}
+            "nativeReachability": "unconfirmed", "stepsUsed": ordinary_steps, "stringIterationsUsed": ordinary_string_steps,
+            "continuationStepsUsed": continuation_steps, "continuationStringIterationsUsed": continuation_string_steps,
+            "limits": {"steps": max_steps, "paths": ordinary_max_paths, "depth": max_depth,
+                       "continuation": continuation_budget}}

@@ -47,7 +47,7 @@ class TableContinuationTests(unittest.TestCase):
 
     def test_limits_do_not_leave_a_positive_continuation_contract(self):
         data, config = fixture()
-        for change in ({"maxPaths": 1}, {"maxSteps": 1}, {"totalSteps": 1}, {"instructionLimit": 1}):
+        for change in ({"continuationBudget": {"paths": 0}}, {"instructionLimit": 1}):
             r = run_report(data, {**config, **change}, "trace")
             self.assertFalse(any(p["returned"] for p in r["declaredContinuationPaths"]))
             self.assertFalse(r["completeWithinModel"])
@@ -125,7 +125,9 @@ class TableContinuationTests(unittest.TestCase):
         self.assertEqual([(p["returned"], p["stop"]) for p in declared["paths"]],
                          [(p["returned"], p["stop"]) for p in plain["paths"]])
         self.assertEqual(len(declared["paths"]), 3)
-        self.assertTrue(any(g["reason"] == "path limit" and g["site"] == 32 for g in declared["gaps"]))
+        # The ordinary paths spent all three paths, and the continuations still start on their own budget.
+        self.assertEqual(len(declared["declaredContinuationPaths"]), 3)
+        self.assertTrue(all(p["returned"] for p in declared["declaredContinuationPaths"]))
 
     def test_operand_read_stays_out_of_the_stopped_ordinary_path(self):
         data, config = fixture()
