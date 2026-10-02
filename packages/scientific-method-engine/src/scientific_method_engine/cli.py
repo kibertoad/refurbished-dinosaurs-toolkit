@@ -18,6 +18,7 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "effects includes ordered path writes/calls and local restoration witnesses; transactionality remains unestablished.\n"
          "callees compares its edges with an ExportCallEdges.java export given as ghidraCallEdges.\n"
          "Declared table continuations are separate conditional paths; ordinary computed transfers remain stopped.\n"
+         "Port accesses and interrupts are hardware-boundary events; portInputs supplies port reads as assumptions.\n"
          "       scientific-method-engine ghidra-scripts")
 
 

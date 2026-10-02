@@ -732,6 +732,52 @@ test("trace decides a decrement loop's exit from p-code flags through the source
   assert.equal(path.registers.cx.value, 0);
 });
 
+test("effects reports port accesses as hardware boundaries apart from RAM writes through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // in al, 0x60; mov [0x200], al; mov dx, 0x3c8; out dx, al; ret
+  data.set([0xe4, 0x60, 0xa2, 0, 2, 0xba, 0xc8, 3, 0xee, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const query = {
+    ...config,
+    sha256: createHash("sha256").update(data).digest("hex"),
+    registers: { ds: 0x2000 },
+    portInputs: [{ site: 64, value: 7, evidence: "synthetic device reply" }],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const result = run(["effects", join(dir, "config.json")]);
+  const path = result.paths[0];
+  assert.equal(path.returned, true);
+  const boundaries = path.events.filter((e: Report) => e.kind === "hardware-boundary");
+  assert.deepEqual(
+    boundaries.map((e: Report) => [e.boundary, e.port.value, e.value.value]),
+    [
+      ["port-input", 0x60, 7],
+      ["port-output", 0x3c8, 7],
+    ],
+  );
+  assert.equal(boundaries[0].valueSource, "query assumption");
+  assert.equal(path.conditionalModels[0].site, 64);
+  const writes = path.events.filter((e: Report) => e.kind === "write");
+  assert.deepEqual(
+    writes.map((e: Report) => e.offset.value),
+    [0x200],
+  );
+  const summary = result.effectOrdering.paths[0];
+  assert.deepEqual(
+    summary.hardwareBoundaryOrders,
+    boundaries.map((e: Report) => e.order),
+  );
+  assert.equal(summary.effectCompleteWithinModel, false);
+  assert.deepEqual(
+    result.hardwareBoundaries.map((row: Report) => [row.site, row.placement]),
+    [
+      [64, "everyTracedPath"],
+      [72, "everyTracedPath"],
+    ],
+  );
+});
+
 test("effects retains stopped dispatch beside separate conditional table paths", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);

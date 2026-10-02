@@ -3,7 +3,7 @@ from copy import deepcopy
 from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
 from .image import integer
 from .machine import (State, StopPath, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
-                      string_count, string_effect, check_string_form, compare_string, repeated)
+                      string_count, string_effect, check_string_form, compare_string, repeated, string_width)
 from .values import const, unknown, sources, op, Value
 from .result_flow import validate_contracts, result_contracts
 
@@ -20,6 +20,7 @@ OVERLAP_REASON = "overlapping entry-path instructions; boundary unresolved"
 RETURNS = {"ret": "near return", "retf": "far return", "iret": "interrupt return", "iretd": "interrupt return"}
 INTERRUPTS = ("int", "int1", "int3", "into")
 PORTS = ("in", "out", "insb", "insw", "insd", "outsb", "outsw", "outsd")
+PORT_INPUTS = ("in", "insb", "insw", "insd")
 
 
 def base_mnemonic(ins):
@@ -210,6 +211,62 @@ def uncovered(start, end, spans):
     return missing
 
 
+def port_width(ins, flat):
+    """The data width of a port instruction: its register operand, or its string element."""
+    if base_mnemonic(ins) in ("in", "out"):
+        return ins.operands[0 if base_mnemonic(ins) == "in" else 1].size
+    return string_width(ins, flat)
+
+
+def validate_port_inputs(config, image):
+    """Check ``portInputs``: each row names an IN or INS site, a value that fits its width, and evidence."""
+    rows = config.get("portInputs", [])
+    if not isinstance(rows, list) or len(rows) > 64:
+        raise ValueError("portInputs must be a list of at most 64 rows")
+    sites = set()
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("evidence"):
+            raise ValueError("Port input requires site, value and evidence")
+        site = integer(row.get("site"), 0, len(image.data) - 1, "port input site")
+        if site in sites:
+            raise ValueError("Port input sites must be unique")
+        sites.add(site)
+        ins = image.decode(site)
+        if ins is None or base_mnemonic(ins) not in PORT_INPUTS:
+            raise ValueError("Port input site must be an IN or INS instruction")
+        integer(row.get("value"), 0, (1 << 8 * port_width(ins, image.flat)) - 1, "port input value")
+
+
+def hardware_placement(outputs, conditional_outputs, gaps):
+    """Each hardware boundary site with the traced paths that reach it.
+
+    ``placement`` is ``everyTracedPath`` when every ordinary path reaches the site and no path was
+    dropped, ``conditional`` when a path returned without reaching it, and ``unresolved`` when only
+    stopped paths lack it or a limit dropped paths.
+    """
+    rows = {}
+    for group, paths in (("paths", outputs), ("declaredContinuationPaths", conditional_outputs)):
+        for index, path in enumerate(paths):
+            for e in path["events"]:
+                if e["kind"] != "hardware-boundary":
+                    continue
+                row = rows.setdefault((e["site"], e["boundary"]), {
+                    "site": e["site"], "boundary": e["boundary"], "mnemonic": e["mnemonic"],
+                    "paths": [], "declaredContinuationPaths": []})
+                if index not in row[group]:
+                    row[group].append(index)
+    result = []
+    for (site, _), row in sorted(rows.items()):
+        missing = [i for i in range(len(outputs)) if i not in row["paths"]]
+        returned = [i for i in missing if outputs[i]["returned"]]
+        stopped = [i for i in missing if not outputs[i]["returned"]]
+        row["pathsWithout"] = {"returned": returned, "stopped": stopped}
+        row["placement"] = ("conditional" if returned else
+                            "everyTracedPath" if not missing and not gaps else "unresolved")
+        result.append(row)
+    return result
+
+
 def snapshot(state):
     return {name: state.reg(name).report() for name in ALIASES}
 
@@ -232,6 +289,7 @@ def trace(image, config, continue_declared_jumps=True):
     if config.get("returnBytes", image.bits // 8) not in ((4,) if image.flat else (2, 4)):
         raise ValueError("returnBytes must agree with the selected near/far frame model")
     contracts = validate_contracts(config, image)
+    validate_port_inputs(config, image)
     models = config.get("callModels", [])
     if not isinstance(models, list) or len(models) > 64:
         raise ValueError("At most 64 explicit call models")
@@ -623,6 +681,7 @@ def trace(image, config, continue_declared_jumps=True):
         except StopPath as error:
             finish(state, str(error))
     return {"paths": outputs, "declaredContinuationPaths": conditional_outputs, "gaps": global_gaps,
+            "hardwareBoundaries": hardware_placement(outputs, conditional_outputs, global_gaps),
             "completeWithinModel": not global_gaps and bool(outputs) and all(p["returned"] for p in outputs),
             "nativeReachability": "unconfirmed", "stepsUsed": total_steps, "stringIterationsUsed": total_string_steps,
             "limits": {"steps": max_steps, "paths": max_paths, "depth": max_depth}}

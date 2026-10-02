@@ -747,6 +747,235 @@ class CallOrderTests(unittest.TestCase):
         self.assertIsNone(r["callers"][0]["calls"][0]["cleanup"]["argumentBytes"])
 
 
+class HardwareBoundaryTests(unittest.TestCase):
+    """Port accesses and interrupts are hardware-boundary events, kept apart from RAM accesses."""
+
+    def boundaries(self, result, kind=None):
+        return [e for e in events(result, "hardware-boundary") if kind is None or e["boundary"] == kind]
+
+    def test_port_output_reports_port_provenance_width_and_value(self):
+        # mov dx, 0x3c8; mov al, 5; out dx, al; out 0x21, al; mov dx, [0x200]; out dx, ax; ret
+        r = report("ba c8 03 b0 05 ee e6 21 8b 16 00 02 ef c3", registers={"ds": 0x2000})
+        self.assertTrue(r["completeWithinModel"])
+        rows = self.boundaries(r, "port-output")
+        self.assertEqual([(e["port"]["value"], e["portKnown"], e["width"]) for e in rows],
+                         [(0x3c8, True, 1), (0x21, True, 1), (None, False, 2)])
+        self.assertEqual(rows[0]["value"]["value"], 5)
+        self.assertIn(8, rows[2]["port"]["producers"])
+        self.assertIn("rendered output are not modeled", rows[0]["interpretation"])
+        # The port writes never become RAM writes.
+        self.assertFalse(events(r, "write"))
+        self.assertEqual([e["site"] for e in events(r, "read")], [8])
+
+    def test_port_input_is_unknown_unless_the_query_supplies_it_as_an_assumption(self):
+        code = "e4 60 3c 01 74 03 b3 01 c3 b3 02 c3"
+        r = report(code)
+        read = self.boundaries(r, "port-input")
+        self.assertEqual({e["valueSource"] for e in read}, {"unknown"})
+        self.assertTrue(all(e["value"]["value"] is None for e in read))
+        self.assertEqual(len(r["paths"]), 2)
+        self.assertTrue(all(not p["conditionalModels"] for p in r["paths"]))
+        supplied = report(code, portInputs=[{"site": 0, "value": 1, "evidence": "synthetic device reply"}])
+        self.assertEqual(len(supplied["paths"]), 1)
+        path = supplied["paths"][0]
+        row = self.boundaries(supplied, "port-input")[0]
+        self.assertEqual((row["value"]["value"], row["valueSource"], row["evidence"]), (1, "query assumption", "synthetic device reply"))
+        self.assertEqual(path["conditionalModels"], [{"site": 0, "evidence": "synthetic device reply",
+                                                      "assumption": "port input value supplied by the query; device state unconfirmed"}])
+        self.assertEqual(path["registers"]["bl"]["value"], 2)
+
+    def test_two_reads_of_one_port_are_distinct_unknowns(self):
+        r = report("e4 60 88 c3 e4 60 c3")
+        first, second = self.boundaries(r, "port-input")
+        self.assertNotEqual(first["value"]["expression"], second["value"]["expression"])
+
+    def test_port_inputs_are_validated_against_the_decoded_instruction(self):
+        code = "e4 60 ed 6c ee c3"
+        good = [{"site": 0, "value": 255, "evidence": "synthetic"}, {"site": 2, "value": 0xffff, "evidence": "synthetic"},
+                {"site": 3, "value": 255, "evidence": "synthetic"}]
+        self.assertTrue(report(code, portInputs=good, registers={"es": 0x2000}, flags={"direction": 0})["paths"])
+        for rows, message in (([{"site": 4, "value": 1, "evidence": "synthetic"}], "IN or INS"),
+                              ([{"site": 0, "value": 256, "evidence": "synthetic"}], "port input value"),
+                              ([{"site": 2, "value": 0x10000, "evidence": "synthetic"}], "port input value"),
+                              ([{"site": 0, "value": 1}], "evidence"),
+                              ([{"site": 0, "value": 1, "evidence": "a"}, {"site": 0, "value": 2, "evidence": "b"}], "unique"),
+                              ([{"site": 0, "value": 1, "evidence": "synthetic"}] * 65, "at most 64"),
+                              ({"site": 0}, "list")):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    report(code, portInputs=rows)
+
+    def test_placement_separates_every_path_conditional_and_unresolved(self):
+        # out 0x20, al on every path; out 0x21, al only when AL is zero.
+        c = Code().emit("e6 20 84 c0").branch("74", "zero").emit("c3").label("zero").emit("e6 21 c3")
+        r = report(c)
+        rows = {row["site"]: row for row in r["hardwareBoundaries"]}
+        self.assertEqual(rows[0]["placement"], "everyTracedPath")
+        self.assertEqual(rows[0]["paths"], [0, 1])
+        zero = rows[c.labels["zero"]]
+        self.assertEqual(zero["placement"], "conditional")
+        self.assertEqual(len(zero["pathsWithout"]["returned"]), 1)
+        # A path dropped at the limit, or one stopped before the site, leaves placement unresolved.
+        capped = report(c, maxPaths=1)
+        self.assertTrue(capped["gaps"])
+        self.assertTrue(all(row["placement"] != "everyTracedPath" for row in capped["hardwareBoundaries"]))
+        c = Code().emit("84 c0").branch("74", "stop").emit("e6 20 c3").label("stop").emit("0f 0b")
+        stopped = report(c)
+        self.assertEqual(stopped["hardwareBoundaries"][0]["placement"], "unresolved")
+        self.assertEqual(len(stopped["hardwareBoundaries"][0]["pathsWithout"]["stopped"]), 1)
+
+    def test_rep_outs_reads_ram_and_writes_ports_as_separate_events(self):
+        # cld; mov cx, 2; mov dx, 0x3c9; mov si, 0x100; rep outsb; ret
+        code = "fc b9 02 00 ba c9 03 be 00 01 f3 6e c3"
+        r = report(code, registers={"ds": 0x2000})
+        path = r["paths"][0]
+        self.assertTrue(path["returned"])
+        sources = [e for e in path["events"] if e["kind"] == "read" and e["role"] == "string-source"]
+        ports = self.boundaries(r, "port-output")
+        self.assertEqual([e["offset"]["value"] for e in sources], [0x100, 0x101])
+        self.assertEqual([e["port"]["value"] for e in ports], [0x3c9, 0x3c9])
+        # Each port write carries the byte read from RAM, and is not itself a RAM write.
+        self.assertEqual([e["value"]["expression"] for e in ports], [e["value"]["expression"] for e in sources])
+        self.assertFalse(events(r, "write"))
+        self.assertEqual(path["registers"]["si"]["value"], 0x102)
+        self.assertEqual(path["registers"]["cx"]["value"], 0)
+        # The memory report keeps RAM only; effects keeps both.
+        self.assertFalse(events(report(code, "memory", registers={"ds": 0x2000}), "hardware-boundary"))
+        self.assertEqual(len(events(report(code, "effects", registers={"ds": 0x2000}), "hardware-boundary")), 2)
+
+    def test_rep_ins_writes_ram_from_unknown_or_supplied_port_values(self):
+        # cld; mov cx, 2; mov dx, 0x60; mov di, 0x100; rep insb; ret
+        code = "fc b9 02 00 ba 60 00 bf 00 01 f3 6c c3"
+        r = report(code, registers={"es": 0x2000})
+        writes = events(r, "write")
+        self.assertEqual([(e["offset"]["value"], e["effectiveSegmentRegister"], e["role"]) for e in writes],
+                         [(0x100, "es", "string-destination"), (0x101, "es", "string-destination")])
+        self.assertTrue(all(e["value"]["value"] is None for e in writes))
+        supplied = report(code, registers={"es": 0x2000}, portInputs=[{"site": 10, "value": 9, "evidence": "synthetic"}])
+        self.assertEqual([e["value"]["value"] for e in events(supplied, "write")], [9, 9])
+        self.assertEqual(len(supplied["paths"][0]["conditionalModels"]), 2)
+
+    def test_string_port_forms_with_unknown_direction_or_count_follow_string_rules(self):
+        r = report("b9 02 00 f3 6e c3", registers={"ds": 0x2000})
+        self.assertEqual(len(r["paths"]), 2)
+        self.assertTrue(events(r, "flag-assumption"))
+        r = report("f3 6e c3", flags={"direction": 0})
+        self.assertIn("count unresolved", r["paths"][0]["stop"])
+        r = report("fc b9 05 00 f3 6e c3", stringIterations=4)
+        self.assertIn("budget exhausted", r["paths"][0]["stop"])
+        self.assertFalse(self.boundaries(r))
+
+    def test_interrupt_is_a_boundary_event_that_stops_the_path(self):
+        r = report("c7 06 00 02 01 00 cd 21 c3", registers={"ds": 0x2000})
+        path = r["paths"][0]
+        self.assertFalse(path["returned"])
+        self.assertEqual(path["stop"], "interrupt handler is not modeled; later effects are not read")
+        row = self.boundaries(r, "interrupt")[0]
+        self.assertEqual((row["site"], row["vector"]), (6, 0x21))
+        self.assertEqual(r["hardwareBoundaries"][0]["placement"], "everyTracedPath")
+        self.assertEqual(self.boundaries(report("cc"), "interrupt")[0]["vector"], 3)
+        # INTO interrupts only when OF is set; that condition is not modeled.
+        into = report("ce c3")
+        self.assertEqual(into["paths"][0]["stop"], "Unsupported instruction semantics: into")
+        self.assertFalse(self.boundaries(into))
+
+    def test_bounds_lists_each_hardware_boundary_statically(self):
+        r = report("e4 60 ed ee e6 21 f3 6e 6d cd 10 ce c3", "bounds")
+        self.assertTrue(r["complete"])
+        self.assertEqual(r["hardwareBoundaries"], [
+            {"site": 0, "boundary": "port-input", "mnemonic": "in", "port": {"source": "immediate", "value": 0x60},
+             "width": 1, "stringForm": False, "repeated": False},
+            {"site": 2, "boundary": "port-input", "mnemonic": "in", "port": {"source": "register", "register": "dx"},
+             "width": 2, "stringForm": False, "repeated": False},
+            {"site": 3, "boundary": "port-output", "mnemonic": "out", "port": {"source": "register", "register": "dx"},
+             "width": 1, "stringForm": False, "repeated": False},
+            {"site": 4, "boundary": "port-output", "mnemonic": "out", "port": {"source": "immediate", "value": 0x21},
+             "width": 1, "stringForm": False, "repeated": False},
+            {"site": 6, "boundary": "port-output", "mnemonic": "outsb", "port": {"source": "register", "register": "dx"},
+             "width": 1, "stringForm": True, "repeated": True},
+            {"site": 8, "boundary": "port-input", "mnemonic": "insw", "port": {"source": "register", "register": "dx"},
+             "width": 2, "stringForm": True, "repeated": False},
+            {"site": 9, "boundary": "interrupt", "mnemonic": "int", "vector": 0x10, "conditional": False},
+            {"site": 11, "boundary": "interrupt", "mnemonic": "into", "vector": 4, "conditional": True}])
+        self.assertEqual(len(r["assumedContinuations"]), 8)
+
+
+class EffectiveSegmentTests(unittest.TestCase):
+    """Frame-derived offsets keep their own provenance; the addressing register picks the segment."""
+
+    FRAME = "55 89 e5 83 ec 08 "  # push bp; mov bp, sp; sub sp, 8
+
+    def access(self, result, site, kind="read"):
+        return next(e for e in events(result, kind) if e["site"] == site)
+
+    def test_bp_offset_moved_or_added_into_bx_uses_ds(self):
+        for setup in ("8d 5e fc", "89 eb 83 c3 fc", "bb fc ff 01 eb"):  # lea; mov+add; mov+add bp
+            with self.subTest(setup=setup):
+                code = self.FRAME + setup + " 8b 07 c9 c3"
+                site = len(bytes.fromhex(self.FRAME + setup))
+                r = report(code)
+                read = self.access(r, site)
+                self.assertEqual(read["effectiveSegmentRegister"], "ds")
+                self.assertEqual(read["segment"]["expression"], ("unknown", "initial:ds"))
+                # The offset keeps its entry-SP provenance, separate from the DS segment that addresses it.
+                self.assertEqual(read["offset"]["expression"], ("offset", ("unknown", "entry:sp"), 0xfffa))
+                self.assertEqual(read["interval"]["segment"], ("unknown", "initial:ds"))
+                self.assertNotIn("argument", read)
+
+    def test_bp_offset_indexed_through_bx_uses_ds(self):
+        code = self.FRAME + "89 eb 01 f3 8b 07 c9 c3"  # mov bx, bp; add bx, si; mov ax, [bx]
+        read = self.access(report(code), len(bytes.fromhex(self.FRAME)) + 4)
+        self.assertEqual(read["effectiveSegmentRegister"], "ds")
+        self.assertIn("entry:sp", repr(read["offset"]["expression"]))
+        self.assertIn("initial:esi", repr(read["offset"]["expression"]))
+
+    def test_segment_override_and_bp_base_use_ss(self):
+        code = self.FRAME + "8d 5e fc 36 8b 07 8b 56 fc c9 c3"
+        r = report(code)
+        start = len(bytes.fromhex(self.FRAME)) + 3
+        self.assertEqual(self.access(r, start)["effectiveSegmentRegister"], "ss")
+        self.assertEqual(self.access(r, start + 3)["effectiveSegmentRegister"], "ss")
+
+    def test_ds_and_frame_accesses_alias_only_when_segment_equality_is_established(self):
+        # Store through DS:[BX] with BX = BP - 4 (by LEA, or as -4 + BP), then read SS:[BP - 4].
+        cases = (({}, None), ({"ds": 0x2000, "ss": 0x3000}, None), ({"ds": 0x2000, "ss": 0x2000}, 0x1234))
+        for setup in ("8d 5e fc", "bb fc ff 01 eb"):
+            code = self.FRAME + setup + " c7 07 34 12 8b 46 fc c9 c3"
+            read_site = len(bytes.fromhex(self.FRAME + setup)) + 4
+            for registers, expected in cases:
+                with self.subTest(setup=setup, registers=registers):
+                    r = report(code, registers=registers)
+                    self.assertEqual(self.access(r, read_site)["value"]["value"], expected)
+        read_site = len(bytes.fromhex(self.FRAME)) + 7
+        # Instructions that copy SS into DS establish the equality on the path that runs them.
+        r = report(self.FRAME + "16 1f 8d 5e fc c7 07 34 12 8b 46 fc c9 c3")
+        self.assertEqual(self.access(r, read_site + 2)["value"]["value"], 0x1234)
+
+    def test_ds_store_over_unknown_segments_invalidates_frame_bytes_instead_of_merging(self):
+        # Write SS:[BP - 4], then DS:[BX] at the same offset, then read SS:[BP - 4] back.
+        code = self.FRAME + "c7 46 fc 11 11 8d 5e fc c7 07 22 22 8b 46 fc c9 c3"
+        r = report(code)
+        store = self.access(r, len(bytes.fromhex(self.FRAME)) + 8, "write")
+        self.assertEqual(store["effectiveSegmentRegister"], "ds")
+        self.assertGreater(store["uncertainAliasesInvalidated"], 0)
+        self.assertIsNone(self.access(r, len(bytes.fromhex(self.FRAME)) + 12)["value"]["value"])
+
+    def test_callee_segment_changes_and_modeled_calls_stay_explicit(self):
+        # The callee loads DS; the caller's later [bx] read uses the DS the callee left.
+        c = Code().emit("bb 00 01").branch("e8", "callee").label("after").emit("8b 07 c3")
+        c.label("callee").emit("b8 00 50 8e d8 c3")
+        r = report(c)
+        read = self.access(r, c.labels["after"])
+        self.assertEqual(read["segment"]["value"], 0x5000)
+        self.assertIn(c.labels["callee"] + 3, read["segment"]["producers"])
+        modeled = report(c, callModels=[{"site": 3, "evidence": "synthetic service", "cases": [{}]}])
+        read = self.access(modeled, c.labels["after"])
+        self.assertEqual(read["segment"]["expression"], ("unknown", "modeled-call:3:ds"))
+        preserved = report(c, registers={"ds": 0x2000},
+                           callModels=[{"site": 3, "evidence": "synthetic service", "preserves": ["ds"], "cases": [{}]}])
+        self.assertEqual(self.access(preserved, c.labels["after"])["segment"]["value"], 0x2000)
+
+
 class ReporterTests(unittest.TestCase):
     def test_register_parts_preserve_neighbor(self):
         r = report("b8 34 12 b0 00 c3")
@@ -869,9 +1098,12 @@ class ReporterTests(unittest.TestCase):
         self.assertTrue(r["gaps"])
         self.assertFalse(r["completeWithinModel"])
 
-    def test_hardware_is_a_boundary(self):
-        for code in ("cd 21 c3", "ee c3", "f3 a5 c3"):
+    def test_interrupts_and_unbounded_strings_stop_while_ports_continue_as_boundary_events(self):
+        for code in ("cd 21 c3", "f3 a5 c3"):
             self.assertFalse(report(code)["completeWithinModel"])
+        r = report("ee c3")
+        self.assertTrue(r["completeWithinModel"])
+        self.assertEqual([e["boundary"] for e in events(r, "hardware-boundary")], ["port-output"])
 
     def test_uses_follow_entries_across_intervening_data(self):
         data = bytes.fromhex("a1 00 02 c3 ff ff a1 00 02 c3")

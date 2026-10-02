@@ -7,7 +7,7 @@ engine resolved to a constant at the routine's return with Unicorn's value there
 import sys
 from pathlib import Path
 
-from unicorn import UC_ARCH_X86, UC_MODE_16, Uc
+from unicorn import UC_ARCH_X86, UC_HOOK_INSN, UC_MODE_16, Uc
 from unicorn import x86_const as U
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -25,9 +25,16 @@ def configuration(data, registers, **extra):
             "entry": 0, "registers": registers, **extra}
 
 
-def unicorn(data, registers, direction=None):
-    """Registers after running ``data`` up to its first byte-0xC3 return reached, as Unicorn sees them."""
+def unicorn(data, registers, direction=None, ports=None, outputs=None):
+    """Registers after running ``data`` up to its first byte-0xC3 return reached, as Unicorn sees them.
+
+    A port read returns ``ports[port]``; each port write is appended to ``outputs`` as
+    ``(port, size, value)``.
+    """
     uc = Uc(UC_ARCH_X86, UC_MODE_16)
+    uc.hook_add(UC_HOOK_INSN, lambda uc, port, size, _: (ports or {})[port], None, 1, 0, U.UC_X86_INS_IN)
+    uc.hook_add(UC_HOOK_INSN, lambda uc, port, size, value, _: (outputs if outputs is not None else []).append((port, size, value)),
+                None, 1, 0, U.UC_X86_INS_OUT)
     uc.mem_map(0, 0x110000)
     base = SEGMENT * 16
     uc.mem_write(base, data)
@@ -49,21 +56,29 @@ def unicorn(data, registers, direction=None):
     return stopped.get("at"), {name: uc.reg_read(getattr(U, "UC_X86_REG_" + name.upper())) for name in names}
 
 
-def check(test, code, registers=None, direction=None, resolved=()):
+def check(test, code, registers=None, direction=None, resolved=(), ports=None, port_inputs=None):
     """Compare the engine's resolved registers with Unicorn's for one synthetic routine.
 
     Routines write any memory they read, because the engine starts with memory unknown and
-    Unicorn with zeros. ``resolved`` names registers the engine must resolve.
+    Unicorn with zeros. ``resolved`` names registers the engine must resolve. ``ports`` gives
+    Unicorn's port reads and ``port_inputs`` the engine's ``portInputs`` rows for the same values;
+    every port write the engine reports must match Unicorn's, in order.
     """
     data = bytes.fromhex(code)
     registers = {**STACK, **(registers or {})}
     flags = {} if direction is None else {"flags": {"direction": direction}}
+    if port_inputs:
+        flags["portInputs"] = port_inputs
     result = run_report(data, configuration(data, registers, **flags), "trace")
     test.assertEqual(len(result["paths"]), 1, "the oracle compares one resolved path")
     path = result["paths"][0]
     test.assertTrue(path["returned"], path["stop"])
-    at, expected = unicorn(data, registers, direction)
+    outputs = []
+    at, expected = unicorn(data, registers, direction, ports, outputs)
     test.assertIsNotNone(at, "Unicorn did not reach a return")
+    written = [(e["port"]["value"], e["width"], e["value"]["value"]) for e in path["events"]
+               if e["kind"] == "hardware-boundary" and e["boundary"] == "port-output"]
+    test.assertEqual(written, outputs, f"port writes after {code}")
     compared = 0
     for name, row in path["registers"].items():
         if name in expected and row["value"] is not None:
