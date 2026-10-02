@@ -25,22 +25,22 @@ class DifferentialTests(unittest.TestCase):
         semantics.register(backend)
         self.addCleanup(semantics._backends.pop, backend.name)
 
-    def test_handwritten_is_the_default_backend(self):
-        self.assertEqual(semantics.names()[0], "handwritten")
-        self.assertEqual(semantics.current().name, "handwritten")
+    def test_the_default_backend_serves_new_states(self):
+        self.assertIn("handwritten", semantics.names())
+        self.assertEqual(semantics.current().name, semantics.names()[0])
 
     def test_selection_applies_only_inside_the_block(self):
         self.register(AltersNop())
         with semantics.selected("test-alters-nop"):
             self.assertEqual(semantics.current().name, "test-alters-nop")
-        self.assertEqual(semantics.current().name, "handwritten")
+        self.assertEqual(semantics.current().name, semantics.names()[0])
 
     def test_identical_backends_agree(self):
         self.register(type("Same", (Handwritten,), {"name": "test-same"})())
         data = bytes.fromhex("b80100" "90" "c3")
         outcomes, found = compare(data, configuration(data), "trace")
         self.assertEqual(found, {})
-        self.assertEqual(set(outcomes), {"handwritten", "test-same"})
+        self.assertLessEqual({"handwritten", "test-same"}, set(outcomes))
 
     def test_a_different_register_value_is_reported(self):
         self.register(AltersNop())

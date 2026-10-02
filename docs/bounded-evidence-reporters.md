@@ -5,7 +5,8 @@ The reports come from two published packages built in this repository's `package
 reports, and `scientific-method-engine` on PyPI decodes the instructions. Run
 `python -m pip install scientific-method-engine` once in the Python environment used for
 research, and add the reader to the project (`pnpm add -D @scientific-method/executable-reader`).
-Python 3.10 or later and Node 22 or later are required; the engine pins Capstone 5.0.7.
+Python 3.12 or later and Node 22 or later are required; the engine pins Capstone 5.0.7 and
+pypcode 4.0.0.
 `EVIDENCE_PYTHON` selects another Python executable. The reader refuses an engine whose
 prepared-config protocol differs from its own, so upgrade the two together.
 See [moving from the vendored reporters](migrating-to-scientific-method.md).
@@ -190,6 +191,13 @@ and saved versus returned pointers stay visible; no rollback is inferred.
 
 ## Limits and assumptions
 
+Capstone decodes each instruction. Its values, flags and branch conditions come from Ghidra's
+SLEIGH specification for x86, lifted to p-code by pypcode and evaluated over the engine's value
+terms ([ADR 0003](decisions/0003-established-instruction-semantics.md)). Segment attribution,
+memory accesses, producers and every control transfer stay with the engine. A p-code memory access
+that does not match the decoded operand, an unsupported p-code operation and a decode length that
+differs from Capstone's stop the path.
+
 The decoder supports 16-bit addressing and a bounded subset of ordinary integer
 operations: MOV/MOVZX/MOVSX, XCHG, low-result two/three-operand IMUL (flags unresolved),
 one-operand MUL/IMUL/DIV/IDIV, LEA, LDS/LES, PUSH/POP, LEAVE, ADD/SUB, ADC/SBB,
@@ -327,12 +335,20 @@ not a solver, loader emulator or whole-program analysis.
 
 ## Bounded string effects and saved flags
 
-MOVS/STOS/LODS report sequential memory accesses in segmented16 and flat32,
-with operand widths, source overrides, fixed ES destination and modular pointers.
-REP requires a concrete count. `stringIterations` bounds the entire query
+MOVS/STOS/LODS/CMPS/SCAS report sequential memory accesses in segmented16 and
+flat32, with operand widths, source overrides, fixed ES destination and modular
+pointers. REP requires a concrete count. `stringIterations` bounds the entire query
 (default 4096, maximum 65536), including reserved iterations of paths that stop.
 Zero count touches no memory and needs no direction assumption. Address-size
-changes and REPNE forms stop with explicit gaps.
+changes and REPNE on MOVS/STOS/LODS stop with explicit gaps.
+
+CMPS and SCAS set the flags of a comparison of the source (or AL/AX/EAX) with the
+ES destination. REPE and REPNE forms run until the comparison fails or the count
+runs out. They cannot reserve their iterations in advance, so each one is charged
+to `stringIterations` as it runs, and an exhausted budget stops the path mid-loop.
+A comparison whose outcome is unresolved stops the path after that iteration. A
+`string-compare-exit` event records the iterations run, the exit (`condition` or
+`count`) and the remaining counter, whose producers include the compared values.
 
 DF begins unknown. CLD/STD establish local values; otherwise string effects fork
 conditional forward/backward cases tied to that producer. Optional

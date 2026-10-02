@@ -3,7 +3,7 @@
 ADR 0003 decision 6 freezes this module. No mnemonic, flag rule or value computation is added here;
 the pypcode backend replaces it group by group, and phase 5 deletes it.
 """
-from capstone.x86 import X86_OP_REG, X86_OP_MEM
+from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
 from . import semantics
 from .machine import ALIASES, StopPath
 from .values import Value, const, unknown, op, extract, join, resize, sources
@@ -235,6 +235,9 @@ def ordinary(state, ins, image):
     if m in ("rol", "ror", "rcl", "rcr"):
         a = state.get(ins, operands[0], image)
         count = state.get(ins, operands[1], image) if len(operands) > 1 else const(1, 8)
+        if len(operands) > 1 and operands[1].type == X86_OP_IMM:
+            # Capstone gives RCL's implicit count of 1 on a memory operand a size of 0.
+            count = const(operands[1].imm, 8, state.at)
         if count.number is None:
             raise StopPath("rotate count unresolved")
         masked = count.number & 31
@@ -264,9 +267,11 @@ def ordinary(state, ins, image):
         # CF is the last bit rotated out: the result's low bit for ROL/RCL and its high bit for ROR/RCR.
         out = {"rol": (bits - n) % bits, "ror": (n - 1) % bits, "rcl": bits - n, "rcr": n - 1}[m]
         carry = extract(a, out, 1)
+        # A count read from CL is an input of the result and of CF.
+        value = Value(value.bits, value.term, sources(value, count, site=state.at))
         state.put(ins, operands[0], value)
         state.forget_flags()
-        state.carry = Value(1, carry.term, sources(carry, site=state.at))
+        state.carry = Value(1, carry.term, sources(carry, count, site=state.at))
         state.event("arithmetic", operation=m, left=a.report(), count=n, result=value.report(),
                     carryOut=state.carry.report(), modulus=1 << bits)
         return
@@ -313,7 +318,9 @@ def ordinary(state, ins, image):
             r = x - q * y
             if not ((-(1 << (bits - 1)) <= q < 1 << (bits - 1)) if signed else q < 1 << bits):
                 raise StopPath("divide overflow raises interrupt 0; its handler is not modeled")
-            quotient, remainder = const(q, bits, state.at), const(r, bits, state.at)
+            # Both results are computed from the dividend and divisor, so they name their producers.
+            origin = sources(dividend, divisor, site=state.at)
+            quotient, remainder = Value(bits, const(q, bits).term, origin), Value(bits, const(r, bits).term, origin)
         else:
             wide = resize(divisor, 2 * bits, signed)
             origin = sources(dividend, divisor, site=state.at)
@@ -345,15 +352,19 @@ def shift_carry(state, m, a, count):
 
 
 def string_iteration(state, ins, operation, width, source_name, delta):
+    if operation in ("cmps", "scas"):
+        raise StopPath("Unsupported instruction semantics: " + ins.mnemonic)
     si, di = ("esi", "edi") if state.flat else ("si", "di")
+    # DF chooses the step's sign, so the instruction that set DF is one of the step's producers.
+    step = Value(state.bits, const(delta, state.bits).term, state.direction_flag.sources)
     if operation in ("movs", "lods"):
         value = state.access(state.segment(source_name), state.reg(si), width, role="string-source", addressing_register=source_name)
-        state.setreg(si, op("add", state.reg(si), const(delta, state.bits), state.at), state.at)
+        state.setreg(si, op("add", state.reg(si), step, state.at), state.at)
     else:
         value = state.reg({1:"al",2:"ax",4:"eax"}[width])
     if operation in ("movs", "stos"):
         state.access(state.segment("es"), state.reg(di), width, value, role="string-destination", addressing_register="es")
-        state.setreg(di, op("add", state.reg(di), const(delta, state.bits), state.at), state.at)
+        state.setreg(di, op("add", state.reg(di), step, state.at), state.at)
     else:
         state.setreg({1:"al",2:"ax",4:"eax"}[width], value, state.at)
 

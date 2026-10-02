@@ -76,6 +76,7 @@ Run what CI runs before pushing:
 pnpm install --frozen-lockfile
 pnpm lint && pnpm format:check && pnpm typecheck && pnpm exec tsc -p tools/tsconfig.json
 pnpm test && node --test "tools/release/*.test.ts" && pnpm build
+python -m pip install -e "packages/scientific-method-engine[test]"
 cd packages/scientific-method-engine && python -B -m unittest discover -s tests -p "test*.py"
 dotnet build packages/dotnet/ScientificMethod.slnx
 dotnet test --project packages/dotnet/ScientificMethod.Core.Tests/ScientificMethod.Core.Tests.csproj

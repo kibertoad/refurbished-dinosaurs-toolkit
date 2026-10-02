@@ -14,7 +14,8 @@ sys.path.insert(0, str(SRC))
 ENGINE = [sys.executable, "-B", "-m", "scientific_method_engine"]
 ENGINE_ENV = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(SRC), os.environ.get("PYTHONPATH")]))}
 from scientific_method_engine.x86.image import Image
-from differential import run_report
+from scientific_method_engine.x86.reports import run_report as engine_report
+from differential import accepted, run_report
 from scientific_method_engine.x86.trace import trace, walk, OVERLAP_REASON, CONTESTED_REASON
 from scientific_method_engine.x86.values import const, unknown, op, extract, resize
 
@@ -1466,6 +1467,59 @@ class ReporterTests(unittest.TestCase):
             self.assertFalse(result["completeWithinModel"])
             self.assertIn(reason,result["paths"][0]["stop"])
             self.assertFalse(events(result,"write"))
+
+    def test_repeated_string_comparisons(self):
+        es = {"es": 0x2000, "ds": 0x2000}
+        with accepted("extended", "the handwritten backend stops on CMPS and SCAS"):
+            # Positive control: REPNE SCASB stops at the terminator it compared, after two iterations.
+            result = report("bf 00 01 c6 05 61 c6 45 01 00 b0 00 b9 10 00 f2 ae c3", flags={"direction": 0}, registers=es)
+            path = result["paths"][0]
+            self.assertTrue(path["returned"], path["stop"])
+            exit_event, = events(result, "string-compare-exit")
+            self.assertEqual((exit_event["iterations"], exit_event["exit"]), (2, "condition"))
+            self.assertEqual((path["registers"]["cx"]["value"], path["registers"]["di"]["value"]), (14, 0x102))
+            self.assertEqual(result["stringIterationsUsed"], 2)
+            # Unknown memory leaves the repeat condition unresolved after the first iteration.
+            result = report("bf 00 01 b0 00 b9 10 00 f2 ae c3", flags={"direction": 0}, registers=es)
+            self.assertIn("comparison outcome unresolved", result["paths"][0]["stop"])
+            self.assertEqual(len(events(result, "read")), 1)
+            # A repeated comparison pays per iteration, so the budget stops it mid-loop.
+            result = report("bf 00 01 c7 05 00 00 b0 01 b9 10 00 f2 ae c3", flags={"direction": 0}, registers=es,
+                            stringIterations=1)
+            self.assertIn("budget exhausted", result["paths"][0]["stop"])
+            self.assertEqual(result["stringIterationsUsed"], 1)
+        # REPNE stays rejected on the forms that do not compare.
+        result = report("f2 a4 c3", flags={"direction": 0})
+        self.assertIn("REPNE", result["paths"][0]["stop"])
+
+    def test_repeated_comparison_splits_an_unknown_direction_when_its_count_exceeds_the_budget(self):
+        es = {"es": 0x2000, "ds": 0x2000}
+        with accepted("extended", "the handwritten backend stops on CMPS and SCAS"):
+            # CX = 0xFFFF exceeds the budget, but the terminator ends the scan after one iteration either way.
+            result = report("bf 00 01 c6 05 00 b0 00 b9 ff ff f2 ae c3", registers=es)
+        self.assertTrue(all(p["returned"] for p in result["paths"]), [p["stop"] for p in result["paths"]])
+        self.assertEqual(sorted(p["registers"]["di"]["value"] for p in result["paths"]), [0xff, 0x101])
+        self.assertEqual(result["stringIterationsUsed"], 2)
+
+    def test_rotates_and_sal_by_one_on_unknown_operands_keep_the_reported_forms(self):
+        # The differential run checks that both backends report the same result and operation.
+        for code in ("d1 c0", "d1 c8", "d0 c0", "d0 c8", "d0 cc", "d1 f0"):
+            with self.subTest(code=code):
+                path = report(code + " c3")["paths"][0]
+                self.assertTrue(path["returned"], path["stop"])
+
+    def test_rotate_through_unknown_carry_resolves_a_carry_out_from_a_known_operand(self):
+        # RCL by n carries out bit 16 - n of a 16-bit operand, RCR by n bit n - 1; CF starts unknown.
+        # The result term still differs in form from the handwritten backend's, so this runs the
+        # engine's default backend alone.
+        cases = (("bb 10 00 c1 d3 05", 0), ("bb 00 08 c1 d3 05", 1), ("bb 10 00 c1 db 05", 1),
+                 ("bb 08 00 c1 db 05", 0), ("c1 d3 05", None))
+        for code, carry in cases:
+            with self.subTest(code=code):
+                data = bytes.fromhex(code + " c3")
+                result = engine_report(data, configuration(data), "trace")
+                event, = events(result, "arithmetic")
+                self.assertEqual(event["carryOut"]["value"], carry)
 
     def test_string_repetition_keeps_register_terms_and_budget_bounded(self):
         # Many 16-bit pointer updates must not nest the unknown upper register halves.

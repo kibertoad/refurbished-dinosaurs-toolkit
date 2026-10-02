@@ -49,7 +49,8 @@ through to the engine, which parses them itself.
 
 Analyses instructions and emits `bounded-x86-v1` reports.
 
-- Decodes segmented 16-bit and i386 instructions, follows bounded paths and reports effects,
+- Decodes segmented 16-bit and i386 instructions with Capstone and takes their semantics from
+  pypcode's SLEIGH p-code (ADR 0003). It follows bounded paths and reports effects,
   arguments, returns, memory accesses, guards, incoming calls, allocation, dispatch, operands,
   call targets, callee graphs, function bounds and site ownership.
 - Parses PE32/i386 sources and derives their section mappings.
@@ -98,8 +99,10 @@ through matching version numbers.
   local runs execute the `.ts` sources directly with Node 24's type stripping. Publishing compiles
   to JavaScript with declaration files, because Node refuses to strip types under `node_modules`.
 - The Node workspace uses pnpm. oxlint lints and oxfmt formats the TypeScript.
-- The Python package builds with hatchling and is tested with `unittest`. It pins its Capstone
-  version, because reports state the decoder they used.
+- The Python package builds with hatchling and is tested with `unittest`. It pins Capstone and
+  pypcode, because reports depend on the decoder and the instruction specification they used.
+  Its `test` extra adds Unicorn, the concrete oracle for synthetic tests. Unicorn's core is GPLv2,
+  so it is never a runtime dependency.
 - The .NET packages keep the existing build settings, including the source-file line limit.
 
 ## Releasing

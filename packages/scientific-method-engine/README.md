@@ -1,8 +1,9 @@
 # scientific-method-engine
 
 Bounded instruction-derived x86 evidence reports for segmented 16-bit MZ/FBOV code and
-PE32/i386 code. The engine decodes instructions with Capstone, follows bounded paths and emits
-`bounded-x86-v1` JSON. It never runs the original program.
+PE32/i386 code. The engine decodes instructions with Capstone, takes their values, flags and
+branch conditions from Ghidra's SLEIGH specification through pypcode, follows bounded paths and
+emits `bounded-x86-v1` JSON. It never runs the original program. It needs Python 3.12 or later.
 
 ```sh
 uv add --group research scientific-method-engine     # or: pip install scientific-method-engine
