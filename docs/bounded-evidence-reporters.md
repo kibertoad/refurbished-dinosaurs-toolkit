@@ -511,9 +511,30 @@ The CFG follows each source-derived word and retains the full declaration in
 `indirectJumpDeclarations`. Bounds retain the consumption assumption in
 `assumedContinuations`; partial tables retain a gap and unresolved transfer.
 Unused declarations do not establish reachability. These supplied edges cannot
-prove overlapping instruction starts. They are CFG evidence inputs, not register
-assignments or path execution: `trace`, effects, arguments and other path reports
-still stop at unresolved computed transfers. No indirect-call effects are modeled.
+prove overlapping instruction starts. A declaration assigns no register or table
+word and verifies no execution. The ordinary
+`paths` still stop at unresolved computed transfers. Path reports additionally retain
+`declaredContinuationPaths`, separate full event streams under explicitly assumed
+source-table target choices. `effects` adds matching summaries under
+`effectOrdering.declaredContinuationPaths`; their `effectCompleteWithinModel` is
+always false. Other focused reports retain raw continuation events, without their
+ordinary-path derived analyses. No indirect-call effects are modeled.
+
+Each conditional path carries `declaredJumpAssumptions`: table indices/source-word
+sites, target, evidence, exhaustiveness, operand and effective address. The live
+selector/table contents and native reachability remain unverified. A concrete
+operand or resolved field address excludes contradictory rows; repeated unchanged
+operands cannot choose contradictory values. Duplicate targets share one route.
+Partial tables retain the original unresolved path and missing routes. Supplied
+targets must survive bounded CFG boundary checks; an overlap cannot be established
+by its supplied edge. Boundary discovery shares `instructionLimit` across cached
+entries (default 10000); exhausted or unresolved boundaries become explicit gaps.
+All continuation choices share path/step/visit/total budgets with ordinary tracing.
+Continuations start only after every ordinary path has finished, so they use only the
+budget the ordinary paths left; `uses` and `dispatch` read ordinary paths and start none.
+A returned conditional path never makes `completeWithinModel` or `allPathsRead`
+true. Split capped queries by explicitly partial evidenced table fields rather
+than raising limits; such a split cannot prove the complete dispatch.
 A true exhaustive flag is not independently validated behavior or native reachability.
 
 ## Relocated pointer-pair inventory

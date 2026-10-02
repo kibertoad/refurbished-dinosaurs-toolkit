@@ -102,3 +102,12 @@ The `effects` command additionally emits path-local `effectOrdering` timelines,
 pre-call write prefixes and bounded local restoration witnesses. Unknown modeled
 or nested service effects stay separate; no return code establishes rollback or
 transactionality. See [the full contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#ordered-effect-path-summaries).
+
+Evidenced segmented16 `indirectJumps` declarations also expose separate
+`declaredContinuationPaths`. Ordinary paths retain their unresolved transfer;
+conditional routes preserve prefix/child effects with target-choice, live-table
+and selector assumptions. Effects summaries never mark those routes complete.
+Concrete values/field addresses reject inconsistent rows; overlap and shared
+path/step/visit/total/boundary limits remain explicit. Partial-table splits are
+partial evidence, never complete dispatch or native-reachability claims. See the
+[table contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#evidenced-indirect-jump-tables).
