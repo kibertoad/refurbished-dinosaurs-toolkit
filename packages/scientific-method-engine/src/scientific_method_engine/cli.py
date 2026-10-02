@@ -10,6 +10,7 @@ PREPARED_CONFIG_LIMIT = 16 * 1024 * 1024
 USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bounds|owner|callees|trace|uses|arguments|"
          "effects|returns|memory|incoming|call-order|guards|allocation|dispatch> <config.json|->\n"
          "effects includes ordered path writes/calls and local restoration witnesses; transactionality remains unestablished.\n"
+         "Declared table continuations are separate conditional paths; ordinary computed transfers remain stopped.\n"
          "       scientific-method-engine ghidra-scripts")
 
 

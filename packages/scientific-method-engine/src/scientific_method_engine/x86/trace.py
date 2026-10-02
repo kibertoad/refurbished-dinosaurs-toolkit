@@ -2,7 +2,7 @@
 from copy import deepcopy
 from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
 from .image import integer
-from .machine import (State, StopPath, ordinary, predicate, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
+from .machine import (State, StopPath, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
                       string_count, string_effect, check_string_form)
 from .values import const, unknown, sources, op, Value
 from .result_flow import validate_contracts, result_contracts
@@ -50,7 +50,7 @@ def counter_branch(state, ins):
     nonzero = None if count.number is None else count.number != 0
     zero_flag = None
     if m != "loop":
-        zero_flag, flag_info = predicate(state, "je")
+        zero_flag, flag_info = state.semantics.condition(state, "je")
         info["zeroFlag"] = flag_info
         if zero_flag is not None and m in ("loopne", "loopnz"):
             zero_flag = not zero_flag
@@ -214,7 +214,14 @@ def snapshot(state):
     return {name: state.reg(name).report() for name in ALIASES}
 
 
-def trace(image, config):
+def trace(image, config, continue_declared_jumps=True):
+    """Trace bounded paths, preserving declared-table continuations as separate conditional evidence.
+
+    Ordinary paths run first. A path stopped at a declared indirect jump is then
+    continued once per surviving table target, so the continuations never take
+    budget from an ordinary path. Callers that read only ordinary paths pass
+    continue_declared_jumps=False.
+    """
     entry = integer(config.get("entry"), 0, len(image.data) - 1, "entry")
     if not any(entry in r["entries"] for r in image.regions):
         raise ValueError("Trace entry must be an established region entry")
@@ -246,6 +253,11 @@ def trace(image, config):
                 if r not in ALIASES or type(n) is not int or not 0 <= n < 1 << ALIASES[r][2]:
                     raise ValueError("Invalid model register")
     pending, outputs, global_gaps = [State(entry, image, config)], [], []
+    conditional_outputs = []
+    # States stopped at a declared jump site, continued after the ordinary paths.
+    deferred = []
+    boundary_cache = {}
+    boundary_budget = integer(config.get("instructionLimit", 10000), 1, 100000, "instruction limit")
     created = 1
     total_steps = 0
     total_string_steps = 0
@@ -264,11 +276,88 @@ def trace(image, config):
         string_effect(s, ins, count, remaining)
 
     def finish(s, reason=None, returned=False):
-        outputs.append({"returned": returned, "stop": reason, "stopSite": None if returned else s.at, "steps": s.steps,
-                        "instructionPath": s.path, "guards": s.guards, "events": s.events,
-                        "registers": snapshot(s), "conditionalModels": s.conditional})
+        path = {"returned": returned, "stop": reason, "stopSite": None if returned else s.at, "steps": s.steps,
+                "instructionPath": s.path, "guards": s.guards, "events": s.events,
+                "registers": snapshot(s), "conditionalModels": s.conditional}
+        assumptions = getattr(s, "declared_jump_assumptions", [])
+        if assumptions:
+            path["declaredJumpAssumptions"] = assumptions
+            conditional_outputs.append(path)
+        else:
+            outputs.append(path)
 
-    while pending:
+    def declared_continuations(s):
+        # Each child follows one declared target under a recorded assumption. The operand
+        # keeps its traced value; no register or table word is assigned. s is a copy taken
+        # at the jump, so the operand read below never enters the stopped ordinary path.
+        nonlocal created, boundary_budget
+        declaration = image.indirect_jumps[s.at]
+        ins = image.decode(s.at)
+        root_entry = s.frames[-1]["entry"]
+        if root_entry not in boundary_cache:
+            if boundary_budget < 1:
+                global_gaps.append({"site": s.at, "reason": "conditional table boundary instruction limit"})
+                return
+            seen, walk_gaps, _, undecoded, contested = walk(image, [root_entry], boundary_budget)
+            boundary_budget -= max(1, len(seen) + len(undecoded) + len(contested))
+            # A truncated walk never saw the instructions that could contest a target start.
+            if any(g["reason"] == "instruction limit" for g in walk_gaps):
+                seen = {}
+            boundary_cache[root_entry] = seen
+        seen = boundary_cache[root_entry]
+        try:
+            value = s.get(ins, ins.operands[0], image)
+            address = s.address(ins, ins.operands[0]) if ins.operands[0].type == X86_OP_MEM else None
+        except StopPath as error:
+            global_gaps.append({"site": s.at, "reason": "conditional table operand unresolved: " + str(error)})
+            return
+        groups = {}
+        region = image.region(s.at)
+        choice_key = repr(value.term)
+        previous = getattr(s, "declared_jump_choices", {}).get(choice_key)
+        for row in declaration["rows"]:
+            if address is not None:
+                segment, offset, _ = address
+                # A table word inside another declared region uses that region's mapping; one
+                # outside every region is read as an extension of the jump's region.
+                row_region = image.region(row["operandSite"]) or region
+                row_offset = row_region["ip"] + row["operandSite"] - row_region["start"]
+                if segment.number is not None and offset.number is not None:
+                    if not 0 <= row_offset <= 65534 or segment.number * 16 + offset.number != row_region["segment"] * 16 + row_offset:
+                        continue
+            if value.number is not None and value.number != row["rawOffset"]:
+                continue
+            if previous is not None and row["rawOffset"] not in previous:
+                continue
+            groups.setdefault(row["target"], []).append(row)
+        for target, rows in groups.items():
+            if target not in seen:
+                global_gaps.append({"site": s.at, "target": target,
+                                    "reason": "conditional table target boundary is unresolved or instruction-limited"})
+                continue
+            if created >= max_paths:
+                global_gaps.append({"site": s.at, "reason": "path limit"})
+                break
+            child = deepcopy(s)
+            child.declared_jump_choices = {**getattr(child, "declared_jump_choices", {}),
+                                          choice_key: {r["rawOffset"] for r in rows}}
+            assumption = {"site": s.at, "target": target, "tableIndices": [r["index"] for r in rows],
+                          "operandSites": [r["operandSite"] for r in rows], "exhaustive": declaration["exhaustive"],
+                          "evidence": declaration["evidence"], "tableEvidence": declaration["table"]["evidence"],
+                          "operand": value.report(),
+                          "operandAddress": None if address is None else
+                              {"segment": address[0].report(), "offset": address[1].report(), "segmentRegister": address[2]},
+                          "meaning": "conditional target choice from source table; selector, live table contents and reachability unverified"}
+            child.declared_jump_assumptions = [*getattr(child, "declared_jump_assumptions", []), assumption]
+            child.event("declared-jump-continuation", **{k: v for k, v in assumption.items() if k != "site"})
+            child.at = target
+            pending.append(child)
+            created += 1
+
+    while pending or deferred:
+        if not pending:
+            declared_continuations(deferred.pop(0))
+            continue
         state = pending.pop()
         try:
             while True:
@@ -468,6 +557,8 @@ def trace(image, config):
                 if m in ("jmp", "ljmp"):
                     target, provenance = call_target(image, at, ins)
                     if target is None:
+                        if continue_declared_jumps and at in image.indirect_jumps:
+                            deferred.append(deepcopy(state))
                         raise StopPath("unresolved jump: " + provenance.get("reason", "outside mapped code"))
                     if m == "ljmp":
                         target_region = image.region(target)
@@ -482,7 +573,7 @@ def trace(image, config):
                         answer, info, key = counter_branch(state, ins)
                         negated = False
                     else:
-                        answer, info = predicate(state, m)
+                        answer, info = state.semantics.condition(state, m)
                         condition, negated = BRANCH_CONDITIONS.get(m, (m, False))
                         if condition == "c":
                             # CF can outlive its producer (INC/DEC, CLC/STC, shifts), so key it by its own value.
@@ -515,11 +606,11 @@ def trace(image, config):
                             pending.append(child)
                             created += 1
                     continue
-                ordinary(state, ins, image)
+                state.semantics.ordinary(state, ins, image)
                 state.at = following
         except StopPath as error:
             finish(state, str(error))
-    return {"paths": outputs, "gaps": global_gaps,
+    return {"paths": outputs, "declaredContinuationPaths": conditional_outputs, "gaps": global_gaps,
             "completeWithinModel": not global_gaps and bool(outputs) and all(p["returned"] for p in outputs),
             "nativeReachability": "unconfirmed", "stepsUsed": total_steps, "stringIterationsUsed": total_string_steps,
             "limits": {"steps": max_steps, "paths": max_paths, "depth": max_depth}}
