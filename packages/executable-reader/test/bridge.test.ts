@@ -569,6 +569,36 @@ test("callee graph through the source bridge compares its edges with a Ghidra ex
   assert.throws(() => run(["callees", join(dir, "config.json")]), /ghidraAgreementSites/);
 });
 
+test("argument frames map pushed words onto the callee's read widths through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // push 7; push 9; call 75; add sp,4; ret; at 75: push bp; mov bp,sp; les bx,[bp+4]; pop bp; ret
+  data.set([0x6a, 7, 0x6a, 9, 0xe8, 4, 0, 0x83, 0xc4, 4, 0xc3, 0x55, 0x89, 0xe5, 0xc4, 0x5e, 4, 0x5d, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const cfg = {
+    ...config,
+    sha256: createHash("sha256").update(data).digest("hex"),
+    regions: [{ ...config.regions[0]!, entries: [64, 75] }],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  const r = run(["arguments", join(dir, "config.json")]);
+  const frame = r.paths[0].argumentFrames[0];
+  assert.equal(frame.callSite, 68);
+  assert.deepEqual(
+    frame.slots.map((s: Report) => [s.offset, s.width, s.writerSite]),
+    [
+      [0, 2, 66],
+      [2, 2, 64],
+    ],
+  );
+  assert.deepEqual(
+    frame.groupings.map((g: Report) => [g.offset, g.width, g.grouping, g.slotOffsets]),
+    [[0, 4, "far-pointer", [0, 2]]],
+  );
+  assert.equal(frame.settledOnThisPath, true);
+  assert.equal(r.argumentFrameSites[0].agreed, true);
+});
+
 test("operand candidates preserve prefixed widths and reject interior starts through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);
