@@ -60,6 +60,12 @@ class State:
         # Keys grouped by (segment, base) so a write scans only groups that can alias it.
         self.memory_groups = {}
         self.memory_epoch = 0
+        # The order of the write event that stored each modeled byte, and for bytes a possibly
+        # aliasing write dropped, the order of that write. memory_cleared is the order of the event
+        # that dropped every byte (a modeled call), or None.
+        self.memory_writers = {}
+        self.lost_memory = {}
+        self.memory_cleared = None
         self.events = []
         # Value transfers are recorded only for queries that trace declared return results.
         self.value_transfers = bool(config.get("returnContracts"))
@@ -145,7 +151,23 @@ class State:
     def clear_memory(self):
         self.memory.clear()
         self.memory_groups.clear()
+        self.memory_writers.clear()
+        self.lost_memory.clear()
+        # The caller records the event that explains the loss right after clearing.
+        self.memory_cleared = len(self.events)
         self.memory_epoch += 1
+
+    def byte_writer(self, index, key):
+        """The byteProducers row of one accessed byte: its producers and the write that stored it."""
+        if key in self.memory:
+            return {"index": index, "producers": producers(self.memory[key]), "writeOrder": self.memory_writers.get(key)}
+        if key in self.lost_memory:
+            unwritten = {"cause": "dropped by a possibly aliasing write", "order": self.lost_memory[key]}
+        elif self.memory_cleared is not None:
+            unwritten = {"cause": "dropped by a modeled call", "order": self.memory_cleared}
+        else:
+            unwritten = {"cause": "no write on this path", "order": None}
+        return {"index": index, "producers": [], "writeOrder": None, "unwritten": unwritten}
 
     def reg(self, name):
         root, low, bits = alias(name)
@@ -219,11 +241,15 @@ class State:
                     if not disjoint:
                         uncertain.append(key)
                         del self.memory[key]
+                        self.memory_writers.pop(key, None)
+                        self.lost_memory[key] = len(self.events)
                         members.discard(key)
                 if not members:
                     del self.memory_groups[group]
             for i, key in enumerate(keys):
                 self.memory[key] = extract(write, i * 8, 8)
+                self.memory_writers[key] = len(self.events)
+                self.lost_memory.pop(key, None)
             self.memory_groups.setdefault((seg, base), set()).update(keys)
             value = write
             missing = []
@@ -242,7 +268,7 @@ class State:
         event = self.event("write" if write is not None else "read", segment=segment.report(), offset=offset.report(),
                            width=width, effectiveSegmentRegister=addressing_register, segmentInterpretation="base" if self.flat else "selector-paragraph", interval={"segment": seg, "base": base, "start": delta, "end": delta + width},
                            value=value.report(), missingByteProducers=missing,
-                           byteProducers=[{"index": i, "producers": producers(self.memory[key]) if key in self.memory else []} for i, key in enumerate(keys)],
+                           byteProducers=[self.byte_writer(i, key) for i, key in enumerate(keys)],
                            guards=deepcopy(relevant), role=role,
                            uncertainAliasesInvalidated=len(uncertain))
         f = self.frames[-1]
