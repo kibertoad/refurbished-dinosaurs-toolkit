@@ -38,6 +38,10 @@ The workflow runs only when a push changes `.changeset/`, an npm package or the 
    the largest of those labels. The publish job writes that version into the build, tests,
    publishes, then creates the tag and a GitHub release with the built files attached.
 
+`release-disc-archiver.yml` then builds the standalone downloads on Windows, macOS and Linux and
+attaches them to the same GitHub release. A failed bundle job can be rerun on its own; it
+replaces the zips it uploads.
+
 Only one release run per workflow goes at a time, and GitHub drops a waiting run when another
 queues behind it. Nothing is lost that way: the run that goes ahead plans from all the pull
 requests merged since the latest tag, including the dropped run's. For the same reason a

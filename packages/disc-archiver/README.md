@@ -61,31 +61,74 @@ is missing is skipped and reported; the others are still written.
 
 ## Install
 
-It needs Python 3.12 or later. The window needs Tk, which the python.org installers for Windows
-and macOS include (on Debian and Ubuntu, install `python3-tk`).
+### Download (no Python needed)
+
+Download the zip for your computer from the
+[toolkit's releases](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/releases?q=dinorefurb-disc-archiver)
+and unpack it anywhere:
+
+| File | For |
+|---|---|
+| `disc-archiver-<version>-windows-x64.zip` | Windows 10 and 11 |
+| `disc-archiver-<version>-macos-arm64.zip` | Macs with Apple silicon |
+| `disc-archiver-<version>-linux-x64.zip` | 64-bit Linux |
+
+Each holds the window, the command and redumper, ready to run:
+
+```text
+disc-archiver-<version>-windows-x64/
+  Disc Archiver.exe          the window: double-click it
+  disc-archiver.exe          the command, for a terminal
+  tools/redumper/            redumper, unmodified, with its licence (GPL-3.0)
+  README.txt
+  PERSONAL-ARCHIVE-ONLY.txt
+```
+
+On macOS the window is `Disc Archiver.app`, and on Linux `disc-archiver-gui`. The builds are not
+code-signed yet: on Windows choose **More info** and **Run anyway** if SmartScreen stops it; on
+macOS right-click the app and choose **Open**, or allow it under **System Settings > Privacy &
+Security**.
+
+Programs placed in `tools/` (or `tools/<name>/bin/`) beside the executables are found first, so
+`chdman` or `ffmpeg` can be dropped in there too.
+
+### With Python
+
+For development, scripts and people who already have Python 3.12 or later. The window needs Tk,
+which the python.org installers for Windows and macOS include (on Debian and Ubuntu, install
+`python3-tk`).
 
 ```sh
 pipx install dinorefurb-disc-archiver     # or: uv tool install dinorefurb-disc-archiver
 ```
 
-Then install [redumper](https://github.com/superg/redumper/releases) for archival dumps. On
-Windows, unpack its release and put `redumper.exe` on `PATH` or set `DISC_ARCHIVER_REDUMPER`.
+This installs the same `disc-archiver` command and `disc-archiver-gui` window, without redumper:
+install [redumper](https://github.com/superg/redumper/releases) and put it on `PATH`, or set
+`DISC_ARCHIVER_REDUMPER`.
 
 ## Use it
 
-The window, for most people:
+### The window
+
+Double-click **Disc Archiver** (or run `disc-archiver-gui`). To start with a restoration's disc
+profile selected:
 
 ```sh
-disc-archiver-gui
-disc-archiver-gui --profile path/to/the-restoration/disc-profile.json
+"Disc Archiver.exe" --profile path\to\disc-profile.json     # the download, on Windows
+disc-archiver-gui --profile path/to/disc-profile.json         # installed with Python
 ```
 
 Tick the notice, choose the drive (or an image you already made), the game's profile and the
 folder, and press **Make the copy**. The formats the profile recommends are ticked already.
 
-The command:
+### The command
+
+Everything the window does, the command does too, for scripts and for people who prefer a
+terminal. In the download it is `disc-archiver.exe` (Windows) or `./disc-archiver`; installed with
+Python it is `disc-archiver`.
 
 ```sh
+disc-archiver --help                                     # commands; disc-archiver <command> --help for options
 disc-archiver tools                                      # backends, programs and drives found
 disc-archiver rip --drive E: --output "D:\Discs\My Game" --name "My Game" \
     --profile disc-profile.json --accept-personal-use
@@ -93,14 +136,33 @@ disc-archiver rip --drive /dev/sr0 --output ~/discs/game --format all --accept-p
 disc-archiver convert --input "My Game.cue" --output ~/discs/game --format iso --format files \
     --accept-personal-use                                # formats from a copy you already have
 disc-archiver check --input "My Game.cue" --profile disc-profile.json
+disc-archiver formats                                    # every format, most complete first
+disc-archiver notice                                     # the personal-use notice
 ```
 
 `convert` and `check` read `.cue` (one or several BIN files, ISO-plus-WAVE sheets), `.iso`,
 `.ccd` and `.chd` (through `chdman`). `rip` passes `--backend-arg` values on to the backend program,
-for example `--backend-arg=--retries=20` for redumper.
+for example `--backend-arg=--retries=20` for redumper. Progress goes to standard error and the
+summary to standard output.
 
 Exit codes: `0` done and verified, `1` failed, `2` usage error or notice not accepted, `3` a
 profile check failed or a written format differs from its source.
+
+On Windows, if redumper cannot open the drive, start the window or the terminal as
+administrator. On Linux, add yourself to the group that owns the drive (often `cdrom`).
+
+### Building the download
+
+```sh
+cd packages/disc-archiver
+python -m pip install . -r packaging/requirements.txt
+python packaging/build_bundle.py --out dist      # --no-redumper, --no-gui-smoke without a display
+```
+
+It builds for the platform it runs on with PyInstaller, downloads the redumper release pinned in
+`packaging/redumper.json` and checks its SHA-256 (against the pinned value, or GitHub's published
+digest while none is pinned), and starts both executables before zipping them. CI builds all
+three platforms on every pull request and attaches them to each release.
 
 ## The output folder
 

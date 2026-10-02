@@ -87,3 +87,47 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.plan.outputs.tag }}
+
+  # Attaches the standalone downloads (no Python needed, with the pinned redumper) to the release
+  # the publish job created.
+  bundles:
+    needs: [plan, publish]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.x
+      - name: Set the version
+        shell: bash
+        run: node tools/release/plan.ts set-version packages/disc-archiver/pyproject.toml "$VERSION"
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+      - run: python -m pip install ./packages/disc-archiver -r packages/disc-archiver/packaging/requirements.txt
+      - name: Build
+        shell: bash
+        working-directory: packages/disc-archiver
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then run=(xvfb-run -a); else run=(); fi
+          "${run[@]}" python packaging/build_bundle.py --out "$RUNNER_TEMP/bundle" --version "$VERSION"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+      - name: Attach to the release
+        shell: bash
+        run: gh release upload "$TAG" "$RUNNER_TEMP"/bundle/*.zip --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.plan.outputs.tag }}

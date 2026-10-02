@@ -350,6 +350,7 @@ def run(argv: list[str] | None = None) -> None:
     """GUI entry point. ``--profile FILE`` preselects a restoration's disc profile."""
     parser = argparse.ArgumentParser(prog="disc-archiver-gui")
     parser.add_argument("--profile", help="a restoration's disc profile file to select")
+    parser.add_argument("--smoke-test", action="store_true", help="build the window, close it and exit (for build checks)")
     arguments = parser.parse_args(sys.argv[1:] if argv is None else argv)
     profile = None
     if arguments.profile:
@@ -360,4 +361,8 @@ def run(argv: list[str] | None = None) -> None:
             sys.exit(2)
     root = tk.Tk()
     ArchiverWindow(root, profile)
+    if arguments.smoke_test:
+        root.update()
+        root.destroy()
+        return
     root.mainloop()

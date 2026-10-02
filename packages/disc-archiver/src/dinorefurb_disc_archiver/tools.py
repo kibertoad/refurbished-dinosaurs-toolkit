@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,13 +41,38 @@ TOOLS = {
 }
 
 
+def bundled_tool_dirs() -> list[Path]:
+    """Where a standalone build keeps the programs it ships: ``tools`` beside the executables,
+    or ``tools/<name>/bin`` for a program that keeps its own libraries beside it.
+
+    On macOS the window's executable sits inside ``Disc Archiver.app/Contents/MacOS``, so the
+    folder holding the app is searched too.
+    """
+    if not getattr(sys, "frozen", False):
+        return []
+    executable = Path(sys.executable).resolve()
+    roots = [executable.parent]
+    if len(executable.parents) > 3 and executable.parents[2].suffix == ".app":
+        roots.append(executable.parents[3])
+    directories = []
+    for root in roots:
+        # A program shipped with its own libraries keeps its tree: tools/<name>/bin/<program>.
+        directories += [root / "tools", *sorted((root / "tools").glob("*/bin")), root]
+    return directories
+
+
 def find_tool(name: str) -> Path | None:
-    """The program's path from its environment variable or PATH, or None."""
+    """The program's path from its environment variable, a standalone build's ``tools`` folder or
+    PATH, or None."""
     tool = TOOLS[name]
     configured = os.environ.get(tool.variable)
     if configured:
         path = Path(configured)
         return path if path.is_file() else None
+    for directory in bundled_tool_dirs():
+        found = shutil.which(name, path=str(directory))
+        if found:
+            return Path(found)
     found = shutil.which(name)
     return Path(found) if found else None
 

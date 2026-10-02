@@ -13,7 +13,7 @@ from . import backends, drives, isofs, tools
 from .disc import DiscError
 from .formats import FORMAT_IDS, FORMATS
 from .notice import NOTICE
-from .pipeline import archive, fingerprint, manifest_ok, open_source
+from .pipeline import archive, fingerprint, manifest_ok, open_source, package_version
 from .profile import BUILTIN_PROFILES, check_profile, load_profile
 
 EXIT_OK = 0
@@ -40,6 +40,7 @@ def _parser() -> argparse.ArgumentParser:
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {package_version()}")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("notice", help="print the personal-use notice")
     commands.add_parser("formats", help="list the output formats, most complete first")

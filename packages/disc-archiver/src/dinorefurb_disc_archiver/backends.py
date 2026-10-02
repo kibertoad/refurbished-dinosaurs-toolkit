@@ -88,7 +88,10 @@ def _redumper(drive: str, directory: Path, name: str, log: Log, extra: Sequence[
     # With no mode, redumper runs its whole disc sequence: dump, protection, refine, split, hash
     # and info. Split writes the Redump cue sheet and one .bin per track.
     command = [program, f"--drive={drive}", f"--image-path={directory}", f"--image-name={name}", *extra]
-    tools.run(command, log, cwd=directory)
+    try:
+        tools.run(command, log, cwd=directory)
+    except DiscError as error:
+        raise DiscError(f"{error}. {_access_hint()}") from None
     sheet = directory / f"{name}.cue"
     if not sheet.is_file():
         raise DiscError(f"redumper finished without writing {sheet.name}; its log is {name}.log")
@@ -107,6 +110,14 @@ def _cdrdao(drive: str, directory: Path, name: str, log: Log, extra: Sequence[st
     )
     tools.run([toc2cue, f"{name}.toc", f"{name}.cue"], log, cwd=directory)
     return directory / f"{name}.cue"
+
+
+def _access_hint() -> str:
+    if sys.platform == "win32":
+        return "If its log says the drive could not be opened, start Disc Archiver as administrator."
+    if sys.platform.startswith("linux"):
+        return "If the drive could not be opened, add yourself to the group that owns it (often cdrom)."
+    return "Check that the drive name is right and that a disc is inserted."
 
 
 def device_path(drive: str) -> str:

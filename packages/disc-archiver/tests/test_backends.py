@@ -167,3 +167,50 @@ class DataCopyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(os.name == "nt", "the stand-in programs are scripts")
+class BundledToolTests(unittest.TestCase):
+    """A standalone build finds the programs it ships in tools/ beside its executables."""
+
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._temp.name)
+        self.environment = mock.patch.dict(os.environ, {"PATH": ""})
+        self.environment.start()
+        for name in ("REDUMPER", "CHDMAN"):
+            os.environ.pop(f"DISC_ARCHIVER_{name}", None)
+
+    def tearDown(self) -> None:
+        self.environment.stop()
+        self._temp.cleanup()
+
+    def program(self, path: Path) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o755)
+        return path
+
+    def test_a_program_with_its_own_libraries_is_found_in_its_bin_folder(self) -> None:
+        from dinorefurb_disc_archiver import tools
+
+        redumper = self.program(self.dir / "tools" / "redumper" / "bin" / "redumper")
+        chdman = self.program(self.dir / "tools" / "chdman")
+        with mock.patch.object(sys, "frozen", True, create=True), mock.patch.object(sys, "executable", str(self.dir / "disc-archiver")):
+            self.assertEqual(tools.find_tool("redumper"), redumper.resolve())
+            self.assertEqual(tools.find_tool("chdman"), chdman.resolve())
+            self.assertIsNone(tools.find_tool("cdrdao"))
+
+    def test_the_macos_app_searches_the_folder_that_holds_it(self) -> None:
+        from dinorefurb_disc_archiver import tools
+
+        redumper = self.program(self.dir / "tools" / "redumper" / "bin" / "redumper")
+        app = self.dir / "Disc Archiver.app" / "Contents" / "MacOS" / "Disc Archiver"
+        self.program(app)
+        with mock.patch.object(sys, "frozen", True, create=True), mock.patch.object(sys, "executable", str(app)):
+            self.assertEqual(tools.find_tool("redumper"), redumper.resolve())
+
+    def test_an_installed_package_does_not_search_beside_python(self) -> None:
+        from dinorefurb_disc_archiver import tools
+
+        self.assertEqual(tools.bundled_tool_dirs(), [])

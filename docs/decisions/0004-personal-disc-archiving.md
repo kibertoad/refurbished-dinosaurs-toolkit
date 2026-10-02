@@ -39,11 +39,17 @@ same content, to test its fingerprinting and import against all of them.
    it keeps (`schemas/disc-profile.schema.json`): layout, volume identifier, audio track count,
    paths on the data track and the formats its importer reads. The archiver ships only the
    generic `any`, `data-only` and `mixed-mode` profiles.
+7. Players are not expected to have Python. Each release also attaches a standalone download per
+   platform (Windows x64, macOS arm64, Linux x64), frozen with PyInstaller, holding the window,
+   the command and the pinned redumper release, unmodified, with its GPL-3.0 licence and a link
+   to its source. The redumper build is checked by SHA-256 before it is packed. The PyPI package
+   stays for developers, scripts and CI.
 
 ## Consequences
 
-- A player installs one package and, for an archival dump, redumper. The window ticks the formats
-  the restoration's profile recommends.
+- A player downloads one zip, unpacks it and double-clicks the window; redumper comes with it.
+  The window ticks the formats the restoration's profile recommends. The downloads are not
+  code-signed yet, so Windows SmartScreen and macOS Gatekeeper warn on first start.
 - A restoration can produce every common form of its disc locally from one dump, with a manifest
   saying which forms hold the same content, and run its importer against each. The copies and
   manifests stay on the researcher's machine, like any other original content.

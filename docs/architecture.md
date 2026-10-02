@@ -96,6 +96,8 @@ Makes personal archival copies of discs a player owns
 - Checks the disc against a restoration's disc profile (`schemas/disc-profile.schema.json`).
 - Provides `disc-archiver` and the Tk window `disc-archiver-gui`. Both require the personal-use
   notice to be accepted before copying.
+- Each release also attaches standalone downloads for Windows, macOS and Linux, built with
+  PyInstaller by `packaging/build_bundle.py`, which need no Python and carry the pinned redumper.
 
 Restorations do not depend on it in code: players and researchers run it before an import. See
 [disc archiving](disc-archiving.md).

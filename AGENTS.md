@@ -90,6 +90,7 @@ python -m pip install -e "packages/scientific-method-engine[test]"
 cd packages/scientific-method-engine && python -B -m unittest discover -s tests -p "test*.py"
 python -m pip install -e packages/disc-archiver
 cd packages/disc-archiver && xvfb-run -a python -B -m unittest discover -s tests -p "test*.py"
+# when packaging/ or an import changes: python packaging/build_bundle.py --out dist
 dotnet build packages/dotnet/ScientificMethod.slnx
 dotnet test --project packages/dotnet/ScientificMethod.Core.Tests/ScientificMethod.Core.Tests.csproj
 pwsh tools/Verify-Repository.ps1
