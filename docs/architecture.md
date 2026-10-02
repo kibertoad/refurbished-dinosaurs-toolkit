@@ -85,7 +85,7 @@ Every public member has XML documentation, and the build fails without it.
 The reader and engine are released separately and agree through a prepared-config protocol, not
 through matching version numbers.
 
-- The reader adds `preparedProtocol` (currently `1`) to every config it pipes on stdin.
+- The reader adds `preparedProtocol` (currently `2`) to every config it pipes on stdin.
 - The engine removes it and refuses to run when the number differs from its own, naming both
   packages in the error. A config file given to the engine directly may not contain the field.
 - Any change to the shape of a prepared config increments the protocol in both packages in the
