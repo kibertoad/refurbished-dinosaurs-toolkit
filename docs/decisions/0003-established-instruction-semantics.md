@@ -404,8 +404,9 @@ backend stays registered for the differential run until phase 5. The engine depe
 - `x86/pcode_backend.py` matches every p-code `LOAD` and `STORE` to a decoded operand or the stack
   by linear offset equivalence (decision 3), takes the segment register from Capstone, and keeps
   each mnemonic's report events. Term rules keep `predicate`'s precision: same-term comparisons,
-  extension and subpiece folding, flag bits as one-bit extracts, and rotates presented as the
-  shifted fields the reports already used.
+  extension and subpiece folding, flag bits as one-bit extracts, rotates presented as the
+  shifted fields the reports already used, and a rotate's carry out folded to a constant when the
+  operand's known bits fix it.
 - `tests/oracle.py` runs a synthetic routine on Unicorn's 16-bit real mode and compares every
   register the engine resolved. `tests/test_oracle.py` has cases for each group.
 
@@ -430,7 +431,20 @@ because they change no instruction semantics (decision 6 allows provenance fixes
 the count runs out, charge `stringIterations` per iteration, stop on an unresolved comparison and
 report a `string-compare-exit` event.
 
-Exit evidence: every group is moved; no disagreement and no stricter difference remain.
+Exit evidence: every group is moved; no disagreement and no stricter difference remain in the
+synthetic cases.
+
+Review of the phase 3 PR found report differences that no synthetic case runs. In each the two
+backends agree on every value and differ only in the form of an unresolved expression:
+
+- `rcl` or `rcr` of a known operand through an unknown CF: the result expression. The carry out
+  resolves on both.
+- `xor dx,dx; div bx` with AX unknown: the quotient is `udiv(zeroExtend(ax), ...)` on pypcode and
+  `udiv(join(ax, 0), ...)` on the handwritten backend.
+- A 32-bit shift by an immediate count of 32 or 33 reports the masked count.
+- `rcl bh,1` with BH known to be zero reports a simpler expression on pypcode.
+
+Phase 5 removes the handwritten backend, so these forms are what reports carry from then on.
 
 ### Blockers
 

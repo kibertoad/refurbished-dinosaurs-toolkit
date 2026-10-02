@@ -192,6 +192,34 @@ def disjoint(parts, width):
     return True
 
 
+def known_bit(term, position, width):
+    """Bit ``position`` of a ``width``-bit term when the term's constants fix it, else None.
+
+    A rotate through CF of a known operand with an unknown CF moves the unknown bit away from
+    the bit it carries out, so that bit is a constant inside an expression.
+    """
+    head = term[0]
+    if head == "constant":
+        return term[1] >> position & 1
+    if head == "zeroExtend":
+        return 0 if position >= term[2] else known_bit(term[1], position, term[2])
+    if head == "extract":
+        return known_bit(term[1], term[2] + position, term[4]) if position < term[3] else None
+    if head == "join":
+        parts = term[1]
+        return known_bit(parts[position // 8], position % 8, 8) if position // 8 < len(parts) else None
+    if head in ("or", "and"):
+        bits = [known_bit(t, position, width) for t in term[1:]]
+        decisive, other = (1, 0) if head == "or" else (0, 1)
+        if decisive in bits:
+            return decisive
+        return other if all(b == other for b in bits) else None
+    if head in ("shl", "shr") and term[2][0] == "constant":
+        source = position - term[2][1] if head == "shl" else position + term[2][1]
+        return known_bit(term[1], source, width) if 0 <= source < width else 0
+    return None
+
+
 def field_bit(term, width, position):
     """Bit ``position`` of a field-shaped term as a bit of the field covering it, or None."""
     parts = fields(term, width)
@@ -683,6 +711,9 @@ def rotate(state, ins, image):
     carry = bit(f.run.flags["CF"], state.at)
     if carry is None:
         raise StopPath("p-code rotate carry has no one-bit form")
+    fixed = known_bit(carry.term, 0, 1)
+    if fixed is not None:
+        carry = Value(1, ("constant", fixed), carry.sources)
     state.forget_flags()
     # The last bit rotated out comes from the operand; a constant fold of the whole rotate would
     # also name the incoming CF and every other operand bit as its inputs.

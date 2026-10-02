@@ -14,6 +14,7 @@ sys.path.insert(0, str(SRC))
 ENGINE = [sys.executable, "-B", "-m", "scientific_method_engine"]
 ENGINE_ENV = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(SRC), os.environ.get("PYTHONPATH")]))}
 from scientific_method_engine.x86.image import Image
+from scientific_method_engine.x86.reports import run_report as engine_report
 from differential import accepted, run_report
 from scientific_method_engine.x86.trace import trace, walk, OVERLAP_REASON, CONTESTED_REASON
 from scientific_method_engine.x86.values import const, unknown, op, extract, resize
@@ -1506,6 +1507,19 @@ class ReporterTests(unittest.TestCase):
             with self.subTest(code=code):
                 path = report(code + " c3")["paths"][0]
                 self.assertTrue(path["returned"], path["stop"])
+
+    def test_rotate_through_unknown_carry_resolves_a_carry_out_from_a_known_operand(self):
+        # RCL by n carries out bit 16 - n of a 16-bit operand, RCR by n bit n - 1; CF starts unknown.
+        # The result term still differs in form from the handwritten backend's, so this runs the
+        # engine's default backend alone.
+        cases = (("bb 10 00 c1 d3 05", 0), ("bb 00 08 c1 d3 05", 1), ("bb 10 00 c1 db 05", 1),
+                 ("bb 08 00 c1 db 05", 0), ("c1 d3 05", None))
+        for code, carry in cases:
+            with self.subTest(code=code):
+                data = bytes.fromhex(code + " c3")
+                result = engine_report(data, configuration(data), "trace")
+                event, = events(result, "arithmetic")
+                self.assertEqual(event["carryOut"]["value"], carry)
 
     def test_string_repetition_keeps_register_terms_and_budget_bounded(self):
         # Many 16-bit pointer updates must not nest the unknown upper register halves.
