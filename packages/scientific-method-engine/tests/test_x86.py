@@ -14,7 +14,7 @@ sys.path.insert(0, str(SRC))
 ENGINE = [sys.executable, "-B", "-m", "scientific_method_engine"]
 ENGINE_ENV = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(SRC), os.environ.get("PYTHONPATH")]))}
 from scientific_method_engine.x86.image import Image
-from scientific_method_engine.x86.reports import run_report
+from differential import run_report
 from scientific_method_engine.x86.trace import trace, walk, OVERLAP_REASON, CONTESTED_REASON
 from scientific_method_engine.x86.values import const, unknown, op, extract, resize
 

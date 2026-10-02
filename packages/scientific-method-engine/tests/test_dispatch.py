@@ -5,7 +5,7 @@ import sys
 import unittest
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
-from scientific_method_engine.x86.reports import run_report
+from differential import run_report
 from scientific_method_engine.x86.image import Image
 from scientific_method_engine.x86.trace import walk, OVERLAP_REASON
 
