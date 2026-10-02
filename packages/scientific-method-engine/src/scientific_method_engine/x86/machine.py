@@ -67,7 +67,9 @@ class State:
         self.assumptions = {}
         self.flags = None
         # Arithmetic flags as values from the last flag-writing instruction's p-code; None when no
-        # instruction computed them yet or the last one forgot them.
+        # instruction computed them yet or the last one forgot them. This is the one stored value of
+        # each flag: code that needs CF reads it through carry_value, which reads this, and never
+        # derives it by running a branch condition.
         self.flag_values = None
         # CF when an instruction sets it without leaving a comparable flag producer; None defers to flags.
         self.carry = None
