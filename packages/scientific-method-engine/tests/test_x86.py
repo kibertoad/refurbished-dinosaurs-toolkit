@@ -404,7 +404,7 @@ class GhidraCrossCheckTests(unittest.TestCase):
         # Ghidra's computed target never becomes an engine edge.
         self.assertIsNone(r["edges"][2]["target"])
         self.assertEqual(r["edges"][2]["classification"], "unresolved")
-        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 2, "ghidraOnly": 1})
+        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 2, "ghidraOnly": 1, "interrupt": 0})
         self.assertEqual(check["comparedCallers"], [0, b])
         self.assertEqual(check["notCompared"]["engineCallers"], [a])
         self.assertFalse(check["agreed"])
@@ -418,7 +418,7 @@ class GhidraCrossCheckTests(unittest.TestCase):
         r = run_report(data, cfg, "callees")
         check = r["ghidraCrossCheck"]
         self.assertTrue(check["agreed"])
-        self.assertEqual(check["counts"], {"agreement": 2, "engineOnly": 0, "ghidraOnly": 0})
+        self.assertEqual(check["counts"], {"agreement": 2, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 0})
         # Agreement on an unresolved call leaves the engine's edge unresolved.
         self.assertEqual(r["edges"][1]["classification"], "unresolved")
 
@@ -430,11 +430,41 @@ class GhidraCrossCheckTests(unittest.TestCase):
         cfg = configuration(data, ghidraCallEdges=export)
         cfg["regions"][0]["entries"] = [0, 6]
         check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
-        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 1, "ghidraOnly": 1})
+        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 1, "ghidraOnly": 1, "interrupt": 0})
         self.assertFalse(check["agreed"])
         cfg["controls"] = {"ghidraAgreementSites": [3]}
         with self.assertRaisesRegex(ValueError, "positive control missed: ghidraAgreementSites"):
             run_report(data, cfg, "callees")
+
+    def test_interrupts_ghidra_lifts_to_targetless_calls_do_not_break_agreement(self):
+        # int 21h; into; int3; int1; call 10; ret; ret. Ghidra's SLEIGH lifts each interrupt to a computed call
+        # with no target; the engine assumes each returns to the next instruction and has no edge there.
+        data = bytes.fromhex("cd 21 ce cc f1 e8 01 00 c3 c3")
+        interrupts = [(0, None, "COMPUTED_CALL"), (2, None, "CONDITIONAL_COMPUTED_CALL"), (3, None, "COMPUTED_CALL_TERMINATOR"),
+                      (4, None, "COMPUTED_CALL_TERMINATOR")]
+        cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: interrupts + [(5, 9, "UNCONDITIONAL_CALL")], 9: []}),
+                            controls={"ghidraAgreementSites": [5]})
+        cfg["regions"][0]["entries"] = [0, 9]
+        r = run_report(data, cfg, "callees")
+        check = r["ghidraCrossCheck"]
+        self.assertTrue(check["agreed"])
+        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 4})
+        self.assertEqual(sorted(e["site"] for e in check["edges"] if e["result"] == "interrupt"), [0, 2, 3, 4])
+        self.assertEqual([e["site"] for e in r["edges"]], [5])
+        # An interrupt site is never an agreement site.
+        cfg["controls"] = {"ghidraAgreementSites": [0]}
+        with self.assertRaisesRegex(ValueError, "positive control missed: ghidraAgreementSites"):
+            run_report(data, cfg, "callees")
+
+    def test_a_ghidra_target_at_an_interrupt_or_a_targetless_call_elsewhere_stays_ghidra_only(self):
+        # int 21h; nop; call 6... Ghidra resolves the interrupt to an address, and claims a call at the nop.
+        data = bytes.fromhex("cd 21 90 e8 00 00 c3")
+        export = ghidra_export(data, {0: [(0, 6, "COMPUTED_CALL"), (2, None, "COMPUTED_CALL"), (3, 6, "UNCONDITIONAL_CALL")], 6: []})
+        cfg = configuration(data, ghidraCallEdges=export)
+        cfg["regions"][0]["entries"] = [0, 6]
+        check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
+        self.assertEqual(sorted((e["site"], e["result"]) for e in check["edges"]), [(0, "ghidraOnly"), (2, "ghidraOnly"), (3, "agreement")])
+        self.assertFalse(check["agreed"])
 
     def test_routes_the_edge_limit_omitted_are_not_compared(self):
         # call 6; call bx; ret; ret. Ghidra misses call bx, and the engine omits it at the edge limit.
@@ -443,7 +473,7 @@ class GhidraCrossCheckTests(unittest.TestCase):
         cfg["regions"][0]["entries"] = [0, 6]
         r = run_report(data, cfg, "callees")
         check = r["ghidraCrossCheck"]
-        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 0, "ghidraOnly": 0})
+        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 0})
         self.assertEqual(check["notCompared"]["omittedEngineRoutes"], [r["omittedRoutes"][0]["id"]])
         self.assertFalse(check["agreed"])
 
@@ -475,6 +505,21 @@ class GhidraCrossCheckTests(unittest.TestCase):
                                 (ghidra_export(data, {0: [(0, None, 3)]}), "Invalid ghidraCallEdges edge"),
                                 ({**ghidra_export(data, {}), "functions": [{}] * 129}, "at most 128"),
                                 (ghidra_export(data, {0: [(0, None, "COMPUTED_CALL")] * 8193}), "more than 8192 edges")):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                run_report(data, configuration(data, ghidraCallEdges=export), "callees")
+
+    def test_a_missing_offset_key_is_a_malformed_export(self):
+        # The script writes null for an address without file bytes; a key it never left out is malformed, never unmapped.
+        data = self.code.bytes()
+        cases = []
+        for key in ("site", "target", "targetAddress"):
+            export = ghidra_export(data, {0: [(0, None, "COMPUTED_CALL")]})
+            del export["functions"][0]["edges"][0][key]
+            cases.append((export, "Invalid ghidraCallEdges edge"))
+        export = ghidra_export(data, {0: []})
+        del export["functions"][0]["entry"]
+        cases.append((export, "Invalid ghidraCallEdges function"))
+        for export, message in cases:
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 run_report(data, configuration(data, ghidraCallEdges=export), "callees")
 
