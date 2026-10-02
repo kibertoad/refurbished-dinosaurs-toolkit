@@ -1493,6 +1493,31 @@ class ReporterTests(unittest.TestCase):
         result = report("f2 a4 c3", flags={"direction": 0})
         self.assertIn("REPNE", result["paths"][0]["stop"])
 
+    def test_repeated_comparison_splits_an_unknown_direction_when_its_count_exceeds_the_budget(self):
+        es = {"es": 0x2000, "ds": 0x2000}
+        # CX = 0xFFFF exceeds the budget, but the terminator ends the scan after one iteration either way.
+        result = report("bf 00 01 c6 05 00 b0 00 b9 ff ff f2 ae c3", registers=es)
+        self.assertTrue(all(p["returned"] for p in result["paths"]), [p["stop"] for p in result["paths"]])
+        self.assertEqual(sorted(p["registers"]["di"]["value"] for p in result["paths"]), [0xff, 0x101])
+        self.assertEqual(result["stringIterationsUsed"], 2)
+
+    def test_rotates_and_sal_by_one_on_unknown_operands_keep_the_reported_forms(self):
+        for code in ("d1 c0", "d1 c8", "d0 c0", "d0 c8", "d0 cc", "d1 f0"):
+            with self.subTest(code=code):
+                path = report(code + " c3")["paths"][0]
+                self.assertTrue(path["returned"], path["stop"])
+
+    def test_rotate_through_unknown_carry_resolves_a_carry_out_from_a_known_operand(self):
+        # RCL by n carries out bit 16 - n of a 16-bit operand, RCR by n bit n - 1; CF starts unknown.
+        cases = (("bb 10 00 c1 d3 05", 0), ("bb 00 08 c1 d3 05", 1), ("bb 10 00 c1 db 05", 1),
+                 ("bb 08 00 c1 db 05", 0), ("c1 d3 05", None))
+        for code, carry in cases:
+            with self.subTest(code=code):
+                data = bytes.fromhex(code + " c3")
+                result = run_report(data, configuration(data), "trace")
+                event, = events(result, "arithmetic")
+                self.assertEqual(event["carryOut"]["value"], carry)
+
     def test_string_repetition_keeps_register_terms_and_budget_bounded(self):
         # Many 16-bit pointer updates must not nest the unknown upper register halves.
         result=report("f3 aa c3",flags={"direction":0},registers={"es":0x2000,"di":0,"cx":4096})

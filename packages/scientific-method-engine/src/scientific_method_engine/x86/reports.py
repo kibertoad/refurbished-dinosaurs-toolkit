@@ -226,7 +226,8 @@ def uses(image, config):
             for root in established[index:]:
                 stops.setdefault(root, "entry not traced: entry or total instruction budget exhausted")
             break
-        report = trace(image, {**config, "entry": at, "totalSteps": remaining, "stringIterations": string_remaining})
+        report = trace(image, {**config, "entry": at, "totalSteps": remaining, "stringIterations": string_remaining},
+                       continue_declared_jumps=False)
         remaining -= report["stepsUsed"]
         string_remaining -= report["stringIterationsUsed"]
         if not report["completeWithinModel"]:
@@ -496,7 +497,7 @@ def dispatch(image, config):
         raise ValueError("Dispatch table mapping differs from PE source sections")
     for value in values:
         integer(value, 0, (1 << ALIASES[input_reg][2]) - 1, "input value")
-        report = trace(image, {**config, "registers": {**config.get("registers", {}), input_reg: value}})
+        report = trace(image, {**config, "registers": {**config.get("registers", {}), input_reg: value}}, continue_declared_jumps=False)
         outcomes = []
         for path in report["paths"]:
             reached = bool(path["instructionPath"]) and path["instructionPath"][-1] == site
@@ -594,7 +595,8 @@ def allocations(report, config):
                                 "observedExtentBytes": capacity,
                                 "capacity": "conditional on evidenced extent units and pointer identity" if extent else "unresolved: request units and bounded writes do not establish allocated extent",
                                 "rollback": "unproven; failure returns do not undo earlier writes"})
-    return {"allocations": results, "paths": report["paths"], "gaps": report["gaps"], "completeWithinModel": report["completeWithinModel"]}
+    return {"allocations": results, "paths": report["paths"], "declaredContinuationPaths": report["declaredContinuationPaths"],
+            "gaps": report["gaps"], "completeWithinModel": report["completeWithinModel"]}
 
 
 def operand_provenance(image, config):
