@@ -64,6 +64,8 @@ class State:
         self.guards = []
         self.assumptions = {}
         self.flags = None
+        # Arithmetic flags as values when the last flag-writing instruction ran on p-code; None otherwise.
+        self.flag_values = None
         # CF when an instruction sets it without leaving a comparable flag producer; None defers to flags.
         self.carry = None
         self.flag_serial = 0
@@ -90,6 +92,7 @@ class State:
     def forget_flags(self, keep_carry=False):
         carry = self.carry_value() if keep_carry else None
         self.flags = None
+        self.flag_values = None
         self.carry = carry
         self.flag_serial += 1
         self.flag_epoch = self.flag_serial
@@ -98,7 +101,7 @@ class State:
     def save_flags(self, bits):
         word = unknown(f"saved-flags:{self.at}:{len(self.events)}", bits, self.at)
         self.saved_flags[(bits, word.term)] = (self.flags, self.flag_epoch, self.unknown_flag_site,
-                                      self.direction_flag, self.interrupt_flag, self.carry)
+                                      self.direction_flag, self.interrupt_flag, self.carry, self.flag_values)
         self.push(word)
         self.event("flags-save", width=bits // 8, value=word.report(),
                    direction=self.direction_flag.report(), interrupt=self.interrupt_flag.report())
@@ -112,7 +115,8 @@ class State:
             self.direction_flag = extract(word, 10, 1)
             self.interrupt_flag = extract(word, 9, 1)
         else:
-            self.flags, self.flag_epoch, self.unknown_flag_site, self.direction_flag, self.interrupt_flag, self.carry = saved
+            (self.flags, self.flag_epoch, self.unknown_flag_site, self.direction_flag, self.interrupt_flag, self.carry,
+             self.flag_values) = saved
         self.event("flags-restore", width=bits // 8, value=word.report(), intactLocalSnapshot=saved is not None,
                    direction=self.direction_flag.report(), interrupt=self.interrupt_flag.report())
 
@@ -132,6 +136,7 @@ class State:
     def set_flags(self, a, b, operation):
         self.flags = (a, b, operation, self.at)
         self.carry = None
+        self.flag_values = None
 
     def clear_memory(self):
         self.memory.clear()
@@ -351,3 +356,4 @@ def string_effect(state, ins, count, remaining):
 
 # The handwritten backend registers itself as the default; it imports names defined above.
 from . import handwritten  # noqa: E402,F401
+from . import pcode_backend  # noqa: E402,F401

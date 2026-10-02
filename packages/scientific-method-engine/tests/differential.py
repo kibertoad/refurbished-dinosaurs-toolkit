@@ -4,8 +4,12 @@ Test modules import ``run_report`` from here instead of from the engine. It retu
 backend's report, or raises its error, after checking that every other registered backend
 produced the same report or raised the same error.
 """
+import atexit
 import copy
+import os
 import sys
+from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -15,6 +19,35 @@ from scientific_method_engine.x86.reports import run_report as engine_report  # 
 
 class BackendDifference(AssertionError):
     """Two backends produced different reports for one case."""
+
+
+# ADR 0003 acceptance classes a test may declare for the cases it runs, and the cases counted per class.
+CLASSES = ("extended", "stricter")
+COUNTS = Counter()
+_accepted = []
+
+
+@contextmanager
+def accepted(kind, reason):
+    """Accept report differences inside the block as ``kind``, for the stated reason.
+
+    ``extended``: pypcode resolves or completes what the handwritten backend left unresolved or
+    stopped on, and the test checks the value against Unicorn. ``stricter``: pypcode reports
+    less, with a recorded follow-up; it blocks cutover.
+    """
+    if kind not in CLASSES or not reason:
+        raise ValueError("An accepted difference needs a class and a reason")
+    _accepted.append(kind)
+    try:
+        yield
+    finally:
+        _accepted.pop()
+
+
+@atexit.register
+def _summary():
+    if os.environ.get("SEMANTICS_DIFFERENTIAL_SUMMARY") and COUNTS:
+        print("Differential classes:", dict(sorted(COUNTS.items())), file=sys.stderr)
 
 
 def differences(left, right, path="$", limit=20):
@@ -75,7 +108,10 @@ def compare(data, config, command):
 def run_report(data, config, command):
     """The default backend's report for one case, after every backend agreed on it."""
     outcomes, found = compare(data, config, command)
-    if found:
+    if {"handwritten", "pypcode"} <= set(outcomes):
+        differs = "handwritten" in found or "pypcode" in found
+        COUNTS["identical" if not differs else _accepted[-1] if _accepted else "disagreement"] += 1
+    if found and not _accepted:
         lines = [f"{name}: {path}: {left!r} != {right!r}" for name, rows in found.items() for path, left, right in rows]
         raise BackendDifference("Semantics backends disagree:\n" + "\n".join(lines))
     report, error = outcomes[semantics.names()[0]]

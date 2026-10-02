@@ -3,7 +3,7 @@
 ADR 0003 decision 6 freezes this module. No mnemonic, flag rule or value computation is added here;
 the pypcode backend replaces it group by group, and phase 5 deletes it.
 """
-from capstone.x86 import X86_OP_REG, X86_OP_MEM
+from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
 from . import semantics
 from .machine import ALIASES, StopPath
 from .values import Value, const, unknown, op, extract, join, resize, sources
@@ -235,6 +235,9 @@ def ordinary(state, ins, image):
     if m in ("rol", "ror", "rcl", "rcr"):
         a = state.get(ins, operands[0], image)
         count = state.get(ins, operands[1], image) if len(operands) > 1 else const(1, 8)
+        if len(operands) > 1 and operands[1].type == X86_OP_IMM:
+            # Capstone gives RCL's implicit count of 1 on a memory operand a size of 0.
+            count = const(operands[1].imm, 8, state.at)
         if count.number is None:
             raise StopPath("rotate count unresolved")
         masked = count.number & 31
@@ -264,9 +267,11 @@ def ordinary(state, ins, image):
         # CF is the last bit rotated out: the result's low bit for ROL/RCL and its high bit for ROR/RCR.
         out = {"rol": (bits - n) % bits, "ror": (n - 1) % bits, "rcl": bits - n, "rcr": n - 1}[m]
         carry = extract(a, out, 1)
+        # A count read from CL is an input of the result and of CF.
+        value = Value(value.bits, value.term, sources(value, count, site=state.at))
         state.put(ins, operands[0], value)
         state.forget_flags()
-        state.carry = Value(1, carry.term, sources(carry, site=state.at))
+        state.carry = Value(1, carry.term, sources(carry, count, site=state.at))
         state.event("arithmetic", operation=m, left=a.report(), count=n, result=value.report(),
                     carryOut=state.carry.report(), modulus=1 << bits)
         return
