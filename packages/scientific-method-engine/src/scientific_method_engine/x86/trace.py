@@ -298,8 +298,8 @@ def trace(image, config, continue_declared_jumps=True):
             if boundary_budget < 1:
                 global_gaps.append({"site": s.at, "reason": "conditional table boundary instruction limit"})
                 return
-            seen, walk_gaps, _, undecoded, contested = walk(image, [root_entry], boundary_budget)
-            boundary_budget -= max(1, len(seen) + len(undecoded) + len(contested))
+            seen, walk_gaps, _, _, _ = walk(image, [root_entry], boundary_budget)
+            boundary_budget -= max(1, len(seen))
             # A truncated walk never saw the instructions that could contest a target start.
             if any(g["reason"] == "instruction limit" for g in walk_gaps):
                 seen = {}

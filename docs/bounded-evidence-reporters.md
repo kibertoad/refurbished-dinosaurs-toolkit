@@ -512,7 +512,9 @@ operands cannot choose contradictory values. Duplicate targets share one route.
 Partial tables retain the original unresolved path and missing routes. Supplied
 targets must survive bounded CFG boundary checks; an overlap cannot be established
 by its supplied edge. Boundary discovery shares `instructionLimit` across cached
-entries (default 10000); exhausted or unresolved boundaries become explicit gaps.
+entries (default 10000). Each walk is charged the instructions it decoded; undecoded
+edges and contested starts cost nothing. Exhausted or unresolved boundaries become
+explicit gaps.
 All continuation choices share path/step/visit/total budgets with ordinary tracing.
 Continuations start only after every ordinary path has finished, so they use only the
 budget the ordinary paths left; `uses` and `dispatch` read ordinary paths and start none.
