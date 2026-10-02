@@ -4,7 +4,7 @@ A scope is a query hypothesis that a modeled service leaves a named byte range a
 call. It is evidence-layer bookkeeping: it reads and writes no memory on the path, adds no read or
 write event and computes no instruction value or flag (ADR 0003).
 """
-from .machine import ALIASES, StopPath
+from .machine import ALIASES, StopPath, uncached_byte
 from .values import const, unknown
 
 
@@ -73,18 +73,18 @@ def capture_scopes(state, model):
         cached = 0
         for key in keys:
             if key in state.memory:
-                cached += 1
+                # A byte an earlier scope kept as an unknown term is still uncached.
+                cached += not uncached_byte(state.memory[key])
                 captured[key] = state.memory[key]
             else:
+                # No site, so uncached_byte recognizes the kept term after the model.
                 captured[key] = unknown(f"memory:{state.memory_epoch}:{key}", 8)
         descriptions.append({
             "segmentRegister": scope["segment"], "segment": segment.report(),
             "baseRegister": scope["base"], "base": base.report(), "displacement": displacement,
             "offset": offset, "linearStart": start, "linearEnd": end, "bytes": size,
             "cachedBytes": cached, "uncachedBytes": size - cached, "evidence": scope["evidence"],
-            "meaning": "explicit pre-call memory-preservation hypothesis; memory outside every scope is unknown",
-            "cacheMeaning": "cachedBytes had a modeled value before the call; uncachedBytes keep unknown terms. "
-                            "Neither count says whether the original program wrote those bytes."})
+            "meaning": "explicit pre-call memory-preservation hypothesis; memory outside every scope is unknown"})
     return captured, descriptions
 
 

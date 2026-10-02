@@ -18,6 +18,15 @@ class StopPath(Exception):
     pass
 
 
+def uncached_byte(value):
+    """True for a memory byte a scope kept only as its pre-call unknown term (ADR 0004).
+
+    Such a byte sits in the cache so later reads see the same term, but nothing produced it: every
+    store adds its site to the value's sources, and a kept uncached byte has none.
+    """
+    return not value.sources and value.term[0] == "unknown" and value.term[1].startswith("memory:")
+
+
 def segment_register(ins, mem):
     """Name the segment register an explicit memory operand uses (override or stack/data default)."""
     if mem.segment:
@@ -228,7 +237,7 @@ class State:
             value = write
             missing = []
         else:
-            missing = [i for i, key in enumerate(keys) if key not in self.memory]
+            missing = [i for i, key in enumerate(keys) if key not in self.memory or uncached_byte(self.memory[key])]
             value = join([self.memory.get(key, unknown(f"memory:{self.memory_epoch}:{key}", 8, self.at)) for key in keys])
         relevant = []
         for g in self.guards:

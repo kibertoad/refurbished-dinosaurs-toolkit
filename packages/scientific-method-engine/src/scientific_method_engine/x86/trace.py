@@ -491,7 +491,8 @@ def trace(image, config, continue_declared_jumps=True):
                             for r, n in case.get("registers", {}).items():
                                 child.setreg(r, const(n, ALIASES[r][2], at), at)
                             child.conditional.append({"site": at, "evidence": model["evidence"],
-                                                      "assumption": "call returns with balanced stack; memory effects unresolved outside explicit scopes",
+                                                      "assumption": "call returns with balanced stack; memory effects unresolved"
+                                                                    + (" outside explicit scopes" if preserved_scopes else ""),
                                                       "preservedMemoryScopes": preserved_scopes})
                             child.event("call-return", callSite=at, callerEntry=state.frames[-1]["entry"],
                                         resultContracts=result_contracts(child, contracts, target), registers=snapshot(child), modeled=True,

@@ -54,7 +54,7 @@ class MemoryScopeTests(unittest.TestCase):
                 self.assertEqual(declared[0]["segment"]["value"], REGISTERS["ss"])
                 self.assertEqual(declared[0]["cachedBytes"], 6 if far else 4)
                 self.assertEqual(declared[0]["uncachedBytes"], 0)
-                self.assertIn("Neither count says whether the original program wrote", declared[0]["cacheMeaning"])
+                self.assertNotIn("cacheMeaning", declared[0])
                 self.assertIn("outside its preservedMemoryScopes", service["continuation"])
                 self.assertEqual(declared[0]["linearStart"], REGISTERS["ss"] * 16 + 0xff00 - declared[0]["bytes"])
                 self.assertMatchUnknownOutsideScopes(c, model, r)
@@ -214,6 +214,20 @@ class MemoryScopeTests(unittest.TestCase):
         self.assertEqual(state.peek(state.segment("ss"), const(0x200, 16), 2).number, 0x1234)
         state.access(state.segment("ss"), state.reg("bx"), 1, write=const(1, 8))
         self.assertIsNone(state.peek(state.segment("ss"), const(0x200, 16), 2).number)
+
+    def test_kept_uncached_bytes_stay_uncached_at_later_models_and_reads(self):
+        data = bytes.fromhex("c3")
+        config = configuration(data, registers={"sp": 0x200, "ss": 0x3000})
+        state = State(0, Image(data, config), config)
+        state.access(state.segment("ss"), const(0x200, 16), 1, write=const(0x12, 8))
+        declarations = {"preservesMemory": [scope(bytes=2)]}
+        for _ in range(2):
+            captured, declared = capture_scopes(state, declarations)
+            self.assertEqual((declared[0]["cachedBytes"], declared[0]["uncachedBytes"]), (1, 1))
+            state.clear_memory()
+            retain_scopes(state, captured)
+        state.access(state.segment("ss"), const(0x200, 16), 2)
+        self.assertEqual(state.events[-1]["missingByteProducers"], [1])
 
     def test_exact_scope_and_byte_limits_execute_and_report_each_scope(self):
         c = Code().label("service").branch("e8", "external").emit("c3").label("external").emit("c3")

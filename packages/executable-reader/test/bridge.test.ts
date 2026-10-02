@@ -861,7 +861,7 @@ test("explicit memory scopes join nested frames through the real MZ prepared bri
   assert.equal(saved[0].bytes, 6);
   assert.equal(saved[0].cachedBytes, 6);
   assert.equal(saved[0].uncachedBytes, 0);
-  assert.match(saved[0].cacheMeaning, /Neither count says whether the original program wrote/);
+  assert.match(saved[0].meaning, /hypothesis/);
   assert.equal(saved[0].segment.value, 0x3000);
   assert.deepEqual(saved, path.conditionalModels[0].preservedMemoryScopes);
   for (const preservation of [[{ ...scope, bytes: 5 }], [{ ...scope, segment: "ds" }], []]) {
