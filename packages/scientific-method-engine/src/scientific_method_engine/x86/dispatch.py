@@ -1,4 +1,4 @@
-"""Explicit, source-derived indirect jump tables for CFG discovery only."""
+"""Explicit, source-derived indirect jump tables for CFG discovery and explicitly conditional path continuations."""
 from capstone.x86 import X86_OP_IMM
 from .image import integer
 

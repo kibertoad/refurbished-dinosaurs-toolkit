@@ -99,8 +99,8 @@ reports enter the repository.
 
 ## Phases
 
-Each phase lists its steps and an exit condition a run can check. Phases run in order. Within a
-phase, one iteration takes one step.
+Each phase lists its steps and an exit condition a run can check. Phases run in order. One
+iteration takes one phase and lands it as one PR, except where phase 3 says otherwise.
 
 ### Phase 0: freeze and baseline
 
@@ -147,14 +147,14 @@ and starts the Miasm evaluation under decision 8 after a human confirms.
 Exit: all engine and bridge tests pass unchanged, and no report differs. Release label
 `release:skip`.
 
-### Phase 3: the pypcode backend, one group at a time
+### Phase 3: the pypcode backend, group by group
 
 Add `pypcode` (pinned) to the engine's dependencies and `unicorn` (pinned) to its test
 dependencies. Implement the p-code interpreter over `Value` (`COPY`, `LOAD`, `STORE`, integer
 arithmetic and logic, `INT_ZEXT`, `INT_SEXT`, `SUBPIECE`, `PIECE`, carries and borrows, boolean
 operations, `CBRANCH` for conditions). Unsupported p-code stops the path with the op's name.
 
-Then move the groups in this order, one per iteration:
+Then move the groups in this order:
 
 | Group | Mnemonics |
 |---|---|
@@ -171,8 +171,12 @@ Then move the groups in this order, one per iteration:
 | string operations | `movs`, `stos`, `lods`, `cmps`, `scas` with and without `rep` |
 
 A group moves when its differential run meets [Acceptance](#acceptance). Each moved group's
-instructions use pypcode by default. Each group is its own PR: `release:patch` when no report
-changes, `release:minor` when an extended class appears.
+instructions use pypcode by default. Phase 3 lands as one PR, or as several so groups that pass do
+not wait for a blocked one: the interpreter and dependencies first, then the moved groups in one or
+more PRs. A PR that adds the dependencies carries `release:minor`, because it adds a runtime
+dependency and raises the engine's Python floor to the one pypcode needs. A PR that only moves
+groups carries `release:patch` when no report changes and `release:minor` when an extended class
+appears.
 
 Exit: every group is moved, and the full differential run has no disagreement and no stricter
 difference without a recorded follow-up.
@@ -182,7 +186,9 @@ difference without a recorded follow-up.
 1. A maintainer runs the recorded restoration cases locally on both backends.
 2. Record the counts per class in Progress.
 
-Exit: no disagreement, and every stricter case is resolved or accepted by a human.
+Exit: no disagreement, and every stricter case is resolved or accepted by a human. Release label
+`release:skip` when only Progress changes. A backend fix the run calls for takes the label phase 3
+gives its report change.
 
 ### Phase 5: cutover
 
@@ -207,21 +213,28 @@ matches the largest report change (`release:major` if a field's meaning changed)
 3. Test the comparison with synthetic exports. The script compiles against Ghidra 12.1.
 
 Exit: the option ships with tests, the reporter guide documents it, and the script has its row in
-the engine README catalog.
+the engine README catalog. Release label `release:minor`.
 
 ## Per-iteration procedure
 
 A recurring run does the following, once per iteration:
 
-1. Read Progress. Take the first phase not marked done and its first step not marked done.
-2. If Blockers has an open entry for that phase, stop and report the blocker.
-3. Check the phase's exit condition. If it already holds, mark the phase done with the date and
-   commit, and go to step 1.
-4. Do the step on a branch named `tooling/semantics-<phase>-<step>`, branched from `main`.
+1. Read Progress on the branch of the newest open phase PR, or on `main` when none is open. Take
+   the first phase not marked done.
+2. If Blockers has an open entry for that phase, stop and report the blocker. In phase 3, an entry
+   that names a group blocks only that group, and the run continues with the groups after it.
+3. Check the phase's exit condition. If it already holds, mark the phase done with the date on the
+   phase's branch, open its PR as in step 7, and stop.
+4. Do the phase's steps on one branch named `tooling/semantics-<phase>`, with a commit per step.
+   Branch from `main`, or from the previous phase's branch while its PR is open, so the phases
+   stack. If the branch exists from a run that stopped, continue on it from its first step not
+   marked done. When phase 3 lands as several PRs, each adds a suffix: `-interpreter` for the
+   interpreter and dependencies, or one naming its groups.
 5. Run the gates from `AGENTS.md`. A step is done only when they pass.
-6. Update Progress in the same change: the step's status, the date, and the evidence (test names,
-   class counts, the PR).
-7. Open the PR with the release label from the phase. Do not merge it.
+6. Update Progress in the same change: each step's status, the date, and the evidence (test names,
+   class counts). Mark the phase done when its exit condition holds.
+7. Open one PR against `main` with the release label from the phase, and record the PR in Progress
+   on the branch. Do not merge it. The maintainer merges stacked PRs in phase order.
 8. Stop when a step needs a human: a no-go in phase 1, a disagreement Unicorn cannot settle, a
    stricter case to accept, or a `release:major` label. Write it under Blockers first.
 
@@ -248,7 +261,7 @@ Rules for every iteration:
 |---|---|---|---|
 | 0 freeze and baseline | done | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
 | 1 pypcode spike | done | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54), 4 (#55), 5 (#56), 6 (#57) and 7 (#58) answered |
-| 2 semantics seam | done | 2026-10-02 | see [Semantics seam](#semantics-seam) |
+| 2 semantics seam | done | 2026-10-02 | #62; see [Semantics seam](#semantics-seam) |
 | 3 pypcode backend | done | 2026-10-02 | #64; see [Groups moved](#groups-moved) |
 | 4 parity on recorded cases | done | 2026-10-02 | #65; see [Parity on recorded cases](#parity-on-recorded-cases) |
 | 5 cutover | not started | | |
@@ -404,19 +417,20 @@ backend stays registered for the differential run until phase 5. The engine depe
 - `x86/pcode_backend.py` matches every p-code `LOAD` and `STORE` to a decoded operand or the stack
   by linear offset equivalence (decision 3), takes the segment register from Capstone, and keeps
   each mnemonic's report events. Term rules keep `predicate`'s precision: same-term comparisons,
-  extension and subpiece folding, flag bits as one-bit extracts, and rotates presented as the
-  shifted fields the reports already used.
+  extension and subpiece folding, flag bits as one-bit extracts, rotates presented as the
+  shifted fields the reports already used, and a rotate's carry out folded to a constant when the
+  operand's known bits fix it.
 - `tests/oracle.py` runs a synthetic routine on Unicorn's 16-bit real mode and compares every
   register the engine resolved. `tests/test_oracle.py` has cases for each group.
 
-Full differential run (`SEMANTICS_DIFFERENTIAL_SUMMARY=1`): 456 identical, 14 extended, 0 stricter,
+Full differential run (`SEMANTICS_DIFFERENTIAL_SUMMARY=1`): 463 identical, 18 extended, 0 stricter,
 0 disagreement. The extended cases, each checked against Unicorn:
 
 | Case | Why pypcode resolves more |
 |---|---|
 | `test_oracle.Compare.test_test_and_parity`, `jp`/`jnp` after `test` and `cmp` (6 runs) | p-code computes PF; `predicate` never resolves it |
 | `test_oracle.ArithmeticAndLogic.test_counted_loop_exits_on_decrement_flags`, `test_effect_order`'s counted loop | p-code keeps the flags `dec` sets, so the loop exit resolves |
-| `test_oracle.StringOperations` CMPS and SCAS cases (3 runs), `test_x86.test_repeated_string_comparisons` (3 runs) | the handwritten backend stops on `cmps` and `scas` |
+| `test_oracle.StringOperations` CMPS and SCAS cases (5 runs), `test_x86`'s repeated string comparison cases (4 runs), `test_pe.test_cmps_with_one_address_for_both_operands` | the handwritten backend stops on `cmps` and `scas` |
 
 The oracle and the differential run found three defects in the handwritten backend, fixed in place
 because they change no instruction semantics (decision 6 allows provenance fixes):
@@ -430,7 +444,20 @@ because they change no instruction semantics (decision 6 allows provenance fixes
 the count runs out, charge `stringIterations` per iteration, stop on an unresolved comparison and
 report a `string-compare-exit` event.
 
-Exit evidence: every group is moved; no disagreement and no stricter difference remain.
+Exit evidence: every group is moved; no disagreement and no stricter difference remain in the
+synthetic cases.
+
+Review of the phase 3 PR found report differences that no synthetic case runs. In each the two
+backends agree on every value and differ only in the form of an unresolved expression:
+
+- `rcl` or `rcr` of a known operand through an unknown CF: the result expression. The carry out
+  resolves on both.
+- `xor dx,dx; div bx` with AX unknown: the quotient is `udiv(zeroExtend(ax), ...)` on pypcode and
+  `udiv(join(ax, 0), ...)` on the handwritten backend.
+- A 32-bit shift by an immediate count of 32 or 33 reports the masked count.
+- `rcl bh,1` with BH known to be zero reports a simpler expression on pypcode.
+
+Phase 5 removes the handwritten backend, so these forms are what reports carry from then on.
 
 ### Parity on recorded cases
 
@@ -468,7 +495,9 @@ existing expressions:
   shift built it from fields (the DX:AX shift chains of a linear-address normalization).
 
 Each has a synthetic oracle test in `test_oracle.py`. The synthetic differential run after them:
-460 identical, 14 extended (the cases listed under phase 3), 0 stricter, 0 disagreement.
+476 identical, 19 extended, 0 stricter, 0 disagreement. The extended cases are the ones listed
+under phase 3 and `test_oracle.ShiftsAndRotates.test_double_word_shift_from_a_zero_high_half`,
+where the second RCL's carry out folds to zero from DX's known top bit.
 
 ### Blockers
 

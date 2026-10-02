@@ -18,7 +18,7 @@ ENGINE_ENV = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(SRC)
 READER = SRC.parents[1] / "executable-reader" / "bin" / "scientific-method.ts"
 from scientific_method_engine.x86.image import Image
 from scientific_method_engine.x86.pe import pe32
-from differential import run_report
+from differential import accepted, run_report
 
 BASE, CODE_VA, DATA_VA = 0x400000, 0x401000, 0x402000
 CODE_RAW, DATA_RAW = 0x200, 0x400
@@ -78,6 +78,21 @@ def events(result, kind):
 
 
 class PEReporterTests(unittest.TestCase):
+    def test_cmps_with_one_address_for_both_operands(self):
+        # ESI = EDI: both CMPSB loads match both operands, and each operand takes one of them.
+        with accepted('extended', 'the handwritten backend stops on CMPS'):
+            r = report('fc be 00 20 40 00 bf 00 20 40 00 c6 06 61 a6 74 01 c3 c3')
+        path, = r['paths']
+        self.assertTrue(path['returned'], path['stop'])
+        self.assertEqual((path['registers']['esi']['value'], path['registers']['edi']['value']), (DATA_VA + 1,) * 2)
+        roles = [e['role'] for e in events(r, 'read') if e['role'] and e['role'].startswith('string')]
+        self.assertEqual(sorted(roles), ['string-destination', 'string-source'])
+
+    def test_pop_addresses_its_destination_after_the_stack_pointer_moves(self):
+        # push 1; push 2; push 3; pop dword [esp+4]; pop eax; pop ebx; ret
+        regs = report('6a 01 6a 02 6a 03 8f 44 24 04 58 5b c3')['paths'][0]['registers']
+        self.assertEqual((regs['eax']['value'], regs['ebx']['value']), (2, 3))
+
     def test_mapping_is_source_derived_and_does_not_mutate_config(self):
         data, config = fixture('b8 78 56 34 12 c3')
         image = Image(data, config)
