@@ -248,3 +248,18 @@ stays in the restoration: verify every cited case and preserve pending contracts
 Exit: canonical package gates and local source controls pass; publish a reviewed
 candidate. Request closure requires merged registry delivery and complete adopted
 source reruns. Several slices may be required; no first slice narrows that exit.
+
+## Ghidra cross-check of the callee graph
+
+Tooling outcome: `callees` compares its edges with the call edges Ghidra recovers, exported by the
+packaged `ExportCallEdges.java` and passed as `ghidraCallEdges` (ADR 0003, decision 7). Each edge
+of a caller both analyses read is an agreement, an edge only the engine read or an edge only Ghidra
+read. A Ghidra-only edge stays unchecked and never becomes an engine edge. Callers either side did
+not read stay listed as not compared, and an export of another file is rejected.
+
+Synthetic acceptance: each result class, agreement on an unresolved call, a missed
+`ghidraAgreementSites` control, uncompared and unmapped functions, and rejected exports, in the
+engine tests and through the reader bridge. The script compiles against Ghidra 12.1. Exports and
+reports of a real program stay in its `GAME_DIR`.
+Exit: the option ships with tests, the reporter guide documents it, and the script has its row in
+the engine README catalog.

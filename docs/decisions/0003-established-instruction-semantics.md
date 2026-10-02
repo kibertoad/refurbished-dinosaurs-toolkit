@@ -252,7 +252,7 @@ Rules for every iteration:
 | 3 pypcode backend | done | 2026-10-02 | #64; see [Groups moved](#groups-moved) |
 | 4 parity on recorded cases | done | 2026-10-02 | #65; see [Parity on recorded cases](#parity-on-recorded-cases) |
 | 5 cutover | done | 2026-10-02 | #66; see [Cutover](#cutover) |
-| 6 Ghidra callee cross-check | not started | | |
+| 6 Ghidra callee cross-check | done | 2026-10-02 | see [Callee cross-check](#callee-cross-check) |
 
 ### Handwritten baseline
 
@@ -494,6 +494,29 @@ Done 2026-10-02.
 
 The release label is `release:minor`: the header gains a field, and no supported import
 (`x86.pe.pe32`, `x86.image.read_source`) changes. The modules removed here were never in a release.
+
+### Callee cross-check
+
+Done 2026-10-02.
+
+1. `ExportCallEdges.java` takes an output path, a function limit (1..128) and entry addresses. It
+   walks Ghidra's functions breadth first from those entries through call targets and jumps to
+   other functions' entries. It writes each function's edges with Ghidra's flow type, and the
+   addresses and file offsets of each site and target, beside the program's SHA-256. Requested
+   addresses without a function and functions past the limit are listed, not dropped. The script
+   compiles against Ghidra 12.1.3, and a headless run on a synthetic binary produced an export
+   that the engine accepts.
+2. `callees` takes the export as `ghidraCallEdges` and reports `ghidraCrossCheck`. For each caller
+   both read, an edge is `agreement`, `engineOnly` or `ghidraOnly`, matched on site and target file
+   offset, with an unresolved call matching an unresolved call at its site. A `ghidraOnly` edge is
+   `checked: false` and never enters the engine's graph. Callers and functions either side left
+   uncompared are listed in `notCompared`. A `ghidraAgreementSites` control fails the report when a
+   named site does not agree. An export of another file, or one over its bounds, is rejected.
+3. Tests: `GhidraCrossCheckTests` in `test_x86.py` (each result class, full agreement, the missed
+   control, uncompared functions, rejected exports) and a bridge case in `bridge.test.ts`.
+
+The release label is `release:minor`: `callees` gains an option, a control and a report field, and
+the package gains a script.
 
 ### Blockers
 
