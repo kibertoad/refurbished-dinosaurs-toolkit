@@ -104,6 +104,37 @@ set `returnBytes` to 4 for a far entry (default 2). The root return must use
 that width and leave SP where it was on entry; otherwise the path stops and the
 report is not complete within the model.
 
+`arguments` also maps each traced call's stack slots onto the widths its callee read. Each path
+gets `argumentFrames`, one per traced call (modeled calls have none). Offsets count from the
+first byte above the return frame (`returnFrameBytes`, 2 or 4). A frame holds:
+
+- `slots`: runs of argument bytes that one write last covered before the call, with the writer's
+  site, order, depth, role (`push` or none), width and value. A byte no write on the path covered,
+  or one a modeled call's unknown memory effects invalidated, has `writerSite: null` and a reason.
+  Each slot lists the callee reads that consumed it (`consumedBy`) and `derivedReads`: argument
+  reads deeper in the callee whose bytes carry the slot writer's site among their producers, such
+  as a setter reading a word the callee forwarded. They match by producer site only.
+- `groupings`: one row per callee argument read, with its offset, width, LDS/LES `grouping` and
+  the slots it covers. `partialSlots` names slots the read covers only in part.
+  `bytesNotFromSlotWriter` names read bytes whose producers do not include the slot's writer, for
+  example after the callee overwrote its argument.
+- `competingWidths`: pairs of read intervals that overlap without being equal.
+- `calleeCleanupBytes` (`RET n`) and `callerCleanupBytes` (an immediate `ADD SP` right after the
+  call). `mappedBytes` is the larger of these and the highest byte read, at most 256.
+- `settledOnThisPath` and `openReasons`. A frame is open when the callee did not return on the
+  path, a written slot was not read, reads overlap with different widths, a read covers part of a
+  slot or sees other bytes than the caller wrote, no cleanup amount bounds the frame, or the frame
+  is wider than 256 bytes.
+
+Only reads group slots. Adjacent pushes, a relocated segment word and a cleanup amount never join
+or split them: a segment fixup locates a segment, and the read that consumes it decides which
+words form the pointer. `argumentFrameSites` collects the frames of each call site across paths.
+`readWidthSets` lists each distinct set of read widths, and `agreed` holds only when one set
+remains and every frame settled. Paths that never reached the call are not represented, so a
+grouping settled on the traced paths says nothing about the others. A decompiler's parameter
+list is an inference and does not settle a grouping; use the `callees` Ghidra cross-check to
+confirm that both analyses reach the same callee, then read its widths here.
+
 Return snapshots retain full and partial registers. Optional `returnContracts`
 contain `entry`, `register`, `failures` (numeric encodings) and `evidence`. Only
 that entry's returns get the label. Caller truncation, stores, flag producers and
