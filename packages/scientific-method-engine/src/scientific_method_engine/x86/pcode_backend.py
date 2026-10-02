@@ -937,8 +937,11 @@ def port_access(state, ins, direction, port, value, size):
         else:
             result = const(supplied["value"], size * 8, state.at)
             fields.update(valueSource="query assumption", evidence=supplied["evidence"])
-            state.conditional.append({"site": state.at, "evidence": supplied["evidence"],
-                                      "assumption": "port input value supplied by the query; device state unconfirmed"})
+            assumption = {"site": state.at, "evidence": supplied["evidence"],
+                          "assumption": "port input value supplied by the query; device state unconfirmed"}
+            # Every read at the site uses the same supplied value, so the path lists it once.
+            if assumption not in state.conditional:
+                state.conditional.append(assumption)
         state.event("hardware-boundary", **fields, value=result.report(), interpretation=INPUT_MEANING)
     if state.flat:
         raise StopPath("port access in the flat model depends on I/O privilege, which is not modeled")

@@ -350,7 +350,8 @@ mocked ports proves. Those are rules for writing findings, now a short paragraph
 Synthetic acceptance: port output with immediate, DX and unknown ports; unknown and supplied port
 reads, including each `portInputs` rejection and its 64-row limit; placement on every path, a
 conditional path, a stopped path and a dropped path; REP OUTS and REP INS with their RAM events;
-INS/OUTS under an unknown direction, unknown count and an exhausted string budget; interrupts and
+INS/OUTS under an unknown direction, unknown count and an exhausted string budget; `uses` past a
+port access; interrupts, with Unicorn oracle cases for their vectors, and
 INTO; the static `bounds` list; the PE32 stop; Unicorn oracle cases for IN/OUT/INS/OUTS port values
 and SI/DI steps; and a reader bridge case. For gap 39: LEA, MOV+ADD and constant+BP forms into BX,
 an index register, SS overrides, aliasing under unknown, different and equal DS/SS, a DS store that

@@ -18,6 +18,13 @@ class StopPath(Exception):
     pass
 
 
+class Shared(dict):
+    """Read-only query configuration that every copy of a path shares instead of copying."""
+
+    def __deepcopy__(self, memo):
+        return self
+
+
 def segment_register(ins, mem):
     """Name the segment register an explicit memory operand uses (override or stack/data default)."""
     if mem.segment:
@@ -83,7 +90,7 @@ class State:
         self.path = []
         self.conditional = []
         # Values the query supplies for port reads, by site; trace validates them.
-        self.port_inputs = {row["site"]: row for row in config.get("portInputs", [])}
+        self.port_inputs = Shared({row["site"]: row for row in config.get("portInputs", [])})
         flags = config.get("flags", {})
         if not isinstance(flags, dict) or set(flags) - {"direction"}:
             raise ValueError("Only an explicit starting direction flag is supported")

@@ -1,7 +1,7 @@
 """Unicorn oracle cases per instruction group (ADR 0003). Synthetic machine code only."""
 import unittest
 
-from oracle import STACK, check, configuration, run_report
+from oracle import STACK, check, configuration, interrupt, run_report
 
 DATA = {"ds": 0x3000, "es": 0x4000}
 SAME = {"ds": 0x4000, "es": 0x4000}
@@ -251,6 +251,19 @@ class PortAccess(unittest.TestCase):
 
     def test_backward_outs_word(self):
         check(self, "fd be1200 c7041122 c744fe3344 ba c803 6f 6f c3", registers=DATA, resolved=("si",))
+
+
+class Interrupts(unittest.TestCase):
+    """The vector the engine reports from p-code is the interrupt Unicorn raises."""
+
+    def test_interrupt_vectors(self):
+        # Unicorn rejects INT1 (F1) as an invalid instruction, so it has no oracle case.
+        for code in ("b4 4c cd 21", "cd 10", "cc"):
+            with self.subTest(code=code):
+                data = bytes.fromhex(code + " c3")
+                result = run_report(data, configuration(data, STACK), "trace")
+                row, = [e for e in result["paths"][0]["events"] if e["kind"] == "hardware-boundary"]
+                self.assertEqual(row["vector"], interrupt(code))
 
 
 if __name__ == "__main__":

@@ -784,6 +784,11 @@ class HardwareBoundaryTests(unittest.TestCase):
                                                       "assumption": "port input value supplied by the query; device state unconfirmed"}])
         self.assertEqual(path["registers"]["bl"]["value"], 2)
 
+    def test_uses_reads_past_a_port_access(self):
+        data = bytes.fromhex("ba c8 03 ee a1 00 02 c3")
+        r = run_report(data, configuration(data, query={"offset": 0x200, "width": 2}, controls=[4]), "uses")
+        self.assertEqual([e["site"] for e in r["matches"]], [4])
+
     def test_two_reads_of_one_port_are_distinct_unknowns(self):
         r = report("e4 60 88 c3 e4 60 c3")
         first, second = self.boundaries(r, "port-input")
@@ -853,7 +858,7 @@ class HardwareBoundaryTests(unittest.TestCase):
         self.assertTrue(all(e["value"]["value"] is None for e in writes))
         supplied = report(code, registers={"es": 0x2000}, portInputs=[{"site": 10, "value": 9, "evidence": "synthetic"}])
         self.assertEqual([e["value"]["value"] for e in events(supplied, "write")], [9, 9])
-        self.assertEqual(len(supplied["paths"][0]["conditionalModels"]), 2)
+        self.assertEqual(len(supplied["paths"][0]["conditionalModels"]), 1)
 
     def test_string_port_forms_with_unknown_direction_or_count_follow_string_rules(self):
         r = report("b9 02 00 f3 6e c3", registers={"ds": 0x2000})
@@ -880,7 +885,7 @@ class HardwareBoundaryTests(unittest.TestCase):
         self.assertFalse(self.boundaries(into))
 
     def test_bounds_lists_each_hardware_boundary_statically(self):
-        r = report("e4 60 ed ee e6 21 f3 6e 6d cd 10 ce c3", "bounds")
+        r = report("e4 60 ed ee e6 21 f3 6e f2 6d 6d cd 10 ce c3", "bounds")
         self.assertTrue(r["complete"])
         self.assertEqual(r["hardwareBoundaries"], [
             {"site": 0, "boundary": "port-input", "mnemonic": "in", "port": {"source": "immediate", "value": 0x60},
@@ -894,10 +899,12 @@ class HardwareBoundaryTests(unittest.TestCase):
             {"site": 6, "boundary": "port-output", "mnemonic": "outsb", "port": {"source": "register", "register": "dx"},
              "width": 1, "stringForm": True, "repeated": True},
             {"site": 8, "boundary": "port-input", "mnemonic": "insw", "port": {"source": "register", "register": "dx"},
+             "width": 2, "stringForm": True, "repeated": True},
+            {"site": 10, "boundary": "port-input", "mnemonic": "insw", "port": {"source": "register", "register": "dx"},
              "width": 2, "stringForm": True, "repeated": False},
-            {"site": 9, "boundary": "interrupt", "mnemonic": "int", "vector": 0x10, "conditional": False},
-            {"site": 11, "boundary": "interrupt", "mnemonic": "into", "vector": 4, "conditional": True}])
-        self.assertEqual(len(r["assumedContinuations"]), 8)
+            {"site": 11, "boundary": "interrupt", "mnemonic": "int", "vector": 0x10, "conditional": False},
+            {"site": 13, "boundary": "interrupt", "mnemonic": "into", "vector": 4, "conditional": True}])
+        self.assertEqual(len(r["assumedContinuations"]), 9)
 
 
 class EffectiveSegmentTests(unittest.TestCase):
@@ -1414,14 +1421,15 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(alone["verdict"], "one established entry reaches this site")
 
     def test_walk_reads_prefixed_returns_ports_and_jumps(self):
-        # "repz ret" and "rep insb" end the walk, "bnd jmp" is followed like a plain jmp, and int1 is a boundary.
+        # "repz ret" ends the walk, "rep insb" continues to the next instruction, "bnd jmp" is followed
+        # like a plain jmp, and interrupts are boundaries.
         def run(code):
             data = bytes.fromhex(code)
             return walk(Image(data, configuration(data)), [0])
         seen, gaps, _, _, _ = run("f3 c3 cc")
         self.assertEqual((sorted(seen), gaps), ([0], []))
-        _, gaps, _, _, _ = run("f3 6c cc")
-        self.assertEqual(gaps, [{"site": 0, "reason": "hardware or interrupt boundary"}])
+        seen, gaps, _, _, _ = run("f3 6c cc")
+        self.assertEqual((sorted(seen), gaps), ([0, 2], [{"site": 2, "reason": "hardware or interrupt boundary"}]))
         seen, gaps, edges, _, _ = run("f2 e9 01 00 cc c3")
         self.assertEqual((sorted(seen), gaps), ([0, 5], []))
         self.assertEqual((edges[0]["kind"], edges[0]["target"]), ("jmp", 5))

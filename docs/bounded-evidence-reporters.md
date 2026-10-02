@@ -390,7 +390,9 @@ Every read at that site returns the same value. A port event is never a `read`
 or `write`: INS and OUTS also report the RAM access of each iteration as its own
 `write` or `read` with role `string-destination` or `string-source`, and the
 `memory` report keeps RAM accesses only. In the PE32 model the path stops after
-the event, because I/O privilege decides whether the access faults.
+the event, because I/O privilege decides whether the access faults, and
+`portInputs` is rejected. The entry-path walk behind `uses`, `incoming` and the
+operand inventories also continues past a port access.
 
 INT, INT1 and INT3 add a `hardware-boundary` event with `boundary: "interrupt"`
 and the `vector` p-code names, then stop the path, since the handler is not
@@ -401,8 +403,9 @@ interrupts depends on OF.
 boundary site with the `paths` and `declaredContinuationPaths` that reach it,
 `pathsWithout` (split into `returned` and `stopped`) and a `placement`:
 `everyTracedPath` when every ordinary path reaches the site and no limit dropped
-a path, `conditional` when a path returned without reaching it, and `unresolved`
-when only stopped paths lack it or a limit dropped paths. Placement covers the
+an ordinary path, `conditional` when a path returned without reaching it, and
+`unresolved` when only stopped paths lack it or a limit dropped ordinary paths.
+A supplied port value is listed once per path, however often the site runs. Placement covers the
 traced paths within the model; native reachability stays unconfirmed.
 
 `bounds` lists the same instructions statically in `hardwareBoundaries`: the

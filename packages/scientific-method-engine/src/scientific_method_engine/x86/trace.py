@@ -110,9 +110,10 @@ def walk(image, entries, limit=10000):
                 following_sites.append(target)
             if m in ("jmp", "ljmp"):
                 continue
-        if m in INTERRUPTS or m == "hlt" or m in PORTS:
+        if m in INTERRUPTS or m == "hlt":
             gaps.append({"site": at, "reason": "hardware or interrupt boundary"})
             continue
+        # A port access continues at the next instruction, as trace and body() follow it.
         if m in ("call", "lcall") and following not in following_sites:
             returns.add((at, following))
         pending.append(following)
@@ -223,6 +224,8 @@ def validate_port_inputs(config, image):
     rows = config.get("portInputs", [])
     if not isinstance(rows, list) or len(rows) > 64:
         raise ValueError("portInputs must be a list of at most 64 rows")
+    if rows and image.flat:
+        raise ValueError("portInputs are outside the PE32 flat model, where a port access stops the path")
     sites = set()
     for row in rows:
         if not isinstance(row, dict) or not row.get("evidence"):
@@ -240,8 +243,8 @@ def validate_port_inputs(config, image):
 def hardware_placement(outputs, conditional_outputs, gaps):
     """Each hardware boundary site with the traced paths that reach it.
 
-    ``placement`` is ``everyTracedPath`` when every ordinary path reaches the site and no path was
-    dropped, ``conditional`` when a path returned without reaching it, and ``unresolved`` when only
+    ``gaps`` are the ordinary paths' gaps. ``placement`` is ``everyTracedPath`` when every
+    ordinary path reaches the site and no ordinary path was dropped, ``conditional`` when a path returned without reaching it, and ``unresolved`` when only
     stopped paths lack it or a limit dropped paths.
     """
     rows = {}
@@ -422,8 +425,12 @@ def trace(image, config, continue_declared_jumps=True):
             pending.append(child)
             created += 1
 
+    # Ordinary paths all finish before the first declared continuation runs; their gaps come first.
+    ordinary_gaps = None
     while pending or deferred:
         if not pending:
+            if ordinary_gaps is None:
+                ordinary_gaps = len(global_gaps)
             declared_continuations(deferred.pop(0))
             continue
         state = pending.pop()
@@ -681,7 +688,7 @@ def trace(image, config, continue_declared_jumps=True):
         except StopPath as error:
             finish(state, str(error))
     return {"paths": outputs, "declaredContinuationPaths": conditional_outputs, "gaps": global_gaps,
-            "hardwareBoundaries": hardware_placement(outputs, conditional_outputs, global_gaps),
+            "hardwareBoundaries": hardware_placement(outputs, conditional_outputs, global_gaps[:ordinary_gaps]),
             "completeWithinModel": not global_gaps and bool(outputs) and all(p["returned"] for p in outputs),
             "nativeReachability": "unconfirmed", "stepsUsed": total_steps, "stringIterationsUsed": total_string_steps,
             "limits": {"steps": max_steps, "paths": max_paths, "depth": max_depth}}

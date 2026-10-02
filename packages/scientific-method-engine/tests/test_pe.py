@@ -96,6 +96,8 @@ class PEReporterTests(unittest.TestCase):
         row, = events(r, 'hardware-boundary')
         self.assertEqual((row['boundary'], row['port']['value'], row['width']), ('port-output', 0x3c8, 1))
         self.assertEqual(r['hardwareBoundaries'][0]['placement'], 'everyTracedPath')
+        with self.assertRaisesRegex(ValueError, 'flat model'):
+            report('ec c3', portInputs=[{'site': CODE_RAW, 'value': 1, 'evidence': 'synthetic'}])
 
     def test_pop_addresses_its_destination_after_the_stack_pointer_moves(self):
         # push 1; push 2; push 3; pop dword [esp+4]; pop eax; pop ebx; ret

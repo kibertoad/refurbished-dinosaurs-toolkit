@@ -11,7 +11,7 @@ from .result_flow import return_flows
 from .image import Image, integer
 from .trace import (trace, walk, call_target, unsupported_transfer, uncovered, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
                     RETURNS, INTERRUPTS, PORTS, PORT_INPUTS, port_width)
-from .machine import repeated, string_instruction
+from .machine import string_instruction
 from .pcode_backend import interrupt_vector
 
 
@@ -756,7 +756,9 @@ def hardware_boundary(image, at, ins):
     port = next(o for o in ins.operands if o.type == X86_OP_IMM or (o.type == X86_OP_REG and ins.reg_name(o.reg) == "dx"))
     return {"site": at, "boundary": "port-input" if m in PORT_INPUTS else "port-output", "mnemonic": m,
             "port": {"source": "immediate", "value": port.imm} if port.type == X86_OP_IMM else {"source": "register", "register": "dx"},
-            "width": port_width(ins, image.flat), "stringForm": string_instruction(ins), "repeated": repeated(ins)}
+            "width": port_width(ins, image.flat), "stringForm": string_instruction(ins),
+            # F2 on INS/OUTS repeats on hardware too; trace stops that form as unsupported.
+            "repeated": 0xF2 in ins.prefix or 0xF3 in ins.prefix}
 
 
 def body(image, entry, limit=10000):

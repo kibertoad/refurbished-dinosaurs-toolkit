@@ -7,7 +7,7 @@ engine resolved to a constant at the routine's return with Unicorn's value there
 import sys
 from pathlib import Path
 
-from unicorn import UC_ARCH_X86, UC_HOOK_INSN, UC_MODE_16, Uc
+from unicorn import UC_ARCH_X86, UC_HOOK_INSN, UC_HOOK_INTR, UC_MODE_16, Uc
 from unicorn import x86_const as U
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -54,6 +54,25 @@ def unicorn(data, registers, direction=None, ports=None, outputs=None):
     uc.emu_start(base, base + len(data), count=10000)
     names = REGISTERS16 + REGISTERS32
     return stopped.get("at"), {name: uc.reg_read(getattr(U, "UC_X86_REG_" + name.upper())) for name in names}
+
+
+def interrupt(code):
+    """The interrupt number Unicorn raises first when running ``code``, or None."""
+    data = bytes.fromhex(code)
+    uc = Uc(UC_ARCH_X86, UC_MODE_16)
+    uc.mem_map(0, 0x110000)
+    uc.mem_write(SEGMENT * 16, data)
+    uc.reg_write(U.UC_X86_REG_CS, SEGMENT)
+    for name, value in STACK.items():
+        uc.reg_write(getattr(U, "UC_X86_REG_" + name.upper()), value)
+    raised = []
+
+    def hook(uc, number, _):
+        raised.append(number)
+        uc.emu_stop()
+    uc.hook_add(UC_HOOK_INTR, hook)
+    uc.emu_start(SEGMENT * 16, SEGMENT * 16 + len(data), count=100)
+    return raised[0] if raised else None
 
 
 def check(test, code, registers=None, direction=None, resolved=(), ports=None, port_inputs=None):
