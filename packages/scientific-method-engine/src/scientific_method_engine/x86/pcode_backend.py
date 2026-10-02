@@ -4,6 +4,20 @@ Values, flags and branch conditions come from the p-code pypcode lifts from Ghid
 specification. The evidence layer keeps what it always decided: which segment register an access
 uses (from Capstone, decision 3), access roles, the model's acceptance rules, flag-producer records
 and the events each instruction reports. A ``State`` reaches this module through ``BACKEND``.
+
+What this module and ``pcode.Run`` use of a ``State``:
+
+- Methods: ``get``, ``put``, ``reg``, ``setreg``, ``segment``, ``access``, ``address``, ``event``,
+  ``set_flags``, ``forget_flags``, ``carry_value``, ``save_flags`` and ``restore_flags``.
+- Read only: ``at``, ``bits``, ``flat``, ``sp``, ``flags``, ``flag_serial``, ``flag_epoch``,
+  ``unknown_flag_site``, ``segment_bases`` and ``value_transfers``.
+- Read and assigned: ``flag_values`` (the arithmetic flags p-code computed, or None), ``carry``,
+  ``direction_flag`` and ``interrupt_flag``. ``conditional`` is appended to (the divide-error
+  assumption).
+
+Every member above belongs to one path, and ``trace`` copies a path with ``deepcopy`` when a branch
+splits it. The backend keeps no path state of its own: ``Pypcode.__deepcopy__`` returns the same
+object, so a value this module stores must live on the ``State`` to be copied with its path.
 """
 from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
 
@@ -409,8 +423,6 @@ def carry_out(state, run, site):
 class Pypcode:
     """The engine's instruction semantics: ordinary instructions, branch conditions and string bodies."""
 
-    name = "pypcode"
-
     def __deepcopy__(self, memo):
         # The backend holds no path state, so every copied path shares it.
         return self
@@ -426,7 +438,8 @@ class Pypcode:
         """Evaluate a conditional branch on the current flags.
 
         Returns ``(answer, info)``: True, False or None when unresolved, and the ``branch`` event
-        fields, which describe the evidence layer's record of the flag producer.
+        fields. They describe the evidence layer's record of the flag producer, then either
+        ``decidedBy: "p-code flags"`` for a decided branch or a ``reason`` for an undecided one.
         """
         ops, _ = LIFTER.ops(state.flat, bytes((0x70 + CONDITION_CODES[mnemonic], 0)), 0x100)
         needed = {LIFTER.register(state.flat, v[1], v[2]) for o in ops for v in o.inputs if v[0] == "register"}
@@ -442,24 +455,24 @@ class Pypcode:
                     "left": a.report(), "right": b.report()}
         # CF is always readable: the evidence layer names it when no instruction resolved it.
         if not needed <= set(state.flag_values or ()) | {"CF"}:
+            info.setdefault("reason", "flags unresolved")
             return None, info
         condition = Run(state, ops, None, flags=state.flag_values or {}).execute(stop_at_branch=True)
         if condition.number is None:
-            if carry_only:
-                info["reason"] = "carry unresolved"
+            # Every undecided branch says why: the carry, the producer or its flags are unknown.
+            info.setdefault("reason", "carry unresolved" if carry_only else "flags unresolved")
             return None, info
-        if "reason" in info:
-            # No comparison record exists, but the flags p-code computed decide the branch.
-            del info["reason"]
-            info["decidedBy"] = "p-code flags"
+        # p-code decides every branch the engine resolves; the record above only describes the producer.
+        info.pop("reason", None)
+        info["decidedBy"] = "p-code flags"
         return bool(condition.number), info
 
-    def string_iteration(self, state, ins, operation, width, source_segment, delta_step):
+    def string_iteration(self, state, ins, operation, width, source_segment):
         """Apply one iteration of an accepted string form; see ``machine.string_effect``.
 
-        For a repeated CMPS or SCAS, returns whether the repeat condition holds afterwards (1, 0
-        or unknown); otherwise None. ``delta_step`` is the evidence layer's step; p-code computes
-        its own from DF.
+        ``source_segment`` names the source operand's segment register (MOVS, LODS and CMPS only).
+        p-code steps SI and DI by the direction flag. For a repeated CMPS or SCAS, returns whether
+        the repeat condition holds afterwards (1, 0 or unknown); otherwise None.
         """
         si, di = ("esi", "edi") if state.flat else ("si", "di")
         source, destination = state.reg(si), state.reg(di)
@@ -768,15 +781,17 @@ def low_product(value, site):
 
     SLEIGH writes a two- or three-operand IMUL as the double-width product of the sign-extended
     operands, truncated; the low half does not depend on the extension, and reports write it as
-    the operand-width product.
+    the operand-width product. An operand that already holds a sign extension (after CBW or MOVSX)
+    reaches the product as one extension of the narrower value, which is extended back to the
+    operand's width here.
     """
     term = value.term
     if term[0] != "extract" or term[2] != 0 or term[1][0] != "mul":
         return value
     factors = []
     for factor in term[1][1:]:
-        if factor[0] in ("signExtend", "zeroExtend") and factor[2] == value.bits:
-            factors.append(Value(value.bits, factor[1]))
+        if factor[0] in ("signExtend", "zeroExtend") and factor[2] <= value.bits:
+            factors.append(resize(Value(factor[2], factor[1]), value.bits, signed=factor[0] == "signExtend"))
         elif factor[0] == "constant":
             factors.append(const(factor[1], value.bits))
         else:
@@ -837,19 +852,19 @@ def divide(state, ins, image):
                 quotient=quotient.report(), remainder=remainder.report(), fault=fault)
 
 
-def sign_fill(value, source, site):
-    """CWD/CDQ's high half as the sign of the source register, when p-code names that same bit.
+def through_extension(value, source, form):
+    """``value`` as ``form(source)`` when p-code wrote ``form`` of the value ``source`` sign-extends.
 
-    When the source is itself a sign extension, p-code takes the sign from the narrower value it
-    extended; both name one bit, and reports name it in the register the instruction reads.
+    When the source register holds a sign extension (after CBW, CWDE or MOVSX), p-code reads
+    through it to the narrower value it extended, because ``pcode.evaluate`` folds an extension
+    of an extension. Both name the same bits; reports name them in the register the instruction
+    reads.
     """
-    expected = resize(extract(source, source.bits - 1, 1), value.bits, signed=True)
-    if value.term == expected.term or value.number is not None:
+    if value.number is not None or source.term[0] != "signExtend":
         return value
-    if source.term[0] == "signExtend":
-        inner = Value(source.term[2], source.term[1])
-        if value.term == resize(extract(inner, inner.bits - 1, 1), value.bits, signed=True).term:
-            return Value(value.bits, expected.term, value.sources)
+    inner = Value(source.term[2], source.term[1])
+    if value.term == form(inner).term:
+        return Value(value.bits, form(source).term, value.sources)
     return value
 
 
@@ -858,9 +873,15 @@ def conversion(state, ins, image):
     before = {name: state.reg(name) for name in ("al", "ax", "eax")}
 
     def present(value, _):
-        if m in ("cwd", "cdq") and value.bits in (16, 32):
-            return sign_fill(value, before["ax" if value.bits == 16 else "eax"], state.at)
-        return value
+        if value.bits not in (16, 32):
+            return value
+        if m in ("cwd", "cdq"):
+            # The high half is the sign bit of AX or EAX.
+            return through_extension(value, before["ax" if value.bits == 16 else "eax"],
+                                     lambda v: resize(extract(v, v.bits - 1, 1), value.bits, signed=True))
+        # CBW and CWDE write the sign extension of AL or AX.
+        return through_extension(value, before["al" if value.bits == 16 else "ax"],
+                                 lambda v: resize(v, value.bits, signed=True))
     f = run_plain(state, ins, image, present=present)
     (destination, value), = f.run.registers.items()
     wide = value.bits == 32

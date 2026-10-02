@@ -207,11 +207,15 @@ INC/DEC and effective-size sign extension. It follows direct near/far
 calls, jumps, common conditional branches, JCXZ, the LOOP family and balanced
 returns. Unsupported instructions, repeat prefixes, 32-bit control transfers,
 indirect targets, hardware accesses and recursion/loop limits stop the affected
-path. A branch on flags that leave no comparable producer (INC/DEC, shifts,
-rotates, multiplies, and PF for JP/JNP) is decided from the flags p-code computed
-when they are known. Its branch event then carries `decidedBy: "p-code flags"`
-and the producer's `flagProducer` site, without `operation`, `left` and `right`.
-Unknown branch conditions are explored both ways.
+path. Branch conditions are decided from the flags p-code computed. A decided
+branch event carries `decidedBy: "p-code flags"` and has no `reason`. An undecided
+one carries a `reason`: `flag producer unresolved`, `carry unresolved` for a
+CF-only branch on an unknown carry, or `flags unresolved` when the flags the
+condition reads are unknown. After a comparable producer (CMP, TEST, CMPS, SCAS,
+ADD, SUB, NEG or logic) the event keeps its `flagProducer`, `operation`, `left` and `right`. After a
+producer with no comparable record (INC/DEC, shifts, rotates, multiplies) it
+carries the producer's `flagProducer` site and `flagGeneration` instead. Unknown
+branch conditions are explored both ways.
 
 CF is tracked on its own where an instruction sets it without leaving a
 comparable producer. Shifts with a known count carry the last bit shifted out,

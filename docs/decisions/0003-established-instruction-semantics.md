@@ -86,7 +86,7 @@ Every synthetic case runs on both backends. Each report difference is classified
 |---|---|---|
 | identical | same report | yes |
 | stricter | pypcode stops or reports unknown where the handwritten backend gave a value, and Unicorn confirms the handwritten value | only with a recorded reason and a follow-up step; it blocks cutover |
-| extended | pypcode completes an instruction the handwritten backend stopped on, and Unicorn confirms the value | yes, listed in the release notes |
+| extended | pypcode completes an instruction the handwritten backend stopped on, or resolves a value or branch it left unresolved, and Unicorn confirms the value | yes, listed in the release notes |
 | disagreement | both give values and they differ | no; Unicorn decides which backend has the bug, and the group stays blocked until it is fixed |
 
 Precision under unknown inputs counts. The handwritten `predicate` resolves comparisons such as
@@ -487,15 +487,27 @@ existing expressions:
   backend's `reason: "flag producer unresolved"`. It now carries `decidedBy: "p-code flags"`
   instead.
 - Two- and three-operand IMUL is reported as the operand-width product, not the low half of the
-  double-width product of extended operands.
+  double-width product of extended operands. An operand holding a sign extension (after CBW or
+  MOVSX) keeps that extension in the product.
 - `x | 0`, `x ^ 0` and `x & ~0` keep the instruction's operation; only one-byte flag selections
   fold a zero arm.
-- CWD/CDQ name the sign bit of AX/EAX after CBW/CWDE, not of the byte CBW extended.
+- CWD/CDQ name the sign bit of AX/EAX after CBW/CWDE, not of the byte CBW extended, and CWDE
+  after CBW or MOVSX extends AX.
 - Rotates and shift carries treat the instruction's operand as one value, even when an earlier
   shift built it from fields (the DX:AX shift chains of a linear-address normalization).
 
-Each has a synthetic oracle test in `test_oracle.py`. The synthetic differential run after them:
-476 identical, 19 extended, 0 stricter, 0 disagreement. The extended cases are the ones listed
+`pcode.evaluate` keeps folding an extension of an extension into one extension, because the fold
+keeps flag terms small for every handler. The handlers that report a register holding a sign
+extension (IMUL, CBW/CWDE, CWD/CDQ) rewrite p-code's term to name that register.
+
+Review of the phase 4 PR found one more report difference that no synthetic case runs. The two
+backends agree on every value and differ only in the form of an unresolved expression: RCL or
+RCR by more than one through a register holding a known constant (`mov dx,0; shr ax,1; rcr dx,4`)
+reports p-code's extract of the joined value, where the handwritten backend wrote the shifted
+carry. Phase 5 keeps p-code's form.
+
+Each listed fix has a synthetic oracle test in `test_oracle.py`. The synthetic differential run after
+them: 479 identical, 19 extended, 0 stricter, 0 disagreement. The extended cases are the ones listed
 under phase 3 and `test_oracle.ShiftsAndRotates.test_double_word_shift_from_a_zero_high_half`,
 where the second RCL's carry out folds to zero from DX's known top bit.
 
@@ -510,19 +522,30 @@ Done 2026-10-02.
    - Branch conditions come from p-code alone. The `branch` event fields come from the evidence
      layer's flag-producer record: `flagProducer`, `operation`, `left` and `right` after a
      comparison; `flag` and `carry` for a CF-only branch on a carry the evidence layer tracks; and
-     `reason: "flag producer unresolved"` or `decidedBy: "p-code flags"` otherwise.
+     `flagProducer` and `flagGeneration` after a producer with no comparable record.
+   - Every decided branch carries `decidedBy: "p-code flags"`, and every undecided one a `reason`
+     (`flag producer unresolved`, `carry unresolved` or `flags unresolved`). In 0.7.0
+     `decidedBy` marked a branch the handwritten predicate left open, so a branch after a
+     comparison it decided had neither field. That rule cannot survive the cutover: telling which
+     branches a comparison record decides needs the handwritten flag rules this phase deletes.
+     Marking every p-code decision keeps `decidedBy` on each event that had it in 0.7.0 and adds it
+     to the rest, and the new `flags unresolved` reason gives an undecided branch after a
+     comparison the reason it lacked.
    - `BRANCH_CONDITIONS` stays in `machine.py`. It is the assumption key table spike answer 4
      called for (synonymous and complementary branches share one assumption), and `result_flow`
      uses it. It computes no flag.
 2. `tests/differential.py` and `tests/test_differential.py` are deleted. The test modules call the
    engine's `run_report`, and `tests/oracle.py` keeps the Unicorn oracle cases on the one backend.
 3. Reports name their semantics in a new header field, `instructionSemantics`, beside `decoder`.
-   The reporter guide documents it and `AGENTS.md` states the rule that replaces decision 6. No
-   report field changed meaning, so the migration guide has no entry for this phase.
+   The reporter guide documents it and `AGENTS.md` states the rule that replaces decision 6. The
+   header names the Capstone and pypcode versions the engine loaded. Branch events gain
+   `decidedBy` and `reason` where they lacked them; no event loses a field, so the migration guide
+   has no entry for this phase.
 4. ADR 0002's open item is marked resolved.
 
 The release label is `release:minor`: the header gains a field, and no supported import
-(`x86.pe.pe32`, `x86.image.read_source`) changes. The modules removed here were never in a release.
+(`x86.pe.pe32`, `x86.image.read_source`) changes. `x86.handwritten` and `x86.semantics` shipped in
+0.7.0 as internal modules, which the package README excludes from the supported imports.
 
 ### Callee cross-check
 
