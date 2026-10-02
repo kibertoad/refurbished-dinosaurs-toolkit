@@ -4,8 +4,8 @@ A scope is a query hypothesis that a modeled service leaves a named byte range a
 call. It is evidence-layer bookkeeping: it reads and writes no memory on the path, adds no read or
 write event and computes no instruction value or flag (ADR 0003).
 """
-from .machine import ALIASES, StopPath, uncached_byte
-from .values import const, unknown
+from .machine import ALIASES, StopPath
+from .values import const
 
 
 SEGMENTS = ("cs", "ds", "es", "ss", "fs", "gs")
@@ -14,18 +14,20 @@ MAX_SCOPES = 32
 MAX_BYTES = 4096
 
 
-def validate_scopes(model, bits):
+def validate_scopes(model, bits, flat):
     """Check the shape and budgets of a call model's ``preservesMemory`` before tracing.
 
     Every model is checked, including one whose call site no path reaches. Raises ``ValueError``
-    on a malformed scope, more than 32 scopes or more than 4,096 bytes in total.
+    on a malformed scope, more than 32 scopes or more than 4,096 bytes in total, two scopes on the
+    same segment and base whose ranges overlap, or (segmented images) a scope whose segment register
+    the model does not preserve: reads after the call could not address it.
     """
     scopes = model.get("preservesMemory", [])
     if not isinstance(scopes, list):
         raise ValueError("preservesMemory must be a list of scopes")
     if len(scopes) > MAX_SCOPES:
         raise ValueError(f"preservesMemory scope limit is {MAX_SCOPES}")
-    total = 0
+    total, declared = 0, {}
     for scope in scopes:
         if not isinstance(scope, dict) or set(scope) - FIELDS:
             raise ValueError("preservesMemory scope fields are segment, base, displacement, bytes and evidence")
@@ -45,17 +47,24 @@ def validate_scopes(model, bits):
             raise ValueError(f"preservesMemory total byte limit is {MAX_BYTES}")
         if not isinstance(scope.get("evidence"), str) or not scope["evidence"].strip():
             raise ValueError("preservesMemory scope requires nonempty evidence")
+        # The model replaces every unpreserved segment register except CS with an unknown value.
+        if not flat and scope["segment"] != "cs" and scope["segment"] not in model.get("preserves", []):
+            raise ValueError(f"preservesMemory segment {scope['segment']} must also be listed in the model's preserves")
+        ranges = declared.setdefault((scope["segment"], ALIASES[base][0]), [])
+        if any(displacement < end and start < displacement + size for start, end in ranges):
+            raise ValueError("preservesMemory scopes on one segment and base overlap")
+        ranges.append((displacement, displacement + size))
 
 
 def capture_scopes(state, model):
     """Resolve each scope against the pre-call state and snapshot its bytes.
 
-    Returns the captured bytes and one report entry per scope. Raises ``StopPath`` when a segment
+    Returns ``(values, unread, descriptions)``: the cached bytes, the unknown term names of bytes
+    the model had no value for, and one report entry per scope. Raises ``StopPath`` when a segment
     or base is not concrete, an interval leaves the address space, or two intervals share a linear
-    byte (segment aliases included). A byte the model had no value for keeps its stable unknown
-    term and counts as uncached.
+    byte (segment aliases included). An uncached byte stays uncached after the call.
     """
-    captured, descriptions, intervals = {}, [], []
+    values, unread, descriptions, intervals = {}, {}, [], []
     for scope in model.get("preservesMemory", []):
         segment, base = state.segment(scope["segment"]), state.reg(scope["base"])
         if segment.number is None or base.number is None:
@@ -73,23 +82,25 @@ def capture_scopes(state, model):
         cached = 0
         for key in keys:
             if key in state.memory:
-                # A byte an earlier scope kept as an unknown term is still uncached.
-                cached += not uncached_byte(state.memory[key])
-                captured[key] = state.memory[key]
+                cached += 1
+                values[key] = state.memory[key]
             else:
-                # No site, so uncached_byte recognizes the kept term after the model.
-                captured[key] = unknown(f"memory:{state.memory_epoch}:{key}", 8)
+                unread[key] = state.unread_term(key)
         descriptions.append({
             "segmentRegister": scope["segment"], "segment": segment.report(),
             "baseRegister": scope["base"], "base": base.report(), "displacement": displacement,
             "offset": offset, "linearStart": start, "linearEnd": end, "bytes": size,
             "cachedBytes": cached, "uncachedBytes": size - cached, "evidence": scope["evidence"],
             "meaning": "explicit pre-call memory-preservation hypothesis; memory outside every scope is unknown"})
-    return captured, descriptions
+    return values, unread, descriptions
 
 
-def retain_scopes(state, captured):
-    """Put the captured bytes back after the model invalidated memory. Later writes still apply."""
-    for key, value in captured.items():
-        state.memory[key] = value
-        state.memory_groups.setdefault((key[0], key[1]), set()).add(key)
+def retain_scopes(state, values, unread):
+    """Put the captured bytes back after the model invalidated memory. Later writes still apply.
+
+    All scoped keys are concrete linear bytes, so they share one alias group.
+    """
+    state.memory.update(values)
+    state.unread_memory.update(unread)
+    if values or unread:
+        state.memory_groups.setdefault((("linear",), ("absolute",)), set()).update(values, unread)

@@ -45,6 +45,9 @@ class MemoryScopeTests(unittest.TestCase):
                 p = r["effectOrdering"]["paths"][0]
                 self.assertFalse(p["effectCompleteWithinModel"])
                 self.assertTrue(all(call["unknownEffects"] for call in p["calls"]))
+                # Every call summary has the field; only the modeled call carries scopes.
+                self.assertEqual([bool(call["preservedMemoryScopes"]) for call in p["calls"]],
+                                 [call["site"] == model["site"] for call in p["calls"]])
                 service = next(call for call in p["calls"] if call["site"] == model["site"])
                 declared = service["preservedMemoryScopes"]
                 self.assertEqual(declared, r["paths"][0]["conditionalModels"][0]["preservedMemoryScopes"])
@@ -144,7 +147,8 @@ class MemoryScopeTests(unittest.TestCase):
         self.assertEqual(r["paths"][0]["registers"]["bx"]["value"], 0x1111)
 
     def test_overlap_and_segment_alias_scopes_stop_before_continuation(self):
-        for other, registers in ((scope(displacement=2), REGISTERS),
+        # Overlap through another base register is visible only once registers are known.
+        for other, registers in ((scope(base="bx"), {**REGISTERS, "bx": 0xff00 - 6}),
                                  (scope(segment="ds"), {**REGISTERS, "ds": REGISTERS["ss"]}),
                                  (scope(segment="ds", displacement=16), {**REGISTERS, "ds": REGISTERS["ss"] - 1})):
             c, model = nested()
@@ -171,14 +175,24 @@ class MemoryScopeTests(unittest.TestCase):
         invalid = [scope(bytes=0), scope(bytes=True), scope(bytes=4097), scope(displacement=True),
                    scope(displacement=-32769), scope(displacement=32768), scope(base="al"), scope(base="esp"),
                    scope(base="ss"), scope(base=[]), scope(segment="eax"), scope(segment=[]), scope(evidence=" "), scope(extra="unexpected")]
-        invalid_lists = [[s] for s in invalid] + [[scope()] * 33, [scope(bytes=4096), scope(bytes=1)], "not a list"]
+        invalid_lists = [[s] for s in invalid] + [[scope()] * 33, [scope(bytes=4096), scope(bytes=1)], "not a list",
+                                                  # declared overlap on one segment and base, duplicates included
+                                                  [scope(), scope(displacement=2)], [scope(), scope()],
+                                                  [scope(base="sp"), scope(base="sp", displacement=-1, bytes=2)],
+                                                  # a segment register the model replaces cannot address the scope
+                                                  [scope(segment="es")]]
         for declarations in invalid_lists:
             with self.subTest(declarations=declarations):
                 unused = {**model, "site": c.labels["external"], "preservesMemory": declarations}
                 with self.assertRaises(ValueError):
                     report(c, "effects", registers=REGISTERS, callModels=[unused])
-        validate_scopes({"preservesMemory": [scope(bytes=1)] * 32}, 16)
-        validate_scopes({"preservesMemory": [scope(bytes=4096)]}, 16)
+        validate_scopes({"preserves": ["ss"], "preservesMemory": [scope(bytes=1, displacement=i) for i in range(32)]}, 16, False)
+        validate_scopes({"preserves": ["ss"], "preservesMemory": [scope(bytes=4096)]}, 16, False)
+        # Adjacent ranges, other bases and CS (never replaced by a model) are accepted; flat images
+        # address memory through segment bases that a model does not replace.
+        validate_scopes({"preserves": ["ss"], "preservesMemory": [scope(), scope(displacement=4), scope(base="bp")]}, 16, False)
+        validate_scopes({"preservesMemory": [scope(segment="cs")]}, 16, False)
+        validate_scopes({"preservesMemory": [scope(base="esp")]}, 32, True)
 
     def test_step_path_and_total_caps_never_prove_a_later_write_absent(self):
         c, model = nested()
@@ -200,11 +214,11 @@ class MemoryScopeTests(unittest.TestCase):
         state.access(state.segment("ds"), const(0x200, 16), 2, write=const(0x9999, 16))
         previous = state.peek(state.segment("ss"), const(0x202, 16), 2)
         event_count = len(state.events)
-        captured, declared = capture_scopes(state, {"preservesMemory": [scope(bytes=4)]})
+        values, unread, declared = capture_scopes(state, {"preservesMemory": [scope(bytes=4)]})
         self.assertEqual(len(state.events), event_count)
         self.assertEqual((declared[0]["cachedBytes"], declared[0]["uncachedBytes"]), (2, 2))
         state.clear_memory()
-        retain_scopes(state, captured)
+        retain_scopes(state, values, unread)
         self.assertEqual(state.peek(state.segment("ss"), const(0x200, 16), 2).number, 0x1234)
         self.assertEqual(state.peek(state.segment("ss"), const(0x202, 16), 2).term, previous.term)
         self.assertIsNone(state.peek(state.segment("ss"), const(0x204, 16), 2).number)
@@ -221,25 +235,46 @@ class MemoryScopeTests(unittest.TestCase):
         state = State(0, Image(data, config), config)
         state.access(state.segment("ss"), const(0x200, 16), 1, write=const(0x12, 8))
         declarations = {"preservesMemory": [scope(bytes=2)]}
+        terms = set()
         for _ in range(2):
-            captured, declared = capture_scopes(state, declarations)
+            values, unread, declared = capture_scopes(state, declarations)
             self.assertEqual((declared[0]["cachedBytes"], declared[0]["uncachedBytes"]), (1, 1))
+            terms.update(unread.values())
             state.clear_memory()
-            retain_scopes(state, captured)
+            retain_scopes(state, values, unread)
+        self.assertEqual(len(terms), 1)
+        # A kept uncached byte reads like any unread byte: produced by the reading site, listed missing.
+        state.at = 7
         state.access(state.segment("ss"), const(0x200, 16), 2)
         self.assertEqual(state.events[-1]["missingByteProducers"], [1])
+        self.assertIn(7, state.peek(state.segment("ss"), const(0x201, 16), 1).sources)
+        # Writing the byte gives it a value; it is no longer unread.
+        state.access(state.segment("ss"), const(0x201, 16), 1, write=const(0x34, 8))
+        self.assertEqual(state.unread_memory, {})
 
     def test_exact_scope_and_byte_limits_execute_and_report_each_scope(self):
         c = Code().label("service").branch("e8", "external").emit("c3").label("external").emit("c3")
         for declarations in ([scope(base="bx", bytes=4096)],
                              [scope(base="bx", displacement=i * 128, bytes=128) for i in range(32)]):
-            model = {"site": 0, "evidence": "synthetic boundary-sized preservation", "cases": [{}],
+            model = {"site": 0, "evidence": "synthetic boundary-sized preservation", "cases": [{}], "preserves": ["ss"],
                      "preservesMemory": declarations}
             r = report(c, "effects", registers={"ss": 0x3000, "bx": 0x1000}, callModels=[model])
             self.assertTrue(r["completeWithinModel"])
             scopes = r["paths"][0]["conditionalModels"][0]["preservedMemoryScopes"]
             self.assertEqual(len(scopes), len(declarations))
             self.assertEqual(sum(s["uncachedBytes"] for s in scopes), 4096)
+
+    def test_allocation_cites_scopes_of_a_modeled_allocator(self):
+        c = Code().emit("b8 02 00").label("call").branch("e8", "allocator").emit("c6 06 00 02 01 c3")
+        c.label("allocator").emit("c3")
+        allocations = [{"site": c.labels["call"], "requestRegister": "ax", "unitBytes": 16, "unitEvidence": "synthetic paragraph API"}]
+        for declared, text in (([scope()], "outside its preservedMemoryScopes"), ([], "memory unresolved")):
+            model = {"site": c.labels["call"], "preserves": ["ds", "ss"], "evidence": "synthetic allocator model",
+                     "cases": [{}], "preservesMemory": declared}
+            r = report(c, "allocation", registers=REGISTERS, allocations=allocations, callModels=[model])
+            a = r["allocations"][0]
+            self.assertTrue(a["allocatorEffects"].endswith(text))
+            self.assertEqual(len(a["preservedMemoryScopes"]), len(declared))
 
     def test_modeled_push_cs_uses_sp_before_consuming_the_segment_word(self):
         c = Code().branch("e8", "child").label("after").emit("c3")
