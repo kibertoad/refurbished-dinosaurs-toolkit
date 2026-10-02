@@ -21,17 +21,19 @@ The workflow runs only when a push changes `.changeset/`, an npm package or the 
 
 ## PyPI and NuGet: release labels
 
-`scientific-method-engine` (PyPI), and `ScientificMethod.Core` with `ScientificMethod.LegacyFormats`
-(NuGet, one shared version).
+`scientific-method-engine` and `dinorefurb-disc-archiver` (PyPI), and `ScientificMethod.Core` with
+`ScientificMethod.LegacyFormats` (NuGet, one shared version).
 
-1. A pull request that changes `packages/scientific-method-engine/`, `packages/dotnet/` or
-   `global.json` carries exactly one of the labels `release:major`, `release:minor`,
-   `release:patch` or `release:skip`. `release-label.yml` fails the pull request otherwise. The
+1. A pull request that changes `packages/scientific-method-engine/`, `packages/disc-archiver/`,
+   `packages/dotnet/` or `global.json` carries exactly one of the labels `release:major`,
+   `release:minor`, `release:patch` or `release:skip`. `release-label.yml` fails the pull request otherwise. The
    paths are listed in `tools/release/plan.ts`.
-2. When it merges, `release-python.yml` or `release-dotnet.yml` starts because its paths changed.
-   Its plan job lists every pull request merged into the package's paths since the package's
-   latest tag (`scientific-method-engine@X.Y.Z` or `scientific-method-dotnet@X.Y.Z`; all of history when
-   there is none) and reads their labels. When all of them carry `release:skip`, the run ends.
+2. When it merges, `release-python.yml`, `release-disc-archiver.yml` or `release-dotnet.yml`
+   starts because its paths changed. Its plan job (`plan.ts release <package>`) lists every pull
+   request merged into the package's paths since the package's latest tag
+   (`scientific-method-engine@X.Y.Z`, `dinorefurb-disc-archiver@X.Y.Z` or
+   `scientific-method-dotnet@X.Y.Z`; all of history when there is none) and reads their labels.
+   When all of them carry `release:skip`, the run ends.
 3. Otherwise the next version is the latest tag's version (`0.0.0` when there is none) bumped by
    the largest of those labels. The publish job writes that version into the build, tests,
    publishes, then creates the tag and a GitHub release with the built files attached.
@@ -83,6 +85,8 @@ the upload skips the existing version, and the tag and release are created.
 - Add a pending trusted publisher for the project `scientific-method-engine` with owner
   `kibertoad`, repository `refurbished-dinosaurs-toolkit`, workflow `release-python.yml` and
   environment `pypi`. The first run creates the project.
+- Add one for the project `dinorefurb-disc-archiver` in the same way, with workflow
+  `release-disc-archiver.yml`.
 
 ### NuGet
 

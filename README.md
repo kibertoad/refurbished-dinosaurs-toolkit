@@ -16,6 +16,7 @@ versions and keep no copies. See [the architecture](docs/architecture.md).
 | [`scientific-method-engine`](packages/scientific-method-engine) | PyPI | Instruction analysis behind the reports, and the shared Ghidra headless scripts. |
 | [`@scientific-method/standard-checker`](packages/standard-checker) | npm | The documentation standard check and index generator (`standard-checker`). |
 | [`ScientificMethod.Core`, `ScientificMethod.LegacyFormats`](packages/dotnet) | NuGet | .NET primitives for asset installation and bounded legacy format readers. |
+| [`dinorefurb-disc-archiver`](packages/disc-archiver) | PyPI | Personal archival copies of discs a player owns, in every common image format, through redumper or cdrdao, with a window for players (`disc-archiver`, `disc-archiver-gui`). |
 
 Used in place from this repository:
 
@@ -28,7 +29,8 @@ Used in place from this repository:
 - `docs/`: the living restoration handbook and decision records distilled from
   the Chaos Overlords and Conqueror A.D. 1086 restorations, including
   [the bounded evidence reporter guide](docs/bounded-evidence-reporters.md),
-  [the documentation standard check](docs/documentation-standard-check.md) and
+  [the documentation standard check](docs/documentation-standard-check.md),
+  [disc archiving](docs/disc-archiving.md) and
   [moving from vendored copies to the packages](docs/migrating-to-scientific-method.md).
 
 ## Build
@@ -38,6 +40,8 @@ pnpm install
 pnpm run typecheck; pnpm run lint; pnpm run format:check; pnpm run test
 python -m pip install -e packages/scientific-method-engine
 python -B -m unittest discover -s packages/scientific-method-engine/tests -p 'test*.py'
+python -m pip install -e packages/disc-archiver
+python -B -m unittest discover -s packages/disc-archiver/tests -p 'test*.py'
 dotnet build packages/dotnet/ScientificMethod.slnx
 dotnet test --project packages/dotnet/ScientificMethod.Core.Tests/ScientificMethod.Core.Tests.csproj
 ./tools/Verify-Repository.ps1

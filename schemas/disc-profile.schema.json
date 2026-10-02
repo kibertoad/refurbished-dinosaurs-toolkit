@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kibertoad/refurbished-dinosaurs-toolkit/schemas/disc-profile.schema.json",
+  "title": "Disc profile",
+  "description": "What a restoration expects of its original disc, and the image formats its importer reads. Read by dinorefurb-disc-archiver.",
+  "type": "object",
+  "required": ["profile", "title", "recommendedFormats"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "profile": { "const": 1 },
+    "title": { "type": "string", "minLength": 1, "description": "The edition, as a person would recognise it." },
+    "restoration": { "type": "string", "minLength": 1, "description": "The restoration that reads this disc." },
+    "layout": {
+      "enum": ["data-only", "mixed-mode"],
+      "description": "data-only: one ISO 9660 data track. mixed-mode: a data track followed by CD audio tracks."
+    },
+    "volumeIdentifier": { "type": "string", "minLength": 1, "description": "The primary volume descriptor's volume identifier; compared ignoring case." },
+    "audioTracks": { "type": "integer", "minimum": 0, "maximum": 98 },
+    "expectedPaths": {
+      "type": "array",
+      "description": "Files or directories on the data track, relative to its root; compared ignoring case.",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "recommendedFormats": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The formats ticked by default: the ones the restoration's importer reads.",
+      "items": { "enum": ["bincue-split", "bincue", "ccd", "chd", "iso-flac", "iso-wav", "iso-ogg", "iso", "files"] }
+    },
+    "notes": { "type": "string", "minLength": 1, "description": "Shown to the person choosing the profile." }
+  },
+  "additionalProperties": false
+}

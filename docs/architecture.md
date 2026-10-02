@@ -14,6 +14,7 @@ packages/
   scientific-method-engine/  PyPI  scientific-method-engine               Python
   dotnet/                    NuGet ScientificMethod.Core,
                                    ScientificMethod.LegacyFormats            C#
+  disc-archiver/             PyPI  dinorefurb-disc-archiver               Python
 actions/    composite GitHub Actions, consumed by commit SHA
 tools/      repository-level scripts (Verify-Repository.ps1, release planning)
 schemas/    JSON schemas for asset and repository-policy contracts
@@ -80,6 +81,25 @@ bounded PCX, BMP RLE8, Smacker, CUE/CDDA, raw Mode 1, ISO-9660 and 16-bit PCM WA
 raw disc image through one interface. LegacyFormats references Core, so the two are built, versioned and published together.
 Every public member has XML documentation, and the build fails without it.
 
+### dinorefurb-disc-archiver
+
+Makes personal archival copies of discs a player owns
+([ADR 0004](decisions/0004-personal-disc-archiving.md)).
+
+- Reads the disc through redumper or cdrdao, or copies a data-only disc's 2,048-byte sectors
+  itself, and keeps the dump unchanged.
+- Writes split and one-file BIN/CUE, CloneCD, CHD (through chdman), ISO with FLAC, WAV or Ogg
+  audio tracks (through ffmpeg for the compressed ones), ISO, and the extracted files. Reads the
+  ISO 9660 file system with pycdlib.
+- Reads each format back and compares it with the dump by format-independent content hashes,
+  and writes `rip-manifest.json`.
+- Checks the disc against a restoration's disc profile (`schemas/disc-profile.schema.json`).
+- Provides `disc-archiver` and the Tk window `disc-archiver-gui`. Both require the personal-use
+  notice to be accepted before copying.
+
+Restorations do not depend on it in code: players and researchers run it before an import. See
+[disc archiving](disc-archiving.md).
+
 ## The reader-engine contract
 
 The reader and engine are released separately and agree through a prepared-config protocol, not
@@ -99,8 +119,10 @@ through matching version numbers.
   local runs execute the `.ts` sources directly with Node 24's type stripping. Publishing compiles
   to JavaScript with declaration files, because Node refuses to strip types under `node_modules`.
 - The Node workspace uses pnpm. oxlint lints and oxfmt formats the TypeScript.
-- The Python package builds with hatchling and is tested with `unittest`. It pins Capstone and
-  pypcode, because reports depend on the decoder and the instruction specification they used.
+- The Python packages build with hatchling and are tested with `unittest`. The disc archiver pins
+  pycdlib and uses only the standard library otherwise; its window is tkinter.
+- The engine pins Capstone and pypcode, because reports depend on the decoder and the
+  instruction specification they used.
   Its `test` extra adds Unicorn, the concrete oracle for synthetic tests. Unicorn's core is GPLv2,
   so it is never a runtime dependency.
 - The .NET packages keep the existing build settings, including the source-file line limit.

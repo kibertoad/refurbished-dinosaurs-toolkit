@@ -9,6 +9,7 @@ This repository publishes the shared tooling that clean-room game restorations c
 | `packages/executable-reader/` | `@scientific-method/executable-reader` | npm | changeset |
 | `packages/standard-checker/` | `@scientific-method/standard-checker` | npm | changeset |
 | `packages/scientific-method-engine/` | `scientific-method-engine` (with the Ghidra scripts) | PyPI | `release:*` label |
+| `packages/disc-archiver/` | `dinorefurb-disc-archiver` | PyPI | `release:*` label |
 | `packages/dotnet/`, `global.json` | `ScientificMethod.Core`, `ScientificMethod.LegacyFormats` | NuGet | `release:*` label |
 | `actions/`, `schemas/`, `tools/`, `docs/` | used in place, pinned by commit | none | none |
 
@@ -31,6 +32,11 @@ This repository publishes the shared tooling that clean-room game restorations c
   compute an instruction's value or flags by hand. It may add term rules that keep reports precise,
   provenance and report fields, and a mnemonic's handler that runs its p-code. Each new mnemonic
   gets Unicorn oracle cases in `tests/test_oracle.py`.
+- Disc copies are for the owner alone ([ADR 0004](docs/decisions/0004-personal-disc-archiving.md)).
+  Every copy path in `packages/disc-archiver/` shows the notice and refuses to run until it is
+  accepted, and every output folder carries it. The archiver gets no upload, sharing or network
+  feature. Reading a disc stays with established dumpers (redumper, cdrdao); a format that
+  cannot hold something, or a comparison not made, is reported as such.
 - The reader and engine agree on `PREPARED_PROTOCOL` (`packages/executable-reader/src/report.ts`
   and `scientific_method_engine/__init__.py`). A change to the shape of a prepared config increments
   both in the same PR and releases both packages.
@@ -46,6 +52,7 @@ This repository publishes the shared tooling that clean-room game restorations c
 | Reader parsing or preparation | `packages/executable-reader/test/` |
 | Documentation checker rule | `packages/standard-checker/test/standard-checker.test.ts`, with a passing and a failing fixture |
 | .NET API | `packages/dotnet/ScientificMethod.Core.Tests/` |
+| Disc archiver backend, format, profile field or command | `packages/disc-archiver/tests/`, against synthetic discs from `tests/synthetic.py` and stand-in programs, with a refused or unavailable case |
 | Ghidra script | it compiles against Ghidra 12.1 (see below); headless runs on real programs stay local |
 | Release tooling | `tools/release/plan.test.ts` |
 
@@ -62,6 +69,8 @@ Update in the same PR:
     with the command's inputs, limits and acceptance rules.
   - `USAGE` in `scientific_method_engine/cli.py`.
 - **Ghidra scripts.** Their row in the catalog in `packages/scientific-method-engine/README.md`.
+- **Disc archiver.** Its README's backend and format tables, and `schemas/disc-profile.schema.json`
+  with `profile.py` for a profile field.
 - **Package READMEs**, for user-visible behaviour: options, exit codes, the exported API.
 - **The migration guide**, when downstream projects have to change something.
 - **[The implementation plan](docs/IMPLEMENTATION-PLAN.md)**, for reporter work. Add a section
@@ -79,6 +88,8 @@ pnpm lint && pnpm format:check && pnpm typecheck && pnpm exec tsc -p tools/tscon
 pnpm test && node --test "tools/release/*.test.ts" && pnpm build
 python -m pip install -e "packages/scientific-method-engine[test]"
 cd packages/scientific-method-engine && python -B -m unittest discover -s tests -p "test*.py"
+python -m pip install -e packages/disc-archiver
+cd packages/disc-archiver && xvfb-run -a python -B -m unittest discover -s tests -p "test*.py"
 dotnet build packages/dotnet/ScientificMethod.slnx
 dotnet test --project packages/dotnet/ScientificMethod.Core.Tests/ScientificMethod.Core.Tests.csproj
 pwsh tools/Verify-Repository.ps1
@@ -95,8 +106,8 @@ javac -proc:none -nowarn -d "$(mktemp -d)" \
 
 ## Releases
 
-A PR that changes `packages/scientific-method-engine/`, `packages/dotnet/` or `global.json` carries
-exactly one release label. The `Release label` check fails without it. The label sets the next
+A PR that changes `packages/scientific-method-engine/`, `packages/disc-archiver/`,
+`packages/dotnet/` or `global.json` carries exactly one release label. The `Release label` check fails without it. The label sets the next
 version of every label-released package the PR touches:
 
 | Label | Use when |
