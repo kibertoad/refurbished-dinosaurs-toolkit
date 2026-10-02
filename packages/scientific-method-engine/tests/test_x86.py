@@ -1480,6 +1480,14 @@ class ReporterTests(unittest.TestCase):
         self.assertFalse(calls[0]["guards"][0]["sameTargetValue"])
         self.assertFalse(result["completeWithinModel"])
 
+    def test_every_engine_module_imports_first(self):
+        modules = sorted(p.stem for p in (SRC / "scientific_method_engine" / "x86").glob("*.py") if p.stem != "__init__")
+        for module in modules:
+            with self.subTest(module=module):
+                code = f"import scientific_method_engine.x86.{module}"
+                result = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True, env=ENGINE_ENV)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_cli_identity_and_errors(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); data = bytes.fromhex("b8 01 00 c3")

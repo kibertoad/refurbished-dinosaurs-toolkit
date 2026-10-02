@@ -38,6 +38,9 @@ def alias(name):
 class State:
     def __init__(self, entry, image, config):
         self.bits, self.flat, self.mask = image.bits, image.flat, image.mask
+        # Imported here: the backend imports this module, so a module-level import would make the
+        # import order matter.
+        from .pcode_backend import BACKEND
         self.semantics = BACKEND
         self.sp, self.bp = ("esp", "ebp") if self.flat else ("sp", "bp")
         self.at = entry
@@ -398,6 +401,3 @@ def string_effect(state, ins, count, remaining, charge=None):
     state.event("string-compare-exit", iterations=iterations, exit=reason, counter=state.reg(counter).report())
     return iterations
 
-
-# The semantics backend imports names defined above.
-from .pcode_backend import BACKEND  # noqa: E402
