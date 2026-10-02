@@ -86,7 +86,7 @@ Every synthetic case runs on both backends. Each report difference is classified
 |---|---|---|
 | identical | same report | yes |
 | stricter | pypcode stops or reports unknown where the handwritten backend gave a value, and Unicorn confirms the handwritten value | only with a recorded reason and a follow-up step; it blocks cutover |
-| extended | pypcode completes an instruction the handwritten backend stopped on, and Unicorn confirms the value | yes, listed in the release notes |
+| extended | pypcode completes an instruction the handwritten backend stopped on, or resolves a value or branch it left unresolved, and Unicorn confirms the value | yes, listed in the release notes |
 | disagreement | both give values and they differ | no; Unicorn decides which backend has the bug, and the group stays blocked until it is fixed |
 
 Precision under unknown inputs counts. The handwritten `predicate` resolves comparisons such as
@@ -263,7 +263,7 @@ Rules for every iteration:
 | 1 pypcode spike | done | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54), 4 (#55), 5 (#56), 6 (#57) and 7 (#58) answered |
 | 2 semantics seam | done | 2026-10-02 | #62; see [Semantics seam](#semantics-seam) |
 | 3 pypcode backend | done | 2026-10-02 | #64; see [Groups moved](#groups-moved) |
-| 4 parity on recorded cases | blocked | 2026-10-02 | see [Blockers](#blockers) |
+| 4 parity on recorded cases | done | 2026-10-02 | #65; see [Parity on recorded cases](#parity-on-recorded-cases) |
 | 5 cutover | not started | | |
 | 6 Ghidra callee cross-check | not started | | |
 
@@ -459,9 +459,58 @@ backends agree on every value and differ only in the form of an unresolved expre
 
 Phase 5 removes the handwritten backend, so these forms are what reports carry from then on.
 
+### Parity on recorded cases
+
+Done 2026-10-02 on the maintainer's machine. The maintainer named seven restorations; two keep
+recorded engine configs. Each config ran through the reader's `run` once per backend, with the
+command its own driver script used. Reports stayed local.
+
+| Restoration | Configs | Runs | identical | extended | stricter | disagreement |
+|---|---|---|---|---|---|---|
+| `dark-sun-wake-redux` (`GAME_DIR/analysis/reporter-audit`) | 243 | 236 | 235 | 1 | 0 | 0 |
+| `magicmayhem-again` (`analysis/original/pe-reporter-adoption`) | 1 | 2 | 2 | 0 | 0 | 0 |
+
+The other five (`enemy-reinfestation`, `rechaos-overlords`, `reconqueror`, `sub-culture-max`,
+`wages-due`) have no recorded engine configs. Eight `dark-sun-wake-redux` configs did not run:
+five belong to `pointers`, which runs in the reader without the engine, and three to the retired
+`table` command. One config ran under both `arguments` and `effects`.
+
+The extended case is `cleanup-hardware-effects/slot-skip` (`effects`). A `dec ax; je` loop exits on
+DEC's flags, which p-code keeps, so the taken arm is never followed where AX cannot be zero; the
+handwritten backend split at each pass. `test_oracle.ArithmeticAndLogic.test_counted_loop_exits_on_decrement_flags`
+checks the same loop against Unicorn.
+
+The first run had 16 differing cases. The fixes are in the pypcode backend and keep the reports'
+existing expressions:
+
+- A branch p-code decided after a producer the handwritten backend leaves unresolved kept that
+  backend's `reason: "flag producer unresolved"`. It now carries `decidedBy: "p-code flags"`
+  instead.
+- Two- and three-operand IMUL is reported as the operand-width product, not the low half of the
+  double-width product of extended operands. An operand holding a sign extension (after CBW or
+  MOVSX) keeps that extension in the product.
+- `x | 0`, `x ^ 0` and `x & ~0` keep the instruction's operation; only one-byte flag selections
+  fold a zero arm.
+- CWD/CDQ name the sign bit of AX/EAX after CBW/CWDE, not of the byte CBW extended, and CWDE
+  after CBW or MOVSX extends AX.
+- Rotates and shift carries treat the instruction's operand as one value, even when an earlier
+  shift built it from fields (the DX:AX shift chains of a linear-address normalization).
+
+`pcode.evaluate` keeps folding an extension of an extension into one extension, because the fold
+keeps flag terms small for every handler. The handlers that report a register holding a sign
+extension (IMUL, CBW/CWDE, CWD/CDQ) rewrite p-code's term to name that register.
+
+Review of the phase 4 PR found one more report difference that no synthetic case runs. The two
+backends agree on every value and differ only in the form of an unresolved expression: RCL or
+RCR by more than one through a register holding a known constant (`mov dx,0; shr ax,1; rcr dx,4`)
+reports p-code's extract of the joined value, where the handwritten backend wrote the shifted
+carry. Phase 5 keeps p-code's form.
+
+Each listed fix has a synthetic oracle test in `test_oracle.py`. The synthetic differential run after
+them: 479 identical, 19 extended, 0 stricter, 0 disagreement. The extended cases are the ones listed
+under phase 3 and `test_oracle.ShiftsAndRotates.test_double_word_shift_from_a_zero_high_half`,
+where the second RCL's carry out folds to zero from DX's known top bit.
+
 ### Blockers
 
-- Phase 4 (open, 2026-10-02): a maintainer runs the recorded restoration cases locally with both
-  backends, for example with `tests/differential.py`'s `compare` over each case's prepared config,
-  and records the counts per class here. Only the counts and the case identifiers known to the
-  requester enter the repository.
+None.

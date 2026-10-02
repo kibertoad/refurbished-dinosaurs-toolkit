@@ -652,6 +652,30 @@ test("trace runs a repeated string comparison until its condition fails through 
   assert.equal(result.stringIterationsUsed, 2);
 });
 
+test("trace decides a decrement loop's exit from p-code flags through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // mov cx, 3; dec cx; jnz back to dec; ret
+  data.set([0xb9, 3, 0, 0x49, 0x75, 0xfd, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const query = { ...config, sha256: createHash("sha256").update(data).digest("hex") };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const result = run(["trace", join(dir, "config.json")]);
+  assert.equal(result.paths.length, 1);
+  const path = result.paths[0];
+  assert.equal(path.returned, true);
+  const branches = path.events.filter((e: Report) => e.kind === "branch");
+  assert.deepEqual(
+    branches.map((e: Report) => e.taken),
+    [true, true, false],
+  );
+  for (const branch of branches) {
+    assert.equal(branch.decidedBy, "p-code flags");
+    assert.equal(branch.reason, undefined);
+  }
+  assert.equal(path.registers.cx.value, 0);
+});
+
 test("effects retains stopped dispatch beside separate conditional table paths", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);
