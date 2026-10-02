@@ -225,6 +225,8 @@ Existing configs need no change. A model without `preservesMemory` invalidates m
 a nested return through it still stops on an unknown return target. To join such a child to its
 parent, declare the saved frame explicitly, for example
 `{ "segment": "ss", "base": "sp", "bytes": 4, "evidence": "..." }` for a saved BP and near return
-address pushed before the call, with evidence for why the service keeps them. Listing `ebp` or
-`esp` in `preserves` does not keep the frame bytes. A report that relies on a scope states it in
-`preservedMemoryScopes`; cite that hypothesis wherever the report is used as evidence.
+address pushed before the call, with evidence for why the service keeps them. For MZ, also list
+`ss` in the model's `preserves`, or the `pop` and `ret` after the call address an unknown segment
+and miss the kept bytes. Listing `ebp` or `esp` in `preserves` does not keep the frame bytes. A
+report that relies on a scope states it in `preservedMemoryScopes`; cite that hypothesis wherever
+the report is used as evidence.

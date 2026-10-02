@@ -267,18 +267,23 @@ stop the path. The model then invalidates memory as before and puts back only th
 cached value, or the stable unknown term of a byte it had no value for. It restores no register or
 return target as such. A traced `pop` or `ret` must still read the full value, so a scope that
 covers part of a return word stops at the return, and a later write or possible-alias write still
-replaces or invalidates a scoped byte. `preserves` alone never keeps a saved stack byte.
+replaces or invalidates a scoped byte. A kept uncached byte stays uncached: a later read lists it in
+`missingByteProducers` and a later scope counts it in `uncachedBytes`. `preserves` alone never keeps
+a saved stack byte, and for MZ a scope is only reachable after the call when `preserves` also lists
+its segment register: the model replaces every other segment value with an unknown one, so a `pop`
+through it no longer resolves to the scoped linear bytes.
 
 Each resolved scope is reported in `preservedMemoryScopes` on the path's `conditionalModels` entry
 and on the modeled `call-return` event, and in the `effects` summary on the call and the summary's
 `conditionalModels`. An entry holds `segmentRegister`, `segment`, `baseRegister`, `base` (values
 and producers), `displacement`, `offset`, `linearStart`, `linearEnd`, `bytes`, `evidence`,
-`cachedBytes` and `uncachedBytes`. The two counts describe the model's cache: an uncached byte is
-labelled uncached and says nothing about whether the original program wrote it. Memory outside the
-scopes, flags, unpreserved registers and the service's native effects stay unknown, so the call
-keeps `unknownEffects: true` and the path's `effectCompleteWithinModel` stays false. Without
-`preservesMemory`, a model invalidates the whole frame as before. The input needs prepared protocol 2
-in both the reader and the engine.
+`cachedBytes`, `uncachedBytes` and a fixed `meaning` text. The two counts describe the model's
+cache: an uncached byte is labelled uncached and says nothing about whether the original program
+wrote it. Memory outside the scopes, flags, unpreserved registers and the service's native effects
+stay unknown, so the call keeps `unknownEffects: true` and the path's `effectCompleteWithinModel`
+stays false. Without `preservesMemory`, a model invalidates the whole frame as before. The input
+needs prepared protocol 2 in both the reader and the engine. How to cite a finding that rests on a
+model or a scope is in [validation and fidelity](validation-and-fidelity.md#citing-bounded-evidence-reports).
 
 Defaults cap each path at 512 instructions, the query at 20,000 steps, paths at
 64 and call depth at 8. Raw scans stop after 65,536 byte positions (`scanLimit`,
