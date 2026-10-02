@@ -26,19 +26,25 @@ frame holds. A service may write its caller's frame and still return with the sa
    other field is accepted. A scope is a query hypothesis supplied by the requester, with the
    evidence that justifies it. It is never derived by the engine.
 2. Budgets are 32 scopes and 4,096 bytes in total per model. The engine checks every model's
-   scopes before tracing, including models whose call site no path reaches, and fails the query on
-   a malformed scope or an exceeded budget.
+   scopes before tracing, including models whose call site no path reaches. It fails the query on
+   a malformed scope, an exceeded budget, two scopes on one segment and base register with
+   overlapping ranges, and, for segmented images, a scope whose segment register the model
+   replaces (anything but CS that is missing from `preserves`), since no read after the call
+   could address it.
 3. When a path reaches a modeled call, each scope resolves against the pre-call state: before a
    pushed CS word is consumed and before a case sets registers. Segment and base must be concrete.
    An unknown address, an interval that leaves the address space, and two intervals that share a
    linear byte (segment aliases included) stop the path. Nothing is preserved on that path.
-4. The engine snapshots the scoped bytes (a cached value, or the stable unknown term of an uncached
-   byte), invalidates memory as before and puts back only the scoped bytes. It does not restore a
+4. The engine snapshots the scoped bytes, invalidates memory as before and puts back only the
+   scoped bytes. A cached byte keeps its value. An uncached byte keeps its pre-call unknown term in
+   a separate record of unread bytes, so later reads still list it as missing and attribute it to
+   the reading instruction, as for any unread byte. It does not restore a
    saved register or a return address as a special case. The traced `pop` and `ret` must still read
    a complete value, so a scope that covers part of a return word still stops at the return, and a
    later write or possible-alias write still replaces or invalidates a scoped byte.
 5. Each resolved scope is reported where the model is: on the path's `conditionalModels` entry, on
-   the modeled `call-return` event, and on the effect summary's call and `conditionalModels`. The
+   the modeled `call-return` event, on the effect summary's call and `conditionalModels`, and on
+   the `allocation` entry of a modeled allocator. The
    entry carries the register values and producers, offset, linear interval, byte count, evidence,
    and `cachedBytes`/`uncachedBytes`. An uncached byte is labelled uncached. It is never evidence
    that the original program did or did not write it.

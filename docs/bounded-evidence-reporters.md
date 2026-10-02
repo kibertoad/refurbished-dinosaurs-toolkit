@@ -256,34 +256,38 @@ Each scope is an object with exactly these fields:
 
 For example, `{ "segment": "ss", "base": "sp", "bytes": 4, "evidence": "..." }` names the four
 bytes at SS:SP when the call is reached. A model holds at most 32 scopes and 4,096 bytes in total.
-Every model's scopes are checked before tracing, including a model no path reaches, and a malformed
-scope or exceeded budget fails the query.
+Every model's scopes are checked before tracing, including a model no path reaches. The query fails
+on a malformed scope, an exceeded budget, two scopes on the same segment and base register whose
+ranges overlap, and, for MZ, a scope whose segment register is neither `cs` nor listed in the
+model's `preserves`: the model replaces every other segment register with an unknown value, so no
+read after the call could address the scope through it.
 
 On a path that reaches the call, each scope resolves against the pre-call state, before a pushed CS
 word is consumed and before a case sets registers. The segment and base must be concrete; PE32 uses
 segment bases, and FS/GS bases stay unknown. An unknown address, an interval that crosses the end of
-the address space, and two scopes that share a linear byte (also through different segment values)
-stop the path. The model then invalidates memory as before and puts back only the scoped bytes: a
-cached value, or the stable unknown term of a byte it had no value for. It restores no register or
-return target as such. A traced `pop` or `ret` must still read the full value, so a scope that
-covers part of a return word stops at the return, and a later write or possible-alias write still
-replaces or invalidates a scoped byte. A kept uncached byte stays uncached: a later read lists it in
-`missingByteProducers` and a later scope counts it in `uncachedBytes`. `preserves` alone never keeps
-a saved stack byte, and for MZ a scope is only reachable after the call when `preserves` also lists
-its segment register: the model replaces every other segment value with an unknown one, so a `pop`
-through it no longer resolves to the scoped linear bytes.
+the address space, and two scopes that share a linear byte (through different base registers or
+segment values) stop the path. The model then invalidates memory as before and puts back only the
+scoped bytes. A byte the model had a value for keeps that value. A byte it had no value for keeps
+its pre-call unknown term and stays unread: a later read lists it in `missingByteProducers` with the
+reading instruction as its producer, and a later scope counts it in `uncachedBytes`. The model
+restores no register or return target as such. A traced `pop` or `ret` must still read the full
+value, so a scope that covers part of a return word stops at the return, and a later write or
+possible-alias write still replaces or invalidates a scoped byte. `preserves` alone never keeps a
+saved stack byte.
 
 Each resolved scope is reported in `preservedMemoryScopes` on the path's `conditionalModels` entry
-and on the modeled `call-return` event, and in the `effects` summary on the call and the summary's
-`conditionalModels`. An entry holds `segmentRegister`, `segment`, `baseRegister`, `base` (values
-and producers), `displacement`, `offset`, `linearStart`, `linearEnd`, `bytes`, `evidence`,
-`cachedBytes`, `uncachedBytes` and a fixed `meaning` text. The two counts describe the model's
-cache: an uncached byte is labelled uncached and says nothing about whether the original program
-wrote it. Memory outside the scopes, flags, unpreserved registers and the service's native effects
-stay unknown, so the call keeps `unknownEffects: true` and the path's `effectCompleteWithinModel`
-stays false. Without `preservesMemory`, a model invalidates the whole frame as before. The input
-needs prepared protocol 2 in both the reader and the engine. How to cite a finding that rests on a
-model or a scope is in [validation and fidelity](validation-and-fidelity.md#citing-bounded-evidence-reports).
+and on the modeled `call-return` event, in the `effects` summary on the call and the summary's
+`conditionalModels`, and in the `allocation` entry of a modeled allocator. Every `effects` call
+summary has the field; it is empty unless the call was modeled with scopes. An entry holds
+`segmentRegister`, `segment`, `baseRegister`, `base` (values and producers), `displacement`,
+`offset`, `linearStart`, `linearEnd`, `bytes`, `evidence`, `cachedBytes`, `uncachedBytes` and a
+fixed `meaning` text. The two counts describe the model's cache: an uncached byte is labelled
+uncached and says nothing about whether the original program wrote it. Memory outside the scopes,
+flags, unpreserved registers and the service's native effects stay unknown, so the call keeps
+`unknownEffects: true` and the path's `effectCompleteWithinModel` stays false. Without
+`preservesMemory`, a model invalidates the whole frame as before. The input needs prepared protocol 2
+in both the reader and the engine. How to cite a finding that rests on a model or a scope is in
+[validation and fidelity](validation-and-fidelity.md#citing-bounded-evidence-reports).
 
 Defaults cap each path at 512 instructions, the query at 20,000 steps, paths at
 64 and call depth at 8. Raw scans stop after 65,536 byte positions (`scanLimit`,

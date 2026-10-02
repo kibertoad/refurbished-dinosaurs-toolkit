@@ -280,20 +280,22 @@ Tooling outcome ([ADR 0004](decisions/0004-scoped-memory-hypotheses-on-call-mode
 model may declare `preservesMemory`, explicit byte scopes the query assumes the service leaves
 unchanged. Each scope has `segment` (a segment register), `base` (an address-width general
 register), optional signed `displacement` (default 0), `bytes` (1..4,096) and nonempty `evidence`,
-and no other field. A model holds at most 32 scopes and 4,096 bytes. Shapes and budgets are checked
-for every model before tracing, reached or not. On a reached call each scope resolves against the
-pre-call registers (before a pushed CS is consumed or a case sets registers); an unresolved
-segment or base, an interval past the end of the address space, and two scopes sharing a linear byte
-stop the path. The model invalidates memory and puts back only the scoped bytes. No register or
-return target is restored as such, so a partial return word still stops at the return, and a later
-write or possible alias still overrides a scope. Each resolved scope, with register values and
-producers, offset, linear interval, evidence and `cachedBytes`/`uncachedBytes`, is reported in
-`preservedMemoryScopes` on the path's conditional model, the modeled `call-return` event and the
-effect summary. Uncached bytes are labelled uncached and never become evidence about the original
-program's writes. Memory outside the scopes, flags, unpreserved registers and native service
-effects stay unknown, so effect summaries keep the modeled call's `unknownEffects` and
-`effectCompleteWithinModel: false`. No instruction value or flag rule changes (ADR 0003). The input
-moves `PREPARED_PROTOCOL` to 2 in the reader and the engine, both released as majors.
+and no other field. A model holds at most 32 scopes and 4,096 bytes. Shapes, budgets, overlaps on
+one segment and base register, and (for MZ) a segment register the model does not preserve are
+rejected for every model before tracing, reached or not. On a reached call each scope resolves
+against the pre-call registers (before a pushed CS is consumed or a case sets registers); an
+unresolved segment or base, an interval past the end of the address space, and two scopes sharing a
+linear byte stop the path. The model invalidates memory and puts back only the scoped bytes. No
+register or return target is restored as such, so a partial return word still stops at the return,
+and a later write or possible alias still overrides a scope. Each resolved scope, with register
+values and producers, offset, linear interval, evidence and `cachedBytes`/`uncachedBytes`, is
+reported in `preservedMemoryScopes` on the path's conditional model, the modeled `call-return`
+event, the effect summary and a modeled allocator's `allocation` entry. Uncached bytes are labelled
+uncached, stay unread after the call, and never become evidence about the original program's writes.
+Memory outside the scopes, flags, unpreserved registers and native service effects stay unknown, so
+effect summaries keep the modeled call's `unknownEffects` and `effectCompleteWithinModel: false`. No
+instruction value or flag rule changes (ADR 0003). The input moves `PREPARED_PROTOCOL` to 2 in the
+reader and the engine, both released as majors.
 
 Synthetic acceptance (`tests/test_memory_scopes.py`, `tests/test_nested_frame_request.py` and the
 bridge cases in `bridge.test.ts`): near and far nested frames join the parent with the saved BP;
@@ -301,11 +303,12 @@ PE32 frames; a push-CS model resolves SP before consuming the CS word; scopes us
 when a case replaces them; default, empty, wrong-segment and partial (incomplete return word) scopes
 stop at the child return even with BP and SP in `preserves`; a return-word scope alone leaves BP
 unknown; an explicit overwrite after the model stops; overlapping and segment-aliased scopes;
-unknown, FS/GS and wrapping addresses; malformed and unreachable declarations; the exact 32-scope
-and 4,096-byte limits and one past each; step, path and total caps leave later writes unread; the
-snapshot keeps only scoped bytes and their unknown terms, and an unknown-address write still
-invalidates them. A synthetic MZ case through the real prepared-reader bridge shows the join, the
-stops and the caps.
+unknown, FS/GS and wrapping addresses; malformed and unreachable declarations, declared overlaps and
+an unpreserved segment register; the exact 32-scope and 4,096-byte limits and one past each; step,
+path and total caps leave later writes unread; the snapshot keeps only scoped bytes and their
+unknown terms, and an unknown-address write still invalidates them; a kept uncached byte stays
+uncached at a later scope and read; a modeled allocator cites its scopes. A synthetic MZ case
+through the real prepared-reader bridge shows the join, the stops and the caps.
 
 Exit: package gates pass and the reader and engine are released together at protocol 2. The request
 closes only when Dark Sun's original nested caller-bracket case joins the parent through declared
