@@ -3,7 +3,7 @@ from bisect import bisect_right
 
 
 KINDS = {"read", "write", "call", "call-return", "return", "branch", "compare", "flag-assumption",
-         "arithmetic", "value-transfer", "conversion", "flag-write", "flags-save", "flags-restore", "local-iret", "string-operation"}
+         "arithmetic", "value-transfer", "conversion", "flag-write", "flags-save", "flags-restore", "local-iret", "string-operation", "declared-jump-continuation"}
 
 
 def _storage(event):
@@ -25,7 +25,10 @@ def effect_ordering(report):
     aliases, external effects, resources or transactionality.
     """
     summaries = []
-    for index, path in enumerate(report["paths"]):
+    conditional_summaries = []
+    combined = [(False, i, p) for i, p in enumerate(report["paths"])]
+    combined += [(True, i, p) for i, p in enumerate(report.get("declaredContinuationPaths", []))]
+    for conditional, index, path in combined:
         timeline, writes, calls, witnesses = [], [], [], []
         snapshots = {}
         pending = {}
@@ -78,13 +81,14 @@ def effect_ordering(report):
         if path.get("stop"):
             boundary = {"site": path.get("stopSite"), "reason": path["stop"],
                         "writesBeforeCount": len(writes), "meaning": "later effects are not read"}
-        summaries.append({"path": index, "returned": path["returned"], "stop": boundary,
+        destination = conditional_summaries if conditional else summaries
+        destination.append({"path": index, "declaredJumpAssumptions": path.get("declaredJumpAssumptions", []), "returned": path["returned"], "stop": boundary,
                           "guards": path["guards"], "timeline": timeline,
                           "writeOrders": [w["order"] for w in writes], "calls": calls,
                           "localRestorationWitnesses": witnesses,
-                          "effectCompleteWithinModel": bool(path["returned"] and not unknown_orders),
+                          "effectCompleteWithinModel": bool(path["returned"] and not unknown_orders and not conditional),
                           "transactionality": "not established; local writes and result codes cannot prove external rollback"})
-    report["effectOrdering"] = {"paths": summaries,
+    report["effectOrdering"] = {"paths": summaries, "declaredContinuationPaths": conditional_summaries,
                                 "allPathsRead": report["completeWithinModel"],
                                 "nativeReachability": "unconfirmed",
                                 "meaning": "separate conditional paths; write prefixes index each path's writeOrders"}
