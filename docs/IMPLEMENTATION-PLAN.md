@@ -318,3 +318,24 @@ engine tests and through the reader bridge. The script compiles against Ghidra 1
 reports of a real program stay in its `GAME_DIR`.
 Exit: the option ships with tests, the reporter guide documents it, and the script has its row in
 the engine README catalog.
+
+## Relational controls
+
+Tooling outcome: the trace-family commands check `relationalControls`, researcher assertions over
+reported values evaluated at every anchor occurrence on every bounded path
+([ADR 0007](decisions/0007-relational-controls.md)). Six kinds cover the requests: `reach`,
+`order` (with the deciding branch and the checked value), `lastWriter` (per byte and per incoming
+edge), `containment`, `relation` (linear arithmetic over reported values, counts of events,
+`modulo` congruence, assumed ranges) and `origin` (producer sites, unknown inputs and the declared
+return that originated a value). A violated control fails the query. A stop, a dropped path, an
+unread call or the new `controlOccurrenceLimit` leaves it undecided, which is reported and never
+held. Access reports gain each byte's `writeOrder` or its `unwritten` cause, the one fact the
+controls needed that the reports did not carry. The reporter guide maps Dark Sun gaps 30 to 34, 36
+and 40 to 43 to controls; their writing-rule halves are guidance in validation and fidelity.
+
+Synthetic acceptance: for each kind a held control, a violated one and an undecided one; a dropped
+path and the occurrence limit reached; a missed anchor; rejected inputs; controls surviving the
+focused commands; and a reader bridge case that holds, fails and stays undecided through the
+prepared config. Inputs pass through the reader unchanged, so the prepared-config protocol stays 1.
+Exit: the controls ship in an engine release, and each listed Dark Sun gap closes only after Dark
+Sun's own case, written as controls, passes against the published packages.
