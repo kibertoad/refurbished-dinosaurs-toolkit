@@ -264,14 +264,15 @@ provenance, while leaving every other memory effect unresolved. The exact input
 contract remains to be designed. It must distinguish saved values from return
 control, validate all declarations including unreachable ones, reject ambiguous
 or overlapping scopes and retain each hypothesis in every derived summary.
-Default models must still invalidate stack memory. This is evidence-layer work,
-not permission to add handwritten instruction semantics under ADR 0003.
+Default models must still invalidate stack memory. The hypotheses live in the
+evidence layer; ADR 0003 still forbids handwritten instruction semantics.
 
-This PR records the plan and synthetic reproductions only. Near and far child
-frames retain their own writes and stop before a later parent write under an
-unknown service. Tracing the same fully synthetic service succeeds; explicit
-ancestor-return overwrite still stops. Step/path caps cannot prove later writes
-absent. A real synthetic MZ prepared-reader case reproduces the same distinction.
+The first slice records the plan and synthetic reproductions only. Near and
+far child frames retain their own writes and stop before a later parent write
+under an unknown service. Tracing the same fully synthetic service succeeds;
+explicit ancestor-return overwrite still stops. Step and path caps that are
+reached cannot prove later writes absent. A synthetic MZ case run through the
+real prepared-reader bridge reproduces the same distinction.
 
 Delivery needs several reviewed slices: first settle the bounded declaration
 and report contract; then implement validated scopes and provenance with near,
@@ -280,6 +281,6 @@ widths, rejected scopes and nonvacuous limits; finally verify archive delivery
 and the requester's original case. A new prepared-config input increments both
 protocol declarations and releases reader and engine together, with major
 classification and migration documentation when their contract breaks.
-No preservation is implemented or adopted by this planning PR. Exit: all package
+The planning slice implements and adopts no preservation. Exit: all package
 gates and the complete downstream nested-return controls pass against reviewed,
 published packages; a leaf-only write witness does not satisfy R1.

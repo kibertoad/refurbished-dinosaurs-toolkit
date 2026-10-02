@@ -1,4 +1,4 @@
-﻿"""Synthetic nested-frame request controls; no proprietary inputs."""
+"""Synthetic nested-frame request controls; no proprietary inputs."""
 import unittest
 from test_x86 import Code, report
 
@@ -32,11 +32,19 @@ class NestedFrameRequestTests(unittest.TestCase):
                                      for e in p["timeline"]))
                 self.assertFalse(p["effectCompleteWithinModel"])
                 self.assertTrue(all(call["unknownEffects"] for call in p["calls"]))
-                for limit in ({"maxSteps": 1}, {"maxPaths": 1}):
-                    capped = report(c, "effects", registers=registers, callModels=models, **limit)
-                    self.assertFalse(capped["effectOrdering"]["allPathsRead"])
-                    self.assertFalse(any(e["site"] == c.labels["childWrite"] and e["kind"] == "write"
-                                         for path in capped["effectOrdering"]["paths"] for e in path["timeline"]))
+                service = next(call for call in p["calls"] if call["site"] == c.labels["service"])
+                self.assertEqual(service["status"], "modeled-return")
+                capped = report(c, "effects", registers=registers, callModels=models, maxSteps=1)
+                self.assertFalse(capped["effectOrdering"]["allPathsRead"])
+                self.assertTrue(capped["effectOrdering"]["paths"])
+                self.assertTrue(all(path["stop"]["reason"].startswith("step limit")
+                                    for path in capped["effectOrdering"]["paths"]))
+                self.assertFalse(any(e["site"] == c.labels["childWrite"] and e["kind"] == "write"
+                                     for path in capped["effectOrdering"]["paths"] for e in path["timeline"]))
+                # The only path forks at the modeled call, so the path limit drops it there.
+                capped = report(c, "effects", registers=registers, callModels=models, maxPaths=1)
+                self.assertFalse(capped["effectOrdering"]["allPathsRead"])
+                self.assertIn({"site": c.labels["service"], "reason": "path limit at modeled call"}, capped["gaps"])
 
     def test_explicit_return_overwrite_does_not_become_balanced_return(self):
         c = Code().branch("e8", "child").label("after").emit("c6 06 30 00 00 c3")
@@ -45,6 +53,7 @@ class NestedFrameRequestTests(unittest.TestCase):
         p = r["effectOrdering"]["paths"][0]
         self.assertFalse(p["returned"])
         self.assertEqual(p["stop"]["site"], c.labels["childReturn"])
+        self.assertEqual(p["stop"]["reason"], "return target was overwritten or has unknown provenance")
         self.assertFalse(any(e["kind"] == "write" and e["site"] == c.labels["after"] for e in p["timeline"]))
 
 

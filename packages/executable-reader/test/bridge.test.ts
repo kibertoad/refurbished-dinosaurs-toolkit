@@ -665,11 +665,21 @@ test("nested modeled services retain child writes but cannot preserve ancestor r
   assert.ok(path.timeline.some((e: Report) => e.kind === "write" && e.site === 86 && e.value.value === 3));
   assert.ok(!path.timeline.some((e: Report) => e.kind === "write" && e.site === 69));
   assert.ok(path.calls.every((c: Report) => c.unknownEffects));
+  assert.equal(path.calls.find((c: Report) => c.site === 83).status, "modeled-return");
   assert.equal(path.effectCompleteWithinModel, false);
-  for (const limit of [{ maxSteps: 1 }, { maxPaths: 1 }]) {
-    writeFileSync(join(dir, "config.json"), JSON.stringify({ ...modeled, ...limit }));
-    const capped = run(["effects", join(dir, "config.json")]);
-    assert.equal(capped.effectOrdering.allPathsRead, false);
-    assert.ok(!capped.paths.some((p: Report) => p.events.some((e: Report) => e.kind === "write" && e.site === 86)));
-  }
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ ...modeled, maxSteps: 1 }));
+  const stepCapped = run(["effects", join(dir, "config.json")]);
+  assert.equal(stepCapped.effectOrdering.allPathsRead, false);
+  assert.ok(stepCapped.effectOrdering.paths.length > 0);
+  assert.ok(stepCapped.effectOrdering.paths.every((p: Report) => p.stop.reason.startsWith("step limit")));
+  assert.ok(
+    !stepCapped.effectOrdering.paths.some((p: Report) =>
+      p.timeline.some((e: Report) => e.kind === "write" && e.site === 86),
+    ),
+  );
+  // The only path forks at the modeled call, so the path limit drops it there.
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ ...modeled, maxPaths: 1 }));
+  const pathCapped = run(["effects", join(dir, "config.json")]);
+  assert.equal(pathCapped.effectOrdering.allPathsRead, false);
+  assert.ok(pathCapped.gaps.some((g: Report) => g.site === 83 && g.reason === "path limit at modeled call"));
 });
