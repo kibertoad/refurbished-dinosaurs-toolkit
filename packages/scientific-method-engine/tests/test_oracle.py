@@ -1,7 +1,7 @@
 """Unicorn oracle cases per instruction group (ADR 0003). Synthetic machine code only."""
 import unittest
 
-from oracle import STACK, check, configuration, run_report
+from oracle import STACK, check, configuration, interrupt, run_report
 
 DATA = {"ds": 0x3000, "es": 0x4000}
 SAME = {"ds": 0x4000, "es": 0x4000}
@@ -229,6 +229,41 @@ class StringOperations(unittest.TestCase):
     def test_backward_steps(self):
         check(self, "fd bf0a00 b0aa b90400 f3aa be0700 ac c3", registers={**DATA, "ds": 0x4000},
               resolved=("al", "si", "di"))
+
+
+class PortAccess(unittest.TestCase):
+    """Port reads take the value the query supplies; Unicorn's hook returns the same value."""
+
+    def test_in_and_out_with_immediate_and_dx_ports(self):
+        check(self, "ba c803 b0 05 ee b8 3412 ef e6 21 e4 60 89 c3 ed 66 ed c3",
+              ports={0x60: 0x7f, 0x3c8: 0x1234abcd},
+              port_inputs=[{"site": 12, "value": 0x7f, "evidence": "synthetic oracle input"},
+                           {"site": 16, "value": 0xabcd, "evidence": "synthetic oracle input"},
+                           {"site": 17, "value": 0x1234abcd, "evidence": "synthetic oracle input"}],
+              resolved=("al", "bx", "eax"))
+
+    def test_string_port_forms_step_si_and_di(self):
+        # outsb x2 from DS:0x10, then insw x2 into ES:0x20 and read the words back.
+        check(self, "fc be1000 c7040102 ba c803 b90200 f36e bf2000 b90200 f36d 268b1e2000 268b0e2200 c3",
+              registers=DATA, ports={0x3c8: 0x5aa5},
+              port_inputs=[{"site": 22, "value": 0x5aa5, "evidence": "synthetic oracle input"}],
+              resolved=("si", "di", "bx", "cx"))
+
+    def test_backward_outs_word(self):
+        check(self, "fd be1200 c7041122 c744fe3344 ba c803 6f 6f c3", registers=DATA, resolved=("si",))
+
+
+class Interrupts(unittest.TestCase):
+    """The vector the engine reports from p-code is the interrupt Unicorn raises."""
+
+    def test_interrupt_vectors(self):
+        # Unicorn rejects INT1 (F1) as an invalid instruction, so it has no oracle case.
+        for code in ("b4 4c cd 21", "cd 10", "cc"):
+            with self.subTest(code=code):
+                data = bytes.fromhex(code + " c3")
+                result = run_report(data, configuration(data, STACK), "trace")
+                row, = [e for e in result["paths"][0]["events"] if e["kind"] == "hardware-boundary"]
+                self.assertEqual(row["vector"], interrupt(code))
 
 
 if __name__ == "__main__":

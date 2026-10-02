@@ -10,7 +10,9 @@ from .effect_order import effect_ordering
 from .result_flow import return_flows
 from .image import Image, integer
 from .trace import (trace, walk, call_target, unsupported_transfer, uncovered, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
-                    RETURNS, INTERRUPTS, PORTS)
+                    RETURNS, INTERRUPTS, PORTS, PORT_INPUTS, port_width)
+from .machine import string_instruction
+from .pcode_backend import interrupt_vector
 
 
 def entries(image):
@@ -745,16 +747,32 @@ def call_target_report(image, config):
     return result
 
 
+def hardware_boundary(image, at, ins):
+    """The static description of one interrupt or port instruction, from its decoding and p-code."""
+    m = base_mnemonic(ins)
+    if m in INTERRUPTS:
+        vector, conditional = interrupt_vector(image.flat, ins, at)
+        return {"site": at, "boundary": "interrupt", "mnemonic": m, "vector": vector, "conditional": conditional}
+    port = next(o for o in ins.operands if o.type == X86_OP_IMM or (o.type == X86_OP_REG and ins.reg_name(o.reg) == "dx"))
+    return {"site": at, "boundary": "port-input" if m in PORT_INPUTS else "port-output", "mnemonic": m,
+            "port": {"source": "immediate", "value": port.imm} if port.type == X86_OP_IMM else {"source": "register", "register": "dx"},
+            "width": port_width(ins, image.flat), "stringForm": string_instruction(ins),
+            # F2 on INS/OUTS repeats on hardware too; trace stops that form as unsupported.
+            "repeated": 0xF2 in ins.prefix or 0xF3 in ins.prefix}
+
+
 def body(image, entry, limit=10000):
     """Every instruction one entry reaches without entering a callee, and every way out of it.
 
     Calls, interrupts and port accesses are followed to the next instruction, and each such
-    continuation is listed as an assumption. A direct jump or conditional branch to another
-    established entry or another region, and every far jump, is a tail transfer.
+    continuation is listed as an assumption. Interrupts and port accesses are also listed as
+    hardware boundaries. A direct jump or conditional branch to another established entry or
+    another region, and every far jump, is a tail transfer.
     """
     integer(limit, 1, 100000, "instruction limit")
     established = set(entries(image))
     pending, seen, exits, calls, gaps, assumed, shared = [entry], {}, [], [], [], [], set()
+    hardware = []
 
     def leaves(at, target):
         return (target in established and target != entry) or image.region(target) is not image.region(at)
@@ -783,6 +801,7 @@ def body(image, entry, limit=10000):
             exits.append({"site": at, "kind": "halt"})
             continue
         if m in INTERRUPTS or m in PORTS:
+            hardware.append(hardware_boundary(image, at, ins))
             assumed.append({"site": at, "assumption": ("the interrupt returns to the next instruction" if m in INTERRUPTS
                                                       else "the port access continues to the next instruction")})
             pending.append(following)
@@ -847,6 +866,7 @@ def body(image, entry, limit=10000):
             "span": {"start": runs[0][0], "end": runs[-1][1]} if runs else None, "coveredBytes": covered,
             "exits": sorted(exits, key=lambda e: e["site"]), "calls": sorted(calls, key=lambda c: c["site"]),
             "assumedContinuations": sorted(assumed, key=lambda a: a["site"]), "sharedEntries": sorted(shared),
+            "hardwareBoundaries": sorted(hardware, key=lambda h: h["site"]),
             "gaps": gaps, "complete": bool(exits) and not gaps}
 
 
@@ -1489,7 +1509,7 @@ def _run_report(image, config, command):
     if command == "returns":
         report = return_flows(report, config)
     if command != "trace":
-        kinds = {"arguments": ("address-formation", "read", "call", "call-return"), "effects": ("address-formation", "write", "call", "call-return", "return", "branch", "string-operation",
+        kinds = {"arguments": ("address-formation", "read", "call", "call-return"), "effects": ("address-formation", "write", "call", "call-return", "return", "branch", "string-operation", "hardware-boundary",
                              "flag-assumption", "flag-write", "flags-save", "flags-restore", "local-iret"),
                  "returns": ("return", "call-return", "compare", "branch", "write"),
                  "guards": ("compare", "branch", "read", "write", "call", "call-return"),

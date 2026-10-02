@@ -18,3 +18,11 @@ assetless publish, game smoke test, platform-native initialization, importer mis
 source behavior, package inspection for proprietary content, installer installation,
 shortcut launch, and uninstall. Test on Windows x64, Linux x64, macOS arm64, and macOS
 x64 when those packages are offered.
+
+Instruction reports stop at the hardware. A port write in an evidence report shows the port and
+value the code produced, not what a device did with it, so a finding about rendered output needs
+a capture of the device result. A fixture that substitutes RAM or answers port reads with chosen
+values tests the code's handling of those values; name the substitutes in the finding and leave
+native output unconfirmed. Treat two segment registers as equal only when a report shows the
+instructions or the stated starting assumption that make them equal, and keep slot, segment,
+count and alias assumptions listed apart from what the algorithm itself computes.
