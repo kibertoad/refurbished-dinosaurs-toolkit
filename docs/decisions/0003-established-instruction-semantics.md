@@ -86,7 +86,7 @@ Every synthetic case runs on both backends. Each report difference is classified
 |---|---|---|
 | identical | same report | yes |
 | stricter | pypcode stops or reports unknown where the handwritten backend gave a value, and Unicorn confirms the handwritten value | only with a recorded reason and a follow-up step; it blocks cutover |
-| extended | pypcode completes an instruction the handwritten backend stopped on, and Unicorn confirms the value | yes, listed in the release notes |
+| extended | pypcode completes an instruction the handwritten backend stopped on, or resolves a value or branch it left unresolved, and Unicorn confirms the value | yes, listed in the release notes |
 | disagreement | both give values and they differ | no; Unicorn decides which backend has the bug, and the group stays blocked until it is fixed |
 
 Precision under unknown inputs counts. The handwritten `predicate` resolves comparisons such as
@@ -487,15 +487,17 @@ existing expressions:
   backend's `reason: "flag producer unresolved"`. It now carries `decidedBy: "p-code flags"`
   instead.
 - Two- and three-operand IMUL is reported as the operand-width product, not the low half of the
-  double-width product of extended operands.
+  double-width product of extended operands. An operand holding a sign extension (after CBW or
+  MOVSX) keeps that extension in the product.
 - `x | 0`, `x ^ 0` and `x & ~0` keep the instruction's operation; only one-byte flag selections
   fold a zero arm.
-- CWD/CDQ name the sign bit of AX/EAX after CBW/CWDE, not of the byte CBW extended.
+- CWD/CDQ name the sign bit of AX/EAX after CBW/CWDE, not of the byte CBW extended, and CWDE
+  after CBW or MOVSX extends AX.
 - Rotates and shift carries treat the instruction's operand as one value, even when an earlier
   shift built it from fields (the DX:AX shift chains of a linear-address normalization).
 
 Each has a synthetic oracle test in `test_oracle.py`. The synthetic differential run after them:
-476 identical, 19 extended, 0 stricter, 0 disagreement. The extended cases are the ones listed
+479 identical, 19 extended, 0 stricter, 0 disagreement. The extended cases are the ones listed
 under phase 3 and `test_oracle.ShiftsAndRotates.test_double_word_shift_from_a_zero_high_half`,
 where the second RCL's carry out folds to zero from DX's known top bit.
 
