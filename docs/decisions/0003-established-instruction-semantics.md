@@ -501,6 +501,16 @@ Each has a synthetic oracle test in `test_oracle.py`. The synthetic differential
 under phase 3 and `test_oracle.ShiftsAndRotates.test_double_word_shift_from_a_zero_high_half`,
 where the second RCL's carry out folds to zero from DX's known top bit.
 
+`pcode.evaluate` keeps folding an extension of an extension into one extension, because the fold
+keeps flag terms small for every handler. The handlers that report a register holding a sign
+extension (IMUL, CBW/CWDE, CWD/CDQ) rewrite p-code's term to name that register.
+
+Review of the phase 4 PR found one more report difference that no synthetic case runs. The two
+backends agree on every value and differ only in the form of an unresolved expression: RCL or
+RCR by more than one through a register holding a known constant (`mov dx,0; shr ax,1; rcr dx,4`)
+reports p-code's extract of the joined value, where the handwritten backend wrote the shifted
+carry. Phase 5 keeps p-code's form.
+
 ### Blockers
 
 None.
