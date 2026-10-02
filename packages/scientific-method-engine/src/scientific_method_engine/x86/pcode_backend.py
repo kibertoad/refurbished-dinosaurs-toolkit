@@ -77,7 +77,7 @@ def bit(value, site):
     # SLESS(x, 0) is the sign bit of x; a SLEIGH shift writes it as SLESS(x << k, 0).
     if term[0] == "sless" and term[2] == ("constant", 0):
         inner, shift = term[1], 0
-        if inner[0] == "shl" and inner[2][0] == "constant":
+        if inner[0] == "shl" and inner[2][0] == "constant" and inner not in LEAVES:
             inner, shift = inner[1], inner[2][1]
         width = width_of(inner, value)
         if width is not None and shift < width:
@@ -90,7 +90,7 @@ def bit(value, site):
         inner, mask = term[1][1], term[1][2]
         if mask[0] == "constant" and mask[1] and mask[1] & (mask[1] - 1) == 0:
             position = mask[1].bit_length() - 1
-            if inner[0] in ("shr", "sar") and inner[2][0] == "constant":
+            if inner[0] in ("shr", "sar") and inner[2][0] == "constant" and inner not in LEAVES:
                 position += inner[2][1]
                 inner = inner[1]
             width = width_of(inner, value)
@@ -116,6 +116,9 @@ def width_of(term, value):
 
 # Widths of the terms the current instruction read or computed; set per frame.
 WIDTHS = {}
+# The current instruction's operand values. Field decomposition stops at them, because reports
+# treat each operand as one value even when an earlier instruction built it from fields.
+LEAVES = set()
 
 
 def fields(term, width):
@@ -125,6 +128,8 @@ def fields(term, width):
     (right when negative). Rotates and shifts of joined values take this form in p-code.
     """
     head = term[0]
+    if term in LEAVES:
+        return [(term, width, 0)]
     if head == "zeroExtend":
         return [(term[1], term[2], 0)]
     if head == "or":
@@ -190,6 +195,7 @@ class Frame:
 
     def __init__(self, state, ins, image, widths=None, roles=None, present=None):
         self.state, self.ins, self.image = state, ins, image
+        # present(value, frame) may rewrite a written value into the equal term reports use.
         self.present = present
         self.widths = widths or {}
         self.roles = roles or {}
@@ -259,6 +265,7 @@ class Frame:
                     self.cache[index] = state.access(segment, evidence, width, role=self.roles.get(index),
                                                      addressing_register=register)
                     self.loaded[index] = self.cache[index]
+                    LEAVES.add(self.cache[index].term)
                 return extract(self.cache[index], d * 8, size * 8)
             location = evidence if d == 0 else op("add", evidence, const(d, evidence.bits), state.at)
             state.access(segment, location, size, value, addressing_register=register)
@@ -279,9 +286,12 @@ class Frame:
 
     def execute(self):
         WIDTHS.clear()
+        LEAVES.clear()
         for index, value in self.before.items():
             WIDTHS[value.term] = value.bits
-        self.run = Run(self.state, self.ops, self.memory, self.constant, present=self.present)
+            LEAVES.add(value.term)
+        present = (lambda value: self.present(value, self)) if self.present else None
+        self.run = Run(self.state, self.ops, self.memory, self.constant, present=present)
         self.run.execute()
         for value in [*self.loaded.values(), *self.run.temps.values(), *self.run.registers.values()]:
             if isinstance(value, Value):  # Real-mode temporaries may hold a segmented Address.
@@ -376,7 +386,13 @@ class Pypcode:
             # A handwritten instruction produced some of these flags; its predicate decides.
             return answer, info
         condition = Run(state, ops, None, flags=flags).execute(stop_at_branch=True)
-        return (None if condition.number is None else bool(condition.number)), info
+        if condition.number is None:
+            return None, info
+        if answer is None:
+            # The handwritten record says why it could not decide; p-code flags decided it.
+            info = {key: value for key, value in info.items() if key != "reason"}
+            info["decidedBy"] = "p-code flags"
+        return bool(condition.number), info
 
     def string_iteration(self, state, ins, operation, width, source_segment, delta_step):
         if operation not in self.mnemonics:
@@ -518,9 +534,25 @@ def compare(state, ins, image):
     state.event("compare", operation=m, left=a.report(), right=b.report())
 
 
+def unfolded(name, value, f, site):
+    """A logic result p-code folded to one operand, written as the operation reports use.
+
+    ``x | 0``, ``x ^ 0`` and ``x & ~0`` equal ``x``; the interpreter folds them, and reports
+    keep the instruction's operation in the result's expression.
+    """
+    if name not in ("and", "or", "xor") or value.number is not None:
+        return value
+    a = f.value(0)
+    b = resize(f.value(1), a.bits)
+    neutral = (1 << a.bits) - 1 if name == "and" else 0
+    if value.bits == a.bits and (b.number == neutral and value.term == a.term or a.number == neutral and value.term == b.term):
+        return Value(value.bits, op(name, a, b, site).term, value.sources)
+    return value
+
+
 def arithmetic(state, ins, image):
     m = ins.mnemonic
-    f = run_plain(state, ins, image)
+    f = run_plain(state, ins, image, present=lambda v, frame: unfolded(m, v, frame, state.at))
     a = f.value(0)
     b = resize(f.value(1), a.bits)
     result = f.result(0)
@@ -618,7 +650,7 @@ def rotate(state, ins, image):
         state.forget_flags(keep_carry=True)
         return
     # Reports write a rotate as its shifted copies, from the leftmost copy for ROL and RCL.
-    f = run_plain(state, ins, image, present=lambda v: arranged(v, m in ("rol", "rcl"), state.at))
+    f = run_plain(state, ins, image, present=lambda v, _: arranged(v, m in ("rol", "rcl"), state.at))
     a = f.value(0)
     value = f.result(0)
     carry = bit(f.run.flags["CF"], state.at)
@@ -643,10 +675,31 @@ def temporary(f, code):
     return f.run.temps[o.output[1]]
 
 
+def low_product(value, site):
+    """The low half of a product of two extended values, as the product at the operands' width.
+
+    SLEIGH writes a two- or three-operand IMUL as the double-width product of the sign-extended
+    operands, truncated; the low half does not depend on the extension, and reports write it as
+    the operand-width product.
+    """
+    term = value.term
+    if term[0] != "extract" or term[2] != 0 or term[1][0] != "mul":
+        return value
+    factors = []
+    for factor in term[1][1:]:
+        if factor[0] in ("signExtend", "zeroExtend") and factor[2] == value.bits:
+            factors.append(Value(value.bits, factor[1]))
+        elif factor[0] == "constant":
+            factors.append(const(factor[1], value.bits))
+        else:
+            return value
+    return Value(value.bits, op("mul", *factors, site).term, value.sources)
+
+
 def multiply(state, ins, image):
     m = ins.mnemonic
     if m == "imul" and len(ins.operands) in (2, 3):
-        f = run_plain(state, ins, image)
+        f = run_plain(state, ins, image, present=lambda v, _: low_product(v, state.at))
         left = resize(f.value(0 if len(ins.operands) == 2 else 1), ins.operands[0].size * 8)
         right = resize(f.value(1 if len(ins.operands) == 2 else 2), left.bits, signed=True)
         result = f.result(0)
@@ -696,10 +749,31 @@ def divide(state, ins, image):
                 quotient=quotient.report(), remainder=remainder.report(), fault=fault)
 
 
+def sign_fill(value, source, site):
+    """CWD/CDQ's high half as the sign of the source register, when p-code names that same bit.
+
+    When the source is itself a sign extension, p-code takes the sign from the narrower value it
+    extended; both name one bit, and reports name it in the register the instruction reads.
+    """
+    expected = resize(extract(source, source.bits - 1, 1), value.bits, signed=True)
+    if value.term == expected.term or value.number is not None:
+        return value
+    if source.term[0] == "signExtend":
+        inner = Value(source.term[2], source.term[1])
+        if value.term == resize(extract(inner, inner.bits - 1, 1), value.bits, signed=True).term:
+            return Value(value.bits, expected.term, value.sources)
+    return value
+
+
 def conversion(state, ins, image):
     m = ins.mnemonic
     before = {name: state.reg(name) for name in ("al", "ax", "eax")}
-    f = run_plain(state, ins, image)
+
+    def present(value, _):
+        if m in ("cwd", "cdq") and value.bits in (16, 32):
+            return sign_fill(value, before["ax" if value.bits == 16 else "eax"], state.at)
+        return value
+    f = run_plain(state, ins, image, present=present)
     (destination, value), = f.run.registers.items()
     wide = value.bits == 32
     if m in ("cbw", "cwde"):

@@ -300,8 +300,11 @@ def evaluate(code, args, bits, site):
             # Identities that keep flag expressions small; constants fold in values.op.
             mask = (1 << bits) - 1
             for x, y in ((a, b), (b, a)):
-                if x.number == 0:
-                    return Value(bits, ("constant", 0), origin) if name == "and" else Value(bits, y.term, origin)
+                if x.number == 0 and name == "and":
+                    return Value(bits, ("constant", 0), origin)
+                if x.number == 0 and boolean(y):
+                    # Flag selections OR a zero arm in; a value operand keeps its OR, as reports write it.
+                    return Value(bits, y.term, origin)
                 if name == "and" and (x.number == mask or (x.number == 1 and boolean(y))):
                     return Value(bits, y.term, origin)
                 if name == "or" and (x.number == mask):

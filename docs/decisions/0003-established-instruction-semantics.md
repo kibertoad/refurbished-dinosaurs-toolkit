@@ -250,7 +250,7 @@ Rules for every iteration:
 | 1 pypcode spike | done | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54), 4 (#55), 5 (#56), 6 (#57) and 7 (#58) answered |
 | 2 semantics seam | done | 2026-10-02 | see [Semantics seam](#semantics-seam) |
 | 3 pypcode backend | done | 2026-10-02 | #64; see [Groups moved](#groups-moved) |
-| 4 parity on recorded cases | blocked | 2026-10-02 | see [Blockers](#blockers) |
+| 4 parity on recorded cases | done | 2026-10-02 | see [Parity on recorded cases](#parity-on-recorded-cases) |
 | 5 cutover | not started | | |
 | 6 Ghidra callee cross-check | not started | | |
 
@@ -432,9 +432,44 @@ report a `string-compare-exit` event.
 
 Exit evidence: every group is moved; no disagreement and no stricter difference remain.
 
+### Parity on recorded cases
+
+Done 2026-10-02 on the maintainer's machine. The maintainer named seven restorations; two keep
+recorded engine configs. Each config ran through the reader's `run` once per backend, with the
+command its own driver script used. Reports stayed local.
+
+| Restoration | Configs | Runs | identical | extended | stricter | disagreement |
+|---|---|---|---|---|---|---|
+| `dark-sun-wake-redux` (`GAME_DIR/analysis/reporter-audit`) | 243 | 236 | 235 | 1 | 0 | 0 |
+| `magicmayhem-again` (`analysis/original/pe-reporter-adoption`) | 1 | 2 | 2 | 0 | 0 | 0 |
+
+The other five (`enemy-reinfestation`, `rechaos-overlords`, `reconqueror`, `sub-culture-max`,
+`wages-due`) have no recorded engine configs. Eight `dark-sun-wake-redux` configs did not run:
+five belong to `pointers`, which runs in the reader without the engine, and three to the retired
+`table` command. One config ran under both `arguments` and `effects`.
+
+The extended case is `cleanup-hardware-effects/slot-skip` (`effects`). A `dec ax; je` loop exits on
+DEC's flags, which p-code keeps, so the taken arm is never followed where AX cannot be zero; the
+handwritten backend split at each pass. `test_oracle.ArithmeticAndLogic.test_counted_loop_exits_on_decrement_flags`
+checks the same loop against Unicorn.
+
+The first run had 16 differing cases. The fixes are in the pypcode backend and keep the reports'
+existing expressions:
+
+- A branch p-code decided after a producer the handwritten backend leaves unresolved kept that
+  backend's `reason: "flag producer unresolved"`. It now carries `decidedBy: "p-code flags"`
+  instead.
+- Two- and three-operand IMUL is reported as the operand-width product, not the low half of the
+  double-width product of extended operands.
+- `x | 0`, `x ^ 0` and `x & ~0` keep the instruction's operation; only one-byte flag selections
+  fold a zero arm.
+- CWD/CDQ name the sign bit of AX/EAX after CBW/CWDE, not of the byte CBW extended.
+- Rotates and shift carries treat the instruction's operand as one value, even when an earlier
+  shift built it from fields (the DX:AX shift chains of a linear-address normalization).
+
+Each has a synthetic oracle test in `test_oracle.py`. The synthetic differential run after them:
+460 identical, 14 extended (the cases listed under phase 3), 0 stricter, 0 disagreement.
+
 ### Blockers
 
-- Phase 4 (open, 2026-10-02): a maintainer runs the recorded restoration cases locally with both
-  backends, for example with `tests/differential.py`'s `compare` over each case's prepared config,
-  and records the counts per class here. Only the counts and the case identifiers known to the
-  requester enter the repository.
+None.

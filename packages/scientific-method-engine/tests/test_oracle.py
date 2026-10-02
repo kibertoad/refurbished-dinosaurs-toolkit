@@ -70,8 +70,19 @@ class ArithmeticAndLogic(unittest.TestCase):
 
     def test_counted_loop_exits_on_decrement_flags(self):
         # inc ax; dec cx; jnz back: the handwritten backend forgets DEC's flags and splits.
-        check(self, "b90300 b80000 40 49 75fc c3", resolved=("ax", "cx"),
-              extended="DEC flags from p-code resolve the loop exit")
+        result = check(self, "b90300 b80000 40 49 75fc c3", resolved=("ax", "cx"),
+                       extended="DEC flags from p-code resolve the loop exit")
+        branches = [e for e in result["paths"][0]["events"] if e["kind"] == "branch"]
+        self.assertEqual([e["taken"] for e in branches], [True, True, False])
+        # A branch p-code decided does not keep the handwritten backend's reason for not deciding it.
+        for e in branches:
+            self.assertNotIn("reason", e)
+            self.assertEqual((e["decidedBy"], e["flagProducer"]), ("p-code flags", 7))
+
+    def test_neutral_operands_keep_the_operation(self):
+        # BX is unknown to the engine, so each result stays an expression over it.
+        result = check(self, "b80100 80cf00 83f300 81e3ffff 09c3 c3", resolved=("ax",))
+        self.assertEqual(result["paths"][0]["registers"]["bx"]["expression"][0], "or")
 
     def test_byte_forms_and_memory(self):
         check(self, "bb1000 c707ff00 8007 01 fe07 8b07 b4ff 00e0 c3", registers=DATA, resolved=("ax",))
@@ -93,6 +104,23 @@ class ShiftsAndRotates(unittest.TestCase):
     def test_rotates_through_carry_and_full_counts(self):
         check(self, "b83412 f9 c1d00c f8 c1d805 c1c010 c1c808 83d000 c3", resolved=("ax",))
 
+    def test_chained_double_word_shifts(self):
+        # DX:AX shifted right twice through CF; the engine leaves both unknown, so each RCR's
+        # result and carry stay expressions over the previous one.
+        result = check(self, "b90100 d1ea d1d8 d1ea d1d8 c3", resolved=("cx",))
+        ax = result["paths"][0]["registers"]["ax"]["expression"]
+        self.assertEqual(ax[0], "or")
+
+    def test_double_word_shift_from_a_zero_high_half(self):
+        # DX starts at zero; RCL carries AX's unknown top bits into it.
+        result = check(self, "b90100 31d2 d1e0 d1d2 d1e0 d1d2 c3", resolved=("cx",))
+        self.assertEqual(result["paths"][0]["registers"]["dx"]["expression"][0], "or")
+
+    def test_double_word_shift_from_a_zero_high_half(self):
+        # DX starts at zero; RCL carries AX's unknown top bits into it.
+        result = check(self, "b90100 31d2 d1e0 d1d2 d1e0 d1d2 c3", resolved=("cx",))
+        self.assertEqual(result["paths"][0]["registers"]["dx"]["expression"][0], "or")
+
     def test_memory_operands(self):
         # RCL by one on memory: Capstone reports its implicit count with a size of 0.
         check(self, "bb1000 c7070180 d107 c12f04 f9 d117 8b07 c7070180 f8 d017 8b07 c3", registers=DATA, resolved=("ax",))
@@ -101,6 +129,13 @@ class ShiftsAndRotates(unittest.TestCase):
 class MultiplyAndDivide(unittest.TestCase):
     def test_products(self):
         check(self, "b80300 bb0500 f7e3 b0f0 b304 f6eb 6bc3fd 0fafc3 c3", resolved=("ax", "dx"))
+
+    def test_low_products_of_unknown_operands(self):
+        # The engine leaves AX and CX unknown; the low products keep the operand-width form.
+        result = check(self, "b80300 0fafc8 6bd1fd 69d90500 c3")
+        registers = result["paths"][0]["registers"]
+        self.assertEqual(registers["cx"]["expression"][0], "mul")
+        self.assertEqual(registers["dx"]["expression"][0], "mul")
 
     def test_quotients(self):
         check(self, "ba0000 b86400 bb0700 f7f3 89c1 b8f6ff 99 f7fb c3", resolved=("ax", "cx", "dx"))
@@ -113,6 +148,13 @@ class MultiplyAndDivide(unittest.TestCase):
 class Conversions(unittest.TestCase):
     def test_sign_extensions(self):
         check(self, "b080 98 89c3 99 b8ff7f 6698 6699 c3", resolved=("ax", "bx", "dx", "eax", "edx"))
+
+
+    def test_sign_fill_of_an_extended_byte(self):
+        # The byte at DS:0 is unknown to the engine; CWD names the sign bit of AX.
+        result = check(self, "a00000 98 99 b80100 c3", registers=DATA, resolved=("ax",))
+        dx = result["paths"][0]["registers"]["dx"]["expression"]
+        self.assertEqual(tuple(dx[1][2:4]), (15, 1))
 
 
 class FlagsAndDirection(unittest.TestCase):
