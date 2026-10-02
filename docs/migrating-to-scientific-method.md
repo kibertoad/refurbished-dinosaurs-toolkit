@@ -211,3 +211,30 @@ file's length, and refuses a volume smaller than 18 sectors.
 - A report from a recorded case gives the same JSON as before the move, apart from fields that
   name the reporter's location.
 - CI passes, including the documentation check with `--check`.
+
+## Runtime packages and shared media
+
+The earlier sections describe the original ScientificMethod package migration. The runtime
+libraries now use RefurbishedDinosaurs IDs and namespaces; analysis tools retain their existing
+ScientificMethod identities. This is a major release with no aliases or forwarding assemblies.
+
+| Remove | Install | Source update |
+|---|---|---|
+| `ScientificMethod.Core` | `RefurbishedDinosaurs.Core` | Change `ScientificMethod.Core.*` usings and qualified names to `RefurbishedDinosaurs.Core.*`. |
+| `ScientificMethod.LegacyFormats` | `RefurbishedDinosaurs.LegacyFormats` | Change non-Smacker names to `RefurbishedDinosaurs.LegacyFormats`. |
+| Smacker types from `ScientificMethod.LegacyFormats` | `RefurbishedDinosaurs.Media.Smacker` | Use `RefurbishedDinosaurs.Media.Smacker`; the types retain their names. |
+| Downstream AVI/Cinepak/RLE video/ADPCM copies | `RefurbishedDinosaurs.Media.Avi` | Use AviReader, CinepakSurface, RleVideoSurface and MicrosoftAdpcmStream. AviVideoFrame exposes compressed Data, not inferred keyframe flags. |
+| Downstream presentation clocks | `RefurbishedDinosaurs.Media.Playback` | Feed elapsed TimeSpan and caller cadence/delay to MoviePlayback; decode every callback, upload once. Pause and stop audio explicitly. |
+| A new AF11 FLI consumer | `RefurbishedDinosaurs.Media.Fli` | Pair FliMovieStream/FliSurface with caller timing. The ring record does not count toward ordinary playback. |
+
+Consume released packages and remove vendored copies in the downstream migration. Do not mix
+old and new runtime packages. Existing SmackerAudioDecoder.Decode remains the unsigned mono8
+API; use DecodePcm16 for packed stereo or 16-bit tracks. Revalidate every owned movie locally:
+strict AVI/Cinepak/RLE and FLI bounds may reject files a downstream reader tolerated. Smacker
+Bink DCT/RDFT audio is explicitly unsupported. Preserve a working FFmpeg fallback until all
+required profiles pass the managed decoder. Game selection, trigger, repeat, skip, scale,
+failure and missing-media policies remain downstream.
+
+All runtime packages share the existing scientific-method-dotnet tag series. CI and local
+builds now use packages/dotnet/RefurbishedDinosaurs.slnx and the RefurbishedDinosaurs.Core.Tests
+project. No npm, Python or prepared-config protocol names change.

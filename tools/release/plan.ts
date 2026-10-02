@@ -39,7 +39,7 @@ export const PACKAGES: ReleasedPackage[] = [
     tagPrefix: "scientific-method-engine@",
   },
   {
-    // ScientificMethod.Core and ScientificMethod.LegacyFormats share one version and one tag.
+    // All six RefurbishedDinosaurs runtime packages share one version and one tag.
     name: "scientific-method-dotnet",
     ecosystem: "nuget",
     paths: ["packages/dotnet/", "global.json"],

@@ -1,10 +1,10 @@
 # Library usage
 
-`ScientificMethod.Core` intentionally has no MonoGame dependency. Add it to Resources,
+`RefurbishedDinosaurs.Core` intentionally has no MonoGame dependency. Add it to Resources,
 Import, or Game as needed after publishing the package to the chosen NuGet feed.
 
-```xml
-<PackageReference Include="ScientificMethod.Core" Version="0.1.0" />
+```sh
+dotnet add package RefurbishedDinosaurs.Core
 ```
 
 Use `AssetManifest` and `AssetVerifier` to identify supported editions. Let the
@@ -19,8 +19,11 @@ atomically replacing changed output. `InstalledContentUninstaller` removes only 
 owned by the manifest, leaving logs, mods, saves, and other unlisted user files intact.
 
 Do not put format decoders into this package merely because they are old-game related.
-A decoder belongs here only when its contract has multiple restoration consumers and
+A decoder belongs in a format library when it has a stable generic contract and
 can be tested without proprietary fixtures.
 
-Generic legacy media and disc formats live in `ScientificMethod.LegacyFormats`, a
-separate package so modern or non-media restorations do not acquire irrelevant APIs.
+Generic non-video media and disc formats live in `RefurbishedDinosaurs.LegacyFormats`.
+Smacker, AVI, FLI and playback cadence have separate `RefurbishedDinosaurs.Media.*` packages;
+see the [runtime package reference](../packages/dotnet/README.md). Install only the formats
+needed by the restoration. Existing ScientificMethod runtime consumers follow the
+[major-release migration](migrating-to-scientific-method.md#runtime-packages-and-shared-media).

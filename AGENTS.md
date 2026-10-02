@@ -9,7 +9,7 @@ This repository publishes the shared tooling that clean-room game restorations c
 | `packages/executable-reader/` | `@scientific-method/executable-reader` | npm | changeset |
 | `packages/standard-checker/` | `@scientific-method/standard-checker` | npm | changeset |
 | `packages/scientific-method-engine/` | `scientific-method-engine` (with the Ghidra scripts) | PyPI | `release:*` label |
-| `packages/dotnet/`, `global.json` | `ScientificMethod.Core`, `ScientificMethod.LegacyFormats` | NuGet | `release:*` label |
+| `packages/dotnet/`, `global.json` | `RefurbishedDinosaurs.Core`, `RefurbishedDinosaurs.LegacyFormats`, `RefurbishedDinosaurs.Media.*` | NuGet | `release:*` label |
 | `actions/`, `schemas/`, `tools/`, `docs/` | used in place, pinned by commit | none | none |
 
 ## Rules that apply to every change
@@ -45,7 +45,7 @@ This repository publishes the shared tooling that clean-room game restorations c
 | Anything a reader user can observe through the engine | an integration case in `packages/executable-reader/test/bridge.test.ts`, which runs the real engine through the prepared-config protocol |
 | Reader parsing or preparation | `packages/executable-reader/test/` |
 | Documentation checker rule | `packages/standard-checker/test/standard-checker.test.ts`, with a passing and a failing fixture |
-| .NET API | `packages/dotnet/ScientificMethod.Core.Tests/` |
+| .NET API | `packages/dotnet/RefurbishedDinosaurs.Core.Tests/` |
 | Ghidra script | it compiles against Ghidra 12.1 (see below); headless runs on real programs stay local |
 | Release tooling | `tools/release/plan.test.ts` |
 
@@ -79,8 +79,8 @@ pnpm lint && pnpm format:check && pnpm typecheck && pnpm exec tsc -p tools/tscon
 pnpm test && node --test "tools/release/*.test.ts" && pnpm build
 python -m pip install -e "packages/scientific-method-engine[test]"
 cd packages/scientific-method-engine && python -B -m unittest discover -s tests -p "test*.py"
-dotnet build packages/dotnet/ScientificMethod.slnx
-dotnet test --project packages/dotnet/ScientificMethod.Core.Tests/ScientificMethod.Core.Tests.csproj
+dotnet build packages/dotnet/RefurbishedDinosaurs.slnx
+dotnet test --project packages/dotnet/RefurbishedDinosaurs.Core.Tests/RefurbishedDinosaurs.Core.Tests.csproj
 pwsh tools/Verify-Repository.ps1
 ```
 

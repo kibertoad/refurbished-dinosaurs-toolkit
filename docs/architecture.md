@@ -12,8 +12,9 @@ packages/
   executable-reader/         npm   @scientific-method/executable-reader   TypeScript
   standard-checker/          npm   @scientific-method/standard-checker    TypeScript
   scientific-method-engine/  PyPI  scientific-method-engine               Python
-  dotnet/                    NuGet ScientificMethod.Core,
-                                   ScientificMethod.LegacyFormats            C#
+  dotnet/                    NuGet RefurbishedDinosaurs.Core,
+                                   RefurbishedDinosaurs.LegacyFormats,
+                                   RefurbishedDinosaurs.Media.{Smacker,Avi,Fli,Playback} C#
 actions/    composite GitHub Actions, consumed by commit SHA
 tools/      repository-level scripts (Verify-Repository.ps1, release planning)
 schemas/    JSON schemas for asset and repository-policy contracts
@@ -70,14 +71,19 @@ request and compiles Kaitai definitions. Its command is `standard-checker`. It d
 executables or evidence reports. The `actions/check-documentation` composite action runs it in CI.
 See [the documentation standard check](documentation-standard-check.md).
 
-### ScientificMethod.Core and ScientificMethod.LegacyFormats
+### RefurbishedDinosaurs runtime libraries
 
 Dependency-free .NET libraries for the restored games themselves. Core holds asset fingerprints,
 manifests, staged installation, content locations, diagnostics, deterministic validation, safe
 persistence, viewport math, indexed palettes and an indexed PNG writer. LegacyFormats holds
-bounded PCX, BMP RLE8, Smacker, CUE/CDDA, raw Mode 1, ISO-9660 and 16-bit PCM WAVE readers, and
+bounded PCX, BMP RLE8, CUE/CDDA, raw Mode 1, ISO-9660 and 16-bit PCM WAVE readers, and
 `OriginalContentSource`, which reads the original from a directory, an `.iso` image or a cue/bin
 raw disc image through one interface. LegacyFormats references Core, so the two are built, versioned and published together.
+Media.Smacker, Media.Avi, Media.Fli and Media.Playback are independent, dependency-free NuGet
+libraries. Smacker was moved from LegacyFormats; runtime package IDs and namespaces use
+RefurbishedDinosaurs, while research tooling retains ScientificMethod. See ADR 0004 and the
+[runtime migration](migrating-to-scientific-method.md#runtime-packages-and-shared-media).
+All six .NET packages share the existing scientific-method-dotnet release tag/version series.
 Every public member has XML documentation, and the build fails without it.
 
 ## The reader-engine contract

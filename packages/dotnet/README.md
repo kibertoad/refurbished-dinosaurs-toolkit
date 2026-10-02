@@ -1,24 +1,30 @@
-# ScientificMethod .NET libraries
+# Refurbished Dinosaurs runtime libraries
 
 .NET libraries for clean-room restorations of legally owned games, from the
 [refurbished-dinosaurs-toolkit](https://github.com/kibertoad/refurbished-dinosaurs-toolkit).
 
-- `ScientificMethod.Core`: dependency-free building blocks for importing, installing and checking
+- `RefurbishedDinosaurs.Core`: dependency-free building blocks for importing, installing and checking
   content from the user's original, plus deterministic randomness, state comparison and display
   helpers.
-- `ScientificMethod.LegacyFormats`: bounded readers for file formats common in 1990s games.
+- `RefurbishedDinosaurs.LegacyFormats`: PCX, bitmap, optical-disc and PCM WAVE readers.
+- `RefurbishedDinosaurs.Media.Smacker`: SMK containers, palette/video decoding and packed audio.
+- `RefurbishedDinosaurs.Media.Avi`: AVI containers, Cinepak, cumulative RLE8 and Microsoft ADPCM.
+- `RefurbishedDinosaurs.Media.Fli`: AF11 FLI indexing, streaming and indexed frame decoding.
+- `RefurbishedDinosaurs.Media.Playback`: host-driven cadence and sequential decoding coordination.
 
-Both packages are released together and always share a version.
+All six runtime packages are released together and share a version. Media packages have no
+Core, MonoGame, native codec or FFmpeg dependency; install only the formats you use.
+ScientificMethod names remain reserved for analysis and research tools.
 
 ```powershell
-dotnet add package ScientificMethod.Core
-dotnet add package ScientificMethod.LegacyFormats
+dotnet add package RefurbishedDinosaurs.Core
+dotnet add package RefurbishedDinosaurs.LegacyFormats
 ```
 
 Every public type and member carries XML documentation, which IDEs show on hover. The build fails
 on an undocumented public member.
 
-## ScientificMethod.Core
+## RefurbishedDinosaurs.Core
 
 | Namespace | Types | Use |
 |---|---|---|
@@ -40,7 +46,7 @@ on an undocumented public member.
 | `Presentation` | `ViewportScaler`, `FixedWidthText` | Fit a fixed resolution into a window and map the mouse back; word-wrap fixed-width text. |
 | `Validation` | `JsonStateDiffer` | List value differences between a reference capture of game state and a restoration's. |
 
-## ScientificMethod.LegacyFormats
+## RefurbishedDinosaurs.LegacyFormats
 
 | Types | Reads |
 |---|---|
@@ -51,16 +57,55 @@ on an undocumented public member.
 | `WavePcm16Reader` | 16-bit mono or stereo PCM WAVE files. |
 | `PcxDecoder`, `RawIndexedImageDecoder`, `IndexedImage` | 8-bit RLE PCX, and headerless indexed pixels, with RGBA conversion. |
 | `Rle8BitmapDecoder` | 8-bit BMP (BI_RLE8 or BI_RGB), rewritten as uncompressed BI_RGB. |
-| `SmackerMovieDecoder`, `SmackerMovieStream` | Smacker `SMK2`/`SMK4` headers, frame tables and frame layouts, from memory or a stream. |
-| `SmackerVideoDecoder`, `SmackerAudioDecoder` | Smacker video into palette indices, and packed 8-bit mono audio. |
 
-Readers reject malformed input with `InvalidDataException`.
+## Media packages
+
+Namespaces match package names. Malformed bytes fail with `InvalidDataException`; unsupported
+profiles fail with `NotSupportedException`, and invalid caller arguments fail with argument
+exceptions. Surfaces are stateful and not thread-safe. Decode every dependent frame in order;
+discard the surface after an exception. No decoder promises transactional recovery.
+
+| Package | Public API and supported subset | Limits and exclusions |
+|---|---|---|
+| `Media.Smacker` | `SmackerMovieDecoder`, `SmackerMovieStream`, `SmackerVideoDecoder`, `SmackerAudioDecoder`; `DecodePcm16` decodes Huffman-packed 8/16-bit mono/stereo to interleaved signed PCM16. The existing `Decode` returns unsigned 8-bit mono samples. | Sources 256 MiB, dimensions 4096, a million physical frames; packed audio 16 MiB source samples per packet (8-bit widening can produce 32 MiB PCM). Uncompressed and Bink DCT/RDFT audio unsupported. Ring frames are indexed; omit the final ring frame from ordinary playback. |
+| `Media.Avi` | `AviReader.Decode` reads classic RIFF AVI into compressed `AviVideoFrame` payloads, palette and `AviAudioFormat`/audio chunks. `CinepakSurface` and `RleVideoSurface` decode cumulative frames; `MicrosoftAdpcmStream` decodes format-tag-2 blocks to signed interleaved PCM16. | Sources 256 MiB, dimensions 4096, 100,000 frames, 64 MiB compressed frame payload, 400,000 movi chunks; ADPCM output 64 MiB. One video and at most one audio stream, flat movi, 40-byte bitmap header, full 256-entry palette for 8-bit video. OpenDML/AVIX, nested record lists and palette-change chunks unsupported. Index/keyframe seeking is not exposed; always decode sequentially. ADPCM chunks must contain complete blocks. |
+| `Media.Fli` | `FliMovieStream` indexes seekable AF11 sources and reads individual records; `FliSurface` decodes COLOR_64 (11), line delta (12), BLACK (13), BRUN (15), COPY (16), and ignores type 14. Exposes top-down indices and an RGB palette. | Sources 256 MiB, dimensions 4096, frames 64 MiB. Strict header/record/chunk extents. FLC/AF12 and other chunk types unsupported. Optional trailing ring record is excluded from FrameCount. Header speed is optional; the host may override cadence. Malformed historical files need a downstream repair policy, never silent shared-reader truncation. |
+| `Media.Playback` | `MoviePlayback(frameCount, frameDuration, initialDelay)`; `Advance(elapsed, decodeFrame)` visits every due frame in ascending order. `Pause`, `Resume`, `Skip`, `FrameIndex`, `IsComplete`. | TimeSpan arithmetic is bounded; negative time and nonpositive cadence rejected. Frame zero appears at the initial delay; completion follows the final frame's full interval. A callback failure invalidates the clock. It owns no audio, GPU, stream or timer. |
+
+```csharp
+using RefurbishedDinosaurs.Media.Fli;
+using RefurbishedDinosaurs.Media.Playback;
+
+using var movie = new FliMovieStream(File.OpenRead(path));
+var surface = new FliSurface(movie.Width, movie.Height);
+var frame = new byte[movie.MaximumFrameLength];
+var playback = new MoviePlayback(movie.FrameCount, cadence, initialDelay);
+playback.Advance(elapsed, index =>
+{
+    int count = movie.ReadFrame(index, frame);
+    surface.DecodeFrame(frame.AsSpan(0, count));
+});
+// Upload surface.Indices and surface.Palette once, after all due frames decoded.
+```
+
+The host chooses track, volume, fit/scale, skip input, file selection, failure policy and audio
+buffering. Pause/resume/skip the audio backend alongside the clock. A fixed video cadence does
+not synchronize independent device clocks; reference captures and long-play drift checks remain
+downstream validation. A huge elapsed step still decodes every frame; hosts may pause admission
+or drive decoding on a worker when that cost is unacceptable.
+
+## Validation
+
+All committed fixtures are synthetic. Smacker packed-audio seed ordering, channel interleaving,
+16-bit byte order and wrapping were additionally compared with FFmpeg using generated packets.
+Run `python tools/media/smacker_audio_oracle.py` with FFmpeg installed to repeat that optional
+oracle check. FFmpeg is useful for inspection and comparisons, not a runtime requirement.
 
 ## Build
 
 From the repository root:
 
 ```powershell
-dotnet build packages/dotnet/ScientificMethod.slnx
-dotnet test --project packages/dotnet/ScientificMethod.Core.Tests/ScientificMethod.Core.Tests.csproj
+dotnet build packages/dotnet/RefurbishedDinosaurs.slnx
+dotnet test --project packages/dotnet/RefurbishedDinosaurs.Core.Tests/RefurbishedDinosaurs.Core.Tests.csproj
 ```

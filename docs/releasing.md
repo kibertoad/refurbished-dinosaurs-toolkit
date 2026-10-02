@@ -21,7 +21,8 @@ The workflow runs only when a push changes `.changeset/`, an npm package or the 
 
 ## PyPI and NuGet: release labels
 
-`scientific-method-engine` (PyPI), and `ScientificMethod.Core` with `ScientificMethod.LegacyFormats`
+`scientific-method-engine` (PyPI), and `RefurbishedDinosaurs.Core`, `RefurbishedDinosaurs.LegacyFormats`
+and the four `RefurbishedDinosaurs.Media.*` packages
 (NuGet, one shared version).
 
 1. A pull request that changes `packages/scientific-method-engine/`, `packages/dotnet/` or
@@ -89,5 +90,10 @@ the upload skips the existing version, and the tag and release are created.
 - On nuget.org, under Trusted Publishing, add a policy for repository owner `kibertoad`,
   repository `refurbished-dinosaurs-toolkit` and workflow file `release-dotnet.yml`, owned by the
   `NUGET_USER` account.
-- The package IDs `ScientificMethod.Core` and `ScientificMethod.LegacyFormats` are created by the
+- The package IDs `RefurbishedDinosaurs.Core` and `RefurbishedDinosaurs.LegacyFormats` are created by the
   first push.
+
+New runtime package IDs need NuGet trusted-publishing coverage before the first release. The
+workflow packs and pushes every packable project in RefurbishedDinosaurs.slnx; its existing
+scientific-method-dotnet tag series remains the shared version source. This PR does not publish
+packages or change account-level trusted-publishing configuration.
