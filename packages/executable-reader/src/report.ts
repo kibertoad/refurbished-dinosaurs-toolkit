@@ -150,7 +150,7 @@ export function prepare(config: ReportConfig, base: string): PreparedConfig {
 
 const MAX_REPORT_MIB = 32;
 /** The prepared-config protocol this reader speaks. It must equal `scientific_method_engine.PREPARED_PROTOCOL`; the engine refuses any other number. */
-export const PREPARED_PROTOCOL = 1;
+export const PREPARED_PROTOCOL = 2;
 
 /**
  * Runs one report, as the `scientific-method` command does. `args` is `[command, configPath]`.

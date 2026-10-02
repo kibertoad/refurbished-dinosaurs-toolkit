@@ -6,6 +6,7 @@ from .machine import (State, StopPath, REGISTERS, ALIASES, BRANCH_CONDITIONS, st
                       string_count, string_effect, check_string_form, compare_string, repeated)
 from .values import const, unknown, sources, op, Value
 from .result_flow import validate_contracts, result_contracts
+from .memory_scopes import validate_scopes, capture_scopes, retain_scopes
 
 def call_target(image, site, ins):
     if ins.mnemonic in ("lcall", "ljmp"):
@@ -237,6 +238,8 @@ def trace(image, config, continue_declared_jumps=True):
         raise ValueError("At most 64 explicit call models")
     sites = set()
     for model in models:
+        if not isinstance(model, dict):
+            raise ValueError("Call model must be an object")
         integer(model.get("site"), 0, len(image.data) - 1, "model site")
         if model["site"] in sites or not model.get("evidence"):
             raise ValueError("Call model requires a unique site and evidence")
@@ -248,6 +251,7 @@ def trace(image, config, continue_declared_jumps=True):
             raise ValueError("Modeled returnBytes must be 2 or 4")
         if any(r not in REGISTERS for r in model.get("preserves", [])):
             raise ValueError("Model preserves must name full registers")
+        validate_scopes(model, image.bits, image.flat)
         for case in cases:
             for r, n in case.get("registers", {}).items():
                 if r not in ALIASES or type(n) is not int or not 0 <= n < 1 << ALIASES[r][2]:
@@ -463,6 +467,9 @@ def trace(image, config, continue_declared_jumps=True):
                             raise StopPath("four-byte call model reached without an immediately executed push cs")
                         if push_cs and return_bytes != 4:
                             raise StopPath("push-CS/near-call model requires an explicit four-byte return contract")
+                        # Scopes resolve against the pre-call state: before the modeled frame consumes an
+                        # already-pushed CS word and before a case replaces registers.
+                        kept_values, kept_unread, preserved_scopes = capture_scopes(state, model)
                         if push_cs:
                             actual_cs = state.pop(2)
                             if actual_cs.term != state.reg("cs").term:
@@ -477,16 +484,19 @@ def trace(image, config, continue_declared_jumps=True):
                                 if r not in model.get("preserves", []) and r not in ("esp", "cs"):
                                     child.setreg(r, unknown(f"modeled-call:{at}:{r}", ALIASES[r][2]), at)
                             child.clear_memory()
+                            retain_scopes(child, kept_values, kept_unread)
                             child.forget_flags()
                             child.direction_flag = unknown(f"modeled-call:{at}:DF:{child.flag_serial}", 1, at)
                             child.interrupt_flag = unknown(f"modeled-call:{at}:IF:{child.flag_serial}", 1, at)
                             for r, n in case.get("registers", {}).items():
                                 child.setreg(r, const(n, ALIASES[r][2], at), at)
                             child.conditional.append({"site": at, "evidence": model["evidence"],
-                                                      "assumption": "call returns with balanced stack; memory effects unresolved"})
+                                                      "assumption": "call returns with balanced stack; memory effects unresolved"
+                                                                    + (" outside explicit scopes" if preserved_scopes else ""),
+                                                      "preservedMemoryScopes": preserved_scopes})
                             child.event("call-return", callSite=at, callerEntry=state.frames[-1]["entry"],
                                         resultContracts=result_contracts(child, contracts, target), registers=snapshot(child), modeled=True,
-                                        unknownMemoryEffects=True)
+                                        unknownMemoryEffects=True, preservedMemoryScopes=preserved_scopes)
                             child.at = following
                             pending.append(child)
                         break

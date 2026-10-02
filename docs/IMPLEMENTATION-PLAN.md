@@ -270,39 +270,50 @@ alone cannot close the downstream request. No gameplay or spec claim changes.
 
 ## Scoped memory hypotheses across nested returning services
 
-Request R1 (downstream effect-ordering acceptance): a traced child can make an
-own field write after a modeled external service, yet cannot return to its
-parent because unknown service memory effects invalidate the ancestor return
-frame. Preserving register values and assuming balanced stack height does not
-establish the contents of that frame or saved registers. Current conservative
-stops are correct; automatically preserving those bytes is refused.
+Request R1 (Dark Sun gap 27, scoped-memory acceptance): a traced child can make its own field write
+after a modeled external service, yet cannot return to its parent, because the model's unknown
+memory effects invalidate the ancestor return frame. Preserving register values and assuming a
+balanced stack does not establish the contents of that frame or the saved registers. The
+conservative stop is correct, and preserving those bytes implicitly is refused.
 
-Outcome: let an evidence-backed query express bounded memory-preservation
-hypotheses for a returning service, with complete address/segment/width
-provenance, while leaving every other memory effect unresolved. The exact input
-contract remains to be designed. It must distinguish saved values from return
-control, validate all declarations including unreachable ones, reject ambiguous
-or overlapping scopes and retain each hypothesis in every derived summary.
-Default models must still invalidate stack memory. The hypotheses live in the
-evidence layer; ADR 0003 still forbids handwritten instruction semantics.
+Tooling outcome ([ADR 0004](decisions/0004-scoped-memory-hypotheses-on-call-models.md)): a call
+model may declare `preservesMemory`, explicit byte scopes the query assumes the service leaves
+unchanged. Each scope has `segment` (a segment register), `base` (an address-width general
+register), optional signed `displacement` (default 0), `bytes` (1..4,096) and nonempty `evidence`,
+and no other field. A model holds at most 32 scopes and 4,096 bytes. Shapes, budgets, overlaps on
+one segment and base register, and (for MZ) a segment register the model does not preserve are
+rejected for every model before tracing, reached or not. On a reached call each scope resolves
+against the pre-call registers (before a pushed CS is consumed or a case sets registers); an
+unresolved segment or base, an interval past the end of the address space, and two scopes sharing a
+linear byte stop the path. The model invalidates memory and puts back only the scoped bytes. No
+register or return target is restored as such, so a partial return word still stops at the return,
+and a later write or possible alias still overrides a scope. Each resolved scope, with register
+values and producers, offset, linear interval, evidence and `cachedBytes`/`uncachedBytes`, is
+reported in `preservedMemoryScopes` on the path's conditional model, the modeled `call-return`
+event, the effect summary and a modeled allocator's `allocation` entry. Uncached bytes are labelled
+uncached, stay unread after the call, and never become evidence about the original program's writes.
+Memory outside the scopes, flags, unpreserved registers and native service effects stay unknown, so
+effect summaries keep the modeled call's `unknownEffects` and `effectCompleteWithinModel: false`. No
+instruction value or flag rule changes (ADR 0003). The input moves `PREPARED_PROTOCOL` to 2 in the
+reader and the engine, both released as majors.
 
-The first slice records the plan and synthetic reproductions only. Near and
-far child frames retain their own writes and stop before a later parent write
-under an unknown service. Tracing the same fully synthetic service succeeds;
-explicit ancestor-return overwrite still stops. Step and path caps that are
-reached cannot prove later writes absent. A synthetic MZ case run through the
-real prepared-reader bridge reproduces the same distinction.
+Synthetic acceptance (`tests/test_memory_scopes.py`, `tests/test_nested_frame_request.py` and the
+bridge cases in `bridge.test.ts`): near and far nested frames join the parent with the saved BP;
+PE32 frames; a push-CS model resolves SP before consuming the CS word; scopes use pre-call registers
+when a case replaces them; default, empty, wrong-segment and partial (incomplete return word) scopes
+stop at the child return even with BP and SP in `preserves`; a return-word scope alone leaves BP
+unknown; an explicit overwrite after the model stops; overlapping and segment-aliased scopes;
+unknown, FS/GS and wrapping addresses; malformed and unreachable declarations, declared overlaps and
+an unpreserved segment register; the exact 32-scope and 4,096-byte limits and one past each; step,
+path and total caps leave later writes unread; the snapshot keeps only scoped bytes and their
+unknown terms, and an unknown-address write still invalidates them; a kept uncached byte stays
+uncached at a later scope and read; a modeled allocator cites its scopes. A synthetic MZ case
+through the real prepared-reader bridge shows the join, the stops and the caps.
 
-Delivery needs several reviewed slices: first settle the bounded declaration
-and report contract; then implement validated scopes and provenance with near,
-far and PE32 frames, saved registers, differing DS/SS, aliases, mixed/partial
-widths, rejected scopes and nonvacuous limits; finally verify archive delivery
-and the requester's original case. A new prepared-config input increments both
-protocol declarations and releases reader and engine together, with major
-classification and migration documentation when their contract breaks.
-The planning slice implements and adopts no preservation. Exit: all package
-gates and the complete downstream nested-return controls pass against reviewed,
-published packages; a leaf-only write witness does not satisfy R1.
+Exit: package gates pass and the reader and engine are released together at protocol 2. The request
+closes only when Dark Sun's original nested caller-bracket case joins the parent through declared
+frame scopes, with every other memory effect still unknown, against the published packages. A
+leaf-only write witness or a candidate build does not satisfy R1.
 
 ## Ghidra cross-check of the callee graph
 

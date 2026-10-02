@@ -67,7 +67,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | Command | Reports | Described in |
 |---|---|---|
 | `trace` | ordered effects and every return along bounded paths from `entry` | this section |
-| `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `effects` also summarizes each path's ordered effects and local restoration witnesses | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries) |
+| `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries) |
 | `uses` | accesses to one memory offset from every established entry | this section |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
@@ -241,6 +241,53 @@ The model assumes a returning call with balanced stack and preserved CS;
 it invalidates memory, flags and every unpreserved register. Its assumptions are
 printed on each affected path. A model supplies no evidence about actual external
 services, hardware behavior or native failure reachability.
+
+A model may also declare `preservesMemory`, a list of explicit byte scopes that the query assumes the
+service leaves as they were before the call ([ADR 0004](decisions/0004-scoped-memory-hypotheses-on-call-models.md)).
+Each scope is an object with exactly these fields:
+
+| Field | Type | Rule |
+|---|---|---|
+| `segment` | string | `cs`, `ds`, `es`, `ss`, `fs` or `gs` |
+| `base` | string | a general register of the address width: `sp`, `bp`, `bx` and the other 16-bit registers for MZ, `esp`, `ebp`, `ebx` and the other 32-bit registers for PE32 |
+| `displacement` | integer | optional, default 0; signed address width (-32,768..32,767 for MZ) |
+| `bytes` | integer | 1..4,096 |
+| `evidence` | string | nonempty; why the requester believes the service keeps these bytes |
+
+For example, `{ "segment": "ss", "base": "sp", "bytes": 4, "evidence": "..." }` names the four
+bytes at SS:SP when the call is reached. A model holds at most 32 scopes and 4,096 bytes in total.
+Every model's scopes are checked before tracing, including a model no path reaches. The query fails
+on a malformed scope, an exceeded budget, two scopes on the same segment and base register whose
+ranges overlap, and, for MZ, a scope whose segment register is neither `cs` nor listed in the
+model's `preserves`: the model replaces every other segment register with an unknown value, so no
+read after the call could address the scope through it.
+
+On a path that reaches the call, each scope resolves against the pre-call state, before a pushed CS
+word is consumed and before a case sets registers. The segment and base must be concrete; PE32 uses
+segment bases, and FS/GS bases stay unknown. An unknown address, an interval that crosses the end of
+the address space, and two scopes that share a linear byte (through different base registers or
+segment values) stop the path. The model then invalidates memory as before and puts back only the
+scoped bytes. A byte the model had a value for keeps that value. A byte it had no value for keeps
+its pre-call unknown term and stays unread: a later read lists it in `missingByteProducers` with the
+reading instruction as its producer, and a later scope counts it in `uncachedBytes`. The model
+restores no register or return target as such. A traced `pop` or `ret` must still read the full
+value, so a scope that covers part of a return word stops at the return, and a later write or
+possible-alias write still replaces or invalidates a scoped byte. `preserves` alone never keeps a
+saved stack byte.
+
+Each resolved scope is reported in `preservedMemoryScopes` on the path's `conditionalModels` entry
+and on the modeled `call-return` event, in the `effects` summary on the call and the summary's
+`conditionalModels`, and in the `allocation` entry of a modeled allocator. Every `effects` call
+summary has the field; it is empty unless the call was modeled with scopes. An entry holds
+`segmentRegister`, `segment`, `baseRegister`, `base` (values and producers), `displacement`,
+`offset`, `linearStart`, `linearEnd`, `bytes`, `evidence`, `cachedBytes`, `uncachedBytes` and a
+fixed `meaning` text. The two counts describe the model's cache: an uncached byte is labelled
+uncached and says nothing about whether the original program wrote it. Memory outside the scopes,
+flags, unpreserved registers and the service's native effects stay unknown, so the call keeps
+`unknownEffects: true` and the path's `effectCompleteWithinModel` stays false. Without
+`preservesMemory`, a model invalidates the whole frame as before. The input needs prepared protocol 2
+in both the reader and the engine. How to cite a finding that rests on a model or a scope is in
+[validation and fidelity](validation-and-fidelity.md#citing-bounded-evidence-reports).
 
 Defaults cap each path at 512 instructions, the query at 20,000 steps, paths at
 64 and call depth at 8. Raw scans stop after 65,536 byte positions (`scanLimit`,

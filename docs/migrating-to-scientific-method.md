@@ -211,3 +211,21 @@ file's length, and refuses a volume smaller than 18 sectors.
 - A report from a recorded case gives the same JSON as before the move, apart from fields that
   name the reporter's location.
 - CI passes, including the documentation check with `--check`.
+
+## Prepared protocol 2: scoped memory on call models
+
+The reader and the engine moved from prepared protocol 1 to 2 when call models gained
+`preservesMemory` ([ADR 0004](decisions/0004-scoped-memory-hypotheses-on-call-models.md)). A
+protocol 2 reader and a protocol 1 engine refuse each other, and so do the reverse pair, with an
+error naming both packages. Upgrade `@scientific-method/executable-reader` and
+`scientific-method-engine` to their protocol 2 majors in the same change. Nothing accepts the old
+number.
+
+Existing configs need no change. A model without `preservesMemory` invalidates memory as before, so
+a nested return through it still stops on an unknown return target. To join such a child to its
+parent, declare the saved frame explicitly, for example
+`{ "segment": "ss", "base": "sp", "bytes": 4, "evidence": "..." }` for a saved BP and near return
+address pushed before the call, with evidence for why the service keeps them. For MZ, the model must
+also list `ss` in `preserves`; the engine rejects a scope whose segment register the model replaces.
+Listing `ebp` or `esp` in `preserves` does not keep the frame bytes. A report that relies on a scope
+states it in `preservedMemoryScopes`; cite that hypothesis wherever the report is used as evidence.
