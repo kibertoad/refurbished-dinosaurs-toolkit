@@ -73,6 +73,11 @@ def effect_ordering(report):
                                 returnOrder=event["order"], writesAfterCount=len(writes),
                                 continuation="assumes balanced returning service; its memory/flag effects are unknown" if modeled
                                 else "local callee return reached within the instruction model")
+                    if modeled:
+                        call["preservedMemoryScopes"] = event.get("preservedMemoryScopes", [])
+                        if call["preservedMemoryScopes"]:
+                            call["continuation"] = ("assumes balanced returning service; memory outside its "
+                                                    "preservedMemoryScopes hypotheses and its flag effects are unknown")
                 if event.get("modeled") or event.get("unknownMemoryEffects"):
                     unknown_orders.append(event["order"])
         for call in calls:
@@ -84,6 +89,7 @@ def effect_ordering(report):
         destination = conditional_summaries if conditional else summaries
         destination.append({"path": index, "declaredJumpAssumptions": path.get("declaredJumpAssumptions", []), "returned": path["returned"], "stop": boundary,
                           "guards": path["guards"], "timeline": timeline,
+                          "conditionalModels": path.get("conditionalModels", []),
                           "writeOrders": [w["order"] for w in writes], "calls": calls,
                           "localRestorationWitnesses": witnesses,
                           "effectCompleteWithinModel": bool(path["returned"] and not unknown_orders and not conditional),
