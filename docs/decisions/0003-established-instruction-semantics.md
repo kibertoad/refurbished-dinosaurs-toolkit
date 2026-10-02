@@ -147,7 +147,7 @@ and starts the Miasm evaluation under decision 8 after a human confirms.
 Exit: all engine and bridge tests pass unchanged, and no report differs. Release label
 `release:skip`.
 
-### Phase 3: the pypcode backend, one group at a time
+### Phase 3: the pypcode backend, group by group
 
 Add `pypcode` (pinned) to the engine's dependencies and `unicorn` (pinned) to its test
 dependencies. Implement the p-code interpreter over `Value` (`COPY`, `LOAD`, `STORE`, integer
@@ -171,10 +171,12 @@ Then move the groups in this order:
 | string operations | `movs`, `stos`, `lods`, `cmps`, `scas` with and without `rep` |
 
 A group moves when its differential run meets [Acceptance](#acceptance). Each moved group's
-instructions use pypcode by default. Phase 3 may land as several PRs, so groups that pass do not
-wait for a blocked one: the interpreter and dependencies first, then the moved groups in one or
-more PRs. Each PR carries `release:patch` when no report changes and `release:minor` when an
-extended class appears.
+instructions use pypcode by default. Phase 3 lands as one PR, or as several so groups that pass do
+not wait for a blocked one: the interpreter and dependencies first, then the moved groups in one or
+more PRs. A PR that adds the dependencies carries `release:minor`, because it adds a runtime
+dependency and raises the engine's Python floor to the one pypcode needs. A PR that only moves
+groups carries `release:patch` when no report changes and `release:minor` when an extended class
+appears.
 
 Exit: every group is moved, and the full differential run has no disagreement and no stricter
 difference without a recorded follow-up.
@@ -184,7 +186,9 @@ difference without a recorded follow-up.
 1. A maintainer runs the recorded restoration cases locally on both backends.
 2. Record the counts per class in Progress.
 
-Exit: no disagreement, and every stricter case is resolved or accepted by a human.
+Exit: no disagreement, and every stricter case is resolved or accepted by a human. Release label
+`release:skip` when only Progress changes. A backend fix the run calls for takes the label phase 3
+gives its report change.
 
 ### Phase 5: cutover
 
@@ -209,23 +213,28 @@ matches the largest report change (`release:major` if a field's meaning changed)
 3. Test the comparison with synthetic exports. The script compiles against Ghidra 12.1.
 
 Exit: the option ships with tests, the reporter guide documents it, and the script has its row in
-the engine README catalog.
+the engine README catalog. Release label `release:minor`.
 
 ## Per-iteration procedure
 
 A recurring run does the following, once per iteration:
 
-1. Read Progress. Take the first phase not marked done. If its PR is open, wait for it to merge.
-2. If Blockers has an open entry for that phase, stop and report the blocker.
-3. Check the phase's exit condition. If it already holds, mark the phase done with the date and
-   go to step 1.
-4. Do the phase's steps on one branch named `tooling/semantics-<phase>`, branched from `main`,
-   with a commit per step. A phase 3 PR adds a suffix naming its groups.
+1. Read Progress on the branch of the newest open phase PR, or on `main` when none is open. Take
+   the first phase not marked done.
+2. If Blockers has an open entry for that phase, stop and report the blocker. In phase 3, an entry
+   that names a group blocks only that group, and the run continues with the groups after it.
+3. Check the phase's exit condition. If it already holds, mark the phase done with the date on the
+   phase's branch, open its PR as in step 7, and stop.
+4. Do the phase's steps on one branch named `tooling/semantics-<phase>`, with a commit per step.
+   Branch from `main`, or from the previous phase's branch while its PR is open, so the phases
+   stack. If the branch exists from a run that stopped, continue on it from its first step not
+   marked done. When phase 3 lands as several PRs, each adds a suffix: `-interpreter` for the
+   interpreter and dependencies, or one naming its groups.
 5. Run the gates from `AGENTS.md`. A step is done only when they pass.
 6. Update Progress in the same change: each step's status, the date, and the evidence (test names,
    class counts). Mark the phase done when its exit condition holds.
-7. Open one PR against `main` with the release label from the phase. Do not merge it. The next
-   phase branches from `main` after the maintainer merges it.
+7. Open one PR against `main` with the release label from the phase, and record the PR in Progress
+   on the branch. Do not merge it. The maintainer merges stacked PRs in phase order.
 8. Stop when a step needs a human: a no-go in phase 1, a disagreement Unicorn cannot settle, a
    stricter case to accept, or a `release:major` label. Write it under Blockers first.
 
