@@ -251,7 +251,7 @@ Rules for every iteration:
 | 2 semantics seam | done | 2026-10-02 | see [Semantics seam](#semantics-seam) |
 | 3 pypcode backend | done | 2026-10-02 | #64; see [Groups moved](#groups-moved) |
 | 4 parity on recorded cases | done | 2026-10-02 | #65; see [Parity on recorded cases](#parity-on-recorded-cases) |
-| 5 cutover | not started | | |
+| 5 cutover | done | 2026-10-02 | see [Cutover](#cutover) |
 | 6 Ghidra callee cross-check | not started | | |
 
 ### Handwritten baseline
@@ -469,6 +469,31 @@ existing expressions:
 
 Each has a synthetic oracle test in `test_oracle.py`. The synthetic differential run after them:
 460 identical, 14 extended (the cases listed under phase 3), 0 stricter, 0 disagreement.
+
+### Cutover
+
+Done 2026-10-02.
+
+1. `x86/handwritten.py` (`ordinary`, `predicate`, `shift_carry`, `CARRY_BRANCHES`,
+   `CLEARED_BY_LOGIC`, the string iteration body) and `x86/semantics.py` (the backend registry and
+   `selected`) are deleted. Every `State` uses `pcode_backend.BACKEND`. A mnemonic without a handler
+   stops the path with `Unsupported instruction semantics`, as before.
+   - Branch conditions come from p-code alone. The `branch` event fields come from the evidence
+     layer's flag-producer record: `flagProducer`, `operation`, `left` and `right` after a
+     comparison; `flag` and `carry` for a CF-only branch on a carry the evidence layer tracks; and
+     `reason: "flag producer unresolved"` or `decidedBy: "p-code flags"` otherwise.
+   - `BRANCH_CONDITIONS` stays in `machine.py`. It is the assumption key table spike answer 4
+     called for (synonymous and complementary branches share one assumption), and `result_flow`
+     uses it. It computes no flag.
+2. `tests/differential.py` and `tests/test_differential.py` are deleted. The test modules call the
+   engine's `run_report`, and `tests/oracle.py` keeps the Unicorn oracle cases on the one backend.
+3. Reports name their semantics in a new header field, `instructionSemantics`, beside `decoder`.
+   The reporter guide documents it and `AGENTS.md` states the rule that replaces decision 6. No
+   report field changed meaning, so the migration guide has no entry for this phase.
+4. ADR 0002's open item is marked resolved.
+
+The release label is `release:minor`: the header gains a field, and no supported import
+(`x86.pe.pe32`, `x86.image.read_source`) changes. The modules removed here were never in a release.
 
 ### Blockers
 

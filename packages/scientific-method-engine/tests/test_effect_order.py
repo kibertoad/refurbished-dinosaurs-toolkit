@@ -1,6 +1,5 @@
 """Synthetic path evidence; no original bytes or claims."""
 import unittest
-from differential import accepted
 from test_x86 import Code, report
 
 
@@ -73,8 +72,7 @@ class EffectOrderTests(unittest.TestCase):
         # A loop re-pushes the same return address into a stack slot another call overwrote.
         c = Code().emit("b9 02 00").label("top").branch("e8", "a").branch("e8", "b").emit("49").branch("75", "top").emit("c3")
         c.label("a").emit("c3").label("b").emit("c3")
-        with accepted("extended", "DEC flags from p-code resolve the loop exit; test_oracle checks the count"):
-            r = report(c, "effects", registers={"ss": 0x3000, "sp": 0xff00})
+        r = report(c, "effects", registers={"ss": 0x3000, "sp": 0xff00})
         self.assertTrue(any(p["returned"] for p in self.paths(r)))
         self.assertFalse([w for p in self.paths(r) for w in p["localRestorationWitnesses"]])
 

@@ -196,7 +196,8 @@ SLEIGH specification for x86, lifted to p-code by pypcode and evaluated over the
 terms ([ADR 0003](decisions/0003-established-instruction-semantics.md)). Segment attribution,
 memory accesses, producers and every control transfer stay with the engine. A p-code memory access
 that does not match the decoded operand, an unsupported p-code operation and a decode length that
-differs from Capstone's stop the path.
+differs from Capstone's stop the path. Every report names both in `decoder` and
+`instructionSemantics`.
 
 The decoder supports 16-bit addressing and a bounded subset of ordinary integer
 operations: MOV/MOVZX/MOVSX, XCHG, low-result two/three-operand IMUL (flags unresolved),

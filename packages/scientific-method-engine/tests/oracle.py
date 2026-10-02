@@ -4,12 +4,14 @@ Unicorn is a test dependency only. ``check`` runs one synthetic routine on the e
 Unicorn with the same segment layout and concrete registers, and compares every register the
 engine resolved to a constant at the routine's return with Unicorn's value there.
 """
-import contextlib
+import sys
+from pathlib import Path
 
 from unicorn import UC_ARCH_X86, UC_MODE_16, Uc
 from unicorn import x86_const as U
 
-from differential import accepted, run_report
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from scientific_method_engine.x86.reports import run_report  # noqa: E402
 
 SEGMENT = 0x1000
 STACK = {"ss": 0x2000, "sp": 0xFFF0}
@@ -47,18 +49,16 @@ def unicorn(data, registers, direction=None):
     return stopped.get("at"), {name: uc.reg_read(getattr(U, "UC_X86_REG_" + name.upper())) for name in names}
 
 
-def check(test, code, registers=None, direction=None, resolved=(), extended=None):
+def check(test, code, registers=None, direction=None, resolved=()):
     """Compare the engine's resolved registers with Unicorn's for one synthetic routine.
 
     Routines write any memory they read, because the engine starts with memory unknown and
     Unicorn with zeros. ``resolved`` names registers the engine must resolve.
-    ``extended`` states why the default backend may resolve more than the handwritten one here.
     """
     data = bytes.fromhex(code)
     registers = {**STACK, **(registers or {})}
     flags = {} if direction is None else {"flags": {"direction": direction}}
-    with accepted("extended", extended) if extended else contextlib.nullcontext():
-        result = run_report(data, configuration(data, registers, **flags), "trace")
+    result = run_report(data, configuration(data, registers, **flags), "trace")
     test.assertEqual(len(result["paths"]), 1, "the oracle compares one resolved path")
     path = result["paths"][0]
     test.assertTrue(path["returned"], path["stop"])

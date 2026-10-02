@@ -1,30 +1,15 @@
-"""The pypcode semantics backend (ADR 0003, phase 3).
+"""Instruction semantics from pypcode (ADR 0003).
 
-Values come from the p-code pypcode lifts. The evidence layer keeps what it always decided: which
-segment register an access uses (from Capstone, decision 3), access roles, the model's acceptance
-rules, flag-producer records and the events each instruction reports. Groups of mnemonics move to
-this backend one at a time; the others still run on the handwritten backend.
+Values, flags and branch conditions come from the p-code pypcode lifts from Ghidra's SLEIGH
+specification. The evidence layer keeps what it always decided: which segment register an access
+uses (from Capstone, decision 3), access roles, the model's acceptance rules, flag-producer records
+and the events each instruction reports. A ``State`` reaches this module through ``BACKEND``.
 """
 from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
 
-from . import handwritten, semantics
 from .machine import ALIASES, StopPath
 from .pcode import LIFTER, Address, Run, FLAGS, SEGMENT_BASES, segment_base
 from .values import Value, const, unknown, op, extract, join, resize, sources
-
-GROUPS = {
-    "data movement": ("mov", "movzx", "movsx", "xchg", "nop"),
-    "address forms": ("lea", "lds", "les"),
-    "stack": ("push", "pop", "leave", "pushf", "pushfd", "popf", "popfd"),
-    "compare": ("cmp", "test"),
-    "arithmetic and logic": ("add", "sub", "and", "or", "xor", "inc", "dec", "not", "neg"),
-    "carry chain": ("adc", "sbb", "clc", "stc", "cmc"),
-    "shifts and rotates": ("shl", "sal", "shr", "sar", "rol", "ror", "rcl", "rcr"),
-    "multiply and divide": ("mul", "imul", "div", "idiv"),
-    "conversions": ("cbw", "cwde", "cwd", "cdq"),
-    "flags and direction": ("cld", "std", "cli", "sti"),
-    "string operations": ("movs", "stos", "lods", "cmps", "scas"),
-}
 
 # Conditional branches by the condition code SLEIGH decodes from 0x70 + code.
 CONDITION_CODES = {}
@@ -219,7 +204,7 @@ class Frame:
         self.addresses = {}
         if ins.mnemonic != "pop":
             # Operands address with the registers the instruction started with. POP's destination
-            # is addressed after the stack pointer moves, as the handwritten backend does.
+            # is addressed after the stack pointer moves, as the CPU addresses it.
             for index, operand in enumerate(ins.operands):
                 if operand.type == X86_OP_MEM:
                     self.address(index)
@@ -356,47 +341,60 @@ def carry_out(state, run, site, named=True):
 
 
 class Pypcode:
-    """Instruction semantics from pypcode for the moved groups; the handwritten backend for the rest."""
+    """The engine's instruction semantics: ordinary instructions, branch conditions and string bodies."""
 
     name = "pypcode"
 
-    def __init__(self, groups):
-        self.groups = tuple(groups)
-        self.mnemonics = {m for group in self.groups for m in GROUPS[group]}
-
     def __deepcopy__(self, memo):
+        # The backend holds no path state, so every copied path shares it.
         return self
 
     def ordinary(self, state, ins, image):
-        m = ins.mnemonic
-        if m not in self.mnemonics:
-            return handwritten.ordinary(state, ins, image)
-        HANDLERS[m](state, ins, image)
+        """Apply one instruction that is neither a control transfer nor a string operation."""
+        handler = HANDLERS.get(ins.mnemonic)
+        if handler is None:
+            raise StopPath("Unsupported instruction semantics: " + ins.mnemonic)
+        handler(state, ins, image)
 
     def condition(self, state, mnemonic):
-        answer, info = handwritten.predicate(state, mnemonic)
-        if "compare" not in self.groups or mnemonic not in CONDITION_CODES:
-            return answer, info
-        flags = state.flag_values
-        if flags is None:
-            return answer, info
+        """Evaluate a conditional branch on the current flags.
+
+        Returns ``(answer, info)``: True, False or None when unresolved, and the ``branch`` event
+        fields, which describe the evidence layer's record of the flag producer.
+        """
         ops, _ = LIFTER.ops(state.flat, bytes((0x70 + CONDITION_CODES[mnemonic], 0)), 0x100)
         needed = {LIFTER.register(state.flat, v[1], v[2]) for o in ops for v in o.inputs if v[0] == "register"}
-        if not needed <= set(flags):
-            # A handwritten instruction produced some of these flags; its predicate decides.
-            return answer, info
-        condition = Run(state, ops, None, flags=flags).execute(stop_at_branch=True)
-        if condition.number is None:
+        carry_only = needed == {"CF"} and state.flags is None and state.carry is not None
+        if carry_only:
+            info = {"predicate": mnemonic, "flag": "CF", "carry": state.carry.report()}
+        elif state.flags is None:
+            info = {"predicate": mnemonic, "reason": "flag producer unresolved",
+                    "flagProducer": state.unknown_flag_site, "flagGeneration": state.flag_epoch}
+        else:
+            a, b, operation, site = state.flags
+            info = {"predicate": mnemonic, "flagProducer": site, "operation": operation,
+                    "left": a.report(), "right": b.report()}
+        # CF is always readable: the evidence layer names it when no instruction resolved it.
+        if not needed <= set(state.flag_values or ()) | {"CF"}:
             return None, info
-        if answer is None:
-            # The handwritten record says why it could not decide; p-code flags decided it.
-            info = {key: value for key, value in info.items() if key != "reason"}
+        condition = Run(state, ops, None, flags=state.flag_values or {}).execute(stop_at_branch=True)
+        if condition.number is None:
+            if carry_only:
+                info["reason"] = "carry unresolved"
+            return None, info
+        if "reason" in info:
+            # No comparison record exists, but the flags p-code computed decide the branch.
+            del info["reason"]
             info["decidedBy"] = "p-code flags"
         return bool(condition.number), info
 
     def string_iteration(self, state, ins, operation, width, source_segment, delta_step):
-        if operation not in self.mnemonics:
-            return handwritten.string_iteration(state, ins, operation, width, source_segment, delta_step)
+        """Apply one iteration of an accepted string form; see ``machine.string_effect``.
+
+        For a repeated CMPS or SCAS, returns whether the repeat condition holds afterwards (1, 0
+        or unknown); otherwise None. ``delta_step`` is the evidence layer's step; p-code computes
+        its own from DF.
+        """
         si, di = ("esi", "edi") if state.flat else ("si", "di")
         source, destination = state.reg(si), state.reg(di)
         loaded = {}
@@ -812,8 +810,5 @@ for names, handler in ((("mov", "movzx", "movsx", "xchg"), move), (("nop",), nop
     for name in names:
         HANDLERS[name] = handler
 
-MOVED = ("data movement", "address forms", "stack", "compare", "arithmetic and logic", "carry chain",
-         "shifts and rotates", "multiply and divide", "conversions", "flags and direction",
-         "string operations")
-
-semantics.register(Pypcode(MOVED), default=bool(MOVED))
+# The backend every State uses.
+BACKEND = Pypcode()

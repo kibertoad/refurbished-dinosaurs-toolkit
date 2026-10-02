@@ -14,7 +14,7 @@ sys.path.insert(0, str(SRC))
 ENGINE = [sys.executable, "-B", "-m", "scientific_method_engine"]
 ENGINE_ENV = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(SRC), os.environ.get("PYTHONPATH")]))}
 from scientific_method_engine.x86.image import Image
-from differential import accepted, run_report
+from scientific_method_engine.x86.reports import run_report
 from scientific_method_engine.x86.trace import trace, walk, OVERLAP_REASON, CONTESTED_REASON
 from scientific_method_engine.x86.values import const, unknown, op, extract, resize
 
@@ -1412,7 +1412,10 @@ class ReporterTests(unittest.TestCase):
             args = [*ENGINE, "trace", str(path)]
             result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads(result.stdout)["sourceIdentity"]["size"], 4)
+            header = json.loads(result.stdout)
+            self.assertEqual(header["sourceIdentity"]["size"], 4)
+            self.assertEqual((header["decoder"], header["instructionSemantics"]),
+                             ("capstone 5.0.7", "pypcode 4.0.0 (Ghidra SLEIGH x86)"))
             cfg["sha256"] = "0" * 64; path.write_text(json.dumps(cfg))
             result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 1)
@@ -1469,24 +1472,23 @@ class ReporterTests(unittest.TestCase):
 
     def test_repeated_string_comparisons(self):
         es = {"es": 0x2000, "ds": 0x2000}
-        with accepted("extended", "the handwritten backend stops on CMPS and SCAS"):
-            # Positive control: REPNE SCASB stops at the terminator it compared, after two iterations.
-            result = report("bf 00 01 c6 05 61 c6 45 01 00 b0 00 b9 10 00 f2 ae c3", flags={"direction": 0}, registers=es)
-            path = result["paths"][0]
-            self.assertTrue(path["returned"], path["stop"])
-            exit_event, = events(result, "string-compare-exit")
-            self.assertEqual((exit_event["iterations"], exit_event["exit"]), (2, "condition"))
-            self.assertEqual((path["registers"]["cx"]["value"], path["registers"]["di"]["value"]), (14, 0x102))
-            self.assertEqual(result["stringIterationsUsed"], 2)
-            # Unknown memory leaves the repeat condition unresolved after the first iteration.
-            result = report("bf 00 01 b0 00 b9 10 00 f2 ae c3", flags={"direction": 0}, registers=es)
-            self.assertIn("comparison outcome unresolved", result["paths"][0]["stop"])
-            self.assertEqual(len(events(result, "read")), 1)
-            # A repeated comparison pays per iteration, so the budget stops it mid-loop.
-            result = report("bf 00 01 c7 05 00 00 b0 01 b9 10 00 f2 ae c3", flags={"direction": 0}, registers=es,
-                            stringIterations=1)
-            self.assertIn("budget exhausted", result["paths"][0]["stop"])
-            self.assertEqual(result["stringIterationsUsed"], 1)
+        # Positive control: REPNE SCASB stops at the terminator it compared, after two iterations.
+        result = report("bf 00 01 c6 05 61 c6 45 01 00 b0 00 b9 10 00 f2 ae c3", flags={"direction": 0}, registers=es)
+        path = result["paths"][0]
+        self.assertTrue(path["returned"], path["stop"])
+        exit_event, = events(result, "string-compare-exit")
+        self.assertEqual((exit_event["iterations"], exit_event["exit"]), (2, "condition"))
+        self.assertEqual((path["registers"]["cx"]["value"], path["registers"]["di"]["value"]), (14, 0x102))
+        self.assertEqual(result["stringIterationsUsed"], 2)
+        # Unknown memory leaves the repeat condition unresolved after the first iteration.
+        result = report("bf 00 01 b0 00 b9 10 00 f2 ae c3", flags={"direction": 0}, registers=es)
+        self.assertIn("comparison outcome unresolved", result["paths"][0]["stop"])
+        self.assertEqual(len(events(result, "read")), 1)
+        # A repeated comparison pays per iteration, so the budget stops it mid-loop.
+        result = report("bf 00 01 c7 05 00 00 b0 01 b9 10 00 f2 ae c3", flags={"direction": 0}, registers=es,
+                        stringIterations=1)
+        self.assertIn("budget exhausted", result["paths"][0]["stop"])
+        self.assertEqual(result["stringIterationsUsed"], 1)
         # REPNE stays rejected on the forms that do not compare.
         result = report("f2 a4 c3", flags={"direction": 0})
         self.assertIn("REPNE", result["paths"][0]["stop"])

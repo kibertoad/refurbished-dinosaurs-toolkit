@@ -59,7 +59,8 @@ def main(argv):
         raise ValueError("preparedProtocol is set by the reader and cannot be supplied")
     data, identity = read_source(config, base)
     result = run_report(data, config, command)
-    print(json.dumps({"schema": "bounded-x86-v1", "decoder": "capstone 5.0.7", "sourceIdentity": identity,
+    print(json.dumps({"schema": "bounded-x86-v1", "decoder": "capstone 5.0.7",
+                      "instructionSemantics": "pypcode 4.0.0 (Ghidra SLEIGH x86)", "sourceIdentity": identity,
                       "status": "Conditional static report; never promotes an evidence entry", **result}, indent=2))
 
 
