@@ -663,3 +663,59 @@ test("effects retains stopped dispatch beside separate conditional table paths",
   assert.equal(capped.declaredContinuationPaths.length, 0);
   assert.ok(capped.gaps.some((g: Report) => g.reason === "path limit"));
 });
+
+test("nested modeled services retain child writes but cannot preserve ancestor return frames implicitly", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.set([0xc6, 0x06, 0x30, 0, 0, 0xc3], 69);
+  data.set([0x55, 0x89, 0xe5, 0xe8, 10, 0, 0xc6, 0x06, 0x30, 0, 3, 0x5d, 0xcb], 80);
+  data[96] = 0xc3;
+  writeFileSync(join(dir, "source.bin"), data);
+  const query = {
+    ...config,
+    sha256: createHash("sha256").update(data).digest("hex"),
+    regions: [{ ...config.regions[0]!, end: 97 }],
+    registers: { ds: 0x2000, ss: 0x3000, sp: 0xff00 },
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const traced = run(["effects", join(dir, "config.json")]);
+  assert.equal(traced.completeWithinModel, true);
+  assert.ok(traced.paths[0].events.some((e: Report) => e.kind === "write" && e.site === 69));
+  const modeled = {
+    ...query,
+    callModels: [
+      {
+        site: 83,
+        returnBytes: 2,
+        preserves: ["ds", "ss", "ebp"],
+        evidence: "synthetic balanced service; memory unknown",
+        cases: [{}],
+      },
+    ],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(modeled));
+  const result = run(["effects", join(dir, "config.json")]);
+  const path = result.effectOrdering.paths[0];
+  assert.equal(result.completeWithinModel, false);
+  assert.equal(path.stop.site, 92);
+  assert.match(path.stop.reason, /return target.*unknown provenance/);
+  assert.ok(path.timeline.some((e: Report) => e.kind === "write" && e.site === 86 && e.value.value === 3));
+  assert.ok(!path.timeline.some((e: Report) => e.kind === "write" && e.site === 69));
+  assert.ok(path.calls.every((c: Report) => c.unknownEffects));
+  assert.equal(path.calls.find((c: Report) => c.site === 83).status, "modeled-return");
+  assert.equal(path.effectCompleteWithinModel, false);
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ ...modeled, maxSteps: 1 }));
+  const stepCapped = run(["effects", join(dir, "config.json")]);
+  assert.equal(stepCapped.effectOrdering.allPathsRead, false);
+  assert.ok(stepCapped.effectOrdering.paths.length > 0);
+  assert.ok(stepCapped.effectOrdering.paths.every((p: Report) => p.stop.reason.startsWith("step limit")));
+  assert.ok(
+    !stepCapped.effectOrdering.paths.some((p: Report) =>
+      p.timeline.some((e: Report) => e.kind === "write" && e.site === 86),
+    ),
+  );
+  // The only path forks at the modeled call, so the path limit drops it there.
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ ...modeled, maxPaths: 1 }));
+  const pathCapped = run(["effects", join(dir, "config.json")]);
+  assert.equal(pathCapped.effectOrdering.allPathsRead, false);
+  assert.ok(pathCapped.gaps.some((g: Report) => g.site === 83 && g.reason === "path limit at modeled call"));
+});
