@@ -422,10 +422,39 @@ class GhidraCrossCheckTests(unittest.TestCase):
         # Agreement on an unresolved call leaves the engine's edge unresolved.
         self.assertEqual(r["edges"][1]["classification"], "unresolved")
 
+    def test_a_ghidra_target_without_file_bytes_does_not_match_an_unresolved_call(self):
+        # call 6; call bx; ret; ret. Ghidra resolves call bx to an import, which has no file offset.
+        data = bytes.fromhex("e8 03 00 ff d3 c3 c3")
+        export = ghidra_export(data, {0: [(0, 6, "UNCONDITIONAL_CALL"), (3, None, "COMPUTED_CALL")], 6: []})
+        export["functions"][0]["edges"][1]["targetAddress"] = "EXTERNAL:00000001"
+        cfg = configuration(data, ghidraCallEdges=export)
+        cfg["regions"][0]["entries"] = [0, 6]
+        check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
+        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 1, "ghidraOnly": 1})
+        self.assertFalse(check["agreed"])
+        cfg["controls"] = {"ghidraAgreementSites": [3]}
+        with self.assertRaisesRegex(ValueError, "positive control missed: ghidraAgreementSites"):
+            run_report(data, cfg, "callees")
+
+    def test_routes_the_edge_limit_omitted_are_not_compared(self):
+        # call 6; call bx; ret; ret. Ghidra misses call bx, and the engine omits it at the edge limit.
+        data = bytes.fromhex("e8 03 00 ff d3 c3 c3")
+        cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: [(0, 6, "UNCONDITIONAL_CALL")], 6: []}), edgeLimit=1)
+        cfg["regions"][0]["entries"] = [0, 6]
+        r = run_report(data, cfg, "callees")
+        check = r["ghidraCrossCheck"]
+        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 0, "ghidraOnly": 0})
+        self.assertEqual(check["notCompared"]["omittedEngineRoutes"], [r["omittedRoutes"][0]["id"]])
+        self.assertFalse(check["agreed"])
+
     def test_missed_agreement_control_fails(self):
         a, b = self.code.labels["a"], self.code.labels["b"]
         with self.assertRaisesRegex(ValueError, "positive control missed: ghidraAgreementSites"):
             self.cross({0: [(0, a, "UNCONDITIONAL_CALL")], b: []}, controls={"ghidraAgreementSites": [3]})
+        # A site where Ghidra also reads a target the engine did not is disputed.
+        with self.assertRaisesRegex(ValueError, "positive control missed: ghidraAgreementSites"):
+            self.cross({0: [(0, a, "UNCONDITIONAL_CALL"), (0, b, "UNCONDITIONAL_CALL")], b: []},
+                       controls={"ghidraAgreementSites": [0]})
         data = self.code.bytes()
         with self.assertRaisesRegex(ValueError, "needs ghidraCallEdges"):
             run_report(data, configuration(data, controls={"ghidraAgreementSites": [0]}), "callees")
@@ -443,7 +472,9 @@ class GhidraCrossCheckTests(unittest.TestCase):
         for export, message in (({**ghidra_export(data, {}), "sha256": "0" * 64}, "different file"),
                                 ({**ghidra_export(data, {}), "version": 2}, "format version 1"),
                                 (ghidra_export(data, {len(data): []}), "file offset"),
-                                (ghidra_export(data, {0: [(0, None, 3)]}), "Invalid ghidraCallEdges edge")):
+                                (ghidra_export(data, {0: [(0, None, 3)]}), "Invalid ghidraCallEdges edge"),
+                                ({**ghidra_export(data, {}), "functions": [{}] * 129}, "at most 128"),
+                                (ghidra_export(data, {0: [(0, None, "COMPUTED_CALL")] * 8193}), "more than 8192 edges")):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 run_report(data, configuration(data, ghidraCallEdges=export), "callees")
 

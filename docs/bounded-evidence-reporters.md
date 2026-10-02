@@ -634,16 +634,19 @@ source. Paste the export into the config as the value of `ghidraCallEdges`. The 
 (`comparedCallers`), every edge is matched on site and target:
 
 - `agreement`: both have the edge. An unresolved call matches an unresolved call at the same site.
+  A Ghidra target address without a file offset, such as an import, matches no engine edge.
 - `engineOnly`: only the engine has it.
 - `ghidraOnly`: only Ghidra has it. It carries `checked: false` and the id of any engine edge at the
   same site. The engine's graph, classifications and summaries never take it in.
 
 `notCompared` lists the engine callers missing from the export, exported callers the engine did not
-read, and exported functions without a file offset. It also passes on the export's
+read, exported functions without a file offset, and the `omittedRoutes` ids of compared callers
+(`omittedEngineRoutes`), which the edge limit kept out of the graph. It also passes on the export's
 `missingEntries` (requested addresses with no function) and `unreadFunctions` (functions the limit
 cut off). `agreed` is true only when every compared edge agrees and nothing is left uncompared.
 Agreement means both analyses read the edge, never that it executes. A `ghidraAgreementSites`
-control lists call sites that must agree, and fails the report otherwise. Requires
+control lists call sites that must agree, and fails the report otherwise. A site agrees only when
+every edge either side read there agrees. Requires
 `ghidraCallEdges`. Keep exports and cross-check reports of a real program in its `GAME_DIR`.
 
 `operand-candidates` scans explicitly declared region starts for an encoded

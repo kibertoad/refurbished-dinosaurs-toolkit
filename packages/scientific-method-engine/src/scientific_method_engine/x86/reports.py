@@ -990,7 +990,7 @@ def callees(image, config):
                 and not s["omittedRoutes"]
                 and not any(d.get("reason") in capped for at in s["entries"] for d in nodes[at]["dependencies"])
                 and not any(d.get("reason") in capped for i in s["dependencyEdges"] for d in edges[i]["dependencies"]))
-    cross_check = _ghidra_cross_check(export, nodes, edges) if export is not None else None
+    cross_check = _ghidra_cross_check(export, nodes, outgoing, omitted) if export is not None else None
     known = {"sharedSites": {e["site"] for e in edges if shared_control(e)},
              "recursiveSites": {e["site"] for e in edges if e["classification"] == "recursivePath"},
              "writeSites": {o["site"] for n in nodes.values() for o in n["memoryObservations"] if o["boundaryUsable"] and "write" in o["access"]},
@@ -1053,23 +1053,34 @@ def _ghidra_call_edges(image, export):
             "unreadFunctions": export["unreadFunctions"]}
 
 
-def _ghidra_cross_check(export, nodes, edges):
+def _ghidra_key(g):
+    """The (site, target) an exported edge matches on.
+
+    A null target matches the engine's unresolved call only when Ghidra resolved no address either;
+    a target address without file bytes (an import, uninitialized memory) matches nothing.
+    """
+    if g["target"] is None and g["targetAddress"] is not None:
+        return g["site"], ("withoutFileOffset", g["targetAddress"])
+    return g["site"], g["target"]
+
+
+def _ghidra_cross_check(export, nodes, outgoing, omitted):
     """Compare the engine's edges with Ghidra's for each caller both read; a Ghidra-only edge stays unchecked."""
     callers = export["callers"]
     compared = sorted(nodes.keys() & callers.keys())
     rows = []
     for caller in compared:
-        ours = [e for e in edges if e["caller"] == caller]
+        ours = outgoing.get(caller, [])
         theirs = callers[caller]
         # A call neither analysis resolved matches on its site with no target.
-        flows = {(g["site"], g["target"]): g["flow"] for g in theirs if g["site"] is not None}
+        flows = {_ghidra_key(g): g["flow"] for g in theirs if g["site"] is not None}
         read = {(e["site"], e["target"]) for e in ours}
         for e in ours:
             flow = flows.get((e["site"], e["target"]))
             rows.append({"caller": caller, "site": e["site"], "target": e["target"], "engineEdge": e["id"],
                          "result": "engineOnly" if flow is None else "agreement", "ghidraFlow": flow})
         for g in theirs:
-            if g["site"] is not None and (g["site"], g["target"]) in read:
+            if g["site"] is not None and _ghidra_key(g) in read:
                 continue
             # Ghidra's edge is evidence the engine did not check; it never becomes an engine edge.
             rows.append({"caller": caller, "site": g["site"], "target": g["target"], "siteAddress": g["siteAddress"],
@@ -1078,12 +1089,16 @@ def _ghidra_cross_check(export, nodes, edges):
     counts = {kind: sum(r["result"] == kind for r in rows) for kind in ("agreement", "engineOnly", "ghidraOnly")}
     not_compared = {"engineCallers": sorted(nodes.keys() - callers.keys()), "ghidraCallers": sorted(callers.keys() - nodes.keys()),
                     "unmappedGhidraFunctions": export["unmappedFunctions"], "missingGhidraEntries": export["missingEntries"],
-                    "unreadGhidraFunctions": export["unreadFunctions"]}
+                    "unreadGhidraFunctions": export["unreadFunctions"],
+                    "omittedEngineRoutes": [o["id"] for o in omitted if o["entry"] in callers]}
+    # A site agrees only when every edge either analysis read there agrees.
+    disputed = {r["site"] for r in rows if r["result"] != "agreement"}
     return {"comparedCallers": compared, "edges": rows, "counts": counts, "notCompared": not_compared,
             "agreed": not counts["engineOnly"] and not counts["ghidraOnly"] and not any(not_compared.values()),
-            "agreementSites": {r["site"] for r in rows if r["result"] == "agreement"},
+            "agreementSites": {r["site"] for r in rows if r["result"] == "agreement"} - disputed,
             "interpretation": "Edges of each caller that both the engine and the Ghidra export read, matched by site and target "
-                              "file offset; an unresolved call matches an unresolved call at its site. A ghidraOnly edge is Ghidra's claim: the engine did not check it and never adds it to "
+                              "file offset; an unresolved call matches an unresolved call at its site, and a Ghidra target without a file offset "
+                              "matches no engine edge. A ghidraOnly edge is Ghidra's claim: the engine did not check it and never adds it to "
                               "its graph. Agreement means both analyses read the edge, not that it executes."}
 
 

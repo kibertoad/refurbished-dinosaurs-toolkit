@@ -76,7 +76,8 @@ public class ExportCallEdges extends GhidraScript {
                     // A jump counts when it enters another function at its entry: a tail transfer.
                     if (!flow.isCall() && (callee == null || callee.equals(function))) continue;
                     edges.add(edge(instruction, destination, flow));
-                    if (callee != null && queued.add(callee)) queue.add(callee);
+                    // An external function has no body to read; its edge keeps the external address.
+                    if (callee != null && !callee.isExternal() && queued.add(callee)) queue.add(callee);
                 }
             }
             if (functions.length() > 0) functions.append(",\n");
