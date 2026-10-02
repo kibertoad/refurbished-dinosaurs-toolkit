@@ -112,3 +112,11 @@ Concrete values/field addresses reject inconsistent rows; overlap and shared
 path/step/visit/total/boundary limits remain explicit. Partial-table splits are
 partial evidence, never complete dispatch or native-reachability claims. See the
 [table contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#evidenced-indirect-jump-tables).
+
+The trace-family commands (`trace`, `arguments`, `effects`, `returns`, `guards`, `memory`,
+`allocation`) check `relationalControls`: assertions over reported values (reach, order, last
+writer, containment, value relation and value origin) evaluated on every bounded path. A violated
+control fails the report. A control left undecided by a stop, a limit or an unread call is
+reported as `undecided` and never counts as held. Access reports also give each byte's
+`writeOrder`, or why it has no modeled value. See the
+[controls contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#relational-controls).
