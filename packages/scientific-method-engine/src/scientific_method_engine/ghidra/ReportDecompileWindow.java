@@ -21,9 +21,15 @@ public class ReportDecompileWindow extends GhidraScript {
         Address address = toAddr(arguments[0]);
         int requestedStart = Integer.parseInt(arguments[1]);
         int requestedCount = Integer.parseInt(arguments[2]);
-        if (requestedStart < 1 || requestedCount < 1 || requestedCount > MAX_LINES) {
-            printerr("Start must be positive and count must be between 1 and " + MAX_LINES + ".");
+        if (requestedStart < 1 || requestedCount < 1) {
+            printerr("Start and count must be positive.");
             return;
+        }
+        // A function's decompiled length is unknown before the run, so a larger count is cut to the cap
+        // and the output says where the next window starts.
+        if (requestedCount > MAX_LINES) {
+            println("Line count " + requestedCount + " cut to the cap of " + MAX_LINES + ".");
+            requestedCount = MAX_LINES;
         }
 
         Function function = currentProgram.getFunctionManager().getFunctionContaining(address);
@@ -52,6 +58,10 @@ public class ReportDecompileWindow extends GhidraScript {
                 + " lines " + (start + 1) + "-" + end + " of " + lines.length + " =====");
             for (int index = start; index < end; index++) {
                 println((index + 1) + ": " + lines[index]);
+            }
+            if (end < lines.length) {
+                println("===== " + (lines.length - end) + " more lines; the next window starts at line " + (end + 1)
+                    + " =====");
             }
         }
         finally {
