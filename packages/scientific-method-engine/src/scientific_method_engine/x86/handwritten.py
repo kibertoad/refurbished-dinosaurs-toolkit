@@ -318,7 +318,9 @@ def ordinary(state, ins, image):
             r = x - q * y
             if not ((-(1 << (bits - 1)) <= q < 1 << (bits - 1)) if signed else q < 1 << bits):
                 raise StopPath("divide overflow raises interrupt 0; its handler is not modeled")
-            quotient, remainder = const(q, bits, state.at), const(r, bits, state.at)
+            # Both results are computed from the dividend and divisor, so they name their producers.
+            origin = sources(dividend, divisor, site=state.at)
+            quotient, remainder = Value(bits, const(q, bits).term, origin), Value(bits, const(r, bits).term, origin)
         else:
             wide = resize(divisor, 2 * bits, signed)
             origin = sources(dividend, divisor, site=state.at)
@@ -350,15 +352,19 @@ def shift_carry(state, m, a, count):
 
 
 def string_iteration(state, ins, operation, width, source_name, delta):
+    if operation in ("cmps", "scas"):
+        raise StopPath("Unsupported instruction semantics: " + ins.mnemonic)
     si, di = ("esi", "edi") if state.flat else ("si", "di")
+    # DF chooses the step's sign, so the instruction that set DF is one of the step's producers.
+    step = Value(state.bits, const(delta, state.bits).term, state.direction_flag.sources)
     if operation in ("movs", "lods"):
         value = state.access(state.segment(source_name), state.reg(si), width, role="string-source", addressing_register=source_name)
-        state.setreg(si, op("add", state.reg(si), const(delta, state.bits), state.at), state.at)
+        state.setreg(si, op("add", state.reg(si), step, state.at), state.at)
     else:
         value = state.reg({1:"al",2:"ax",4:"eax"}[width])
     if operation in ("movs", "stos"):
         state.access(state.segment("es"), state.reg(di), width, value, role="string-destination", addressing_register="es")
-        state.setreg(di, op("add", state.reg(di), const(delta, state.bits), state.at), state.at)
+        state.setreg(di, op("add", state.reg(di), step, state.at), state.at)
     else:
         state.setreg({1:"al",2:"ax",4:"eax"}[width], value, state.at)
 

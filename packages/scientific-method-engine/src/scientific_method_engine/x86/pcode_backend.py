@@ -23,7 +23,7 @@ GROUPS = {
     "multiply and divide": ("mul", "imul", "div", "idiv"),
     "conversions": ("cbw", "cwde", "cwd", "cdq"),
     "flags and direction": ("cld", "std", "cli", "sti"),
-    "string operations": ("movs", "stos", "lods"),
+    "string operations": ("movs", "stos", "lods", "cmps", "scas"),
 }
 
 # Conditional branches by the condition code SLEIGH decodes from 0x70 + code.
@@ -383,27 +383,52 @@ class Pypcode:
             return handwritten.string_iteration(state, ins, operation, width, source_segment, delta_step)
         si, di = ("esi", "edi") if state.flat else ("si", "di")
         source, destination = state.reg(si), state.reg(di)
+        loaded = {}
 
         def memory(kind, address, size, value):
             segment_name, offset = (address.segment, address.offset) if isinstance(address, Address) else (None, address)
             if size != width:
                 raise StopPath("p-code string access width differs from the decoded instruction")
-            if kind == "load":
-                if delta(offset, source) != 0 or (segment_name is not None and segment_name.lower() != source_segment):
+            if kind == "load" and source_segment is not None and delta(offset, source) == 0:
+                if segment_name is not None and segment_name.lower() != source_segment:
                     raise StopPath("p-code string source differs from the decoded instruction")
-                return state.access(state.segment(source_segment), source, width, role="string-source",
-                                    addressing_register=source_segment)
+                if "source" not in loaded:
+                    loaded["source"] = state.access(state.segment(source_segment), source, width, role="string-source",
+                                                    addressing_register=source_segment)
+                return loaded["source"]
             if delta(offset, destination) != 0 or (segment_name is not None and segment_name != "ES"):
                 raise StopPath("p-code string destination differs from the decoded instruction")
+            if kind == "load":
+                # SCAS reloads ES:DI for each flag; the iteration reads it once.
+                if "destination" not in loaded:
+                    loaded["destination"] = state.access(state.segment("es"), destination, width,
+                                                         role="string-destination", addressing_register="es")
+                return loaded["destination"]
             state.access(state.segment("es"), destination, width, value, role="string-destination", addressing_register="es")
             return None
 
-        # One iteration is the instruction without its REP prefix; the evidence layer counts them.
-        code = bytes(b for b in ins.bytes[:len(ins.bytes) - 1] if b != 0xF3) + bytes(ins.bytes[-1:])
+        # One iteration is the instruction without its repeat prefix; the evidence layer counts them.
+        code = bytes(b for b in ins.bytes[:len(ins.bytes) - 1] if b not in (0xF2, 0xF3)) + bytes(ins.bytes[-1:])
         ops, length = LIFTER.ops(state.flat, code, state.at)
         if length != len(code):
             raise StopPath(f"pypcode decoded {length} bytes where Capstone decoded {len(code)}")
-        Run(state, ops, memory).execute()
+        accumulator = state.reg({1: "al", 2: "ax", 4: "eax"}[width]) if operation == "scas" else None
+        run = Run(state, ops, memory)
+        run.execute()
+        if operation not in ("cmps", "scas"):
+            return None
+        left = loaded["source"] if operation == "cmps" else accumulator
+        state.set_flags(left, loaded["destination"], "cmp")
+        flags_written(state, run, state.at)
+        if len(code) == len(ins.bytes):
+            return None
+        # The repeated form ends with a CBRANCH back to itself while the comparison holds.
+        repeated_ops, _ = LIFTER.ops(state.flat, bytes(ins.bytes), state.at)
+        branches = [i for i, o in enumerate(repeated_ops) if o.code == "CBRANCH"]
+        start = max(i for i, o in enumerate(repeated_ops[:branches[-1]]) if o.output is not None
+                    and o.output[0] == "register" and LIFTER.register(state.flat, o.output[1], o.output[2]) in FLAGS)
+        tail = repeated_ops[start + 1:branches[-1] + 1]
+        return Run(state, tail, None, flags=state.flag_values).execute(stop_at_branch=True)
 
 
 def run_plain(state, ins, image, **frame):
@@ -610,8 +635,11 @@ def rotate(state, ins, image):
 
 
 def temporary(f, code):
-    """The value of the first p-code op ``code`` in the run, from its temporary output."""
+    """The value of the first p-code op ``code`` in the run, from its output."""
     o = next(o for o in f.ops if o.code == code)
+    if o.output[0] == "register":
+        # A byte multiply writes its product straight to AX.
+        return f.run.registers[LIFTER.register(f.state.flat, o.output[1], o.output[2]).lower()]
     return f.run.temps[o.output[1]]
 
 
@@ -711,6 +739,7 @@ for names, handler in ((("mov", "movzx", "movsx", "xchg"), move), (("nop",), nop
         HANDLERS[name] = handler
 
 MOVED = ("data movement", "address forms", "stack", "compare", "arithmetic and logic", "carry chain",
-         "shifts and rotates")
+         "shifts and rotates", "multiply and divide", "conversions", "flags and direction",
+         "string operations")
 
 semantics.register(Pypcode(MOVED), default=bool(MOVED))

@@ -30,10 +30,12 @@ class Backend(Protocol):
         """
 
     def string_iteration(self, state, ins, operation, width, source_segment, delta):
-        """Apply one iteration of an accepted ``movs``, ``stos`` or ``lods`` string form.
+        """Apply one iteration of an accepted ``movs``, ``stos``, ``lods``, ``cmps`` or ``scas`` form.
 
-        ``source_segment`` names the source operand's segment register (``movs`` and ``lods``
-        only), and ``delta`` is the signed step the direction flag selects for SI and DI.
+        ``source_segment`` names the source operand's segment register (``movs``, ``lods`` and
+        ``cmps`` only), and ``delta`` is the signed step the direction flag selects for SI and DI.
+        For a repeated ``cmps`` or ``scas``, return whether the repeat condition holds after the
+        iteration: a ``Value`` that is 1 to continue, 0 to stop, or unknown. Otherwise return None.
         """
 
 

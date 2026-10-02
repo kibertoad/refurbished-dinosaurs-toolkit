@@ -249,8 +249,8 @@ Rules for every iteration:
 | 0 freeze and baseline | done | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
 | 1 pypcode spike | done | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54), 4 (#55), 5 (#56), 6 (#57) and 7 (#58) answered |
 | 2 semantics seam | done | 2026-10-02 | see [Semantics seam](#semantics-seam) |
-| 3 pypcode backend | not started | | |
-| 4 parity on recorded cases | not started | | |
+| 3 pypcode backend | done | 2026-10-02 | see [Groups moved](#groups-moved) |
+| 4 parity on recorded cases | blocked | 2026-10-02 | see [Blockers](#blockers) |
 | 5 cutover | not started | | |
 | 6 Ghidra callee cross-check | not started | | |
 
@@ -393,8 +393,48 @@ backend registered no report can differ.
 
 ### Groups moved
 
-None yet.
+Done 2026-10-02. Every group in the table under phase 3 runs on pypcode by default; the handwritten
+backend stays registered for the differential run until phase 5. The engine depends on
+`pypcode==4.0.0` and needs Python 3.12 or later; its `test` extra installs `unicorn==2.1.4`.
+
+- `x86/pcode.py` lifts and caches each instruction's p-code and evaluates it over `Value` terms.
+  It drops the CS-override idiom, treats `LOCK`/`UNLOCK` as no-ops, reads CF through
+  `State.carry_value` and the other arithmetic flags from `State.flag_values`, and stops on any
+  other user operation, unsupported op or address space.
+- `x86/pcode_backend.py` matches every p-code `LOAD` and `STORE` to a decoded operand or the stack
+  by linear offset equivalence (decision 3), takes the segment register from Capstone, and keeps
+  each mnemonic's report events. Term rules keep `predicate`'s precision: same-term comparisons,
+  extension and subpiece folding, flag bits as one-bit extracts, and rotates presented as the
+  shifted fields the reports already used.
+- `tests/oracle.py` runs a synthetic routine on Unicorn's 16-bit real mode and compares every
+  register the engine resolved. `tests/test_oracle.py` has cases for each group.
+
+Full differential run (`SEMANTICS_DIFFERENTIAL_SUMMARY=1`): 456 identical, 14 extended, 0 stricter,
+0 disagreement. The extended cases, each checked against Unicorn:
+
+| Case | Why pypcode resolves more |
+|---|---|
+| `test_oracle.Compare.test_test_and_parity`, `jp`/`jnp` after `test` and `cmp` (6 runs) | p-code computes PF; `predicate` never resolves it |
+| `test_oracle.ArithmeticAndLogic.test_counted_loop_exits_on_decrement_flags`, `test_effect_order`'s counted loop | p-code keeps the flags `dec` sets, so the loop exit resolves |
+| `test_oracle.StringOperations` CMPS and SCAS cases (3 runs), `test_x86.test_repeated_string_comparisons` (3 runs) | the handwritten backend stops on `cmps` and `scas` |
+
+The oracle and the differential run found three defects in the handwritten backend, fixed in place
+because they change no instruction semantics (decision 6 allows provenance fixes):
+
+- `rcl` by one on a memory operand (`d0 /2`, `d1 /2`) read a count of 0, because Capstone reports
+  that implicit count with a size of 0, and left the operand unchanged. It now reads 1.
+- A rotate count read from CL, the dividend and divisor of a constant division, and the DF value
+  that sets a string step's sign were missing from the producers of the results they decide.
+
+`cmps` and `scas` are new on the pypcode backend: REPE and REPNE run until the comparison fails or
+the count runs out, charge `stringIterations` per iteration, stop on an unresolved comparison and
+report a `string-compare-exit` event.
+
+Exit evidence: every group is moved; no disagreement and no stricter difference remain.
 
 ### Blockers
 
-None.
+- Phase 4 (open, 2026-10-02): a maintainer runs the recorded restoration cases locally with both
+  backends, for example with `tests/differential.py`'s `compare` over each case's prepared config,
+  and records the counts per class here. Only the counts and the case identifiers known to the
+  requester enter the repository.

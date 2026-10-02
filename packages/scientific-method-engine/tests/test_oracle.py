@@ -4,6 +4,8 @@ import unittest
 from oracle import check
 
 DATA = {"ds": 0x3000, "es": 0x4000}
+SAME = {"ds": 0x4000, "es": 0x4000}
+STRING_COMPARE = "the handwritten backend stops on CMPS and SCAS"
 
 
 class DataMovement(unittest.TestCase):
@@ -103,6 +105,10 @@ class MultiplyAndDivide(unittest.TestCase):
     def test_quotients(self):
         check(self, "ba0000 b86400 bb0700 f7f3 89c1 b8f6ff 99 f7fb c3", resolved=("ax", "cx", "dx"))
 
+    def test_byte_and_memory_forms(self):
+        check(self, "b86400 b307 f6f3 89c1 b8f9ff b302 f6fb bb1000 c7070300 f727 c3", registers=DATA,
+              resolved=("ax", "cx", "dx"))
+
 
 class Conversions(unittest.TestCase):
     def test_sign_extensions(self):
@@ -118,6 +124,19 @@ class StringOperations(unittest.TestCase):
     def test_repeated_moves_and_stores(self):
         check(self, "fc bf0000 b8cdab b90300 f3ab be0000 bf1000 b90600 f3a4 be1000 ad c3", registers={**DATA, "ds": 0x4000},
               resolved=("ax", "si", "di", "cx"))
+
+    def test_repne_scas_finds_a_terminator(self):
+        check(self, "fc bf1000 c7056162 c6450200 b000 b9ffff f2ae c3", registers=SAME,
+              resolved=("cx", "di"), extended=STRING_COMPARE)
+
+    def test_repe_cmps_stops_at_the_first_difference(self):
+        # SI's byte is below DI's at the difference, so JB takes the branch: BX = 2.
+        check(self, "fc be1000 bf2000 c7046162 c6440263 c7056162 c6450264 b90500 f3a6 7204 bb0100 c3 bb0200 c3",
+              registers=SAME, resolved=("cx", "si", "di", "bx"), extended=STRING_COMPARE)
+
+    def test_repe_cmps_runs_out_of_count_and_single_forms(self):
+        check(self, "fc be1000 bf2000 c7046162 c7056162 b90200 f3a6 be1000 bf2000 a7 b86162 bf2000 af 7504 bb0100 c3 bb0200 c3",
+              registers=SAME, resolved=("cx", "si", "di", "bx"), extended=STRING_COMPARE)
 
     def test_backward_steps(self):
         check(self, "fd bf0a00 b0aa b90400 f3aa be0700 ac c3", registers={**DATA, "ds": 0x4000},

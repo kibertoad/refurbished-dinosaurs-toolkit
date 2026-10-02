@@ -627,3 +627,27 @@ test("effects preserves pre-service writes and unknown returning-service effects
   assert.equal(incomplete.allPathsRead, false);
   assert.equal(incomplete.paths[0].stop.writesBeforeCount, 1);
 });
+
+test("trace runs a repeated string comparison until its condition fails through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // mov di, 0x100; mov byte [di], 'a'; mov byte [di+1], 0; mov al, 0; mov cx, 16; repne scasb; ret
+  data.set([0xbf, 0, 1, 0xc6, 5, 0x61, 0xc6, 0x45, 1, 0, 0xb0, 0, 0xb9, 16, 0, 0xf2, 0xae, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const query = {
+    ...config,
+    sha256: createHash("sha256").update(data).digest("hex"),
+    registers: { ds: 0x2000, es: 0x2000 },
+    flags: { direction: 0 },
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const result = run(["trace", join(dir, "config.json")]);
+  const path = result.paths[0];
+  assert.equal(path.returned, true);
+  const exit = path.events.find((e: Report) => e.kind === "string-compare-exit");
+  assert.equal(exit.iterations, 2);
+  assert.equal(exit.exit, "condition");
+  assert.equal(path.registers.cx.value, 14);
+  assert.equal(path.registers.di.value, 0x102);
+  assert.equal(result.stringIterationsUsed, 2);
+});

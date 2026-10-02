@@ -41,6 +41,10 @@ for example `requirements-evidence.txt`:
 scientific-method-engine==<version>
 ```
 
+The engine needs Python 3.12 or later, because pypcode 4.0.0, which supplies its instruction
+semantics, publishes wheels only for 3.12 and later. Move CI and research environments that run an
+older Python to 3.12 in the same change.
+
 The reader and the engine have independent versions. Any engine works with any reader that
 speaks the same prepared-config protocol; a mismatch stops with an error naming both packages, and
 the fix is to update the older one. `EVIDENCE_PYTHON` still selects the interpreter, which must have

@@ -313,45 +313,90 @@ for names, condition in ((("jne", "jnz"), "z"), (("jae", "jnb", "jnc"), "c"), ((
     for name in names:
         BRANCH_CONDITIONS[name] = (condition, True)
 
+# One-byte opcodes of the string forms; CMPS and SCAS repeat while a comparison holds.
+STRING_OPCODES = (0xA4, 0xA5, 0xAA, 0xAB, 0xAC, 0xAD)
+COMPARE_STRING_OPCODES = (0xA6, 0xA7, 0xAE, 0xAF)
+
+
 def string_instruction(ins):
     # Match the one-byte opcode, not the last encoded byte: SSE MOVSD (F2 0F 10 /r) can end in A5.
-    return ins.opcode[0] in (0xA4, 0xA5, 0xAA, 0xAB, 0xAC, 0xAD) and ins.opcode[1] == 0
+    return ins.opcode[0] in STRING_OPCODES + COMPARE_STRING_OPCODES and ins.opcode[1] == 0
+
+
+def compare_string(ins):
+    return ins.opcode[0] in COMPARE_STRING_OPCODES
+
+
+def repeated(ins):
+    return 0xF3 in ins.prefix or (0xF2 in ins.prefix and compare_string(ins))
 
 
 def string_count(state, ins):
-    return state.reg("ecx" if state.flat else "cx") if 0xF3 in ins.prefix else const(1, state.bits)
+    return state.reg("ecx" if state.flat else "cx") if repeated(ins) else const(1, state.bits)
 
 
 def check_string_form(state, ins):
     if ins.addr_size != state.bits // 8:
         raise StopPath("Address-size override on string operation is outside the selected model")
-    if 0xF2 in ins.prefix:
+    if 0xF2 in ins.prefix and not compare_string(ins):
         raise StopPath("REPNE string form is not supported")
 
 
-def string_effect(state, ins, count, remaining):
-    """Apply a string form already accepted by check_string_form with its string_count."""
+def string_effect(state, ins, count, remaining, charge=None):
+    """Apply a string form already accepted by check_string_form with its string_count.
+
+    Returns the iterations run. A repeated CMPS or SCAS runs until its repeat condition fails or
+    the count runs out, within ``remaining`` iterations, and calls ``charge(1)`` for each one,
+    because it cannot reserve its iterations before they run.
+    """
     width = 1 if ins.opcode[0] % 2 == 0 else (4 if (0x66 in ins.prefix) != state.flat else 2)
     operation = ins.mnemonic.split()[-1][:4]
+    compare = compare_string(ins)
     state.event("string-operation", operation=operation, width=width, repetitions=count.report(),
-                direction=state.direction_flag.report(), repeat=0xF3 in ins.prefix,
+                direction=state.direction_flag.report(), repeat=repeated(ins),
                 interpretation="bounded memory effects only, not pixels or native input coverage")
     if count.number is None:
         raise StopPath("String repetition count unresolved; a bounded producer is required")
-    if count.number > remaining:
+    if count.number > remaining and not (compare and repeated(ins)):
         raise StopPath("String iteration budget exhausted; remaining effects unresolved")
     if count.number == 0:
         return 0
     if state.direction_flag.number is None:
         raise StopPath("Direction flag unresolved; conditional string paths required")
-    # MOVS/LODS decode their source as the second memory operand, carrying any segment override.
-    source_name = segment_register(ins, ins.operands[1].mem) if operation in ("movs", "lods") else None
+    # MOVS/LODS decode their source as the second memory operand and CMPS as the first, carrying
+    # any segment override.
+    source_name = (segment_register(ins, ins.operands[1].mem) if operation in ("movs", "lods") else
+                   segment_register(ins, ins.operands[0].mem) if operation == "cmps" else None)
     delta = -width if state.direction_flag.number else width
-    for _ in range(count.number):
-        state.semantics.string_iteration(state, ins, operation, width, source_name, delta)
-    if 0xF3 in ins.prefix:
-        state.setreg("ecx" if state.flat else "cx", const(0, state.bits, state.at), state.at)
-    return count.number
+    counter = "ecx" if state.flat else "cx"
+    if not compare or not repeated(ins):
+        for _ in range(count.number):
+            state.semantics.string_iteration(state, ins, operation, width, source_name, delta)
+        if repeated(ins):
+            state.setreg(counter, const(0, state.bits, state.at), state.at)
+        return count.number
+    iterations, outcomes = 0, []
+    while True:
+        if iterations == remaining:
+            raise StopPath("String iteration budget exhausted; remaining effects unresolved")
+        if charge is not None:
+            charge(1)
+        holds = state.semantics.string_iteration(state, ins, operation, width, source_name, delta)
+        iterations += 1
+        outcomes.append(holds)
+        if iterations == count.number:
+            reason = "count"
+            break
+        if holds.number is None:
+            raise StopPath("Repeated string comparison outcome unresolved; its exit is unknown")
+        if not holds.number:
+            reason = "condition"
+            break
+    # The comparisons decide where the loop stopped, so their inputs produce the remaining count.
+    left = Value(state.bits, const(count.number - iterations, state.bits).term, sources(count, *outcomes))
+    state.setreg(counter, left, state.at)
+    state.event("string-compare-exit", iterations=iterations, exit=reason, counter=state.reg(counter).report())
+    return iterations
 
 
 # The handwritten backend registers itself as the default; it imports names defined above.
