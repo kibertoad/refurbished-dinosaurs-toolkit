@@ -5,7 +5,8 @@ The reports come from two published packages built in this repository's `package
 reports, and `scientific-method-engine` on PyPI decodes the instructions. Run
 `python -m pip install scientific-method-engine` once in the Python environment used for
 research, and add the reader to the project (`pnpm add -D @scientific-method/executable-reader`).
-Python 3.10 or later and Node 22 or later are required; the engine pins Capstone 5.0.7.
+Python 3.12 or later and Node 22 or later are required; the engine pins Capstone 5.0.7 and
+pypcode 4.0.0.
 `EVIDENCE_PYTHON` selects another Python executable. The reader refuses an engine whose
 prepared-config protocol differs from its own, so upgrade the two together.
 See [moving from the vendored reporters](migrating-to-scientific-method.md).
@@ -77,7 +78,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `target` | call-target provenance of one call site | [call-target provenance](#call-target-provenance) |
 | `bounds` | the instruction extent reached from one entry | [function bounds](#function-bounds-and-site-ownership) |
 | `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
-| `callees` | the bounded call graph below an entry, with recursion and shared callees | [function bounds](#function-bounds-and-site-ownership) |
+| `callees` | the bounded call graph below an entry, with recursion and shared callees, optionally compared with Ghidra's edges | [function bounds](#function-bounds-and-site-ownership) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 
 The engine also has `scientific-method-engine ghidra-scripts`, which prints the directory of the
@@ -190,6 +191,14 @@ and saved versus returned pointers stay visible; no rollback is inferred.
 
 ## Limits and assumptions
 
+Capstone decodes each instruction. Its values, flags and branch conditions come from Ghidra's
+SLEIGH specification for x86, lifted to p-code by pypcode and evaluated over the engine's value
+terms ([ADR 0003](decisions/0003-established-instruction-semantics.md)). Segment attribution,
+memory accesses, producers and every control transfer stay with the engine. A p-code memory access
+that does not match the decoded operand, an unsupported p-code operation and a decode length that
+differs from Capstone's stop the path. Every report names both in `decoder` and
+`instructionSemantics`.
+
 The decoder supports 16-bit addressing and a bounded subset of ordinary integer
 operations: MOV/MOVZX/MOVSX, XCHG, low-result two/three-operand IMUL (flags unresolved),
 one-operand MUL/IMUL/DIV/IDIV, LEA, LDS/LES, PUSH/POP, LEAVE, ADD/SUB, ADC/SBB,
@@ -198,8 +207,15 @@ INC/DEC and effective-size sign extension. It follows direct near/far
 calls, jumps, common conditional branches, JCXZ, the LOOP family and balanced
 returns. Unsupported instructions, repeat prefixes, 32-bit control transfers,
 indirect targets, hardware accesses and recursion/loop limits stop the affected
-path. INC/DEC leave flags other than CF unresolved; unknown branch conditions are
-explored both ways.
+path. Branch conditions are decided from the flags p-code computed. A decided
+branch event carries `decidedBy: "p-code flags"` and has no `reason`. An undecided
+one carries a `reason`: `flag producer unresolved`, `carry unresolved` for a
+CF-only branch on an unknown carry, or `flags unresolved` when the flags the
+condition reads are unknown. After a comparable producer (CMP, TEST, CMPS, SCAS,
+ADD, SUB, NEG or logic) the event keeps its `flagProducer`, `operation`, `left` and `right`. After a
+producer with no comparable record (INC/DEC, shifts, rotates, multiplies) it
+carries the producer's `flagProducer` site and `flagGeneration` instead. Unknown
+branch conditions are explored both ways.
 
 CF is tracked on its own where an instruction sets it without leaving a
 comparable producer. Shifts with a known count carry the last bit shifted out,
@@ -327,12 +343,20 @@ not a solver, loader emulator or whole-program analysis.
 
 ## Bounded string effects and saved flags
 
-MOVS/STOS/LODS report sequential memory accesses in segmented16 and flat32,
-with operand widths, source overrides, fixed ES destination and modular pointers.
-REP requires a concrete count. `stringIterations` bounds the entire query
+MOVS/STOS/LODS/CMPS/SCAS report sequential memory accesses in segmented16 and
+flat32, with operand widths, source overrides, fixed ES destination and modular
+pointers. REP requires a concrete count. `stringIterations` bounds the entire query
 (default 4096, maximum 65536), including reserved iterations of paths that stop.
 Zero count touches no memory and needs no direction assumption. Address-size
-changes and REPNE forms stop with explicit gaps.
+changes and REPNE on MOVS/STOS/LODS stop with explicit gaps.
+
+CMPS and SCAS set the flags of a comparison of the source (or AL/AX/EAX) with the
+ES destination. REPE and REPNE forms run until the comparison fails or the count
+runs out. They cannot reserve their iterations in advance, so each one is charged
+to `stringIterations` as it runs, and an exhausted budget stops the path mid-loop.
+A comparison whose outcome is unresolved stops the path after that iteration. A
+`string-compare-exit` event records the iterations run, the exit (`condition` or
+`count`) and the remaining counter, whose producers include the compared values.
 
 DF begins unknown. CLD/STD establish local values; otherwise string effects fork
 conditional forward/backward cases tied to that producer. Optional
@@ -601,6 +625,31 @@ usable bodies for every node the reused node reaches, no reached node on the
 active path, and no limit-omitted or instruction-capped route beneath the reused
 node, any of which could lead back into the active path. x87 stores and loads
 take their access direction from the mnemonic, since Capstone misreports some.
+
+`ghidraCallEdges` takes the JSON that the packaged `ExportCallEdges.java` writes. Run it with an
+output path, a function limit (1..128) and the entries to start from. Ghidra walks breadth first
+from those entries through its call targets and its jumps to other functions' entry points. The
+export records each function's edges as file offsets. It is accepted only when its `sha256` equals
+the source's. It can hold at most 128 functions and 8192 edges, and every offset must lie inside the
+source. Paste the export into the config as the value of `ghidraCallEdges`. The command then reports
+`ghidraCrossCheck`. For each caller that both the engine read and the export lists
+(`comparedCallers`), every edge is matched on site and target:
+
+- `agreement`: both have the edge. An unresolved call matches an unresolved call at the same site.
+  A Ghidra target address without a file offset, such as an import, matches no engine edge.
+- `engineOnly`: only the engine has it.
+- `ghidraOnly`: only Ghidra has it. It carries `checked: false` and the id of any engine edge at the
+  same site. The engine's graph, classifications and summaries never take it in.
+
+`notCompared` lists the engine callers missing from the export, exported callers the engine did not
+read, exported functions without a file offset, and the `omittedRoutes` ids of compared callers
+(`omittedEngineRoutes`), which the edge limit kept out of the graph. It also passes on the export's
+`missingEntries` (requested addresses with no function) and `unreadFunctions` (functions the limit
+cut off). `agreed` is true only when every compared edge agrees and nothing is left uncompared.
+Agreement means both analyses read the edge, never that it executes. A `ghidraAgreementSites`
+control lists call sites that must agree, and fails the report otherwise. A site agrees only when
+every edge either side read there agrees. Requires
+`ghidraCallEdges`. Keep exports and cross-check reports of a real program in its `GAME_DIR`.
 
 `operand-candidates` scans explicitly declared region starts for an encoded
 memory displacement or immediate matching `query.offset`; implicit operands and

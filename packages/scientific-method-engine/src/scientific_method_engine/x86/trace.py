@@ -3,7 +3,7 @@ from copy import deepcopy
 from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
 from .image import integer
 from .machine import (State, StopPath, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
-                      string_count, string_effect, check_string_form)
+                      string_count, string_effect, check_string_form, compare_string, repeated)
 from .values import const, unknown, sources, op, Value
 from .result_flow import validate_contracts, result_contracts
 
@@ -267,12 +267,19 @@ def trace(image, config, continue_declared_jumps=True):
     # How often one path may pass the same instruction; a loop with a known bound needs it raised.
     visit_limit = integer(config.get("visitLimit", 4), 1, 4096, "visitLimit")
 
+    def charge(n):
+        nonlocal total_string_steps
+        total_string_steps += n
+
     def string_step(s, ins, count):
         # Reserve iterations only when they fit, so a rejected request never drains the shared budget.
-        nonlocal total_string_steps
+        # A repeated comparison may stop early, so it pays for each iteration as it runs.
         remaining = string_limit - total_string_steps
+        if compare_string(ins) and repeated(ins):
+            string_effect(s, ins, count, remaining, charge)
+            return
         if count.number is not None and count.number <= remaining:
-            total_string_steps += count.number
+            charge(count.number)
         string_effect(s, ins, count, remaining)
 
     def finish(s, reason=None, returned=False):
@@ -390,7 +397,9 @@ def trace(image, config, continue_declared_jumps=True):
                     check_string_form(state, ins)
                     count = string_count(state, ins)
                     direction = state.direction_flag
-                    if count.number and direction.number is None and count.number <= string_limit - total_string_steps:
+                    # A repeated comparison may stop before its count runs out, so one iteration must fit.
+                    needed = 1 if compare_string(ins) and repeated(ins) else count.number
+                    if count.number and direction.number is None and needed <= string_limit - total_string_steps:
                         key = repr(("direction", direction.term))
                         if key in state.assumptions:
                             state.direction_flag = const(state.assumptions[key], 1, at)

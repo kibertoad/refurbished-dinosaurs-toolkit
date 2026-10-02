@@ -1,4 +1,5 @@
 """Focused reports derived from instruction paths and explicit source bounds."""
+import hashlib
 from bisect import bisect_right
 from collections import deque
 from capstone import CS_AC_READ, CS_AC_WRITE
@@ -859,8 +860,13 @@ def callees(image, config):
     depth_limit = integer(config.get("depthLimit", 16), 1, 128, "callee depth limit")
     instruction_limit = integer(config.get("instructionLimit", 10000), 1, 100000, "instruction limit")
     controls = config.get("controls", {})
-    if not isinstance(controls, dict) or set(controls) - {"sharedSites", "recursiveSites", "writeSites"}:
+    if not isinstance(controls, dict) or set(controls) - {"sharedSites", "recursiveSites", "writeSites", "ghidraAgreementSites"}:
         raise ValueError("Invalid callee controls")
+    export = config.get("ghidraCallEdges")
+    if export is not None:
+        export = _ghidra_call_edges(image, export)
+    elif "ghidraAgreementSites" in controls:
+        raise ValueError("ghidraAgreementSites needs ghidraCallEdges")
     nodes, edges, omitted = {}, [], []
 
     def read(entry):
@@ -984,20 +990,116 @@ def callees(image, config):
                 and not s["omittedRoutes"]
                 and not any(d.get("reason") in capped for at in s["entries"] for d in nodes[at]["dependencies"])
                 and not any(d.get("reason") in capped for i in s["dependencyEdges"] for d in edges[i]["dependencies"]))
+    cross_check = _ghidra_cross_check(export, nodes, outgoing, omitted) if export is not None else None
     known = {"sharedSites": {e["site"] for e in edges if shared_control(e)},
              "recursiveSites": {e["site"] for e in edges if e["classification"] == "recursivePath"},
-             "writeSites": {o["site"] for n in nodes.values() for o in n["memoryObservations"] if o["boundaryUsable"] and "write" in o["access"]}}
+             "writeSites": {o["site"] for n in nodes.values() for o in n["memoryObservations"] if o["boundaryUsable"] and "write" in o["access"]},
+             "ghidraAgreementSites": cross_check and cross_check["agreementSites"]}
     for kind, sites in controls.items():
         if not isinstance(sites, list) or len(sites) > 256 or any(type(at) is not int or at not in known[kind] for at in sites):
             raise ValueError("Callee positive control missed: " + kind)
     return {"root": root, "nodes": [{k: v for k, v in n.items() if k != "body"} | {"body": _body_report(n["body"])} for n in nodes.values()],
             "edges": edges, "calleeSummaries": list(summaries.values()), "omittedRoutes": omitted, "uncheckedEntries": unchecked,
-            "controls": controls,
+            "controls": controls, "ghidraCrossCheck": cross_check and {k: v for k, v in cross_check.items() if k != "agreementSites"},
             "completeWithinDeclaredGraph": not omitted and all(n["boundaryUsable"] for n in nodes.values()) and not any(e["dependencies"] for e in edges),
             "exclusions": ["implicit memory effects", "computed/unestablished targets", "argument-sensitive effects", "runtime reachability"],
             "interpretation": "Nodes are read breadth-first; path is the shortest read route to the caller. A recursivePath is a "
                               "non-tree entry-CFG edge whose target reaches its caller; sharedNodeReuse is a previously read node "
                               "that does not. Neither proves runtime recursion."}
+
+
+GHIDRA_CALL_EDGES = "scientific-method-ghidra-call-edges"
+
+
+def _ghidra_call_edges(image, export):
+    """Validate an ExportCallEdges.java export against the image; returns its edges keyed by caller file offset."""
+    if not isinstance(export, dict) or export.get("format") != GHIDRA_CALL_EDGES or export.get("version") != 1:
+        raise ValueError("ghidraCallEdges must be an ExportCallEdges.java export, format version 1")
+    if not isinstance(export.get("sha256"), str) or export["sha256"].lower() != hashlib.sha256(image.data).hexdigest():
+        raise ValueError("ghidraCallEdges was exported from a different file")
+    functions = export.get("functions")
+    if not isinstance(functions, list) or len(functions) > 128:
+        raise ValueError("ghidraCallEdges functions must be a list of at most 128")
+    for key in ("missingEntries", "unreadFunctions"):
+        if not isinstance(export.get(key), list) or not all(isinstance(v, str) for v in export[key]):
+            raise ValueError(f"ghidraCallEdges {key} must be a list of addresses")
+
+    def offset(value, label):
+        if value is None:
+            return None
+        return integer(value, 0, len(image.data) - 1, "Ghidra " + label + " file offset")
+    callers, unmapped, total = {}, [], 0
+    for function in functions:
+        if not isinstance(function, dict) or not isinstance(function.get("address"), str) or not isinstance(function.get("edges"), list):
+            raise ValueError("Invalid ghidraCallEdges function")
+        total += len(function["edges"])
+        if total > 8192:
+            raise ValueError("ghidraCallEdges holds more than 8192 edges")
+        rows = []
+        for edge in function["edges"]:
+            if (not isinstance(edge, dict) or not isinstance(edge.get("siteAddress"), str) or not isinstance(edge.get("flow"), str)
+                    or not (edge.get("targetAddress") is None or isinstance(edge["targetAddress"], str))):
+                raise ValueError("Invalid ghidraCallEdges edge")
+            rows.append({"site": offset(edge.get("site"), "site"), "siteAddress": edge["siteAddress"],
+                         "target": offset(edge.get("target"), "target"), "targetAddress": edge["targetAddress"], "flow": edge["flow"]})
+        entry = offset(function.get("entry"), "entry")
+        if entry is None:
+            unmapped.append(function["address"])
+        elif entry in callers:
+            raise ValueError("ghidraCallEdges exports one function twice")
+        else:
+            callers[entry] = rows
+    return {"callers": callers, "unmappedFunctions": unmapped, "missingEntries": export["missingEntries"],
+            "unreadFunctions": export["unreadFunctions"]}
+
+
+def _ghidra_key(g):
+    """The (site, target) an exported edge matches on.
+
+    A null target matches the engine's unresolved call only when Ghidra resolved no address either;
+    a target address without file bytes (an import, uninitialized memory) matches nothing.
+    """
+    if g["target"] is None and g["targetAddress"] is not None:
+        return g["site"], ("withoutFileOffset", g["targetAddress"])
+    return g["site"], g["target"]
+
+
+def _ghidra_cross_check(export, nodes, outgoing, omitted):
+    """Compare the engine's edges with Ghidra's for each caller both read; a Ghidra-only edge stays unchecked."""
+    callers = export["callers"]
+    compared = sorted(nodes.keys() & callers.keys())
+    rows = []
+    for caller in compared:
+        ours = outgoing.get(caller, [])
+        theirs = callers[caller]
+        # A call neither analysis resolved matches on its site with no target.
+        flows = {_ghidra_key(g): g["flow"] for g in theirs if g["site"] is not None}
+        read = {(e["site"], e["target"]) for e in ours}
+        for e in ours:
+            flow = flows.get((e["site"], e["target"]))
+            rows.append({"caller": caller, "site": e["site"], "target": e["target"], "engineEdge": e["id"],
+                         "result": "engineOnly" if flow is None else "agreement", "ghidraFlow": flow})
+        for g in theirs:
+            if g["site"] is not None and _ghidra_key(g) in read:
+                continue
+            # Ghidra's edge is evidence the engine did not check; it never becomes an engine edge.
+            rows.append({"caller": caller, "site": g["site"], "target": g["target"], "siteAddress": g["siteAddress"],
+                         "targetAddress": g["targetAddress"], "ghidraFlow": g["flow"], "result": "ghidraOnly", "checked": False,
+                         "engineEdge": next((e["id"] for e in ours if g["site"] is not None and e["site"] == g["site"]), None)})
+    counts = {kind: sum(r["result"] == kind for r in rows) for kind in ("agreement", "engineOnly", "ghidraOnly")}
+    not_compared = {"engineCallers": sorted(nodes.keys() - callers.keys()), "ghidraCallers": sorted(callers.keys() - nodes.keys()),
+                    "unmappedGhidraFunctions": export["unmappedFunctions"], "missingGhidraEntries": export["missingEntries"],
+                    "unreadGhidraFunctions": export["unreadFunctions"],
+                    "omittedEngineRoutes": [o["id"] for o in omitted if o["entry"] in callers]}
+    # A site agrees only when every edge either analysis read there agrees.
+    disputed = {r["site"] for r in rows if r["result"] != "agreement"}
+    return {"comparedCallers": compared, "edges": rows, "counts": counts, "notCompared": not_compared,
+            "agreed": not counts["engineOnly"] and not counts["ghidraOnly"] and not any(not_compared.values()),
+            "agreementSites": {r["site"] for r in rows if r["result"] == "agreement"} - disputed,
+            "interpretation": "Edges of each caller that both the engine and the Ghidra export read, matched by site and target "
+                              "file offset; an unresolved call matches an unresolved call at its site, and a Ghidra target without a file offset "
+                              "matches no engine edge. A ghidraOnly edge is Ghidra's claim: the engine did not check it and never adds it to "
+                              "its graph. Agreement means both analyses read the edge, not that it executes."}
 
 
 # These branches test CX/ECX (LOOPE/LOOPNE also ZF), so an adjacent CMP/TEST never describes their predicate.

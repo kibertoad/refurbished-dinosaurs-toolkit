@@ -1,8 +1,7 @@
-"""Path state for the evidence layer. Instruction semantics come from the backend a State holds (semantics.py)."""
+"""Path state for the evidence layer. Instruction semantics come from pypcode (pcode_backend.py)."""
 from copy import deepcopy
 from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
 from .values import Value, const, unknown, op, extract, join, resize, sources, address_parts, producers
-from . import semantics
 
 REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "cs", "ds", "es", "ss", "fs", "gs")
 ALIASES = {}
@@ -39,7 +38,10 @@ def alias(name):
 class State:
     def __init__(self, entry, image, config):
         self.bits, self.flat, self.mask = image.bits, image.flat, image.mask
-        self.semantics = semantics.current()
+        # Imported here: the backend imports this module, so a module-level import would make the
+        # import order matter.
+        from .pcode_backend import BACKEND
+        self.semantics = BACKEND
         self.sp, self.bp = ("esp", "ebp") if self.flat else ("sp", "bp")
         self.at = entry
         self.regs = {r: unknown("initial:" + r, ALIASES[r][2]) for r in REGISTERS}
@@ -64,6 +66,9 @@ class State:
         self.guards = []
         self.assumptions = {}
         self.flags = None
+        # Arithmetic flags as values from the last flag-writing instruction's p-code; None when no
+        # instruction computed them yet or the last one forgot them.
+        self.flag_values = None
         # CF when an instruction sets it without leaving a comparable flag producer; None defers to flags.
         self.carry = None
         self.flag_serial = 0
@@ -90,6 +95,7 @@ class State:
     def forget_flags(self, keep_carry=False):
         carry = self.carry_value() if keep_carry else None
         self.flags = None
+        self.flag_values = None
         self.carry = carry
         self.flag_serial += 1
         self.flag_epoch = self.flag_serial
@@ -98,7 +104,7 @@ class State:
     def save_flags(self, bits):
         word = unknown(f"saved-flags:{self.at}:{len(self.events)}", bits, self.at)
         self.saved_flags[(bits, word.term)] = (self.flags, self.flag_epoch, self.unknown_flag_site,
-                                      self.direction_flag, self.interrupt_flag, self.carry)
+                                      self.direction_flag, self.interrupt_flag, self.carry, self.flag_values)
         self.push(word)
         self.event("flags-save", width=bits // 8, value=word.report(),
                    direction=self.direction_flag.report(), interrupt=self.interrupt_flag.report())
@@ -112,16 +118,18 @@ class State:
             self.direction_flag = extract(word, 10, 1)
             self.interrupt_flag = extract(word, 9, 1)
         else:
-            self.flags, self.flag_epoch, self.unknown_flag_site, self.direction_flag, self.interrupt_flag, self.carry = saved
+            (self.flags, self.flag_epoch, self.unknown_flag_site, self.direction_flag, self.interrupt_flag, self.carry,
+             self.flag_values) = saved
         self.event("flags-restore", width=bits // 8, value=word.report(), intactLocalSnapshot=saved is not None,
                    direction=self.direction_flag.report(), interrupt=self.interrupt_flag.report())
 
     def carry_value(self):
         """CF as a one-bit value: from the last comparable flag producer, an explicit carry, or unknown."""
         if self.flags is not None:
-            answer, _ = self.semantics.condition(self, "jb")
-            if answer is not None:
-                return const(int(answer), 1, self.flags[3])
+            if self.flag_values is not None and "CF" in self.flag_values:
+                answer, _ = self.semantics.condition(self, "jb")
+                if answer is not None:
+                    return const(int(answer), 1, self.flags[3])
             # Name the carry by its producer's operands, so every reading of one comparison shares an assumption.
             a, b, operation, site = self.flags
             return unknown(f"carry:{site}:{(operation, a.term, b.term)!r}", 1, site)
@@ -132,6 +140,7 @@ class State:
     def set_flags(self, a, b, operation):
         self.flags = (a, b, operation, self.at)
         self.carry = None
+        self.flag_values = None
 
     def clear_memory(self):
         self.memory.clear()
@@ -308,46 +317,87 @@ for names, condition in ((("jne", "jnz"), "z"), (("jae", "jnb", "jnc"), "c"), ((
     for name in names:
         BRANCH_CONDITIONS[name] = (condition, True)
 
+# One-byte opcodes of the string forms; CMPS and SCAS repeat while a comparison holds.
+STRING_OPCODES = (0xA4, 0xA5, 0xAA, 0xAB, 0xAC, 0xAD)
+COMPARE_STRING_OPCODES = (0xA6, 0xA7, 0xAE, 0xAF)
+
+
 def string_instruction(ins):
     # Match the one-byte opcode, not the last encoded byte: SSE MOVSD (F2 0F 10 /r) can end in A5.
-    return ins.opcode[0] in (0xA4, 0xA5, 0xAA, 0xAB, 0xAC, 0xAD) and ins.opcode[1] == 0
+    return ins.opcode[0] in STRING_OPCODES + COMPARE_STRING_OPCODES and ins.opcode[1] == 0
+
+
+def compare_string(ins):
+    return ins.opcode[0] in COMPARE_STRING_OPCODES
+
+
+def repeated(ins):
+    return 0xF3 in ins.prefix or (0xF2 in ins.prefix and compare_string(ins))
 
 
 def string_count(state, ins):
-    return state.reg("ecx" if state.flat else "cx") if 0xF3 in ins.prefix else const(1, state.bits)
+    return state.reg("ecx" if state.flat else "cx") if repeated(ins) else const(1, state.bits)
 
 
 def check_string_form(state, ins):
     if ins.addr_size != state.bits // 8:
         raise StopPath("Address-size override on string operation is outside the selected model")
-    if 0xF2 in ins.prefix:
+    if 0xF2 in ins.prefix and not compare_string(ins):
         raise StopPath("REPNE string form is not supported")
 
 
-def string_effect(state, ins, count, remaining):
-    """Apply a string form already accepted by check_string_form with its string_count."""
+def string_effect(state, ins, count, remaining, charge=None):
+    """Apply a string form already accepted by check_string_form with its string_count.
+
+    Returns the iterations run. A repeated CMPS or SCAS runs until its repeat condition fails or
+    the count runs out, within ``remaining`` iterations, and calls ``charge(1)`` for each one,
+    because it cannot reserve its iterations before they run.
+    """
     width = 1 if ins.opcode[0] % 2 == 0 else (4 if (0x66 in ins.prefix) != state.flat else 2)
     operation = ins.mnemonic.split()[-1][:4]
+    compare = compare_string(ins)
     state.event("string-operation", operation=operation, width=width, repetitions=count.report(),
-                direction=state.direction_flag.report(), repeat=0xF3 in ins.prefix,
+                direction=state.direction_flag.report(), repeat=repeated(ins),
                 interpretation="bounded memory effects only, not pixels or native input coverage")
     if count.number is None:
         raise StopPath("String repetition count unresolved; a bounded producer is required")
-    if count.number > remaining:
+    if count.number > remaining and not (compare and repeated(ins)):
         raise StopPath("String iteration budget exhausted; remaining effects unresolved")
     if count.number == 0:
         return 0
     if state.direction_flag.number is None:
         raise StopPath("Direction flag unresolved; conditional string paths required")
-    # MOVS/LODS decode their source as the second memory operand, carrying any segment override.
-    source_name = segment_register(ins, ins.operands[1].mem) if operation in ("movs", "lods") else None
-    delta = -width if state.direction_flag.number else width
-    for _ in range(count.number):
-        state.semantics.string_iteration(state, ins, operation, width, source_name, delta)
-    if 0xF3 in ins.prefix:
-        state.setreg("ecx" if state.flat else "cx", const(0, state.bits, state.at), state.at)
-    return count.number
+    # MOVS/LODS decode their source as the second memory operand and CMPS as the first, carrying
+    # any segment override.
+    source_name = (segment_register(ins, ins.operands[1].mem) if operation in ("movs", "lods") else
+                   segment_register(ins, ins.operands[0].mem) if operation == "cmps" else None)
+    counter = "ecx" if state.flat else "cx"
+    if not compare or not repeated(ins):
+        for _ in range(count.number):
+            state.semantics.string_iteration(state, ins, operation, width, source_name)
+        if repeated(ins):
+            state.setreg(counter, const(0, state.bits, state.at), state.at)
+        return count.number
+    iterations, outcomes = 0, []
+    while True:
+        if iterations == remaining:
+            raise StopPath("String iteration budget exhausted; remaining effects unresolved")
+        if charge is not None:
+            charge(1)
+        holds = state.semantics.string_iteration(state, ins, operation, width, source_name)
+        iterations += 1
+        outcomes.append(holds)
+        if iterations == count.number:
+            reason = "count"
+            break
+        if holds.number is None:
+            raise StopPath("Repeated string comparison outcome unresolved; its exit is unknown")
+        if not holds.number:
+            reason = "condition"
+            break
+    # The comparisons decide where the loop stopped, so their inputs produce the remaining count.
+    left = Value(state.bits, const(count.number - iterations, state.bits).term, sources(count, *outcomes))
+    state.setreg(counter, left, state.at)
+    state.event("string-compare-exit", iterations=iterations, exit=reason, counter=state.reg(counter).report())
+    return iterations
 
-
-# The handwritten backend registers itself as the default; it imports names defined above.
-from . import handwritten  # noqa: E402,F401

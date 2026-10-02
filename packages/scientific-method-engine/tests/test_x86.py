@@ -13,8 +13,10 @@ sys.path.insert(0, str(SRC))
 # The engine CLI runs from this checkout's source whether or not the package is installed.
 ENGINE = [sys.executable, "-B", "-m", "scientific_method_engine"]
 ENGINE_ENV = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(SRC), os.environ.get("PYTHONPATH")]))}
+import capstone
+import pypcode
 from scientific_method_engine.x86.image import Image
-from differential import run_report
+from scientific_method_engine.x86.reports import run_report
 from scientific_method_engine.x86.trace import trace, walk, OVERLAP_REASON, CONTESTED_REASON
 from scientific_method_engine.x86.values import const, unknown, op, extract, resize
 
@@ -367,6 +369,114 @@ class CalleeGraphTests(unittest.TestCase):
         cfg = configuration(data, controls={"writeSites": [0, 4]})
         r = run_report(data, cfg, "callees")
         self.assertEqual([o["access"] for o in r["nodes"][0]["memoryObservations"]], [["write"], ["write"], ["read"]])
+
+
+def ghidra_export(data, functions, **extra):
+    """A synthetic ExportCallEdges.java export: functions maps an entry offset to (site, target, flow) edges."""
+    rows = [{"entry": entry, "address": "2000:0000" if entry is None else f"1000:{entry:04x}",
+             "edges": [{"site": site, "siteAddress": f"1000:{site:04x}", "target": target,
+                        "targetAddress": None if target is None else f"1000:{target:04x}", "flow": flow}
+                       for site, target, flow in edges]}
+            for entry, edges in functions.items()]
+    return {"format": "scientific-method-ghidra-call-edges", "version": 1, "sha256": hashlib.sha256(data).hexdigest(),
+            "functionLimit": 128, "missingEntries": [], "unreadFunctions": [], "functions": rows, **extra}
+
+
+class GhidraCrossCheckTests(unittest.TestCase):
+    # root: call a (site 0); call b (site 3); call bx (site 6); ret. a and b return.
+    code = Code().label("root").branch("e8", "a").branch("e8", "b").emit("ff d3 c3").label("a").emit("c3").label("b").emit("c3")
+
+    def cross(self, functions, controls=None, **extra):
+        data = self.code.bytes()
+        cfg = configuration(data, ghidraCallEdges=ghidra_export(data, functions, **extra), controls=controls or {})
+        cfg["regions"][0]["entries"] = [self.code.labels[n] for n in ("root", "a", "b")]
+        return run_report(data, cfg, "callees")
+
+    def test_each_edge_is_agreement_engine_only_or_unchecked_ghidra_only(self):
+        a, b = self.code.labels["a"], self.code.labels["b"]
+        r = self.cross({0: [(0, a, "UNCONDITIONAL_CALL"), (6, b, "COMPUTED_CALL")], b: []}, controls={"ghidraAgreementSites": [0]})
+        check = r["ghidraCrossCheck"]
+        rows = {(e["site"], e["target"], e["result"]) for e in check["edges"]}
+        self.assertEqual(rows, {(0, a, "agreement"), (3, b, "engineOnly"), (6, None, "engineOnly"), (6, b, "ghidraOnly")})
+        ghidra_only = next(e for e in check["edges"] if e["result"] == "ghidraOnly")
+        self.assertFalse(ghidra_only["checked"])
+        self.assertEqual(ghidra_only["engineEdge"], 2)
+        # Ghidra's computed target never becomes an engine edge.
+        self.assertIsNone(r["edges"][2]["target"])
+        self.assertEqual(r["edges"][2]["classification"], "unresolved")
+        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 2, "ghidraOnly": 1})
+        self.assertEqual(check["comparedCallers"], [0, b])
+        self.assertEqual(check["notCompared"]["engineCallers"], [a])
+        self.assertFalse(check["agreed"])
+
+    def test_matching_graphs_agree_on_resolved_and_unresolved_calls(self):
+        # call 6; call bx; ret; ret
+        data = bytes.fromhex("e8 03 00 ff d3 c3 c3")
+        cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: [(0, 6, "UNCONDITIONAL_CALL"), (3, None, "COMPUTED_CALL")], 6: []}),
+                            controls={"ghidraAgreementSites": [0, 3]})
+        cfg["regions"][0]["entries"] = [0, 6]
+        r = run_report(data, cfg, "callees")
+        check = r["ghidraCrossCheck"]
+        self.assertTrue(check["agreed"])
+        self.assertEqual(check["counts"], {"agreement": 2, "engineOnly": 0, "ghidraOnly": 0})
+        # Agreement on an unresolved call leaves the engine's edge unresolved.
+        self.assertEqual(r["edges"][1]["classification"], "unresolved")
+
+    def test_a_ghidra_target_without_file_bytes_does_not_match_an_unresolved_call(self):
+        # call 6; call bx; ret; ret. Ghidra resolves call bx to an import, which has no file offset.
+        data = bytes.fromhex("e8 03 00 ff d3 c3 c3")
+        export = ghidra_export(data, {0: [(0, 6, "UNCONDITIONAL_CALL"), (3, None, "COMPUTED_CALL")], 6: []})
+        export["functions"][0]["edges"][1]["targetAddress"] = "EXTERNAL:00000001"
+        cfg = configuration(data, ghidraCallEdges=export)
+        cfg["regions"][0]["entries"] = [0, 6]
+        check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
+        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 1, "ghidraOnly": 1})
+        self.assertFalse(check["agreed"])
+        cfg["controls"] = {"ghidraAgreementSites": [3]}
+        with self.assertRaisesRegex(ValueError, "positive control missed: ghidraAgreementSites"):
+            run_report(data, cfg, "callees")
+
+    def test_routes_the_edge_limit_omitted_are_not_compared(self):
+        # call 6; call bx; ret; ret. Ghidra misses call bx, and the engine omits it at the edge limit.
+        data = bytes.fromhex("e8 03 00 ff d3 c3 c3")
+        cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: [(0, 6, "UNCONDITIONAL_CALL")], 6: []}), edgeLimit=1)
+        cfg["regions"][0]["entries"] = [0, 6]
+        r = run_report(data, cfg, "callees")
+        check = r["ghidraCrossCheck"]
+        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 0, "ghidraOnly": 0})
+        self.assertEqual(check["notCompared"]["omittedEngineRoutes"], [r["omittedRoutes"][0]["id"]])
+        self.assertFalse(check["agreed"])
+
+    def test_missed_agreement_control_fails(self):
+        a, b = self.code.labels["a"], self.code.labels["b"]
+        with self.assertRaisesRegex(ValueError, "positive control missed: ghidraAgreementSites"):
+            self.cross({0: [(0, a, "UNCONDITIONAL_CALL")], b: []}, controls={"ghidraAgreementSites": [3]})
+        # A site where Ghidra also reads a target the engine did not is disputed.
+        with self.assertRaisesRegex(ValueError, "positive control missed: ghidraAgreementSites"):
+            self.cross({0: [(0, a, "UNCONDITIONAL_CALL"), (0, b, "UNCONDITIONAL_CALL")], b: []},
+                       controls={"ghidraAgreementSites": [0]})
+        data = self.code.bytes()
+        with self.assertRaisesRegex(ValueError, "needs ghidraCallEdges"):
+            run_report(data, configuration(data, controls={"ghidraAgreementSites": [0]}), "callees")
+
+    def test_unmapped_missing_and_unread_functions_are_not_compared(self):
+        r = self.cross({0: [], None: []}, missingEntries=["1000:0100"], unreadFunctions=["1000:0200"])
+        left = r["ghidraCrossCheck"]["notCompared"]
+        self.assertEqual(left["unmappedGhidraFunctions"], ["2000:0000"])
+        self.assertEqual(left["missingGhidraEntries"], ["1000:0100"])
+        self.assertEqual(left["unreadGhidraFunctions"], ["1000:0200"])
+        self.assertFalse(r["ghidraCrossCheck"]["agreed"])
+
+    def test_export_from_another_file_or_format_is_rejected(self):
+        data = self.code.bytes()
+        for export, message in (({**ghidra_export(data, {}), "sha256": "0" * 64}, "different file"),
+                                ({**ghidra_export(data, {}), "version": 2}, "format version 1"),
+                                (ghidra_export(data, {len(data): []}), "file offset"),
+                                (ghidra_export(data, {0: [(0, None, 3)]}), "Invalid ghidraCallEdges edge"),
+                                ({**ghidra_export(data, {}), "functions": [{}] * 129}, "at most 128"),
+                                (ghidra_export(data, {0: [(0, None, "COMPUTED_CALL")] * 8193}), "more than 8192 edges")):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                run_report(data, configuration(data, ghidraCallEdges=export), "callees")
 
 
 class OperandCandidateTests(unittest.TestCase):
@@ -1403,6 +1513,14 @@ class ReporterTests(unittest.TestCase):
         self.assertFalse(calls[0]["guards"][0]["sameTargetValue"])
         self.assertFalse(result["completeWithinModel"])
 
+    def test_every_engine_module_imports_first(self):
+        modules = sorted(p.stem for p in (SRC / "scientific_method_engine" / "x86").glob("*.py") if p.stem != "__init__")
+        for module in modules:
+            with self.subTest(module=module):
+                code = f"import scientific_method_engine.x86.{module}"
+                result = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True, env=ENGINE_ENV)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_cli_identity_and_errors(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); data = bytes.fromhex("b8 01 00 c3")
@@ -1412,7 +1530,10 @@ class ReporterTests(unittest.TestCase):
             args = [*ENGINE, "trace", str(path)]
             result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads(result.stdout)["sourceIdentity"]["size"], 4)
+            header = json.loads(result.stdout)
+            self.assertEqual(header["sourceIdentity"]["size"], 4)
+            self.assertEqual((header["decoder"], header["instructionSemantics"]),
+                             ("capstone " + capstone.__version__, f"pypcode {pypcode.__version__} (Ghidra SLEIGH x86)"))
             cfg["sha256"] = "0" * 64; path.write_text(json.dumps(cfg))
             result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 1)
@@ -1466,6 +1587,64 @@ class ReporterTests(unittest.TestCase):
             self.assertFalse(result["completeWithinModel"])
             self.assertIn(reason,result["paths"][0]["stop"])
             self.assertFalse(events(result,"write"))
+
+    def test_repeated_string_comparisons(self):
+        es = {"es": 0x2000, "ds": 0x2000}
+        # Positive control: REPNE SCASB stops at the terminator it compared, after two iterations.
+        result = report("bf 00 01 c6 05 61 c6 45 01 00 b0 00 b9 10 00 f2 ae c3", flags={"direction": 0}, registers=es)
+        path = result["paths"][0]
+        self.assertTrue(path["returned"], path["stop"])
+        exit_event, = events(result, "string-compare-exit")
+        self.assertEqual((exit_event["iterations"], exit_event["exit"]), (2, "condition"))
+        self.assertEqual((path["registers"]["cx"]["value"], path["registers"]["di"]["value"]), (14, 0x102))
+        self.assertEqual(result["stringIterationsUsed"], 2)
+        # Unknown memory leaves the repeat condition unresolved after the first iteration.
+        result = report("bf 00 01 b0 00 b9 10 00 f2 ae c3", flags={"direction": 0}, registers=es)
+        self.assertIn("comparison outcome unresolved", result["paths"][0]["stop"])
+        self.assertEqual(len(events(result, "read")), 1)
+        # A repeated comparison pays per iteration, so the budget stops it mid-loop.
+        result = report("bf 00 01 c7 05 00 00 b0 01 b9 10 00 f2 ae c3", flags={"direction": 0}, registers=es,
+                        stringIterations=1)
+        self.assertIn("budget exhausted", result["paths"][0]["stop"])
+        self.assertEqual(result["stringIterationsUsed"], 1)
+        # REPNE stays rejected on the forms that do not compare.
+        result = report("f2 a4 c3", flags={"direction": 0})
+        self.assertIn("REPNE", result["paths"][0]["stop"])
+
+    def test_repeated_comparison_splits_an_unknown_direction_when_its_count_exceeds_the_budget(self):
+        es = {"es": 0x2000, "ds": 0x2000}
+        # CX = 0xFFFF exceeds the budget, but the terminator ends the scan after one iteration either way.
+        result = report("bf 00 01 c6 05 00 b0 00 b9 ff ff f2 ae c3", registers=es)
+        self.assertTrue(all(p["returned"] for p in result["paths"]), [p["stop"] for p in result["paths"]])
+        self.assertEqual(sorted(p["registers"]["di"]["value"] for p in result["paths"]), [0xff, 0x101])
+        self.assertEqual(result["stringIterationsUsed"], 2)
+
+    def test_rotates_and_sal_by_one_on_unknown_operands_keep_the_reported_forms(self):
+        for code in ("d1 c0", "d1 c8", "d0 c0", "d0 c8", "d0 cc", "d1 f0"):
+            with self.subTest(code=code):
+                path = report(code + " c3")["paths"][0]
+                self.assertTrue(path["returned"], path["stop"])
+                event, = [e for e in path["events"] if e["kind"] == "arithmetic"]
+                operation = {"c0": "rol", "c8": "ror", "cc": "ror", "f0": "sal"}[code[-2:]]
+                self.assertEqual(event["operation"], operation)
+                # A rotate reports the OR of its two shifted halves; SAL by one reports one shift.
+                self.assertEqual(event["result"]["expression"][0], "shl" if operation == "sal" else "or")
+                if operation != "sal":
+                    # The carry out is bit 0 (ROR) or the top bit (ROL) of the rotated operand.
+                    bits = event["left"]["bits"]
+                    low = event["left"]["expression"][2]
+                    self.assertEqual(event["carryOut"]["expression"][2], low + (bits - 1 if operation == "rol" else 0))
+
+    def test_rotate_through_unknown_carry_resolves_a_carry_out_from_a_known_operand(self):
+        # RCL by n carries out bit 16 - n of a 16-bit operand, RCR by n bit n - 1; CF starts unknown.
+        cases = (("bb 10 00 c1 d3 05", 0), ("bb 00 08 c1 d3 05", 1), ("bb 10 00 c1 db 05", 1),
+                 ("bb 08 00 c1 db 05", 0), ("c1 d3 05", None))
+        for code, carry in cases:
+            with self.subTest(code=code):
+                data = bytes.fromhex(code + " c3")
+                result = run_report(data, configuration(data), "trace")
+                event, = events(result, "arithmetic")
+                self.assertEqual(event["carryOut"]["value"], carry)
 
     def test_string_repetition_keeps_register_terms_and_budget_bounded(self):
         # Many 16-bit pointer updates must not nest the unknown upper register halves.

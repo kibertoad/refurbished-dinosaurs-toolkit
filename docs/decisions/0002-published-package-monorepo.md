@@ -65,6 +65,6 @@ needed a copy round in every consumer.
   the two ExportVersionTracking scripts exist in three or four diverging versions across Dark
   Sun, reconqueror, sub-culture-max and magicmayhem-again, and ReportJumpTable names two
   different scripts. They are still to be reconciled, as are Dark Sun's FBOV mapping tools.
-- The pypcode and Unicorn work in decision 8 awaits its benchmark.
-  [ADR 0003](0003-established-instruction-semantics.md) defines that comparison and the phases
-  that replace the handwritten instruction semantics, and tracks their progress.
+- Resolved: the pypcode and Unicorn work in decision 8 is done under
+  [ADR 0003](0003-established-instruction-semantics.md). The engine's instruction semantics come
+  from pypcode, Unicorn is the tests' concrete oracle, and the handwritten semantics are deleted.

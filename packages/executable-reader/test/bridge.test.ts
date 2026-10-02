@@ -516,6 +516,59 @@ test("callee graph through the source bridge keeps a reused node distinct from r
   assert.equal(r.completeWithinDeclaredGraph, true);
 });
 
+test("callee graph through the source bridge compares its edges with a Ghidra export", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // call 71; call 71; ret; at 71: ret
+  data.set([0xe8, 4, 0, 0xe8, 1, 0, 0xc3, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const sha256 = createHash("sha256").update(data).digest("hex");
+  const edge = (site: number, target: number | null, flow: string) => ({
+    site,
+    siteAddress: `1000:${site.toString(16)}`,
+    target,
+    targetAddress: target === null ? null : `1000:${target.toString(16)}`,
+    flow,
+  });
+  const cfg = {
+    ...config,
+    sha256,
+    regions: [{ ...config.regions[0]!, entries: [64, 71] }],
+    controls: { ghidraAgreementSites: [64] },
+    ghidraCallEdges: {
+      format: "scientific-method-ghidra-call-edges",
+      version: 1,
+      sha256,
+      functionLimit: 8,
+      missingEntries: [],
+      unreadFunctions: [],
+      functions: [
+        {
+          entry: 64,
+          address: "1000:0040",
+          edges: [edge(64, 71, "UNCONDITIONAL_CALL"), edge(69, null, "COMPUTED_CALL")],
+        },
+        { entry: 71, address: "1000:0047", edges: [] },
+      ],
+    },
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  const check = run(["callees", join(dir, "config.json")]).ghidraCrossCheck;
+  assert.deepEqual(
+    check.edges.map((e: Report) => [e.site, e.result]),
+    [
+      [64, "agreement"],
+      [67, "engineOnly"],
+      [69, "ghidraOnly"],
+    ],
+  );
+  assert.equal(check.edges[2].checked, false);
+  assert.equal(check.agreed, false);
+  cfg.controls = { ghidraAgreementSites: [67] };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  assert.throws(() => run(["callees", join(dir, "config.json")]), /ghidraAgreementSites/);
+});
+
 test("operand candidates preserve prefixed widths and reject interior starts through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);
@@ -626,6 +679,57 @@ test("effects preserves pre-service writes and unknown returning-service effects
   const incomplete = run(["effects", join(dir, "config.json")]).effectOrdering;
   assert.equal(incomplete.allPathsRead, false);
   assert.equal(incomplete.paths[0].stop.writesBeforeCount, 1);
+});
+
+test("trace runs a repeated string comparison until its condition fails through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // mov di, 0x100; mov byte [di], 'a'; mov byte [di+1], 0; mov al, 0; mov cx, 16; repne scasb; ret
+  data.set([0xbf, 0, 1, 0xc6, 5, 0x61, 0xc6, 0x45, 1, 0, 0xb0, 0, 0xb9, 16, 0, 0xf2, 0xae, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const query = {
+    ...config,
+    sha256: createHash("sha256").update(data).digest("hex"),
+    registers: { ds: 0x2000, es: 0x2000 },
+    flags: { direction: 0 },
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const result = run(["trace", join(dir, "config.json")]);
+  const path = result.paths[0];
+  assert.equal(path.returned, true);
+  const exit = path.events.find((e: Report) => e.kind === "string-compare-exit");
+  assert.equal(exit.iterations, 2);
+  assert.equal(exit.exit, "condition");
+  assert.equal(path.registers.cx.value, 14);
+  assert.equal(path.registers.di.value, 0x102);
+  assert.equal(result.stringIterationsUsed, 2);
+});
+
+test("trace decides a decrement loop's exit from p-code flags through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // mov cx, 3; dec cx; jnz back to dec; ret
+  data.set([0xb9, 3, 0, 0x49, 0x75, 0xfd, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const query = { ...config, sha256: createHash("sha256").update(data).digest("hex") };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const result = run(["trace", join(dir, "config.json")]);
+  // The report names the decoder and the instruction semantics the engine ran.
+  assert.match(result.decoder, /^capstone \d+\.\d+\.\d+$/);
+  assert.match(result.instructionSemantics, /^pypcode \d+\.\d+\.\d+ \(Ghidra SLEIGH x86\)$/);
+  assert.equal(result.paths.length, 1);
+  const path = result.paths[0];
+  assert.equal(path.returned, true);
+  const branches = path.events.filter((e: Report) => e.kind === "branch");
+  assert.deepEqual(
+    branches.map((e: Report) => e.taken),
+    [true, true, false],
+  );
+  for (const branch of branches) {
+    assert.equal(branch.decidedBy, "p-code flags");
+    assert.equal(branch.reason, undefined);
+  }
+  assert.equal(path.registers.cx.value, 0);
 });
 
 test("effects retains stopped dispatch beside separate conditional table paths", (t) => {

@@ -86,7 +86,7 @@ Every synthetic case runs on both backends. Each report difference is classified
 |---|---|---|
 | identical | same report | yes |
 | stricter | pypcode stops or reports unknown where the handwritten backend gave a value, and Unicorn confirms the handwritten value | only with a recorded reason and a follow-up step; it blocks cutover |
-| extended | pypcode completes an instruction the handwritten backend stopped on, and Unicorn confirms the value | yes, listed in the release notes |
+| extended | pypcode completes an instruction the handwritten backend stopped on, or resolves a value or branch it left unresolved, and Unicorn confirms the value | yes, listed in the release notes |
 | disagreement | both give values and they differ | no; Unicorn decides which backend has the bug, and the group stays blocked until it is fixed |
 
 Precision under unknown inputs counts. The handwritten `predicate` resolves comparisons such as
@@ -262,10 +262,10 @@ Rules for every iteration:
 | 0 freeze and baseline | done | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
 | 1 pypcode spike | done | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54), 4 (#55), 5 (#56), 6 (#57) and 7 (#58) answered |
 | 2 semantics seam | done | 2026-10-02 | #62; see [Semantics seam](#semantics-seam) |
-| 3 pypcode backend | not started | | |
-| 4 parity on recorded cases | not started | | |
-| 5 cutover | not started | | |
-| 6 Ghidra callee cross-check | not started | | |
+| 3 pypcode backend | done | 2026-10-02 | #64; see [Groups moved](#groups-moved) |
+| 4 parity on recorded cases | done | 2026-10-02 | #65; see [Parity on recorded cases](#parity-on-recorded-cases) |
+| 5 cutover | done | 2026-10-02 | #66; see [Cutover](#cutover) |
+| 6 Ghidra callee cross-check | done | 2026-10-02 | #67; see [Callee cross-check](#callee-cross-check) |
 
 ### Handwritten baseline
 
@@ -406,7 +406,169 @@ backend registered no report can differ.
 
 ### Groups moved
 
-None yet.
+Done 2026-10-02. Every group in the table under phase 3 runs on pypcode by default; the handwritten
+backend stays registered for the differential run until phase 5. The engine depends on
+`pypcode==4.0.0` and needs Python 3.12 or later; its `test` extra installs `unicorn==2.1.4`.
+
+- `x86/pcode.py` lifts and caches each instruction's p-code and evaluates it over `Value` terms.
+  It drops the CS-override idiom, treats `LOCK`/`UNLOCK` as no-ops, reads CF through
+  `State.carry_value` and the other arithmetic flags from `State.flag_values`, and stops on any
+  other user operation, unsupported op or address space.
+- `x86/pcode_backend.py` matches every p-code `LOAD` and `STORE` to a decoded operand or the stack
+  by linear offset equivalence (decision 3), takes the segment register from Capstone, and keeps
+  each mnemonic's report events. Term rules keep `predicate`'s precision: same-term comparisons,
+  extension and subpiece folding, flag bits as one-bit extracts, rotates presented as the
+  shifted fields the reports already used, and a rotate's carry out folded to a constant when the
+  operand's known bits fix it.
+- `tests/oracle.py` runs a synthetic routine on Unicorn's 16-bit real mode and compares every
+  register the engine resolved. `tests/test_oracle.py` has cases for each group.
+
+Full differential run (`SEMANTICS_DIFFERENTIAL_SUMMARY=1`): 463 identical, 18 extended, 0 stricter,
+0 disagreement. The extended cases, each checked against Unicorn:
+
+| Case | Why pypcode resolves more |
+|---|---|
+| `test_oracle.Compare.test_test_and_parity`, `jp`/`jnp` after `test` and `cmp` (6 runs) | p-code computes PF; `predicate` never resolves it |
+| `test_oracle.ArithmeticAndLogic.test_counted_loop_exits_on_decrement_flags`, `test_effect_order`'s counted loop | p-code keeps the flags `dec` sets, so the loop exit resolves |
+| `test_oracle.StringOperations` CMPS and SCAS cases (5 runs), `test_x86`'s repeated string comparison cases (4 runs), `test_pe.test_cmps_with_one_address_for_both_operands` | the handwritten backend stops on `cmps` and `scas` |
+
+The oracle and the differential run found three defects in the handwritten backend, fixed in place
+because they change no instruction semantics (decision 6 allows provenance fixes):
+
+- `rcl` by one on a memory operand (`d0 /2`, `d1 /2`) read a count of 0, because Capstone reports
+  that implicit count with a size of 0, and left the operand unchanged. It now reads 1.
+- A rotate count read from CL, the dividend and divisor of a constant division, and the DF value
+  that sets a string step's sign were missing from the producers of the results they decide.
+
+`cmps` and `scas` are new on the pypcode backend: REPE and REPNE run until the comparison fails or
+the count runs out, charge `stringIterations` per iteration, stop on an unresolved comparison and
+report a `string-compare-exit` event.
+
+Exit evidence: every group is moved; no disagreement and no stricter difference remain in the
+synthetic cases.
+
+Review of the phase 3 PR found report differences that no synthetic case runs. In each the two
+backends agree on every value and differ only in the form of an unresolved expression:
+
+- `rcl` or `rcr` of a known operand through an unknown CF: the result expression. The carry out
+  resolves on both.
+- `xor dx,dx; div bx` with AX unknown: the quotient is `udiv(zeroExtend(ax), ...)` on pypcode and
+  `udiv(join(ax, 0), ...)` on the handwritten backend.
+- A 32-bit shift by an immediate count of 32 or 33 reports the masked count.
+- `rcl bh,1` with BH known to be zero reports a simpler expression on pypcode.
+
+Phase 5 removes the handwritten backend, so these forms are what reports carry from then on.
+
+### Parity on recorded cases
+
+Done 2026-10-02 on the maintainer's machine. The maintainer named seven restorations; two keep
+recorded engine configs. Each config ran through the reader's `run` once per backend, with the
+command its own driver script used. Reports stayed local.
+
+| Restoration | Configs | Runs | identical | extended | stricter | disagreement |
+|---|---|---|---|---|---|---|
+| `dark-sun-wake-redux` (`GAME_DIR/analysis/reporter-audit`) | 243 | 236 | 235 | 1 | 0 | 0 |
+| `magicmayhem-again` (`analysis/original/pe-reporter-adoption`) | 1 | 2 | 2 | 0 | 0 | 0 |
+
+The other five (`enemy-reinfestation`, `rechaos-overlords`, `reconqueror`, `sub-culture-max`,
+`wages-due`) have no recorded engine configs. Eight `dark-sun-wake-redux` configs did not run:
+five belong to `pointers`, which runs in the reader without the engine, and three to the retired
+`table` command. One config ran under both `arguments` and `effects`.
+
+The extended case is `cleanup-hardware-effects/slot-skip` (`effects`). A `dec ax; je` loop exits on
+DEC's flags, which p-code keeps, so the taken arm is never followed where AX cannot be zero; the
+handwritten backend split at each pass. `test_oracle.ArithmeticAndLogic.test_counted_loop_exits_on_decrement_flags`
+checks the same loop against Unicorn.
+
+The first run had 16 differing cases. The fixes are in the pypcode backend and keep the reports'
+existing expressions:
+
+- A branch p-code decided after a producer the handwritten backend leaves unresolved kept that
+  backend's `reason: "flag producer unresolved"`. It now carries `decidedBy: "p-code flags"`
+  instead.
+- Two- and three-operand IMUL is reported as the operand-width product, not the low half of the
+  double-width product of extended operands. An operand holding a sign extension (after CBW or
+  MOVSX) keeps that extension in the product.
+- `x | 0`, `x ^ 0` and `x & ~0` keep the instruction's operation; only one-byte flag selections
+  fold a zero arm.
+- CWD/CDQ name the sign bit of AX/EAX after CBW/CWDE, not of the byte CBW extended, and CWDE
+  after CBW or MOVSX extends AX.
+- Rotates and shift carries treat the instruction's operand as one value, even when an earlier
+  shift built it from fields (the DX:AX shift chains of a linear-address normalization).
+
+`pcode.evaluate` keeps folding an extension of an extension into one extension, because the fold
+keeps flag terms small for every handler. The handlers that report a register holding a sign
+extension (IMUL, CBW/CWDE, CWD/CDQ) rewrite p-code's term to name that register.
+
+Review of the phase 4 PR found one more report difference that no synthetic case runs. The two
+backends agree on every value and differ only in the form of an unresolved expression: RCL or
+RCR by more than one through a register holding a known constant (`mov dx,0; shr ax,1; rcr dx,4`)
+reports p-code's extract of the joined value, where the handwritten backend wrote the shifted
+carry. Phase 5 keeps p-code's form.
+
+Each listed fix has a synthetic oracle test in `test_oracle.py`. The synthetic differential run after
+them: 479 identical, 19 extended, 0 stricter, 0 disagreement. The extended cases are the ones listed
+under phase 3 and `test_oracle.ShiftsAndRotates.test_double_word_shift_from_a_zero_high_half`,
+where the second RCL's carry out folds to zero from DX's known top bit.
+
+### Cutover
+
+Done 2026-10-02.
+
+1. `x86/handwritten.py` (`ordinary`, `predicate`, `shift_carry`, `CARRY_BRANCHES`,
+   `CLEARED_BY_LOGIC`, the string iteration body) and `x86/semantics.py` (the backend registry and
+   `selected`) are deleted. Every `State` uses `pcode_backend.BACKEND`. A mnemonic without a handler
+   stops the path with `Unsupported instruction semantics`, as before.
+   - Branch conditions come from p-code alone. The `branch` event fields come from the evidence
+     layer's flag-producer record: `flagProducer`, `operation`, `left` and `right` after a
+     comparison; `flag` and `carry` for a CF-only branch on a carry the evidence layer tracks; and
+     `flagProducer` and `flagGeneration` after a producer with no comparable record.
+   - Every decided branch carries `decidedBy: "p-code flags"`, and every undecided one a `reason`
+     (`flag producer unresolved`, `carry unresolved` or `flags unresolved`). In 0.7.0
+     `decidedBy` marked a branch the handwritten predicate left open, so a branch after a
+     comparison it decided had neither field. That rule cannot survive the cutover: telling which
+     branches a comparison record decides needs the handwritten flag rules this phase deletes.
+     Marking every p-code decision keeps `decidedBy` on each event that had it in 0.7.0 and adds it
+     to the rest, and the new `flags unresolved` reason gives an undecided branch after a
+     comparison the reason it lacked.
+   - `BRANCH_CONDITIONS` stays in `machine.py`. It is the assumption key table spike answer 4
+     called for (synonymous and complementary branches share one assumption), and `result_flow`
+     uses it. It computes no flag.
+2. `tests/differential.py` and `tests/test_differential.py` are deleted. The test modules call the
+   engine's `run_report`, and `tests/oracle.py` keeps the Unicorn oracle cases on the one backend.
+3. Reports name their semantics in a new header field, `instructionSemantics`, beside `decoder`.
+   The reporter guide documents it and `AGENTS.md` states the rule that replaces decision 6. The
+   header names the Capstone and pypcode versions the engine loaded. Branch events gain
+   `decidedBy` and `reason` where they lacked them; no event loses a field, so the migration guide
+   has no entry for this phase.
+4. ADR 0002's open item is marked resolved.
+
+The release label is `release:minor`: the header gains a field, and no supported import
+(`x86.pe.pe32`, `x86.image.read_source`) changes. `x86.handwritten` and `x86.semantics` shipped in
+0.7.0 as internal modules, which the package README excludes from the supported imports.
+
+### Callee cross-check
+
+Done 2026-10-02.
+
+1. `ExportCallEdges.java` takes an output path, a function limit (1..128) and entry addresses. It
+   walks Ghidra's functions breadth first from those entries through call targets and jumps to
+   other functions' entries. It writes each function's edges with Ghidra's flow type, and the
+   addresses and file offsets of each site and target, beside the program's SHA-256. Requested
+   addresses without a function and functions past the limit are listed, not dropped. The script
+   compiles against Ghidra 12.1.3, and a headless run on a synthetic binary produced an export
+   that the engine accepts.
+2. `callees` takes the export as `ghidraCallEdges` and reports `ghidraCrossCheck`. For each caller
+   both read, an edge is `agreement`, `engineOnly` or `ghidraOnly`, matched on site and target file
+   offset, with an unresolved call matching an unresolved call at its site. A `ghidraOnly` edge is
+   `checked: false` and never enters the engine's graph. Callers and functions either side left
+   uncompared are listed in `notCompared`. A `ghidraAgreementSites` control fails the report when a
+   named site does not agree. An export of another file, or one over its bounds, is rejected.
+3. Tests: `GhidraCrossCheckTests` in `test_x86.py` (each result class, full agreement, the missed
+   control, uncompared functions, rejected exports) and a bridge case in `bridge.test.ts`.
+
+The release label is `release:minor`: `callees` gains an option, a control and a report field, and
+the package gains a script.
 
 ### Blockers
 

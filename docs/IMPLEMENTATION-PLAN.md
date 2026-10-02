@@ -303,3 +303,18 @@ classification and migration documentation when their contract breaks.
 The planning slice implements and adopts no preservation. Exit: all package
 gates and the complete downstream nested-return controls pass against reviewed,
 published packages; a leaf-only write witness does not satisfy R1.
+
+## Ghidra cross-check of the callee graph
+
+Tooling outcome: `callees` compares its edges with the call edges Ghidra recovers, exported by the
+packaged `ExportCallEdges.java` and passed as `ghidraCallEdges` (ADR 0003, decision 7). Each edge
+of a caller both analyses read is an agreement, an edge only the engine read or an edge only Ghidra
+read. A Ghidra-only edge stays unchecked and never becomes an engine edge. Callers either side did
+not read stay listed as not compared, and an export of another file is rejected.
+
+Synthetic acceptance: each result class, agreement on an unresolved call, a missed
+`ghidraAgreementSites` control, uncompared and unmapped functions, and rejected exports, in the
+engine tests and through the reader bridge. The script compiles against Ghidra 12.1. Exports and
+reports of a real program stay in its `GAME_DIR`.
+Exit: the option ships with tests, the reporter guide documents it, and the script has its row in
+the engine README catalog.

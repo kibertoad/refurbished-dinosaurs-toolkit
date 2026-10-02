@@ -8,10 +8,15 @@ name = "scientific-method-engine"
 version = "0.0.0"
 description = "Bounded instruction-derived x86 evidence reports for segmented MZ/FBOV and PE32/i386 code."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = "MIT"
 authors = [{ name = "kibertoad" }]
-dependencies = ["capstone==5.0.7"]
+dependencies = ["capstone==5.0.7", "pypcode==4.0.0"]
+
+[project.optional-dependencies]
+# Unicorn is the tests' concrete oracle (ADR 0003, decision 4). Its core is GPLv2, so it never
+# becomes a runtime dependency.
+test = ["unicorn==2.1.4"]
 
 [project.scripts]
 scientific-method-engine = "scientific_method_engine.cli:run"

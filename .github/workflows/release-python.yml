@@ -72,7 +72,7 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
       - name: Test
         working-directory: packages/scientific-method-engine
-        run: uv run --isolated --with-editable . python -B -m unittest discover -s tests -p 'test*.py'
+        run: uv run --isolated --with-editable '.[test]' python -B -m unittest discover -s tests -p 'test*.py'
       - name: Build
         run: uv build packages/scientific-method-engine --out-dir dist
       - name: Publish to PyPI
