@@ -248,3 +248,38 @@ stays in the restoration: verify every cited case and preserve pending contracts
 Exit: canonical package gates and local source controls pass; publish a reviewed
 candidate. Request closure requires merged registry delivery and complete adopted
 source reruns. Several slices may be required; no first slice narrows that exit.
+
+## Scoped memory hypotheses across nested returning services
+
+Request R1 (downstream effect-ordering acceptance): a traced child can make an
+own field write after a modeled external service, yet cannot return to its
+parent because unknown service memory effects invalidate the ancestor return
+frame. Preserving register values and assuming balanced stack height does not
+establish the contents of that frame or saved registers. Current conservative
+stops are correct; automatically preserving those bytes is refused.
+
+Outcome: let an evidence-backed query express bounded memory-preservation
+hypotheses for a returning service, with complete address/segment/width
+provenance, while leaving every other memory effect unresolved. The exact input
+contract remains to be designed. It must distinguish saved values from return
+control, validate all declarations including unreachable ones, reject ambiguous
+or overlapping scopes and retain each hypothesis in every derived summary.
+Default models must still invalidate stack memory. This is evidence-layer work,
+not permission to add handwritten instruction semantics under ADR 0003.
+
+This PR records the plan and synthetic reproductions only. Near and far child
+frames retain their own writes and stop before a later parent write under an
+unknown service. Tracing the same fully synthetic service succeeds; explicit
+ancestor-return overwrite still stops. Step/path caps cannot prove later writes
+absent. A real synthetic MZ prepared-reader case reproduces the same distinction.
+
+Delivery needs several reviewed slices: first settle the bounded declaration
+and report contract; then implement validated scopes and provenance with near,
+far and PE32 frames, saved registers, differing DS/SS, aliases, mixed/partial
+widths, rejected scopes and nonvacuous limits; finally verify archive delivery
+and the requester's original case. A new prepared-config input increments both
+protocol declarations and releases reader and engine together, with major
+classification and migration documentation when their contract breaks.
+No preservation is implemented or adopted by this planning PR. Exit: all package
+gates and the complete downstream nested-return controls pass against reviewed,
+published packages; a leaf-only write witness does not satisfy R1.
