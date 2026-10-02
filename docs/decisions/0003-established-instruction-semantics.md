@@ -251,7 +251,7 @@ Rules for every iteration:
 | 2 semantics seam | done | 2026-10-02 | see [Semantics seam](#semantics-seam) |
 | 3 pypcode backend | done | 2026-10-02 | #64; see [Groups moved](#groups-moved) |
 | 4 parity on recorded cases | done | 2026-10-02 | #65; see [Parity on recorded cases](#parity-on-recorded-cases) |
-| 5 cutover | done | 2026-10-02 | see [Cutover](#cutover) |
+| 5 cutover | done | 2026-10-02 | #66; see [Cutover](#cutover) |
 | 6 Ghidra callee cross-check | not started | | |
 
 ### Handwritten baseline
