@@ -661,6 +661,9 @@ test("trace decides a decrement loop's exit from p-code flags through the source
   const query = { ...config, sha256: createHash("sha256").update(data).digest("hex") };
   writeFileSync(join(dir, "config.json"), JSON.stringify(query));
   const result = run(["trace", join(dir, "config.json")]);
+  // The report names the decoder and the instruction semantics the engine ran.
+  assert.match(result.decoder, /^capstone \d+\.\d+\.\d+$/);
+  assert.match(result.instructionSemantics, /^pypcode \d+\.\d+\.\d+ \(Ghidra SLEIGH x86\)$/);
   assert.equal(result.paths.length, 1);
   const path = result.paths[0];
   assert.equal(path.returned, true);

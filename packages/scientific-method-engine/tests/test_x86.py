@@ -13,6 +13,8 @@ sys.path.insert(0, str(SRC))
 # The engine CLI runs from this checkout's source whether or not the package is installed.
 ENGINE = [sys.executable, "-B", "-m", "scientific_method_engine"]
 ENGINE_ENV = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(SRC), os.environ.get("PYTHONPATH")]))}
+import capstone
+import pypcode
 from scientific_method_engine.x86.image import Image
 from scientific_method_engine.x86.reports import run_report
 from scientific_method_engine.x86.trace import trace, walk, OVERLAP_REASON, CONTESTED_REASON
@@ -1403,6 +1405,14 @@ class ReporterTests(unittest.TestCase):
         self.assertFalse(calls[0]["guards"][0]["sameTargetValue"])
         self.assertFalse(result["completeWithinModel"])
 
+    def test_every_engine_module_imports_first(self):
+        modules = sorted(p.stem for p in (SRC / "scientific_method_engine" / "x86").glob("*.py") if p.stem != "__init__")
+        for module in modules:
+            with self.subTest(module=module):
+                code = f"import scientific_method_engine.x86.{module}"
+                result = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True, env=ENGINE_ENV)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_cli_identity_and_errors(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); data = bytes.fromhex("b8 01 00 c3")
@@ -1415,7 +1425,7 @@ class ReporterTests(unittest.TestCase):
             header = json.loads(result.stdout)
             self.assertEqual(header["sourceIdentity"]["size"], 4)
             self.assertEqual((header["decoder"], header["instructionSemantics"]),
-                             ("capstone 5.0.7", "pypcode 4.0.0 (Ghidra SLEIGH x86)"))
+                             ("capstone " + capstone.__version__, f"pypcode {pypcode.__version__} (Ghidra SLEIGH x86)"))
             cfg["sha256"] = "0" * 64; path.write_text(json.dumps(cfg))
             result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 1)
@@ -1506,6 +1516,16 @@ class ReporterTests(unittest.TestCase):
             with self.subTest(code=code):
                 path = report(code + " c3")["paths"][0]
                 self.assertTrue(path["returned"], path["stop"])
+                event, = [e for e in path["events"] if e["kind"] == "arithmetic"]
+                operation = {"c0": "rol", "c8": "ror", "cc": "ror", "f0": "sal"}[code[-2:]]
+                self.assertEqual(event["operation"], operation)
+                # A rotate reports the OR of its two shifted halves; SAL by one reports one shift.
+                self.assertEqual(event["result"]["expression"][0], "shl" if operation == "sal" else "or")
+                if operation != "sal":
+                    # The carry out is bit 0 (ROR) or the top bit (ROL) of the rotated operand.
+                    bits = event["left"]["bits"]
+                    low = event["left"]["expression"][2]
+                    self.assertEqual(event["carryOut"]["expression"][2], low + (bits - 1 if operation == "rol" else 0))
 
     def test_rotate_through_unknown_carry_resolves_a_carry_out_from_a_known_operand(self):
         # RCL by n carries out bit 16 - n of a 16-bit operand, RCR by n bit n - 1; CF starts unknown.

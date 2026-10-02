@@ -522,19 +522,30 @@ Done 2026-10-02.
    - Branch conditions come from p-code alone. The `branch` event fields come from the evidence
      layer's flag-producer record: `flagProducer`, `operation`, `left` and `right` after a
      comparison; `flag` and `carry` for a CF-only branch on a carry the evidence layer tracks; and
-     `reason: "flag producer unresolved"` or `decidedBy: "p-code flags"` otherwise.
+     `flagProducer` and `flagGeneration` after a producer with no comparable record.
+   - Every decided branch carries `decidedBy: "p-code flags"`, and every undecided one a `reason`
+     (`flag producer unresolved`, `carry unresolved` or `flags unresolved`). In 0.7.0
+     `decidedBy` marked a branch the handwritten predicate left open, so a branch after a
+     comparison it decided had neither field. That rule cannot survive the cutover: telling which
+     branches a comparison record decides needs the handwritten flag rules this phase deletes.
+     Marking every p-code decision keeps `decidedBy` on each event that had it in 0.7.0 and adds it
+     to the rest, and the new `flags unresolved` reason gives an undecided branch after a
+     comparison the reason it lacked.
    - `BRANCH_CONDITIONS` stays in `machine.py`. It is the assumption key table spike answer 4
      called for (synonymous and complementary branches share one assumption), and `result_flow`
      uses it. It computes no flag.
 2. `tests/differential.py` and `tests/test_differential.py` are deleted. The test modules call the
    engine's `run_report`, and `tests/oracle.py` keeps the Unicorn oracle cases on the one backend.
 3. Reports name their semantics in a new header field, `instructionSemantics`, beside `decoder`.
-   The reporter guide documents it and `AGENTS.md` states the rule that replaces decision 6. No
-   report field changed meaning, so the migration guide has no entry for this phase.
+   The reporter guide documents it and `AGENTS.md` states the rule that replaces decision 6. The
+   header names the Capstone and pypcode versions the engine loaded. Branch events gain
+   `decidedBy` and `reason` where they lacked them; no event loses a field, so the migration guide
+   has no entry for this phase.
 4. ADR 0002's open item is marked resolved.
 
 The release label is `release:minor`: the header gains a field, and no supported import
-(`x86.pe.pe32`, `x86.image.read_source`) changes. The modules removed here were never in a release.
+(`x86.pe.pe32`, `x86.image.read_source`) changes. `x86.handwritten` and `x86.semantics` shipped in
+0.7.0 as internal modules, which the package README excludes from the supported imports.
 
 ### Blockers
 

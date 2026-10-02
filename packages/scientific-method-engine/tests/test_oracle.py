@@ -60,6 +60,23 @@ class Compare(unittest.TestCase):
             with self.subTest(jcc=jcc):
                 check(self, "39c0" + jcc + "04 b90100 c3 b90200 c3", registers={"ax": 0x1234}, resolved=("cx",))
 
+    def test_branches_after_a_comparison_name_how_they_were_decided(self):
+        # cmp ax, 3 with AX = 3: p-code decides JE and JP, and the event keeps the comparison record.
+        for jcc in ("74", "7a"):
+            with self.subTest(jcc=jcc):
+                result = check(self, "b80300 3d0300" + jcc + "04 b90100 c3 b90200 c3", resolved=("cx",))
+                branch, = [e for e in result["paths"][0]["events"] if e["kind"] == "branch"]
+                self.assertEqual((branch["operation"], branch["decidedBy"]), ("cmp", "p-code flags"))
+                self.assertNotIn("reason", branch)
+        # With AX unknown the comparison decides nothing: both arms run and each says why.
+        data = bytes.fromhex("3d0300 7401 90 c3".replace(" ", ""))
+        result = run_report(data, configuration(data, dict(STACK)), "trace")
+        branches = [e for path in result["paths"] for e in path["events"] if e["kind"] == "branch"]
+        self.assertEqual(sorted(e["taken"] for e in branches), [False, True])
+        for e in branches:
+            self.assertEqual((e["operation"], e["reason"]), ("cmp", "flags unresolved"))
+            self.assertNotIn("decidedBy", e)
+
 
 class ArithmeticAndLogic(unittest.TestCase):
     def test_values(self):
@@ -77,7 +94,7 @@ class ArithmeticAndLogic(unittest.TestCase):
             self.assertEqual((e["decidedBy"], e["flagProducer"]), ("p-code flags", 7))
 
     def test_undecided_branch_keeps_the_reason(self):
-        # inc ax; jnz: AX is unknown, so neither backend decides the branch and both arms run.
+        # inc ax; jnz: AX is unknown, so the engine does not decide the branch and both arms run.
         data = bytes.fromhex("40 7501 90 c3".replace(" ", ""))
         result = run_report(data, configuration(data, dict(STACK)), "trace")
         branches = [e for path in result["paths"] for e in path["events"] if e["kind"] == "branch"]

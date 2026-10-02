@@ -4,6 +4,20 @@ Values, flags and branch conditions come from the p-code pypcode lifts from Ghid
 specification. The evidence layer keeps what it always decided: which segment register an access
 uses (from Capstone, decision 3), access roles, the model's acceptance rules, flag-producer records
 and the events each instruction reports. A ``State`` reaches this module through ``BACKEND``.
+
+What this module and ``pcode.Run`` use of a ``State``:
+
+- Methods: ``get``, ``put``, ``reg``, ``setreg``, ``segment``, ``access``, ``address``, ``event``,
+  ``set_flags``, ``forget_flags``, ``carry_value``, ``save_flags`` and ``restore_flags``.
+- Read only: ``at``, ``bits``, ``flat``, ``sp``, ``flags``, ``flag_serial``, ``flag_epoch``,
+  ``unknown_flag_site``, ``segment_bases`` and ``value_transfers``.
+- Read and assigned: ``flag_values`` (the arithmetic flags p-code computed, or None), ``carry``,
+  ``direction_flag`` and ``interrupt_flag``. ``conditional`` is appended to (the divide-error
+  assumption).
+
+Every member above belongs to one path, and ``trace`` copies a path with ``deepcopy`` when a branch
+splits it. The backend keeps no path state of its own: ``Pypcode.__deepcopy__`` returns the same
+object, so a value this module stores must live on the ``State`` to be copied with its path.
 """
 from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
 
@@ -409,8 +423,6 @@ def carry_out(state, run, site):
 class Pypcode:
     """The engine's instruction semantics: ordinary instructions, branch conditions and string bodies."""
 
-    name = "pypcode"
-
     def __deepcopy__(self, memo):
         # The backend holds no path state, so every copied path shares it.
         return self
@@ -426,7 +438,8 @@ class Pypcode:
         """Evaluate a conditional branch on the current flags.
 
         Returns ``(answer, info)``: True, False or None when unresolved, and the ``branch`` event
-        fields, which describe the evidence layer's record of the flag producer.
+        fields. They describe the evidence layer's record of the flag producer, then either
+        ``decidedBy: "p-code flags"`` for a decided branch or a ``reason`` for an undecided one.
         """
         ops, _ = LIFTER.ops(state.flat, bytes((0x70 + CONDITION_CODES[mnemonic], 0)), 0x100)
         needed = {LIFTER.register(state.flat, v[1], v[2]) for o in ops for v in o.inputs if v[0] == "register"}
@@ -442,24 +455,24 @@ class Pypcode:
                     "left": a.report(), "right": b.report()}
         # CF is always readable: the evidence layer names it when no instruction resolved it.
         if not needed <= set(state.flag_values or ()) | {"CF"}:
+            info.setdefault("reason", "flags unresolved")
             return None, info
         condition = Run(state, ops, None, flags=state.flag_values or {}).execute(stop_at_branch=True)
         if condition.number is None:
-            if carry_only:
-                info["reason"] = "carry unresolved"
+            # Every undecided branch says why: the carry, the producer or its flags are unknown.
+            info.setdefault("reason", "carry unresolved" if carry_only else "flags unresolved")
             return None, info
-        if "reason" in info:
-            # No comparison record exists, but the flags p-code computed decide the branch.
-            del info["reason"]
-            info["decidedBy"] = "p-code flags"
+        # p-code decides every branch the engine resolves; the record above only describes the producer.
+        info.pop("reason", None)
+        info["decidedBy"] = "p-code flags"
         return bool(condition.number), info
 
-    def string_iteration(self, state, ins, operation, width, source_segment, delta_step):
+    def string_iteration(self, state, ins, operation, width, source_segment):
         """Apply one iteration of an accepted string form; see ``machine.string_effect``.
 
-        For a repeated CMPS or SCAS, returns whether the repeat condition holds afterwards (1, 0
-        or unknown); otherwise None. ``delta_step`` is the evidence layer's step; p-code computes
-        its own from DF.
+        ``source_segment`` names the source operand's segment register (MOVS, LODS and CMPS only).
+        p-code steps SI and DI by the direction flag. For a repeated CMPS or SCAS, returns whether
+        the repeat condition holds afterwards (1, 0 or unknown); otherwise None.
         """
         si, di = ("esi", "edi") if state.flat else ("si", "di")
         source, destination = state.reg(si), state.reg(di)

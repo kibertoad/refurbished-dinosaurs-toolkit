@@ -38,6 +38,9 @@ def alias(name):
 class State:
     def __init__(self, entry, image, config):
         self.bits, self.flat, self.mask = image.bits, image.flat, image.mask
+        # Imported here: the backend imports this module, so a module-level import would make the
+        # import order matter.
+        from .pcode_backend import BACKEND
         self.semantics = BACKEND
         self.sp, self.bp = ("esp", "ebp") if self.flat else ("sp", "bp")
         self.at = entry
@@ -63,7 +66,8 @@ class State:
         self.guards = []
         self.assumptions = {}
         self.flags = None
-        # Arithmetic flags as values when the last flag-writing instruction ran on p-code; None otherwise.
+        # Arithmetic flags as values from the last flag-writing instruction's p-code; None when no
+        # instruction computed them yet or the last one forgot them.
         self.flag_values = None
         # CF when an instruction sets it without leaving a comparable flag producer; None defers to flags.
         self.carry = None
@@ -367,11 +371,10 @@ def string_effect(state, ins, count, remaining, charge=None):
     # any segment override.
     source_name = (segment_register(ins, ins.operands[1].mem) if operation in ("movs", "lods") else
                    segment_register(ins, ins.operands[0].mem) if operation == "cmps" else None)
-    delta = -width if state.direction_flag.number else width
     counter = "ecx" if state.flat else "cx"
     if not compare or not repeated(ins):
         for _ in range(count.number):
-            state.semantics.string_iteration(state, ins, operation, width, source_name, delta)
+            state.semantics.string_iteration(state, ins, operation, width, source_name)
         if repeated(ins):
             state.setreg(counter, const(0, state.bits, state.at), state.at)
         return count.number
@@ -381,7 +384,7 @@ def string_effect(state, ins, count, remaining, charge=None):
             raise StopPath("String iteration budget exhausted; remaining effects unresolved")
         if charge is not None:
             charge(1)
-        holds = state.semantics.string_iteration(state, ins, operation, width, source_name, delta)
+        holds = state.semantics.string_iteration(state, ins, operation, width, source_name)
         iterations += 1
         outcomes.append(holds)
         if iterations == count.number:
@@ -398,6 +401,3 @@ def string_effect(state, ins, count, remaining, charge=None):
     state.event("string-compare-exit", iterations=iterations, exit=reason, counter=state.reg(counter).report())
     return iterations
 
-
-# The semantics backend imports names defined above.
-from .pcode_backend import BACKEND  # noqa: E402
