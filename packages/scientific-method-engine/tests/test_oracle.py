@@ -1,7 +1,7 @@
 """Unicorn oracle cases per instruction group (ADR 0003). Synthetic machine code only."""
 import unittest
 
-from oracle import check
+from oracle import STACK, check, configuration, run_report
 
 DATA = {"ds": 0x3000, "es": 0x4000}
 SAME = {"ds": 0x4000, "es": 0x4000}
@@ -76,10 +76,22 @@ class ArithmeticAndLogic(unittest.TestCase):
             self.assertNotIn("reason", e)
             self.assertEqual((e["decidedBy"], e["flagProducer"]), ("p-code flags", 7))
 
+    def test_undecided_branch_keeps_the_reason(self):
+        # inc ax; jnz: AX is unknown, so neither backend decides the branch and both arms run.
+        data = bytes.fromhex("40 7501 90 c3".replace(" ", ""))
+        result = run_report(data, configuration(data, dict(STACK)), "trace")
+        branches = [e for path in result["paths"] for e in path["events"] if e["kind"] == "branch"]
+        self.assertEqual(sorted(e["taken"] for e in branches), [False, True])
+        for e in branches:
+            self.assertEqual(e["reason"], "flag producer unresolved")
+            self.assertNotIn("decidedBy", e)
+
     def test_neutral_operands_keep_the_operation(self):
         # BX is unknown to the engine, so each result stays an expression over it.
         result = check(self, "b80100 80cf00 83f300 81e3ffff 09c3 c3", resolved=("ax",))
-        self.assertEqual(result["paths"][0]["registers"]["bx"]["expression"][0], "or")
+        bx = result["paths"][0]["registers"]["bx"]["expression"]
+        # or(and(xor(..., 0), 0xffff), ax): neither the XOR with 0 nor the AND with ~0 folds away.
+        self.assertEqual((bx[0], bx[1][0], bx[1][1][0]), ("or", "and", "xor"))
 
     def test_byte_forms_and_memory(self):
         check(self, "bb1000 c707ff00 8007 01 fe07 8b07 b4ff 00e0 c3", registers=DATA, resolved=("ax",))
@@ -107,6 +119,9 @@ class ShiftsAndRotates(unittest.TestCase):
         result = check(self, "b90100 d1ea d1d8 d1ea d1d8 c3", resolved=("cx",))
         ax = result["paths"][0]["registers"]["ax"]["expression"]
         self.assertEqual(ax[0], "or")
+        # The second RCR shifts out bit 0 of the first RCR's result, not bit 1 of the initial AX.
+        rotates = [e for e in result["paths"][0]["events"] if e.get("operation") == "rcr"]
+        self.assertEqual(rotates[1]["carryOut"]["expression"][1][0], "or")
 
     def test_double_word_shift_from_a_zero_high_half(self):
         # DX starts at zero; RCL carries AX's unknown top bits into it. The second RCL shifts out
@@ -124,8 +139,15 @@ class MultiplyAndDivide(unittest.TestCase):
         check(self, "b80300 bb0500 f7e3 b0f0 b304 f6eb 6bc3fd 0fafc3 c3", resolved=("ax", "dx"))
 
     def test_low_products_of_unknown_operands(self):
-        # The engine leaves AX and CX unknown; the low products keep the operand-width form.
+        # The engine leaves CX unknown; the low products keep the operand-width form.
         result = check(self, "b80300 0fafc8 6bd1fd 69d90500 c3")
+        registers = result["paths"][0]["registers"]
+        self.assertEqual(registers["cx"]["expression"][0], "mul")
+        self.assertEqual(registers["dx"]["expression"][0], "mul")
+
+    def test_low_products_of_extended_operands(self):
+        # AX holds the sign extension of an unknown byte; the products name AX, not the byte.
+        result = check(self, "a00000 98 0fafc8 6bd0fd b80100 c3", registers=DATA, resolved=("ax",))
         registers = result["paths"][0]["registers"]
         self.assertEqual(registers["cx"]["expression"][0], "mul")
         self.assertEqual(registers["dx"]["expression"][0], "mul")
@@ -142,12 +164,18 @@ class Conversions(unittest.TestCase):
     def test_sign_extensions(self):
         check(self, "b080 98 89c3 99 b8ff7f 6698 6699 c3", resolved=("ax", "bx", "dx", "eax", "edx"))
 
-
     def test_sign_fill_of_an_extended_byte(self):
         # The byte at DS:0 is unknown to the engine; CWD names the sign bit of AX.
         result = check(self, "a00000 98 99 b80100 c3", registers=DATA, resolved=("ax",))
         dx = result["paths"][0]["registers"]["dx"]["expression"]
         self.assertEqual(tuple(dx[1][2:4]), (15, 1))
+
+    def test_sign_extension_of_an_extended_byte(self):
+        # The byte at DS:0 is unknown to the engine; CWDE extends AX and CDQ names the sign bit of EAX.
+        result = check(self, "a00000 98 6698 6699 b80100 c3", registers=DATA, resolved=("ax",))
+        cwde = next(e for e in result["paths"][0]["events"] if e["kind"] == "conversion" and e["destinationBits"] == 32)
+        self.assertEqual(cwde["result"]["expression"][1][2:4], (8, 16))
+        self.assertEqual(tuple(result["paths"][0]["registers"]["edx"]["expression"][1][2:4]), (31, 1))
 
 
 class FlagsAndDirection(unittest.TestCase):

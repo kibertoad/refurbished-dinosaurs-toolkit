@@ -768,15 +768,17 @@ def low_product(value, site):
 
     SLEIGH writes a two- or three-operand IMUL as the double-width product of the sign-extended
     operands, truncated; the low half does not depend on the extension, and reports write it as
-    the operand-width product.
+    the operand-width product. An operand that already holds a sign extension (after CBW or MOVSX)
+    reaches the product as one extension of the narrower value, which is extended back to the
+    operand's width here.
     """
     term = value.term
     if term[0] != "extract" or term[2] != 0 or term[1][0] != "mul":
         return value
     factors = []
     for factor in term[1][1:]:
-        if factor[0] in ("signExtend", "zeroExtend") and factor[2] == value.bits:
-            factors.append(Value(value.bits, factor[1]))
+        if factor[0] in ("signExtend", "zeroExtend") and factor[2] <= value.bits:
+            factors.append(resize(Value(factor[2], factor[1]), value.bits, signed=factor[0] == "signExtend"))
         elif factor[0] == "constant":
             factors.append(const(factor[1], value.bits))
         else:
@@ -837,19 +839,19 @@ def divide(state, ins, image):
                 quotient=quotient.report(), remainder=remainder.report(), fault=fault)
 
 
-def sign_fill(value, source, site):
-    """CWD/CDQ's high half as the sign of the source register, when p-code names that same bit.
+def through_extension(value, source, form):
+    """``value`` as ``form(source)`` when p-code wrote ``form`` of the value ``source`` sign-extends.
 
-    When the source is itself a sign extension, p-code takes the sign from the narrower value it
-    extended; both name one bit, and reports name it in the register the instruction reads.
+    When the source register holds a sign extension (after CBW, CWDE or MOVSX), p-code reads
+    through it to the narrower value it extended, because ``pcode.evaluate`` folds an extension
+    of an extension. Both name the same bits; reports name them in the register the instruction
+    reads.
     """
-    expected = resize(extract(source, source.bits - 1, 1), value.bits, signed=True)
-    if value.term == expected.term or value.number is not None:
+    if value.number is not None or source.term[0] != "signExtend":
         return value
-    if source.term[0] == "signExtend":
-        inner = Value(source.term[2], source.term[1])
-        if value.term == resize(extract(inner, inner.bits - 1, 1), value.bits, signed=True).term:
-            return Value(value.bits, expected.term, value.sources)
+    inner = Value(source.term[2], source.term[1])
+    if value.term == form(inner).term:
+        return Value(value.bits, form(source).term, value.sources)
     return value
 
 
@@ -858,9 +860,15 @@ def conversion(state, ins, image):
     before = {name: state.reg(name) for name in ("al", "ax", "eax")}
 
     def present(value, _):
-        if m in ("cwd", "cdq") and value.bits in (16, 32):
-            return sign_fill(value, before["ax" if value.bits == 16 else "eax"], state.at)
-        return value
+        if value.bits not in (16, 32):
+            return value
+        if m in ("cwd", "cdq"):
+            # The high half is the sign bit of AX or EAX.
+            return through_extension(value, before["ax" if value.bits == 16 else "eax"],
+                                     lambda v: resize(extract(v, v.bits - 1, 1), value.bits, signed=True))
+        # CBW and CWDE write the sign extension of AL or AX.
+        return through_extension(value, before["al" if value.bits == 16 else "ax"],
+                                 lambda v: resize(v, value.bits, signed=True))
     f = run_plain(state, ins, image, present=present)
     (destination, value), = f.run.registers.items()
     wide = value.bits == 32
