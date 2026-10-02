@@ -7,6 +7,7 @@ import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.InstructionIterator;
 import ghidra.program.model.listing.Listing;
+import ghidra.program.model.symbol.FlowType;
 
 public class ReportCallsToRange extends GhidraScript {
     private static final int MAX_MATCHES = 50;
@@ -14,8 +15,11 @@ public class ReportCallsToRange extends GhidraScript {
     @Override
     protected void run() throws Exception {
         String[] arguments = getScriptArgs();
-        if (arguments.length < 2) {
-            printerr("Supply start address and end address (inclusive), e.g. 1028:d820 1028:dab7");
+        String mode = arguments.length == 3 ? arguments[2] : "all";
+        if (arguments.length < 2 || arguments.length > 3
+            || !(mode.equals("all") || mode.equals("calls") || mode.equals("jumps"))) {
+            printerr("Supply start address, end address (inclusive) and an optional kind (all, calls or jumps), "
+                + "e.g. 1028:d820 1028:dab7 calls");
             return;
         }
 
@@ -26,24 +30,27 @@ public class ReportCallsToRange extends GhidraScript {
             return;
         }
 
-        println("===== flow targets in " + start + ".." + end + " =====");
+        println("===== flow targets in " + start + ".." + end + " (" + mode + ") =====");
         Listing listing = currentProgram.getListing();
         InstructionIterator instructions = listing.getInstructions(true);
-        int matches = 0;
-        while (instructions.hasNext() && matches < MAX_MATCHES && !monitor.isCancelled()) {
+        int calls = 0;
+        int jumps = 0;
+        boolean capped = false;
+        while (instructions.hasNext() && !monitor.isCancelled()) {
             Instruction instruction = instructions.next();
-            if (!instruction.getFlowType().isCall() && !instruction.getFlowType().isJump()) {
-                continue;
-            }
+            FlowType flow = instruction.getFlowType();
+            boolean call = flow.isCall();
+            if (!call && !flow.isJump()) continue;
+            if (call ? mode.equals("jumps") : mode.equals("calls")) continue;
 
             Address[] flows = instruction.getFlows();
-            if (flows == null) {
-                continue;
-            }
+            if (flows == null) continue;
 
             for (Address target : flows) {
-                if (target.compareTo(start) < 0 || target.compareTo(end) > 0) {
-                    continue;
+                if (target.compareTo(start) < 0 || target.compareTo(end) > 0) continue;
+                if (calls + jumps >= MAX_MATCHES) {
+                    capped = true;
+                    break;
                 }
 
                 Function fromFunction = listing.getFunctionContaining(instruction.getAddress());
@@ -52,16 +59,22 @@ public class ReportCallsToRange extends GhidraScript {
                     + (fromFunction == null ? "" : " in " + fromFunction.getEntryPoint() + " " + fromFunction.getName())
                     + " -> " + target
                     + (toFunction == null ? "" : " (" + toFunction.getEntryPoint() + " " + toFunction.getName() + ")")
-                    + " :: " + instruction);
-                matches++;
+                    + " :: " + instruction + (call ? " [call]" : " [jump]"));
+                if (call) calls++;
+                else jumps++;
                 break;
             }
+            if (capped) break;
         }
 
-        if (matches == 0) {
-            println("No resolved call/jump targets in range.");
-        } else if (matches == MAX_MATCHES && instructions.hasNext()) {
-            println("Output capped at " + MAX_MATCHES + " matches.");
+        if (capped) {
+            println("Output capped at " + MAX_MATCHES + " sites (" + calls + " calls, " + jumps
+                + " jumps); the scan did not finish. Narrow the range or pass calls or jumps.");
+        } else if (calls + jumps == 0) {
+            println("No resolved " + (mode.equals("all") ? "call/jump" : mode.substring(0, mode.length() - 1))
+                + " targets in range.");
+        } else {
+            println("Matched " + calls + " calls and " + jumps + " jumps; the scan covered every instruction.");
         }
     }
 }

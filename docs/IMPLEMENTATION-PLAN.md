@@ -318,3 +318,23 @@ engine tests and through the reader bridge. The script compiles against Ghidra 1
 reports of a real program stay in its `GAME_DIR`.
 Exit: the option ships with tests, the reporter guide documents it, and the script has its row in
 the engine README catalog.
+
+## Analyzer script requests from restorations
+
+Tooling outcome: the packaged Ghidra scripts say what their scans covered and where they stopped.
+`ReportScalarConstants` labels each match as an immediate or a memory-operand displacement and can
+keep one kind. `ReportCallsToRange` labels calls and jumps and can keep one kind. A capped report
+says its scan did not finish. The first-argument scripts take the nearest `PUSH` before the call,
+passing over instructions that fall through, leave the stack pointer alone and are no flow target,
+and never read a memory operand's displacement as a literal. `ReportFunctionSummary` prints body
+ranges and calls without a continuation in the body, and ends with the addresses it could not
+summarize. `ReportDecompileWindow` cuts a count above its cap and names the next window.
+`ExportFunctionFingerprints` replaces its output only when the export completes. Methodology that
+no script can enforce (checking a headless run, sweep coverage, positive controls for byte scans,
+header addresses) is in the Ghidra workflow guide.
+
+Synthetic acceptance: headless Ghidra 12.1 runs on synthetic 32-bit programs that show each new
+label, mode, cap message and skipped or refused look-back, a no-return truncation and a missing
+function. Every script compiles against Ghidra 12.1. There is no CI job for scripts.
+Exit: the engine README catalog and the Ghidra workflow describe the behaviour, and each request
+closes when its restoration's own run passes against the released scripts.

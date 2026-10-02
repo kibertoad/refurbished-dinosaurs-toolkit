@@ -1,7 +1,9 @@
-// Reports bounded instruction references to explicitly supplied scalar values.
+// Reports bounded instruction references to explicitly supplied scalar values, as immediates or as
+// memory-operand displacements.
 // @category Restoration
 
 import ghidra.app.script.GhidraScript;
+import ghidra.program.model.lang.OperandType;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.InstructionIterator;
@@ -16,18 +18,25 @@ public class ReportScalarConstants extends GhidraScript {
     @Override
     protected void run() throws Exception {
         String[] arguments = getScriptArgs();
-        if (arguments.length == 0) {
-            printerr("Supply one or more scalar values (decimal or 0x-prefixed). ");
+        // An optional first argument keeps only one operand kind: "immediate" or "memory".
+        String kind = arguments.length > 0 && (arguments[0].equals("immediate") || arguments[0].equals("memory"))
+            ? arguments[0] : null;
+        int first = kind == null ? 0 : 1;
+        if (arguments.length <= first) {
+            printerr("Supply an optional operand kind (immediate or memory) and one or more scalar values "
+                + "(decimal or 0x-prefixed).");
             return;
         }
 
         Set<Long> requested = new HashSet<>();
-        for (String argument : arguments) requested.add(Long.decode(argument));
+        for (int index = first; index < arguments.length; index++) requested.add(Long.decode(arguments[index]));
         int matches = 0;
         InstructionIterator instructions = currentProgram.getListing().getInstructions(true);
         while (instructions.hasNext() && !monitor.isCancelled()) {
             Instruction instruction = instructions.next();
             for (int operand = 0; operand < instruction.getNumOperands(); operand++) {
+                String operandKind = isMemory(instruction.getOperandType(operand)) ? "memory" : "immediate";
+                if (kind != null && !kind.equals(operandKind)) continue;
                 for (Object object : instruction.getOpObjects(operand)) {
                     if (!(object instanceof Scalar scalar)
                         || !matchesRequested(scalar, requested)) continue;
@@ -35,15 +44,24 @@ public class ReportScalarConstants extends GhidraScript {
                         .getFunctionContaining(instruction.getAddress());
                     println(scalar.getUnsignedValue() + " at " + instruction.getAddress()
                         + (function == null ? "" : " in " + function.getEntryPoint()
-                            + " " + function.getName()));
+                            + " " + function.getName())
+                        + " :: " + operandKind + " operand " + operand + " of " + instruction);
                     if (++matches >= MAX_MATCHES) {
-                        println("... output capped at " + MAX_MATCHES + " matches");
+                        println("Output capped at " + MAX_MATCHES + " matches; the search did not finish. "
+                            + "Narrow it with an operand kind or fewer values.");
                         return;
                     }
                 }
             }
         }
         if (matches == 0) println("No requested scalar constants matched.");
+        else println("Matched " + matches + " operands; the search covered every instruction.");
+    }
+
+    // A displacement inside a memory operand, such as [ECX + 0x44], is a memory operand; an operand
+    // that is only a scalar is an immediate.
+    private static boolean isMemory(int type) {
+        return OperandType.isDynamic(type) || OperandType.isIndirect(type) || OperandType.isAddress(type);
     }
 
     // Arguments are decoded as signed longs while operands are reported unsigned, so a request
