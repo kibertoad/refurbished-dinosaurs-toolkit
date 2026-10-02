@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-from . import backends, drives, tools
+from . import backends, drives, redumper, tools
 from .disc import DiscError
 from .formats import FORMATS
 from .notice import NOTICE
@@ -57,10 +57,34 @@ def format_choices(profile: Profile, found: dict[str, Path | None] | None = None
     return choices
 
 
+AUTO_LABEL = "Automatic (redumper, downloaded if needed)"
+AUTO_DESCRIPTION = (
+    "Uses redumper when it is installed, and otherwise offers to download the pinned redumper "
+    "release from GitHub. If that is declined or fails, it uses cdrdao, and if cdrdao is not "
+    "installed either, it copies the data track only, without audio."
+)
+
+
 def backend_label(backend: backends.Backend) -> str:
-    """A backend's name with what it is missing."""
+    """A backend's name with what it is missing, or that redumper downloads when needed."""
     missing = backend.missing()
+    if backend.id == "redumper" and missing and redumper.can_download():
+        return backend.title + " - downloads when you start"
     return backend.title + (f" - needs {', '.join(missing)}" if missing else "")
+
+
+def needs_download(backend_id: str) -> bool:
+    """Whether copying with this backend choice will first download redumper."""
+    return backend_id in ("auto", "redumper") and tools.find_tool("redumper") is None and redumper.can_download()
+
+
+def will_hold_raw_sectors(backend_id: str) -> bool:
+    """Whether a copy with this backend choice holds raw sectors (and so audio)."""
+    if backend_id == "data-copy":
+        return False
+    if backend_id == "auto":
+        return tools.find_tool("redumper") is not None or redumper.can_download() or not backends.backend_by_id("cdrdao").missing()
+    return True
 
 
 class ArchiverWindow:
@@ -91,7 +115,8 @@ class ArchiverWindow:
         self._profile_changed()
         self.source_kind.trace_add("write", lambda *_: self._profile_changed())
         self._update_state()
-        root.after(100, self._poll)
+        self._poll_job = root.after(100, self._poll)
+        root.protocol("WM_DELETE_WINDOW", self.close)
 
     # Layout
 
@@ -127,9 +152,8 @@ class ArchiverWindow:
         self.drive_box.grid(row=0, column=1, sticky="ew", padx=4)
         ttk.Button(box, text="Refresh", command=self._refresh_drives).grid(row=0, column=2)
         ttk.Label(box, text="Copied with").grid(row=1, column=0, sticky="w")
-        self.backend_labels = {backend_label(b): b for b in backends.BACKENDS}
-        auto = backends.backend_by_id("auto")
-        self.backend = tk.StringVar(value=backend_label(auto))
+        self.backend_labels = {AUTO_LABEL: "auto", **{backend_label(b): b.id for b in backends.BACKENDS}}
+        self.backend = tk.StringVar(value=AUTO_LABEL)
         backend_box = ttk.Combobox(box, textvariable=self.backend, values=list(self.backend_labels), state="readonly")
         backend_box.grid(row=1, column=1, sticky="ew", padx=4, pady=2)
         backend_box.bind("<<ComboboxSelected>>", lambda _: self._profile_changed())
@@ -236,12 +260,13 @@ class ArchiverWindow:
 
     def raw_copy(self) -> bool:
         """Whether the copy will hold raw sectors: an existing image is assumed to, a data track copy does not."""
-        return self.source_kind.get() == "image" or self.backend_labels[self.backend.get()].id != "data-copy"
+        return self.source_kind.get() == "image" or will_hold_raw_sectors(self.backend_labels[self.backend.get()])
 
     def _profile_changed(self) -> None:
         profile = self.profiles[self.profile_name.get()]
-        backend = self.backend_labels[self.backend.get()]
-        self.backend_notes.configure(text=backend.description if self.source_kind.get() == "drive" else "")
+        backend_id = self.backend_labels[self.backend.get()]
+        description = AUTO_DESCRIPTION if backend_id == "auto" else backends.backend_by_id(backend_id).description
+        self.backend_notes.configure(text=description if self.source_kind.get() == "drive" else "")
         for choice in format_choices(profile, raw=self.raw_copy()):
             button = self.format_buttons[choice.id]
             button.configure(text=choice.label + (f" - {choice.reason}" if choice.reason else ""))
@@ -281,8 +306,25 @@ class ArchiverWindow:
             "name": self.name.get(),
         }
         if self.source_kind.get() == "drive":
+            backend_id = self.backend_labels[self.backend.get()]
             job["drive"] = self.drive.get().strip()
-            job["backend"] = self.backend_labels[self.backend.get()].id
+            job["backend"] = backend_id
+            job["allow_download"] = False
+            if needs_download(backend_id):
+                pin = redumper.load_pin()
+                job["allow_download"] = messagebox.askyesno(
+                    "Download redumper",
+                    f"redumper, the program that makes the archival copy, is not installed.\n\n"
+                    f"Download redumper {pin.tag} for {redumper.platform_key()} from GitHub now? It is "
+                    f"checked by SHA-256 and kept in {redumper.install_dir(pin)}.\n\n"
+                    "If you choose No, cdrdao is used if it is installed, and otherwise only the data "
+                    "track is copied, without audio.",
+                )
+                if not job["allow_download"] and backend_id == "redumper":
+                    return
+                if not job["allow_download"] and backends.backend_by_id("cdrdao").missing():
+                    # Only the data track will be read: write what the profile recommends for that.
+                    job["formats"] = None
         else:
             job["image"] = Path(self.image.get())
         self._clear_log()
@@ -310,7 +352,13 @@ class ArchiverWindow:
                     self._finish(kind, value)
         except queue.Empty:
             pass
-        self.root.after(100, self._poll)
+        self._poll_job = self.root.after(100, self._poll)
+
+    def close(self) -> None:
+        """Stop the window's timers and destroy it."""
+        self.progress.stop()
+        self.root.after_cancel(self._poll_job)
+        self.root.destroy()
 
     def _finish(self, kind: str, value: object) -> None:
         self.progress.stop()

@@ -34,9 +34,37 @@ Reading the disc (`--backend`):
 | `cdrdao` | [cdrdao](https://cdrdao.sourceforge.net) and its `toc2cue` | Every raw sector of data and audio tracks, with pregaps. No subchannel or protection data. |
 | `data-copy` | none | The data track's 2,048-byte sectors as an ISO. No audio. For data-only discs on a computer without either program. |
 
-`auto` (the default) uses the first one installed, in that order. The backend's own files
-(redumper's `.scram`, `.subcode`, `.toc` and `.log`, for example) are kept unchanged in the
-`archival` folder.
+`auto` (the default) works down that list:
+
+1. redumper, if it is installed, in the download's `tools/` folder, or already downloaded;
+2. otherwise the pinned redumper release, downloaded from GitHub. The window asks first; the
+   command downloads unless given `--no-download`;
+3. if the download is declined or fails, cdrdao, if it is installed;
+4. otherwise the data track copy, which reads no audio. The log says so, and a disc profile that
+   expects audio tracks reports the mismatch.
+
+Asking for `--backend redumper` downloads it the same way, but fails rather than falling back.
+The backend's own files (redumper's `.scram`, `.subcode`, `.toc` and `.log`, for example) are
+kept unchanged in the `archival` folder.
+
+### Downloading redumper
+
+The release to download is pinned in
+[`src/dinorefurb_disc_archiver/redumper.json`](src/dinorefurb_disc_archiver/redumper.json): a
+tag and the SHA-256 of each platform's zip. A download is used only when its SHA-256 matches the
+pin, or, for a platform the pin leaves `null`, the digest GitHub publishes for that asset; a
+download with neither is refused. It is unpacked, unmodified, into your own data folder under its
+tag, so a new pin downloads its own copy:
+
+| System | Folder |
+|---|---|
+| Windows | `%LOCALAPPDATA%\dinorefurb-disc-archiver\redumper\<tag>` |
+| macOS | `~/Library/Application Support/dinorefurb-disc-archiver/redumper/<tag>` |
+| Linux | `$XDG_DATA_HOME/dinorefurb-disc-archiver/redumper/<tag>` (default `~/.local/share`) |
+
+`DISC_ARCHIVER_HOME` moves that folder. `disc-archiver install-redumper` downloads it ahead of
+time, and `disc-archiver tools` says whether it is there. Downloading redumper is the archiver's
+only use of the network.
 
 Writing the copy (`--format`, repeat for several):
 
@@ -73,13 +101,13 @@ and unpack it anywhere:
 | `disc-archiver-<version>-macos-arm64.zip` | Macs with Apple silicon |
 | `disc-archiver-<version>-linux-x64.zip` | 64-bit Linux |
 
-Each holds the window, the command and redumper, ready to run:
+Each holds the window and the command, ready to run:
 
 ```text
 disc-archiver-<version>-windows-x64/
   Disc Archiver.exe          the window: double-click it
   disc-archiver.exe          the command, for a terminal
-  tools/redumper/            redumper, unmodified, with its licence (GPL-3.0)
+  tools/                     put chdman or ffmpeg here if you want those formats
   README.txt
   PERSONAL-ARCHIVE-ONLY.txt
 ```
@@ -89,8 +117,9 @@ code-signed yet: on Windows choose **More info** and **Run anyway** if SmartScre
 macOS right-click the app and choose **Open**, or allow it under **System Settings > Privacy &
 Security**.
 
-Programs placed in `tools/` (or `tools/<name>/bin/`) beside the executables are found first, so
-`chdman` or `ffmpeg` can be dropped in there too.
+redumper is downloaded the first time you copy a disc (see [Downloading redumper](#downloading-redumper)).
+Programs placed in `tools/` (or `tools/<name>/bin/`) beside the executables are found first, so a
+redumper you downloaded yourself, `chdman` or `ffmpeg` can be dropped in there too.
 
 ### With Python
 
@@ -102,9 +131,9 @@ which the python.org installers for Windows and macOS include (on Debian and Ubu
 pipx install dinorefurb-disc-archiver     # or: uv tool install dinorefurb-disc-archiver
 ```
 
-This installs the same `disc-archiver` command and `disc-archiver-gui` window, without redumper:
-install [redumper](https://github.com/superg/redumper/releases) and put it on `PATH`, or set
-`DISC_ARCHIVER_REDUMPER`.
+This installs the same `disc-archiver` command and `disc-archiver-gui` window. redumper is
+downloaded on first use in the same way, or install it yourself and put it on `PATH` (or set
+`DISC_ARCHIVER_REDUMPER`).
 
 ## Use it
 
@@ -130,6 +159,7 @@ Python it is `disc-archiver`.
 ```sh
 disc-archiver --help                                     # commands; disc-archiver <command> --help for options
 disc-archiver tools                                      # backends, programs and drives found
+disc-archiver install-redumper                           # download the pinned redumper now
 disc-archiver rip --drive E: --output "D:\Discs\My Game" --name "My Game" \
     --profile disc-profile.json --accept-personal-use
 disc-archiver rip --drive /dev/sr0 --output ~/discs/game --format all --accept-personal-use
@@ -142,7 +172,8 @@ disc-archiver notice                                     # the personal-use noti
 
 `convert` and `check` read `.cue` (one or several BIN files, ISO-plus-WAVE sheets), `.iso`,
 `.ccd` and `.chd` (through `chdman`). `rip` passes `--backend-arg` values on to the backend program,
-for example `--backend-arg=--retries=20` for redumper. Progress goes to standard error and the
+for example `--backend-arg=--retries=20` for redumper, and `--no-download` keeps it from
+downloading redumper. Progress goes to standard error and the
 summary to standard output.
 
 Exit codes: `0` done and verified, `1` failed, `2` usage error or notice not accepted, `3` a
@@ -156,12 +187,12 @@ administrator. On Linux, add yourself to the group that owns the drive (often `c
 ```sh
 cd packages/disc-archiver
 python -m pip install . -r packaging/requirements.txt
-python packaging/build_bundle.py --out dist      # --no-redumper, --no-gui-smoke without a display
+python packaging/build_bundle.py --out dist      # --no-gui-smoke without a display
 ```
 
-It builds for the platform it runs on with PyInstaller, downloads the redumper release pinned in
-`packaging/redumper.json` and checks its SHA-256 (against the pinned value, or GitHub's published
-digest while none is pinned), and starts both executables before zipping them. CI builds all
+It builds for the platform it runs on with PyInstaller and starts both executables before
+zipping them. `--with-redumper` also carries the pinned redumper in `tools/redumper/` with its
+GPL-3.0 licence, checked the same way as a download, for a zip that works offline. CI builds all
 three platforms on every pull request and attaches them to each release.
 
 ## The output folder

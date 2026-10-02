@@ -331,18 +331,20 @@ def archive(
     backend: str = "auto",
     backend_args: Iterable[str] = (),
     image: Path | None = None,
+    allow_download: bool = True,
 ) -> dict[str, object]:
     """Copy a disc from ``drive``, or take the ``image`` already made, and write ``formats``.
 
     A drive's dump stays in ``output/archival`` as the backend wrote it. ``formats`` of None
-    writes the profile's recommendation. Returns the manifest.
+    writes the profile's recommendation. ``allow_download`` lets a missing redumper be downloaded
+    (see ``backends.choose_backend``). Returns the manifest.
     """
     from . import backends
 
     if (drive is None) == (image is None):
         raise DiscError("give either a drive or an image")
     if drive is not None:
-        chosen = backends.backend_by_id(backend)
+        chosen = backends.choose_backend(backend, log, allow_download)
         name = check_name(name or "disc")
         log(f"Copying the disc in {drive} with {chosen.title}")
         dump = backends.rip(chosen, drive, output / "archival", name, log, list(backend_args))

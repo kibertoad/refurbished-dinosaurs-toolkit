@@ -39,8 +39,59 @@ class ChoiceTests(unittest.TestCase):
         self.assertTrue(choices["iso"].selected)
 
 
+@unittest.skipIf(gui is None, "tkinter is not installed")
+class DownloadChoiceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory()
+        patched = {"DISC_ARCHIVER_HOME": self._temp.name, "PATH": ""}
+        patched.update({tool.variable: str(Path(self._temp.name) / "none") for tool in gui.tools.TOOLS.values()})
+        self.environment = mock.patch.dict(os.environ, patched)
+        self.environment.start()
+
+    def tearDown(self) -> None:
+        self.environment.stop()
+        self._temp.cleanup()
+
+    def test_a_missing_redumper_is_downloaded_for_automatic_and_redumper_only(self) -> None:
+        with mock.patch.object(gui.redumper, "can_download", return_value=True):
+            self.assertTrue(gui.needs_download("auto"))
+            self.assertTrue(gui.needs_download("redumper"))
+            self.assertFalse(gui.needs_download("cdrdao"))
+            self.assertTrue(gui.will_hold_raw_sectors("auto"))
+            self.assertIn("downloads when you start", gui.backend_label(gui.backends.backend_by_id("redumper")))
+        with mock.patch.object(gui.redumper, "can_download", return_value=False):
+            self.assertFalse(gui.needs_download("auto"))
+            self.assertFalse(gui.will_hold_raw_sectors("auto"))
+
+
 @unittest.skipIf(gui is None or not os.environ.get("DISPLAY"), "no display")
 class WindowTests(unittest.TestCase):
+    def test_redumper_is_downloaded_only_after_the_person_agrees(self) -> None:
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(
+            os.environ, {"DISC_ARCHIVER_HOME": temp, "PATH": "", "DISC_ARCHIVER_REDUMPER": "", "DISC_ARCHIVER_CDRDAO": ""}
+        ), mock.patch.object(gui.redumper, "can_download", return_value=True):
+            root = tkinter.Tk()
+            try:
+                window = gui.ArchiverWindow(root)
+                window.accepted.set(True)
+                window.drive.set("E:")
+                window.output.set(str(Path(temp) / "out"))
+                jobs = []
+                with mock.patch.object(window, "_work", side_effect=jobs.append), mock.patch.object(gui.messagebox, "askyesno", side_effect=[True, False]) as ask:
+                    window.start()
+                    window.worker.join()  # type: ignore[union-attr]
+                    window.start()
+                    window.worker.join()  # type: ignore[union-attr]
+                self.assertEqual(ask.call_count, 2)
+                self.assertTrue(jobs[0]["allow_download"])
+                self.assertEqual(jobs[0]["formats"], ["bincue"])
+                # Declined, with no cdrdao: only the data track can be read, so the profile's
+                # recommendation for that is written instead of the ticked raw formats.
+                self.assertFalse(jobs[1]["allow_download"])
+                self.assertIsNone(jobs[1]["formats"])
+            finally:
+                window.close()
+
     def test_the_copy_starts_only_after_the_notice_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             sheet = SyntheticDisc(iso_image()).write_split(Path(temp) / "source")
@@ -69,7 +120,7 @@ class WindowTests(unittest.TestCase):
                 self.assertEqual(window.result["outputs"][0]["verification"]["status"], "matched")  # type: ignore[index]
                 self.assertTrue((Path(temp) / "out" / "bincue" / "Synth.bin").is_file())
             finally:
-                root.destroy()
+                window.close()
 
 
 if __name__ == "__main__":

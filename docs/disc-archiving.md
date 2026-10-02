@@ -27,8 +27,9 @@ A disc profile per supported disc, for example `docs/disc-profile.json`, followi
 The profile states only what the edition record already says. It holds no hashes: fingerprints
 stay in the importer's manifests, which decide support. In the player documentation, point to the
 archiver with the profile. Players download the standalone zip from
-[the toolkit's releases](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/releases?q=dinorefurb-disc-archiver), which needs no Python and carries redumper, and load the profile
-in the window. People with Python can install the package instead:
+[the toolkit's releases](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/releases?q=dinorefurb-disc-archiver),
+which needs no Python, and load the profile in the window. The archiver downloads redumper on
+the first copy, or falls back to cdrdao. People with Python can install the package instead:
 
 ```sh
 pipx install dinorefurb-disc-archiver

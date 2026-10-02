@@ -13,7 +13,7 @@ from unittest import mock
 
 from synthetic import iso_image
 
-from dinorefurb_disc_archiver import backends
+from dinorefurb_disc_archiver import backends, redumper
 from dinorefurb_disc_archiver.disc import DiscError
 from dinorefurb_disc_archiver.pipeline import MANIFEST_NAME, archive
 from dinorefurb_disc_archiver.profile import BUILTIN_PROFILES
@@ -66,8 +66,10 @@ class ProgramBackendTests(unittest.TestCase):
     def setUp(self) -> None:
         self._temp = tempfile.TemporaryDirectory()
         self.dir = Path(self._temp.name)
-        self.environment = mock.patch.dict(os.environ, {})
+        self.environment = mock.patch.dict(os.environ, {"DISC_ARCHIVER_HOME": str(self.dir / "home")})
         self.environment.start()
+        self.offline = mock.patch.object(redumper, "fetch", side_effect=DiscError("offline in tests"))
+        self.offline.start()
         for name, script in (("redumper", FAKE_REDUMPER), ("cdrdao", FAKE_CDRDAO), ("toc2cue", FAKE_TOC2CUE)):
             path = self.dir / name
             path.write_text(script.format(python=sys.executable, tests=TESTS))
@@ -75,6 +77,7 @@ class ProgramBackendTests(unittest.TestCase):
             os.environ[f"DISC_ARCHIVER_{name.upper()}"] = str(path)
 
     def tearDown(self) -> None:
+        self.offline.stop()
         self.environment.stop()
         self._temp.cleanup()
 
@@ -109,9 +112,9 @@ class ProgramBackendTests(unittest.TestCase):
         self.assertIn("generic-mmc-raw:0x20000", argv)
         self.assertEqual(manifest["outputs"][0]["verification"]["status"], "matched")  # type: ignore[index]
 
-    def test_a_missing_program_says_how_to_install_it(self) -> None:
+    def test_a_missing_program_that_cannot_be_downloaded_says_how_to_install_it(self) -> None:
         os.environ["DISC_ARCHIVER_REDUMPER"] = str(self.dir / "nowhere")
-        with self.assertRaisesRegex(DiscError, "github.com/superg/redumper"):
+        with self.assertRaisesRegex(DiscError, "offline in tests.*github.com/superg/redumper"):
             archive(output=self.dir / "out", profile=BUILTIN_PROFILES["any"], log=silent_log, drive="E:", backend="redumper")
 
 

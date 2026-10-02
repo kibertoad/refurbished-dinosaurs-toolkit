@@ -34,20 +34,26 @@ same content, to test its fingerprinting and import against all of them.
    subchannel generated from the table of contents is labelled as generated.
 5. The tool is for personal archival and for preparing one's own disc for a restoration, nothing
    else. Every copy command shows the notice and refuses to run until the person accepts it, and
-   every output folder carries the notice. The tool has no upload, sharing or network feature.
+   every output folder carries the notice. The tool has no upload or sharing feature. Its only
+   use of the network is downloading the pinned redumper release (decision 7).
 6. Game knowledge stays downstream (ADR 0001). A restoration describes its disc in a profile file
    it keeps (`schemas/disc-profile.schema.json`): layout, volume identifier, audio track count,
    paths on the data track and the formats its importer reads. The archiver ships only the
    generic `any`, `data-only` and `mixed-mode` profiles.
-7. Players are not expected to have Python. Each release also attaches a standalone download per
-   platform (Windows x64, macOS arm64, Linux x64), frozen with PyInstaller, holding the window,
-   the command and the pinned redumper release, unmodified, with its GPL-3.0 licence and a link
-   to its source. The redumper build is checked by SHA-256 before it is packed. The PyPI package
+7. Players are not expected to have Python or to install redumper. Each release also attaches a
+   standalone download per platform (Windows x64, macOS arm64, Linux x64), frozen with
+   PyInstaller, holding the window and the command. When redumper is missing, the archiver
+   downloads the release pinned in `redumper.json` (a tag and each platform's SHA-256) into the
+   person's data folder, unmodified, and uses it only when its SHA-256 matches the pin, or
+   GitHub's published digest while the pin leaves the platform `null`. The window asks before
+   downloading; the command downloads unless told not to. When the download is declined or
+   fails, `auto` falls back to cdrdao, then to the data track copy, and says so. The PyPI package
    stays for developers, scripts and CI.
 
 ## Consequences
 
-- A player downloads one zip, unpacks it and double-clicks the window; redumper comes with it.
+- A player downloads one zip, unpacks it and double-clicks the window; redumper is fetched on the
+  first copy. A new redumper release reaches players by changing the pin, without a new zip.
   The window ticks the formats the restoration's profile recommends. The downloads are not
   code-signed yet, so Windows SmartScreen and macOS Gatekeeper warn on first start.
 - A restoration can produce every common form of its disc locally from one dump, with a manifest

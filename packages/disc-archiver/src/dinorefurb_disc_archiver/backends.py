@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import tools
+from . import redumper, tools
 from .disc import COOKED_SECTOR, DiscError
 from .tools import Log
 
@@ -59,6 +59,33 @@ BACKENDS = (
         (),
     ),
 )
+
+
+def choose_backend(identifier: str, log: Log, allow_download: bool = True, get: redumper.Fetch | None = None) -> Backend:
+    """The backend to copy with, downloading redumper first when it is wanted and missing.
+
+    ``redumper`` fails when redumper is neither installed nor downloadable. ``auto`` falls back,
+    saying why at each step: to cdrdao, then to the data track copy, which reads no audio.
+    """
+    if identifier in ("auto", "redumper") and tools.find_tool("redumper") is None:
+        reason = None
+        if not allow_download:
+            reason = "redumper is not installed and downloading it was declined"
+        elif not redumper.can_download():
+            reason = f"redumper publishes no build for {redumper.platform_key()}"
+        else:
+            try:
+                redumper.download(log, get)
+            except DiscError as error:
+                reason = f"redumper could not be downloaded: {error}"
+        if reason and identifier == "redumper":
+            raise DiscError(f"{reason}. Install it from https://github.com/superg/redumper, or choose another backend")
+        if reason:
+            log(f"{reason}; falling back")
+    chosen = backend_by_id(identifier)
+    if identifier == "auto" and chosen.id == "data-copy":
+        log("Neither redumper nor cdrdao is available: copying the data track only. Audio tracks will not be copied.")
+    return chosen
 
 
 def backend_by_id(identifier: str) -> Backend:

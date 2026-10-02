@@ -62,14 +62,21 @@ def bundled_tool_dirs() -> list[Path]:
 
 
 def find_tool(name: str) -> Path | None:
-    """The program's path from its environment variable, a standalone build's ``tools`` folder or
-    PATH, or None."""
+    """The program's path from its environment variable, a standalone build's ``tools`` folder,
+    the archiver's own download (redumper only) or PATH, or None."""
     tool = TOOLS[name]
     configured = os.environ.get(tool.variable)
     if configured:
         path = Path(configured)
         return path if path.is_file() else None
-    for directory in bundled_tool_dirs():
+    directories = bundled_tool_dirs()
+    if name == "redumper":
+        from . import redumper
+
+        downloaded = redumper.installed_bin()
+        if downloaded is not None:
+            directories.append(downloaded)
+    for directory in directories:
         found = shutil.which(name, path=str(directory))
         if found:
             return Path(found)

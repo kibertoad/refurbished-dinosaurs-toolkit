@@ -9,7 +9,7 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import backends, drives, isofs, tools
+from . import backends, drives, isofs, redumper, tools
 from .disc import DiscError
 from .formats import FORMAT_IDS, FORMATS
 from .notice import NOTICE
@@ -45,6 +45,8 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("notice", help="print the personal-use notice")
     commands.add_parser("formats", help="list the output formats, most complete first")
     commands.add_parser("tools", help="list the backends, the programs they need and the drives found")
+    install = commands.add_parser("install-redumper", help="download the pinned redumper release now")
+    install.add_argument("--force", action="store_true", help="download it again even if it is already there")
 
     def common(sub: argparse.ArgumentParser) -> None:
         sub.add_argument("--output", required=True, type=Path, help="directory to write the copy into")
@@ -76,6 +78,11 @@ def _parser() -> argparse.ArgumentParser:
         help="auto (the best installed), " + ", ".join(b.id for b in backends.BACKENDS),
     )
     rip.add_argument("--backend-arg", action="append", default=[], help="an extra argument for the backend program")
+    rip.add_argument(
+        "--no-download",
+        action="store_true",
+        help="never download redumper; auto falls back to cdrdao, then to the data track copy",
+    )
     common(rip)
 
     convert = commands.add_parser("convert", help="write the chosen formats from a copy you already have")
@@ -139,6 +146,13 @@ def _tools() -> int:
     for backend in backends.BACKENDS:
         missing = backend.missing()
         print(f"{backend.id}: {'ready' if not missing else 'needs ' + ', '.join(missing)} - {backend.description}")
+    pin = redumper.load_pin()
+    if redumper.installed_bin(pin):
+        print(f"  redumper {pin.tag} downloaded to {redumper.install_dir(pin)}")
+    elif redumper.can_download(pin):
+        print(f"  redumper {pin.tag} for {redumper.platform_key()} is downloaded on first use (or: disc-archiver install-redumper)")
+    else:
+        print(f"  redumper publishes no build for {redumper.platform_key()}")
     for name, path in tools.available_tools().items():
         tool = tools.TOOLS[name]
         print(f"  {name}: {path or 'not found (' + tool.homepage + ', or set ' + tool.variable + ')'}")
@@ -161,6 +175,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_OK
         if arguments.command == "tools":
             return _tools()
+        if arguments.command == "install-redumper":
+            found = tools.find_tool("redumper")
+            if found and not arguments.force:
+                print(f"redumper is already at {found}")
+                return EXIT_OK
+            print(redumper.download(_log) / "redumper")
+            return EXIT_OK
         profile = load_profile(arguments.profile)
         if arguments.command == "check":
             with tempfile.TemporaryDirectory() as work, open_source(arguments.input, Path(work), _log) as disc:
@@ -183,6 +204,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             backend=getattr(arguments, "backend", "auto"),
             backend_args=getattr(arguments, "backend_arg", ()),
             image=getattr(arguments, "input", None),
+            allow_download=not getattr(arguments, "no_download", False),
         )
         return _report(manifest)
     except DiscError as error:
