@@ -66,7 +66,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 
 | Command | Reports | Described in |
 |---|---|---|
-| `trace` | ordered effects and every return along bounded paths from `entry` | this section |
+| `trace` | ordered effects and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes | this section, [loop progress](#loop-restart-edges-and-iteration-changes) |
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `effects` also summarizes each path's ordered effects and local restoration witnesses | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries) |
 | `uses` | accesses to one memory offset from every established entry | this section |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
@@ -792,3 +792,65 @@ avoid quadratic per-call copies. Acceptance includes early bypasses, child write
 mutations before modeled failure, last comparison provenance, restore/bypass and
 wrong segment/width/value controls, ports, nonvacuous caps and real reader/engine
 integration. Request closure still needs the requester's complete source cases.
+
+## Loop restart edges and iteration changes
+
+Every path of `trace`, `arguments`, `effects`, `returns`, `memory` and `guards` carries a
+`loops` record. It reports what the path's traced iterations did. It never says that a loop
+terminates, is bounded, or that a retry, eviction or search succeeded. Those are research
+claims a finding makes from these facts and from evidence outside the path
+([ADR 0008](decisions/0008-loop-progress-facts-on-paths.md), [validation and fidelity](validation-and-fidelity.md#loops-retries-and-termination-claims)).
+
+A restart edge is a transfer that lands on an instruction the same call activation already ran
+on this path. Its target is the loop head. `restartEdges` lists each edge once per activation
+with `entry`, `depth`, `activation`, `site`, `target`, the transfer's `kind` (`jmp`, `jb`,
+`loop` and so on), `traversals` and the event order of its first traversal. A loop restarted from
+two places, such as an index reset after a collision beside the ordinary increment, has two
+edges to one head. A function called twice is two activations, so its first instruction is not a
+restart. A fall-through, a call and a return never form a restart edge.
+
+Each traversal of a restart edge compares the state at this arrival at the head with the state
+at the previous one and appends one record to `iterations`. A record names the `head`, the
+`restartEdge`, `fromArrival` and `toArrival` (arrival 1 is the first time the activation reached
+the head, by any route) and the event orders `fromOrder` and `toOrder` the iteration spans:
+
+- `registers.unchanged` lists the registers whose expression is identical. `registers.changed`
+  gives the others with `before`, `after` and a `relation`: `changed` when both are known numbers
+  that differ, `differentExpression` when the model cannot tell whether the values differ.
+  Segmented16 paths compare 16-bit registers and list a 32-bit register only when its upper half
+  differs.
+- `flags` is `unchanged` when the flag producer, CF and the direction and interrupt flags are
+  identical, and `differ` otherwise.
+- `memory` lists, as byte intervals with the `segment`, `base` and offsets of the event
+  `interval` field, every byte the iteration wrote or invalidated: `unchanged`, `changed` and
+  `differentExpression` compare the stored bytes; `writtenOverUnmodeled` had no modeled value at
+  the earlier arrival; `invalidated` has none now, because a possibly aliasing write or a call
+  model dropped it. A byte not listed was not written during the iteration.
+- `gates` lists the branches the iteration evaluated in the loop's own frame, in order, with
+  `predicate`, `predicateDomain` (`signed`, `unsigned`, `counter` for LOOP and JCXZ, or
+  `flags/equality`), `operation`, `taken`, the compared `operands` (`left`, `right`, `count` or
+  `carry`) and the decision's `decidedBy` or `reason`. From the second record on, each gate
+  carries `operandsSincePreviousIteration`, comparing its operands with the gate at the same
+  position of the previous iteration.
+- `gateOperandsRepeated` is true when the iteration evaluated the same gates, with the same
+  outcomes and identical operand expressions, as the previous iteration: nothing a gate in the
+  loop's frame reads changed. It is false when a gate's known operands or the gate sequence
+  changed, and null when the first iteration has nothing to compare with, an operand is unresolved
+  or only differs in expression, or the loop's frame has no gate.
+- `stateRepeatsArrival` names the earliest earlier arrival whose registers, flags and modeled
+  memory are identical to this one, or is null. A byte the model held no value for at either
+  arrival never matches, because its contents may differ. A wrapped index that returns to an
+  earlier candidate shows here even when no two consecutive iterations repeat.
+
+Unread memory is named by the write generation it was read in, so a loop that writes anything
+reads unwritten bytes as different expressions. The comparison then reports
+`differentExpression` and never claims a repeat it cannot see. A repeated state is a fact about
+the model on this path. The native program may still leave the loop through state the model does
+not hold, such as a port, an interrupt or a callee's result sequence, and branches in a callee
+are not gates of the caller's loop.
+
+`loopIterationLimit` (default 64, 1 to 1024) caps the records kept per path. Past it, restart
+edges are still counted, `iterationsOmitted` counts the traversals without a record and
+`allIterationsRecorded` is false. The last iteration of a path that exits or stops is not
+compared, since the path never returns to the head. A loop that reaches `visitLimit` stops as
+before, and its `loops` record shows what the traced iterations changed up to that stop.

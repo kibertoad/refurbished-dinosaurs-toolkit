@@ -318,3 +318,29 @@ engine tests and through the reader bridge. The script compiles against Ghidra 1
 reports of a real program stay in its `GAME_DIR`.
 Exit: the option ships with tests, the reporter guide documents it, and the script has its row in
 the engine README catalog.
+
+## Loop restart edges and iteration changes
+
+Request: Dark Sun gap 29 (FND-SCRIPT-022, FND-CONFIG-161) asks shared loop summaries to identify
+restart edges and the state that must change for progress, to check wrapped arithmetic and no-op
+invalidation before a bounded search or a successful eviction is claimed, to keep comparison
+signedness at each gate, and to keep local repeated-state examples apart from native
+reachability.
+
+Tooling outcome: every traced path carries a `loops` record ([ADR 0008](decisions/0008-loop-progress-facts-on-paths.md)). It lists each restart
+edge per call activation, and for each traversal compares the arrival at the loop head with the
+previous one: registers, flags, bytes written or invalidated, the gates of the loop's frame with
+their signedness domain and operands, whether those gates repeat the previous iteration, and the
+earliest earlier arrival with an identical modeled state. `loopIterationLimit` caps the records.
+No report field states that a loop terminates, is bounded or that an eviction or retry succeeded;
+that part of the request is guidance in [validation and fidelity](validation-and-fidelity.md), as
+are the rules on counting slots, eviction calls and local repeated states.
+
+Synthetic acceptance: a counted LOOP (known changes, a counter gate, no repeat), a scan whose
+iteration changes nothing and that still stops at `visitLimit`, a wrapped index that returns to an
+earlier state with no consecutive repeat, a no-op rewrite of a free slot, a possibly aliasing write
+reported as invalidation and never matched as a repeat, a restart after a collision as a second
+edge to the same head, a signed gate, two activations of one callee, the iteration limit reached
+and rejected limits. The reader bridge runs the no-change scan through the prepared config.
+Exit: the gates pass and the reporter guide documents the record. Gap 29 closes only after Dark
+Sun's own cases are read with the published engine.

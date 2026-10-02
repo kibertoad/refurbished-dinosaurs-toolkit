@@ -6,6 +6,7 @@ from .machine import (State, StopPath, REGISTERS, ALIASES, BRANCH_CONDITIONS, st
                       string_count, string_effect, check_string_form, compare_string, repeated)
 from .values import const, unknown, sources, op, Value
 from .result_flow import validate_contracts, result_contracts
+from .loops import LoopTracker
 
 def call_target(image, site, ins):
     if ins.mnemonic in ("lcall", "ljmp"):
@@ -252,7 +253,10 @@ def trace(image, config, continue_declared_jumps=True):
             for r, n in case.get("registers", {}).items():
                 if r not in ALIASES or type(n) is not int or not 0 <= n < 1 << ALIASES[r][2]:
                     raise ValueError("Invalid model register")
-    pending, outputs, global_gaps = [State(entry, image, config)], [], []
+    root = State(entry, image, config)
+    # Each path carries its own loop record; forks copy it with the rest of the state.
+    root.loops = LoopTracker(integer(config.get("loopIterationLimit", 64), 1, 1024, "loopIterationLimit"))
+    pending, outputs, global_gaps = [root], [], []
     conditional_outputs = []
     # States stopped at a declared jump site, continued after the ordinary paths.
     deferred = []
@@ -285,7 +289,7 @@ def trace(image, config, continue_declared_jumps=True):
     def finish(s, reason=None, returned=False):
         path = {"returned": returned, "stop": reason, "stopSite": None if returned else s.at, "steps": s.steps,
                 "instructionPath": s.path, "guards": s.guards, "events": s.events,
-                "registers": snapshot(s), "conditionalModels": s.conditional}
+                "registers": snapshot(s), "conditionalModels": s.conditional, "loops": s.loops.report()}
         assumptions = getattr(s, "declared_jump_assumptions", [])
         if assumptions:
             path["declaredJumpAssumptions"] = assumptions
@@ -382,6 +386,7 @@ def trace(image, config, continue_declared_jumps=True):
                     raise StopPath("undecoded or unmapped instruction")
                 state.steps += 1
                 state.path.append(at)
+                state.loops.arrive(state, at, ins)
                 state.visits[at] = state.visits.get(at, 0) + 1
                 if state.visits[at] > visit_limit:
                     raise StopPath(f"instruction repeated more than {visit_limit} times; raise visitLimit or read the loop's bound")
