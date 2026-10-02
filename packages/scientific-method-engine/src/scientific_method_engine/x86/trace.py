@@ -214,6 +214,7 @@ def snapshot(state):
     return {name: state.reg(name).report() for name in ALIASES}
 
 
+STRING_BUDGET_STOP = "String iteration budget exhausted"
 CONTINUATION_BUDGET_RANGES = {"paths": (0, 256), "totalSteps": (1, 100000), "maxSteps": (1, 10000),
                               "visitLimit": (1, 4096), "stringIterations": (0, 65536)}
 
@@ -310,6 +311,9 @@ def trace(image, config, continue_declared_jumps=True):
         string_effect(s, ins, count, remaining)
 
     def finish(s, reason=None, returned=False):
+        if continuing and reason and reason.startswith(STRING_BUDGET_STOP):
+            # machine.py names no budget; a continuation's string iterations come from continuationBudget.
+            reason = "Continuation s" + reason[1:]
         path = {"returned": returned, "stop": reason, "stopSite": None if returned else s.at, "steps": s.steps,
                 "instructionPath": s.path, "guards": s.guards, "events": s.events,
                 "registers": snapshot(s), "conditionalModels": s.conditional}
@@ -325,6 +329,10 @@ def trace(image, config, continue_declared_jumps=True):
         # keeps its traced value; no register or table word is assigned. s is a copy taken
         # at the jump, so the operand read below never enters the stopped ordinary path.
         nonlocal created, boundary_budget
+        if created >= max_paths:
+            # Spent or zero path budget: no route is read, so no boundary walk or operand read is needed.
+            global_gaps.append({"site": s.at, "reason": "path limit"})
+            return
         declaration = image.indirect_jumps[s.at]
         ins = image.decode(s.at)
         root_entry = s.frames[-1]["entry"]
@@ -674,6 +682,8 @@ def trace(image, config, continue_declared_jumps=True):
         except StopPath as error:
             finish(state, str(error))
     if continuing:
+        # Only continuation states are traced after the switch: deferred states are popped only when
+        # pending is empty, and every state pending holds from then on descends from a continuation.
         continuation_steps, continuation_string_steps = total_steps, total_string_steps
         for gap in global_gaps[first_continuation_gap:]:
             gap["route"] = "declaredContinuation"
@@ -681,7 +691,7 @@ def trace(image, config, continue_declared_jumps=True):
         ordinary_steps, ordinary_string_steps = total_steps, total_string_steps
         continuation_steps = continuation_string_steps = 0
     return {"paths": outputs, "declaredContinuationPaths": conditional_outputs, "gaps": global_gaps,
-            "completeWithinModel": not global_gaps and bool(outputs) and all(p["returned"] for p in outputs),
+            "completeWithinModel": not global_gaps[:first_continuation_gap] and bool(outputs) and all(p["returned"] for p in outputs),
             "nativeReachability": "unconfirmed", "stepsUsed": ordinary_steps, "stringIterationsUsed": ordinary_string_steps,
             "continuationStepsUsed": continuation_steps, "continuationStringIterationsUsed": continuation_string_steps,
             "limits": {"steps": max_steps, "paths": ordinary_max_paths, "depth": max_depth,

@@ -30,8 +30,10 @@ has not read every route. Treat the limit as a sign that the query is too broad 
 - Read the producer of the forking value and state it as an evidenced input the reporter takes:
   a starting register or flag, a call model's return case, or a narrower entry where the producer
   is an input. Record the producer evidence beside the finding.
-- When a declared table jump's continuations are missing because ordinary paths spent the
-  budget, raise `continuationBudget`, which leaves the ordinary paths as they were.
+- Declared table jumps are continued on their own `continuationBudget`. When the continuations
+  stop at a limit, raise that budget, which leaves the ordinary paths as they were. When the
+  ordinary route to the jump was itself dropped or stopped, no continuation budget helps:
+  narrow the query so that route is read.
 - Do not join separate narrower queries into one claim in prose. State the relation the claim
   needs and check it with a query control, which fails when a path breaks it or stays undecided.
 - A claim that needs every route of a function whose routes cannot be read stays open. Record the

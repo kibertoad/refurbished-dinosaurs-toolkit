@@ -259,7 +259,7 @@ writes, stack/child state and target-selection/table-content assumptions. A
 return on one conditional route proves neither selection nor whole-call coverage.
 Reject contested/overlapping target starts and contradictory concrete operands;
 partial tables retain missing routes. Continuations spend their own `continuationBudget`
-(see the separate continuation budget section). Inputs and prepared protocol remain unchanged; no guessed
+(see the separate continuation budget section). The prepared protocol remains unchanged; no guessed
 selector, table contents or game-specific dispatch enters the engine.
 Acceptance: synthetic prefix mutation and child-result exits, duplicate targets,
 partial declarations, concrete mismatch, overlapping targets, loops and nonvacuous

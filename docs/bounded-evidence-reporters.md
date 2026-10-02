@@ -542,9 +542,12 @@ uncovered region bytes cost nothing. Exhausted or unresolved boundaries become
 explicit gaps.
 
 Continuations start only after every ordinary path has finished, and they spend their own
-`continuationBudget`. The ordinary paths, their gaps, `stepsUsed` and `stringIterationsUsed`
-are the same whatever that budget is, and however many paths and steps the ordinary paths
-spend, the continuations still start. `uses` and `dispatch` read ordinary paths and start none.
+`continuationBudget`. The ordinary paths, their gaps and derived analyses, `stepsUsed` and
+`stringIterationsUsed` are the same whatever that budget is. Each ordinary path that reached a
+declared jump is continued, however much of `maxPaths` and `totalSteps` the ordinary paths spent.
+An ordinary route dropped at a path limit, or stopped before it reached the jump, is never
+continued; its ordinary gap or stop reason says so, and the continuation budget cannot recover
+it. `uses` and `dispatch` read ordinary paths and start none.
 
 | `continuationBudget` field | Bounds | Default | Range | Reached |
 |---|---|---|---|---|
@@ -552,18 +555,19 @@ spend, the continuations still start. `uses` and `dispatch` read ordinary paths 
 | `totalSteps` | instructions across every continuation | `totalSteps` | 1..100000 | each remaining continuation stops with `continuation instruction budget exhausted` |
 | `maxSteps` | instructions one path runs after its first declared jump | `maxSteps` | 1..10000 | the path stops with `continuation step limit; loop progress unresolved` |
 | `visitLimit` | passes over one instruction after the first declared jump | `visitLimit` | 1..4096 | the path stops naming `continuationBudget.visitLimit` |
-| `stringIterations` | string iterations across every continuation | `stringIterations` | 0..65536 | the path stops with `String iteration budget exhausted` |
+| `stringIterations` | string iterations across every continuation | `stringIterations` | 0..65536 | the path stops with `Continuation string iteration budget exhausted` |
 
 Unknown fields are rejected. Every gap raised while continuations run carries
 `route: "declaredContinuation"`, so it is never mistaken for an ordinary gap. Each
 continuation path still reports `steps` and `instructionPath` from `entry`, and
-`maxDepth` applies to the whole path. `paths: 0` starts no continuation and leaves one
-`path limit` gap per stopped jump. The report adds `continuationStepsUsed`,
-`continuationStringIterationsUsed` and `limits.continuation` with the effective values.
-When ordinary paths spend `maxPaths` or `totalSteps` before a table jump's routes run, the
-routes still start on the continuation budget; raise that budget if they stop. Raising
-`maxPaths` or `totalSteps` grows every ordinary route that hit them and leaves the
-continuations as they were.
+`maxDepth` applies to the whole path. Once the path budget is spent (or with `paths: 0`),
+each further ordinary path stopped at a declared jump leaves one `path limit` gap at the jump.
+The report adds `continuationStepsUsed`, `continuationStringIterationsUsed` and
+`limits.continuation` with the effective values. When continuations stop at a limit, raise
+the matching `continuationBudget` field. Unset fields follow the ordinary inputs, so raising
+`maxPaths` or `totalSteps` without setting the field also raises the continuation budget, and
+a report can hold up to twice the paths the ordinary inputs allow. Set
+`continuationBudget.paths` when the report must stay within the reader's output limit.
 A returned conditional path never makes `completeWithinModel` or `allPathsRead`
 true. Split capped queries by explicitly partial evidenced table fields rather
 than raising limits; such a split cannot prove the complete dispatch.
