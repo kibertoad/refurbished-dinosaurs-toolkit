@@ -141,6 +141,55 @@ class TableContinuationTests(unittest.TestCase):
         self.assertFalse(r["declaredContinuationPaths"])
         self.assertTrue(any("boundary" in g["reason"] for g in r["gaps"]))
 
+    def test_boundary_budget_counts_only_decoded_instructions(self):
+        # Two functions each end in a declared table jump and branch once outside every region.
+        # Their boundary walks decode four instructions apiece and leave most region bytes uncovered.
+        data = bytearray([0x90] * 56)
+        data[0:6] = bytes.fromhex("72 06 e8 0b 00 c3")
+        data[8:12] = bytes.fromhex("e8 15 00 c3")
+        data[16:20] = bytes.fromhex("74 7f ff e3")
+        data[22:24] = bytes.fromhex("c3 c3")
+        data[32:36] = bytes.fromhex("74 7f ff e3")
+        data[38:40] = bytes.fromhex("c3 c3")
+        data[48:56] = bytes.fromhex("16 00 17 00 26 00 27 00")
+        jumps = [{"site": site, "exhaustive": True, "evidence": "constructed BX consumer",
+                  "table": {"start": table, "count": 2, "stride": 2, "evidence": "constructed words"}}
+                 for site, table in ((18, 48), (34, 52))]
+        config = {"entry": 0, "indirectJumps": jumps,
+                  "regions": [{"name": "code", "start": 0, "end": 48, "segment": 4096, "ip": 0,
+                               "entries": [0], "evidence": "constructed mappings"}]}
+        r = run_report(bytes(data), {**config, "instructionLimit": 8}, "trace")
+        self.assertEqual(len(r["declaredContinuationPaths"]), 4)
+        self.assertFalse(any("boundary" in g["reason"] for g in r["gaps"]))
+        r = run_report(bytes(data), {**config, "instructionLimit": 7}, "trace")
+        self.assertEqual(len(r["declaredContinuationPaths"]), 2)
+        self.assertTrue(any("boundary" in g["reason"] for g in r["gaps"]))
+
+    def test_boundary_budget_charges_rejected_overlapping_instructions(self):
+        # The function at 32 is walked first. Its side branch calls into its own call
+        # (40 e8 ff ff -> 42 inc bx) and returns to 43, so 40, 42 and 43 overlap and 44
+        # is reached only through them. The walk decodes eight instructions and establishes four.
+        data = bytearray([0x90] * 56)
+        data[0:6] = bytes.fromhex("72 06 e8 0b 00 c3")
+        data[8:12] = bytes.fromhex("e8 15 00 c3")
+        data[16:20] = bytes.fromhex("74 7f ff e3")
+        data[22:24] = bytes.fromhex("c3 c3")
+        data[32:36] = bytes.fromhex("74 06 ff e3")
+        data[38:40] = bytes.fromhex("c3 c3")
+        data[40:45] = bytes.fromhex("e8 ff ff c3 c3")
+        data[48:56] = bytes.fromhex("16 00 17 00 26 00 27 00")
+        jumps = [{"site": site, "exhaustive": True, "evidence": "constructed BX consumer",
+                  "table": {"start": table, "count": 2, "stride": 2, "evidence": "constructed words"}}
+                 for site, table in ((18, 48), (34, 52))]
+        config = {"entry": 0, "indirectJumps": jumps,
+                  "regions": [{"name": "code", "start": 0, "end": 48, "segment": 4096, "ip": 0,
+                               "entries": [0], "evidence": "constructed mappings"}]}
+        r = run_report(bytes(data), {**config, "instructionLimit": 12}, "trace")
+        self.assertEqual(len(r["declaredContinuationPaths"]), 4)
+        r = run_report(bytes(data), {**config, "instructionLimit": 11}, "trace")
+        self.assertEqual(len(r["declaredContinuationPaths"]), 2)
+        self.assertTrue(any("boundary" in g["reason"] for g in r["gaps"]))
+
     def test_field_address_uses_the_table_region_mapping(self):
         data, config = fixture()
         data = bytearray(data)
