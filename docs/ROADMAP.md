@@ -1,138 +1,141 @@
 # Roadmap
 
-As of 2026-10-02. This file orders the toolkit work that comes after the ADR 0003 cutover. Each
-milestone that lands gets its own section in [the implementation plan](IMPLEMENTATION-PLAN.md),
-with its tests and exit condition. Remove a milestone from this file once its plan section exists.
+As of 2026-10-02. This file orders the toolkit work that follows the ADR 0003 cutover. When a
+milestone starts it gets its own section in [the implementation plan](IMPLEMENTATION-PLAN.md),
+stating its tests and exit condition. Remove a milestone from this file once it lands.
 
 ## Where things stand
 
-The ADR 0003 cutover is finished and published:
+Engine 0.9.0 is published. That release completes ADR 0003: values come from pypcode, the
+handwritten semantics are gone, and the callee graph is cross-checked against Ghidra. Reader 0.2.0
+and checker 0.1.0 are current. PR 60 (conditional table-target continuations), PR 63 (the
+scoped-memory plan) and PR 69 (boundary budget) are merged.
 
-- Engine 0.7.0 adds the backend seam and the pypcode backend (PRs 62, 64, 65).
-- Engine 0.8.0 deletes the handwritten semantics (PR 66).
-- Engine 0.9.0 cross-checks the callee graph against Ghidra's call edges (PR 67).
+Dark Sun has committed engine 0.7.0 and is moving to 0.8.0. It has 18 requests open in its
+`gaps.md`, and all of its open engine requests come from Dark Sun alone. Sub-culture-max,
+enemy-reinfestation and reconqueror ask for none of these analyses. Sub-culture-max does have about
+ten open requests against the Ghidra scripts this toolkit ships. They are tracked in M6.
 
-PR 60 (conditional table-target continuations) and PR 63 (the scoped-memory plan and its
-synthetic reproductions) are merged. Reader 0.2.0 and checker 0.1.0 are current.
+## What belongs in the engine
 
-Dark Sun's committed adoption is engine 0.7.0 at `98395df`. Its working tree is moving to 0.8.0.
-Engine 0.9.0 is not adopted yet.
+A Dark Sun gap is usually written from one finding and mixes three kinds of request. Each kind has
+a different home.
 
-Not everything Dark Sun relies on is delivered. All 18 requests still open in its `gaps.md` are
-open against this toolkit or the template. The toolkit has delivered part of one of them (27).
+| Kind of request | Example | Home |
+|---|---|---|
+| A fact the engine can observe on a bounded path | a port access, a write's interval, the guard a branch tests | Engine report field |
+| A relation the researcher asserts over observed facts | "every write lies inside the buffer", "this guard runs before that access" | A control in the query. The query fails when any path breaks the relation or is left unread |
+| A rule for writing findings | "keep local examples distinct from native reachability" | The restoration's rules or the documentation standard |
+
+The engine never interprets game concepts. Terminators, allocator extents, runtime modes and
+cardinalities are named by the researcher in a control, over values the engine reports. This keeps
+one Dark Sun finding from turning into one bespoke report field.
 
 ## Open downstream requests
 
-Gap numbers are Dark Sun's stable IDs in `gaps.md`. "Partly there" names existing commands or
-fields that touch the request. Their acceptance against the request is not verified. A gap closes
-only when Dark Sun's own case passes against published packages.
+Gap numbers are Dark Sun's stable IDs. "Delivered" means current behaviour matches the request as
+read here. A gap still closes only when Dark Sun's own case passes against published packages.
 
-| Gap | Request | Toolkit status | Milestone |
+| Gap | Request | Assessment | Milestone |
 |---|---|---|---|
-| 5 | Portable encoding of manifest paths for coverage files | Template work, not this repo. Template PR 33 merged; disc-source validation pending downstream | none here |
-| 9 | Separate a window's image field from copied control data in the UI catalog | Lives in Dark Sun's extractor. The WIND format is game-specific (ADR 0001) | none here |
-| 27 | Ordered effects at early exits and before external failure, scoped memory, conditional fill | PR 60 delivered table continuations, but the original MENU positive is not reproduced under the shared path budget. PR 63 is a plan only. The implementation (`aaf9419`) exists locally in Dark Sun and is not forward-ported | M1, M2 |
-| 37 | Classify port I/O as a hardware boundary on each path | `bounds` assumes port accesses return. Effect reports have no port event | M3 |
-| 39 | Effective segment of frame-indexed accesses | Memory events already carry `effectiveSegmentRegister` and the addressed interval. May be delivered; needs the FND-CONFIG-198 case run | M3 |
-| 40 | Cleanup-slot assignment on each failure edge | None | M4 |
-| 32 | Check that a guard precedes and controls the access; checked snapshot versus reload | Partly there: `guards` | M4 |
-| 31 | Output-argument aliasing; register origin of loop predicates | Partly there: memory provenance from gap 21 | M4 |
-| 30 | Carry runtime mode and pre-store guards through cleanup branches | Partly there: `guards`, `call-order` | M4 |
-| 33 | Follow a propagated result to the leaf that produced it, through recursion | Partly there: `callees` reports recursion | M4 |
-| 36 | Overlapping access widths across call summaries | Partly there: widths and intervals on memory events. Full producer and normalized-wrapper cases open | M5 |
-| 41 | Terminator write separate from returned length | None | M5 |
-| 42 | Requested bytes, allocator extent and clearing capacity reported separately | Partly there: `allocation` | M5 |
-| 43 | Caller input ranges in arithmetic admission | Partly there: carry, multiply and divide tracking | M5 |
-| 34 | Output cardinality bounded independently of input counts | None | M5 |
-| 29 | Loop progress across restarted scans and repeated invalidation | Partly there: `visitLimit` | M6 |
-| 35 | Map pushed words to the callee's argument widths | Partly there: `arguments` | M7 |
-
-## Loose ends in this repository
-
-- PR 69 fixes issue 68 (boundary budget) and is in review. Merge it, then release a patch.
-- Issue 70 (`carry_value` re-runs the JB condition) needs a decision.
-- Issues 25, 26 and 27 match plan sections that are already delivered: function bounds, incoming
-  coverage, and carry/multiply/divide. Close each one whose delivery checks out. Issue 7 (emulator
-  alternatives to Unicorn) is research with no milestone.
+| 5 | Portable manifest paths in coverage files | Template work | none here |
+| 9 | Window image versus copied control data in the UI catalog | Dark Sun's extractor; a game format under ADR 0001 | none here |
+| 27 | Ordered effects at early exits, scoped memory, conditional fill, MENU linked child | Scoped memory is generic (M1). Fill and MENU first need the budget investigation (M2) | M1, M2 |
+| 37 | Port I/O as a hardware boundary | Generic engine fact. The parts about rendered pixels and mocked-port fixtures are writing rules | M3 |
+| 39 | Effective segment of frame-indexed accesses | Looks delivered: the reporter guide already says BP-derived offsets accessed through BX use DS. Verify and pin with tests | M3 |
+| 36 | Overlapping access widths across calls | Mostly delivered: accesses report byte producers and missing producers. The remainder is Dark Sun's case | M4 controls |
+| 32 | A guard precedes and controls an access; a checked snapshot versus a later reload | Generic relation: guard order on every path | M4 |
+| 40 | Assignment on each cleanup edge | Generic relation: the last writer on each path into a site | M4 |
+| 31 | Aliased outputs; the register a loop predicate comes from | The last writer, plus predicate provenance | M4 |
+| 33 | A propagated result traced to the leaf that produced it | Generic relation: value origin across calls | M4 |
+| 30 | Runtime mode carried through cleanup | The mode is a query assumption the engine already accepts. Branch reach is an M4 control | M4 |
+| 41 | Terminator write versus returned length | A relation over write intervals and the returned value | M4 |
+| 42 | Requested bytes, allocator extent, clearing capacity | Relations over `allocation` output | M4 |
+| 43 | Caller ranges in arithmetic admission | A relation over an assumed input range | M4 |
+| 34 | Output cardinality versus input counts | A count relation over a bounded path set | M4 |
+| 29 | Progress across restarted scans | Termination is undecidable in general. Only restart edges and what changed across the traced iterations are reportable | M5 |
+| 35 | Pushed words mapped to the callee's argument widths | Generic, and overlaps Ghidra's analysis | M6 |
 
 ## Milestones
 
-The order puts the request Dark Sun is blocked on first, then groups the rest by the engine
-mechanism they share. One mechanism serves several gaps.
+### M0. Housekeeping (in progress)
 
-### M0. Housekeeping and adoption
+Settle issue 70 (`carry_value` re-runs the JB condition), and triage issues 7 and 25 to 27, closing
+the ones whose behaviour has been delivered. Dark Sun then adopts the latest engine on its own
+schedule.
 
-Merge PR 69, settle issue 70, triage issues 7 and 25 to 27, and release. Dark Sun adopts the latest
-engine. This also tests whether gap 39 is already met.
+### M1. Scoped memory hypotheses (gap 27, part; in progress)
 
-Exit: Dark Sun's gates pass on the latest published engine.
-
-### M1. Scoped memory hypotheses across nested services (gap 27, part)
-
-Forward-port Dark Sun's `aaf9419` onto main as a new PR. It adds ADR 0004 and `memory_scopes.py`,
-and a new prepared-config input. The input increments `PREPARED_PROTOCOL` in the reader and the
-engine, releases both, and adds a migration-guide entry. The PR 63 plan section already states the
-contract.
+Forward-port Dark Sun's local implementation onto main. It adds a prepared-config input with an
+explicit pre-call segment, base, width and evidence. That input increments `PREPARED_PROTOCOL` in
+the reader and the engine, releases both, and comes with a migration-guide entry. The PR 63 plan
+section is the contract.
 
 Exit: the original nested caller-bracket case passes against published packages.
 
-### M2. Bounded input and path hypotheses (gap 27, rest)
+### M2. Continuation budgets before any path hypotheses (gap 27, rest)
 
-Two Dark Sun cases stay open after PR 60: the conditional fill (FND-SCRIPT-019) and the MENU
-linked-child positive. Neither should close by raising caps or stitching windows together. Both
-need an explicitly labelled hypothesis input that fixes chosen inputs or paths. Contradictions and
-omitted paths stay in the report. Design it in an ADR first. If it changes the prepared config,
-combine its protocol increment with M1's.
+PR 60 made declared-table continuations share the ordinary paths' budget. Under that budget, Dark
+Sun's MENU positive disappears. First measure whether a separate continuation budget recovers it.
+That budget would be explicit, reported and limit-tested, and it would leave ordinary routes
+untouched. Do the same for the conditional fill.
 
-Exit: both cases pass against published packages, with every assumed path labelled.
+Only if that fails, write an ADR before building anything. The ADR weighs an explicitly labelled
+path-hypothesis input against Dark Sun gathering fresh producer evidence. A hypothesis input that
+pins paths can manufacture a positive, which Dark Sun's own dead ends warn against. Any such input
+must keep contradictions and omitted paths in the report.
 
-### M3. Hardware boundary and effective segments (gaps 37, 39)
+### M3. Port I/O and effective segments (gaps 37, 39; in progress)
 
-Report port I/O as an event on each path, beside interrupts. Keep RAM effects and port effects
-apart. p-code exposes IN and OUT, so ADR 0003 permits this without hand-written semantics. Confirm
-gap 39 against FND-CONFIG-198, and add only what that case shows is missing.
+Report port accesses as events on each path, beside interrupts. Each event carries the port's
+provenance and width. Port reads are unknown unless the query supplies a value. Keep RAM effects
+apart from port effects. For gap 39, pin the delivered segment rules with synthetic tests and fix
+only what a test shows is missing.
 
-### M4. Per-edge assignment and predicate provenance (gaps 40, 32, 31, 30, 33)
+### M4. Relational controls
 
-One mechanism serves these gaps: for each path or edge, which write last produced a value, and
-which value a branch or call actually tests.
+Add a small set of generic control kinds. A control evaluates over every bounded path and fails when
+a path breaks it, or when a stop, limit or unread callee leaves a path undecided:
 
-- Gap 40: assignment per cleanup edge.
-- Gap 32: a guard that dominates the access it protects, with reloads after the check kept separate.
-- Gap 31: aliased output arguments and the register a loop predicate comes from.
-- Gap 30: runtime mode carried through cleanup.
-- Gap 33: a result traced back to the leaf that produced it.
+- Ordering: site A runs before site B on every path that reaches B, and decides the branch that
+  guards B.
+- Last writer: the producer of a location or register on each path into a site, including incoming
+  cleanup edges.
+- Containment: every write on every path lies inside an interval stated in terms of reported values.
+- Value relation: a relation between reported terms, such as a returned length plus one terminator
+  write, or a count against a capacity.
+- Value origin: the leaf or external source a value at a site comes from, across calls and recursion.
 
-Build the shared provenance first, then one report field per gap.
+Build the controls first, with synthetic tests: a positive control, a violated case and an undecided
+case for each. Then express each M4 gap from the table as controls, documented in the reporter
+guide, so Dark Sun can write its own cases. Add an engine report field only where a control needs a
+fact the reports do not yet carry.
 
-### M5. Buffer, allocation and arithmetic contracts (gaps 41, 42, 43, 34, 36)
+### M5. Loop progress facts (gap 29)
 
-Each of these reports a set of quantities that today get merged into one:
+Report each loop's restart edges, and which locations and registers changed between consecutive
+traced iterations. Flag an iteration that changed nothing. Never report that a loop terminates or
+stays bounded. That stays a research claim backed by these facts.
 
-- Gap 41: character count, terminator write and destination capacity.
-- Gap 42: requested bytes, admission units, allocator extent and the range actually cleared.
-- Gap 43: the encoded predicate, the modulus and the callers' established input ranges.
-- Gap 34: input counts, generated cardinality and destination capacity.
-- Gap 36: every byte producer under a wider consumer.
+### M6. Analyzer scripts and argument widths (gap 35, other restorations)
 
-These depend on M4's provenance.
+Map pushed words onto the callee's BP-relative argument widths for gap 35, building on the
+Ghidra call-edge cross-check from engine 0.9.0. In the same milestone, triage sub-culture-max's
+and enemy-reinfestation's open requests against this toolkit's Ghidra scripts. In sub-culture-max
+these are items 12, 13, 20 to 27 and 32. Some name scripts the toolkit does not ship. Re-verify
+each against main and fix the ones that belong here.
 
-### M6. Loop progress (gap 29)
+### Writing rules
 
-Identify restart edges, and the state that must change for the loop to make progress. Check
-wrapped arithmetic and no-op invalidation before a report calls a search bounded.
+The writing-rule halves of gaps 27, 29, 32 to 34, 37 and 41 to 43 go back to Dark Sun as proposed
+rules for its `docs/UPSTREAM-RULES.md` or the documentation standard. This repository does not
+implement them.
 
-### M7. Stack argument reconstruction (gap 35)
+## Decisions taken
 
-Map pushed words onto the callee's BP-relative argument widths, accounting for near and far return
-frames. Keep competing groupings open until the callee's reads settle them.
-
-## Decisions needed
-
-- M2 or new evidence: is a hypothesis input worth building, or should Dark Sun gather fresh
-  producer evidence for the fill and MENU cases instead?
-- Protocol increments: ship M1 and M2 behind one `PREPARED_PROTOCOL` increment, or two? Each
-  increment forces a coordinated reader and engine release.
-- Gap 9: confirm that the UI catalog fix stays in Dark Sun, since ADR 0001 keeps game formats out
-  of this repository.
-- Order after M3: M4 to M7 follow the dependency order. Dark Sun's own priorities may reorder them.
+- M2 investigates budgets before any hypothesis input exists. Building a hypothesis input needs an
+  ADR first.
+- M4 adds controls in place of semantic report fields. The engine names no game concept.
+- Each PR that changes the prepared config increments `PREPARED_PROTOCOL` itself, as AGENTS.md
+  requires.
+- Gaps 5 and 9 stay downstream.
