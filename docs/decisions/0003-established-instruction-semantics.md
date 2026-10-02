@@ -250,7 +250,7 @@ Rules for every iteration:
 | 1 pypcode spike | done | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54), 4 (#55), 5 (#56), 6 (#57) and 7 (#58) answered |
 | 2 semantics seam | done | 2026-10-02 | see [Semantics seam](#semantics-seam) |
 | 3 pypcode backend | done | 2026-10-02 | #64; see [Groups moved](#groups-moved) |
-| 4 parity on recorded cases | done | 2026-10-02 | see [Parity on recorded cases](#parity-on-recorded-cases) |
+| 4 parity on recorded cases | done | 2026-10-02 | #65; see [Parity on recorded cases](#parity-on-recorded-cases) |
 | 5 cutover | not started | | |
 | 6 Ghidra callee cross-check | not started | | |
 
