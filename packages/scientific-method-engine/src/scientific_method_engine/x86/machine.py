@@ -60,6 +60,9 @@ class State:
         # Keys grouped by (segment, base) so a write scans only groups that can alias it.
         self.memory_groups = {}
         self.memory_epoch = 0
+        # (key, previous byte or None) for every byte a write stores or invalidates, in order, so a
+        # reader can recover the memory as it stood at an earlier point of the path (x86/loops.py).
+        self.memory_log = []
         self.events = []
         # Value transfers are recorded only for queries that trace declared return results.
         self.value_transfers = bool(config.get("returnContracts"))
@@ -143,6 +146,7 @@ class State:
         self.flag_values = None
 
     def clear_memory(self):
+        self.memory_log.extend(self.memory.items())
         self.memory.clear()
         self.memory_groups.clear()
         self.memory_epoch += 1
@@ -218,11 +222,12 @@ class State:
                     disjoint = a is not None and b is not None and (a[1] <= b[0] or b[1] <= a[0])
                     if not disjoint:
                         uncertain.append(key)
-                        del self.memory[key]
+                        self.memory_log.append((key, self.memory.pop(key)))
                         members.discard(key)
                 if not members:
                     del self.memory_groups[group]
             for i, key in enumerate(keys):
+                self.memory_log.append((key, self.memory.get(key)))
                 self.memory[key] = extract(write, i * 8, 8)
             self.memory_groups.setdefault((seg, base), set()).update(keys)
             value = write
