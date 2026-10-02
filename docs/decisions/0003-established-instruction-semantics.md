@@ -248,7 +248,7 @@ Rules for every iteration:
 |---|---|---|---|
 | 0 freeze and baseline | done | 2026-10-02 | step 1 done: decision 6 is a rule in `AGENTS.md` (#48); step 2 done: ADR 0002's open item points here (#49); step 3 done: the handwritten baseline below lists every mnemonic `ordinary()` handles (#51) |
 | 1 pypcode spike | done | 2026-10-02 | questions 1 (#52), 2 (#53), 3 (#54), 4 (#55), 5 (#56), 6 (#57) and 7 (#58) answered |
-| 2 semantics seam | done | 2026-10-02 | see [Semantics seam](#semantics-seam) |
+| 2 semantics seam | done | 2026-10-02 | #62; see [Semantics seam](#semantics-seam) |
 | 3 pypcode backend | not started | | |
 | 4 parity on recorded cases | not started | | |
 | 5 cutover | not started | | |
