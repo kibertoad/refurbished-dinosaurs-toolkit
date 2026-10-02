@@ -258,8 +258,8 @@ conditional continuation paths for declared near-word targets. Preserve prefix
 writes, stack/child state and target-selection/table-content assumptions. A
 return on one conditional route proves neither selection nor whole-call coverage.
 Reject contested/overlapping target starts and contradictory concrete operands;
-partial tables retain missing routes. Existing path/step/visit/total budgets apply
-to all continuations. Inputs and prepared protocol remain unchanged; no guessed
+partial tables retain missing routes. Continuations spend their own `continuationBudget`
+(see the separate continuation budget section). The prepared protocol remains unchanged; no guessed
 selector, table contents or game-specific dispatch enters the engine.
 Acceptance: synthetic prefix mutation and child-result exits, duplicate targets,
 partial declarations, concrete mismatch, overlapping targets, loops and nonvacuous
@@ -318,3 +318,26 @@ engine tests and through the reader bridge. The script compiles against Ghidra 1
 reports of a real program stay in its `GAME_DIR`.
 Exit: the option ships with tests, the reporter guide documents it, and the script has its row in
 the engine README catalog.
+
+## Separate continuation budget
+
+Tooling outcome (ADR 0005): declared-table continuations spend `continuationBudget` (`paths`,
+`totalSteps`, `maxSteps`, `visitLimit`, `stringIterations`), each defaulting to the ordinary input
+of the same name and counted apart from it. Per-path steps and visits count from the first
+declared jump a path continues past. Ordinary paths, their gaps and their step counts are the same
+whatever the continuation budget is. Every continuation limit reached is a gap with
+`route: "declaredContinuation"` or a stop reason naming the continuation budget, and
+`limits.continuation` reports the effective values. No filter over ordinary paths is added.
+
+Synthetic acceptance: a function whose ordinary forks spend `maxPaths` before its table jump's
+routes run still reports both returned continuations; ordinary output is byte-identical across
+continuation budgets and with continuations off; each continuation limit is reached and reported
+(`paths` 0 and 1, forks inside a continuation, `totalSteps`, `maxSteps`, `visitLimit`,
+`stringIterations`); invalid budgets are rejected; a reader bridge case runs the same shape
+through the prepared-config protocol. A per-element forking loop (the conditional fill shape)
+cannot be read whole by any budget and is left to ADR 0006 (proposed) and the handbook's guidance
+on limits.
+
+Exit: a major engine release with the migration-guide entry. Dark Sun gap 27's menu linked-child
+part closes only when its own case passes against the released engine with a continuation budget
+and the ordinary paths unchanged; its conditional fill part stays open under ADR 0006.

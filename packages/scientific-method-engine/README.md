@@ -108,7 +108,9 @@ Evidenced segmented16 `indirectJumps` declarations also expose separate
 `declaredContinuationPaths`. Ordinary paths retain their unresolved transfer;
 conditional routes preserve prefix/child effects with target-choice, live-table
 and selector assumptions. Effects summaries never mark those routes complete.
-Concrete values/field addresses reject inconsistent rows; overlap and shared
-path/step/visit/total/boundary limits remain explicit. Partial-table splits are
+Concrete values/field addresses reject inconsistent rows. Continuations run after
+every ordinary path on their own `continuationBudget` (paths, total and per-path steps,
+visits, string iterations), so ordinary paths are the same with or without them. Overlap,
+boundary and continuation limits remain explicit gaps or stops. Partial-table splits are
 partial evidence, never complete dispatch or native-reachability claims. See the
 [table contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#evidenced-indirect-jump-tables).

@@ -211,3 +211,35 @@ file's length, and refuses a volume smaller than 18 sectors.
 - A report from a recorded case gives the same JSON as before the move, apart from fields that
   name the reporter's location.
 - CI passes, including the documentation check with `--check`.
+
+## Engine upgrades
+
+Breaking engine releases that need a change in a restoration are listed here, newest first.
+
+### Declared-table continuations spend `continuationBudget`
+
+Continuations of a declared `indirectJumps` site used to share `maxPaths`, `totalSteps`,
+`maxSteps`, `visitLimit` and `stringIterations` with the ordinary paths and got whatever the
+ordinary paths left. They now spend `continuationBudget`, whose fields default to those same
+inputs and are counted separately (see
+[jump tables](bounded-evidence-reporters.md#evidenced-indirect-jump-tables)). Ordinary paths are
+unchanged.
+
+- A query that lowered `maxPaths`, `totalSteps` or another ordinary limit to keep continuations out
+  of a report now sets `continuationBudget: { "paths": 0 }` to start none.
+- A query that raised `maxPaths` or `totalSteps` only so continuations could run drops that raise
+  and sets the matching `continuationBudget` field.
+- A query whose ordinary paths used to spend the shared budget now also reads continuations,
+  up to another `maxPaths` paths and `totalSteps` steps. A query near the reader's 32 MiB output
+  limit sets `continuationBudget.paths` (and `totalSteps`) to keep the report under it.
+- `stepsUsed` and `stringIterationsUsed` count ordinary paths only. Continuations report
+  `continuationStepsUsed` and `continuationStringIterationsUsed`.
+- Continuation paths stop with `continuation step limit; loop progress unresolved`,
+  `continuation instruction budget exhausted`, `Continuation string iteration budget
+  exhausted; remaining effects unresolved`, or a repeated-instruction reason naming
+  `continuationBudget.visitLimit`. Controls that matched the ordinary stop reasons on
+  `declaredContinuationPaths` match these.
+- Gaps raised while continuations run carry `route: "declaredContinuation"`.
+- Controls that expected a `path limit` gap at a table jump because ordinary paths spent
+  `maxPaths` now see continuation paths there. Rerun them: a newly returned continuation is still
+  conditional evidence under its `declaredJumpAssumptions`.

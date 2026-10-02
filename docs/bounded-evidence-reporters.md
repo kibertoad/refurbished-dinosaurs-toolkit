@@ -66,7 +66,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 
 | Command | Reports | Described in |
 |---|---|---|
-| `trace` | ordered effects and every return along bounded paths from `entry` | this section |
+| `trace` | ordered effects and every return along bounded paths from `entry`; declared-table continuations run on their own `continuationBudget` | this section, [jump tables](#evidenced-indirect-jump-tables) |
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `effects` also summarizes each path's ordered effects and local restoration witnesses | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries) |
 | `uses` | accesses to one memory offset from every established entry | this section |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
@@ -540,9 +540,34 @@ entries (default 10000). Each walk is charged every instruction it decoded, incl
 overlapping and contested ones it does not establish; edges it could not decode and
 uncovered region bytes cost nothing. Exhausted or unresolved boundaries become
 explicit gaps.
-All continuation choices share path/step/visit/total budgets with ordinary tracing.
-Continuations start only after every ordinary path has finished, so they use only the
-budget the ordinary paths left; `uses` and `dispatch` read ordinary paths and start none.
+
+Continuations start only after every ordinary path has finished, and they spend their own
+`continuationBudget`. The ordinary paths, their gaps and derived analyses, `stepsUsed` and
+`stringIterationsUsed` are the same whatever that budget is. Each ordinary path that reached a
+declared jump is continued, however much of `maxPaths` and `totalSteps` the ordinary paths spent.
+An ordinary route dropped at a path limit, or stopped before it reached the jump, is never
+continued; its ordinary gap or stop reason says so, and the continuation budget cannot recover
+it. `uses` and `dispatch` read ordinary paths and start none.
+
+| `continuationBudget` field | Bounds | Default | Range | Reached |
+|---|---|---|---|---|
+| `paths` | continuation paths, including forks inside them | `maxPaths` | 0..256 | a `path limit` gap (or the fork-specific path-limit reason) at the jump or fork |
+| `totalSteps` | instructions across every continuation | `totalSteps` | 1..100000 | each remaining continuation stops with `continuation instruction budget exhausted` |
+| `maxSteps` | instructions one path runs after its first declared jump | `maxSteps` | 1..10000 | the path stops with `continuation step limit; loop progress unresolved` |
+| `visitLimit` | passes over one instruction after the first declared jump | `visitLimit` | 1..4096 | the path stops naming `continuationBudget.visitLimit` |
+| `stringIterations` | string iterations across every continuation | `stringIterations` | 0..65536 | the path stops with `Continuation string iteration budget exhausted` |
+
+Unknown fields are rejected. Every gap raised while continuations run carries
+`route: "declaredContinuation"`, so it is never mistaken for an ordinary gap. Each
+continuation path still reports `steps` and `instructionPath` from `entry`, and
+`maxDepth` applies to the whole path. Once the path budget is spent (or with `paths: 0`),
+each further ordinary path stopped at a declared jump leaves one `path limit` gap at the jump.
+The report adds `continuationStepsUsed`, `continuationStringIterationsUsed` and
+`limits.continuation` with the effective values. When continuations stop at a limit, raise
+the matching `continuationBudget` field. Unset fields follow the ordinary inputs, so raising
+`maxPaths` or `totalSteps` without setting the field also raises the continuation budget, and
+a report can hold up to twice the paths the ordinary inputs allow. Set
+`continuationBudget.paths` when the report must stay within the reader's output limit.
 A returned conditional path never makes `completeWithinModel` or `allPathsRead`
 true. Split capped queries by explicitly partial evidenced table fields rather
 than raising limits; such a split cannot prove the complete dispatch.

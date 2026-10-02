@@ -762,10 +762,60 @@ test("effects retains stopped dispatch beside separate conditional table paths",
   assert.ok(r.declaredContinuationPaths.every((p: Report) => p.returned && p.declaredJumpAssumptions.length));
   assert.deepEqual(r.effectOrdering.declaredContinuationPaths.map((p: Report) => p.writeOrders.length).sort(), [1, 2]);
   assert.ok(r.effectOrdering.declaredContinuationPaths.every((p: Report) => !p.effectCompleteWithinModel));
+  // continuationBudget.paths defaults to maxPaths and is spent apart from it.
   writeFileSync(join(dir, "config.json"), JSON.stringify({ ...query, maxPaths: 1 }));
   const capped = run(["effects", join(dir, "config.json")]);
-  assert.equal(capped.declaredContinuationPaths.length, 0);
-  assert.ok(capped.gaps.some((g: Report) => g.reason === "path limit"));
+  assert.equal(capped.declaredContinuationPaths.length, 1);
+  assert.ok(capped.gaps.some((g: Report) => g.reason === "path limit" && g.route === "declaredContinuation"));
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ ...query, continuationBudget: { paths: 0 } }));
+  const none = run(["effects", join(dir, "config.json")]);
+  assert.equal(none.declaredContinuationPaths.length, 0);
+  assert.ok(none.gaps.some((g: Report) => g.reason === "path limit" && g.route === "declaredContinuation"));
+});
+
+test("declared continuations run on their own budget after ordinary paths spend maxPaths", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // jc to the table jump; otherwise fork on an unknown byte and return.
+  data.set([0x72, 0x08, 0x80, 0x3e, 0x00, 0x01, 0x00, 0x74, 0x00, 0xc3, 0xff, 0xe3], 64);
+  data.set([0xb8, 0x01, 0x00, 0xc3], 80);
+  data.set([0xb8, 0x02, 0x00, 0xc3], 96);
+  data.writeUInt16LE(16, 112);
+  data.writeUInt16LE(32, 114);
+  writeFileSync(join(dir, "source.bin"), data);
+  const query = {
+    ...config,
+    sha256: createHash("sha256").update(data).digest("hex"),
+    regions: [{ ...config.regions[0]!, end: 104 }],
+    maxPaths: 2,
+    indirectJumps: [
+      {
+        site: 74,
+        exhaustive: true,
+        evidence: "synthetic BX consumer",
+        table: { start: 112, count: 2, stride: 2, evidence: "synthetic two-target word table" },
+      },
+    ],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const r = run(["trace", join(dir, "config.json")]);
+  assert.equal(r.paths.length, 2);
+  assert.ok(r.gaps.some((g: Report) => g.reason === "path limit" && g.route === undefined));
+  assert.deepEqual(r.declaredContinuationPaths.map((p: Report) => p.registers.ax.value).sort(), [1, 2]);
+  assert.ok(r.declaredContinuationPaths.every((p: Report) => p.returned));
+  assert.equal(r.limits.continuation.paths, 2);
+  assert.equal(r.completeWithinModel, false);
+  writeFileSync(
+    join(dir, "config.json"),
+    JSON.stringify({ ...query, continuationBudget: { paths: 1, totalSteps: 50 } }),
+  );
+  const capped = run(["trace", join(dir, "config.json")]);
+  assert.deepEqual(capped.paths, r.paths);
+  assert.equal(capped.declaredContinuationPaths.length, 1);
+  assert.ok(
+    capped.gaps.some((g: Report) => g.site === 74 && g.reason === "path limit" && g.route === "declaredContinuation"),
+  );
+  assert.equal(capped.limits.continuation.totalSteps, 50);
 });
 
 test("nested modeled services retain child writes but cannot preserve ancestor return frames implicitly", (t) => {
