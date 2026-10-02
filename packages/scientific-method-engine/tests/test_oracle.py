@@ -138,6 +138,14 @@ class StringOperations(unittest.TestCase):
         check(self, "fc be1000 bf2000 c7046162 c7056162 b90200 f3a6 be1000 bf2000 a7 b86162 bf2000 af 7504 bb0100 c3 bb0200 c3",
               registers=SAME, resolved=("cx", "si", "di", "bx"), extended=STRING_COMPARE)
 
+    def test_cmps_with_equal_source_and_destination_offsets(self):
+        # SI = DI = 0x10. In different segments 'a' < 'b' takes JB (BX = 2); in one segment the second
+        # store overwrites the first, so the bytes are equal and JB falls through (BX = 1).
+        code = "fc be1000 bf1000 c60461 26c60562 a6 7204 bb0100 c3 bb0200 c3"
+        for registers in (DATA, SAME):
+            with self.subTest(registers=registers):
+                check(self, code, registers=registers, resolved=("si", "di", "bx"), extended=STRING_COMPARE)
+
     def test_backward_steps(self):
         check(self, "fd bf0a00 b0aa b90400 f3aa be0700 ac c3", registers={**DATA, "ds": 0x4000},
               resolved=("al", "si", "di"))

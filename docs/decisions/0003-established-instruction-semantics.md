@@ -409,14 +409,14 @@ backend stays registered for the differential run until phase 5. The engine depe
 - `tests/oracle.py` runs a synthetic routine on Unicorn's 16-bit real mode and compares every
   register the engine resolved. `tests/test_oracle.py` has cases for each group.
 
-Full differential run (`SEMANTICS_DIFFERENTIAL_SUMMARY=1`): 456 identical, 14 extended, 0 stricter,
+Full differential run (`SEMANTICS_DIFFERENTIAL_SUMMARY=1`): 463 identical, 18 extended, 0 stricter,
 0 disagreement. The extended cases, each checked against Unicorn:
 
 | Case | Why pypcode resolves more |
 |---|---|
 | `test_oracle.Compare.test_test_and_parity`, `jp`/`jnp` after `test` and `cmp` (6 runs) | p-code computes PF; `predicate` never resolves it |
 | `test_oracle.ArithmeticAndLogic.test_counted_loop_exits_on_decrement_flags`, `test_effect_order`'s counted loop | p-code keeps the flags `dec` sets, so the loop exit resolves |
-| `test_oracle.StringOperations` CMPS and SCAS cases (3 runs), `test_x86.test_repeated_string_comparisons` (3 runs) | the handwritten backend stops on `cmps` and `scas` |
+| `test_oracle.StringOperations` CMPS and SCAS cases (5 runs), `test_x86`'s repeated string comparison cases (4 runs), `test_pe.test_cmps_with_one_address_for_both_operands` | the handwritten backend stops on `cmps` and `scas` |
 
 The oracle and the differential run found three defects in the handwritten backend, fixed in place
 because they change no instruction semantics (decision 6 allows provenance fixes):

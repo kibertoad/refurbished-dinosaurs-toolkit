@@ -308,7 +308,9 @@ def trace(image, config):
                     check_string_form(state, ins)
                     count = string_count(state, ins)
                     direction = state.direction_flag
-                    if count.number and direction.number is None and count.number <= string_limit - total_string_steps:
+                    # A repeated comparison may stop before its count runs out, so one iteration must fit.
+                    needed = 1 if compare_string(ins) and repeated(ins) else count.number
+                    if count.number and direction.number is None and needed <= string_limit - total_string_steps:
                         key = repr(("direction", direction.term))
                         if key in state.assumptions:
                             state.direction_flag = const(state.assumptions[key], 1, at)

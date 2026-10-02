@@ -1491,6 +1491,22 @@ class ReporterTests(unittest.TestCase):
         result = report("f2 a4 c3", flags={"direction": 0})
         self.assertIn("REPNE", result["paths"][0]["stop"])
 
+    def test_repeated_comparison_splits_an_unknown_direction_when_its_count_exceeds_the_budget(self):
+        es = {"es": 0x2000, "ds": 0x2000}
+        with accepted("extended", "the handwritten backend stops on CMPS and SCAS"):
+            # CX = 0xFFFF exceeds the budget, but the terminator ends the scan after one iteration either way.
+            result = report("bf 00 01 c6 05 00 b0 00 b9 ff ff f2 ae c3", registers=es)
+        self.assertTrue(all(p["returned"] for p in result["paths"]), [p["stop"] for p in result["paths"]])
+        self.assertEqual(sorted(p["registers"]["di"]["value"] for p in result["paths"]), [0xff, 0x101])
+        self.assertEqual(result["stringIterationsUsed"], 2)
+
+    def test_rotates_and_sal_by_one_on_unknown_operands_keep_the_reported_forms(self):
+        # The differential run checks that both backends report the same result and operation.
+        for code in ("d1 c0", "d1 c8", "d0 c0", "d0 c8", "d0 cc", "d1 f0"):
+            with self.subTest(code=code):
+                path = report(code + " c3")["paths"][0]
+                self.assertTrue(path["returned"], path["stop"])
+
     def test_string_repetition_keeps_register_terms_and_budget_bounded(self):
         # Many 16-bit pointer updates must not nest the unknown upper register halves.
         result=report("f3 aa c3",flags={"direction":0},registers={"es":0x2000,"di":0,"cx":4096})

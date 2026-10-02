@@ -99,6 +99,11 @@ def bit(value, site):
                 if covered is not None:
                     return Value(1, covered.term, value.sources)
                 return Value(1, extract(Value(width, inner), position, 1).term, value.sources)
+    # x & 1 is bit 0 of x; an 8-bit ROR by one writes CF this way.
+    if term[0] == "and" and term[2] == ("constant", 1):
+        width = width_of(term[1], value)
+        if width is not None:
+            return Value(1, extract(Value(width, term[1]), 0, 1).term, value.sources)
     # x == 0 for a one-bit x zero-extended is NOT x.
     if term[0] == "equal" and term[2] == ("constant", 0) and term[1][0] == "zeroExtend" and term[1][2] == 1:
         return Value(1, ("xor", term[1][1], ("constant", 1)), value.sources)
@@ -125,11 +130,19 @@ def fields(term, width):
     (right when negative). Rotates and shifts of joined values take this form in p-code.
     """
     head = term[0]
+    top = top_bit(term)
+    if top is not None:
+        return [top]
     if head == "zeroExtend":
         return [(term[1], term[2], 0)]
     if head == "or":
         x, y = fields(term[1], width), fields(term[2], width)
         return None if x is None or y is None else x + y
+    if head == "shl" and term[2] == ("constant", width - 1):
+        # SLEIGH moves bit 0 into the top bit as x & 1 or (x & 1) != 0; shifting x itself drops the other bits.
+        low = low_bit(term[1])
+        if low is not None and width_of(low, None) == width:
+            return [(low, width, width - 1)]
     if head in ("shl", "shr") and term[2][0] == "constant":
         inner = fields(term[1], width)
         if inner is None:
@@ -145,6 +158,27 @@ def fields(term, width):
             return None
         return [(t, w, s - low) for t, w, s in parts if s - low < bits and s - low + w > 0]
     return [(term, width, 0)]
+
+
+def top_bit(term):
+    """SLEIGH's sign test SLESS(x, 0), zero-extended or not, as the field of x shifted down to bit 0, or None."""
+    if term[0] == "zeroExtend":
+        term = term[1]
+    if term[0] != "sless" or term[2] != ("constant", 0):
+        return None
+    width = width_of(term[1], None)
+    return None if width is None else (term[1], width, 1 - width)
+
+
+def low_bit(term):
+    """x when ``term`` is SLEIGH's bit-0 test x & 1 or (x & 1) != 0, zero-extended or not, else None."""
+    if term[0] == "zeroExtend":
+        term = term[1]
+    if term[0] == "notEqual" and term[2] == ("constant", 0):
+        term = term[1]
+    if term[0] == "and" and term[2] == ("constant", 1):
+        return term[1]
+    return None
 
 
 def disjoint(parts, width):
@@ -244,7 +278,10 @@ class Frame:
     def memory(self, kind, address, size, value):
         state, ins = self.state, self.ins
         segment_name, offset = (address.segment, address.offset) if isinstance(address, Address) else flat_address(address)
-        for index, operand in enumerate(ins.operands):
+        # POP loads only from the stack. Matching that load against the destination would address
+        # the destination before the stack pointer moves.
+        operands = () if kind == "load" and ins.mnemonic == "pop" else ins.operands
+        for index, operand in enumerate(operands):
             if operand.type != X86_OP_MEM:
                 continue
             segment, evidence, register = self.address(index)
@@ -259,6 +296,7 @@ class Frame:
                     self.cache[index] = state.access(segment, evidence, width, role=self.roles.get(index),
                                                      addressing_register=register)
                     self.loaded[index] = self.cache[index]
+                    WIDTHS.setdefault(self.cache[index].term, self.cache[index].bits)
                 return extract(self.cache[index], d * 8, size * 8)
             location = evidence if d == 0 else op("add", evidence, const(d, evidence.bits), state.at)
             state.access(segment, location, size, value, addressing_register=register)
@@ -328,12 +366,12 @@ def segment_operand(state, ins, index):
             and ins.reg_name(operand.reg) in state.segment_bases)
 
 
-def flags_written(state, run, site):
+def flags_written(state, run):
     """Record the arithmetic flags a p-code run wrote, after the evidence layer's flag record."""
     state.flag_values = {name: value for name, value in run.flags.items() if name in FLAGS}
 
 
-def carry_out(state, run, site, named=True):
+def carry_out(state, run, site):
     """CF after an instruction that is not a comparable flag producer."""
     value = run.flags.get("CF")
     if value is None:
@@ -341,7 +379,7 @@ def carry_out(state, run, site, named=True):
     carry = bit(value, site)
     if carry is None or carry.number is None:
         # An unresolved carry out is named by its site, as the evidence layer names it.
-        return unknown(f"carry:{site}:{state.flag_serial}", 1, site) if named else None
+        return unknown(f"carry:{site}:{state.flag_serial}", 1, site)
     return const(carry.number, 1, site)
 
 
@@ -389,15 +427,19 @@ class Pypcode:
             segment_name, offset = (address.segment, address.offset) if isinstance(address, Address) else (None, address)
             if size != width:
                 raise StopPath("p-code string access width differs from the decoded instruction")
-            if kind == "load" and source_segment is not None and delta(offset, source) == 0:
-                if segment_name is not None and segment_name.lower() != source_segment:
-                    raise StopPath("p-code string source differs from the decoded instruction")
+            is_source = (source_segment is not None and delta(offset, source) == 0
+                         and (segment_name is None or segment_name.lower() == source_segment))
+            is_destination = delta(offset, destination) == 0 and segment_name in (None, "ES")
+            # With SI equal to DI a CMPS load matches both operands. Without a segment name to tell
+            # them apart (flat mode, or the same segment register) each operand takes one of the loads.
+            if kind == "load" and is_source and not (is_destination and "destination" not in loaded
+                                                     and "source" in loaded):
                 if "source" not in loaded:
                     loaded["source"] = state.access(state.segment(source_segment), source, width, role="string-source",
                                                     addressing_register=source_segment)
                 return loaded["source"]
-            if delta(offset, destination) != 0 or (segment_name is not None and segment_name != "ES"):
-                raise StopPath("p-code string destination differs from the decoded instruction")
+            if not is_destination:
+                raise StopPath("p-code string access differs from the decoded instruction")
             if kind == "load":
                 # SCAS reloads ES:DI for each flag; the iteration reads it once.
                 if "destination" not in loaded:
@@ -407,11 +449,7 @@ class Pypcode:
             state.access(state.segment("es"), destination, width, value, role="string-destination", addressing_register="es")
             return None
 
-        # One iteration is the instruction without its repeat prefix; the evidence layer counts them.
-        code = bytes(b for b in ins.bytes[:len(ins.bytes) - 1] if b not in (0xF2, 0xF3)) + bytes(ins.bytes[-1:])
-        ops, length = LIFTER.ops(state.flat, code, state.at)
-        if length != len(code):
-            raise StopPath(f"pypcode decoded {length} bytes where Capstone decoded {len(code)}")
+        ops, tail = string_ops(state.flat, bytes(ins.bytes), state.at, operation)
         accumulator = state.reg({1: "al", 2: "ax", 4: "eax"}[width]) if operation == "scas" else None
         run = Run(state, ops, memory)
         run.execute()
@@ -419,16 +457,37 @@ class Pypcode:
             return None
         left = loaded["source"] if operation == "cmps" else accumulator
         state.set_flags(left, loaded["destination"], "cmp")
-        flags_written(state, run, state.at)
-        if len(code) == len(ins.bytes):
+        flags_written(state, run)
+        if tail is None:
             return None
-        # The repeated form ends with a CBRANCH back to itself while the comparison holds.
-        repeated_ops, _ = LIFTER.ops(state.flat, bytes(ins.bytes), state.at)
-        branches = [i for i, o in enumerate(repeated_ops) if o.code == "CBRANCH"]
-        start = max(i for i, o in enumerate(repeated_ops[:branches[-1]]) if o.output is not None
-                    and o.output[0] == "register" and LIFTER.register(state.flat, o.output[1], o.output[2]) in FLAGS)
-        tail = repeated_ops[start + 1:branches[-1] + 1]
         return Run(state, tail, None, flags=state.flag_values).execute(stop_at_branch=True)
+
+
+STRING_OPS = {}
+
+
+def string_ops(flat, encoded, address, operation):
+    """One iteration's p-code and, for a repeated CMPS or SCAS, the p-code of its repeat condition.
+
+    Both are lifted once per instruction, because a repeated form runs them for every iteration.
+    """
+    key = (flat, encoded, address)
+    if key not in STRING_OPS:
+        # One iteration is the instruction without its repeat prefix; the evidence layer counts them.
+        code = bytes(b for b in encoded[:-1] if b not in (0xF2, 0xF3)) + encoded[-1:]
+        ops, length = LIFTER.ops(flat, code, address)
+        if length != len(code):
+            raise StopPath(f"pypcode decoded {length} bytes where Capstone decoded {len(code)}")
+        tail = None
+        if operation in ("cmps", "scas") and len(code) != len(encoded):
+            # The repeated form ends with a CBRANCH back to itself while the comparison holds.
+            repeated_ops, _ = LIFTER.ops(flat, encoded, address)
+            branches = [i for i, o in enumerate(repeated_ops) if o.code == "CBRANCH"]
+            start = max(i for i, o in enumerate(repeated_ops[:branches[-1]]) if o.output is not None
+                        and o.output[0] == "register" and LIFTER.register(flat, o.output[1], o.output[2]) in FLAGS)
+            tail = repeated_ops[start + 1:branches[-1] + 1]
+        STRING_OPS[key] = (ops, tail)
+    return STRING_OPS[key]
 
 
 def run_plain(state, ins, image, **frame):
@@ -514,7 +573,7 @@ def compare(state, ins, image):
     f = run_plain(state, ins, image)
     a, b = f.value(0), f.value(1)
     state.set_flags(a, resize(b, a.bits), m)
-    flags_written(state, f.run, state.at)
+    flags_written(state, f.run)
     state.event("compare", operation=m, left=a.report(), right=b.report())
 
 
@@ -525,7 +584,7 @@ def arithmetic(state, ins, image):
     b = resize(f.value(1), a.bits)
     result = f.result(0)
     state.set_flags(a, b, m)
-    flags_written(state, f.run, state.at)
+    flags_written(state, f.run)
     state.event("arithmetic", operation=m, left=a.report(), right=b.report(), result=result.report(), modulus=1 << a.bits)
 
 
@@ -533,7 +592,7 @@ def step(state, ins, image):
     run = run_plain(state, ins, image).run
     # Carry is preserved; the evidence layer forgets the comparable flag producer.
     state.forget_flags(keep_carry=True)
-    flags_written(state, run, state.at)
+    flags_written(state, run)
 
 
 def invert(state, ins, image):
@@ -545,7 +604,7 @@ def negate(state, ins, image):
     a = f.value(0)
     result = f.result(0)
     state.set_flags(const(0, a.bits, state.at), a, "sub")
-    flags_written(state, f.run, state.at)
+    flags_written(state, f.run)
     state.event("arithmetic", operation="neg", left=a.report(), result=result.report(), modulus=1 << a.bits)
 
 
@@ -558,7 +617,7 @@ def carry_arithmetic(state, ins, image):
     result = f.result(0)
     state.forget_flags()
     state.carry = carry_out(state, f.run, state.at)
-    flags_written(state, f.run, state.at)
+    flags_written(state, f.run)
     state.flag_values["CF"] = resize(state.carry, 8)
     state.event("arithmetic", operation=m, left=a.report(), right=b.report(), carryIn=carry_in.report(),
                 result=result.report(), carryOut=state.carry.report(), modulus=1 << a.bits)
@@ -587,9 +646,9 @@ def shift(state, ins, image):
         state.forget_flags()
         carry = bit(f.run.flags["CF"], state.at) if n is not None and n <= a.bits else None
         state.carry = carry if carry is not None else unknown(f"carry:{state.at}:{state.flag_serial}", 1, state.at)
-        flags_written(state, f.run, state.at)
+        flags_written(state, f.run)
         state.flag_values["CF"] = resize(state.carry, 8)
-    state.event("arithmetic", operation="shl" if m == "sal" else m, left=a.report(), right=b.report(), result=result.report(), modulus=1 << a.bits)
+    state.event("arithmetic", operation=m, left=a.report(), right=b.report(), result=result.report(), modulus=1 << a.bits)
 
 
 def rotate(state, ins, image):
@@ -628,7 +687,7 @@ def rotate(state, ins, image):
     # The last bit rotated out comes from the operand; a constant fold of the whole rotate would
     # also name the incoming CF and every other operand bit as its inputs.
     state.carry = Value(1, carry.term, sources(a, count, site=state.at))
-    flags_written(state, f.run, state.at)
+    flags_written(state, f.run)
     state.flag_values["CF"] = resize(state.carry, 8)
     state.event("arithmetic", operation=m, left=a.report(), count=n, result=value.report(),
                 carryOut=state.carry.report(), modulus=1 << bits)
@@ -662,7 +721,7 @@ def multiply(state, ins, image):
     state.forget_flags()
     carry = bit(f.run.flags["CF"], state.at)
     state.carry = const(carry.number, 1, state.at) if carry is not None and carry.number is not None else unknown(f"carry:{state.at}:{state.flag_serial}", 1, state.at)
-    flags_written(state, f.run, state.at)
+    flags_written(state, f.run)
     state.flag_values["CF"] = resize(state.carry, 8)
     state.event("arithmetic", operation=m, left=multiplicand.report(), right=source.report(),
                 result=product.report(), resultBits=2 * bits, carryOut=state.carry.report())
