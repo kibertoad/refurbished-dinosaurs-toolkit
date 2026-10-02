@@ -107,3 +107,55 @@ class TableContinuationTests(unittest.TestCase):
         self.assertFalse(any(e["kind"] == "write" and e["site"] == 28 for e in failure["events"]))
         self.assertFalse(r["completeWithinModel"])
         self.assertTrue(all(not p["effectCompleteWithinModel"] for p in r["effectOrdering"]["declaredContinuationPaths"]))
+
+    def test_continuations_never_take_budget_from_ordinary_paths(self):
+        data = bytearray([0x90] * 52)
+        data[0:2] = bytes.fromhex("72 1e")
+        data[2:8] = bytes.fromhex("85 c0 74 01 c3 c3")
+        data[32:34] = bytes.fromhex("ff e3")
+        data[40:45] = bytes.fromhex("85 c9 74 00 c3")
+        data[48:52] = bytes.fromhex("28 00 2c 00")
+        config = {"entry": 0, "maxPaths": 3,
+                  "regions": [{"name": "code", "start": 0, "end": 48, "segment": 4096, "ip": 0,
+                               "entries": [0], "evidence": "constructed mappings"}],
+                  "indirectJumps": [{"site": 32, "evidence": "constructed BX consumer", "exhaustive": True,
+                                     "table": {"start": 48, "count": 2, "stride": 2, "evidence": "constructed words"}}]}
+        declared = run_report(bytes(data), config, "trace")
+        plain = run_report(bytes(data), {k: v for k, v in config.items() if k != "indirectJumps"}, "trace")
+        self.assertEqual([(p["returned"], p["stop"]) for p in declared["paths"]],
+                         [(p["returned"], p["stop"]) for p in plain["paths"]])
+        self.assertEqual(len(declared["paths"]), 3)
+        self.assertTrue(any(g["reason"] == "path limit" and g["site"] == 32 for g in declared["gaps"]))
+
+    def test_operand_read_stays_out_of_the_stopped_ordinary_path(self):
+        data, config = fixture()
+        data = bytearray(data)
+        data[0:3] = bytes.fromhex("2e ff 27")
+        r = run_report(bytes(data), {**config, "registers": {"bx": 32}}, "trace")
+        self.assertFalse(any(e["kind"] == "read" for e in r["paths"][0]["events"]))
+        self.assertTrue(any(e["kind"] == "read" for e in r["declaredContinuationPaths"][0]["events"]))
+
+    def test_truncated_boundary_walk_establishes_no_target(self):
+        data, config = fixture()
+        r = run_report(data, {**config, "instructionLimit": 2}, "trace")
+        self.assertFalse(r["declaredContinuationPaths"])
+        self.assertTrue(any("boundary" in g["reason"] for g in r["gaps"]))
+
+    def test_field_address_uses_the_table_region_mapping(self):
+        data, config = fixture()
+        data = bytearray(data)
+        data[0:3] = bytes.fromhex("2e ff 27")
+        config = copy.deepcopy(config)
+        config["regions"][0]["end"] = 32
+        config["regions"].append({"name": "table", "start": 32, "end": 40, "segment": 4096, "ip": 0x100,
+                                  "entries": [36], "evidence": "constructed table mapping"})
+        r = run_report(bytes(data), {**config, "registers": {"bx": 0x100}}, "trace")
+        self.assertEqual([p["declaredJumpAssumptions"][0]["tableIndices"] for p in r["declaredContinuationPaths"]], [[0]])
+        r = run_report(bytes(data), {**config, "registers": {"bx": 32}}, "trace")
+        self.assertFalse(r["declaredContinuationPaths"])
+
+    def test_allocation_retains_the_conditional_routes(self):
+        data, config = fixture()
+        allocation = run_report(data, {**config, "allocations": [{"site": 8, "unitBytes": 16, "unitEvidence": "constructed unit",
+                                                                  "requestRegister": "bx"}]}, "allocation")
+        self.assertEqual(len(allocation["declaredContinuationPaths"]), 2)

@@ -495,8 +495,8 @@ The CFG follows each source-derived word and retains the full declaration in
 `indirectJumpDeclarations`. Bounds retain the consumption assumption in
 `assumedContinuations`; partial tables retain a gap and unresolved transfer.
 Unused declarations do not establish reachability. These supplied edges cannot
-prove overlapping instruction starts. They are evidence inputs, not register
-assignments or verified execution. The ordinary
+prove overlapping instruction starts. A declaration assigns no register or table
+word and verifies no execution. The ordinary
 `paths` still stop at unresolved computed transfers. Path reports additionally retain
 `declaredContinuationPaths`, separate full event streams under explicitly assumed
 source-table target choices. `effects` adds matching summaries under
@@ -514,6 +514,8 @@ targets must survive bounded CFG boundary checks; an overlap cannot be establish
 by its supplied edge. Boundary discovery shares `instructionLimit` across cached
 entries (default 10000); exhausted or unresolved boundaries become explicit gaps.
 All continuation choices share path/step/visit/total budgets with ordinary tracing.
+Continuations start only after every ordinary path has finished, so they use only the
+budget the ordinary paths left; `uses` and `dispatch` read ordinary paths and start none.
 A returned conditional path never makes `completeWithinModel` or `allPathsRead`
 true. Split capped queries by explicitly partial evidenced table fields rather
 than raising limits; such a split cannot prove the complete dispatch.
