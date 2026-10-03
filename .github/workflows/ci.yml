@@ -38,6 +38,8 @@ jobs:
       - run: pnpm exec tsc -p tools/tsconfig.json
       - run: pnpm run test
       - run: node --test "tools/release/*.test.ts"
+      - name: Software OpenGL provisioning controls
+        run: node --test actions/setup-software-opengl/install.test.mjs
       # Builds the npm packages and packs them as they would be published.
       - run: pnpm run build
       - run: pnpm -r exec pnpm pack --pack-destination "$RUNNER_TEMP/npm"
@@ -96,3 +98,21 @@ jobs:
       - uses: ./actions/check-documentation
         with:
           root: packages/standard-checker/test/valid
+
+  software-opengl-action:
+    name: Software OpenGL action
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./actions/setup-software-opengl
+        id: software-gl
+      - name: Verify staged driver
+        shell: pwsh
+        env:
+          SOFTWARE_GL_DRIVER: ${{ steps.software-gl.outputs.driver-path }}
+        run: |
+          if (-not (Test-Path -LiteralPath $env:SOFTWARE_GL_DRIVER -PathType Leaf)) { throw 'Driver is missing.' }
+          if (-not $env:SOFTWARE_GL_DRIVER.StartsWith($env:RUNNER_TEMP, [StringComparison]::OrdinalIgnoreCase)) { throw 'Driver escaped runner temp.' }

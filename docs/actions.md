@@ -1,6 +1,6 @@
 # Composite actions
 
-The toolkit publishes four composite GitHub Actions under `actions/`. Reference them by commit
+The toolkit publishes composite GitHub Actions under `actions/`. Reference them by commit
 SHA, as with any third-party action:
 
 ```yaml
@@ -13,6 +13,7 @@ SHA, as with any third-party action:
 | `setup-kaitai` | any | Installs a Kaitai Struct compiler release whose SHA-256 is pinned. |
 | `verify-repository` | any with PowerShell 7 | Fails when files that must stay local could be committed. |
 | `setup-inno` | Windows | Installs a verified Inno Setup 7 compiler for building installers. |
+| `setup-software-opengl` | Windows x64 | Provisions checksum-verified Mesa for graphics smoke tests outside build outputs. |
 
 `check-documentation` and `setup-kaitai` are covered, with every input, in
 [the documentation standard check guide](documentation-standard-check.md).
@@ -68,3 +69,14 @@ version. It sets `INNO_COMPILER` to the path of `ISCC.exe` for later steps.
 - run: '& $env:INNO_COMPILER installer/setup.iss'
   shell: pwsh
 ```
+
+## setup-software-opengl
+
+Hosted Windows runners can expose only OpenGL 1.1 without framebuffer objects. This action
+installs the pinned Mesa x64 driver and its adjacent libraries under a private `RUNNER_TEMP`
+directory. It verifies the archive SHA-256 before extraction and requires 7-Zip. A download,
+checksum or extraction failure fails the step; it never skips the graphics test.
+
+The `driver-path` output is the absolute `opengl32.dll` path. The host explicitly configures
+its graphics backend for its smoke test; the action does not alter game packages or default
+rendering. Never copy this directory into published outputs. Consume the action by commit SHA.
