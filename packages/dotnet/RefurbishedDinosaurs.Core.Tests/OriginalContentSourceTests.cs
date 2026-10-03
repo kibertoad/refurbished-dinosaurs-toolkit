@@ -57,6 +57,8 @@ public sealed class OriginalContentSourceTests
             await using var stream = source.OpenRead("data/map.bin");
             Assert.Equal(9, stream.ReadByte());
             Assert.False(source.TryGetFile("DATA/OTHER.BIN", out _));
+            Assert.Throws<InvalidDataException>(() => source.TryGetFile("C:DATA/MAP.BIN", out _));
+            Assert.Throws<InvalidDataException>(() => source.TryGetFile(" ", out _));
             Assert.Throws<FileNotFoundException>(() => source.OpenRead("DATA/OTHER.BIN"));
         }
         finally

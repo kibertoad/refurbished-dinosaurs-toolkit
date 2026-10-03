@@ -244,3 +244,14 @@ project. No npm, Python or prepared-config protocol names change.
 Use `PortableAssetPath.Relative` for install-relative names. Only call `WithoutDriveRoot`
 when the original format intentionally carries a drive root; then `ResolveFile` against the
 verified content directory. Remove host-dependent `Path.GetPathRoot` and filename glob fallbacks.
+
+`AssetManifest.Validate`, `AssetVerifier`, `OriginalContentSource.TryGetFile` and `OpenRead`, and
+`CueBinSheet.Parse` now apply `PortableAssetPath.Relative`, so they also reject drive-relative
+names such as `C:x.dat` on Linux and macOS, components with a trailing dot or space, and reserved
+device names. Rename such entries in manifests and lookups.
+
+A blank or null path reference (`PortableAssetPath.Relative`, `WithoutDriveRoot`, the relative
+argument of `SafePath.Below`, a manifest file path or a source lookup), a blank manifest game id or
+source edition, and a missing manifest file list now throw `InvalidDataException` instead of
+`ArgumentException` or `ArgumentNullException`. Catch `InvalidDataException` for malformed data;
+blank roots and source paths still throw `ArgumentException`.

@@ -53,8 +53,14 @@ traversal references on every host, along with components Windows reads differen
 or space, or a reserved device name such as `CON` or `nul.dat`). `WithoutDriveRoot` explicitly
 discards an ASCII Windows drive root when a game stores installation paths. `ResolveFile` matches
 every component ignoring ordinal case, rejects a missing root, ambiguous matches and links, and
-returns the actual relative spelling. The resolver is for trusted, stable content directories;
-concurrent filesystem replacement needs host controls.
+returns the actual relative spelling. It lists hidden and system entries and fails on an unreadable
+directory, so it never skips a name another host would match. The resolver is for trusted, stable
+content directories; concurrent filesystem replacement needs host controls.
+
+`AssetManifest`, `AssetVerifier`, `OriginalContentSource` lookups and the cue sheet `FILE` check
+use the same rules. A null or blank reference from data, a blank manifest game or edition and a
+missing file list throw `InvalidDataException`, like every other rejected reference; a blank root
+or source path passed by the caller still throws `ArgumentException`.
 
 ## RefurbishedDinosaurs.LegacyFormats
 

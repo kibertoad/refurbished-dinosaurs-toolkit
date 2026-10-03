@@ -7,13 +7,15 @@ public static class SafePath
     /// Returns the full path of <paramref name="relative"/> under <paramref name="root"/>. Comparison
     /// ignores case on Windows.
     /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="root"/> is null or blank.</exception>
     /// <exception cref="InvalidDataException">
-    /// <paramref name="relative"/> is absolute or resolves outside <paramref name="root"/>.
+    /// <paramref name="relative"/> is null, blank, absolute or resolves outside <paramref name="root"/>.
     /// </exception>
     public static string Below(string root, string relative)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
-        ArgumentException.ThrowIfNullOrWhiteSpace(relative);
+        if (string.IsNullOrWhiteSpace(relative))
+            throw new InvalidDataException("Path is blank.");
         if (Path.IsPathFullyQualified(relative))
             throw new InvalidDataException("Path must be relative.");
         var fullRoot = Path.GetFullPath(root).TrimEnd(
