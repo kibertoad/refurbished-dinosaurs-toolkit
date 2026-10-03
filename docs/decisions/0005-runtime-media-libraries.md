@@ -12,7 +12,7 @@ the analysis and research tools. Rename Core and LegacyFormats cleanly, with a m
 an explicit migration guide; provide no aliases or forwarding assemblies.
 
 Keep Core and non-video LegacyFormats. Move Smacker into Media.Smacker, and add Media.Avi,
-Media.Fli and Media.Playback. The four media packages have no dependency on each other, Core,
+Media.Fli and Media.Playback. The media packages have no dependency on each other, Core,
 MonoGame, host codecs or FFmpeg. A package follows a coherent format family or presentation
 responsibility; do not create a package for each Huffman tree, surface or PCM helper.
 
@@ -31,6 +31,6 @@ The unsigned mono8 API remains. AVI exposes sequential payloads without claiming
 keyframes. The shared clock accepts cadence and an initial delay, calls every dependent frame
 in order, holds the final interval, and leaves audio buffering/synchronization to the host.
 
-All six runtime packages share the existing .NET version/tag series and release workflow. New
+The runtime packages share the existing .NET version/tag series and release workflow. New
 NuGet IDs require trusted-publishing coverage before release. Tests use only synthetic inputs;
 owned media validation and original-derived reports stay in the restoration repositories.

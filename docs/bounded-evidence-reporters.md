@@ -1,12 +1,12 @@
 # Bounded instruction reports
 
-The reports come from two published packages built in this repository's `packages/`:
+The reports use the published reader and engine:
 `@scientific-method/executable-reader` on npm reads and hash-checks the original and runs the
 reports, and `scientific-method-engine` on PyPI decodes the instructions. Run
 `python -m pip install scientific-method-engine` once in the Python environment used for
 research, and add the reader to the project (`pnpm add -D @scientific-method/executable-reader`).
-Python 3.12 or later and Node 22 or later are required; the engine pins Capstone 5.0.7 and
-pypcode 4.0.0.
+Python 3.12 or later and Node 22 or later are required. The engine pins its decoder dependencies
+in [pyproject.toml](../packages/scientific-method-engine/pyproject.toml).
 `EVIDENCE_PYTHON` selects another Python executable. The reader refuses an engine whose
 prepared-config protocol differs from its own, so upgrade the two together.
 See [moving from the vendored reporters](migrating-to-scientific-method.md).
@@ -260,7 +260,7 @@ Run `python -B -m unittest discover -s tests -p 'test*.py'` in
 `packages/scientific-method-engine` and `pnpm --filter @scientific-method/executable-reader test`. The fixtures are entirely synthetic. The paired segment test reads distinct
 values through the same BP-derived BX offset before and after `push ss; pop ds`;
 the incoming-call test places a caller at a higher address than the target's code.
-Restorations depend on released versions of the two packages; refine the reporters here and
+Restorations depend on released versions of the reader and engine; refine the reporters here and
 release them (see [releasing](releasing.md)). The website describes acceptance
 contracts, while these executable tests establish delivered reporter behavior.
 A reporter need not support every query. Each supported query must meet its

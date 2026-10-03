@@ -1,7 +1,7 @@
 name: Release NuGet packages
 
 # When a pull request that changed packages/dotnet or global.json merges with a release:major,
-# release:minor or release:patch label, publishes all six RefurbishedDinosaurs runtime packages
+# release:minor or release:patch label, publishes the RefurbishedDinosaurs runtime packages
 # at the next shared version to nuget.org through trusted publishing
 # (OIDC) and creates the scientific-method-dotnet@<version> tag and GitHub release. The version comes from
 # the latest such tag plus the largest bump among the pull requests merged since that tag.

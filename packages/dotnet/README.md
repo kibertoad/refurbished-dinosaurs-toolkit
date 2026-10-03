@@ -12,7 +12,7 @@
 - `RefurbishedDinosaurs.Media.Fli`: AF11 FLI indexing, streaming and indexed frame decoding.
 - `RefurbishedDinosaurs.Media.Playback`: host-driven cadence and sequential decoding coordination.
 
-All six runtime packages are released together and share a version. Media packages have no
+The runtime packages are released together and share a version. Media packages have no
 Core, MonoGame, native codec or FFmpeg dependency; install only the formats you use.
 ScientificMethod names remain reserved for analysis and research tools.
 

@@ -84,7 +84,7 @@ Media.Smacker, Media.Avi, Media.Fli and Media.Playback are independent, dependen
 libraries. Smacker was moved from LegacyFormats; runtime package IDs and namespaces use
 RefurbishedDinosaurs, while research tooling retains ScientificMethod. See ADR 0005 and the
 [runtime migration](migrating-to-scientific-method.md#runtime-packages-and-shared-media).
-All six .NET packages share the existing scientific-method-dotnet release tag/version series.
+The .NET packages share the existing scientific-method-dotnet release tag/version series.
 Every public member has XML documentation, and the build fails without it.
 
 ### dinorefurb-disc-archiver
@@ -115,7 +115,7 @@ Restorations do not depend on it in code: players and researchers run it before 
 The reader and engine are released separately and agree through a prepared-config protocol, not
 through matching version numbers.
 
-- The reader adds `preparedProtocol` (currently `1`) to every config it pipes on stdin.
+- The reader adds `preparedProtocol` to every config it pipes on stdin.
 - The engine removes it and refuses to run when the number differs from its own, naming both
   packages in the error. A config file given to the engine directly may not contain the field.
 - Any change to the shape of a prepared config increments the protocol in both packages in the

@@ -45,7 +45,7 @@ export const PACKAGES: ReleasedPackage[] = [
     tagPrefix: "dinorefurb-disc-archiver@",
   },
   {
-    // All six RefurbishedDinosaurs runtime packages share one version and one tag.
+    // The RefurbishedDinosaurs runtime packages share one version and one tag.
     name: "scientific-method-dotnet",
     ecosystem: "nuget",
     paths: ["packages/dotnet/", "global.json"],
