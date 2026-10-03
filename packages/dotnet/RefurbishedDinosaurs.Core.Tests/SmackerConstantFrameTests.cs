@@ -26,9 +26,12 @@ public sealed class SmackerConstantFrameTests
         foreach (byte flags in new byte[] { 1, 2 })
         {
             var bytes = Movie(0, flags, []);
+            // Declare packed track 0 so the audio case reaches the header check, not the track lookup.
+            BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(72), 0x8000_0000u | 22050);
             var movie = SmackerMovieDecoder.Decode(bytes);
-            Assert.Throws<InvalidDataException>(() =>
+            var error = Assert.Throws<InvalidDataException>(() =>
                 SmackerMovieDecoder.DecodeFrameLayout(movie, 0, bytes, new byte[768]));
+            Assert.Contains("truncated", error.Message);
         }
     }
 
@@ -41,6 +44,8 @@ public sealed class SmackerConstantFrameTests
         Array.Resize(ref bytes, bytes.Length - 1);
         var movie = SmackerMovieDecoder.Decode(bytes);
         Assert.Throws<InvalidDataException>(() => new SmackerVideoDecoder(movie, bytes));
+        var error = Assert.Throws<InvalidDataException>(() => SmackerVideoDecoder.FromTreeData(movie, []));
+        Assert.Contains("bitstream is truncated", error.Message);
     }
 
     [Fact]
@@ -50,6 +55,9 @@ public sealed class SmackerConstantFrameTests
         Assert.Empty(SmackerAudioDecoder.Decode([0, 0, 0, 0, 0], track).Samples);
         Assert.Empty(SmackerAudioDecoder.DecodePcm16([0, 0, 0, 0, 0], track).Samples);
         Assert.Throws<InvalidDataException>(() => SmackerAudioDecoder.Decode([0, 0, 0, 0, 1], track));
+        // A packet that declares samples but clears its data bit is not empty audio.
+        Assert.Throws<InvalidDataException>(() => SmackerAudioDecoder.Decode([5, 0, 0, 0, 0], track));
+        Assert.Throws<InvalidDataException>(() => SmackerAudioDecoder.DecodePcm16([5, 0, 0, 0, 0], track));
     }
 
     [Fact]
@@ -61,6 +69,17 @@ public sealed class SmackerConstantFrameTests
         var layout = SmackerMovieDecoder.DecodeFrameLayout(movie, 0, bytes, previous);
         Assert.Equal(previous, layout.Palette);
         Assert.Equal(0, layout.Video.Length);
+    }
+
+    [Fact]
+    public void DeltaPaletteAcceptsTwoBytesOfAlignmentPadding()
+    {
+        // One skip command, then two zero bytes that pad the chunk to four bytes.
+        var bytes = Movie(4, 1, [1, 0x81, 0, 0]);
+        var movie = SmackerMovieDecoder.Decode(bytes);
+        var previous = Enumerable.Repeat((byte)7, 768).ToArray();
+        var layout = SmackerMovieDecoder.DecodeFrameLayout(movie, 0, bytes, previous);
+        Assert.Equal(previous, layout.Palette);
     }
 
     [Fact]

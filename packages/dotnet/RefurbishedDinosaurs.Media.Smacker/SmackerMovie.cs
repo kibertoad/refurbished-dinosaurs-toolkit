@@ -35,7 +35,7 @@ public sealed record SmackerAudioPacket(int TrackIndex, int DecodedLength, Smack
 /// <param name="PaletteChanged">Whether the frame updates the palette.</param>
 /// <param name="Palette">The palette in effect for the frame: 256 RGB triples, 8 bits per channel.</param>
 /// <param name="AudioPackets">The frame's audio packets, by track.</param>
-/// <param name="Video">The video packet, as a file range.</param>
+/// <param name="Video">The video packet, as a file range; empty when the frame carries no video bits.</param>
 public sealed record SmackerFrameLayout(
     bool PaletteChanged,
     byte[] Palette,
@@ -279,8 +279,10 @@ public static class SmackerMovieDecoder
         var entry = 0;
         while (entry < 256 && sourceOffset < packet.Length)
         {
-            // A delta palette may stop before entry 256; a final zero is alignment padding.
-            if (sourceOffset == packet.Length - 1 && packet[sourceOffset] == 0) break;
+            // A delta palette may stop before entry 256. The chunk is padded to four bytes, so one or
+            // two trailing zeros are padding; neither can hold a three-byte colour command.
+            var rest = packet[sourceOffset..];
+            if (rest.Length < 3 && !rest.ContainsAnyExcept((byte)0)) break;
             var command = packet[sourceOffset++];
             if ((command & 0x80) != 0)
             {

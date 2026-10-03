@@ -37,11 +37,10 @@ public sealed class SmackerVideoDecoder
         _width = movie.Width;
         _height = movie.Height;
         var reader = new LittleEndianBitReader(treeData);
-        var skipped = 0;
-        _mMap = ReadHeaderTree(ref reader, movie.TreeSizes.MMap, ref skipped);
-        _mClr = ReadHeaderTree(ref reader, movie.TreeSizes.MClr, ref skipped);
-        _full = ReadHeaderTree(ref reader, movie.TreeSizes.Full, ref skipped);
-        _type = ReadHeaderTree(ref reader, movie.TreeSizes.Type, ref skipped);
+        _mMap = ReadHeaderTree(ref reader, movie.TreeSizes.MMap);
+        _mClr = ReadHeaderTree(ref reader, movie.TreeSizes.MClr);
+        _full = ReadHeaderTree(ref reader, movie.TreeSizes.Full);
+        _type = ReadHeaderTree(ref reader, movie.TreeSizes.Type);
     }
 
     /// <summary>Reads the video trees from tree data alone, such as <see cref="SmackerMovieStream.TreeData"/>.</summary>
@@ -61,7 +60,7 @@ public sealed class SmackerVideoDecoder
     /// Applies one video packet to <paramref name="indices"/>, which holds the previous frame; unchanged
     /// blocks keep their pixels.
     /// </summary>
-    /// <param name="packet">The frame's video packet.</param>
+    /// <param name="packet">The frame's video packet; empty when every block decodes from constant trees.</param>
     /// <param name="indices">Width × height palette indices, rows top to bottom.</param>
     /// <param name="isKeyFrame">Whether to clear <paramref name="indices"/> first.</param>
     public void DecodeFrame(ReadOnlySpan<byte> packet, Span<byte> indices, bool isKeyFrame)
@@ -199,14 +198,9 @@ public sealed class SmackerVideoDecoder
         output[offset + 1] = (byte)((pair >> 8) & 0xFF);
     }
 
-    private static HuffmanTree ReadHeaderTree(
-        ref LittleEndianBitReader reader, int declaredSize, ref int skipped)
+    private static HuffmanTree ReadHeaderTree(ref LittleEndianBitReader reader, int declaredSize)
     {
-        if (!reader.ReadBit())
-        {
-            skipped++;
-            return HuffmanTree.Constant();
-        }
+        if (!reader.ReadBit()) return HuffmanTree.Constant();
 
         var low = ReadByteTree(ref reader);
         var high = ReadByteTree(ref reader);
