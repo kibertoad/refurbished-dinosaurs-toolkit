@@ -31,7 +31,8 @@ Used in place from this repository:
   the Chaos Overlords and Conqueror A.D. 1086 restorations, including
   [the bounded evidence reporter guide](docs/bounded-evidence-reporters.md),
   [the documentation standard check](docs/documentation-standard-check.md),
-  [disc archiving](docs/disc-archiving.md) and
+  [disc archiving](docs/disc-archiving.md),
+  [the shared runtime libraries](docs/runtime-libraries.md) and
   [moving from vendored copies to the packages](docs/migrating-to-scientific-method.md).
 
 ## Build

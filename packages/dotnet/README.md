@@ -22,6 +22,9 @@ dotnet add package RefurbishedDinosaurs.Core
 dotnet add package RefurbishedDinosaurs.LegacyFormats
 ```
 
+[The shared runtime libraries guide](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/runtime-libraries.md)
+explains how a restoration adopts these packages and lists their migrations.
+
 Every public type and member carries XML documentation, which IDEs show on hover. The build fails
 on an undocumented public member.
 
@@ -113,6 +116,29 @@ buffering. Pause/resume/skip the audio backend alongside the clock. A fixed vide
 not synchronize independent device clocks; reference captures and long-play drift checks remain
 downstream validation. A huge elapsed step still decodes every frame; hosts may pause admission
 or drive decoding on a worker when that cost is unacceptable.
+
+## Recoverable persistence
+
+`RecoverableFile.Write` flushes a staged file, invokes the caller's validator, preserves a usable
+primary as `.bak` and promotes the staged generation. Rejected primaries preserve existing backups.
+Supply exception admission explicitly for your format and preserve incompatible generations when
+appropriate. `Read` reports generation and primary failure and never repairs files during browsing.
+`ReadBounded` checks file size before allocation. Serialize writers; these operations are not a journal.
+
+`JsonSettingsStore<T>.MaximumBytes` bounds reads and writes (set a small application limit; the compatibility default is Int32.MaxValue), and `LoadResult`
+reports primary, backup or defaults. Whole-document validation and migration remain caller callbacks.
+For partial settings recovery, parse bounded primary and backup documents with the game's version
+admission, then use `SettingsRecovery.Select` for each nullable field. Defaults and clamps stay local.
+
+`FileWriteLock.Acquire` provides a cooperative exclusive `.lock` sibling lease, timeout and
+cancellation. Dispose the lease after each serialized operation; the lock file is intentionally
+retained. Schedule and snapshot saves in the host, and never rely on timestamp-only trust for validation.
+
+`AtomicFile.WriteBytesAsync` preserves cancellation before promotion while flushing the sibling
+to disk. `JsonSettingsStore.Save` can also admit an older primary through its migration callback
+before preserving it as the backup. Recoverable writers accept a backup suffix, which `Read` must
+be given too, and an explicit trusted-primary fast path; use that only for a known exact
+generation under serialized ownership.
 
 ## Validation
 

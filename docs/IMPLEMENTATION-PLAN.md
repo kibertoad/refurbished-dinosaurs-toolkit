@@ -50,9 +50,9 @@ published packages; a leaf-only write witness does not satisfy R1.
 
 ## Shared runtime primitives
 
-Status: open. Portable asset paths merged in PR 86; PCM conversion, audio lifetimes and WAVE
-streaming in PR 89. Recoverable persistence and settings, and input snapshots and bindings are
-still to do.
+Status: open. Portable asset paths merged in PR 86, recoverable persistence and settings in PR 88,
+and PCM conversion, audio lifetimes and WAVE streaming in PR 89. Input snapshots and bindings are
+still to do. Adoption guidance is in [the shared runtime libraries guide](runtime-libraries.md).
 
 Outcome: restorations consume shared portable paths, validated backup storage, bounded settings,
 PCM/WAVE streaming and generic input transitions while retaining game formats and rules.
