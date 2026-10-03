@@ -1,3 +1,5 @@
+using RefurbishedDinosaurs.Core.IO;
+
 namespace RefurbishedDinosaurs.Core.Assets;
 
 /// <summary>Why a file failed verification against its <see cref="AssetFileSpec"/>.</summary>
@@ -48,7 +50,7 @@ public static class AssetVerifier
         foreach (var spec in manifest.Files)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var relative = AssetPath.NormalizeRelative(spec.Path);
+            var relative = PortableAssetPath.Relative(spec.Path);
             var path = Path.Combine(sourceRoot, relative.Replace('/', Path.DirectorySeparatorChar));
             if (!File.Exists(path))
             {
