@@ -10,6 +10,7 @@
 - `RefurbishedDinosaurs.Media.Smacker`: SMK containers, palette/video decoding and packed audio.
 - `RefurbishedDinosaurs.Media.Avi`: AVI containers, Cinepak, cumulative RLE8 and Microsoft ADPCM.
 - `RefurbishedDinosaurs.Media.Fli`: AF11 FLI indexing, streaming and indexed frame decoding.
+- `RefurbishedDinosaurs.Media.Audio`: PCM conversion and disposable resource/voice ownership.
 - `RefurbishedDinosaurs.Media.Playback`: host-driven cadence and sequential decoding coordination.
 
 The runtime packages are released together and share a version. Media packages have no
@@ -109,3 +110,18 @@ From the repository root:
 dotnet build packages/dotnet/RefurbishedDinosaurs.slnx
 dotnet test --project packages/dotnet/RefurbishedDinosaurs.Core.Tests/RefurbishedDinosaurs.Core.Tests.csproj
 ```
+
+## Audio buffers and lifetimes
+
+`Media.Audio.Pcm16` converts unsigned eight-bit PCM and encodes signed samples in explicit
+little-endian order. Channel layout remains interleaved; conversion does not resample or remix.
+`AudioResourceCache` lazily owns backend resources and retries failed factories. `AudioVoices`
+owns admitted instances and disposes stopped voices on `Reap`. Both are host-thread objects;
+the caller controls limits, stealing, gain, routing and fades. Dispose voices before resources.
+
+`LegacyFormats.WavePcm16Writer` writes canonical mono/stereo PCM16 with a positive rate and a representable byte rate.
+`WavePcm16Stream` indexes RIFF chunks without allocating track data, admits mono/stereo PCM16
+at 8–48 kHz and accepts a caller track-size bound. Buffers and seeks must align to whole frames.
+`Read` stops at track end; `ReadLooped` wraps. Ownership includes constructor failure unless
+`leaveOpen` is true. Admit game-specific CDDA rates and canonical layouts in the game adapter.
+The eager `WavePcm16Reader` retains its 256 MiB data bound and leaves its input open.

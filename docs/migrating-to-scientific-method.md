@@ -238,3 +238,10 @@ failure and missing-media policies remain downstream.
 All runtime packages share the existing scientific-method-dotnet tag series. CI and local
 builds now use packages/dotnet/RefurbishedDinosaurs.slnx and the RefurbishedDinosaurs.Core.Tests
 project. No npm, Python or prepared-config protocol names change.
+
+## Shared audio primitives
+
+Replace unsigned-eight-bit widening loops with `Media.Audio.Pcm16.FromUnsigned8`; use
+`Pcm16.Encode` and `LegacyFormats.WavePcm16Writer` instead of host-endian WAVE construction.
+`WavePcm16Stream` owns its input by default, supports aligned buffers and looped reads, and exposes
+format metadata for game-specific CDDA admission. Dispose voices before cached resources.
