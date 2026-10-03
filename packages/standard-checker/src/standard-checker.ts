@@ -191,11 +191,18 @@ if (!Number.isSafeInteger(maxRange) || maxRange < 1) {
 const problems: string[] = [];
 let codeFilesCache: CodeFile[] | undefined; // see codeFiles()
 
+/** The whole numbers from 1 to N. */
+type UpTo<N extends number, Seen extends 0[] = [0]> =
+  | Seen["length"]
+  | (Seen["length"] extends N ? never : UpTo<N, [...Seen, 0]>);
+
 /**
  * A numbered rule of the documentation standard, such as `STATUS-14`. The standard opens each rule
  * with the heading `###### STATUS-14`, anchored at `#status-14` on the site and in vendored copies.
+ * Each count is the last rule the standard numbers in that section, so a label that names no rule
+ * does not compile. Raise a count, or add a section, when the standard numbers more rules.
  */
-type Rule = `${"IDENTIFIERS" | "STATUS" | "ENTRY-TYPES"}-${number}`;
+type Rule = `IDENTIFIERS-${UpTo<7>}` | `STATUS-${UpTo<41>}` | `ENTRY-TYPES-${UpTo<8>}`;
 let citedRule = false;
 // A problem that breaks a numbered rule ends with the rule's label, so whoever fixes it can read
 // that one rule instead of the whole section.
@@ -267,6 +274,19 @@ const SECTIONS: Record<string, string[]> = {
 
 const COMMON = ["id", "title", "status", "builds", "superseded_by"];
 const CLAIM_LINKS = ["evidence", "conflicting", "split_with", "related"];
+// The rules that make the fields every entry, or every claim, has always present. A field of one
+// kind alone is described under that kind, which has no numbered rules yet.
+const FIELD_RULES: Record<string, Rule> = {
+  id: "ENTRY-TYPES-4",
+  title: "ENTRY-TYPES-4",
+  status: "ENTRY-TYPES-4",
+  builds: "ENTRY-TYPES-4",
+  superseded_by: "ENTRY-TYPES-4",
+  evidence: "ENTRY-TYPES-5",
+  conflicting: "ENTRY-TYPES-5",
+  split_with: "ENTRY-TYPES-5",
+  related: "ENTRY-TYPES-6",
+};
 const FIELDS: Record<string, { required: string[] }> = {
   BLD: {
     required: [
@@ -719,7 +739,7 @@ for (const [kind, { dir }] of Object.entries(KINDS)) {
     const entry: Entry = Object.assign(read, { kind });
     const id = entry.meta.id;
     if (typeof id !== "string") {
-      problem(file, "has no id");
+      problem(file, "has no id", "IDENTIFIERS-1");
       continue;
     }
     if (name !== `${id}.md`) problem(file, `file name must be ${id}.md`);
@@ -729,7 +749,9 @@ for (const [kind, { dir }] of Object.entries(KINDS)) {
       continue;
     }
     if (kindOf(id) !== kind) problem(file, `a ${kindOf(id)} entry does not belong in spec/${dir}/`);
-    if (entries.has(id)) problem(file, `ID ${id} is used twice`, "IDENTIFIERS-3");
+    // IDENTIFIERS-3 makes a number unique within its kind and area. No numbered rule says so of an alias.
+    if (entries.has(id))
+      problem(file, `ID ${id} is used twice`, ["BLD", "SRC"].includes(kindOf(id)) ? undefined : "IDENTIFIERS-3");
     entries.set(id, entry);
   }
 }
@@ -959,7 +981,8 @@ for (const [id, e] of entries) {
     if (ids.length !== 1 || kindOf(ids[0]) !== "FND" || finding !== ids[0])
       problem(e.file, `${at}: the finding column holds the ID of one finding`);
     else if (cited && !asList(cited.meta.builds).includes(id)) problem(e.file, `${at}: ${ids[0]} does not list ${id}`);
-    else if (cited?.meta.status === "superseded") problem(e.file, `${at}: cites ${ids[0]}, which is superseded`);
+    else if (cited?.meta.status === "superseded")
+      problem(e.file, `${at}: cites ${ids[0]}, which is superseded`, "STATUS-17");
     // The finding shows code in this file of this build, so it has a location there that is not
     // file data. One with no locations there, or only file data there, shows no code in the row.
     else if (
@@ -1053,7 +1076,8 @@ function checkDraws(fixture: string, draws: Yaml, live: boolean) {
     if (extra.length) problem(fixture, `draw ${i} has ${extra.join(", ")}; a draw gives only rule, bound and result`);
     if (entries.get(draw.rule)?.kind !== "RULE")
       problem(fixture, `draw ${i} names ${draw.rule}, which is not a rule entry`);
-    else if (live && isSuperseded(draw.rule)) problem(fixture, `draw ${i} names ${draw.rule}, which is superseded`);
+    else if (live && isSuperseded(draw.rule))
+      problem(fixture, `draw ${i} names ${draw.rule}, which is superseded`, "STATUS-17");
     if (!Number.isInteger(draw.bound) || !Number.isInteger(draw.result))
       problem(fixture, `draw ${i} gives bound and result as integers`);
   });
@@ -1160,7 +1184,7 @@ const fieldNames = new Map<string, Set<string>>(); // format ID -> Set of names
 for (const [id, e] of entries) {
   const { file, meta, kind } = e;
   checkIdForm(file, id);
-  for (const f of FIELDS[kind].required) if (!(f in meta)) problem(file, `front matter lacks ${f}`);
+  for (const f of FIELDS[kind].required) if (!(f in meta)) problem(file, `front matter lacks ${f}`, FIELD_RULES[f]);
   if (!Array.isArray(meta.superseded_by)) problem(file, "superseded_by must be a list", "ENTRY-TYPES-4");
   const expectedSections = SECTIONS[kind];
   const got = e.sections.map((s) => s.title);
@@ -1386,7 +1410,7 @@ for (const [id, e] of entries) {
     }
     for (const x of evidence)
       if (!["FND", "EXP", "SRC"].includes(kindOf(x)))
-        problem(file, `evidence may hold only findings, experiments and sources, not ${x}`);
+        problem(file, `evidence may hold only findings, experiments and sources, not ${x}`, "ENTRY-TYPES-5");
     for (const x of conflicting)
       if (!["FND", "EXP"].includes(kindOf(x)))
         problem(file, `conflicting may hold only findings and experiments, not ${x}`, "ENTRY-TYPES-5");
@@ -1423,7 +1447,7 @@ for (const [id, e] of entries) {
       if (!["relied-on", "not-relied-on", "unknown"].includes(meta.player_reliance))
         problem(file, "player_reliance must be relied-on, not-relied-on or unknown");
       if (!related.some((x) => ["RULE", "FMT", "SCR"].includes(kindOf(x))))
-        problem(file, "a bug names at least one rule, format or screen in related");
+        problem(file, "a bug names at least one rule, format or screen in related", "ENTRY-TYPES-6");
     }
   }
 
@@ -1492,7 +1516,7 @@ function checkFormat(e: Entry) {
       if (isTotal) continue;
       const st = row[statusCol];
       if (!ROW_STATUSES.includes(st)) {
-        problem(file, `${kindLabel} row ${row[nameCol] ?? row[0]}: status ${st} is not allowed in a row`);
+        problem(file, `${kindLabel} row ${row[nameCol] ?? row[0]}: status ${st} is not allowed in a row`, "STATUS-1");
         continue;
       }
       if (st === "disputed") disputed = true;
@@ -1560,7 +1584,7 @@ function checkFormat(e: Entry) {
     for (const row of t.rows)
       for (const x of idsIn(row[t.header.indexOf("Meaning")]))
         if (kindOf(x) === "RULE" && !asList(meta.related).includes(x))
-          problem(file, `layout names ${x}; add it to related`);
+          problem(file, `layout names ${x}; add it to related`, "ENTRY-TYPES-6");
   // Kaitai definition
   if (meta.definition && existsSync(join(dirname(file), meta.definition))) {
     const ksy = readFileSync(join(dirname(file), meta.definition), "utf8");
@@ -1632,7 +1656,7 @@ function checkScreen(e: Entry) {
         for (const row of t.rows)
           for (const x of idsIn(row[c]))
             if (["RULE", "SCR"].includes(kindOf(x)) && !asList(meta.related).includes(x))
-              problem(file, `${col} cell names ${x}; add it to related`);
+              problem(file, `${col} cell names ${x}; add it to related`, "ENTRY-TYPES-6");
       }
     }
   for (const x of cited) checkResolves(file, [x], "a table");
@@ -1789,9 +1813,9 @@ for (const [id, e] of entries) {
       }
   }
   for (const m of code.matchAll(/\bcall\s+(RULE-[A-Z0-9]+-\d+)/g))
-    if (!related.includes(m[1])) problem(file, `calls ${m[1]}; add it to related`);
+    if (!related.includes(m[1])) problem(file, `calls ${m[1]}; add it to related`, "ENTRY-TYPES-6");
   for (const m of code.matchAll(/\bshow\s+(SCR-[A-Z0-9]+-\d+)/g))
-    if (!related.includes(m[1])) problem(file, `shows ${m[1]}; add it to related`);
+    if (!related.includes(m[1])) problem(file, `shows ${m[1]}; add it to related`, "ENTRY-TYPES-6");
   for (const m of code.matchAll(/\b(FMT-[A-Z0-9]+-\d+)/g))
     if (!related.includes(m[1])) problem(file, `uses ${m[1]}; add it to related`);
   for (const m of e.code!.matchAll(/# may run: (RULE-[A-Z0-9]+-\d+)/g))
@@ -1806,7 +1830,7 @@ for (const [id, e] of entries) {
     problem(
       file,
       "another rule may interrupt this procedure (# may run:), so a complete reading cannot establish it; leave complete_reading empty",
-      "STATUS-15",
+      "STATUS-4",
     );
   for (const x of idsIn(code)) if (!entries.has(x)) problem(file, `procedure names ${x}, which does not exist`);
   for (const m of code.matchAll(/\bemit\s+([A-Za-z_][A-Za-z0-9_]*)/g))
@@ -1841,7 +1865,7 @@ for (const [id, e] of entries) {
     }
     for (const owner of defined.get(name) ?? [])
       if (owner !== id && !related.includes(owner))
-        problem(file, `uses ${name} from ${owner}; add ${owner} to related`);
+        problem(file, `uses ${name} from ${owner}; add ${owner} to related`, "ENTRY-TYPES-6");
   }
   for (const m of code.matchAll(/(?<![.\w])([A-Z][A-Z0-9_]*[A-Z0-9])(?![\w-])/g)) {
     const name = m[1];
@@ -2023,7 +2047,7 @@ for (const [id, e] of entries) {
       if (!related.includes(g)) problem(e.file, `relates to ${x}, which is split with ${g}; add ${g} to related`);
     for (const b of asList(e.meta.builds))
       if (!group.some((g) => asList(entries.get(g)?.meta.builds).includes(b)))
-        problem(e.file, `lists ${b}, which no entry of the split ${group.join(", ")} lists`);
+        problem(e.file, `lists ${b}, which no entry of the split ${group.join(", ")} lists`, "ENTRY-TYPES-8");
   }
 }
 
@@ -2401,6 +2425,7 @@ const legacyParity =
         problem(
           file,
           `${specId}: another rule may interrupt it (# may run:), so tests against emulated calls alone cannot validate it`,
+          "STATUS-15",
         );
       for (const cell of [code, tests, devs, notes])
         if (cell === "") problem(file, `${specId}: an empty cell says None`);
