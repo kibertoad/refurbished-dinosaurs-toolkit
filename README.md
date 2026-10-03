@@ -16,7 +16,7 @@ versions and keep no copies. See [the architecture](docs/architecture.md).
 | [`scientific-method-engine`](packages/scientific-method-engine) | PyPI | Instruction analysis behind the reports, and the shared Ghidra headless scripts. |
 | [`@scientific-method/standard-checker`](packages/standard-checker) | npm | The documentation standard check and index generator (`standard-checker`). |
 | [`RefurbishedDinosaurs.Core`, `RefurbishedDinosaurs.LegacyFormats`](packages/dotnet) | NuGet | Runtime asset installation, presentation primitives and bounded legacy readers. |
-| [`RefurbishedDinosaurs.Media.Smacker`, `.Avi`, `.Fli`, `.Playback`](packages/dotnet) | NuGet | Independent managed movie codecs and host-driven sequential playback. |
+| [`RefurbishedDinosaurs.Media.Smacker`, `.Avi`, `.Fli`, `.Playback`, `.Audio`](packages/dotnet) | NuGet | Independent managed movie codecs, host-driven playback and audio buffer/lifetime helpers. |
 | [`dinorefurb-disc-archiver`](packages/disc-archiver) | PyPI | Personal archival copies of discs a player owns, in every common image format, through redumper or cdrdao, with a window for players (`disc-archiver`, `disc-archiver-gui`). |
 
 Used in place from this repository:
@@ -31,7 +31,8 @@ Used in place from this repository:
   the Chaos Overlords and Conqueror A.D. 1086 restorations, including
   [the bounded evidence reporter guide](docs/bounded-evidence-reporters.md),
   [the documentation standard check](docs/documentation-standard-check.md),
-  [disc archiving](docs/disc-archiving.md) and
+  [disc archiving](docs/disc-archiving.md),
+  [the shared runtime libraries](docs/runtime-libraries.md) and
   [moving from vendored copies to the packages](docs/migrating-to-scientific-method.md).
 
 ## Build

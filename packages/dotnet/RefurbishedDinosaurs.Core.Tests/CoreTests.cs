@@ -1,4 +1,5 @@
 using RefurbishedDinosaurs.Media.Smacker;
+using System.Text;
 using System.Text.Json;
 using System.Buffers.Binary;
 using RefurbishedDinosaurs.Core.Assets;
@@ -17,12 +18,24 @@ namespace RefurbishedDinosaurs.Core.Tests;
 
 public sealed class CoreTests
 {
-    [Fact]
-    public void ManifestRejectsTraversal()
+    [Theory]
+    [InlineData("../secret.dat")]
+    [InlineData("C:secret.dat")]
+    [InlineData("data/secret.dat.")]
+    [InlineData(" ")]
+    public void ManifestRejectsPathsOutsideThePortableForm(string path)
     {
-        var manifest = new AssetManifest("game", "edition", [new("../secret.dat", 1)]);
+        var manifest = new AssetManifest("game", "edition", [new(path, 1)]);
         Assert.Throws<InvalidDataException>(manifest.Validate);
     }
+
+    [Theory]
+    [InlineData("{\"gameId\": \" \", \"sourceEdition\": \"edition\", \"files\": []}")]
+    [InlineData("{\"gameId\": \"game\", \"sourceEdition\": \"\", \"files\": []}")]
+    [InlineData("{\"gameId\": \"game\", \"sourceEdition\": \"edition\", \"files\": null}")]
+    [InlineData("{\"gameId\": \"game\", \"sourceEdition\": \"edition\", \"files\": [{\"path\": null, \"size\": 1}]}")]
+    public void ManifestReportsMissingFieldsAsInvalidData(string json) =>
+        Assert.Throws<InvalidDataException>(() => AssetManifest.Load(new MemoryStream(Encoding.UTF8.GetBytes(json))));
 
     [Fact]
     public async Task VerifierReportsWrongSizeBeforeHashing()
@@ -88,6 +101,7 @@ public sealed class CoreTests
     {
         var root = Path.Combine(Path.GetTempPath(), "assets");
         Assert.Throws<InvalidDataException>(() => SafePath.Below(root, "../assets-elsewhere/file.dat"));
+        Assert.Throws<InvalidDataException>(() => SafePath.Below(root, " "));
         Assert.Equal(Path.Combine(root, "nested", "file.dat"), SafePath.Below(root, "nested/file.dat"));
     }
 

@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>RefurbishedDinosaurs.Media.Audio</PackageId>
+    <Description>PCM conversion and host-owned audio resource lifetimes.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+</Project>

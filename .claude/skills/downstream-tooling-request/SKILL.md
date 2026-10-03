@@ -133,7 +133,8 @@ Pick by the amount of work, not the number of findings:
 - **Several PRs.** Add a section to [the implementation plan](../../../docs/IMPLEMENTATION-PLAN.md)
   in its existing form: the outcome, the synthetic tests, what the reports must keep explicit, and
   the exit condition, ending with the request closing only after the requester's own case passes.
-  Then land one PR per slice and update the section as slices merge.
+  Then land one PR per slice, update the section's status line as slices merge, and delete the
+  section once its exit condition is met.
 
 What you commit is our revision of the request, in our terms. Do not commit their document, and do
 not copy game-specific details from it into the plan, tests or ADRs.

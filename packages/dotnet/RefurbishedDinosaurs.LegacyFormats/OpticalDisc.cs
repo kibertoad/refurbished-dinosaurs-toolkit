@@ -70,10 +70,7 @@ public static class CddaWave
         if (!source.CanSeek || !source.CanRead || !output.CanWrite || startSector < 0 || sectorCount < 0)
             throw new ArgumentException("Invalid CDDA streams or sector range.");
         var dataLength = checked(sectorCount * BytesPerSector);
-        using var writer = new BinaryWriter(output, Encoding.ASCII, true);
-        writer.Write("RIFF"u8); writer.Write(dataLength + 36); writer.Write("WAVEfmt "u8); writer.Write(16);
-        writer.Write((short)1); writer.Write((short)2); writer.Write(44100); writer.Write(44100 * 4);
-        writer.Write((short)4); writer.Write((short)16); writer.Write("data"u8); writer.Write(dataLength);
+        WavePcm16Writer.WriteHeader(output, (uint)dataLength, 2, 44100);
         source.Position = (long)startSector * BytesPerSector;
         var remaining = dataLength; var buffer = new byte[128 * 1024];
         while (remaining > 0)
@@ -82,6 +79,7 @@ public static class CddaWave
             if (read == 0) throw new EndOfStreamException();
             output.Write(buffer, 0, read); remaining -= read;
         }
+        output.Flush();
     }
 }
 

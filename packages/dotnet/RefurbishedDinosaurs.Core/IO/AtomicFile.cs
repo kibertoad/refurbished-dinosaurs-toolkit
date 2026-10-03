@@ -31,6 +31,32 @@ public static class AtomicFile
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
+    /// <summary>
+    /// Writes a durable temporary sibling asynchronously. Cancellation before promotion leaves the
+    /// existing file unchanged. The final disk flush and promotion are synchronous filesystem calls.
+    /// </summary>
+    public static async Task WriteBytesAsync(string path, ReadOnlyMemory<byte> contents,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var destination = Path.GetFullPath(path);
+        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+        var temporary = TemporaryPath(destination);
+        try
+        {
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None, 128 * 1024, FileOptions.WriteThrough | FileOptions.Asynchronous))
+            {
+                await stream.WriteAsync(contents, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                stream.Flush(true);
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(temporary, destination, true);
+        }
+        finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
     /// <summary>Copies <paramref name="source"/> to <paramref name="destination"/>, creating the parent directory if needed.</summary>
     public static void Copy(string source, string destination)
     {
@@ -48,6 +74,6 @@ public static class AtomicFile
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
-    private static string TemporaryPath(string destination) => Path.Combine(
+    internal static string TemporaryPath(string destination) => Path.Combine(
         Path.GetDirectoryName(destination)!, $".{Path.GetFileName(destination)}.{Guid.NewGuid():N}.tmp");
 }
