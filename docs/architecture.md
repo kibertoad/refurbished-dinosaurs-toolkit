@@ -152,6 +152,9 @@ one release label, or `release:skip`. No registry token is stored in the reposit
 
 ## What stays out of packages
 
+Software OpenGL provisioning lives in a composite action: it verifies and stages a third-party
+driver outside build outputs; games retain backend selection and package policy.
+
 The composite actions, `Verify-Repository.ps1`, the schemas and the handbook are consumed in
 place: actions by commit SHA, the rest by reading this repository. Game-specific formats,
 fingerprints, rules, names and findings stay in each restoration repository, as
