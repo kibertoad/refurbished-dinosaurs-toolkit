@@ -6,6 +6,7 @@ import {
   bump,
   combinedBump,
   latestVersion,
+  packageNamed,
   releaseLabel,
   resolveMergedPull,
   setPyprojectVersion,
@@ -14,12 +15,21 @@ import {
 
 const engine = PACKAGES.find((p) => p.name === "scientific-method-engine")!;
 const dotnet = PACKAGES.find((p) => p.name === "scientific-method-dotnet")!;
+const archiver = PACKAGES.find((p) => p.name === "dinorefurb-disc-archiver")!;
 
 test("a package is touched by a file under its path prefix or by an exact file path", () => {
   assert.ok(touched(engine, ["packages/scientific-method-engine/src/scientific_method_engine/cli.py"]));
   assert.ok(touched(dotnet, ["global.json"]));
   assert.ok(!touched(engine, ["packages/scientific-method-engine-extra/x.py", "docs/architecture.md"]));
   assert.ok(!touched(dotnet, ["tools/global.json"]));
+  assert.ok(touched(archiver, ["packages/disc-archiver/src/dinorefurb_disc_archiver/cli.py"]));
+  assert.ok(!touched(engine, ["packages/disc-archiver/README.md"]));
+});
+
+test("a release is planned for one package by name, so an ecosystem may hold several", () => {
+  assert.equal(packageNamed("dinorefurb-disc-archiver"), archiver);
+  assert.equal(PACKAGES.filter((p) => p.ecosystem === "pypi").length, 2);
+  assert.throws(() => packageNamed("pypi"), /No label-versioned package is named pypi/);
 });
 
 test("exactly one release label is required", () => {

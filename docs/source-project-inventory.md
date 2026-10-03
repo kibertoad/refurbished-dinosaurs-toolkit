@@ -22,7 +22,7 @@ the generalized result belongs.
 
 The shared runtime libraries now use RefurbishedDinosaurs package IDs. Smacker lives in
 Media.Smacker; AVI/Cinepak/RLE8/ADPCM, AF11 FLI and sequential playback cadence are isolated
-in Media.Avi, Media.Fli and Media.Playback. See ADR 0004 for the expanded media boundary.
+in Media.Avi, Media.Fli and Media.Playback. See ADR 0005 for the expanded media boundary.
 
 Game-specific fingerprints, proprietary engine formats, balance tables, UI layouts,
 rules, executable addresses, and original-derived evidence remain in their game

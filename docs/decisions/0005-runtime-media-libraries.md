@@ -1,4 +1,4 @@
-# ADR 0004: Refurbished Dinosaurs runtime media libraries
+# ADR 0005: Refurbished Dinosaurs runtime media libraries
 
 Status: accepted
 

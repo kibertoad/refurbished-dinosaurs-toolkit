@@ -43,7 +43,7 @@ jobs:
         with:
           node-version: 24.x
       - id: plan
-        run: node tools/release/plan.ts release nuget "$AFTER"
+        run: node tools/release/plan.ts release scientific-method-dotnet "$AFTER"
         env:
           AFTER: ${{ github.sha }}
           GITHUB_TOKEN: ${{ github.token }}
