@@ -1,8 +1,8 @@
-name: Release Python package
+name: Release disc archiver
 
-# When a pull request that changed packages/scientific-method-engine merges with a release:major,
+# When a pull request that changed packages/disc-archiver merges with a release:major,
 # release:minor or release:patch label, publishes the next version to PyPI through trusted
-# publishing (OIDC) and creates the scientific-method-engine@<version> tag and GitHub release.
+# publishing (OIDC) and creates the dinorefurb-disc-archiver@<version> tag and GitHub release.
 # The version comes from the latest such tag plus the largest bump among the pull requests merged
 # since that tag.
 on:
@@ -10,7 +10,7 @@ on:
     branches:
       - main
     paths:
-      - packages/scientific-method-engine/**
+      - packages/disc-archiver/**
 
 # One release at a time. GitHub replaces a pending run when another is queued, which loses nothing:
 # the plan covers every pull request merged since the latest release tag, not only the one that
@@ -42,7 +42,7 @@ jobs:
         with:
           node-version: 24.x
       - id: plan
-        run: node tools/release/plan.ts release scientific-method-engine "$AFTER"
+        run: node tools/release/plan.ts release dinorefurb-disc-archiver "$AFTER"
         env:
           AFTER: ${{ github.sha }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -66,15 +66,15 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - name: Set the version and licence
         run: |
-          node tools/release/plan.ts set-version packages/scientific-method-engine/pyproject.toml "$VERSION"
-          cp LICENSE packages/scientific-method-engine/LICENSE
+          node tools/release/plan.ts set-version packages/disc-archiver/pyproject.toml "$VERSION"
+          cp LICENSE packages/disc-archiver/LICENSE
         env:
           VERSION: ${{ needs.plan.outputs.version }}
       - name: Test
-        working-directory: packages/scientific-method-engine
-        run: uv run --isolated --with-editable '.[test]' python -B -m unittest discover -s tests -p 'test*.py'
+        working-directory: packages/disc-archiver
+        run: uv run --isolated --with-editable . python -B -m unittest discover -s tests -p 'test*.py'
       - name: Build
-        run: uv build packages/scientific-method-engine --out-dir dist
+        run: uv build packages/disc-archiver --out-dir dist
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
@@ -83,6 +83,50 @@ jobs:
           skip-existing: true
       - name: Tag and create the GitHub release
         run: gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$TAG" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.plan.outputs.tag }}
+
+  # Attaches the standalone downloads (no Python needed, with the pinned redumper) to the release
+  # the publish job created.
+  bundles:
+    needs: [plan, publish]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.x
+      - name: Set the version
+        shell: bash
+        run: node tools/release/plan.ts set-version packages/disc-archiver/pyproject.toml "$VERSION"
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+      - run: python -m pip install ./packages/disc-archiver -r packages/disc-archiver/packaging/requirements.txt
+      - name: Build
+        shell: bash
+        working-directory: packages/disc-archiver
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then run=(xvfb-run -a); else run=(); fi
+          "${run[@]}" python packaging/build_bundle.py --out "$RUNNER_TEMP/bundle" --version "$VERSION"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+      - name: Attach to the release
+        shell: bash
+        run: gh release upload "$TAG" "$RUNNER_TEMP"/bundle/*.zip --clobber
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

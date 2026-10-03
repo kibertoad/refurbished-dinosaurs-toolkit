@@ -7,7 +7,7 @@
 //     request does not carry exactly one release label. Reads the labels from PR_LABELS, a JSON
 //     array of label names.
 //
-//   node tools/release/plan.ts release <ecosystem> <head-sha>
+//   node tools/release/plan.ts release <package> <head-sha>
 //     For a push to main: finds every pull request merged since the package's latest release tag
 //     that changed the package, up to <head-sha>, and bumps that tag's version by the largest of
 //     their release labels. Writes `release`, `package`, `version` and `tag` to GITHUB_OUTPUT.
@@ -37,6 +37,12 @@ export const PACKAGES: ReleasedPackage[] = [
     ecosystem: "pypi",
     paths: ["packages/scientific-method-engine/"],
     tagPrefix: "scientific-method-engine@",
+  },
+  {
+    name: "dinorefurb-disc-archiver",
+    ecosystem: "pypi",
+    paths: ["packages/disc-archiver/"],
+    tagPrefix: "dinorefurb-disc-archiver@",
   },
   {
     // ScientificMethod.Core and ScientificMethod.LegacyFormats share one version and one tag.
@@ -189,11 +195,19 @@ const realClock = {
   sleep: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
 };
 
-async function release(ecosystem: string, head: string): Promise<void> {
+// The label-versioned package with this name.
+export function packageNamed(name: string): ReleasedPackage {
+  const pkg = PACKAGES.find((p) => p.name === name);
+  if (!pkg)
+    throw new Error(
+      `No label-versioned package is named ${name}; expected one of ${PACKAGES.map((p) => p.name).join(", ")}`,
+    );
+  return pkg;
+}
+
+async function release(name: string, head: string): Promise<void> {
   const none = { release: "false", package: "", version: "", tag: "" };
-  const packages = PACKAGES.filter((p) => p.ecosystem === ecosystem);
-  if (packages.length !== 1) throw new Error(`Expected one ${ecosystem} package, found ${packages.length}`);
-  const pkg = packages[0]!;
+  const pkg = packageNamed(name);
   const tags = git("tag", "--list", `${pkg.tagPrefix}*`).split("\n").filter(Boolean);
   const latest = latestVersion(tags, pkg.tagPrefix);
   const latestTag = tags.includes(`${pkg.tagPrefix}${latest}`) ? `${pkg.tagPrefix}${latest}` : null;
@@ -235,7 +249,7 @@ async function main(argv: string[]): Promise<void> {
     return;
   }
   throw new Error(
-    "Usage: plan.ts check <base> <head> | release <ecosystem> <head> | set-version <pyproject.toml> <version>",
+    "Usage: plan.ts check <base> <head> | release <package> <head> | set-version <pyproject.toml> <version>",
   );
 }
 

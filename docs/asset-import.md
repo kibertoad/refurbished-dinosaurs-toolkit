@@ -13,6 +13,11 @@ Use several stable fingerprints: archive/executable size and SHA-256, required f
 set, volume/container metadata, and (when needed) a small internal signature. Give a
 precise unsupported-edition error. Do not modify the source installation.
 
+Players hold a disc in many forms: the disc itself, split or one-file BIN/CUE, CloneCD, CHD, an
+ISO with or without audio files, or the copied files. Point players at
+[`dinorefurb-disc-archiver`](disc-archiving.md) with the restoration's disc profile, so they copy
+their disc into a form the importer reads, and use it to test identification against every form.
+
 ## Transactional pipeline
 
 ```text
