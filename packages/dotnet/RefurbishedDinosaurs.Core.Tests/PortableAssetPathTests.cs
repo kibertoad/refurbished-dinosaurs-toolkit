@@ -22,7 +22,7 @@ public sealed class PortableAssetPathTests
     {
         Assert.Equal("ASSETS/frame.dat", PortableAssetPath.WithoutDriveRoot("C:\\ASSETS\\frame.dat"));
         Assert.Throws<InvalidDataException>(() => PortableAssetPath.WithoutDriveRoot("C:\\..\\frame.dat"));
-        Assert.Throws<ArgumentException>(() => PortableAssetPath.WithoutDriveRoot("C:\\"));
+        Assert.Throws<InvalidDataException>(() => PortableAssetPath.WithoutDriveRoot("C:\\"));
         Assert.Throws<InvalidDataException>(() => PortableAssetPath.WithoutDriveRoot("C:frame.dat"));
     }
 

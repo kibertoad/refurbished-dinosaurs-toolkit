@@ -46,6 +46,14 @@ on an undocumented public member.
 | `Presentation` | `ViewportScaler`, `FixedWidthText` | Fit a fixed resolution into a window and map the mouse back; word-wrap fixed-width text. |
 | `Validation` | `JsonStateDiffer` | List value differences between a reference capture of game state and a restoration's. |
 
+## Portable asset references
+
+`PortableAssetPath.Relative` accepts either separator and rejects drive-relative, rooted and
+traversal references on every host. `WithoutDriveRoot` explicitly discards an ASCII Windows drive
+root when a game stores installation paths. `ResolveFile` matches every component ignoring ordinal
+case, rejects ambiguous matches and links, and returns the actual relative spelling. The resolver
+is for trusted, stable content directories; concurrent filesystem replacement needs host controls.
+
 ## RefurbishedDinosaurs.LegacyFormats
 
 | Types | Reads |
@@ -109,11 +117,3 @@ From the repository root:
 dotnet build packages/dotnet/RefurbishedDinosaurs.slnx
 dotnet test --project packages/dotnet/RefurbishedDinosaurs.Core.Tests/RefurbishedDinosaurs.Core.Tests.csproj
 ```
-
-## Portable asset references
-
-`PortableAssetPath.Relative` accepts either separator and rejects drive-relative, rooted and
-traversal references on every host. `WithoutDriveRoot` explicitly discards an ASCII Windows drive
-root when a game stores installation paths. `ResolveFile` matches every component ignoring ordinal
-case, rejects ambiguous matches and links, and returns the actual relative spelling. The resolver
-is for trusted, stable content directories; concurrent filesystem replacement needs host controls.

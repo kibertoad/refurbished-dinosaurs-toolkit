@@ -25,6 +25,7 @@ public static class PortableAssetPath
         if (normalized.Length >= 3 && char.IsAsciiLetter(normalized[0]) &&
             normalized[1] == ':' && normalized[2] == '/')
             normalized = normalized[3..];
+        if (normalized.Length == 0) throw new InvalidDataException("Asset reference is only a drive root.");
         return Relative(normalized);
     }
 
