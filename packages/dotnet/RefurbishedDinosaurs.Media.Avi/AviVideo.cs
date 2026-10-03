@@ -145,7 +145,7 @@ public static class AviReader
         if (moviStart < 0)
             throw new InvalidDataException("AVI file has no movi list.");
 
-        int videoStream = FindStream(streamTypes, "vids");
+        int videoStream = streamTypes.IndexOf("vids");
         if (videoStream < 0)
             throw new InvalidDataException("AVI file has no video stream.");
 
@@ -153,7 +153,7 @@ public static class AviReader
         if (width <= 0 || height <= 0 || width > MaxDimension || height > MaxDimension)
             throw new InvalidDataException($"AVI video dimensions {width}x{height} are out of range.");
 
-        int audioStream = FindStream(streamTypes, "auds");
+        int audioStream = streamTypes.IndexOf("auds");
         AviAudioFormat? audio = audioStream >= 0 ? ParseAudioFormat(streamFormats[audioStream]) : null;
 
         var frames = new List<AviVideoFrame>();
@@ -305,14 +305,6 @@ public static class AviReader
         types.Add(type);
         handlers.Add(handler);
         formats.Add(format ?? []);
-    }
-
-    private static int FindStream(IReadOnlyList<string> types, string type)
-    {
-        for (int i = 0; i < types.Count; i++)
-            if (types[i] == type)
-                return i;
-        return -1;
     }
 
     private static (int Width, int Height, uint Compression, byte[]? Palette) ParseVideoFormat(byte[] format)

@@ -1,6 +1,5 @@
 using RefurbishedDinosaurs.Media.Smacker;
 using System.Buffers.Binary;
-using RefurbishedDinosaurs.LegacyFormats;
 using Xunit;
 
 namespace RefurbishedDinosaurs.Core.Tests;

@@ -110,7 +110,8 @@ public sealed class MicrosoftAdpcmStream
             int predictor = block[channel];
             if ((uint)predictor >= _coefficient1.Length)
                 throw new InvalidDataException($"ADPCM predictor {predictor} is outside the coefficient table.");
-            int headerDelta = BinaryPrimitives.ReadUInt16LittleEndian(block[(Channels + channel * 2)..]);
+            // The header's step size is a signed word, as the reference decoders read it.
+            int headerDelta = BinaryPrimitives.ReadInt16LittleEndian(block[(Channels + channel * 2)..]);
             states[channel] = new ChannelState(
                 _coefficient1[predictor],
                 _coefficient2[predictor],

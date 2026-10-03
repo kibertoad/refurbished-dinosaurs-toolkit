@@ -85,6 +85,19 @@ public sealed class MicrosoftAdpcmStreamTests
     }
 
     [Fact]
+    public void ReadsTheHeaderStepSizeAsASignedWord()
+    {
+        var stream = new MicrosoftAdpcmStream(MonoFormat(9, 6));
+        // Header delta 0x9000 is -28672 as the signed word FFmpeg reads, so
+        // nibble 1 steps down; read unsigned it would step up and clamp.
+        byte[] block = MonoBlock(0, 0x9000, 0, 0, 0x10, 0x00);
+
+        short[] samples = stream.DecodeBlock(block);
+
+        Assert.Equal([0, 0, -28672, -28672, -28672, -28672], samples);
+    }
+
+    [Fact]
     public void DecodesStereoWithInterleavedPreambleAndNibbles()
     {
         // block align 16 for two channels: a 14-byte preamble whose fields
