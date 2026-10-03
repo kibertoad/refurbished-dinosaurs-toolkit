@@ -114,7 +114,8 @@ def _redumper(drive: str, directory: Path, name: str, log: Log, extra: Sequence[
     program = tools.require_tool("redumper")
     # With no mode, redumper runs its whole disc sequence: dump, protection, refine, split, hash
     # and info. Split writes the Redump cue sheet and one .bin per track.
-    command = [program, f"--drive={drive}", f"--image-path={directory}", f"--image-name={name}", *extra]
+    # redumper runs in ``directory``, so a relative image path would point below it again.
+    command = [program, f"--drive={drive}", f"--image-path={directory.absolute()}", f"--image-name={name}", *extra]
     try:
         tools.run(command, log, cwd=directory)
     except DiscError as error:

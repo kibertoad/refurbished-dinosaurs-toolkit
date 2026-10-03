@@ -155,6 +155,17 @@ class RefusalTests(CueTestCase):
         self.assertRefused('FILE "a.wav" WAVE\n TRACK 01 AUDIO\n  INDEX 01 00:00:00\n', "not 44.1 kHz", {"a.wav": mono})
         self.assertRefused('FILE "a.wav" WAVE\n TRACK 01 MODE1/2352\n  INDEX 01 00:00:00\n', "WAVE file", {"a.wav": mono})
 
+    def test_numbers_that_are_not_numbers(self) -> None:
+        self.assertRefused('FILE "d.bin" BINARY\n TRACK one MODE1/2352\n  INDEX 01 00:00:00\n', "not a number")
+        self.assertRefused('FILE "d.bin" BINARY\n TRACK 01 MODE1/2352\n  INDEX x1 00:00:00\n', "not a number")
+
+    def test_a_ccd_index_that_is_not_a_sector_number(self) -> None:
+        path = self.dir / "bad.ccd"
+        (self.dir / "bad.img").write_bytes(bytes(2352 * 4))
+        path.write_text("[TRACK 1]\nMODE=1\nINDEX 1=zero\n")
+        with self.assertRaisesRegex(DiscError, "not a sector number"):
+            read_ccd(path)
+
     def test_a_missing_file(self) -> None:
         self.assertRefused('FILE "missing.bin" BINARY\n TRACK 01 MODE1/2352\n  INDEX 01 00:00:00\n', "does not exist", {})
 

@@ -34,8 +34,9 @@ This repository publishes the shared tooling that clean-room game restorations c
   gets Unicorn oracle cases in `tests/test_oracle.py`.
 - Disc copies are for the owner alone ([ADR 0004](docs/decisions/0004-personal-disc-archiving.md)).
   Every copy path in `packages/disc-archiver/` shows the notice and refuses to run until it is
-  accepted, and every output folder carries it. The archiver gets no upload, sharing or network
-  feature. Reading a disc stays with established dumpers (redumper, cdrdao); a format that
+  accepted, and every output folder carries it. The archiver gets no upload or sharing feature,
+  and its only use of the network is downloading the redumper release pinned in `redumper.json`.
+  Reading a disc stays with established dumpers (redumper, cdrdao); a format that
   cannot hold something, or a comparison not made, is reported as such.
 - The reader and engine agree on `PREPARED_PROTOCOL` (`packages/executable-reader/src/report.ts`
   and `scientific_method_engine/__init__.py`). A change to the shape of a prepared config increments

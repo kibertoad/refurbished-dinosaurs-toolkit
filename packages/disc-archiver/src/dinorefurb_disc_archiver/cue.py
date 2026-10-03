@@ -51,6 +51,12 @@ def _time(text: str, line: int) -> int:
     return (minutes * 60 + seconds) * 75 + frames
 
 
+def _number(text: str, line: int) -> int:
+    if not (text.isascii() and text.isdigit()):
+        raise DiscError(f"line {line}: {text!r} is not a number")
+    return int(text)
+
+
 def _safe_file(sheet: Path, name: str, line: int) -> Path:
     # A sheet names its files relative to itself. An absolute path or a step out of the sheet's
     # directory could make the reader open any file, so both are refused.
@@ -94,9 +100,9 @@ def read_cue(sheet: Path) -> Disc:
                 raise DiscError(f"line {number}: track type {args[1]} is not supported")
             if len(tracks) >= MAXIMUM_TRACKS:
                 raise DiscError(f"line {number}: more than {MAXIMUM_TRACKS} tracks")
-            tracks.append(_Track(int(args[0]), kind, len(files) - 1))
+            tracks.append(_Track(_number(args[0], number), kind, len(files) - 1))
         elif command == "INDEX" and len(args) == 2 and current:
-            index = int(args[0])
+            index = _number(args[0], number)
             if index in current.indexes or index > 99:
                 raise DiscError(f"line {number}: INDEX {index} repeated or out of range")
             if current.indexes and index != max(current.indexes) + 1:

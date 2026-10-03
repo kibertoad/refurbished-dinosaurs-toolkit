@@ -14,6 +14,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import zlib
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -71,8 +72,10 @@ def open_source(path: Path, work: Path, log: Log) -> Iterator[Disc]:
 @contextmanager
 def _extracted_chd(path: Path, work: Path, log: Log) -> Iterator[Path]:
     chdman = tools.require_tool("chdman")
-    staging = work / ".chd-extract"
-    staging.mkdir(parents=True, exist_ok=True)
+    # Each extraction gets its own folder: a CHD source stays open while a CHD output is read
+    # back, and neither may overwrite or remove the other's files.
+    work.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".chd-extract-", dir=work))
     try:
         sheet = staging / "disc.cue"
         tools.run([chdman, "extractcd", "-i", path, "-o", sheet, "-ob", staging / "disc.bin", "-f"], log)
@@ -209,6 +212,13 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
     if kind in ("bincue-split", "bincue", "ccd", "chd", "iso-wav"):
         with open_source(output.entry, work, log) as copy:
             found = fingerprint(copy)
+        if kind == "iso-wav" and any(t["mode"] == "MODE2" for t in reference["tracks"]):
+            # The cue sheet types the ISO as MODE1/2048: it holds the user data, not the sector mode.
+            found["tracks"] = [
+                {**theirs, "mode": mine["mode"]} if mine["mode"] == "MODE2" and theirs["mode"] == "MODE1" else theirs
+                for mine, theirs in zip(reference["tracks"], found["tracks"], strict=False)
+            ]
+            result.not_compared.append("the data track's MODE2 sector mode, which an ISO does not hold")
         _compare(reference, found, result, layout=True, audio=True)
         if kind == "iso-wav" and any(a["pregapSilent"] is False for a in reference["audio"]):
             result.not_compared.append("audio in pregaps, which the format does not hold")
@@ -260,7 +270,14 @@ def derive(
     checks = check_profile(profile, reference, paths)
     for check in checks:
         log(f"profile: {check.name}: expected {check.expected!r}, found {check.found!r} - {'ok' if check.matched else 'MISMATCH'}")
-    wanted = [f.id for f in FORMATS if f.id in set(formats)]
+    requested = set(formats)
+    wanted = [f.id for f in FORMATS if f.id in requested]
+    # A format's folder is replaced whole below, so it must not hold the source being read.
+    sources = {t.source.resolve() for t in disc.tracks} | ({disc.origin.resolve()} if disc.origin else set())
+    for identifier in wanted:
+        held = (root / identifier).resolve()
+        if any(source.is_relative_to(held) for source in sources):
+            raise DiscError(f"{root / identifier} holds the source being read; choose another output folder")
     outputs, unavailable = [], []
     for identifier in wanted:
         directory = root / identifier

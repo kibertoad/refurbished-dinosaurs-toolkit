@@ -143,6 +143,12 @@ def write_ccd(disc: Disc, directory: Path, name: str) -> list[Path]:
 _SECTION = re.compile(r"^\[(?P<name>[^\]]+)\]$")
 
 
+def _sector(path: Path, number: int, key: str, value: str) -> int:
+    if not re.fullmatch(r"-?\d+", value):
+        raise DiscError(f"{path.name}: track {number} has {key}={value!r}, which is not a sector number")
+    return int(value)
+
+
 def read_ccd(path: Path) -> Disc:
     """Read a CloneCD image back from the ``[TRACK]`` sections of its ``.ccd`` and its ``.img``."""
     img = path.with_suffix(".img")
@@ -172,14 +178,16 @@ def read_ccd(path: Path) -> Disc:
         section = sections[f"TRACK {number}"]
         if "INDEX 1" not in section:
             raise DiscError(f"{path.name}: track {number} has no INDEX 1")
-        starts.append((int(section.get("INDEX 0", section["INDEX 1"])), int(section["INDEX 1"]), section))
+        index1 = _sector(path, number, "INDEX 1", section["INDEX 1"])
+        start = _sector(path, number, "INDEX 0", section["INDEX 0"]) if "INDEX 0" in section else index1
+        starts.append((start, index1, section))
     for i, (number, (start, index1, section)) in enumerate(zip(numbers, starts, strict=True)):
         end = starts[i + 1][0] if i + 1 < len(starts) else sectors
         mode = {"0": "AUDIO", "1": "MODE1", "2": "MODE2"}.get(section.get("MODE", ""))
         if mode is None:
             raise DiscError(f"{path.name}: track {number} has mode {section.get('MODE')!r}")
         extra = {
-            int(key.split()[1]): int(value) - index1
+            int(key.split()[1]): _sector(path, number, key, value) - index1
             for key, value in section.items()
             if re.fullmatch(r"INDEX \d+", key) and int(key.split()[1]) > 1
         }

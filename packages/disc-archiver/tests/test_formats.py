@@ -10,13 +10,13 @@ import unittest
 import wave
 from pathlib import Path
 
-from synthetic import FILES, SyntheticDisc, iso_image
+from synthetic import FILES, SyntheticDisc, iso_image, mode1_sector
 
 from dinorefurb_disc_archiver import ccd, formats
 from dinorefurb_disc_archiver.cue import read_cue, read_iso
-from dinorefurb_disc_archiver.disc import RAW_SECTOR
+from dinorefurb_disc_archiver.disc import RAW_SECTOR, DiscError
 from dinorefurb_disc_archiver.formats import FormatUnavailable, write_format
-from dinorefurb_disc_archiver.pipeline import derive, fingerprint, open_source
+from dinorefurb_disc_archiver.pipeline import archive, derive, fingerprint, open_source
 from dinorefurb_disc_archiver.profile import BUILTIN_PROFILES
 
 FAKE_CHDMAN = """\
@@ -144,6 +144,25 @@ class RawFormatTests(FormatTestCase):
         finally:
             del os.environ["DISC_ARCHIVER_CHDMAN"]
 
+    @unittest.skipIf(os.name == "nt", "the stand-in chdman is a script with a shebang")
+    def test_a_chd_source_survives_reading_back_a_chd_output(self) -> None:
+        script = self.dir / "chdman"
+        script.write_text(FAKE_CHDMAN.format(python=sys.executable))
+        script.chmod(0o755)
+        os.environ["DISC_ARCHIVER_CHDMAN"] = str(script)
+        try:
+            source = derive(self.disc, self.dir / "first", "Synth", ["chd"], BUILTIN_PROFILES["any"], silent_log, {})
+            self.assertEqual(source["outputs"][0]["verification"]["status"], "matched")  # type: ignore[index]
+            manifest = archive(
+                output=self.dir / "second", profile=BUILTIN_PROFILES["any"], log=silent_log,
+                formats=["chd", "iso"], image=self.dir / "first" / "chd" / "Synth.chd",
+            )
+            statuses = [o["verification"]["status"] for o in manifest["outputs"]]  # type: ignore[union-attr, index]
+            self.assertEqual(statuses, ["matched", "partial"])
+            self.assertEqual(list((self.dir / "second").glob(".chd-extract*")), [])
+        finally:
+            del os.environ["DISC_ARCHIVER_CHDMAN"]
+
     def test_chd_without_chdman_is_unavailable(self) -> None:
         os.environ["DISC_ARCHIVER_CHDMAN"] = str(self.dir / "missing")
         try:
@@ -170,6 +189,38 @@ class DataFormatTests(FormatTestCase):
         plain.write_bytes(iso_image({"README.TXT": b"x"}, joliet=False))
         output = self.write("files", read_iso(plain))
         self.assertEqual([p.name for p in output.entry.iterdir()], ["README.TXT"])
+
+    def test_joliet_versions_are_dropped_from_extracted_names(self) -> None:
+        versioned = self.dir / "versioned.iso"
+        versioned.write_bytes(iso_image({"Setup.exe;1": b"x", "a;b.txt": b"y"}))
+        output = self.write("files", read_iso(versioned))
+        self.assertEqual(sorted(p.name for p in output.entry.iterdir()), ["Setup.exe", "a;b.txt"])
+
+    def test_extracted_files_beside_a_folder_of_the_same_stem_match(self) -> None:
+        path = self.dir / "stems.iso"
+        path.write_bytes(iso_image({"DATA/X.BIN": b"1", "DATA.BIN": b"2"}))
+        manifest = derive(read_iso(path), self.dir / "out", "Synth", ["files"], BUILTIN_PROFILES["any"], silent_log, {})
+        self.assertEqual(manifest["outputs"][0]["verification"]["status"], "matched")  # type: ignore[index]
+
+    def test_a_format_folder_holding_the_source_is_not_replaced(self) -> None:
+        derive(self.disc, self.dir / "out", "Synth", ["bincue"], BUILTIN_PROFILES["any"], silent_log, {})
+        sheet = self.dir / "out" / "bincue" / "Synth.cue"
+        with self.assertRaisesRegex(DiscError, "holds the source being read"):
+            derive(read_cue(sheet), self.dir / "out", "Synth", ["bincue-split", "bincue"], BUILTIN_PROFILES["any"], silent_log, {})
+        self.assertTrue(sheet.is_file())
+        self.assertFalse((self.dir / "out" / "bincue-split").exists())
+
+    def test_iso_and_wav_of_a_mode2_data_track_is_not_a_mismatch(self) -> None:
+        source = self.dir / "mode2"
+        sheet = self.synthetic.write_split(source)
+        iso = self.synthetic.iso
+        raw = b"".join(mode1_sector(lba, iso[lba * 2048 : (lba + 1) * 2048], mode=2) for lba in range(len(iso) // 2048))
+        (source / "Synth (Track 1).bin").write_bytes(raw)
+        sheet.write_text(sheet.read_text().replace("MODE1/2352", "MODE2/2352"))
+        manifest = derive(read_cue(sheet), self.dir / "out", "Synth", ["iso-wav"], BUILTIN_PROFILES["any"], silent_log, {})
+        verification = manifest["outputs"][0]["verification"]  # type: ignore[index]
+        self.assertEqual(verification["status"], "partial", verification)
+        self.assertIn("MODE2 sector mode", " ".join(verification["notCompared"]))
 
     def test_iso_and_wav_with_a_dosbox_style_sheet(self) -> None:
         output = self.write("iso-wav")

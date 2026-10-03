@@ -94,6 +94,16 @@ class ProgramBackendTests(unittest.TestCase):
         self.assertEqual([o["format"] for o in manifest["outputs"]], ["bincue"])  # type: ignore[union-attr]
         self.assertEqual(manifest["outputs"][0]["verification"]["status"], "matched")  # type: ignore[index]
 
+    def test_a_relative_output_folder_is_not_nested_inside_itself(self) -> None:
+        previous = Path.cwd()
+        os.chdir(self.dir)
+        try:
+            manifest = archive(output=Path("rel"), profile=BUILTIN_PROFILES["any"], log=silent_log, drive="E:", name="Game", backend="redumper")
+        finally:
+            os.chdir(previous)
+        self.assertTrue((self.dir / "rel" / "archival" / "Game.cue").is_file())
+        self.assertEqual(manifest["source"]["dump"], "archival/Game.cue")  # type: ignore[index]
+
     def test_a_failed_dump_fails_the_run(self) -> None:
         with self.assertRaisesRegex(DiscError, "redumper exited with code 1"):
             archive(output=self.dir / "out", profile=BUILTIN_PROFILES["any"], log=silent_log, drive="broken", backend="redumper")

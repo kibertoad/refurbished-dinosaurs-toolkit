@@ -121,10 +121,16 @@ class _HashingWriter:
 
 
 def _component(name: str, joliet: bool) -> str:
-    if not joliet:
+    # Both trees may carry a ";1" version, as mkisofs writes in Joliet names too. An ISO 9660 name
+    # ends at its ";"; a Joliet name may hold ";" itself, so only a trailing ";<digits>" is a version.
+    if joliet:
+        stem, separator, version = name.rpartition(";")
+        if separator and version.isdigit():
+            name = stem
+    else:
         name = name.split(";", 1)[0]
-        if name.endswith(".") and len(name) > 1:
-            name = name[:-1]
+    if name.endswith(".") and len(name) > 1:
+        name = name[:-1]
     if not name or name in (".", "..") or any(c in name for c in '/\\:\x00'):
         raise DiscError(f"the file system holds a name that is not a safe file name: {name!r}")
     return name
@@ -193,11 +199,14 @@ def walk(track: Track, destination: Path | None = None) -> list[FileEntry]:
 def tree_entries(root: Path) -> list[FileEntry]:
     """Every file under an extracted directory, with its size and SHA-256."""
     entries = []
-    for path in sorted(p for p in root.rglob("*") if p.is_file() and not p.is_symlink()):
+    for path in root.rglob("*"):
+        if not path.is_file() or path.is_symlink():
+            continue
         digest = hashlib.sha256()
         with path.open("rb") as handle:
             for block in iter(lambda: handle.read(1 << 20), b""):
                 digest.update(block)
         entries.append(FileEntry(path.relative_to(root).as_posix(), path.stat().st_size, digest.hexdigest()))
-    return entries
+    # Sorted by the path text, as walk sorts, so the two lists compare equal when the files do.
+    return sorted(entries, key=lambda e: e.path)
 
