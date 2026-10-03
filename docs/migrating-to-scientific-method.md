@@ -203,6 +203,13 @@ it is not the local `CueSheet` record. The package's ISO 9660 reader is slightly
 template's: it checks every extent against the volume size the image declares rather than the
 file's length, and refuses a volume smaller than 18 sectors.
 
+## Shared persistence primitives
+
+Keep game serializers and version admission. Pass them into `RecoverableFile.Write` and
+`Read`, excluding incompatible versions from fallback. Configure `JsonSettingsStore.MaximumBytes`
+for the application and use `LoadResult` to show recovery/default diagnostics. Field-level settings
+may use bounded parsing and `SettingsRecovery.Select` instead of document-wide fallback.
+
 ## 6. Verify
 
 - No file under `tools/evidence/x86-reporter/`, `vendor/check-documentation.mjs`, `x86-lock.json`

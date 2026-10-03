@@ -16,6 +16,9 @@ public sealed class JsonSettingsStore<T>(string path, JsonSerializerOptions? jso
     private readonly string _path = Path.GetFullPath(path);
     private readonly JsonSerializerOptions _jsonOptions = jsonOptions ?? new() { WriteIndented = true };
 
+    /// <summary>Maximum admitted UTF-8 file size; defaults to Int32.MaxValue for compatibility. Applies to reads and writes.</summary>
+    public int MaximumBytes { get; init; } = int.MaxValue;
+
     /// <summary>The backup file: the settings path with <c>.bak</c> appended.</summary>
     public string BackupPath => _path + ".bak";
 
@@ -30,8 +33,20 @@ public sealed class JsonSettingsStore<T>(string path, JsonSerializerOptions? jso
     {
         ArgumentNullException.ThrowIfNull(createDefault);
         ArgumentNullException.ThrowIfNull(isSupported);
-        return TryLoad(_path, isSupported, migrate) ??
-               TryLoad(BackupPath, isSupported, migrate) ?? createDefault();
+        return LoadResult(createDefault, isSupported, migrate).Value;
+    }
+
+    /// <summary>Loads settings with explicit primary, backup or default provenance.</summary>
+    public SettingsResult<T> LoadResult(Func<T> createDefault, Func<T, bool> isSupported,
+        Func<T, T?>? migrate = null)
+    {
+        ArgumentNullException.ThrowIfNull(createDefault);
+        ArgumentNullException.ThrowIfNull(isSupported);
+        if (MaximumBytes <= 0) throw new ArgumentOutOfRangeException(nameof(MaximumBytes));
+        var primary = TryLoad(_path, isSupported, migrate);
+        if (primary is not null) return new(primary, SettingsSource.Primary);
+        var backup = TryLoad(BackupPath, isSupported, migrate);
+        return backup is not null ? new(backup, SettingsSource.Backup) : new(createDefault(), SettingsSource.Default);
     }
 
     /// <summary>
@@ -39,14 +54,20 @@ public sealed class JsonSettingsStore<T>(string path, JsonSerializerOptions? jso
     /// atomically.
     /// </summary>
     /// <exception cref="InvalidDataException"><paramref name="settings"/> fails <paramref name="isSupported"/>.</exception>
-    public void Save(T settings, Func<T, bool> isSupported)
+    public void Save(T settings, Func<T, bool> isSupported) => Save(settings, isSupported, null);
+
+    /// <summary>Saves settings, also preserving a primary admitted by the supplied migration.</summary>
+    public void Save(T settings, Func<T, bool> isSupported, Func<T, T?>? migrate)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(isSupported);
         if (!isSupported(settings)) throw new InvalidDataException("Cannot save unsupported settings.");
-        if (TryLoad(_path, isSupported, migrate: null) is not null)
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(settings, _jsonOptions);
+        if (MaximumBytes <= 0) throw new ArgumentOutOfRangeException(nameof(MaximumBytes));
+        if (bytes.Length > MaximumBytes) throw new InvalidDataException("Settings exceed their size limit.");
+        if (TryLoad(_path, isSupported, migrate) is not null)
             AtomicFile.Copy(_path, BackupPath);
-        AtomicFile.WriteAllText(_path, JsonSerializer.Serialize(settings, _jsonOptions));
+        AtomicFile.WriteBytes(_path, bytes);
     }
 
     private T? TryLoad(string candidate, Func<T, bool> isSupported, Func<T, T?>? migrate)
@@ -54,13 +75,13 @@ public sealed class JsonSettingsStore<T>(string path, JsonSerializerOptions? jso
         if (!File.Exists(candidate)) return null;
         try
         {
-            var value = JsonSerializer.Deserialize<T>(File.ReadAllText(candidate), _jsonOptions);
+            var value = JsonSerializer.Deserialize<T>(RecoverableFile.ReadBounded(candidate, MaximumBytes), _jsonOptions);
             if (value is null) return null;
             if (isSupported(value)) return value;
             var migrated = migrate?.Invoke(value);
             return migrated is not null && isSupported(migrated) ? migrated : null;
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or
+        catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException or
                                       JsonException or NotSupportedException or ArgumentException)
         {
             return null;

@@ -94,6 +94,28 @@ not synchronize independent device clocks; reference captures and long-play drif
 downstream validation. A huge elapsed step still decodes every frame; hosts may pause admission
 or drive decoding on a worker when that cost is unacceptable.
 
+## Recoverable persistence
+
+`RecoverableFile.Write` flushes a staged file, invokes the caller's validator, preserves a usable
+primary as `.bak` and promotes the staged generation. Rejected primaries preserve existing backups.
+Supply exception admission explicitly for your format and preserve incompatible generations when
+appropriate. `Read` reports generation and primary failure and never repairs files during browsing.
+`ReadBounded` checks file size before allocation. Serialize writers; these operations are not a journal.
+
+`JsonSettingsStore<T>.MaximumBytes` bounds reads and writes (set a small application limit; the compatibility default is Int32.MaxValue), and `LoadResult`
+reports primary, backup or defaults. Whole-document validation and migration remain caller callbacks.
+For partial settings recovery, parse bounded primary and backup documents with the game's version
+admission, then use `SettingsRecovery.Select` for each nullable field. Defaults and clamps stay local.
+
+`FileWriteLock.Acquire` provides a cooperative exclusive `.lock` sibling lease, timeout and
+cancellation. Dispose the lease after each serialized operation; the lock file is intentionally
+retained. Schedule and snapshot saves in the host, and never rely on timestamp-only trust for validation.
+
+`AtomicFile.WriteBytesAsync` preserves cancellation before promotion while flushing the sibling
+to disk. `JsonSettingsStore.Save` can also admit an older primary through its migration callback
+before preserving it as the backup. Recoverable writers accept a backup suffix and an explicit
+trusted-primary fast path; use that only for a known exact generation under serialized ownership.
+
 ## Validation
 
 All committed fixtures are synthetic. Smacker packed-audio seed ordering, channel interleaving,
