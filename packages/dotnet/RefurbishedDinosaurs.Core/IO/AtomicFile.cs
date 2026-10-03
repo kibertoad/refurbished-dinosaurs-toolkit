@@ -74,6 +74,6 @@ public static class AtomicFile
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
     }
 
-    private static string TemporaryPath(string destination) => Path.Combine(
+    internal static string TemporaryPath(string destination) => Path.Combine(
         Path.GetDirectoryName(destination)!, $".{Path.GetFileName(destination)}.{Guid.NewGuid():N}.tmp");
 }

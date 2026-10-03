@@ -118,5 +118,29 @@ public sealed class RecoverableFileTests : IDisposable
         Assert.Equal(0, JsonSerializer.Deserialize<Settings>(File.ReadAllText(PathName + ".bak"))!.Version);
     }
 
+    [Fact]
+    public void SettingsLoadAPrimaryWithAByteOrderMarkAndRejectANonPositiveLimit()
+    {
+        var store = new JsonSettingsStore<Settings>(PathName) { MaximumBytes = 64 };
+        File.WriteAllText(PathName, JsonSerializer.Serialize(new Settings(1, true)), new System.Text.UTF8Encoding(true));
+        var result = store.LoadResult(() => new(1, false), value => value.Version == 1);
+        Assert.Equal(SettingsSource.Primary, result.Source);
+        Assert.True(result.Value.Enabled);
+        Assert.Throws<ArgumentOutOfRangeException>(() => new JsonSettingsStore<Settings>(PathName) { MaximumBytes = 0 });
+    }
+
+    [Fact]
+    public void RecoveryReadsTheBackupSuffixTheWriterUsed()
+    {
+        void WritePrevious(string value) => RecoverableFile.Write(PathName,
+            stream => stream.Write(System.Text.Encoding.UTF8.GetBytes(value)), path => Read(path),
+            error => error is IOException or FormatException, backupSuffix: ".previous");
+        WritePrevious("1"); WritePrevious("2");
+        File.WriteAllText(PathName, "broken");
+        var result = RecoverableFile.Read(PathName, Read, error => error is IOException or FormatException, ".previous");
+        Assert.Equal(1, result.Value);
+        Assert.Equal(FileGeneration.Backup, result.Generation);
+    }
+
     private sealed record Settings(int Version, bool Enabled);
 }

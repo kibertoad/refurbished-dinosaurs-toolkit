@@ -21,7 +21,9 @@ public static class FileWriteLock
         {
             cancellationToken.ThrowIfCancellationRequested();
             try { return new FileStream(full + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
-            catch (IOException error)
+            // Missing directories and over-long paths will not clear by waiting; report them as they are.
+            catch (IOException error) when (error is not (FileNotFoundException or DirectoryNotFoundException or
+                                                          PathTooLongException))
             {
                 var remaining = timeout - clock.Elapsed;
                 if (remaining <= TimeSpan.Zero) throw new TimeoutException("Save writer lock was not available.", error);

@@ -28,17 +28,19 @@ public static class RecoverableFile
     /// <summary>
     /// Reads the primary and, on an admitted failure, its backup. Browsing never modifies either file.
     /// The default admits I/O and access errors; pass a predicate for format errors and exclude
-    /// incompatible versions that must not silently load an older generation.
+    /// incompatible versions that must not silently load an older generation. Pass the same
+    /// <paramref name="backupSuffix"/> that <see cref="Write"/> was given.
     /// </summary>
     public static RecoverableFileResult<T> Read<T>(string path, Func<string, T> read,
-        Func<Exception, bool>? canRecover = null)
+        Func<Exception, bool>? canRecover = null, string backupSuffix = ".bak")
     {
         ArgumentNullException.ThrowIfNull(read);
         canRecover ??= IsFileFailure;
+        var backupPath = BackupPath(path, backupSuffix);
         try { return new(read(path), FileGeneration.Primary, null); }
         catch (Exception primary) when (canRecover(primary))
         {
-            try { return new(read(path + ".bak"), FileGeneration.Backup, primary); }
+            try { return new(read(backupPath), FileGeneration.Backup, primary); }
             catch (Exception backup) when (canRecover(backup))
             { throw new AggregateException("Neither file generation is readable.", primary, backup); }
         }
@@ -57,12 +59,10 @@ public static class RecoverableFile
         ArgumentNullException.ThrowIfNull(write);
         ArgumentNullException.ThrowIfNull(validate);
         canReject ??= IsFileFailure;
-        ArgumentException.ThrowIfNullOrWhiteSpace(backupSuffix);
-        if (backupSuffix.Any(character => character is '/' or '\\' or ':' or '\0'))
-            throw new ArgumentException("Backup suffix must remain beside the primary.", nameof(backupSuffix));
         var full = Path.GetFullPath(path);
+        var backupPath = BackupPath(full, backupSuffix);
         Directory.CreateDirectory(Path.GetDirectoryName(full)!);
-        var temporary = Path.Combine(Path.GetDirectoryName(full)!, $".{Path.GetFileName(full)}.{Guid.NewGuid():N}.tmp");
+        var temporary = AtomicFile.TemporaryPath(full);
         try
         {
             using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write,
@@ -79,7 +79,7 @@ public static class RecoverableFile
                 catch (Exception error) when (canReject(error))
                 { preserve = preserveRejected?.Invoke(error) ?? false; }
             }
-            if (preserve) AtomicFile.Copy(full, full + backupSuffix);
+            if (preserve) AtomicFile.Copy(full, backupPath);
             File.Move(temporary, full, true);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
@@ -95,6 +95,20 @@ public static class RecoverableFile
         stream.ReadExactly(bytes);
         if (stream.ReadByte() != -1) throw new InvalidDataException("File grew beyond its admitted length.");
         return bytes;
+    }
+
+    private static string BackupPath(string path, string backupSuffix)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentException.ThrowIfNullOrWhiteSpace(backupSuffix);
+        if (backupSuffix.Any(character => character is '/' or '\\' or ':' or '\0'))
+            throw new ArgumentException("Backup suffix must remain beside the primary.", nameof(backupSuffix));
+        var full = Path.GetFullPath(path);
+        var backup = Path.GetFullPath(full + backupSuffix);
+        // Windows trims trailing dots and spaces, so a suffix such as "." names the primary itself.
+        if (string.Equals(backup, full, StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("Backup suffix must name a different file.", nameof(backupSuffix));
+        return backup;
     }
 
     private static bool IsFileFailure(Exception error) => error is IOException or UnauthorizedAccessException;

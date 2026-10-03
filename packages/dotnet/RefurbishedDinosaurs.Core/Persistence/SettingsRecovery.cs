@@ -21,9 +21,9 @@ public sealed record SettingsResult<T>(T Value, SettingsSource Source);
 public static class SettingsRecovery
 {
     /// <summary>
-    /// Selects the first present, admitted field. Call separately per field for partial recovery,
-    /// or once with a whole document for all-or-nothing recovery. Invalid values do not become defaults
-    /// until both generations have been tried.
+    /// Selects the first present, admitted field. Call separately per value-type field for partial
+    /// recovery; whole-document fallback is <see cref="JsonSettingsStore{T}.LoadResult"/>. Invalid
+    /// values do not become defaults until both generations have been tried.
     /// </summary>
     public static SettingsResult<T> Select<T>(T? primary, T? backup, T fallback, Func<T, bool> isValid)
         where T : struct

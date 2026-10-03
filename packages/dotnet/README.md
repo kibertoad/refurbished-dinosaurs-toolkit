@@ -113,8 +113,9 @@ retained. Schedule and snapshot saves in the host, and never rely on timestamp-o
 
 `AtomicFile.WriteBytesAsync` preserves cancellation before promotion while flushing the sibling
 to disk. `JsonSettingsStore.Save` can also admit an older primary through its migration callback
-before preserving it as the backup. Recoverable writers accept a backup suffix and an explicit
-trusted-primary fast path; use that only for a known exact generation under serialized ownership.
+before preserving it as the backup. Recoverable writers accept a backup suffix, which `Read` must
+be given too, and an explicit trusted-primary fast path; use that only for a known exact
+generation under serialized ownership.
 
 ## Validation
 
