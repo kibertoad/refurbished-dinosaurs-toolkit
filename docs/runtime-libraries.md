@@ -14,7 +14,7 @@ limits and exceptions of each type.
 
 | Package | Use it for | References |
 |---|---|---|
-| `RefurbishedDinosaurs.Core` | Identifying, importing, installing and checking content from the player's original; content and settings locations; startup diagnostics; deterministic randomness; recoverable saves and settings; viewport and palette helpers. | nothing |
+| `RefurbishedDinosaurs.Core` | Identifying, importing, installing and checking content from the player's original; content and settings locations; startup diagnostics; input snapshots and action bindings; deterministic randomness; recoverable saves and settings; viewport and palette helpers. | nothing |
 | `RefurbishedDinosaurs.LegacyFormats` | Game-independent PCX, BMP RLE8, CUE/CDDA, raw Mode 1, ISO 9660 and PCM WAVE readers, a canonical PCM WAVE writer, a streaming WAVE reader, and `OriginalContentSource`. | Core |
 | `RefurbishedDinosaurs.Media.Smacker`, `.Avi`, `.Fli` | Movie decoding. | nothing |
 | `RefurbishedDinosaurs.Media.Playback` | Frame cadence for any of the movie decoders. | nothing |
@@ -109,6 +109,20 @@ routing, mixing and the choice of which CDDA tracks to admit.
   game's own admission checks.
 
 The details are in [audio buffers and lifetimes](../packages/dotnet/README.md#audio-buffers-and-lifetimes).
+
+## Input
+
+Core's input types replace a game's own key-state bookkeeping; they read no device. The game keeps
+its actions, default controls, rebinding admission, conflict policy, analog thresholds, timing and
+focus handling.
+
+- Adapt the backend's held keys and buttons into an `InputState` once per admitted input step.
+- Build `InputBindings` with `InputBindings.Create` once for each context, outside the frame loop,
+  and give snapshots the same button comparer as the bindings.
+- Alternatives are OR bindings, not chords: an action is pressed once when the first of them
+  becomes held.
+
+The details are in [input snapshots and bindings](../packages/dotnet/README.md#input-snapshots-and-bindings).
 
 ## Migrations
 

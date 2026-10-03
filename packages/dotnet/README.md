@@ -45,6 +45,7 @@ on an undocumented public member.
 | `IO` | `AtomicFile`, `SafePath`, `PortableAssetPath` | Atomic writes, paths from untrusted names that cannot leave their root, and legacy asset references resolved the same way on every host. |
 | `Imaging` | `IndexedPalette`, `IndexedPaletteDecoder` | 256-colour palettes, including 6-bit VGA values. |
 | `Imaging` | `IndexedPngWriter` | Write 8-bit indexed pixels as a palette PNG. |
+| `Input` | `InputState<TButton>`, `InputBindings<TAction,TButton>` | Held, pressed and released queries over copied button snapshots; immutable OR bindings with rebinding and context overlays. |
 | `Paths` | `RestorationPaths` | Find imported content (portable or per-user) and the settings directory. |
 | `Persistence` | `JsonSettingsStore<T>` | JSON settings with a backup copy and migration. |
 | `Presentation` | `ViewportScaler`, `FixedWidthText` | Fit a fixed resolution into a window and map the mouse back; word-wrap fixed-width text. |
@@ -65,6 +66,21 @@ content directories; concurrent filesystem replacement needs host controls.
 use the same rules. A null or blank reference from data, a blank manifest game or edition and a
 missing file list throw `InvalidDataException`, like every other rejected reference; a blank root
 or source path passed by the caller still throws `ArgumentException`.
+
+## Input snapshots and bindings
+
+`InputState<TButton>` copies down-button snapshots and answers held, pressed and released queries;
+opposing digital axis inputs cancel. Hosts advance snapshots once per admitted input step and
+decide focus-loss policy. `InputBindings<TAction,TButton>` owns immutable alternatives, supports
+explicit conflict rejection on rebinding and context overlays. Alternatives are OR bindings: an
+action is pressed when one of them becomes held while none was held before. An overlay replaces
+that action's alternatives. Build bindings with `InputBindings<TAction,TButton>.Create`, which takes
+any map of button collections, such as `Dictionary<TAction, TButton[]>`. Snapshots queried by
+bindings, and contexts overlaid on them, must use the same comparers; a mismatch throws
+`ArgumentException` instead of missing a press. Pressed queries do not allocate. Actions, default
+keys, valid token admission, analog thresholds, pointer speed, replay timing and text input rules
+stay in the game. There is no MonoGame dependency and no hidden event loop. Build bindings and
+contexts outside per-frame loops.
 
 ## RefurbishedDinosaurs.LegacyFormats
 
