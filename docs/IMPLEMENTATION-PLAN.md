@@ -318,3 +318,18 @@ engine tests and through the reader bridge. The script compiles against Ghidra 1
 reports of a real program stay in its `GAME_DIR`.
 Exit: the option ships with tests, the reporter guide documents it, and the script has its row in
 the engine README catalog.
+
+
+## Shared runtime primitives
+
+Outcome: restorations consume shared portable paths, validated backup storage, bounded settings,
+PCM/WAVE streaming and generic input transitions while retaining game formats and rules.
+
+Slices: portable asset paths; recoverable persistence/settings; PCM/audio lifetimes/WAVE streaming;
+input snapshots and bindings. Each slice has synthetic positive, malformed and admission controls.
+Recovery provenance, incompatible versions, ownership, buffer alignment and conflict admission
+remain explicit. Consumer PRs use published packages, never copied toolkit source.
+
+Exit: each slice is released, consumer version pins and lock hashes are updated, and each affected
+restoration's own controls pass against the released version. Candidate-package tests do not close
+this work on behalf of consumers.
