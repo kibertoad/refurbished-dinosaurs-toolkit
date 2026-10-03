@@ -14,7 +14,7 @@ packages/
   scientific-method-engine/  PyPI  scientific-method-engine               Python
   dotnet/                    NuGet RefurbishedDinosaurs.Core,
                                    RefurbishedDinosaurs.LegacyFormats,
-                                   RefurbishedDinosaurs.Media.{Smacker,Avi,Fli,Playback} C#
+                                   RefurbishedDinosaurs.Media.{Smacker,Avi,Fli,Playback,Audio} C#
   disc-archiver/             PyPI  dinorefurb-disc-archiver               Python
 actions/    composite GitHub Actions, consumed by commit SHA
 tools/      repository-level scripts (Verify-Repository.ps1, release planning)
@@ -80,7 +80,7 @@ persistence, viewport math, indexed palettes and an indexed PNG writer. LegacyFo
 bounded PCX, BMP RLE8, CUE/CDDA, raw Mode 1, ISO-9660 and 16-bit PCM WAVE readers, and
 `OriginalContentSource`, which reads the original from a directory, an `.iso` image or a cue/bin
 raw disc image through one interface. LegacyFormats references Core, so the two are built, versioned and published together.
-Media.Smacker, Media.Avi, Media.Fli and Media.Playback are independent, dependency-free NuGet
+Media.Smacker, Media.Avi, Media.Fli, Media.Playback and Media.Audio are independent, dependency-free NuGet
 libraries. Smacker was moved from LegacyFormats; runtime package IDs and namespaces use
 RefurbishedDinosaurs, while research tooling retains ScientificMethod. See ADR 0005 and
 [the shared runtime libraries guide](runtime-libraries.md), which also holds their migrations.
@@ -155,3 +155,6 @@ The composite actions, `Verify-Repository.ps1`, the schemas and the handbook are
 place: actions by commit SHA, the rest by reading this repository. Game-specific formats,
 fingerprints, rules, names and findings stay in each restoration repository, as
 [ADR 0001](decisions/0001-repository-boundary.md) sets out.
+
+Media.Audio owns buffer conversions and backend-neutral disposal. WAVE container code remains
+in LegacyFormats. Save payloads, audio routing and bindings remain restoration-owned (ADR 0006).

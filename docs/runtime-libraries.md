@@ -15,9 +15,10 @@ limits and exceptions of each type.
 | Package | Use it for | References |
 |---|---|---|
 | `RefurbishedDinosaurs.Core` | Identifying, importing, installing and checking content from the player's original; content and settings locations; startup diagnostics; deterministic randomness; recoverable saves and settings; viewport and palette helpers. | nothing |
-| `RefurbishedDinosaurs.LegacyFormats` | Game-independent PCX, BMP RLE8, CUE/CDDA, raw Mode 1, ISO 9660 and PCM WAVE readers, and `OriginalContentSource`. | Core |
+| `RefurbishedDinosaurs.LegacyFormats` | Game-independent PCX, BMP RLE8, CUE/CDDA, raw Mode 1, ISO 9660 and PCM WAVE readers, a canonical PCM WAVE writer, a streaming WAVE reader, and `OriginalContentSource`. | Core |
 | `RefurbishedDinosaurs.Media.Smacker`, `.Avi`, `.Fli` | Movie decoding. | nothing |
 | `RefurbishedDinosaurs.Media.Playback` | Frame cadence for any of the movie decoders. | nothing |
+| `RefurbishedDinosaurs.Media.Audio` | PCM sample conversion and the lifetimes of backend voices and cached audio resources. | nothing |
 
 The packages are released together and share one version, from the `scientific-method-dotnet`
 tag series (see [releasing](releasing.md)). None depends on MonoGame, a native codec or FFmpeg, so
@@ -94,6 +95,21 @@ strict about bounds and may reject a file a restoration's own reader tolerated. 
 FFmpeg fallback until every required movie profile passes the managed decoder. The supported
 subset of each format is in [media packages](../packages/dotnet/README.md#media-packages).
 
+## Audio
+
+Media.Audio converts buffers and owns disposal; it plays nothing. The game keeps its audio backend,
+routing, mixing and the choice of which CDDA tracks to admit.
+
+- Widen unsigned 8-bit samples with `Pcm16.FromUnsigned8` and write little-endian PCM with
+  `Pcm16.Encode`, whatever the host's byte order.
+- Admit backend voices to `AudioVoices`, dispose the stopped ones with `Reap`, and dispose
+  the collection before the `AudioResourceCache` the voices draw from.
+- Write WAVE files with `WavePcm16Writer`. Stream long tracks with `WavePcm16Stream`, which owns its
+  input by default, reads frame-aligned buffers, loops on request and exposes the format for the
+  game's own admission checks.
+
+The details are in [audio buffers and lifetimes](../packages/dotnet/README.md#audio-buffers-and-lifetimes).
+
 ## Migrations
 
 A rename or removal in these packages ships as a major release with an entry here, and no aliases
@@ -142,3 +158,10 @@ argument of `SafePath.Below`, a manifest file path or a source lookup), a blank 
 source edition, and a missing manifest file list now throw `InvalidDataException` instead of
 `ArgumentException` or `ArgumentNullException`. Catch `InvalidDataException` for malformed data;
 blank roots and source paths still throw `ArgumentException`.
+
+### Shared audio primitives
+
+Replace unsigned-eight-bit widening loops with `Media.Audio.Pcm16.FromUnsigned8`; use
+`Pcm16.Encode` and `LegacyFormats.WavePcm16Writer` instead of host-endian WAVE construction.
+`WavePcm16Stream` owns its input by default, supports aligned buffers and looped reads, and exposes
+format metadata for game-specific CDDA admission. Dispose voices before cached resources.
