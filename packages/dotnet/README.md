@@ -109,3 +109,13 @@ From the repository root:
 dotnet build packages/dotnet/RefurbishedDinosaurs.slnx
 dotnet test --project packages/dotnet/RefurbishedDinosaurs.Core.Tests/RefurbishedDinosaurs.Core.Tests.csproj
 ```
+
+## Input primitives
+
+`RefurbishedDinosaurs.Core.Input.InputState<TButton>` copies down-button snapshots and answers
+held, pressed and released queries; opposing digital axis inputs cancel. Hosts advance snapshots
+once per admitted input step and decide focus-loss policy. `InputBindings<TAction,TButton>` owns
+immutable alternatives, supports explicit conflict rejection on rebinding and context overlays.
+An overlay replaces that action's alternatives. Actions, default keys, valid token admission,
+analog thresholds, pointer speed, replay timing and text input rules stay in the game. There is no
+MonoGame dependency and no hidden event loop. Build bindings and contexts outside per-frame loops.
