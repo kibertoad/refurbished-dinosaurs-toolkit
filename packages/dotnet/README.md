@@ -39,13 +39,29 @@ on an undocumented public member.
 | `Determinism` | `IRandomSource`, `MsvcRandom` | The legacy Microsoft C `rand()` sequence, with saveable state. |
 | `Diagnostics` | `StartupFailure` | Log a failed start and show the player what to do. |
 | `Discovery` | `KnownDirectorySourceLocator`, `CompositeSourceLocator` | Offer likely install directories of the original. |
-| `IO` | `AtomicFile`, `SafePath` | Atomic writes, and paths from untrusted names that cannot leave their root. |
+| `IO` | `AtomicFile`, `SafePath`, `PortableAssetPath` | Atomic writes, paths from untrusted names that cannot leave their root, and legacy asset references resolved the same way on every host. |
 | `Imaging` | `IndexedPalette`, `IndexedPaletteDecoder` | 256-colour palettes, including 6-bit VGA values. |
 | `Imaging` | `IndexedPngWriter` | Write 8-bit indexed pixels as a palette PNG. |
 | `Paths` | `RestorationPaths` | Find imported content (portable or per-user) and the settings directory. |
 | `Persistence` | `JsonSettingsStore<T>` | JSON settings with a backup copy and migration. |
 | `Presentation` | `ViewportScaler`, `FixedWidthText` | Fit a fixed resolution into a window and map the mouse back; word-wrap fixed-width text. |
 | `Validation` | `JsonStateDiffer` | List value differences between a reference capture of game state and a restoration's. |
+
+## Portable asset references
+
+`PortableAssetPath.Relative` accepts either separator and rejects drive-relative, rooted and
+traversal references on every host, along with components Windows reads differently (a trailing dot
+or space, or a reserved device name such as `CON` or `nul.dat`). `WithoutDriveRoot` explicitly
+discards an ASCII Windows drive root when a game stores installation paths. `ResolveFile` matches
+every component ignoring ordinal case, rejects a missing root, ambiguous matches and links, and
+returns the actual relative spelling. It lists hidden and system entries and fails on an unreadable
+directory, so it never skips a name another host would match. The resolver is for trusted, stable
+content directories; concurrent filesystem replacement needs host controls.
+
+`AssetManifest`, `AssetVerifier`, `OriginalContentSource` lookups and the cue sheet `FILE` check
+use the same rules. A null or blank reference from data, a blank manifest game or edition and a
+missing file list throw `InvalidDataException`, like every other rejected reference; a blank root
+or source path passed by the caller still throws `ArgumentException`.
 
 ## RefurbishedDinosaurs.LegacyFormats
 

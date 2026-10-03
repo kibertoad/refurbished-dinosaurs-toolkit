@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RefurbishedDinosaurs.Core.IO;
 
 namespace RefurbishedDinosaurs.Core.Assets;
 
@@ -33,22 +34,22 @@ public sealed record AssetManifest(
     }
 
     /// <summary>
-    /// Throws unless the game and edition are named, every path is relative without <c>.</c> or <c>..</c>
-    /// segments and appears once (ignoring case), no size is negative, and every hash is 64 hex digits.
+    /// Throws unless the game and edition are named, every path passes <see cref="PortableAssetPath.Relative"/>
+    /// and appears once (ignoring case), no size is negative, and every hash is 64 hex digits.
     /// </summary>
-    /// <exception cref="ArgumentException">The game or edition is blank.</exception>
-    /// <exception cref="InvalidDataException">A file record is invalid.</exception>
+    /// <exception cref="InvalidDataException">The game or edition is blank, the file list is missing, or a file record is invalid.</exception>
     public void Validate()
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(GameId);
-        ArgumentException.ThrowIfNullOrWhiteSpace(SourceEdition);
-        ArgumentNullException.ThrowIfNull(Files);
+        if (string.IsNullOrWhiteSpace(GameId)) throw new InvalidDataException("Asset manifest has no game id.");
+        if (string.IsNullOrWhiteSpace(SourceEdition))
+            throw new InvalidDataException("Asset manifest has no source edition.");
+        if (Files is null) throw new InvalidDataException("Asset manifest has no file list.");
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in Files)
         {
             if (file is null) throw new InvalidDataException("Asset manifest contains a null file record.");
-            var normalized = AssetPath.NormalizeRelative(file.Path);
+            var normalized = PortableAssetPath.Relative(file.Path);
             if (!seen.Add(normalized))
                 throw new InvalidDataException($"Duplicate asset path '{normalized}'.");
             if (file.Size < 0)
@@ -69,16 +70,3 @@ public sealed record AssetFileSpec(
     long Size,
     string? Sha256 = null,
     bool Required = true);
-
-internal static class AssetPath
-{
-    public static string NormalizeRelative(string path)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        var normalized = path.Replace('\\', '/');
-        if (Path.IsPathRooted(path) || normalized.StartsWith('/') ||
-            normalized.Split('/').Any(part => part is "" or "." or ".."))
-            throw new InvalidDataException($"Asset path must be a normalized relative path: '{path}'.");
-        return normalized;
-    }
-}

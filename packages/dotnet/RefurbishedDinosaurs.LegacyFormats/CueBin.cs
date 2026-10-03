@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using RefurbishedDinosaurs.Core.IO;
 
 namespace RefurbishedDinosaurs.LegacyFormats;
 
@@ -62,7 +63,8 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     }
 
     /// <summary>
-    /// Parses a cue sheet. It must name exactly one <c>BINARY</c> <c>FILE</c> by a safe relative path,
+    /// Parses a cue sheet. It must name exactly one <c>BINARY</c> <c>FILE</c> by a relative path
+    /// <see cref="PortableAssetPath.Relative"/> accepts,
     /// number its 1 to 99 tracks consecutively from 1, begin with a <c>MODE1/2352</c> track whose
     /// <c>INDEX 01</c> is at <c>00:00:00</c> followed only by <c>AUDIO</c> tracks, give each track an
     /// <c>INDEX 01</c>, and keep every index in order, within a track and across tracks. A
@@ -126,9 +128,11 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
 
         if (string.IsNullOrWhiteSpace(referencedFile))
             throw new InvalidDataException("Cue sheet has no FILE entry.");
-        var normalized = referencedFile.Replace('\\', '/');
-        if (Path.IsPathFullyQualified(referencedFile) || normalized.Split('/').Any(part => part is "" or "." or ".."))
-            throw new InvalidDataException("Cue FILE must be a safe relative path.");
+        try { PortableAssetPath.Relative(referencedFile); }
+        catch (InvalidDataException exception)
+        {
+            throw new InvalidDataException("Cue FILE must be a safe relative path.", exception);
+        }
         if (tracks.Count is 0 or > 99)
             throw new InvalidDataException("Cue sheet must contain between 1 and 99 tracks.");
         if (tracks[0].Type != "MODE1/2352")

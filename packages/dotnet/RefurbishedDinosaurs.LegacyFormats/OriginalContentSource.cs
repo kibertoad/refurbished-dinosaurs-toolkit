@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
+using RefurbishedDinosaurs.Core.IO;
 
 namespace RefurbishedDinosaurs.LegacyFormats;
 
@@ -38,11 +39,11 @@ public abstract class OriginalContentSource : IDisposable
     /// <summary>Every file, sorted by path ignoring case.</summary>
     public abstract IReadOnlyList<ContentSourceEntry> Files { get; }
     /// <summary>Looks up a file.</summary>
-    /// <exception cref="InvalidDataException"><paramref name="relativePath"/> is absolute or contains empty, <c>.</c> or <c>..</c> segments.</exception>
+    /// <exception cref="InvalidDataException"><paramref name="relativePath"/> is not accepted by <see cref="PortableAssetPath.Relative"/>.</exception>
     public abstract bool TryGetFile(string relativePath, out ContentSourceEntry? entry);
     /// <summary>Opens a file as a read-only seekable stream.</summary>
     /// <exception cref="FileNotFoundException">The source has no such file.</exception>
-    /// <exception cref="InvalidDataException"><paramref name="relativePath"/> is absolute or contains empty, <c>.</c> or <c>..</c> segments.</exception>
+    /// <exception cref="InvalidDataException"><paramref name="relativePath"/> is not accepted by <see cref="PortableAssetPath.Relative"/>.</exception>
     public abstract Stream OpenRead(string relativePath);
     /// <summary>Releases the source. Streams already opened stay usable.</summary>
     public abstract void Dispose();
@@ -130,15 +131,6 @@ public abstract class OriginalContentSource : IDisposable
                 new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read), dataSectors),
             ContentSourceKinds.CueBin, sheet);
     }
-
-    internal static string NormalizeRelative(string path)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        var normalized = path.Replace('\\', '/');
-        if (Path.IsPathRooted(path) || normalized.Split('/').Any(x => x is "" or "." or ".."))
-            throw new InvalidDataException($"Source path must be relative: '{path}'.");
-        return normalized;
-    }
 }
 
 internal sealed class DirectoryContentSource : OriginalContentSource
@@ -158,7 +150,7 @@ internal sealed class DirectoryContentSource : OriginalContentSource
         };
         foreach (var fullPath in Directory.EnumerateFiles(root, "*", options))
         {
-            var relative = OriginalContentSource.NormalizeRelative(Path.GetRelativePath(root, fullPath));
+            var relative = Path.GetRelativePath(root, fullPath).Replace('\\', '/');
             var entry = new ContentSourceEntry(relative, new FileInfo(fullPath).Length);
             if (!files.TryAdd(relative, (entry, fullPath)))
                 throw new InvalidDataException($"Source contains duplicate path '{relative}'.");
@@ -173,7 +165,7 @@ internal sealed class DirectoryContentSource : OriginalContentSource
 
     public override bool TryGetFile(string relativePath, out ContentSourceEntry? entry)
     {
-        if (files.TryGetValue(OriginalContentSource.NormalizeRelative(relativePath), out var value))
+        if (files.TryGetValue(PortableAssetPath.Relative(relativePath), out var value))
         {
             entry = value.Entry;
             return true;
@@ -184,7 +176,7 @@ internal sealed class DirectoryContentSource : OriginalContentSource
 
     public override Stream OpenRead(string relativePath)
     {
-        if (!files.TryGetValue(OriginalContentSource.NormalizeRelative(relativePath), out var value))
+        if (!files.TryGetValue(PortableAssetPath.Relative(relativePath), out var value))
             throw new FileNotFoundException("Source file was not found.", relativePath);
         return new FileStream(value.FullPath, FileMode.Open, FileAccess.Read, FileShare.Read);
     }
@@ -238,7 +230,7 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
 
     public override bool TryGetFile(string relativePath, out ContentSourceEntry? entry)
     {
-        if (files.TryGetValue(OriginalContentSource.NormalizeRelative(relativePath), out var value))
+        if (files.TryGetValue(PortableAssetPath.Relative(relativePath), out var value))
         {
             entry = value.Entry;
             return true;
@@ -249,7 +241,7 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
 
     public override Stream OpenRead(string relativePath)
     {
-        if (!files.TryGetValue(OriginalContentSource.NormalizeRelative(relativePath), out var value))
+        if (!files.TryGetValue(PortableAssetPath.Relative(relativePath), out var value))
             throw new FileNotFoundException("Source file was not found in the ISO image.", relativePath);
         return new ExtentReadStream(openImage(), checked((long)value.Extent * SectorSize), value.Entry.Size);
     }

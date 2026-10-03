@@ -127,6 +127,8 @@ public sealed class CueBinSourceTests
     [Theory]
     [InlineData("FILE \"../game.bin\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n")]
     [InlineData("FILE \"/game.bin\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n")]
+    [InlineData("FILE \"C:game.bin\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n")]
+    [InlineData("FILE \"CON.bin\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n")]
     [InlineData("FILE a.bin BINARY\nFILE b.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n")]
     [InlineData("TRACK 01 MODE1/2352\nINDEX 01 00:00:00\n")]
     [InlineData("FILE a.bin BINARY\nINDEX 01 00:00:00\nTRACK 01 MODE1/2352\n")]
