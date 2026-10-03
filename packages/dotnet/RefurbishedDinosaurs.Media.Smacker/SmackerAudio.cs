@@ -4,7 +4,7 @@ namespace RefurbishedDinosaurs.Media.Smacker;
 
 /// <summary>Decoded 8-bit mono audio.</summary>
 /// <param name="SampleRate">Samples per second.</param>
-/// <param name="Samples">Unsigned 8-bit samples centred on 128.</param>
+/// <param name="Samples">Unsigned 8-bit samples centred on 128; empty when the packet declares no data.</param>
 public sealed record SmackerAudioBuffer(int SampleRate, byte[] Samples)
 {
     /// <summary>Converts the samples to signed 16-bit little-endian PCM.</summary>
@@ -40,6 +40,28 @@ public static class SmackerAudioDecoder
     {
         ArgumentNullException.ThrowIfNull(track);
         if (!track.IsCompressed) throw new NotSupportedException("Only Huffman-packed Smacker audio is supported.");
+        var (channels, samples) = DecodeCore(packet, track, pcm16: true);
+        return new(track.SampleRate, channels, samples);
+    }
+
+    /// <summary>Decodes one Huffman-packed 8-bit mono packet.</summary>
+    /// <param name="packet">The packet bytes, from <see cref="SmackerAudioPacket.Data"/>.</param>
+    /// <param name="track">The packet's track.</param>
+    /// <returns>The samples; empty when the packet declares no data.</returns>
+    /// <exception cref="NotSupportedException">The track is uncompressed, 16-bit or stereo.</exception>
+    /// <exception cref="InvalidDataException">The packet or track metadata is malformed.</exception>
+    public static SmackerAudioBuffer Decode(ReadOnlySpan<byte> packet, SmackerAudioTrack track)
+    {
+        ArgumentNullException.ThrowIfNull(track);
+        if (!track.IsCompressed || track.Is16Bit || track.IsStereo)
+            throw new NotSupportedException("Only packed 8-bit mono Smacker audio is supported.");
+        return new SmackerAudioBuffer(track.SampleRate, DecodeCore(packet, track, pcm16: false).Samples);
+    }
+
+    // Writes signed PCM16 when pcm16 is set; otherwise the predictor bytes themselves (8-bit tracks only).
+    private static (int Channels, byte[] Samples) DecodeCore(
+        ReadOnlySpan<byte> packet, SmackerAudioTrack track, bool pcm16)
+    {
         if (track.SampleRate is < 1000 or > 192000 || track.MaximumDecodedBytes < 0)
             throw new InvalidDataException("Smacker audio metadata is invalid.");
         if (packet.Length <= 4) throw new InvalidDataException("Smacker audio packet is truncated.");
@@ -50,7 +72,12 @@ public static class SmackerAudioDecoder
             || track.MaximumDecodedBytes > 0 && length > track.MaximumDecodedBytes)
             throw new InvalidDataException("Smacker audio decoded length is invalid.");
         var reader = new LittleEndianBitReader(packet[4..]);
-        if (!reader.ReadBit()) return new(track.SampleRate, channels, []);
+        if (!reader.ReadBit())
+        {
+            if (length != 0)
+                throw new InvalidDataException("Smacker audio packet declares samples but contains no data.");
+            return (channels, Array.Empty<byte>());
+        }
         if (reader.ReadBit() != track.IsStereo || reader.ReadBit() != track.Is16Bit
             || length < channels * bytesPerSample)
             throw new InvalidDataException("Smacker audio packet does not match its declared profile.");
@@ -72,7 +99,7 @@ public static class SmackerAudioDecoder
             predictors[channel] = track.Is16Bit ? ((value & 255) << 8) | (value >> 8) : value;
         }
         int sampleCount = (int)length / bytesPerSample;
-        var output = new byte[checked(sampleCount * 2)];
+        var output = new byte[pcm16 ? checked(sampleCount * 2) : sampleCount];
         for (int sample = 0; sample < sampleCount; sample++)
         {
             int channel = sample % channels;
@@ -83,50 +110,15 @@ public static class SmackerAudioDecoder
                 if (track.Is16Bit) delta |= DecodeSymbol(ref reader, trees[tree + 1], roots[tree + 1]) << 8;
                 predictors[channel] = (predictors[channel] + delta) & (track.Is16Bit ? 65535 : 255);
             }
+            if (!pcm16)
+            {
+                output[sample] = (byte)predictors[channel];
+                continue;
+            }
             short pcm = track.Is16Bit ? unchecked((short)predictors[channel]) : (short)((predictors[channel] - 128) << 8);
             BinaryPrimitives.WriteInt16LittleEndian(output.AsSpan(sample * 2), pcm);
         }
-        return new(track.SampleRate, channels, output);
-    }
-
-    /// <summary>Decodes one Huffman-packed 8-bit mono packet.</summary>
-    /// <param name="packet">The packet bytes, from <see cref="SmackerAudioPacket.Data"/>.</param>
-    /// <param name="track">The packet's track.</param>
-    /// <exception cref="NotSupportedException">The track is uncompressed, 16-bit or stereo.</exception>
-    /// <exception cref="InvalidDataException">The packet is malformed.</exception>
-    public static SmackerAudioBuffer Decode(ReadOnlySpan<byte> packet, SmackerAudioTrack track)
-    {
-        ArgumentNullException.ThrowIfNull(track);
-        if (!track.IsCompressed || track.Is16Bit || track.IsStereo)
-            throw new NotSupportedException("Only packed 8-bit mono Smacker audio is supported.");
-        if (packet.Length <= 4)
-            throw new InvalidDataException("Smacker audio packet is truncated.");
-        var outputLength = BinaryPrimitives.ReadUInt32LittleEndian(packet);
-        if (outputLength == 0 || outputLength > MaximumDecodedBytes || outputLength > int.MaxValue
-            || track.MaximumDecodedBytes > 0 && outputLength > track.MaximumDecodedBytes)
-            throw new InvalidDataException("Smacker audio output length is invalid.");
-
-        var reader = new LittleEndianBitReader(packet[4..]);
-        if (!reader.ReadBit())
-            throw new InvalidDataException("Smacker audio packet contains no sample data.");
-        if (reader.ReadBit() || reader.ReadBit())
-            throw new InvalidDataException("Smacker audio packet does not match its mono 8-bit track.");
-
-        reader.ReadBit();
-        var nodes = new List<HuffmanNode>();
-        var leaves = 0;
-        var root = ReadTree(ref reader, nodes, 0, ref leaves);
-        reader.ReadBit();
-
-        var output = new byte[checked((int)outputLength)];
-        var predictor = reader.ReadBits(8);
-        output[0] = (byte)predictor;
-        for (var index = 1; index < output.Length; index++)
-        {
-            predictor = (predictor + DecodeSymbol(ref reader, nodes, root)) & 0xFF;
-            output[index] = (byte)predictor;
-        }
-        return new SmackerAudioBuffer(track.SampleRate, output);
+        return (channels, output);
     }
 
     private static int ReadTree(

@@ -35,7 +35,7 @@ public sealed record SmackerAudioPacket(int TrackIndex, int DecodedLength, Smack
 /// <param name="PaletteChanged">Whether the frame updates the palette.</param>
 /// <param name="Palette">The palette in effect for the frame: 256 RGB triples, 8 bits per channel.</param>
 /// <param name="AudioPackets">The frame's audio packets, by track.</param>
-/// <param name="Video">The video packet, as a file range.</param>
+/// <param name="Video">The video packet, as a file range; empty when the frame carries no video bits.</param>
 public sealed record SmackerFrameLayout(
     bool PaletteChanged,
     byte[] Palette,
@@ -98,7 +98,7 @@ public static class SmackerMovieDecoder
             throw new ArgumentException("Smacker palette must contain exactly 256 RGB entries.", nameof(previousPalette));
 
         var frame = movie.Frames[frameIndex];
-        if (frame.Offset < 0 || frame.Length <= 0 || frame.Offset > source.Length - frame.Length)
+        if (frame.Offset < 0 || frame.Length < 0 || frame.Offset > source.Length - frame.Length)
             throw new InvalidDataException("Smacker frame lies outside the supplied movie.");
         return DecodeFramePayloadCore(movie, frame,
             source.Slice(frame.Offset, frame.Length), previousPalette, frame.Offset);
@@ -136,6 +136,7 @@ public static class SmackerMovieDecoder
         var paletteChanged = (frame.Flags & 1) != 0;
         if (paletteChanged)
         {
+            if (source.IsEmpty) throw new InvalidDataException("Smacker palette packet is truncated.");
             var paletteLength = checked(source[cursor] * 4);
             if (paletteLength == 0 || paletteLength > end - cursor)
                 throw new InvalidDataException("Smacker palette packet is invalid.");
@@ -162,7 +163,7 @@ public static class SmackerMovieDecoder
                 if (dataLength < 4)
                     throw new InvalidDataException("Smacker packed-audio packet is truncated.");
                 var declaredLength = ReadUInt32(source, dataOffset);
-                if (declaredLength == 0 || declaredLength > int.MaxValue
+                if (declaredLength > int.MaxValue
                     || track.MaximumDecodedBytes > 0 && declaredLength > track.MaximumDecodedBytes)
                     throw new InvalidDataException("Smacker packed-audio output length is invalid.");
                 decodedLength = checked((int)declaredLength);
@@ -172,8 +173,6 @@ public static class SmackerMovieDecoder
             cursor += checked((int)packetLength);
         }
 
-        if (cursor >= end)
-            throw new InvalidDataException("Smacker frame has no video payload.");
         return new SmackerFrameLayout(paletteChanged, palette, audioPackets,
             new SmackerDataSegment(checked(segmentBase + cursor), end - cursor));
     }
@@ -249,7 +248,7 @@ public static class SmackerMovieDecoder
         {
             var encodedLength = ReadUInt32(source, checked(HeaderSize + (int)index * 4));
             var length = encodedLength & 0xFFFF_FFFCu;
-            if (length == 0 || length > int.MaxValue || offset + length > sourceLength)
+            if (length > int.MaxValue || offset + length > sourceLength)
                 throw new InvalidDataException("Smacker frame extent is invalid.");
             var frameFlags = source[checked(HeaderSize + (int)(frameCount * 4) + (int)index)];
             frames.Add(new SmackerFrame(index, checked((int)offset), checked((int)length), frameFlags,
@@ -278,10 +277,12 @@ public static class SmackerMovieDecoder
     {
         var sourceOffset = 0;
         var entry = 0;
-        while (entry < 256)
+        while (entry < 256 && sourceOffset < packet.Length)
         {
-            if (sourceOffset >= packet.Length)
-                throw new InvalidDataException("Smacker palette update is truncated.");
+            // A delta palette may stop before entry 256. The chunk is padded to four bytes, so one or
+            // two trailing zeros are padding; neither can hold a three-byte colour command.
+            var rest = packet[sourceOffset..];
+            if (rest.Length < 3 && !rest.ContainsAnyExcept((byte)0)) break;
             var command = packet[sourceOffset++];
             if ((command & 0x80) != 0)
             {

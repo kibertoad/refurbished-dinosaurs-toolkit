@@ -37,13 +37,10 @@ public sealed class SmackerVideoDecoder
         _width = movie.Width;
         _height = movie.Height;
         var reader = new LittleEndianBitReader(treeData);
-        var skipped = 0;
-        _mMap = ReadHeaderTree(ref reader, movie.TreeSizes.MMap, ref skipped);
-        _mClr = ReadHeaderTree(ref reader, movie.TreeSizes.MClr, ref skipped);
-        _full = ReadHeaderTree(ref reader, movie.TreeSizes.Full, ref skipped);
-        _type = ReadHeaderTree(ref reader, movie.TreeSizes.Type, ref skipped);
-        if (skipped == 4)
-            throw new InvalidDataException("Smacker movie omits every video tree.");
+        _mMap = ReadHeaderTree(ref reader, movie.TreeSizes.MMap);
+        _mClr = ReadHeaderTree(ref reader, movie.TreeSizes.MClr);
+        _full = ReadHeaderTree(ref reader, movie.TreeSizes.Full);
+        _type = ReadHeaderTree(ref reader, movie.TreeSizes.Type);
     }
 
     /// <summary>Reads the video trees from tree data alone, such as <see cref="SmackerMovieStream.TreeData"/>.</summary>
@@ -63,15 +60,13 @@ public sealed class SmackerVideoDecoder
     /// Applies one video packet to <paramref name="indices"/>, which holds the previous frame; unchanged
     /// blocks keep their pixels.
     /// </summary>
-    /// <param name="packet">The frame's video packet.</param>
+    /// <param name="packet">The frame's video packet; empty when every block decodes from constant trees.</param>
     /// <param name="indices">Width × height palette indices, rows top to bottom.</param>
     /// <param name="isKeyFrame">Whether to clear <paramref name="indices"/> first.</param>
     public void DecodeFrame(ReadOnlySpan<byte> packet, Span<byte> indices, bool isKeyFrame)
     {
         if (indices.Length != checked(_width * _height))
             throw new ArgumentException("Smacker output buffer dimensions are inconsistent.", nameof(indices));
-        if (packet.IsEmpty)
-            throw new InvalidDataException("Smacker video packet is empty.");
         if (isKeyFrame) indices.Clear();
         _mMap.ResetHistory();
         _mClr.ResetHistory();
@@ -86,10 +81,12 @@ public sealed class SmackerVideoDecoder
         {
             var type = _type.Decode(ref reader);
             var run = BlockRuns[(type >> 2) & 0x3F];
+            if (run > blockCount - block)
+                throw new InvalidDataException("Smacker block run exceeds the frame.");
             switch (type & 3)
             {
                 case 0:
-                    while (run-- > 0 && block < blockCount)
+                    while (run-- > 0)
                     {
                         DecodeMonoBlock(ref reader, indices, blockWidth, block);
                         block++;
@@ -99,18 +96,18 @@ public sealed class SmackerVideoDecoder
                     var mode = 0;
                     if (_version == 4)
                         mode = reader.ReadBit() ? 1 : reader.ReadBit() ? 2 : 0;
-                    while (run-- > 0 && block < blockCount)
+                    while (run-- > 0)
                     {
                         DecodeFullBlock(ref reader, indices, blockWidth, block, mode);
                         block++;
                     }
                     break;
                 case 2:
-                    block += Math.Min(run, blockCount - block);
+                    block += run;
                     break;
                 case 3:
                     var color = checked((byte)(type >> 8));
-                    while (run-- > 0 && block < blockCount)
+                    while (run-- > 0)
                     {
                         FillBlock(indices, blockWidth, block, color);
                         block++;
@@ -201,14 +198,9 @@ public sealed class SmackerVideoDecoder
         output[offset + 1] = (byte)((pair >> 8) & 0xFF);
     }
 
-    private static HuffmanTree ReadHeaderTree(
-        ref LittleEndianBitReader reader, int declaredSize, ref int skipped)
+    private static HuffmanTree ReadHeaderTree(ref LittleEndianBitReader reader, int declaredSize)
     {
-        if (!reader.ReadBit())
-        {
-            skipped++;
-            return HuffmanTree.Constant();
-        }
+        if (!reader.ReadBit()) return HuffmanTree.Constant();
 
         var low = ReadByteTree(ref reader);
         var high = ReadByteTree(ref reader);
