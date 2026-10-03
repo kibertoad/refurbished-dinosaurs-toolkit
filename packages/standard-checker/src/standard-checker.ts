@@ -190,8 +190,21 @@ if (!Number.isSafeInteger(maxRange) || maxRange < 1) {
 
 const problems: string[] = [];
 let codeFilesCache: CodeFile[] | undefined; // see codeFiles()
-const problem = (file: string | null, message: string) =>
-  problems.push(`${file ? relative(repoDir, file).replaceAll("\\", "/") : "spec"}: ${message}`);
+
+/**
+ * A numbered rule of the documentation standard, such as `STATUS-14`. The standard opens each rule
+ * with the heading `###### STATUS-14`, anchored at `#status-14` on the site and in vendored copies.
+ */
+type Rule = `${"IDENTIFIERS" | "STATUS" | "ENTRY-TYPES"}-${number}`;
+let citedRule = false;
+// A problem that breaks a numbered rule ends with the rule's label, so whoever fixes it can read
+// that one rule instead of the whole section.
+const problem = (file: string | null, message: string, rule?: Rule) => {
+  if (rule) citedRule = true;
+  problems.push(
+    `${file ? relative(repoDir, file).replaceAll("\\", "/") : "spec"}: ${message}${rule ? ` [${rule}]` : ""}`,
+  );
+};
 
 // ---------------------------------------------------------------------------------------------
 // Kinds, statuses and sections
@@ -681,7 +694,11 @@ const areas: string[] = [];
     for (const row of areaTable.rows) {
       const a = row[0].replaceAll("`", "");
       if (!/^[A-Z][A-Z0-9]*$/.test(a))
-        problem(join(specDir, "README.md"), `area ${a} must be upper-case letters and digits starting with a letter`);
+        problem(
+          join(specDir, "README.md"),
+          `area ${a} must be upper-case letters and digits starting with a letter`,
+          "IDENTIFIERS-2",
+        );
       if (areas.includes(a)) problem(join(specDir, "README.md"), `area ${a} is listed twice`);
       areas.push(a);
     }
@@ -708,11 +725,11 @@ for (const [kind, { dir }] of Object.entries(KINDS)) {
     if (name !== `${id}.md`) problem(file, `file name must be ${id}.md`);
     // Later checks look the kind up in KINDS, so an entry of an unknown kind is reported and dropped.
     if (!KINDS[kindOf(id)]) {
-      problem(file, `${id} is not an ID of a known kind`);
+      problem(file, `${id} is not an ID of a known kind`, "IDENTIFIERS-1");
       continue;
     }
     if (kindOf(id) !== kind) problem(file, `a ${kindOf(id)} entry does not belong in spec/${dir}/`);
-    if (entries.has(id)) problem(file, `ID ${id} is used twice`);
+    if (entries.has(id)) problem(file, `ID ${id} is used twice`, "IDENTIFIERS-3");
     entries.set(id, entry);
   }
 }
@@ -972,7 +989,7 @@ const isSuperseded = (id: string) =>
 function checkIdForm(file: string, id: string) {
   const kind = kindOf(id);
   if (!KINDS[kind]) {
-    problem(file, `${id} is not an ID of a known kind`);
+    problem(file, `${id} is not an ID of a known kind`, "IDENTIFIERS-1");
     return;
   }
   if (kind === "BLD" || kind === "SRC") {
@@ -980,17 +997,18 @@ function checkIdForm(file: string, id: string) {
       problem(
         file,
         `${id}: an alias starts with an upper-case letter and holds only upper-case letters, digits, dots and hyphens`,
+        "IDENTIFIERS-4",
       );
     return;
   }
   const m = /^[A-Z]+-([A-Z][A-Z0-9]*)-(\d+)$/.exec(id);
   if (!m) {
-    problem(file, `${id} does not have the form KIND-AREA-NNN`);
+    problem(file, `${id} does not have the form KIND-AREA-NNN`, "IDENTIFIERS-1");
     return;
   }
-  if (!areas.includes(m[1])) problem(file, `${id}: area ${m[1]} is not in the area list`);
+  if (!areas.includes(m[1])) problem(file, `${id}: area ${m[1]} is not in the area list`, "IDENTIFIERS-2");
   if (m[2].length < 3 || (m[2].length > 3 && m[2].startsWith("0")))
-    problem(file, `${id}: the number is zero-padded to exactly three digits until it passes 999`);
+    problem(file, `${id}: the number is zero-padded to exactly three digits until it passes 999`, "IDENTIFIERS-3");
 }
 
 function checkResolves(file: string, ids: string[], what: string) {
@@ -1054,16 +1072,18 @@ function onlyEmulatedRuns(e: Entry) {
 const mayBeInterrupted = (e: Entry) => e.kind === "RULE" && /# may run: RULE-/.test(e.code ?? "");
 
 function checkStatusCitations(file: string, status: Yaml, facts: Facts, conflicting: string[], label = "status") {
-  if (status === "sourced" && facts.sources === 0) problem(file, `${label} sourced needs at least one source`);
+  if (status === "sourced" && facts.sources === 0)
+    problem(file, `${label} sourced needs at least one source`, "STATUS-1");
   if (status === "supported" && facts.staticF + facts.dynamic === 0)
-    problem(file, `${label} supported needs at least one finding or experiment that lists the first build`);
+    problem(file, `${label} supported needs at least one finding or experiment that lists the first build`, "STATUS-1");
   if (status === "established" && (facts.staticF === 0 || (facts.dynamic === 0 && !facts.completeReading)))
     problem(
       file,
       `${label} established needs a static finding and either a dynamic finding or experiment that list the first build, or a complete reading in complete_reading`,
+      "STATUS-1",
     );
   if (status === "disputed" && conflicting.length === 0)
-    problem(file, `${label} disputed needs at least one finding or experiment in conflicting`);
+    problem(file, `${label} disputed needs at least one finding or experiment in conflicting`, "STATUS-1");
 }
 
 // complete is the entry's complete reading, and the cited evidence counts as part of it when it
@@ -1141,25 +1161,29 @@ for (const [id, e] of entries) {
   const { file, meta, kind } = e;
   checkIdForm(file, id);
   for (const f of FIELDS[kind].required) if (!(f in meta)) problem(file, `front matter lacks ${f}`);
-  if (!Array.isArray(meta.superseded_by)) problem(file, "superseded_by must be a list");
+  if (!Array.isArray(meta.superseded_by)) problem(file, "superseded_by must be a list", "ENTRY-TYPES-4");
   const expectedSections = SECTIONS[kind];
   const got = e.sections.map((s) => s.title);
   if (got.join("|") !== expectedSections.join("|"))
-    problem(file, `sections must be ${expectedSections.join(", ")} in that order; found ${got.join(", ") || "none"}`);
+    problem(
+      file,
+      `sections must be ${expectedSections.join(", ")} in that order; found ${got.join(", ") || "none"}`,
+      "ENTRY-TYPES-1",
+    );
   for (const s of e.sections)
-    if (s.text.trim() === "") problem(file, `section ${s.title} is empty; write None known. or None.`);
+    if (s.text.trim() === "") problem(file, `section ${s.title} is empty; write None known. or None.`, "ENTRY-TYPES-2");
 
   const superseded = asList(meta.superseded_by);
   const status = meta.status;
   if (KINDS[kind].statuses === "claim" && !CLAIM_STATUSES.includes(status))
-    problem(file, `status ${status} is not one of ${CLAIM_STATUSES.join(", ")}`);
+    problem(file, `status ${status} is not one of ${CLAIM_STATUSES.join(", ")}`, "STATUS-1");
   if (KINDS[kind].statuses === "evidence" && !EVIDENCE_STATUSES.includes(status))
-    problem(file, `status ${status} is not one of ${EVIDENCE_STATUSES.join(", ")}`);
+    problem(file, `status ${status} is not one of ${EVIDENCE_STATUSES.join(", ")}`, "STATUS-21");
   const isSup = status === "superseded" || ((kind === "BLD" || kind === "SRC") && superseded.length > 0);
   if (status === "superseded" && superseded.length === 0)
-    problem(file, "a superseded entry names what replaced or disproved it in superseded_by");
+    problem(file, "a superseded entry names what replaced or disproved it in superseded_by", "IDENTIFIERS-7");
   if (status && status !== "superseded" && superseded.length > 0)
-    problem(file, "superseded_by must be empty unless the status is superseded");
+    problem(file, "superseded_by must be empty unless the status is superseded", "ENTRY-TYPES-4");
   checkResolves(file, superseded, "superseded_by");
   for (const s of superseded) {
     const k = kindOf(s);
@@ -1172,7 +1196,7 @@ for (const [id, e] of entries) {
           : kind === "BUG"
             ? true
             : k !== "SRC" && k !== "BLD";
-    if (!ok) problem(file, `superseded_by may not name ${s}`);
+    if (!ok) problem(file, `superseded_by may not name ${s}`, "IDENTIFIERS-7");
   }
 
   if (kind !== "BLD" && kind !== "SRC") {
@@ -1188,18 +1212,18 @@ for (const [id, e] of entries) {
     const linkFields = ["builds", "evidence", "conflicting", "related"];
     for (const f of linkFields)
       for (const t of asList(meta[f]))
-        if (entries.has(t) && isSuperseded(t)) problem(file, `${f} cites ${t}, which is superseded`);
+        if (entries.has(t) && isSuperseded(t)) problem(file, `${f} cites ${t}, which is superseded`, "STATUS-17");
     for (const loc of asList(meta.locations))
       if (loc && entries.has(loc.build) && isSuperseded(loc.build))
-        problem(file, `a location names ${loc.build}, which is superseded`);
+        problem(file, `a location names ${loc.build}, which is superseded`, "STATUS-17");
   }
 
   if (["FND", "EXP"].includes(kind)) {
     const rep = asList(meta.reproduced_by);
     if (status === "reproduced" && rep.every((p: Yaml) => p === meta.recorded_by))
-      problem(file, "a reproduced entry names someone other than recorded_by in reproduced_by");
+      problem(file, "a reproduced entry names someone other than recorded_by in reproduced_by", "STATUS-21");
     if (status !== "reproduced" && rep.length > 0)
-      problem(file, "reproduced_by must be empty unless the status is reproduced");
+      problem(file, "reproduced_by must be empty unless the status is reproduced", "STATUS-21");
     if (typeof meta.recorded_by !== "string" || !meta.recorded_by)
       problem(file, "recorded_by must be a GitHub username");
   }
@@ -1286,7 +1310,7 @@ for (const [id, e] of entries) {
 
   if (kind === "EXP") {
     const builds = asList(meta.builds);
-    if (builds.length !== 1) problem(file, "an experiment lists exactly one build");
+    if (builds.length !== 1) problem(file, "an experiment lists exactly one build", "ENTRY-TYPES-7");
     const fixture = meta.fixture && join(specDir, "experiments", meta.fixture);
     if (!fixture || !existsSync(fixture)) problem(file, `fixture ${meta.fixture} does not exist`);
     else {
@@ -1353,10 +1377,11 @@ for (const [id, e] of entries) {
         const f = entries.get(x);
         if (!f) continue;
         if (f.kind !== "FND" || f.meta.method !== "static")
-          problem(file, `complete_reading may hold only static findings, not ${x}`);
-        else if (!evidence.includes(x)) problem(file, `complete_reading names ${x}; list it in evidence as well`);
+          problem(file, `complete_reading may hold only static findings, not ${x}`, "STATUS-4");
+        else if (!evidence.includes(x))
+          problem(file, `complete_reading names ${x}; list it in evidence as well`, "STATUS-4");
         else if (!asList(f.meta.builds).includes(first))
-          problem(file, `complete_reading names ${x}, which does not list the first build ${first}`);
+          problem(file, `complete_reading names ${x}, which does not list the first build ${first}`, "STATUS-4");
       }
     }
     for (const x of evidence)
@@ -1364,17 +1389,19 @@ for (const [id, e] of entries) {
         problem(file, `evidence may hold only findings, experiments and sources, not ${x}`);
     for (const x of conflicting)
       if (!["FND", "EXP"].includes(kindOf(x)))
-        problem(file, `conflicting may hold only findings and experiments, not ${x}`);
+        problem(file, `conflicting may hold only findings and experiments, not ${x}`, "ENTRY-TYPES-5");
     if (conflicting.length > 0 && status !== "disputed")
-      problem(file, "conflicting must be empty unless the status is disputed");
+      problem(file, "conflicting must be empty unless the status is disputed", "ENTRY-TYPES-5");
     for (const x of related)
-      if (!RELATED_KINDS[kind].includes(kindOf(x))) problem(file, `related may not link to ${x}`);
+      if (!RELATED_KINDS[kind].includes(kindOf(x))) problem(file, `related may not link to ${x}`, "ENTRY-TYPES-6");
     for (const s of split) {
       const other = entries.get(s);
       if (!other) continue;
-      if (!asList(other.meta.split_with).includes(id)) problem(file, `${s} does not name ${id} back in split_with`);
+      if (!asList(other.meta.split_with).includes(id))
+        problem(file, `${s} does not name ${id} back in split_with`, "ENTRY-TYPES-8");
       for (const b of asList(meta.builds))
-        if (asList(other.meta.builds).includes(b)) problem(file, `${s} is split from this entry but also lists ${b}`);
+        if (asList(other.meta.builds).includes(b))
+          problem(file, `${s} is split from this entry but also lists ${b}`, "ENTRY-TYPES-8");
     }
     if (status !== "superseded") {
       const facts = evidenceFacts(e);
@@ -1384,7 +1411,8 @@ for (const [id, e] of entries) {
           const covered = evidence.some(
             (x) => ["FND", "EXP"].includes(kindOf(x)) && asList(entries.get(x)?.meta.builds).includes(b),
           );
-          if (!covered) problem(file, `lists ${b}, but no finding or experiment it cites lists that build`);
+          if (!covered)
+            problem(file, `lists ${b}, but no finding or experiment it cites lists that build`, "ENTRY-TYPES-7");
         }
       }
     }
@@ -1772,11 +1800,13 @@ for (const [id, e] of entries) {
     problem(
       file,
       "another rule may interrupt this procedure (# may run:), so emulated calls alone cannot establish it",
+      "STATUS-15",
     );
   if (asList(meta.complete_reading).length > 0 && /# may run: RULE-/.test(e.code!))
     problem(
       file,
       "another rule may interrupt this procedure (# may run:), so a complete reading cannot establish it; leave complete_reading empty",
+      "STATUS-15",
     );
   for (const x of idsIn(code)) if (!entries.has(x)) problem(file, `procedure names ${x}, which does not exist`);
   for (const m of code.matchAll(/\bemit\s+([A-Za-z_][A-Za-z0-9_]*)/g))
@@ -1970,7 +2000,7 @@ for (const [id, e] of entries) {
   while (stack.length) {
     const x = stack.pop()!;
     if (x === id) {
-      problem(e.file, "its superseded_by links lead back to it");
+      problem(e.file, "its superseded_by links lead back to it", "IDENTIFIERS-7");
       break;
     }
     if (seen.has(x) || !entries.has(x)) continue;
@@ -2852,7 +2882,8 @@ function codeComments(source: string, javascript: boolean): CodeLine[] {
     for (const p of listing.split("\n")) {
       const m =
         /^spec\/(?:builds|sources|formats|rules|findings|experiments|bugs|screens)\/([A-Z]+-[A-Z0-9.-]+)\.md$/.exec(p);
-      if (m && !entries.has(m[1])) problem(null, `${m[1]} exists at ${base} and has been deleted or renamed`);
+      if (m && !entries.has(m[1]))
+        problem(null, `${m[1]} exists at ${base} and has been deleted or renamed`, "IDENTIFIERS-6");
       const d = /^deviations\/(DEV-[A-Z0-9]+-\d+)\.md$/.exec(p);
       if (d && !deviations.has(d[1])) problem(null, `${d[1]} exists at ${base} and has been deleted or renamed`);
     }
@@ -2873,7 +2904,8 @@ function codeComments(source: string, javascript: boolean): CodeLine[] {
     const oldAreaTable = oldAreaSection && tables(oldAreaSection.text)[0];
     for (const row of (oldAreaTable || undefined)?.rows ?? []) {
       const a = row[0].replaceAll("`", "");
-      if (!areas.includes(a)) problem(null, `area ${a} exists at ${base} and has been removed or renamed`);
+      if (!areas.includes(a))
+        problem(null, `area ${a} exists at ${base} and has been removed or renamed`, "IDENTIFIERS-5");
     }
     // A base from before the deviation log became a directory keeps its deviations in DEVIATIONS.md.
     const oldDev = show("DEVIATIONS.md");
@@ -3153,6 +3185,10 @@ const unique = [...new Set(problems)];
 if (unique.length) {
   for (const p of unique) console.error(p);
   console.error(`\n${unique.length} problem(s) in ${entries.size} spec entries.`);
+  if (citedRule)
+    console.error(
+      "A label in brackets, such as [STATUS-14], names the rule of the documentation standard that the problem breaks. The standard opens it with the heading ###### STATUS-14, anchored at #status-14.",
+    );
   process.exit(1);
 }
 console.log(

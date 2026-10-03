@@ -54,6 +54,27 @@ test("a missing section is reported", (t) => {
   assert.match(output, /RULE-SCORE-001\.md: sections must be .*Edge cases/);
 });
 
+test("a problem that breaks a numbered rule names the rule", (t) => {
+  const root = broken(t, (r) =>
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "## Edge cases\n\nNone known.\n", "## Edge cases\n\n"),
+  );
+  const { status, output } = run(root, "--check");
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /RULE-SCORE-001\.md: section Edge cases is empty; write None known\. or None\. \[ENTRY-TYPES-2\]$/m,
+  );
+  assert.match(output, /names the rule of the documentation standard that the problem breaks/);
+});
+
+test("a problem that no numbered rule covers has no label and no note about labels", (t) => {
+  const root = broken(t, (r) => writeFileSync(join(r, "spec", "index", "by-kind.md"), "stale\n"));
+  const { output } = run(root, "--check");
+  assert.match(output, /spec\/index\/by-kind\.md: is stale/);
+  assert.doesNotMatch(output, /\[[A-Z]+(-[A-Z]+)*-\d+\]/);
+  assert.doesNotMatch(output, /names the rule of the documentation standard/);
+});
+
 test("a data path in the wrong case is reported", (t) => {
   const root = broken(t, (r) =>
     replaceIn(r, "spec/formats/FMT-SCORE-001.md", "`DATA/SCORES.BIN` holds", "`DATA/scores.bin` holds"),
