@@ -25,7 +25,9 @@ This repository publishes the shared tooling that clean-room game restorations c
   unsupported instruction is reported as such. It never becomes a negative or a proof. A query with
   controls fails when a control is missed.
 - Migrate cleanly. A rename or removal ships without aliases or shims, with a major release label or
-  changeset and an entry in [the migration guide](docs/migrating-to-scientific-method.md).
+  changeset and an entry in [the migration guide](docs/migrating-to-scientific-method.md), or for
+  the .NET runtime packages in the migrations of
+  [the shared runtime libraries guide](docs/runtime-libraries.md).
 - No handwritten instruction semantics in the engine
   ([ADR 0003](docs/decisions/0003-established-instruction-semantics.md)). Values, flags and branch
   conditions come from pypcode's p-code (`x86/pcode.py`, `x86/pcode_backend.py`). A change may not
@@ -73,7 +75,9 @@ Update in the same PR:
 - **Disc archiver.** Its README's backend and format tables, and `schemas/disc-profile.schema.json`
   with `profile.py` for a profile field.
 - **Package READMEs**, for user-visible behaviour: options, exit codes, the exported API.
-- **The migration guide**, when downstream projects have to change something.
+- **The migration guide**, when downstream projects have to change something. Changes to the
+  .NET runtime packages go in the migrations of
+  [the shared runtime libraries guide](docs/runtime-libraries.md).
 - **[The implementation plan](docs/IMPLEMENTATION-PLAN.md)**, for work that takes several PRs. Add
   a section stating the outcome, the tests and the exit condition, update its status line as slices
   merge, and delete it once the exit condition is met.
