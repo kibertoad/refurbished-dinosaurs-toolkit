@@ -298,6 +298,11 @@ review:
 The tests in `packages/standard-checker/test/` run the checker over a small fixture restoration and
 over broken copies of it.
 
+The checker's entry point is `packages/standard-checker/src/standard-checker.ts`. It reads the
+options and runs the phases in `src/load/`, `src/checks/` and `src/generate/` in a fixed order, so
+problems are always reported in the same order. The standard's kinds, sections, fields and limits
+are in `src/standard.ts`.
+
 ## Version 1 evidence locations and historical rules
 
 A superseded rule keeps its Procedure text for history. Its declarations do
@@ -382,5 +387,5 @@ left to review.
 A file in any other format fails the manifest check, and so does a packed file whose unpacked
 form is in any other format. Before such a file is documented, the Standard must decide how
 locations in that format are given and record that decision. Only then is the format added to
-the `LOCATIONS` table in `packages/standard-checker/src/standard-checker.ts` and to this table. These rules
+the `LOCATIONS` table in `packages/standard-checker/src/standard.ts` and to this table. These rules
 implement Standard v1.
