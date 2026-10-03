@@ -40,10 +40,13 @@ public sealed class RleVideoSurface
     /// of <c>(count, value)</c> runs and the four escape forms
     /// <c>00 00</c> (end of line), <c>00 01</c> (end of bitmap),
     /// <c>00 02 dx dy</c> (delta), and <c>00 nn</c> followed by <c>nn</c>
-    /// literal indices padded to an even count.
+    /// literal indices padded to an even count. An empty payload (an AVI
+    /// dropped frame) leaves the surface unchanged.
     /// </summary>
     public void DecodeFrame(ReadOnlySpan<byte> frame)
     {
+        if (frame.IsEmpty)
+            return;
         int x = 0;
         int y = 0;
         int i = 0;

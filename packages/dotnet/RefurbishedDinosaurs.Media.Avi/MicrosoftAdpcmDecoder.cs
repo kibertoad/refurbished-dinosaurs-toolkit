@@ -25,7 +25,6 @@ public sealed class MicrosoftAdpcmStream
 
     private readonly int[] _coefficient1;
     private readonly int[] _coefficient2;
-    private readonly ChannelState[] _states;
 
     /// <summary>
     /// Prepares a decoder for one audio stream. The format must be Microsoft
@@ -71,7 +70,6 @@ public sealed class MicrosoftAdpcmStream
             throw new InvalidDataException(
                 $"ADPCM block align {BlockAlign} and samples per block {SamplesPerBlock} disagree " +
                 $"(the blocks hold {nibblesPerChannel + 2} samples per channel).");
-        _states = new ChannelState[Channels];
     }
 
     /// <summary>The channel count, 1 or 2.</summary>
@@ -95,24 +93,32 @@ public sealed class MicrosoftAdpcmStream
     /// </summary>
     public short[] DecodeBlock(ReadOnlySpan<byte> block)
     {
+        var samples = new short[SamplesPerBlock * Channels];
+        DecodeBlock(block, samples);
+        return samples;
+    }
+
+    private void DecodeBlock(ReadOnlySpan<byte> block, Span<short> samples)
+    {
         if (block.Length != BlockAlign)
             throw new InvalidDataException($"ADPCM block is {block.Length} bytes, expected {BlockAlign}.");
         int preamble = 7 * Channels;
-        var samples = new short[SamplesPerBlock * Channels];
+        // Every block carries its own predictor, step size and history, so no state outlives it.
+        Span<ChannelState> states = stackalloc ChannelState[Channels];
         for (int channel = 0; channel < Channels; channel++)
         {
             int predictor = block[channel];
             if ((uint)predictor >= _coefficient1.Length)
                 throw new InvalidDataException($"ADPCM predictor {predictor} is outside the coefficient table.");
             int headerDelta = BinaryPrimitives.ReadUInt16LittleEndian(block[(Channels + channel * 2)..]);
-            _states[channel] = new ChannelState(
+            states[channel] = new ChannelState(
                 _coefficient1[predictor],
                 _coefficient2[predictor],
                 headerDelta,
                 BinaryPrimitives.ReadInt16LittleEndian(block[(Channels * 3 + channel * 2)..]),
                 BinaryPrimitives.ReadInt16LittleEndian(block[(Channels * 5 + channel * 2)..]));
-            samples[channel] = (short)_states[channel].Sample2;
-            samples[Channels + channel] = (short)_states[channel].Sample1;
+            samples[channel] = (short)states[channel].Sample2;
+            samples[Channels + channel] = (short)states[channel].Sample1;
         }
 
         int position = preamble;
@@ -122,21 +128,20 @@ public sealed class MicrosoftAdpcmStream
             int byteValue = block[position++];
             if (Channels == 1)
             {
-                ref var mono = ref _states[0];
+                ref var mono = ref states[0];
                 samples[sampleIndex++] = (short)mono.Decode(byteValue >> 4);
                 if (sampleIndex < SamplesPerBlock)
                     samples[sampleIndex++] = (short)mono.Decode(byteValue & 0x0f);
             }
             else
             {
-                ref var left = ref _states[0];
-                ref var right = ref _states[1];
+                ref var left = ref states[0];
+                ref var right = ref states[1];
                 samples[sampleIndex * 2] = (short)left.Decode(byteValue >> 4);
                 samples[sampleIndex * 2 + 1] = (short)right.Decode(byteValue & 0x0f);
                 sampleIndex++;
             }
         }
-        return samples;
     }
 
     /// <summary>
@@ -152,23 +157,24 @@ public sealed class MicrosoftAdpcmStream
         foreach (var chunk in chunks)
         {
             ArgumentNullException.ThrowIfNull(chunk);
+            if (chunk.Length % stream.BlockAlign != 0)
+                throw new InvalidDataException(
+                    $"ADPCM chunk is {chunk.Length} bytes, not a whole number of {stream.BlockAlign}-byte blocks.");
             totalSamples += (long)(chunk.Length / stream.BlockAlign) * stream.SamplesPerBlock * stream.Channels;
             if (totalSamples > 32 * 1024 * 1024)
                 throw new InvalidDataException("ADPCM decoded output exceeds 64 MiB.");
         }
-        var samples = new List<short[]>();
+        var decoded = new short[totalSamples];
         int blockSamples = stream.SamplesPerBlock * stream.Channels;
+        int written = 0;
         foreach (var chunk in chunks)
         {
-            if (chunk.Length % stream.BlockAlign != 0)
-                throw new InvalidDataException(
-                    $"ADPCM chunk is {chunk.Length} bytes, not a whole number of {stream.BlockAlign}-byte blocks.");
             for (int offset = 0; offset < chunk.Length; offset += stream.BlockAlign)
-                samples.Add(stream.DecodeBlock(chunk.AsSpan(offset, stream.BlockAlign)));
+            {
+                stream.DecodeBlock(chunk.AsSpan(offset, stream.BlockAlign), decoded.AsSpan(written, blockSamples));
+                written += blockSamples;
+            }
         }
-        var decoded = new short[samples.Count * blockSamples];
-        for (int i = 0; i < samples.Count; i++)
-            samples[i].CopyTo(decoded, i * blockSamples);
         return decoded;
     }
 

@@ -43,11 +43,19 @@ public sealed record AviVideo(
     /// <summary>The <c>BI_RLE8</c> compression tag.</summary>
     public const uint Rle8Compression = 1;
 
+    /// <summary>The <c>cvid</c> compression FourCC, lower case, as a little-endian tag.</summary>
+    private const uint CinepakFourCc = 0x64697663;
+
     /// <summary>Whether the video stream is 8-bit Microsoft RLE.</summary>
     public bool IsRle8 => Compression == Rle8Compression;
 
-    /// <summary>Whether the video stream is Cinepak (<c>cvid</c>).</summary>
-    public bool IsCinepak => string.Equals(Codec, "cvid", StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// Whether the video stream is Cinepak: the stream handler or the bitmap
+    /// compression is <c>cvid</c>, in either case.
+    /// </summary>
+    public bool IsCinepak =>
+        string.Equals(Codec, "cvid", StringComparison.OrdinalIgnoreCase)
+        || (Compression | 0x20202020u) == CinepakFourCc;
 
     /// <summary>The declared frame rate in frames per second, or 0 when undeclared.</summary>
     public double FramesPerSecond => MicrosecondsPerFrame > 0 ? 1_000_000.0 / MicrosecondsPerFrame : 0;
@@ -137,7 +145,7 @@ public static class AviReader
         if (moviStart < 0)
             throw new InvalidDataException("AVI file has no movi list.");
 
-        int videoStream = FindVideoStream(streamTypes);
+        int videoStream = FindStream(streamTypes, "vids");
         if (videoStream < 0)
             throw new InvalidDataException("AVI file has no video stream.");
 
@@ -188,7 +196,7 @@ public static class AviReader
         if (frames.Count == 0)
             throw new InvalidDataException("AVI file has no video frames.");
 
-        return new AviVideo(
+        var video = new AviVideo(
             width,
             height,
             (int)microsecondsPerFrame,
@@ -199,6 +207,10 @@ public static class AviReader
             frames,
             audio,
             audioChunks);
+        // Palettized Cinepak codebooks hold palette indices, which CinepakSurface would draw as gray.
+        if (video.IsCinepak && palette is not null)
+            throw new NotSupportedException("AVI 8-bit palettized Cinepak is not supported.");
+        return video;
     }
 
     private sealed record HeaderList(
@@ -295,14 +307,6 @@ public static class AviReader
         formats.Add(format ?? []);
     }
 
-    private static int FindVideoStream(IReadOnlyList<string> types)
-    {
-        for (int i = 0; i < types.Count; i++)
-            if (types[i] == "vids")
-                return i;
-        return -1;
-    }
-
     private static int FindStream(IReadOnlyList<string> types, string type)
     {
         for (int i = 0; i < types.Count; i++)
@@ -327,12 +331,17 @@ public static class AviReader
         if (compression == AviVideo.Rle8Compression && bits != 8)
             throw new InvalidDataException("RLE8 requires an 8-bit bitmap.");
         byte[]? palette = null;
-        if (bits == 8 && format.Length < 40 + 256 * 4)
-            throw new InvalidDataException("AVI indexed video requires a complete 256-entry palette.");
         if (bits == 8)
         {
+            // biClrUsed: 0 means a full 256-entry table; entries past it stay black.
+            uint colorsUsed = BinaryPrimitives.ReadUInt32LittleEndian(span[32..]);
+            if (colorsUsed > 256)
+                throw new InvalidDataException($"AVI indexed video declares {colorsUsed} palette entries, above 256.");
+            int entries = colorsUsed == 0 ? 256 : (int)colorsUsed;
+            if (format.Length < 40 + entries * 4)
+                throw new InvalidDataException($"AVI indexed video requires its complete {entries}-entry palette.");
             palette = new byte[256 * 3];
-            for (int i = 0; i < 256; i++)
+            for (int i = 0; i < entries; i++)
             {
                 palette[i * 3] = format[40 + i * 4 + 2];      // red
                 palette[i * 3 + 1] = format[40 + i * 4 + 1];  // green
@@ -364,18 +373,13 @@ public static class AviReader
             extra);
     }
 
-    private static bool MatchesChunkId(ReadOnlySpan<byte> id, int streamIndex, string suffix)
-    {
-        if (id.Length != 4)
-            return false;
-        if (streamIndex < 0 || streamIndex > 99)
-            return false;
-        string expected = streamIndex.ToString("D2", System.Globalization.CultureInfo.InvariantCulture) + suffix;
-        return id[0] == (byte)expected[0]
-            && id[1] == (byte)expected[1]
-            && id[2] == (byte)expected[2]
-            && id[3] == (byte)expected[3];
-    }
+    private static bool MatchesChunkId(ReadOnlySpan<byte> id, int streamIndex, string suffix) =>
+        id.Length == 4
+        && streamIndex is >= 0 and <= 99
+        && id[0] == (byte)('0' + streamIndex / 10)
+        && id[1] == (byte)('0' + streamIndex % 10)
+        && id[2] == (byte)suffix[0]
+        && id[3] == (byte)suffix[1];
 
     private static string FourCc(ReadOnlySpan<byte> value)
     {

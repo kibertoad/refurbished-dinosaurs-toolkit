@@ -95,5 +95,4 @@ the upload skips the existing version, and the tag and release are created.
 
 New runtime package IDs need NuGet trusted-publishing coverage before the first release. The
 workflow packs and pushes every packable project in RefurbishedDinosaurs.slnx; its existing
-scientific-method-dotnet tag series remains the shared version source. This PR does not publish
-packages or change account-level trusted-publishing configuration.
+scientific-method-dotnet tag series remains the shared version source.

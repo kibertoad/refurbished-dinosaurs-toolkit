@@ -55,6 +55,32 @@ public sealed class AviReaderTests
     }
 
     [Fact]
+    public void ReportsCinepakByCompressionWhenTheHandlerIsBlank()
+    {
+        var avi = AviReader.Decode(BuildAvi(4, 4, [new byte[] { 1 }], [], null, codec: "", compression: 0x44495643, bits: 24));
+
+        Assert.True(avi.IsCinepak);
+    }
+
+    [Fact]
+    public void RejectsPalettizedCinepak()
+    {
+        Assert.Throws<NotSupportedException>(() => AviReader.Decode(
+            BuildAvi(4, 4, [new byte[] { 1 }], [], BuildPalette(), codec: "cvid", compression: 0x64697663, bits: 8)));
+    }
+
+    [Fact]
+    public void ReadsAPaletteOfItsDeclaredUsedColorCount()
+    {
+        var palette = BuildPalette();
+        var avi = AviReader.Decode(BuildAvi(4, 4, [new byte[] { 1 }], [], palette, colorsUsed: 2));
+
+        Assert.Equal(palette[..6], avi.Palette![..6]);
+        Assert.All(avi.Palette![6..], value => Assert.Equal(0, value));
+        Assert.Throws<InvalidDataException>(() => AviReader.Decode(BuildAvi(4, 4, [new byte[] { 1 }], [], palette, colorsUsed: 257)));
+    }
+
+    [Fact]
     public void RejectsNonAviSource()
     {
         Assert.Throws<InvalidDataException>(() => AviReader.Decode([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]));
@@ -159,6 +185,7 @@ public sealed class AviReaderTests
         string codec = "RLE ",
         uint compression = 1,
         int bits = 8,
+        int colorsUsed = 0,
         bool includeVideo = true,
         bool includeAudio = true,
         bool includeMovi = true)
@@ -166,7 +193,7 @@ public sealed class AviReaderTests
         var header = new List<byte>();
         header.AddRange(Chunk("avih", BuildAvih(width, height, frames.Count)));
         if (includeVideo)
-            header.AddRange(List("strl", VideoStream(codec, width, height, bits, compression, palette)));
+            header.AddRange(List("strl", VideoStream(codec, width, height, bits, compression, palette, colorsUsed)));
         if (includeAudio)
             header.AddRange(List("strl", AudioStream()));
 
@@ -199,11 +226,11 @@ public sealed class AviReaderTests
         return body;
     }
 
-    private static byte[] VideoStream(string codec, int width, int height, int bits, uint compression, byte[]? palette)
+    private static byte[] VideoStream(string codec, int width, int height, int bits, uint compression, byte[]? palette, int colorsUsed)
     {
         var stream = new List<byte>();
         stream.AddRange(Chunk("strh", BuildStrh("vids", codec)));
-        stream.AddRange(Chunk("strf", BuildBitmapInfo(width, height, bits, compression, palette)));
+        stream.AddRange(Chunk("strf", BuildBitmapInfo(width, height, bits, compression, palette, colorsUsed)));
         return stream.ToArray();
     }
 
@@ -230,9 +257,10 @@ public sealed class AviReaderTests
         return body;
     }
 
-    private static byte[] BuildBitmapInfo(int width, int height, int bits, uint compression, byte[]? palette)
+    private static byte[] BuildBitmapInfo(int width, int height, int bits, uint compression, byte[]? palette, int colorsUsed)
     {
-        int length = 40 + (palette is not null ? 256 * 4 : 0);
+        int entries = colorsUsed is > 0 and < 256 ? colorsUsed : 256;
+        int length = 40 + (palette is not null ? entries * 4 : 0);
         var body = new byte[length];
         BinaryPrimitives.WriteUInt32LittleEndian(body.AsSpan(0), 40);
         BinaryPrimitives.WriteInt32LittleEndian(body.AsSpan(4), width);
@@ -241,9 +269,10 @@ public sealed class AviReaderTests
         BinaryPrimitives.WriteUInt16LittleEndian(body.AsSpan(14), (ushort)bits);
         BinaryPrimitives.WriteUInt32LittleEndian(body.AsSpan(16), compression);
         BinaryPrimitives.WriteUInt32LittleEndian(body.AsSpan(20), (uint)(width * height));
+        BinaryPrimitives.WriteUInt32LittleEndian(body.AsSpan(32), (uint)colorsUsed);
         if (palette is not null)
         {
-            for (int i = 0; i < 256; i++)
+            for (int i = 0; i < entries; i++)
             {
                 body[40 + i * 4] = palette[i * 3 + 2];
                 body[40 + i * 4 + 1] = palette[i * 3 + 1];

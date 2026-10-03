@@ -78,6 +78,18 @@ public sealed class FliTests
         Assert.Throws<InvalidDataException>(() => new FliSurface(4, 1).DecodeFrame(broken));
     }
 
+    [Fact]
+    public void DisposesAnOwnedSourceThatFailsValidation()
+    {
+        var owned = new MemoryStream(new byte[16]);
+        Assert.Throws<InvalidDataException>(() => new FliMovieStream(owned));
+        Assert.False(owned.CanRead);
+
+        var borrowed = new MemoryStream(new byte[16]);
+        Assert.Throws<InvalidDataException>(() => new FliMovieStream(borrowed, leaveOpen: true));
+        Assert.True(borrowed.CanRead);
+    }
+
     private static byte[] Movie(int declared, params byte[][] records)
     {
         var header = new byte[128];

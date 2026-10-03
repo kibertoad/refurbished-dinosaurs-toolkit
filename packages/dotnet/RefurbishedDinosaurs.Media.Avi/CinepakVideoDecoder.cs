@@ -41,9 +41,15 @@ public sealed class CinepakSurface
     /// <summary>The display height in pixels, before 4-pixel padding.</summary>
     public int DisplayHeight { get; }
 
-    /// <summary>Applies one compressed Cinepak frame onto the surface.</summary>
+    /// <summary>
+    /// Applies one compressed Cinepak frame onto the surface. An empty payload
+    /// (an AVI dropped frame) and a frame with no strips leave the surface
+    /// unchanged.
+    /// </summary>
     public void DecodeFrame(ReadOnlySpan<byte> frame)
     {
+        if (frame.IsEmpty)
+            return;
         if (frame.Length < 10)
             throw new InvalidDataException("Cinepak frame is shorter than its 10-byte header.");
 
@@ -51,7 +57,7 @@ public sealed class CinepakSurface
             throw new InvalidDataException("Cinepak frame length or dimensions disagree with the surface.");
         int frameFlags = frame[0];
         int stripCount = ReadU16(frame, 8);
-        if (stripCount is <= 0 or > MaxStrips)
+        if (stripCount > MaxStrips)
             throw new InvalidDataException("Cinepak strip count is invalid.");
 
         int position = 10;
@@ -118,7 +124,8 @@ public sealed class CinepakSurface
 
     private void DecodeStrip(ReadOnlySpan<byte> body, Strip strip, int x1, int y1, int x2, int y2)
     {
-        if (x2 > _width || y2 > _height || x1 >= x2 || y1 >= y2 || (x1 & 3) != 0 || (y1 & 3) != 0 || (x2 & 3) != 0 || (y2 & 3) != 0)
+        // The far edges may be the unpadded display size; Put clips the 4x4 blocks to the padded surface.
+        if (x2 > _width || y2 > _height || x1 >= x2 || y1 >= y2 || (x1 & 3) != 0 || (y1 & 3) != 0)
             throw new InvalidDataException($"Cinepak strip bounds ({x1},{y1})-({x2},{y2}) are outside the surface.");
 
         int position = 0;

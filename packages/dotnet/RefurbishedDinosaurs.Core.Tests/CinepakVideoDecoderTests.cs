@@ -50,6 +50,35 @@ public sealed class CinepakVideoDecoderTests
     }
 
     [Fact]
+    public void LeavesTheSurfaceUnchangedForEmptyAndStriplessFrames()
+    {
+        var surface = new CinepakSurface(4, 4);
+        surface.DecodeFrame(BuildFrame(includeCodebook: true, [0, 1, 0, 1]));
+        var before = surface.ToRgba();
+
+        // An AVI dropped frame is an empty chunk; a header-only frame declares no strips.
+        surface.DecodeFrame([]);
+        surface.DecodeFrame([1, 0, 0, 10, 0, 4, 0, 4, 0, 0]);
+
+        Assert.Equal(before, surface.ToRgba());
+    }
+
+    [Fact]
+    public void DecodesAStripWhoseRightEdgeIsTheUnpaddedWidth()
+    {
+        var surface = new CinepakSurface(3, 4);
+        var frame = BuildFrame(includeCodebook: true, [0, 1, 0, 1]);
+        frame[5] = 3;  // frame width
+        frame[21] = 3; // strip right edge
+        surface.DecodeFrame(frame);
+
+        var rgba = surface.ToRgba();
+        AssertPixel(rgba, 3, 0, 0, 10);
+        AssertPixel(rgba, 3, 2, 0, 50);
+        AssertPixel(rgba, 3, 2, 1, 70);
+    }
+
+    [Fact]
     public void RejectsFrameWithoutHeader()
     {
         var surface = new CinepakSurface(4, 4);

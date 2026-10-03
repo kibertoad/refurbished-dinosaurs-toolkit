@@ -45,6 +45,17 @@ public sealed class RleVideoDecoderTests
     }
 
     [Fact]
+    public void LeavesTheSurfaceUnchangedForAnEmptyFrame()
+    {
+        var surface = new RleVideoSurface(2, 1);
+        surface.DecodeFrame([1, 4, 0, 1]);
+        // An AVI dropped frame is an empty chunk.
+        surface.DecodeFrame([]);
+
+        Assert.Equal(new byte[] { 4, 0 }, surface.Indices);
+    }
+
+    [Fact]
     public void FlipsToDisplayOrderInRgba()
     {
         var surface = new RleVideoSurface(2, 2);

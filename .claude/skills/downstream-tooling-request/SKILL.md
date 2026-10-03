@@ -8,7 +8,8 @@ description: Handle a request from a restoration that consumes the toolkit's pac
 The consumers are the restorations that install the published packages:
 `@scientific-method/executable-reader` and `@scientific-method/standard-checker` from npm,
 `scientific-method-engine` from PyPI (which includes the Ghidra scripts), and
-`ScientificMethod.Core` and `ScientificMethod.LegacyFormats` from NuGet. Older restorations may still
+`RefurbishedDinosaurs.Core`, `RefurbishedDinosaurs.LegacyFormats` and the
+`RefurbishedDinosaurs.Media.*` packages from NuGet. Older restorations may still
 carry vendored copies pinned by a toolkit commit (`tools/evidence/x86-lock.json`, a copied
 `check-documentation.mjs`, copied Ghidra scripts, or `Toad.Discovery.*` source).
 

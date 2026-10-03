@@ -8,7 +8,7 @@
     <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900</WarningsNotAsErrors>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
   </PropertyGroup>
-  <!-- Package metadata shared by RefurbishedDinosaurs.Core and RefurbishedDinosaurs.LegacyFormats, which are
+  <!-- Package metadata shared by the six RefurbishedDinosaurs runtime packages, which are
        released together under one version. The committed version is a placeholder: the release
        workflow passes -p:Version from the scientific-method-dotnet@ tag it creates. -->
   <PropertyGroup>
