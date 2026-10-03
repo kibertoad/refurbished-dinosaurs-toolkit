@@ -17,6 +17,9 @@ public sealed class InputState<TButton> where TButton : notnull
         _previous = new(previous, comparer);
     }
 
+    /// <summary>The comparer that identifies buttons in both snapshots.</summary>
+    public IEqualityComparer<TButton> Comparer => _current.Comparer;
+
     /// <summary>Whether a button is held in the current snapshot.</summary>
     public bool IsDown(TButton button) => _current.Contains(button);
     /// <summary>Whether a button became held in this snapshot.</summary>
@@ -27,11 +30,10 @@ public sealed class InputState<TButton> where TButton : notnull
     /// <summary>
     /// Whether the supplied alternatives, read as one OR binding, became held: at least one is held
     /// now and none was held in the previous snapshot. Pressing a second alternative while another
-    /// is still held is not a new press.
+    /// is still held is not a new press. Does not allocate.
     /// </summary>
-    public bool AnyPressed(IEnumerable<TButton> buttons)
+    public bool AnyPressed(ReadOnlySpan<TButton> buttons)
     {
-        ArgumentNullException.ThrowIfNull(buttons);
         var down = false;
         foreach (var button in buttons)
         {

@@ -242,5 +242,6 @@ project. No npm, Python or prepared-config protocol names change.
 ## Shared input primitives
 
 Adapt backend keys/buttons into `Core.Input.InputState` snapshots, retaining game timing
-and focus handling. Build `InputBindings` once for each context. Preserve game-specific rebinding
+and focus handling. Build `InputBindings` once for each context with `InputBindings.Create`, and
+give snapshots the same button comparer as the bindings. Preserve game-specific rebinding
 admission, conflict policy and default controls; alternatives represent OR bindings, not chords.

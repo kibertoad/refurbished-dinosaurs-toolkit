@@ -52,7 +52,10 @@ opposing digital axis inputs cancel. Hosts advance snapshots once per admitted i
 decide focus-loss policy. `InputBindings<TAction,TButton>` owns immutable alternatives, supports
 explicit conflict rejection on rebinding and context overlays. Alternatives are OR bindings: an
 action is pressed when one of them becomes held while none was held before. An overlay replaces
-that action's alternatives. Actions, default keys, valid token admission, analog thresholds,
+that action's alternatives. Build bindings with `InputBindings<TAction,TButton>.Create`, which takes
+any map of button collections, such as `Dictionary<TAction, TButton[]>`. Snapshots queried by
+bindings, and contexts overlaid on them, must use the same comparers; a mismatch throws
+`ArgumentException` instead of missing a press. Pressed queries do not allocate. Actions, default keys, valid token admission, analog thresholds,
 pointer speed, replay timing and text input rules stay in the game. There is no MonoGame
 dependency and no hidden event loop. Build bindings and contexts outside per-frame loops.
 
