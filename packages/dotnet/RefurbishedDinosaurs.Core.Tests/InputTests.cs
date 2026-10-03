@@ -17,6 +17,20 @@ public sealed class InputTests
         Assert.True(state.IsReleased("released"));
         Assert.Equal(0, state.Axis("left", "right"));
         Assert.False(state.IsReleased("missing"));
+        Assert.Equal(-1, state.Axis("left", "missing"));
+        Assert.Equal(1, state.Axis("missing", "left"));
+    }
+
+    [Fact]
+    public void AlternativesShareOnePressedEdge()
+    {
+        var bindings = new InputBindings<string, string>(new Dictionary<string, IEnumerable<string>>
+        { ["fire"] = new[] { "ctrl", "mouse" } });
+        Assert.True(bindings.IsPressed("fire", new(new[] { "ctrl" }, Array.Empty<string>())));
+        Assert.False(bindings.IsPressed("fire", new(new[] { "ctrl", "mouse" }, new[] { "ctrl" })));
+        Assert.False(bindings.IsPressed("fire", new(new[] { "mouse" }, new[] { "ctrl" })));
+        Assert.True(bindings.IsPressed("fire", new(new[] { "ctrl", "mouse" }, Array.Empty<string>())));
+        Assert.False(bindings.IsPressed("missing", new(new[] { "ctrl" }, Array.Empty<string>())));
     }
 
     [Fact]

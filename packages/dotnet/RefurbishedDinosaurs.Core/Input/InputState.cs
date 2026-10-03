@@ -23,12 +23,24 @@ public sealed class InputState<TButton> where TButton : notnull
     public bool IsPressed(TButton button) => _current.Contains(button) && !_previous.Contains(button);
     /// <summary>Whether a button became released in this snapshot.</summary>
     public bool IsReleased(TButton button) => !_current.Contains(button) && _previous.Contains(button);
-    /// <summary>Whether any supplied button became held.</summary>
+
+    /// <summary>
+    /// Whether the supplied alternatives, read as one OR binding, became held: at least one is held
+    /// now and none was held in the previous snapshot. Pressing a second alternative while another
+    /// is still held is not a new press.
+    /// </summary>
     public bool AnyPressed(IEnumerable<TButton> buttons)
     {
         ArgumentNullException.ThrowIfNull(buttons);
-        return buttons.Any(IsPressed);
+        var down = false;
+        foreach (var button in buttons)
+        {
+            if (_previous.Contains(button)) return false;
+            down |= _current.Contains(button);
+        }
+        return down;
     }
+
     /// <summary>Returns negative, zero or positive one; opposing held buttons cancel.</summary>
     public int Axis(TButton negative, TButton positive) => (IsDown(positive) ? 1 : 0) - (IsDown(negative) ? 1 : 0);
 }

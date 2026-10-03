@@ -41,10 +41,20 @@ on an undocumented public member.
 | `IO` | `AtomicFile`, `SafePath` | Atomic writes, and paths from untrusted names that cannot leave their root. |
 | `Imaging` | `IndexedPalette`, `IndexedPaletteDecoder` | 256-colour palettes, including 6-bit VGA values. |
 | `Imaging` | `IndexedPngWriter` | Write 8-bit indexed pixels as a palette PNG. |
+| `Input` | `InputState<TButton>`, `InputBindings<TAction,TButton>` | Held, pressed and released queries over copied button snapshots; immutable OR bindings with rebinding and context overlays. |
 | `Paths` | `RestorationPaths` | Find imported content (portable or per-user) and the settings directory. |
 | `Persistence` | `JsonSettingsStore<T>` | JSON settings with a backup copy and migration. |
 | `Presentation` | `ViewportScaler`, `FixedWidthText` | Fit a fixed resolution into a window and map the mouse back; word-wrap fixed-width text. |
 | `Validation` | `JsonStateDiffer` | List value differences between a reference capture of game state and a restoration's. |
+
+`InputState<TButton>` copies down-button snapshots and answers held, pressed and released queries;
+opposing digital axis inputs cancel. Hosts advance snapshots once per admitted input step and
+decide focus-loss policy. `InputBindings<TAction,TButton>` owns immutable alternatives, supports
+explicit conflict rejection on rebinding and context overlays. Alternatives are OR bindings: an
+action is pressed when one of them becomes held while none was held before. An overlay replaces
+that action's alternatives. Actions, default keys, valid token admission, analog thresholds,
+pointer speed, replay timing and text input rules stay in the game. There is no MonoGame
+dependency and no hidden event loop. Build bindings and contexts outside per-frame loops.
 
 ## RefurbishedDinosaurs.LegacyFormats
 
@@ -57,16 +67,6 @@ on an undocumented public member.
 | `WavePcm16Reader` | 16-bit mono or stereo PCM WAVE files. |
 | `PcxDecoder`, `RawIndexedImageDecoder`, `IndexedImage` | 8-bit RLE PCX, and headerless indexed pixels, with RGBA conversion. |
 | `Rle8BitmapDecoder` | 8-bit BMP (BI_RLE8 or BI_RGB), rewritten as uncompressed BI_RGB. |
-
-## Input primitives
-
-`RefurbishedDinosaurs.Core.Input.InputState<TButton>` copies down-button snapshots and answers
-held, pressed and released queries; opposing digital axis inputs cancel. Hosts advance snapshots
-once per admitted input step and decide focus-loss policy. `InputBindings<TAction,TButton>` owns
-immutable alternatives, supports explicit conflict rejection on rebinding and context overlays.
-An overlay replaces that action's alternatives. Actions, default keys, valid token admission,
-analog thresholds, pointer speed, replay timing and text input rules stay in the game. There is no
-MonoGame dependency and no hidden event loop. Build bindings and contexts outside per-frame loops.
 
 ## Media packages
 

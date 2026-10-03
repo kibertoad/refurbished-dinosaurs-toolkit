@@ -131,12 +131,6 @@ two alternatives from the patterns once the directories are gone; `docs/upstream
    against the vendored copy's revision (reconqueror's `upstream.mjs`) now checks it against that
    version, or drops the check.
 
-## Shared input primitives
-
-Adapt backend keys/buttons into `Core.Input.InputState` snapshots, retaining game timing
-and focus handling. Build `InputBindings` once for each context. Preserve game-specific rebinding
-admission, conflict policy and default controls; alternatives represent OR bindings, not chords.
-
 ## 4. Ghidra scripts
 
 The engine package carries the headless scripts that restorations had copied between themselves.
@@ -244,3 +238,9 @@ failure and missing-media policies remain downstream.
 All runtime packages share the existing scientific-method-dotnet tag series. CI and local
 builds now use packages/dotnet/RefurbishedDinosaurs.slnx and the RefurbishedDinosaurs.Core.Tests
 project. No npm, Python or prepared-config protocol names change.
+
+## Shared input primitives
+
+Adapt backend keys/buttons into `Core.Input.InputState` snapshots, retaining game timing
+and focus handling. Build `InputBindings` once for each context. Preserve game-specific rebinding
+admission, conflict policy and default controls; alternatives represent OR bindings, not chords.
