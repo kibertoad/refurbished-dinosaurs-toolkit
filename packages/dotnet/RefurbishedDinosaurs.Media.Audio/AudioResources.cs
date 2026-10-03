@@ -69,27 +69,32 @@ public sealed class AudioVoices<TVoice> : IDisposable where TVoice : class, IDis
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(voice);
-        if (_voices.Contains(voice)) throw new ArgumentException("Voice is already owned.", nameof(voice));
+        if (_voices.Exists(owned => ReferenceEquals(owned, voice))) throw new ArgumentException("Voice is already owned.", nameof(voice));
         _voices.Add(voice);
     }
 
     /// <summary>
     /// Disposes finished voices. A voice is removed before disposal so it is attempted once; every
-    /// finished voice is attempted even if one fails.
+    /// finished voice is attempted even if one fails. The predicate must not add, reap or dispose voices.
     /// </summary>
     public void Reap(Func<TVoice, bool> isStopped)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(isStopped);
         List<Exception>? failures = null;
-        for (var index = _voices.Count - 1; index >= 0; index--)
+        try
         {
-            if (!isStopped(_voices[index])) continue;
-            var voice = _voices[index];
-            _voices.RemoveAt(index);
-            try { voice.Dispose(); }
-            catch (Exception error) { (failures ??= new()).Add(error); }
+            for (var index = _voices.Count - 1; index >= 0; index--)
+            {
+                if (!isStopped(_voices[index])) continue;
+                var voice = _voices[index];
+                _voices.RemoveAt(index);
+                try { voice.Dispose(); }
+                catch (Exception error) { (failures ??= new()).Add(error); }
+            }
         }
+        // A failing predicate stops the sweep; keep the disposal failures it would otherwise hide.
+        catch (Exception error) when (failures is not null) { failures.Add(error); }
         if (failures is not null) throw new AggregateException(failures);
     }
 

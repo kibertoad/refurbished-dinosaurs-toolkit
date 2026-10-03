@@ -133,6 +133,59 @@ public sealed class AudioPrimitiveTests
         Assert.Equal(1, stopped.Disposals);
     }
 
+    [Fact]
+    public void ReapKeepsDisposalFailuresWhenThePredicateFails()
+    {
+        var failing = new FailingResource(); var pending = new Resource();
+        using var voices = new AudioVoices<IDisposable>();
+        voices.Add(pending); voices.Add(failing);
+        var error = Assert.Throws<AggregateException>(() =>
+            voices.Reap(voice => ReferenceEquals(voice, failing) ? true : throw new TimeoutException()));
+        Assert.Contains(error.InnerExceptions, inner => inner is IOException);
+        Assert.Contains(error.InnerExceptions, inner => inner is TimeoutException);
+    }
+
+    [Fact]
+    public void VoicesAdmitDistinctInstancesThatCompareEqual()
+    {
+        using var voices = new AudioVoices<EqualVoice>();
+        var voice = new EqualVoice();
+        voices.Add(voice);
+        voices.Add(new EqualVoice());
+        Assert.Equal(2, voices.Count);
+        Assert.Throws<ArgumentException>(() => voices.Add(voice));
+    }
+
+    [Fact]
+    public void WriterRejectsRatesWhoseByteRateIsNotRepresentable()
+    {
+        using var bytes = new MemoryStream();
+        Assert.Throws<ArgumentOutOfRangeException>(() => WavePcm16Writer.Write(bytes, Array.Empty<byte>(), 2, int.MaxValue));
+        Assert.Equal(0, bytes.Length);
+    }
+
+    [Fact]
+    public void CddaWaveFlushesItsOutput()
+    {
+        using var source = new MemoryStream(new byte[CddaWave.BytesPerSector]);
+        using var output = new FlushCountingStream();
+        CddaWave.Write(source, output, 0, 1);
+        Assert.Equal(1, output.Flushes);
+    }
+
+    private sealed class FlushCountingStream : MemoryStream
+    {
+        public int Flushes { get; private set; }
+        public override void Flush() { Flushes++; base.Flush(); }
+    }
+
+    private sealed class EqualVoice : IDisposable
+    {
+        public override bool Equals(object? obj) => obj is EqualVoice;
+        public override int GetHashCode() => 0;
+        public void Dispose() { }
+    }
+
     private sealed class FailingResource : IDisposable
     {
         public void Dispose() => throw new IOException();

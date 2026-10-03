@@ -11,7 +11,7 @@ public static class WavePcm16Writer
         ArgumentNullException.ThrowIfNull(destination);
         if (!destination.CanWrite) throw new ArgumentException("Destination must be writable.", nameof(destination));
         if (channels is < 1 or > 2) throw new ArgumentOutOfRangeException(nameof(channels));
-        if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
+        if (sampleRate <= 0 || (long)sampleRate * channels * 2 > uint.MaxValue) throw new ArgumentOutOfRangeException(nameof(sampleRate));
         if (samples.Length % (channels * 2) != 0) throw new ArgumentException("Samples must contain complete frames.", nameof(samples));
         WriteHeader(destination, (uint)samples.Length, channels, sampleRate);
         destination.Write(samples);

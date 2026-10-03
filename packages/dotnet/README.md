@@ -6,7 +6,7 @@
 - `RefurbishedDinosaurs.Core`: dependency-free building blocks for importing, installing and checking
   content from the user's original, plus deterministic randomness, state comparison and display
   helpers.
-- `RefurbishedDinosaurs.LegacyFormats`: PCX, bitmap, optical-disc and PCM WAVE readers.
+- `RefurbishedDinosaurs.LegacyFormats`: PCX, bitmap, optical-disc and PCM WAVE readers, and a PCM WAVE writer.
 - `RefurbishedDinosaurs.Media.Smacker`: SMK containers, palette/video decoding and packed audio.
 - `RefurbishedDinosaurs.Media.Avi`: AVI containers, Cinepak, cumulative RLE8 and Microsoft ADPCM.
 - `RefurbishedDinosaurs.Media.Fli`: AF11 FLI indexing, streaming and indexed frame decoding.
@@ -56,6 +56,8 @@ on an undocumented public member.
 | `CueSheet`, `RawMode1Image`, `Iso9660` | Cue/bin raw disc images and the ISO 9660 file system on their data track. |
 | `CddaWave` | A CD audio track of a raw image, written out as WAVE. |
 | `WavePcm16Reader` | 16-bit mono or stereo PCM WAVE files. |
+| `WavePcm16Stream` | 16-bit mono or stereo PCM WAVE files, indexed and read in frame-aligned buffers without loading the track. |
+| `WavePcm16Writer` | Writes canonical 16-bit mono or stereo PCM WAVE files. |
 | `PcxDecoder`, `RawIndexedImageDecoder`, `IndexedImage` | 8-bit RLE PCX, and headerless indexed pixels, with RGBA conversion. |
 | `Rle8BitmapDecoder` | 8-bit BMP (BI_RLE8 or BI_RGB), rewritten as uncompressed BI_RGB. |
 
@@ -71,6 +73,7 @@ discard the surface after an exception. No decoder promises transactional recove
 | `Media.Smacker` | `SmackerMovieDecoder`, `SmackerMovieStream`, `SmackerVideoDecoder`, `SmackerAudioDecoder`; `DecodePcm16` decodes Huffman-packed 8/16-bit mono/stereo to interleaved signed PCM16. The existing `Decode` returns unsigned 8-bit mono samples. | Sources 256 MiB, dimensions 4096, a million physical frames; packed audio 16 MiB source samples per packet (8-bit widening can produce 32 MiB PCM). Uncompressed and Bink DCT/RDFT audio unsupported. Constant trees can decode without video bits; partial delta palettes keep unmentioned entries. Ring frames are indexed; omit the final ring frame from ordinary playback. |
 | `Media.Avi` | `AviReader.Decode` reads classic RIFF AVI into compressed `AviVideoFrame` payloads, palette and `AviAudioFormat`/audio chunks. `CinepakSurface` and `RleVideoSurface` decode cumulative frames; `MicrosoftAdpcmStream` decodes format-tag-2 blocks to signed interleaved PCM16. | Sources 256 MiB, dimensions 4096, 100,000 frames, 64 MiB compressed frame payload, 400,000 movi chunks; ADPCM output 64 MiB. One video and at most one audio stream, flat movi, 40-byte bitmap header, the complete palette `biClrUsed` declares (256 entries when 0) for 8-bit video. Empty video chunks (dropped frames) leave a surface unchanged. OpenDML/AVIX, nested record lists, palette-change chunks and 8-bit palettized Cinepak unsupported. Index/keyframe seeking is not exposed; always decode sequentially. ADPCM chunks must contain complete blocks. |
 | `Media.Fli` | `FliMovieStream` indexes seekable AF11 sources and reads individual records; `FliSurface` decodes COLOR_64 (11), line delta (12), BLACK (13), BRUN (15), COPY (16), and ignores type 14. Exposes top-down indices and an RGB palette. | Sources 256 MiB, dimensions 4096, frames 64 MiB. Strict header/record/chunk extents. FLC/AF12 and other chunk types unsupported. Optional trailing ring record is excluded from FrameCount. Header speed is optional; the host may override cadence. Malformed historical files need a downstream repair policy, never silent shared-reader truncation. |
+| `Media.Audio` | `Pcm16.FromUnsigned8` and `Pcm16.Encode` produce little-endian interleaved PCM16; `AudioResourceCache<TKey, TResource>` lazily creates and owns backend resources; `AudioVoices<TVoice>` owns admitted voices and disposes stopped ones on `Reap`. | No resampling or remixing. Host-thread objects; capacity, eviction, stealing, routing, gain and fades stay with the caller. Dispose voices before resources. |
 | `Media.Playback` | `MoviePlayback(frameCount, frameDuration, initialDelay)`; `Advance(elapsed, decodeFrame)` visits every due frame in ascending order. `Pause`, `Resume`, `Skip`, `FrameIndex`, `IsComplete`. | TimeSpan arithmetic is bounded; negative time and nonpositive cadence rejected. Frame zero appears at the initial delay; completion follows the final frame's full interval. A callback failure invalidates the clock. It owns no audio, GPU, stream or timer. |
 
 ```csharp

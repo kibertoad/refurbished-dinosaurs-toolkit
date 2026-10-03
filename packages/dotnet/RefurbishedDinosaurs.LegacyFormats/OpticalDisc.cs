@@ -79,6 +79,7 @@ public static class CddaWave
             if (read == 0) throw new EndOfStreamException();
             output.Write(buffer, 0, read); remaining -= read;
         }
+        output.Flush();
     }
 }
 
