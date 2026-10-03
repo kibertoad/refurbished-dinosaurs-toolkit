@@ -15,7 +15,8 @@ versions and keep no copies. See [the architecture](docs/architecture.md).
 | [`@scientific-method/executable-reader`](packages/executable-reader) | npm | Reads hash-checked MZ/FBOV originals and runs the bounded instruction reports (`scientific-method`). |
 | [`scientific-method-engine`](packages/scientific-method-engine) | PyPI | Instruction analysis behind the reports, and the shared Ghidra headless scripts. |
 | [`@scientific-method/standard-checker`](packages/standard-checker) | npm | The documentation standard check and index generator (`standard-checker`). |
-| [`ScientificMethod.Core`, `ScientificMethod.LegacyFormats`](packages/dotnet) | NuGet | .NET primitives for asset installation and bounded legacy format readers. |
+| [`RefurbishedDinosaurs.Core`, `RefurbishedDinosaurs.LegacyFormats`](packages/dotnet) | NuGet | Runtime asset installation, presentation primitives and bounded legacy readers. |
+| [`RefurbishedDinosaurs.Media.Smacker`, `.Avi`, `.Fli`, `.Playback`](packages/dotnet) | NuGet | Independent managed movie codecs and host-driven sequential playback. |
 | [`dinorefurb-disc-archiver`](packages/disc-archiver) | PyPI | Personal archival copies of discs a player owns, in every common image format, through redumper or cdrdao, with a window for players (`disc-archiver`, `disc-archiver-gui`). |
 
 Used in place from this repository:
@@ -42,8 +43,8 @@ python -m pip install -e packages/scientific-method-engine
 python -B -m unittest discover -s packages/scientific-method-engine/tests -p 'test*.py'
 python -m pip install -e packages/disc-archiver
 python -B -m unittest discover -s packages/disc-archiver/tests -p 'test*.py'
-dotnet build packages/dotnet/ScientificMethod.slnx
-dotnet test --project packages/dotnet/ScientificMethod.Core.Tests/ScientificMethod.Core.Tests.csproj
+dotnet build packages/dotnet/RefurbishedDinosaurs.slnx
+dotnet test --project packages/dotnet/RefurbishedDinosaurs.Core.Tests/RefurbishedDinosaurs.Core.Tests.csproj
 ./tools/Verify-Repository.ps1
 ```
 

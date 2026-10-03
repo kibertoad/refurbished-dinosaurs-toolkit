@@ -44,10 +44,10 @@ jobs:
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
-      - run: dotnet restore packages/dotnet/ScientificMethod.slnx
-      - run: dotnet build packages/dotnet/ScientificMethod.slnx --no-restore -v minimal
-      - run: dotnet test --project packages/dotnet/ScientificMethod.Core.Tests/ScientificMethod.Core.Tests.csproj --no-restore --no-progress -v minimal
-      - run: dotnet pack packages/dotnet/ScientificMethod.slnx --no-build -c Debug --output artifacts
+      - run: dotnet restore packages/dotnet/RefurbishedDinosaurs.slnx
+      - run: dotnet build packages/dotnet/RefurbishedDinosaurs.slnx --no-restore -v minimal
+      - run: dotnet test --project packages/dotnet/RefurbishedDinosaurs.Core.Tests/RefurbishedDinosaurs.Core.Tests.csproj --no-restore --no-progress -v minimal
+      - run: dotnet pack packages/dotnet/RefurbishedDinosaurs.slnx --no-build -c Debug --output artifacts
   # Builds the standalone Disc Archiver download (no Python needed) on each platform players use,
   # with the pinned redumper, and starts both executables. The zips are kept for a week for trying.
   disc-archiver-bundle:
