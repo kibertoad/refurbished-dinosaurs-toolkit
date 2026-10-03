@@ -15,6 +15,12 @@ It exits with 0 when the repository passes, 1 when it reports problems (one line
 starting with the file's path), and 2 when the options are invalid. `--record-validation` cannot be
 combined with `--check`.
 
+A problem that breaks a numbered rule of the standard ends with the rule's label in brackets, such
+as `[STATUS-14]`. The standard opens that rule with the heading `###### STATUS-14`, anchored at
+`#status-14` on the site and in the copies restorations vendor, so the rule can be read on its
+own. Rules are numbered in Identifiers, Status and the shared part of Entry types so far, and
+problems under other sections carry no label yet.
+
 ## Options
 
 | Option | Meaning | Default |
