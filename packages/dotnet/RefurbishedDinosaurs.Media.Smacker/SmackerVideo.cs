@@ -42,8 +42,6 @@ public sealed class SmackerVideoDecoder
         _mClr = ReadHeaderTree(ref reader, movie.TreeSizes.MClr, ref skipped);
         _full = ReadHeaderTree(ref reader, movie.TreeSizes.Full, ref skipped);
         _type = ReadHeaderTree(ref reader, movie.TreeSizes.Type, ref skipped);
-        if (skipped == 4)
-            throw new InvalidDataException("Smacker movie omits every video tree.");
     }
 
     /// <summary>Reads the video trees from tree data alone, such as <see cref="SmackerMovieStream.TreeData"/>.</summary>
@@ -70,8 +68,6 @@ public sealed class SmackerVideoDecoder
     {
         if (indices.Length != checked(_width * _height))
             throw new ArgumentException("Smacker output buffer dimensions are inconsistent.", nameof(indices));
-        if (packet.IsEmpty)
-            throw new InvalidDataException("Smacker video packet is empty.");
         if (isKeyFrame) indices.Clear();
         _mMap.ResetHistory();
         _mClr.ResetHistory();
@@ -86,10 +82,12 @@ public sealed class SmackerVideoDecoder
         {
             var type = _type.Decode(ref reader);
             var run = BlockRuns[(type >> 2) & 0x3F];
+            if (run > blockCount - block)
+                throw new InvalidDataException("Smacker block run exceeds the frame.");
             switch (type & 3)
             {
                 case 0:
-                    while (run-- > 0 && block < blockCount)
+                    while (run-- > 0)
                     {
                         DecodeMonoBlock(ref reader, indices, blockWidth, block);
                         block++;
@@ -99,18 +97,18 @@ public sealed class SmackerVideoDecoder
                     var mode = 0;
                     if (_version == 4)
                         mode = reader.ReadBit() ? 1 : reader.ReadBit() ? 2 : 0;
-                    while (run-- > 0 && block < blockCount)
+                    while (run-- > 0)
                     {
                         DecodeFullBlock(ref reader, indices, blockWidth, block, mode);
                         block++;
                     }
                     break;
                 case 2:
-                    block += Math.Min(run, blockCount - block);
+                    block += run;
                     break;
                 case 3:
                     var color = checked((byte)(type >> 8));
-                    while (run-- > 0 && block < blockCount)
+                    while (run-- > 0)
                     {
                         FillBlock(indices, blockWidth, block, color);
                         block++;

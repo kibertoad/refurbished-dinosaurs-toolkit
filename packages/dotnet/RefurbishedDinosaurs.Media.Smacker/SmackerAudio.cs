@@ -99,34 +99,11 @@ public static class SmackerAudioDecoder
         ArgumentNullException.ThrowIfNull(track);
         if (!track.IsCompressed || track.Is16Bit || track.IsStereo)
             throw new NotSupportedException("Only packed 8-bit mono Smacker audio is supported.");
-        if (packet.Length <= 4)
-            throw new InvalidDataException("Smacker audio packet is truncated.");
-        var outputLength = BinaryPrimitives.ReadUInt32LittleEndian(packet);
-        if (outputLength == 0 || outputLength > MaximumDecodedBytes || outputLength > int.MaxValue
-            || track.MaximumDecodedBytes > 0 && outputLength > track.MaximumDecodedBytes)
-            throw new InvalidDataException("Smacker audio output length is invalid.");
-
-        var reader = new LittleEndianBitReader(packet[4..]);
-        if (!reader.ReadBit())
-            throw new InvalidDataException("Smacker audio packet contains no sample data.");
-        if (reader.ReadBit() || reader.ReadBit())
-            throw new InvalidDataException("Smacker audio packet does not match its mono 8-bit track.");
-
-        reader.ReadBit();
-        var nodes = new List<HuffmanNode>();
-        var leaves = 0;
-        var root = ReadTree(ref reader, nodes, 0, ref leaves);
-        reader.ReadBit();
-
-        var output = new byte[checked((int)outputLength)];
-        var predictor = reader.ReadBits(8);
-        output[0] = (byte)predictor;
-        for (var index = 1; index < output.Length; index++)
-        {
-            predictor = (predictor + DecodeSymbol(ref reader, nodes, root)) & 0xFF;
-            output[index] = (byte)predictor;
-        }
-        return new SmackerAudioBuffer(track.SampleRate, output);
+        var pcm = DecodePcm16(packet, track);
+        var samples = new byte[pcm.Samples.Length / 2];
+        for (var i = 0; i < samples.Length; i++)
+            samples[i] = (byte)((BinaryPrimitives.ReadInt16LittleEndian(pcm.Samples.AsSpan(i * 2)) >> 8) + 128);
+        return new SmackerAudioBuffer(track.SampleRate, samples);
     }
 
     private static int ReadTree(
