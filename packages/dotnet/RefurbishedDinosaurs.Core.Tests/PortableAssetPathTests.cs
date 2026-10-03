@@ -14,8 +14,20 @@ public sealed class PortableAssetPathTests
     [InlineData("folder//frame.dat")]
     [InlineData("folder/./frame.dat")]
     [InlineData("folder/\0frame.dat")]
+    [InlineData("folder/frame.dat.")]
+    [InlineData("folder /frame.dat")]
+    [InlineData("folder/.. /frame.dat")]
+    [InlineData("folder/CON")]
+    [InlineData("folder/nul.dat")]
     public void RelativeRejectsUnsafeReferencesOnEveryHost(string reference) =>
         Assert.Throws<InvalidDataException>(() => PortableAssetPath.Relative(reference));
+
+    [Theory]
+    [InlineData("folder\\frame.dat", "folder/frame.dat")]
+    [InlineData("Folder/CONTROL.DAT", "Folder/CONTROL.DAT")]
+    [InlineData("frame", "frame")]
+    public void RelativeNormalizesSeparators(string reference, string expected) =>
+        Assert.Equal(expected, PortableAssetPath.Relative(reference));
 
     [Fact]
     public void DriveRemovalIsExplicitAndStillRejectsTraversal()
@@ -37,12 +49,14 @@ public sealed class PortableAssetPathTests
             Assert.Equal("Assets/Frames/Frame.dat", PortableAssetPath.ResolveFile(root, "ASSETS\\frames\\FRAME.DAT"));
             Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveFile(root, "Assets/Frames"));
             Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveFile(root, "missing/frame.dat"));
+            Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveFile(Path.Combine(root, "absent"), "frame.dat"));
             if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
             {
                 File.WriteAllText(Path.Combine(root, "Assets", "Frames", "frame.dat"), "ambiguous");
                 Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveFile(root, "Assets/Frames/Frame.dat"));
                 Directory.CreateSymbolicLink(Path.Combine(root, "linked"), Path.Combine(root, "Assets"));
                 Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveFile(root, "linked/Frames/Frame.dat"));
+                Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveFile(Path.Combine(root, "linked"), "Frames/Frame.dat"));
             }
         }
         finally { Directory.Delete(root, true); }

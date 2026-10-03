@@ -319,7 +319,6 @@ reports of a real program stay in its `GAME_DIR`.
 Exit: the option ships with tests, the reporter guide documents it, and the script has its row in
 the engine README catalog.
 
-
 ## Shared runtime primitives
 
 Outcome: restorations consume shared portable paths, validated backup storage, bounded settings,

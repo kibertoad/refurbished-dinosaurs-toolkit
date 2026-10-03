@@ -166,12 +166,6 @@ Scripts that exist only in one restoration, or that have diverged between restor
 ExportVersionTrackingMatches, ReportJumpTable), stay in the repository for now. Pass both
 directories to `-scriptPath`, separated by `;`.
 
-## Shared paths primitives
-
-Use `PortableAssetPath.Relative` for install-relative names. Only call `WithoutDriveRoot`
-when the original format intentionally carries a drive root; then `ResolveFile` against the
-verified content directory. Remove host-dependent `Path.GetPathRoot` and filename glob fallbacks.
-
 ## 5. .NET readers
 
 The .NET libraries are published as `ScientificMethod.Core` and `ScientificMethod.LegacyFormats`.
@@ -244,3 +238,9 @@ failure and missing-media policies remain downstream.
 All runtime packages share the existing scientific-method-dotnet tag series. CI and local
 builds now use packages/dotnet/RefurbishedDinosaurs.slnx and the RefurbishedDinosaurs.Core.Tests
 project. No npm, Python or prepared-config protocol names change.
+
+### Portable asset paths
+
+Use `PortableAssetPath.Relative` for install-relative names. Only call `WithoutDriveRoot`
+when the original format intentionally carries a drive root; then `ResolveFile` against the
+verified content directory. Remove host-dependent `Path.GetPathRoot` and filename glob fallbacks.
