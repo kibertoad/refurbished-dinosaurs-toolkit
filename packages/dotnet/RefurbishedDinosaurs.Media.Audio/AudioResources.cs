@@ -19,7 +19,13 @@ public sealed class AudioResourceCache<TKey, TResource> : IDisposable where TKey
         ArgumentNullException.ThrowIfNull(create);
         if (_resources.TryGetValue(key, out var resource)) return resource;
         resource = create(key) ?? throw new InvalidOperationException("Audio factory returned null.");
-        _resources.Add(key, resource);
+        if (_disposed || !_resources.TryAdd(key, resource))
+        {
+            // The factory disposed the cache or created this key re-entrantly; nothing else owns it.
+            resource.Dispose();
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            throw new InvalidOperationException("Audio factory created its own key re-entrantly.");
+        }
         return resource;
     }
 
@@ -67,21 +73,30 @@ public sealed class AudioVoices<TVoice> : IDisposable where TVoice : class, IDis
         _voices.Add(voice);
     }
 
-    /// <summary>Disposes finished voices. A voice is removed before disposal so it is attempted once.</summary>
+    /// <summary>
+    /// Disposes finished voices. A voice is removed before disposal so it is attempted once; every
+    /// finished voice is attempted even if one fails.
+    /// </summary>
     public void Reap(Func<TVoice, bool> isStopped)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(isStopped);
+        List<Exception>? failures = null;
         for (var index = _voices.Count - 1; index >= 0; index--)
         {
             if (!isStopped(_voices[index])) continue;
             var voice = _voices[index];
             _voices.RemoveAt(index);
-            voice.Dispose();
+            try { voice.Dispose(); }
+            catch (Exception error) { (failures ??= new()).Add(error); }
         }
+        if (failures is not null) throw new AggregateException(failures);
     }
 
-    /// <summary>Visits admitted voices for host volume, pause or other backend operations.</summary>
+    /// <summary>
+    /// Visits admitted voices for host volume, pause or other backend operations. The action must not
+    /// add, reap or dispose voices.
+    /// </summary>
     public void ForEach(Action<TVoice> action)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

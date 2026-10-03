@@ -39,8 +39,7 @@ public sealed class WavePcm16Stream : IDisposable
     /// <summary>Reads complete frames, returning zero at the end; requires a frame-aligned buffer.</summary>
     public int Read(Span<byte> destination)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (destination.Length % (ChannelCount * 2) != 0) throw new ArgumentException("Buffer must hold complete frames.", nameof(destination));
+        RequireFrames(destination);
         var count = (int)Math.Min(destination.Length, Length - Position);
         _stream.Position = _dataStart + Position;
         _stream.ReadExactly(destination[..count]);
@@ -51,8 +50,7 @@ public sealed class WavePcm16Stream : IDisposable
     /// <summary>Fills a frame-aligned buffer, wrapping to the first frame at track end.</summary>
     public void ReadLooped(Span<byte> destination)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
-        if (destination.Length % (ChannelCount * 2) != 0) throw new ArgumentException("Buffer must hold complete frames.", nameof(destination));
+        RequireFrames(destination);
         while (!destination.IsEmpty)
         {
             if (Position == Length) Position = 0;
@@ -70,6 +68,13 @@ public sealed class WavePcm16Stream : IDisposable
         Position = position;
     }
 
+    private void RequireFrames(Span<byte> destination)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (destination.Length % (ChannelCount * 2) != 0)
+            throw new ArgumentException("Buffer must hold complete frames.", nameof(destination));
+    }
+
     /// <summary>Disposes the owned stream once.</summary>
     public void Dispose()
     {
@@ -84,7 +89,6 @@ public sealed class WavePcm16Stream : IDisposable
 
     private void Index(Stream stream, long maximumSampleBytes)
     {
-        ArgumentNullException.ThrowIfNull(stream);
         if (!stream.CanRead || !stream.CanSeek)
             throw new ArgumentException("WAVE input must be readable and seekable.", nameof(stream));
         var start = stream.Position;

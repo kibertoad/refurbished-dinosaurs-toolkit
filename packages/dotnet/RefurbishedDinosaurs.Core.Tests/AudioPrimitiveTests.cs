@@ -81,6 +81,63 @@ public sealed class AudioPrimitiveTests
         Assert.Equal(1, stopped.Disposals);
     }
 
+    [Fact]
+    public void EagerReaderLeavesInputAfterContainer()
+    {
+        using var bytes = new MemoryStream();
+        WavePcm16Writer.Write(bytes, new byte[] { 1, 2, 3, 4 }, 2, 22050);
+        bytes.WriteByte(0xAA);
+        bytes.Position = 0;
+        WavePcm16Reader.Read(bytes);
+        Assert.Equal(48, bytes.Position);
+    }
+
+    [Fact]
+    public void CddaWaveIsReadableAsCanonicalStereoPcm16()
+    {
+        using var source = new MemoryStream(new byte[CddaWave.BytesPerSector]);
+        using var output = new MemoryStream();
+        CddaWave.Write(source, output, 0, 1);
+        output.Position = 0;
+        using var reader = new WavePcm16Stream(output, leaveOpen: true);
+        Assert.Equal((44100, 2, (long)CddaWave.BytesPerSector), (reader.SampleRate, reader.ChannelCount, reader.Length));
+    }
+
+    [Fact]
+    public void CacheDisposesResourceCreatedAgainstADisposedOrReenteredCache()
+    {
+        var cache = new AudioResourceCache<int, Resource>();
+        var orphan = new Resource();
+        Assert.Throws<ObjectDisposedException>(() => cache.GetOrCreate(1, _ => { cache.Dispose(); return orphan; }));
+        Assert.Equal(1, orphan.Disposals);
+
+        var reentered = new AudioResourceCache<int, Resource>();
+        var outer = new Resource();
+        Assert.Throws<InvalidOperationException>(() => reentered.GetOrCreate(1, key =>
+        {
+            reentered.GetOrCreate(key, _ => new Resource());
+            return outer;
+        }));
+        Assert.Equal(1, outer.Disposals);
+        reentered.Dispose();
+    }
+
+    [Fact]
+    public void ReapAttemptsEveryStoppedVoiceWhenOneDisposalFails()
+    {
+        var failing = new FailingResource(); var stopped = new Resource();
+        using var voices = new AudioVoices<IDisposable>();
+        voices.Add(stopped); voices.Add(failing);
+        Assert.Throws<AggregateException>(() => voices.Reap(_ => true));
+        Assert.Equal(0, voices.Count);
+        Assert.Equal(1, stopped.Disposals);
+    }
+
+    private sealed class FailingResource : IDisposable
+    {
+        public void Dispose() => throw new IOException();
+    }
+
     private sealed class Resource : IDisposable
     {
         public int Disposals { get; private set; }

@@ -13,10 +13,16 @@ public static class WavePcm16Writer
         if (channels is < 1 or > 2) throw new ArgumentOutOfRangeException(nameof(channels));
         if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
         if (samples.Length % (channels * 2) != 0) throw new ArgumentException("Samples must contain complete frames.", nameof(samples));
+        WriteHeader(destination, (uint)samples.Length, channels, sampleRate);
+        destination.Write(samples);
+    }
+
+    /// <summary>Writes the 44-byte canonical header for <paramref name="dataLength"/> PCM bytes.</summary>
+    internal static void WriteHeader(Stream destination, uint dataLength, int channels, int sampleRate)
+    {
         Span<byte> header = stackalloc byte[44];
-        header.Clear();
         "RIFF"u8.CopyTo(header);
-        BinaryPrimitives.WriteUInt32LittleEndian(header[4..], checked((uint)samples.Length + 36));
+        BinaryPrimitives.WriteUInt32LittleEndian(header[4..], checked(dataLength + 36));
         "WAVEfmt "u8.CopyTo(header[8..]);
         BinaryPrimitives.WriteUInt32LittleEndian(header[16..], 16);
         BinaryPrimitives.WriteUInt16LittleEndian(header[20..], 1);
@@ -26,8 +32,7 @@ public static class WavePcm16Writer
         BinaryPrimitives.WriteUInt16LittleEndian(header[32..], (ushort)(channels * 2));
         BinaryPrimitives.WriteUInt16LittleEndian(header[34..], 16);
         "data"u8.CopyTo(header[36..]);
-        BinaryPrimitives.WriteUInt32LittleEndian(header[40..], (uint)samples.Length);
+        BinaryPrimitives.WriteUInt32LittleEndian(header[40..], dataLength);
         destination.Write(header);
-        destination.Write(samples);
     }
 }
