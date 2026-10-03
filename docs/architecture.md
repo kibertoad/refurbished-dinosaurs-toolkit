@@ -82,8 +82,8 @@ bounded PCX, BMP RLE8, CUE/CDDA, raw Mode 1, ISO-9660 and 16-bit PCM WAVE reader
 raw disc image through one interface. LegacyFormats references Core, so the two are built, versioned and published together.
 Media.Smacker, Media.Avi, Media.Fli and Media.Playback are independent, dependency-free NuGet
 libraries. Smacker was moved from LegacyFormats; runtime package IDs and namespaces use
-RefurbishedDinosaurs, while research tooling retains ScientificMethod. See ADR 0005 and the
-[runtime migration](migrating-to-scientific-method.md#runtime-packages-and-shared-media).
+RefurbishedDinosaurs, while research tooling retains ScientificMethod. See ADR 0005 and
+[the shared runtime libraries guide](runtime-libraries.md), which also holds their migrations.
 The .NET packages share the existing scientific-method-dotnet release tag/version series.
 Every public member has XML documentation, and the build fails without it.
 

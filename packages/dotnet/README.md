@@ -21,6 +21,9 @@ dotnet add package RefurbishedDinosaurs.Core
 dotnet add package RefurbishedDinosaurs.LegacyFormats
 ```
 
+[The shared runtime libraries guide](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/runtime-libraries.md)
+explains how a restoration adopts these packages and lists their migrations.
+
 Every public type and member carries XML documentation, which IDEs show on hover. The build fails
 on an undocumented public member.
 
