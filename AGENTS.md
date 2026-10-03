@@ -74,8 +74,9 @@ Update in the same PR:
   with `profile.py` for a profile field.
 - **Package READMEs**, for user-visible behaviour: options, exit codes, the exported API.
 - **The migration guide**, when downstream projects have to change something.
-- **[The implementation plan](docs/IMPLEMENTATION-PLAN.md)**, for reporter work. Add a section
-  stating the outcome, the tests and the exit condition.
+- **[The implementation plan](docs/IMPLEMENTATION-PLAN.md)**, for work that takes several PRs. Add
+  a section stating the outcome, the tests and the exit condition, update its status line as slices
+  merge, and delete it once the exit condition is met.
 - **ADRs.** A durable design decision gets one in `docs/decisions/`. Check the next free number.
 - **The architecture doc and root README**, when packages, layout or contracts change.
 
