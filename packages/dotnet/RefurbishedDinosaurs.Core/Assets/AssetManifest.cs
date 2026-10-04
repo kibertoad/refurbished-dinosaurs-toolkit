@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using RefurbishedDinosaurs.Core.IO;
 
 namespace RefurbishedDinosaurs.Core.Assets;
@@ -112,7 +113,13 @@ public sealed record AssetManifest(
     // descriptor and the set terminator.
     private const long MinimumVolumeBlocks = 18;
 
-    private bool PinsVolume => VolumeIdentifier is not null || VolumeBlocks is not null || VolumeXxh3 is not null;
+    /// <summary>
+    /// Whether the manifest pins the ISO 9660 volume: it gives <see cref="VolumeIdentifier"/>,
+    /// <see cref="VolumeBlocks"/> or <see cref="VolumeXxh3"/>. A verifier checks the volume only when
+    /// this is <see langword="true"/>.
+    /// </summary>
+    [JsonIgnore]
+    public bool PinsVolume => VolumeIdentifier is not null || VolumeBlocks is not null || VolumeXxh3 is not null;
 
     private void ValidateVolume()
     {
