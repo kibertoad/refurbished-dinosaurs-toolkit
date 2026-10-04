@@ -320,7 +320,9 @@ class State:
 
     def access(self, segment, offset, width, write=None, role=None, addressing_register=None):
         seg, base, delta, keys = self.keys(segment, offset, width)
-        uncertain = []
+        # Bytes a possibly aliasing write drops: those with a modeled value, and those a
+        # preservesMemory scope kept without one (counted apart, since they lose no value).
+        dropped_values = dropped_unread = 0
         if write is not None:
             write = Value(write.bits, write.term, sources(write, site=self.at))
             self.memory_epoch += 1
@@ -332,7 +334,10 @@ class State:
                     continue
                 for key in list(members):
                     if may_alias(key, written, self.bits, self.flat):
-                        uncertain.append(key)
+                        if key in self.memory:
+                            dropped_values += 1
+                        elif key in self.unread_memory:
+                            dropped_unread += 1
                         self.write_log.append((key, self.memory.pop(key, None)))
                         self.unread_memory.pop(key, None)
                         self.memory_writers.pop(key, None)
@@ -366,7 +371,7 @@ class State:
                            value=value.report(), missingByteProducers=missing,
                            byteProducers=[self.byte_writer(i, key) for i, key in enumerate(keys)],
                            guards=deepcopy(relevant), role=role,
-                           uncertainAliasesInvalidated=len(uncertain))
+                           uncertainAliasesInvalidated=dropped_values, uncertainScopeBytesInvalidated=dropped_unread)
         f = self.frames[-1]
         stack_base, stack_delta = address_parts(f["sp"])
         mem_base, mem_delta = address_parts(offset)

@@ -45,7 +45,7 @@ def _writers(events, before, segment, base, start, width, modulus, image):
     for j in range(before - 1, -1, -1):
         event = events[j]
         interval = event.get("interval")
-        if (event["kind"] == "write" and event.get("uncertainAliasesInvalidated") and interval
+        if (event["kind"] == "write" and (event.get("uncertainAliasesInvalidated") or event.get("uncertainScopeBytesInvalidated")) and interval
                 and (interval["segment"], interval["base"]) != (segment, base)):
             written = written_domain(interval["segment"], interval["base"], interval["start"],
                                      interval["end"] - interval["start"], image.bits, image.flat)

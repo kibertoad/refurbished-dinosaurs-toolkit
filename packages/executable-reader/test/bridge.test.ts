@@ -1098,6 +1098,40 @@ test("explicit memory scopes join nested frames through the real MZ prepared bri
   );
 });
 
+test("a possibly aliasing write counts dropped values apart from dropped unread scope bytes", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(20, 28);
+  // mov word [1000h],1234h; call service; mov byte [bx],1; ret; service: ret
+  data.set([0xc7, 0x06, 0, 0x10, 0x34, 0x12, 0xe8, 4, 0, 0xc6, 0x07, 1, 0xc3, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  // DS:[BX] holds the stored word in two of its six bytes; the model has no value for the other four.
+  const scope = { segment: "ds", base: "bx", bytes: 6, evidence: "synthetic service keeping DS:[BX]" };
+  const store = (preserves: string[]) => {
+    const model = { site: 70, preserves, preservesMemory: [scope], evidence: "synthetic service", cases: [{}] };
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({
+        ...config,
+        xxh3: sourceXxh3(data),
+        regions: [{ ...config.regions[0]!, end: 78 }],
+        registers: { ds: 0x2000, ss: 0x3000, sp: 0xff00, bx: 0x1000 },
+        callModels: [model],
+      }),
+    );
+    const r = run(["effects", join(dir, "config.json")]);
+    assert.equal(r.completeWithinModel, true);
+    return r.paths[0].events.find((e: Report) => e.kind === "write" && e.site === 73);
+  };
+  // The model leaves BX unknown, so the store may alias every scoped byte.
+  const dropped = store(["ds", "ss"]);
+  assert.equal(dropped.uncertainAliasesInvalidated, 2);
+  assert.equal(dropped.uncertainScopeBytesInvalidated, 4);
+  // With BX preserved the store names one scoped byte and drops nothing.
+  const kept = store(["ds", "ss", "ebx"]);
+  assert.equal(kept.uncertainAliasesInvalidated, 0);
+  assert.equal(kept.uncertainScopeBytesInvalidated, 0);
+});
+
 test("relational controls pass through preparation and fail, hold or stay undecided in the engine", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(20, 28);
