@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import xxhash
 
@@ -18,8 +19,9 @@ ENGINE_ENV = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(SRC)
 import capstone
 import pypcode
 from scientific_method_engine.x86.image import Image
+from scientific_method_engine.x86 import reports
 from scientific_method_engine.x86.reports import run_report
-from scientific_method_engine.x86.trace import trace, walk, OVERLAP_REASON, CONTESTED_REASON
+from scientific_method_engine.x86.trace import trace, walk, OVERLAP_REASON, CONTESTED_REASON, RETURNS
 from scientific_method_engine.x86.values import const, unknown, op, extract, resize
 
 
@@ -927,6 +929,65 @@ class GhidraCrossCheckTests(unittest.TestCase):
                 else:
                     with self.assertRaisesRegex(ValueError, "positive control missed: ghidraAgreementSites"):
                         run_report(data, cfg, "callees")
+
+    def test_the_fall_through_compared_is_the_one_body_recorded(self):
+        # Synthetic bodies covering every exit kind and every instruction body() reads on past. At each instruction
+        # Ghidra claims a targetless call that does or does not fall through. The engine's side of the comparison is the
+        # readsOn body() recorded there, so flipping that record flips the result.
+        def table(exhaustive):
+            # jmp bx through a two-word table at 4: one target in the body, one in the entry at 3.
+            data = bytes.fromhex("ff e3 c3 c3 02 00 03 00")
+            return data, {"end": 4, "entries": [0, 3], "indirectJumps": [{"site": 0, "evidence": "synthetic table consumer",
+                          "exhaustive": exhaustive, "table": {"start": 4, "count": 2, "stride": 2, "evidence": "synthetic table"}}]}
+
+        def code(c):
+            return c.bytes(), {"entries": sorted({0, c.labels.get("callee", 0)})}
+        cases = {
+            "near return": code(Code().emit("90 c3")),
+            "far return": code(Code().emit("cb")),
+            "interrupt return": code(Code().emit("cf")),
+            "halt": code(Code().emit("f4")),
+            "call, interrupt and ports": code(Code().branch("e8", "callee").emit("cd 21 ec ee c3").label("callee").emit("c3")),
+            "conditional branches": code(Code().branch("74", "skip").emit("90").label("skip").branch("e2", "skip")
+                                         .branch("74", "callee").emit("c3").label("callee").emit("c3")),
+            "jumps": code(Code().emit("eb 00").branch("eb", "on").emit("c3").label("on").branch("e9", "callee")
+                          .label("callee").emit("c3")),
+            "unresolved jump": code(Code().emit("ff e0")),
+            "far jump": code(Code().emit("ea 00 00 00 10")),
+            "unsupported transfer": code(Code().emit("66 e8 01 00 00 00 c3 c3")),
+            "declared table": table(True),
+            "partly declared table": table(False),
+        }
+        body, kinds, decisions = reports.body, set(), set()
+        for name, (data, region) in cases.items():
+            cfg = configuration(data, indirectJumps=region.pop("indirectJumps", []))
+            cfg["regions"][0].update(region)
+            b = body(Image(data, cfg), 0)
+            kinds |= {e["kind"] for e in b["exits"]}
+            self.assertEqual(b["flow"].keys(), b["instructions"].keys())
+            for site, step in b["flow"].items():
+                decisions.add(step["readsOn"])
+                if step["readsOn"]:
+                    self.assertIn(site + b["instructions"][site].size, b["instructions"])
+                for flipped in (False, True):
+                    def reading(image, entry, limit=10000):
+                        read = body(image, entry, limit)
+                        if flipped and entry == 0:
+                            read["flow"] = {at: s | {"readsOn": None if s["readsOn"] is None else not s["readsOn"]}
+                                            for at, s in read["flow"].items()}
+                        return read
+                    reads_on = None if step["readsOn"] is None else step["readsOn"] != flipped
+                    for falls_through in (False, True):
+                        with self.subTest(name, site=site, flipped=flipped, fallsThrough=falls_through):
+                            export = ghidra_export(data, {0: [(site, None, "COMPUTED_CALL", falls_through)]})
+                            with mock.patch.object(reports, "body", reading):
+                                check = run_report(data, cfg | {"ghidraCallEdges": export}, "callees")["ghidraCrossCheck"]
+                            [row] = [r for r in check["edges"] if r["site"] == site and r["result"] != "engineOnly"]
+                            self.assertEqual(row.get("ghidraFallsThrough"), None if reads_on is None else falls_through)
+                            self.assertEqual((check["counts"]["ghidraEndsFunction"], check["counts"]["ghidraContinues"]),
+                                             (int(reads_on is True and not falls_through), int(reads_on is False and falls_through)))
+        self.assertEqual(kinds, set(RETURNS.values()) | {"halt", "tail transfer", "unresolved jump"})
+        self.assertEqual(decisions, {True, False, None})
 
     def test_a_ghidra_target_at_an_interrupt_or_a_targetless_call_elsewhere_stays_ghidra_only(self):
         # int 21h; int 10h; nop; call 8; ret. Ghidra resolves the first interrupt to a file offset and the second to an
