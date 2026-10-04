@@ -100,12 +100,22 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
         byte[] bytes;
         using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
         {
-            // Read one byte past the limit so a file that grew after a length check is still caught.
-            var buffer = new byte[MaximumCueLength + 1];
+            // Sized from the file's length plus one byte, so a sheet read whole needs no second buffer.
+            // The buffer grows when the file grew after the length was taken, up to one byte past the
+            // limit, so a file over the limit is caught however it got there.
+            var buffer = new byte[(int)Math.Min(stream.Length, MaximumCueLength) + 1];
             var length = 0;
-            for (int read; length < buffer.Length && (read = stream.Read(buffer, length, buffer.Length - length)) > 0;)
+            while (true)
+            {
+                if (length == buffer.Length)
+                {
+                    if (length > MaximumCueLength) throw new InvalidDataException("Cue sheet is too large.");
+                    Array.Resize(ref buffer, (int)Math.Min(2L * buffer.Length, MaximumCueLength + 1L));
+                }
+                var read = stream.Read(buffer, length, buffer.Length - length);
+                if (read == 0) break;
                 length += read;
-            if (length > MaximumCueLength) throw new InvalidDataException("Cue sheet is too large.");
+            }
             bytes = buffer[..length];
         }
         using var reader = new StreamReader(new MemoryStream(bytes, writable: false), Encoding.UTF8,
@@ -230,9 +240,15 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     {
         var info = new FileInfo(path);
         if (!info.Exists) throw new FileNotFoundException("BIN image not found.", path);
-        if (info.Length == 0 || info.Length % RawSectorSize != 0)
+        ValidateBinLength(info.Length);
+    }
+
+    // Checks an image of the given length, for a caller that took the length from its own stat of the file.
+    internal void ValidateBinLength(long length)
+    {
+        if (length == 0 || length % RawSectorSize != 0)
             throw new InvalidDataException($"BIN length must be a positive multiple of {RawSectorSize} bytes.");
-        var sectors = info.Length / RawSectorSize;
+        var sectors = length / RawSectorSize;
         foreach (var track in Tracks)
             foreach (var index in track.Indices)
                 if (index.Value >= sectors)

@@ -360,7 +360,7 @@ public sealed class CueBinSourceTests
             })
             {
                 var failure = Assert.Throws<IOException>(read);
-                Assert.Contains("changed after the cue/bin source was opened", failure.Message, StringComparison.Ordinal);
+                Assert.Contains("changed after the source was opened", failure.Message, StringComparison.Ordinal);
             }
         }
         finally { Directory.Delete(root, true); }

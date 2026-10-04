@@ -185,6 +185,40 @@ public sealed class CddaTrackFingerprintTests
     }
 
     [Fact]
+    public async Task AnOpenedSourceRecordsFromItsBinAndRefusesTracksOfAChangedBin()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var manifest = await RecordAsync(root);
+            var binPath = Path.Combine(root, "game.bin");
+            var written = File.GetLastWriteTimeUtc(binPath);
+            using var source = OriginalContentSource.OpenCueBin(root);
+            foreach (var track in manifest.AudioTracks!)
+            {
+                await using var bin = source.OpenBin();
+                var recorded = await CddaTrackFingerprints.RecordAsync(bin,
+                    source.Cue!.TrackExtent(track.Track, bin.Length / RawSector), Tolerance, AnchorOffset,
+                    AnchorSamples, TestContext.Current.CancellationToken);
+                Assert.Equal(track, recorded);
+            }
+            Assert.True((await AssetVerifier.VerifyAsync(source, manifest, TestContext.Current.CancellationToken)).IsValid);
+
+            // The same bytes written again with a later write time: the source no longer knows it
+            // checked this file, so the audio tracks are unreadable rather than matched.
+            await File.WriteAllBytesAsync(binPath, Rip(0), TestContext.Current.CancellationToken);
+            File.SetLastWriteTimeUtc(binPath, written.AddMinutes(1));
+            var result = await AssetVerifier.VerifyAsync(source, manifest, TestContext.Current.CancellationToken);
+            var audio = result.Issues.Where(issue => issue.AudioTrack is not null).ToArray();
+            Assert.Equal([(2, AssetProblem.Unreadable), (3, AssetProblem.Unreadable)],
+                audio.Select(issue => (issue.AudioTrack!.Value, issue.Problem)));
+            Assert.All(audio, issue =>
+                Assert.Contains("changed after the source was opened", issue.Detail, StringComparison.Ordinal));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task RecordingRefusesAnAnchorThatRepeatsWithinTheTolerance()
     {
         var root = CreateTemporaryDirectory();
