@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using RefurbishedDinosaurs.Core.IO;
 
 namespace RefurbishedDinosaurs.Core.Assets;
@@ -6,9 +5,9 @@ namespace RefurbishedDinosaurs.Core.Assets;
 /// <summary>The file an <see cref="InstalledContentWriter"/> call left in place.</summary>
 /// <param name="Path">Full path of the installed file.</param>
 /// <param name="Bytes">Its size.</param>
-/// <param name="Sha256">Its SHA-256 as lowercase hex.</param>
+/// <param name="Xxh3">Its XXH3-128 fingerprint (<see cref="FileFingerprint"/>).</param>
 /// <param name="Changed">Whether the file was written, or an identical file was already there.</param>
-public sealed record InstalledFileResult(string Path, long Bytes, string Sha256, bool Changed);
+public sealed record InstalledFileResult(string Path, long Bytes, string Xxh3, bool Changed);
 
 /// <summary>Writes generated/imported files atomically and reuses identical installed output.</summary>
 public static class InstalledContentWriter
@@ -21,7 +20,7 @@ public static class InstalledContentWriter
     public static InstalledFileResult WriteBytes(string root, string relativePath, ReadOnlySpan<byte> bytes)
     {
         var target = SafePath.Below(root, relativePath);
-        var hash = Convert.ToHexStringLower(SHA256.HashData(bytes));
+        var hash = FileFingerprint.Xxh3(bytes);
         if (Matches(target, bytes.Length, hash)) return new(target, bytes.Length, hash, false);
         AtomicFile.WriteBytes(target, bytes);
         return new(target, bytes.Length, hash, true);
@@ -37,7 +36,7 @@ public static class InstalledContentWriter
         ArgumentException.ThrowIfNullOrWhiteSpace(source);
         var target = SafePath.Below(root, relativePath);
         var info = new FileInfo(source);
-        var hash = FileFingerprint.Sha256(source);
+        var hash = FileFingerprint.Xxh3(source);
         if (Matches(target, info.Length, hash)) return new(target, info.Length, hash, false);
         AtomicFile.Copy(source, target);
         return new(target, info.Length, hash, true);
@@ -45,7 +44,7 @@ public static class InstalledContentWriter
 
     private static bool Matches(string path, long bytes, string hash) => File.Exists(path)
         && new FileInfo(path).Length == bytes
-        && FileFingerprint.Sha256(path).Equals(hash, StringComparison.OrdinalIgnoreCase);
+        && FileFingerprint.Xxh3(path).Equals(hash, StringComparison.Ordinal);
 }
 
 /// <summary>Removes only files declared by an installed-content manifest.</summary>
