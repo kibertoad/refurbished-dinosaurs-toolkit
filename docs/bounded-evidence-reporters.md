@@ -895,12 +895,17 @@ from those entries through its call targets and its jumps to other functions' en
 export records each function's edges as file offsets, with Ghidra's flow type (`flow`) and whether
 Ghidra continues to the next instruction at the site (`fallsThrough`). The flow reflects a user's
 flow override, and `fallsThrough` reflects a fall-through override as well: one that clears the
-fall-through or sends it to another address makes it false. It is accepted only when its `sha256`,
+fall-through or sends it to another address makes it false. Where the override sends it to another
+address, `fallsThroughToAddress` holds that address and `fallsThroughTo` its file offset; both are
+`null` otherwise. It is accepted only when its `sha256`,
 the SHA-256 Ghidra records for the program it analysed, equals the source's. It can hold at most
 128 functions and 8192 edges, and every offset must lie inside the source. The script writes `null`
 for an address without file bytes, and a function or edge that lacks one of the keys it writes is
 rejected. An edge without `fallsThrough`, which older copies of the script leave out, is accepted.
-A `fallsThrough` other than true or false is rejected. Paste the export into the config as the
+A `fallsThrough` other than true or false is rejected. An edge without both `fallsThroughTo` and
+`fallsThroughToAddress`, which older copies leave out, is accepted. An edge with only one of them,
+with a `fallsThroughTo` but no address, or with an address while `fallsThrough` is not false, is
+rejected. Paste the export into the config as the
 value of `ghidraCallEdges`. The command then reports `ghidraCrossCheck`. For each caller that both
 the engine read and the export lists (`comparedCallers`), every edge is matched on site and target:
 
@@ -926,11 +931,18 @@ a `JMP`. With `flowName`, for an export without that field, it is true for the f
 gives a fall-through (`FALL_THROUGH`, `CONDITIONAL_JUMP`, `UNCONDITIONAL_CALL`, `CONDITIONAL_CALL`,
 `CONDITIONAL_TERMINATOR`, `COMPUTED_CALL`, `CONDITIONAL_COMPUTED_CALL`,
 `CONDITIONAL_COMPUTED_JUMP`, `CALL_OVERRIDE_UNCONDITIONAL` and `CALLOTHER_OVERRIDE_CALL`) and false
-for every other flow, which misses such an override. The engine's side is what its body reading
+for every other flow, which misses such an override. The row also carries `ghidraFallsThroughTo`,
+`{"target", "targetAddress"}` from the edge's `fallsThroughTo` and `fallsThroughToAddress` where a
+fall-through override sends Ghidra to another address, and `null` otherwise, with
+`ghidraFallsThroughToBasis`. That basis is `fallsThroughTo` when the edge has the field, and
+`notExported` for an edge from an older copy of the script. Such an export writes a redirected
+fall-through as `fallsThrough: false`, so the row reads as one Ghidra does not take: it agrees at a
+`JMP` and counts in `ghidraEndsFunction` at a call. Export again with the packaged script to see
+redirects. The engine's side is what its body reading
 recorded at the site: it reads on past every call, conditional jump and interrupt, and stops at a
 `JMP`, `LJMP`, return or `HLT`. A row whose site is a transfer outside the frame model, or an
-instruction the engine did not read, carries neither field. The two
-analyses disagree on the function's extent in two ways, and either way the row counts against
+instruction the engine did not read, carries none of these fields. The two
+analyses disagree on the function's extent in three ways, and each way the row counts against
 `agreed` and its site is no agreement site:
 
 - Ghidra ends the function where the engine reads on (`ghidraFallsThrough` false at a call,
@@ -938,18 +950,24 @@ analyses disagree on the function's extent in two ways, and either way the row c
   (`CALL_TERMINATOR`), the interrupt is `INT1` or `INT3`, or a user cleared the fall-through.
 - Ghidra continues where the engine stops (`ghidraFallsThrough` true at a `JMP`, `LJMP`, return or
   `HLT`): a user gave the instruction a fall-through.
+- Ghidra continues at another address than the next instruction (`ghidraFallsThroughTo` set): a
+  user's fall-through override sent it there. Ghidra neither ends the function at the site nor
+  reads on to the next instruction, so the row counts here whatever the engine does, and in neither
+  of the other two counts.
 
 `notCompared` lists the engine callers missing from the export, exported callers the engine did not
 read, exported functions without a file offset, and the `omittedRoutes` ids of compared callers
 (`omittedEngineRoutes`), which the edge limit kept out of the graph. It also passes on the export's
 `missingEntries` (requested addresses with no function) and `unreadFunctions` (functions the limit
 cut off). `counts` holds the number of rows of each result, `ghidraEndsFunction` the number of rows
-where Ghidra ends the function and the engine reads on, and `ghidraContinues` the number where
-Ghidra continues and the engine stops. `agreed` is true only when no row is `engineOnly` or
-`ghidraOnly`, `ghidraEndsFunction` and `ghidraContinues` are 0, and nothing is left uncompared.
+where Ghidra ends the function and the engine reads on, `ghidraContinues` the number where
+Ghidra continues and the engine stops, and `ghidraFallsThroughElsewhere` the number where Ghidra
+continues at another address. `agreed` is true only when no row is `engineOnly` or `ghidraOnly`,
+`ghidraEndsFunction`, `ghidraContinues` and `ghidraFallsThroughElsewhere` are 0, and nothing is
+left uncompared.
 Agreement means both analyses read the edge, never that it executes. A `ghidraAgreementSites`
 control lists call sites that must agree, and fails the report otherwise. A site agrees only when
-every edge either side read there agrees and neither extent disagreement is reported there. Requires
+every edge either side read there agrees and no extent disagreement is reported there. Requires
 `ghidraCallEdges`. Keep exports and cross-check reports of a real program in its `GAME_DIR`.
 
 `operand-candidates` scans explicitly declared region starts for an encoded
