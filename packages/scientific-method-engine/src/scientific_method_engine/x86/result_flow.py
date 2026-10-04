@@ -58,6 +58,17 @@ def result_contracts(state, contracts, entry):
 DOMAINS = {"l": "signed", "le": "signed", "s": "signed", "o": "signed", "c": "unsigned", "be": "unsigned"}
 
 
+def predicate_domain(predicate):
+    """How a branch reads what it tests: ``signed``, ``unsigned``, ``counter`` or ``flags/equality``.
+
+    LOOP, LOOPE, LOOPNE, JCXZ and JECXZ test CX or ECX against zero (``counter``); the conditional
+    jumps read the flags of their producer.
+    """
+    if predicate.startswith("loop") or predicate in ("jcxz", "jecxz"):
+        return "counter"
+    return DOMAINS.get(BRANCH_CONDITIONS.get(predicate, (None,))[0], "flags/equality")
+
+
 VALUE_FIELDS = ("sourceValue", "resultValue", "destinationContainerValue", "result", "value", "left", "right", "carry", "count")
 CONSUMER_KINDS = ("value-transfer", "conversion", "read", "write", "compare", "branch", "return")
 ROW_FIELDS = ("kind", "site", "entry", "depth", "order", "operation", "source", "destination", "sourceBits", "destinationBits",
@@ -116,8 +127,10 @@ def return_flows(report, config):
                     row.update(values=values, dependentValueFields=list(dependent), returnWidthRelationships=widths,
                                relationship="producer dependency only; not value or storage identity")
                     if later["kind"] == "branch":
-                        condition = BRANCH_CONDITIONS.get(later.get("predicate"), (None,))[0]
-                        row["predicateDomain"] = DOMAINS.get(condition, "flags/equality")
+                        domain = predicate_domain(later.get("predicate", ""))
+                        # returnFlows has reported LOOP and JCXZ as flags/equality since it shipped, and
+                        # consumers read that value, so it stays until a major release changes it.
+                        row["predicateDomain"] = "flags/equality" if domain == "counter" else domain
                     consumers.append(row)
                 flows.append({"originOrder": event["order"], "originSite": event["site"], "calleeEntry": contract["entry"],
                               "callSite": event.get("callSite"), "callerEntry": event.get("callerEntry"),

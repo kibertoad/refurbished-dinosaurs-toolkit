@@ -82,7 +82,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 
 | Command | Reports | Described in |
 |---|---|---|
-| `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`; declared-table continuations run on their own `continuationBudget`; checks `relationalControls` | this section, [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [relational controls](#relational-controls) |
+| `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; declared-table continuations run on their own `continuationBudget`; checks `relationalControls` | this section, [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
 | `uses` | accesses to one memory offset from every established entry | this section |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
@@ -899,7 +899,9 @@ This ancestry is only a dependency candidate:
 a derived value or alias is never unchanged value or storage identity. Unknown
 expressions remain unknown; coincident constants without a shared origin are not
 linked. Both predicate operands are retained; `dependentValueFields` marks which
-depend on the result. Sign and overflow branches are in the signed domain.
+depend on the result. A predicate's `predicateDomain` is `signed` for sign and
+overflow branches, `unsigned` for carry branches and `flags/equality` otherwise,
+LOOP and JCXZ included; the `loops` record names those two `counter`.
 Nothing normalizes a nonzero check into success or proves resource
 contents/extent.
 
@@ -978,6 +980,90 @@ avoid quadratic per-call copies. Acceptance includes early bypasses, child write
 mutations before modeled failure, last comparison provenance, restore/bypass and
 wrong segment/width/value controls, ports, nonvacuous caps and real reader/engine
 integration. Request closure still needs the requester's complete source cases.
+
+## Loop restart edges and iteration changes
+
+Every path of `trace`, `arguments`, `effects`, `returns`, `memory`, `guards` and `allocation`
+carries a `loops` record. It reports what the path's traced iterations did. It never says that a loop
+terminates, is bounded, or that a retry, eviction or search succeeded. Those are research
+claims a finding makes from these facts and from evidence outside the path
+([ADR 0010](decisions/0010-loop-progress-facts-on-paths.md), [validation and fidelity](validation-and-fidelity.md#loops-retries-and-termination-claims)).
+
+A restart edge is a transfer to its own site's address or below that lands on an instruction the
+same call activation already ran on this path. Its target is the loop head. `restartEdges` lists each edge once per activation
+with `entry`, `depth`, `activation`, `site`, `target`, the transfer's `kind` (`jmp`, `jb`,
+`loop` and so on), `traversals` and `firstOrder`, the event order at which its first traversal
+reached the head (the `toOrder` of that iteration). A loop restarted from two places, such as an
+index reset after a collision beside the ordinary increment, has two edges to one head. A
+function called twice is two activations, so its first instruction is not a restart. A
+fall-through, a call and a return never form a restart edge. The engine reads restart edges off
+the path and builds no control-flow graph. Every cycle on a path contains a transfer to a lower
+or equal address, because fall-throughs run forward, so every repeated loop has a restart edge.
+A forward branch that lands on an instruction an earlier iteration ran, such as the join after an
+if/else in a loop body, is an ordinary arrival. A rotated loop entered by a forward jump to its
+test is headed at the target of its backward branch, the start of its body.
+
+Each traversal of a restart edge compares the state at this arrival at the head with the state
+at the previous arrival at that head, by whatever route the path reached it, and appends one
+record to `iterations`. An inner loop's iteration therefore starts where the outer loop last
+entered it and never spans the outer loop's gates. A record names the `head`, the
+`restartEdge`, `fromArrival` and `toArrival` (arrival 1 is the first time the activation reached
+the head, by any route) and the event orders `fromOrder` and `toOrder` the iteration spans:
+
+- `registers.unchanged` lists the registers whose expression is identical. `registers.changed`
+  gives the others with `before`, `after` and a `relation`: `changed` when both are known numbers
+  that differ, `differentExpression` when the model cannot tell whether the values differ.
+  Segmented16 paths compare 16-bit registers and list a 32-bit register only when one of its two
+  upper bytes differs, so a 16-bit write never lists the 32-bit register.
+- `flags` is `unchanged` when the arithmetic flags, CF and the direction and interrupt flags are
+  identical, and `differ` otherwise. The arithmetic flags of a comparison are its operation and
+  operands; after an instruction such as INC, DEC or a shift they are the values its p-code
+  computed. Flags the model forgot are unknowns named by the point where they were forgotten:
+  two arrivals with no flag write between them hold the same unknown flags and are `unchanged`,
+  and flags forgotten again in between differ.
+- `memory` lists, as byte intervals with the `segment`, `base` and offsets of the event
+  `interval` field, every byte the iteration wrote or invalidated: `unchanged`, `changed` and
+  `differentExpression` compare the stored bytes; `writtenOverUnmodeled` had no modeled value at
+  the earlier arrival; `invalidated` has none now, because a possibly aliasing write or a call
+  model dropped it. `memoryForgotten` is true when a call model forgot all modeled memory during
+  the iteration; bytes the model never held may then have changed without a row here. When it is
+  false, a byte not listed was not written during the iteration.
+- `gates` lists the branches the iteration evaluated in the loop's own frame, in order, with
+  `predicate`, `predicateDomain` (`signed`, `unsigned`, `counter` for LOOP and JCXZ, or
+  `flags/equality`), `operation`, `taken`, the compared `operands` (`left`, `right`, `count` or
+  `carry`), the decision's `decidedBy` or `reason`, and for LOOPE and LOOPNE the `zeroFlag`
+  record of the flag test. From the second record after the path
+  entered the loop, each gate carries `operandsSincePreviousIteration`, comparing its operands
+  with the gate at the same position of the previous iteration. An arrival at the head that is
+  not a restart, such as a fall-through or forward jump into an inner loop on the next outer
+  iteration, starts a new entry, so its first iteration has nothing to compare with.
+- `gateOperandsRepeated` is true when the iteration evaluated the same gates, with the same
+  outcomes and identical operand expressions, as the previous iteration: nothing a gate in the
+  loop's frame reads changed. It is false when a gate's known operands or the gate sequence
+  changed, including an iteration with no gate after one with gates, and null when the first
+  iteration has nothing to compare with, an operand is unresolved or only differs in expression,
+  or neither iteration has a gate in the loop's frame.
+- `stateRepeatsArrival` names the earliest earlier arrival at the head, by any route, whose
+  registers, flags and modeled memory are identical to this one, or is null. The candidates are
+  the arrival just before the head's first restart in this activation and every arrival after
+  it; arrivals before that one are not kept. Only bytes written in between are compared, since a
+  byte nothing wrote holds what it held. A byte the model held no value for at either arrival
+  never matches, because its contents may differ, and a call model that forgets memory in
+  between rules out every earlier arrival. A wrapped index that returns to an earlier candidate
+  shows here even when no two consecutive iterations repeat.
+
+Unread memory is named by the write generation it was read in, so a loop that writes anything
+reads unwritten bytes as different expressions. The comparison then reports
+`differentExpression` and never claims a repeat it cannot see. A repeated state is a fact about
+the model on this path. The native program may still leave the loop through state the model does
+not hold, such as a port, an interrupt or a callee's result sequence, and branches in a callee
+are not gates of the caller's loop.
+
+`loopIterationLimit` (default 64, 1 to 1024) caps the records kept per path. Past it, restart
+edges are still counted, `iterationsOmitted` counts the traversals without a record and
+`allIterationsRecorded` is false. The last iteration of a path that exits or stops is not
+compared, since the path never returns to the head. A loop that reaches `visitLimit` stops as
+before, and its `loops` record shows what the traced iterations changed up to that stop.
 
 ## Relational controls
 
