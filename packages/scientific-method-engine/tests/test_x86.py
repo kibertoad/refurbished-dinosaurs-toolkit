@@ -384,6 +384,192 @@ def ghidra_export(data, functions, **extra):
             "functionLimit": 128, "missingEntries": [], "unreadFunctions": [], "functions": rows, **extra}
 
 
+class ArgumentFrameTests(unittest.TestCase):
+    def frames(self, code, **extra):
+        r = report(code, "arguments", **extra)
+        return r, [f for path in r["paths"] for f in path["argumentFrames"]]
+
+    def test_read_widths_group_pushed_words_and_forwarding_reaches_a_setter(self):
+        # Caller pushes id, segment, offset and mask words. The callee reads the mask as a word and the far
+        # pointer with LES, and forwards the id word to a setter, which reads it as a word.
+        c = Code().emit("68 05 00 68 00 30 68 44 00 68 07 00").branch("e8", "callee").emit("83 c4 08 c3")
+        c.label("callee").emit("55 89 e5 8b 46 04 c4 5e 06 ff 76 0a").branch("e8", "setter").emit("83 c4 02 5d c3")
+        c.label("setter").emit("55 89 e5 8b 46 04 5d c3")
+        r, frames = self.frames(c)
+        self.assertTrue(r["completeWithinModel"], r)
+        outer = next(f for f in frames if f["depth"] == 0)
+        self.assertTrue(outer["settledOnThisPath"], outer["openReasons"])
+        self.assertEqual((outer["returnFrameBytes"], outer["callerCleanupBytes"], outer["mappedBytes"]), (2, 8, 8))
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"]) for s in outer["slots"]], [(0, 2, 9), (2, 2, 6), (4, 2, 3), (6, 2, 0)])
+        self.assertEqual([(g["offset"], g["width"], g["grouping"], g["slotOffsets"]) for g in outer["groupings"]],
+                         [(0, 2, "consumed width only", [0]), (2, 4, "far-pointer", [2, 4]), (6, 2, "consumed width only", [6])])
+        # The setter's read of the forwarded id is a derived read of the id slot, two frames down.
+        identifier = outer["slots"][3]
+        self.assertEqual([(d["entry"], d["depth"], d["width"]) for d in identifier["derivedReads"]], [(c.labels["setter"], 2, 2)])
+        self.assertEqual(outer["slots"][0]["derivedReads"], [])
+        inner = next(f for f in frames if f["depth"] == 1)
+        self.assertTrue(inner["settledOnThisPath"], inner["openReasons"])
+        self.assertEqual(r["argumentFrameSites"][0]["readWidthSets"], [[{"offset": 0, "width": 2, "grouping": "consumed width only"},
+                                                                         {"offset": 2, "width": 4, "grouping": "far-pointer"},
+                                                                         {"offset": 6, "width": 2, "grouping": "consumed width only"}]])
+        self.assertTrue(all(site["agreed"] for site in r["argumentFrameSites"]))
+
+    def test_the_report_keeps_the_writes_its_slots_cite(self):
+        c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("83 c4 04 c3").label("callee").emit("55 89 e5 8b 46 04 8b 46 06 5d c3")
+        r, frames = self.frames(c)
+        events = {e["order"]: e for e in r["paths"][0]["events"]}
+        cited = [s["writerOrder"] for s in frames[0]["slots"]]
+        self.assertEqual(len(cited), 2)
+        self.assertEqual([(events[o]["kind"], events[o]["site"]) for o in cited], [("write", 2), ("write", 0)])
+        # Writes no slot cites are still filtered out of the arguments report.
+        self.assertEqual(sum(e["kind"] == "write" for e in events.values()), 2)
+
+    def test_a_far_call_maps_slots_above_its_four_byte_frame(self):
+        data = bytes.fromhex("68 00 30 68 44 00 68 07 00 9a 12 00 00 00 83 c4 06 c3 55 89 e5 8b 46 06 c5 5e 08 c9 cb")
+        cfg = configuration(data, relocations=[{"site": 12, "segment": 0x1000, "evidence": "synthetic relocated call"}])
+        frame = run_report(data, cfg, "arguments")["paths"][0]["argumentFrames"][0]
+        self.assertEqual(frame["returnFrameBytes"], 4)
+        self.assertTrue(frame["settledOnThisPath"], frame["openReasons"])
+        self.assertEqual([(g["offset"], g["width"]) for g in frame["groupings"]], [(0, 2), (2, 4)])
+
+    def test_a_far_frame_starts_at_the_return_ip_across_the_address_wrap(self):
+        # Four pops leave three pushed words at offsets 2..7, so the far call pushes CS at offset 0 and
+        # the return IP at 0xFFFE. The frame starts above the return IP, not above the CS word.
+        data = bytes.fromhex("5a 5a 5a 5a 68 00 30 68 44 00 68 07 00 9a 1a 00 00 00 83 c4 06 52 52 52 52 c3"
+                             "55 89 e5 8b 46 06 c5 5e 08 c9 cb")
+        cfg = configuration(data, relocations=[{"site": 16, "segment": 0x1000, "evidence": "synthetic relocated call"}])
+        frame = run_report(data, cfg, "arguments")["paths"][0]["argumentFrames"][0]
+        self.assertEqual(frame["returnFrameBytes"], 4)
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"]) for s in frame["slots"]], [(0, 2, 10), (2, 2, 7), (4, 2, 4)])
+        self.assertTrue(frame["settledOnThisPath"], frame["openReasons"])
+
+    def test_overlapping_read_widths_compete_and_stay_open(self):
+        # The callee reads the first pushed word as a byte and as a word.
+        c = Code().emit("68 07 00").branch("e8", "callee").emit("83 c4 02 c3")
+        c.label("callee").emit("55 89 e5 8a 46 04 8b 46 04 5d c3")
+        _, frames = self.frames(c)
+        frame = frames[0]
+        self.assertEqual(frame["competingWidths"], [[[0, 1], [0, 2]]])
+        self.assertEqual(frame["groupings"][0]["partialSlots"], [0])
+        self.assertFalse(frame["settledOnThisPath"])
+        self.assertIn("reads of different widths overlap", frame["openReasons"])
+
+    def test_an_unread_slot_an_overwritten_slot_and_an_unbounded_frame_stay_open(self):
+        # Two words pushed and released, only the first read.
+        c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("83 c4 04 c3").label("callee").emit("55 89 e5 8b 46 04 5d c3")
+        frame = self.frames(c)[1][0]
+        self.assertEqual(frame["slots"][1]["consumedBy"], [])
+        self.assertIn("the slot at 2 was not read by the callee on this path", frame["openReasons"])
+        # The callee overwrites its argument before reading it.
+        c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("55 89 e5 c7 46 04 09 00 8b 46 04 5d c3")
+        frame = self.frames(c)[1][0]
+        self.assertEqual(frame["groupings"][0]["bytesNotFromSlotWriter"], [0, 1])
+        self.assertFalse(frame["settledOnThisPath"])
+        # The callee doubles its argument in place, so the stored word still carries the push among its producers.
+        c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("55 89 e5 d1 66 04 8b 46 04 5d c3")
+        frame = self.frames(c)[1][0]
+        self.assertEqual([g["bytesNotFromSlotWriter"] for g in frame["groupings"]], [[], [0, 1]])
+        self.assertFalse(frame["settledOnThisPath"])
+        # The caller rebalances with POP, so no cleanup amount bounds the frame.
+        c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("59 59 c3").label("callee").emit("55 89 e5 8b 46 04 5d c3")
+        frame = self.frames(c)[1][0]
+        self.assertEqual((frame["callerCleanupBytes"], frame["mappedBytes"]), (None, 2))
+        self.assertIn("no cleanup amount bounds the frame; slots above the highest read are not mapped", frame["openReasons"])
+
+    def test_slots_follow_the_stack_across_the_address_wrap(self):
+        # The root pops its return word, so the call's return frame sits at the top of the stack
+        # offset range and the pushed argument sits at offset 0.
+        c = Code().emit("5a 6a 07").branch("e8", "callee").emit("83 c4 02 52 c3").label("callee").emit("55 89 e5 8b 46 04 5d c3")
+        frame = self.frames(c)[1][0]
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"]) for s in frame["slots"]], [(0, 2, 1)])
+        self.assertTrue(frame["settledOnThisPath"], frame["openReasons"])
+
+    def test_a_read_of_a_word_a_modeled_call_invalidated_stays_open(self):
+        c = Code().emit("6a 01").branch("e8", "service").branch("e8", "callee").emit("83 c4 02 c3")
+        c.label("service").emit("c3").label("callee").emit("55 89 e5 8b 46 04 5d c3")
+        r, frames = self.frames(c, callModels=[{"site": 2, "evidence": "synthetic service", "preserves": ["ss"], "cases": [{}]}])
+        frame = frames[0]
+        self.assertEqual((frame["slots"][0]["writerSite"], frame["slots"][0]["reason"]), (None, "memory invalidated by the modeled call at 2"))
+        self.assertEqual(frame["groupings"][0]["bytesNotFromSlotWriter"], [0, 1])
+        self.assertFalse(frame["settledOnThisPath"])
+        self.assertFalse(r["argumentFrameSites"][0]["agreed"])
+
+    def test_a_word_a_modeled_call_preserved_keeps_its_writer(self):
+        # The model keeps the pushed word on a concrete stack, so the callee reads the push.
+        c = Code().emit("6a 01").branch("e8", "service").branch("e8", "callee").emit("83 c4 02 c3")
+        c.label("service").emit("c3").label("callee").emit("55 89 e5 8b 46 04 5d c3")
+        scope = {"segment": "ss", "base": "sp", "displacement": 0, "bytes": 2, "evidence": "synthetic pushed word"}
+        model = {"site": 2, "evidence": "synthetic service", "preserves": ["ss", "esp"], "cases": [{}], "preservesMemory": [scope]}
+        r, frames = self.frames(c, registers={"ss": 0x2000, "sp": 0x100}, callModels=[model])
+        frame = frames[0]
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"]) for s in frame["slots"]], [(0, 2, 0)])
+        self.assertTrue(frame["settledOnThisPath"], frame["openReasons"])
+        # A frame byte outside the scope still loses its writer.
+        scope["bytes"] = 1
+        frame = self.frames(c, registers={"ss": 0x2000, "sp": 0x100}, callModels=[model])[1][0]
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"], s.get("reason")) for s in frame["slots"]],
+                         [(0, 1, 0, None), (1, 1, None, "memory invalidated by the modeled call at 2")])
+        self.assertFalse(frame["settledOnThisPath"])
+
+    def test_a_callee_that_stops_leaves_its_frame_open(self):
+        c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("55 89 e5 8b 46 04 ff d3")
+        r, frames = self.frames(c)
+        self.assertFalse(r["completeWithinModel"])
+        self.assertFalse(frames[0]["calleeReturned"])
+        self.assertIn("the callee did not return on this path", frames[0]["openReasons"])
+
+    def test_the_window_limit_is_reported(self):
+        # The caller releases 0x200 bytes; only the first 256 are mapped.
+        c = Code().emit("6a 01").branch("e8", "callee").emit("81 c4 00 02 c3").label("callee").emit("55 89 e5 8b 46 04 5d c3")
+        frame = self.frames(c)[1][0]
+        self.assertEqual((frame["callerCleanupBytes"], frame["mappedBytes"]), (0x200, 256))
+        self.assertIn("the frame is wider than the 256-byte window", frame["openReasons"])
+        self.assertEqual(frame["slots"][-1]["writerSite"], None)
+        self.assertEqual(frame["slots"][-1]["offset"] + frame["slots"][-1]["width"], 256)
+
+    def test_paths_that_read_different_widths_keep_the_site_open(self):
+        # One path reads a word, the other a far pointer, from the same two pushed words.
+        c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("83 c4 04 c3")
+        c.label("callee").emit("55 89 e5 85 f6").branch("74", "far").emit("8b 46 04").branch("eb", "done")
+        c.label("far").emit("c4 5e 04").label("done").emit("5d c3")
+        r, frames = self.frames(c)
+        self.assertEqual(len(frames), 2)
+        site = r["argumentFrameSites"][0]
+        self.assertEqual(site["readWidthSets"], [[{"offset": 0, "width": 2, "grouping": "consumed width only"}],
+                                                 [{"offset": 0, "width": 4, "grouping": "far-pointer"}]])
+        self.assertFalse(site["agreed"])
+        self.assertEqual(len(site["unsettledPaths"]), 1)
+
+    def test_paths_that_group_the_same_bytes_differently_keep_the_site_open(self):
+        # Both paths read four bytes at offset 0: one as a far pointer with LES, one as a 32-bit dword.
+        c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("83 c4 04 c3")
+        c.label("callee").emit("55 89 e5 85 f6").branch("74", "far").emit("66 8b 46 04").branch("eb", "done")
+        c.label("far").emit("c4 5e 04").label("done").emit("5d c3")
+        r, frames = self.frames(c)
+        self.assertEqual(len(frames), 2)
+        self.assertTrue(all(f["settledOnThisPath"] for f in frames), [f["openReasons"] for f in frames])
+        site = r["argumentFrameSites"][0]
+        self.assertEqual(site["readWidthSets"], [[{"offset": 0, "width": 4, "grouping": "consumed width only"}],
+                                                 [{"offset": 0, "width": 4, "grouping": "far-pointer"}]])
+        self.assertFalse(site["agreed"])
+
+    def test_a_write_through_another_address_drops_the_slot_writer(self):
+        # A DS write between the push and the call may alias the symbolic stack, so the pushed word
+        # has no known writer when the callee reads it.
+        c = Code().emit("6a 01 c7 06 00 01 05 00").branch("e8", "callee").emit("83 c4 02 c3")
+        c.label("callee").emit("55 89 e5 8b 46 04 5d c3")
+        r, frames = self.frames(c)
+        frame = frames[0]
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"], s.get("reason")) for s in frame["slots"]],
+                         [(0, 2, None, "memory possibly overwritten through another address by the write at 2")])
+        self.assertEqual(frame["groupings"][0]["bytesNotFromSlotWriter"], [0, 1])
+        self.assertFalse(frame["settledOnThisPath"])
+        # On a concrete stack the DS write lands elsewhere, so the push stays the slot's writer.
+        frame = self.frames(c, registers={"ss": 0x2000, "sp": 0x100, "ds": 0x3000})[1][0]
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"]) for s in frame["slots"]], [(0, 2, 0)])
+        self.assertTrue(frame["settledOnThisPath"], frame["openReasons"])
+
+
 class GhidraCrossCheckTests(unittest.TestCase):
     # root: call a (site 0); call b (site 3); call bx (site 6); ret. a and b return.
     code = Code().label("root").branch("e8", "a").branch("e8", "b").emit("ff d3 c3").label("a").emit("c3").label("b").emit("c3")
