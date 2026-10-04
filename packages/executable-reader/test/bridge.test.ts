@@ -1060,6 +1060,72 @@ test("the Ghidra cross-check counts a jmp tail transfer Ghidra continues past ag
   assert.equal(continues.agreed, false);
 });
 
+test("the Ghidra cross-check counts a fall-through Ghidra sends to another address against agreed", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // jmp 68; ret; ret; at 68: ret. The engine stops at the jump into the entry at 68.
+  data.set([0xeb, 2, 0xc3, 0xc3, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const sha256 = createHash("sha256").update(data).digest("hex");
+  const check = (jump: Record<string, unknown>) => {
+    const cfg = {
+      ...config,
+      xxh3: sourceXxh3(data),
+      regions: [{ ...config.regions[0]!, entries: [64, 68] }],
+      ghidraCallEdges: {
+        format: "scientific-method-ghidra-call-edges",
+        version: 1,
+        sha256,
+        functionLimit: 8,
+        missingEntries: [],
+        unreadFunctions: [],
+        functions: [
+          {
+            entry: 64,
+            address: "1000:0040",
+            edges: [
+              {
+                site: 64,
+                siteAddress: "1000:40",
+                target: 68,
+                targetAddress: "1000:44",
+                flow: "UNCONDITIONAL_JUMP",
+                fallsThrough: false,
+                ...jump,
+              },
+            ],
+          },
+          { entry: 68, address: "1000:0044", edges: [] },
+        ],
+      },
+    };
+    writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+    return run(["callees", join(dir, "config.json")]).ghidraCrossCheck;
+  };
+
+  const stops = check({ fallsThroughTo: null, fallsThroughToAddress: null });
+  assert.equal(stops.edges[0].ghidraFallsThroughTo, null);
+  assert.equal(stops.edges[0].ghidraFallsThroughToBasis, "fallsThroughTo");
+  assert.equal(stops.counts.ghidraFallsThroughElsewhere, 0);
+  assert.equal(stops.agreed, true);
+
+  // A user's fall-through override sends Ghidra from the jump to 67.
+  const redirected = check({ fallsThroughTo: 67, fallsThroughToAddress: "1000:43" });
+  assert.equal(redirected.edges[0].result, "agreement");
+  assert.equal(redirected.edges[0].ghidraFallsThrough, false);
+  assert.deepEqual(redirected.edges[0].ghidraFallsThroughTo, { target: 67, targetAddress: "1000:43" });
+  assert.equal(redirected.edges[0].ghidraFallsThroughToBasis, "fallsThroughTo");
+  assert.equal(redirected.counts.ghidraFallsThroughElsewhere, 1);
+  assert.equal(redirected.counts.ghidraContinues, 0);
+  assert.equal(redirected.agreed, false);
+
+  // An export from an older copy of the script carries no redirect, and the row says so.
+  const older = check({});
+  assert.equal(older.edges[0].ghidraFallsThroughTo, null);
+  assert.equal(older.edges[0].ghidraFallsThroughToBasis, "notExported");
+  assert.equal(older.agreed, true);
+});
+
 test("operand candidates preserve prefixed widths and reject interior starts through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);
