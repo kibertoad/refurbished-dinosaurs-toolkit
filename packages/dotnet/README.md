@@ -176,9 +176,9 @@ Every pixel is opaque: the fourth byte of a 32-bit BI_RGB pixel is unused by the
 Pixels a BI_RLE8 stream skips take palette index 0. The file is checked before any pixel buffer is
 allocated: the `BM` signature, a declared file size equal to the length, a positive width, a nonzero
 height, one plane, a palette that ends before the pixel data, rows padded to 4 bytes that fit in the
-file, and at most `maximumPixels` pixels (`ImageLimits.DefaultMaximumPixels`, 16,777,216, by default). A pixel whose palette index is past
-the palette's last colour also throws. Pass `requireDeclaredFileSize: false` for files whose writer
-left the size field zero or wrong.
+file, and at most `maximumPixels` pixels (`ImageLimits.DefaultMaximumPixels`, 16,777,216, by
+default). A pixel whose palette index is past the palette's last colour also throws. Pass
+`requireDeclaredFileSize: false` for files whose writer left the size field zero or wrong.
 
 `Rle8BitmapDecoder` keeps a different job: it rewrites an 8-bit BMP as an uncompressed 8-bit BMP for
 libraries that cannot read BI_RLE8.
