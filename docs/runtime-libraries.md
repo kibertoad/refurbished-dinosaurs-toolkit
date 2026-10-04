@@ -84,8 +84,9 @@ LegacyFormats parts of it:
   then calls `Commit`, which swaps the pack in and keeps the old one on failure.
 - `ContentOverlay` brings the staged content to a patched version before `Commit`. It replaces
   or adds a file only when the target holds the hash the overlay records for it, verifies every
-  payload before replacing anything, and returns records for the installed manifest. The overlay's
-  files and hashes are the restoration's data. See
+  payload before replacing anything, and returns records for the installed manifest. It throws
+  for an importer record list with an unsafe or duplicate path; `InstalledAssetVerifier` checks
+  the rest of each record. The overlay's files and hashes are the restoration's data. See
   [content overlays](../packages/dotnet/README.md#content-overlays).
 - `InstalledContentWriter` suits incremental extractors: it replaces changed files atomically and
   skips byte-identical ones. `InstalledContentUninstaller` removes only the paths the installed
@@ -264,3 +265,21 @@ the old method threw `OverflowException` above about 913,000 sectors. A range th
 image now throws `EndOfStreamException` before the header is written instead of after it, and
 null streams throw `ArgumentNullException`. Remove local byte-count checks made before calling it,
 and use `WriteAsync` to cancel a copy mid-track.
+
+### Overlay installed records
+
+`ContentOverlayResult.UpdateInstalledFiles` now runs each record's path through
+`PortableAssetPath.Relative` before matching it to an output. A record no output matches is
+returned under that path, so `\` separators become `/`; a matched record takes the output's
+spelling, as before. It throws `InvalidDataException` for a list it used to pass
+through:
+
+- a record whose path `Relative` rejects, such as a blank path, `./data/main.bin`, `../x` or a
+  rooted path;
+- two records that name the same path ignoring case and separators, such as `data/main.bin` and
+  `DATA/main.bin`. The message names both spellings.
+
+`InstalledAssetVerifier` already reported these records as `UnsafePath` or `DuplicatePath`, so a
+manifest built from such a list never verified. Fix the importer so each installed file has one
+record with a portable relative path, or catch `InvalidDataException` where the overlay is applied
+and report it as an import failure.

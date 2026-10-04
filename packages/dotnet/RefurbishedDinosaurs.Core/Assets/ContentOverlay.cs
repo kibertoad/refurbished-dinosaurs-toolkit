@@ -399,32 +399,39 @@ public sealed record ContentOverlayResult(string Name, IReadOnlyList<ContentOver
 
     /// <summary>
     /// Returns <paramref name="files"/> with the overlay's outputs in it, for an
-    /// <see cref="InstalledAssetManifest"/>. A record whose path matches an output ignoring case is
-    /// replaced, keeping its media type; outputs no record matches are appended as
-    /// <c>application/octet-stream</c>. Each output's record takes the output's path, size and
-    /// fingerprint, the output's path as its source path, and an
-    /// <see cref="AssetConversion"/> whose method is <see cref="Name"/>.
+    /// <see cref="InstalledAssetManifest"/>. Each record's path goes through
+    /// <see cref="PortableAssetPath.Relative"/>, the check <see cref="InstalledAssetVerifier"/> applies,
+    /// and a record no output matches is returned under that path, so a <c>\</c> separator becomes
+    /// <c>/</c>. A record whose path matches an output ignoring case is replaced, keeping its media
+    /// type; outputs no record matches are appended as <c>application/octet-stream</c>. Each output's
+    /// record takes the output's path, size and fingerprint, the output's path as its source path,
+    /// and an <see cref="AssetConversion"/> whose method is <see cref="Name"/>.
     /// </summary>
     /// <param name="files">The records the import wrote for the content before the overlay.</param>
-    /// <exception cref="InvalidDataException">A record in <paramref name="files"/> is null.</exception>
+    /// <exception cref="InvalidDataException">
+    /// A record in <paramref name="files"/> is null, its path is not accepted by
+    /// <see cref="PortableAssetPath.Relative"/>, or two records name the same path ignoring case and
+    /// separators. For a duplicate, the message names both spellings.
+    /// </exception>
     public IReadOnlyList<InstalledAsset> UpdateInstalledFiles(IEnumerable<InstalledAsset> files)
     {
         ArgumentNullException.ThrowIfNull(files);
         var outputs = Outputs.ToDictionary(output => output.Path, StringComparer.OrdinalIgnoreCase);
-        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // Each normalized record path, mapped to the spelling the record gave it.
+        var listed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var updated = new List<InstalledAsset>();
         foreach (var file in files)
         {
             if (file is null) throw new InvalidDataException("Installed files contain a null record.");
-            var key = file.Path?.Replace('\\', '/');
-            if (key is not null && outputs.TryGetValue(key, out var output))
-            {
-                used.Add(output.Path);
-                updated.Add(Record(output, file.MediaType));
-            }
-            else updated.Add(file);
+            var path = PortableAssetPath.Relative(file.Path);
+            if (!listed.TryAdd(path, file.Path))
+                throw new InvalidDataException(
+                    $"Installed files list one path twice: '{listed[path]}' and '{file.Path}'.");
+            updated.Add(outputs.TryGetValue(path, out var output)
+                ? Record(output, file.MediaType)
+                : file with { Path = path });
         }
-        updated.AddRange(Outputs.Where(output => !used.Contains(output.Path))
+        updated.AddRange(Outputs.Where(output => !listed.ContainsKey(output.Path))
             .Select(output => Record(output, "application/octet-stream")));
         return updated;
     }
