@@ -210,19 +210,25 @@ STEPPED_PORT = "port access past a stop; assumed to continue"
 OPEN_CALL = "call open at a stop inside its callee; continued at its return site, assumed to return"
 
 
-def _function_exit(image, start, limit, follow_flat_ports):
+def _function_exit(image, start, limit, follow_flat_ports, cache):
     """Walk one function's CFG from ``start``, stepping over calls, and say whether it reaches a return.
 
-    Returns the decoded sites, whether a return instruction was reached, and whether the walk
-    stopped at ``limit`` first. A PE32 port access ends its branch unless ``follow_flat_ports``.
+    Returns the decoded sites on a route from ``start`` to a return instruction, whether one was
+    reached, and whether the walk stopped at ``limit`` first. A PE32 port access ends its branch
+    unless ``follow_flat_ports``. In the PE32 model an IRET stops ``trace``, so it is no return here.
+    ``cache`` keeps each walk's result, as several open calls and stops share the same walks.
     """
-    pending, seen, exits = [start], {}, False
+    key = (start, follow_flat_ports)
+    if key in cache:
+        return cache[key]
+    pending, seen, successors, exits = [start], {}, {}, []
     while pending:
         at = pending.pop()
         if at in seen:
             continue
         if len(seen) >= limit:
-            return seen, exits, True
+            cache[key] = {}, False, True
+            return cache[key]
         ins = image.decode(at)
         if ins is None:
             continue
@@ -230,26 +236,37 @@ def _function_exit(image, start, limit, follow_flat_ports):
         m = base_mnemonic(ins)
         if unsupported_transfer(image, ins):
             continue
-        declaration = image.indirect_jumps.get(at)
-        if declaration is not None:
-            pending.extend(row["target"] for row in declaration["rows"])
-            continue
-        if m in RETURNS:
-            exits = True
-            continue
-        if m in ("jmp", "ljmp") or (m.startswith("j") or m.startswith("loop")):
-            target, _ = call_target(image, at, ins)
-            if target is not None:
-                pending.append(target)
-            if m in ("jmp", "ljmp"):
-                continue
-        if m in INTERRUPTS or m == "hlt" or (m in PORTS and image.flat and not follow_flat_ports):
-            continue
-        pending.append(at + ins.size)
-    return seen, exits, False
+        following = successors[at] = []
+        if at in image.indirect_jumps:
+            following.extend(row["target"] for row in image.indirect_jumps[at]["rows"])
+        elif m in RETURNS:
+            if not (image.flat and m in ("iret", "iretd")):
+                exits.append(at)
+        else:
+            if m == "ljmp" or m.startswith(("j", "loop")):
+                target, _ = call_target(image, at, ins)
+                if target is not None:
+                    following.append(target)
+            if not (m in ("jmp", "ljmp") or m in INTERRUPTS or m == "hlt"
+                    or (m in PORTS and image.flat and not follow_flat_ports)):
+                following.append(at + ins.size)
+        pending.extend(following)
+    # Only the sites a return is reachable from lie on the way to it; a branch that never returns is left out.
+    callers = {}
+    for at, following in successors.items():
+        for target in following:
+            callers.setdefault(target, []).append(at)
+    on_route, pending = set(exits), list(exits)
+    while pending:
+        for at in callers.get(pending.pop(), ()):
+            if at not in on_route:
+                on_route.add(at)
+                pending.append(at)
+    cache[key] = {at: seen[at] for at in on_route}, bool(exits), False
+    return cache[key]
 
 
-def _caller_continuations(image, stop, reason, stack, limit):
+def _caller_continuations(image, stop, reason, stack, limit, cache):
     """Return sites at which ``uses`` continues its inventory past a stop inside a called function.
 
     ``stack`` holds the traced calls still open at ``stop`` as (call site, return site) pairs,
@@ -267,15 +284,15 @@ def _caller_continuations(image, stop, reason, stack, limit):
     depends = [{"site": stop, "reason": reason}]
     start, port_free = stop, not (image.flat and base_mnemonic(ins) in PORTS)
     for call_site, return_site in reversed(stack):
-        seen, exits, truncated = _function_exit(image, start, limit, True)
+        route, exits, truncated = _function_exit(image, start, limit, True, cache)
         if truncated:
             return rows, [{"site": start, "reason": "instruction limit"}]
         if not exits:
             break
         if port_free:
-            _, port_free, truncated = _function_exit(image, start, limit, False)
-            port_free = port_free and not truncated
-        for at, ins in sorted(seen.items()):
+            # This walk decodes a subset of the one above, so it cannot reach the limit.
+            port_free = _function_exit(image, start, limit, False, cache)[1]
+        for at, ins in sorted(route.items()):
             if at == stop:
                 continue
             if ins.mnemonic in ("call", "lcall"):
@@ -332,15 +349,13 @@ def uses(image, config):
         string_remaining -= report["stringIterationsUsed"]
         if not report["completeWithinModel"]:
             gaps.append({"entry": at, "reason": "incomplete path effects", "stops": list({p["stop"] for p in report["paths"] if p["stop"]})})
-        for p in report["paths"]:
-            if p["stop"] and p["stopSite"] is not None:
-                stops.setdefault(p["stopSite"], p["stop"])
-                if p["callStack"]:
-                    open_calls.setdefault(p["stopSite"], set()).add(
-                        tuple((f["callSite"], f["continuation"]) for f in p["callStack"]))
-        for g in report["gaps"]:
-            if "site" in g:
-                stops.setdefault(g["site"], g["reason"])
+        stopped = [(p["stopSite"], p["stop"], p["callStack"]) for p in report["paths"]
+                   if p["stop"] and p["stopSite"] is not None]
+        stopped += [(g["site"], g["reason"], g.get("callStack")) for g in report["gaps"] if "site" in g]
+        for site, reason, stack in stopped:
+            stops.setdefault(site, reason)
+            if stack:
+                open_calls.setdefault(site, set()).add(tuple((f["callSite"], f["continuation"]) for f in stack))
         for path in report["paths"]:
             for e in path["events"]:
                 if e["kind"] not in ("read", "write") or mode not in ("both", e["kind"]):
@@ -381,10 +396,10 @@ def uses(image, config):
     # A stop inside a called function would end the inventory at that function's return. The code
     # after each call still open at the stop is inventoried too, from the call's return site, and
     # depends on the stop and on every call between them returning.
-    returning = []
+    returning, exit_walks = [], {}
     for root, stacks in sorted(open_calls.items()):
         for stack in sorted(stacks):
-            rows, frame_gaps = _caller_continuations(image, root, stops[root], stack, instruction_limit)
+            rows, frame_gaps = _caller_continuations(image, root, stops[root], stack, instruction_limit, exit_walks)
             returning.extend(rows)
             gaps.extend(g for g in frame_gaps if g not in gaps)
     seeds = list(stops) + [start for start, _, _ in returning]
@@ -410,8 +425,13 @@ def uses(image, config):
         starts += [(at + ins.size, [{"site": at, "reason": STEPPED_PORT}])
                    for at, ins in after_stop.items() if base_mnemonic(ins) in PORTS and at not in stops]
     starts += [(start, row_depends) for start, row_depends, _ in returning]
-    depends = {}
+    # Several rows can share a start (one return site of many open calls), so each start is walked once.
+    by_start = {}
     for start, row_depends in starts:
+        named = by_start.setdefault(start, [])
+        named.extend(d for d in row_depends if d not in named)
+    depends = {}
+    for start, row_depends in by_start.items():
         reached, _, _, _, _ = walk(image, [start], instruction_limit, follow_flat_ports=True)
         for at in reached:
             named = depends.setdefault(at, [])

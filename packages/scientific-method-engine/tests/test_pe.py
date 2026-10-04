@@ -243,6 +243,40 @@ class PEReporterTests(unittest.TestCase):
                           (f, 'unresolved call: computed transfer remains unresolved'),
                           (f + 2, 'call past a stop; assumed to return')])
 
+    def test_uses_leaves_out_a_call_on_a_branch_that_never_returns(self):
+        # call f; mov [DATA_VA], eax; ret; f: call eax; test eax, eax; jz L; ret; L: call g; jmp $; g: ret
+        c = Code().branch('e8', 'f').emit('a3 00 20 40 00 c3')
+        c.label('f').emit('ff d0 85 c0').branch('74', 'L').emit('c3')
+        c.label('L').branch('e8', 'g').emit('eb fe').label('g').emit('c3')
+        f = c.labels['f']
+        r = report(c, 'uses', query={'offset': DATA_VA, 'width': 4}, controls=[CODE_RAW + 5])
+        row, = r['conditionalAccesses']
+        self.assertEqual([(d['site'] - CODE_RAW, d['reason']) for d in row['dependsOn']],
+                         [(0, 'call open at a stop inside its callee; continued at its return site, assumed to return'),
+                          (f, 'unresolved call: computed transfer remains unresolved')])
+
+    def test_uses_continues_at_the_return_site_of_a_path_limit_inside_a_callee(self):
+        # call f; mov [ebx], eax; ret; f: test eax, eax; jz L; mov ebx, DATA_VA; ret; L: mov ebx, CODE_VA; ret
+        # One path: the branch that points ebx at the query is dropped at the path limit.
+        c = Code().branch('e8', 'f').emit('89 03 c3')
+        c.label('f').emit('85 c0').branch('74', 'L').emit('bb 00 20 40 00 c3').label('L').emit('bb 00 10 40 00 c3')
+        branch = c.labels['f'] + 2
+        r = report(c, 'uses', query={'offset': DATA_VA, 'width': 4}, maxPaths=1)
+        self.assertEqual([(e['site'] - CODE_RAW, e['address'], [(d['site'] - CODE_RAW, d['reason']) for d in e['dependsOn']])
+                          for e in r['conditionalAccesses']],
+                         [(5, 'possible alias',
+                           [(0, 'call open at a stop inside its callee; continued at its return site, assumed to return'),
+                            (branch, 'path limit')])])
+        self.assertFalse(r['negativeUsable'])
+        # The trace command's gaps carry no call stack.
+        self.assertNotIn('callStack', report(c, maxPaths=1)['gaps'][0])
+
+    def test_uses_does_not_continue_past_a_pe32_iret(self):
+        # call f; mov [DATA_VA], eax; ret; f: call eax; iretd. IRET stops the PE32 trace, so it returns to no caller.
+        r = report('e8 06 00 00 00 a3 00 20 40 00 c3 ff d0 cf', 'uses', query={'offset': DATA_VA, 'width': 4})
+        self.assertEqual(r['conditionalAccesses'], [])
+        self.assertFalse(r['negativeUsable'])
+
     def test_uses_keeps_a_stop_in_the_entry_function_without_a_caller_continuation(self):
         # call eax; mov [DATA_VA], eax; ret: no call is open at the stop, so dependsOn names the stop alone.
         r = report('ff d0 a3 00 20 40 00 c3', 'uses', query={'offset': DATA_VA, 'width': 4}, controls=[CODE_RAW + 2])

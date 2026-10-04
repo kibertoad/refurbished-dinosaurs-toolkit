@@ -203,10 +203,12 @@ named callee has been read, those are the accesses to re-check.
 A stop inside a directly called function does not end the inventory at that
 function's return. For each traced call still open at the stop, the inventory
 continues at the call's return site in the caller, and for a nested stop at the
-return site of every open call out to the entry. A return site is continued only
+return site of every open call out to the entry. A path dropped at a path limit
+inside a called function counts as a stop there. A return site is continued only
 when the called function's CFG from the stop (or from the inner return site)
 reaches a return instruction, with calls inside it stepped over; a callee that
-cannot return on its encoded CFG leaves its caller's continuation out. A stop at a
+cannot return on its encoded CFG leaves its caller's continuation out. In the
+PE32 model an IRET stops the trace, so it is no such return. A stop at a
 return instruction is that return failing, so it continues no caller. The
 `dependsOn` of a row reached this way names the stop, each open call between the
 stop and the row with `call open at a stop inside its callee; continued at its

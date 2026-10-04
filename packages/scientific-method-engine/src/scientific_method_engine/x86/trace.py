@@ -336,6 +336,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, call_st
     Callers that continue past a stop at the return sites of its callers pass
     call_stacks=True, and each stopped path carries ``callStack``: the traced
     calls still open at the stop, outermost first, with each one's return site.
+    A path limit gap inside a called function carries the same ``callStack``.
     """
     entry = integer(config.get("entry"), 0, len(image.data) - 1, "entry")
     if not any(entry in r["entries"] for r in image.regions):
@@ -413,6 +414,16 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, call_st
             charge(count.number)
         string_effect(s, ins, count, remaining)
 
+    def open_calls(s):
+        return [{"callSite": f["callSite"], "continuation": f["continuation"]} for f in s.frames[1:]]
+
+    def path_limit(site, s, reason):
+        # A path dropped at site shares the open calls of s; a caller continuing past it needs them.
+        gap = {"site": site, "reason": reason}
+        if call_stacks and len(s.frames) > 1:
+            gap["callStack"] = open_calls(s)
+        global_gaps.append(gap)
+
     def finish(s, reason=None, returned=False):
         if continuing and reason and reason.startswith(STRING_BUDGET_STOP):
             # machine.py names no budget; a continuation's string iterations come from continuationBudget.
@@ -423,7 +434,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, call_st
         if s.loops is not None:
             path["loops"] = s.loops.report()
         if call_stacks and not returned:
-            path["callStack"] = [{"callSite": f["callSite"], "continuation": f["continuation"]} for f in s.frames[1:]]
+            path["callStack"] = open_calls(s)
         assumptions = getattr(s, "declared_jump_assumptions", [])
         if assumptions:
             path["declaredJumpAssumptions"] = assumptions
@@ -585,7 +596,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, call_st
                             for choice in (0, 1):
                                 if choice == 0:
                                     if created >= max_paths:
-                                        global_gaps.append({"site": at, "reason": "path limit at unknown direction flag"})
+                                        path_limit(at, state, "path limit at unknown direction flag")
                                         continue
                                     child = deepcopy(state); created += 1
                                 else:
@@ -645,7 +656,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, call_st
                                 raise StopPath("modeled far return segment changed")
                         for case in model["cases"]:
                             if created >= max_paths:
-                                global_gaps.append({"site": at, "reason": "path limit at modeled call"})
+                                path_limit(at, state, "path limit at modeled call")
                                 break
                             child = deepcopy(state)
                             created += 1
@@ -795,7 +806,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, call_st
                     state = branches.pop()
                     for child in branches:
                         if created >= max_paths:
-                            global_gaps.append({"site": at, "reason": "path limit"})
+                            path_limit(at, state, "path limit")
                         else:
                             pending.append(child)
                             created += 1
