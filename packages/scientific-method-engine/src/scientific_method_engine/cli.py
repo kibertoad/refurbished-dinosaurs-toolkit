@@ -20,6 +20,7 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "agreed is false where Ghidra ends the function at a call, conditional jump or interrupt the engine reads past (ghidraEndsFunction).\n"
          "trace, arguments, effects, returns, guards, memory and allocation check relationalControls:\n"
          "a violated control fails the report; an undecided one is reported and never counts as held.\n"
+         "entryFrame {from} starts an entry inside the function at from, in the frame a trace from there observed.\n"
          "Declared table continuations are separate conditional paths that spend continuationBudget\n"
          "(paths, totalSteps, maxSteps, visitLimit, stringIterations); ordinary computed transfers remain stopped.\n"
          "Port accesses and interrupts are hardware-boundary events; portInputs supplies port reads as assumptions.\n"

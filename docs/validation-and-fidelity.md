@@ -37,7 +37,9 @@ has not read every route. Treat the limit as a sign that the query is too broad 
   follows a loop like that to its end.
 - Read the producer of the forking value and state it as an evidenced input the reporter takes:
   a starting register or flag, a call model's return case, or a narrower entry where the producer
-  is an input. Record the producer evidence beside the finding.
+  is an input. A narrower entry inside a function names the function in `entryFrame`, so the
+  function's return balances and a path through it is read to its end. Record the producer
+  evidence beside the finding.
 - Declared table jumps are continued on their own `continuationBudget`. When the continuations
   stop at a limit, raise that budget, which leaves the ordinary paths as they were. When the
   ordinary route to the jump was itself dropped or stopped, no continuation budget helps:
