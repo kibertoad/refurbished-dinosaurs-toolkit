@@ -73,6 +73,33 @@ public sealed class CoreTests
     }
 
     [Fact]
+    public void StagedPackIgnoresTrailingSeparatorOnDestination()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var destination = Path.Combine(root, "UserContent");
+            Directory.CreateDirectory(destination);
+            File.WriteAllText(Path.Combine(destination, "old.txt"), "old");
+            using var pack = StagedAssetPack.Create(destination + Path.DirectorySeparatorChar);
+            Assert.Equal(Path.GetFullPath(root), Path.GetDirectoryName(pack.StagingDirectory));
+            File.WriteAllText(Path.Combine(pack.StagingDirectory, "new.txt"), "new");
+            pack.Commit();
+            Assert.Equal(["new.txt"], Directory.GetFiles(destination).Select(Path.GetFileName));
+            Assert.Equal(["UserContent"], Directory.GetFileSystemEntries(root).Select(Path.GetFileName));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void StagedPackRejectsFilesystemRoot()
+    {
+        var error = Assert.Throws<ArgumentException>(
+            () => StagedAssetPack.Create(Path.GetPathRoot(Path.GetTempPath())!));
+        Assert.Equal("destination", error.ParamName);
+    }
+
+    [Fact]
     public void PathsPreferContentBesideApplication()
     {
         var root = CreateTemporaryDirectory();
@@ -84,6 +111,23 @@ public sealed class CoreTests
             var result = RestorationPaths.ResolveImportedContent(
                 new("ExampleGame"), app, root, Path.Combine(root, "Local"));
             Assert.Equal(content, result);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void PathsSearchParentOfApplicationDirectoryWithTrailingSeparator()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var app = Path.Combine(root, "Game");
+            var content = Path.Combine(root, "UserContent");
+            Directory.CreateDirectory(app);
+            Directory.CreateDirectory(content);
+            var result = RestorationPaths.ResolveImportedContent(new("ExampleGame"),
+                app + Path.DirectorySeparatorChar, Path.Combine(root, "Elsewhere"), Path.Combine(root, "Local"));
+            Assert.Equal(Path.GetFullPath(content), result);
         }
         finally { Directory.Delete(root, true); }
     }
@@ -102,6 +146,13 @@ public sealed class CoreTests
         var root = Path.Combine(Path.GetTempPath(), "assets");
         Assert.Throws<InvalidDataException>(() => SafePath.Below(root, "../assets-elsewhere/file.dat"));
         Assert.Throws<InvalidDataException>(() => SafePath.Below(root, " "));
+        Assert.Equal(Path.Combine(root, "nested", "file.dat"), SafePath.Below(root, "nested/file.dat"));
+    }
+
+    [Fact]
+    public void SafePathKeepsFilesystemRootAsRoot()
+    {
+        var root = Path.GetPathRoot(Path.GetTempPath())!;
         Assert.Equal(Path.Combine(root, "nested", "file.dat"), SafePath.Below(root, "nested/file.dat"));
     }
 

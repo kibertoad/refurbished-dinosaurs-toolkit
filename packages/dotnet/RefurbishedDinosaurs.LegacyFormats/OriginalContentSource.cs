@@ -140,7 +140,7 @@ internal sealed class DirectoryContentSource : OriginalContentSource
 
     public DirectoryContentSource(string path)
     {
-        root = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
         files = new Dictionary<string, (ContentSourceEntry, string)>(StringComparer.OrdinalIgnoreCase);
         var options = new EnumerationOptions
         {

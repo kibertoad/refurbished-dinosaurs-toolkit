@@ -15,7 +15,10 @@ public static class RestorationPaths
     /// current directory (portable installs), and otherwise the one under local application data.
     /// </summary>
     /// <param name="options">Directory names.</param>
-    /// <param name="applicationDirectory">The directory the game runs from.</param>
+    /// <param name="applicationDirectory">
+    /// The directory the game runs from. A trailing directory separator, as on
+    /// <see cref="AppContext.BaseDirectory"/>, is ignored.
+    /// </param>
     /// <param name="currentDirectory">The process's current directory.</param>
     /// <param name="localApplicationData">The user's local application data folder.</param>
     public static string ResolveImportedContent(
@@ -31,9 +34,13 @@ public static class RestorationPaths
         Validate(currentDirectory, nameof(currentDirectory));
         Validate(localApplicationData, nameof(localApplicationData));
 
-        var parent = Directory.GetParent(applicationDirectory)?.FullName ?? applicationDirectory;
+        // Without trimming, "Game/" has "Game" as its parent, so the parent would never be searched.
+        // A root has no parent and is searched once.
+        var parent = Path.GetDirectoryName(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(applicationDirectory)));
         foreach (var root in new[] { applicationDirectory, parent, currentDirectory })
         {
+            if (root is null) continue;
             var candidate = Path.Combine(root, options.ContentDirectory);
             if (Directory.Exists(candidate)) return candidate;
         }
