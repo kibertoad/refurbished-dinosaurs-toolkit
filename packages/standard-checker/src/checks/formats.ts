@@ -7,7 +7,7 @@ import type { Context } from "../context.ts";
 import { checkResolves, checkStatusCitations, completeReading, rowFacts, statusIndex } from "../evidence.ts";
 import { asList, idsIn, kindOf } from "../ids.ts";
 import { readCsv, tables } from "../markdown.ts";
-import { BINARY_LAYOUT, ENUM_TABLE, ROW_STATUSES, TEXT_LAYOUT } from "../standard.ts";
+import { BINARY_LAYOUT, CLAIM_STATUSES, ENUM_TABLE, ROW_STATUSES, TEXT_LAYOUT } from "../standard.ts";
 import type { Entry, Table } from "../types.ts";
 
 /** The names the formats' tables define. */
@@ -80,7 +80,13 @@ export function checkFormat(ctx: Context, e: Entry, formatNames: FormatNames) {
       if (isTotal) continue;
       const st = row[statusCol];
       if (!ROW_STATUSES.includes(st)) {
-        problem(file, `${kindLabel} row ${row[nameCol] ?? row[0]}: status ${st} is not allowed in a row`, "STATUS-1");
+        // STATUS-1 lists the statuses. That a row is never superseded is a rule of Formats, which has no
+        // numbered rules yet.
+        problem(
+          file,
+          `${kindLabel} row ${row[nameCol] ?? row[0]}: status ${st} is not allowed in a row`,
+          CLAIM_STATUSES.includes(st) ? undefined : "STATUS-1",
+        );
         continue;
       }
       if (st === "disputed") disputed = true;

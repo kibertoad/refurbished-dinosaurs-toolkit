@@ -36,8 +36,8 @@ export function loadEntries({ config, problem }: LoadContext): Map<string, Entry
         continue;
       }
       if (kindOf(id) !== kind) problem(file, `a ${kindOf(id)} entry does not belong in spec/${dir}/`);
-      // IDENTIFIERS-3 makes a number unique within its kind and area. No numbered rule says so of an alias.
-      if (entries.has(id)) problem(file, `ID ${id} is used twice`, isAlias(id) ? undefined : "IDENTIFIERS-3");
+      // IDENTIFIERS-3 makes a number unique within its kind and area, and IDENTIFIERS-4 an alias.
+      if (entries.has(id)) problem(file, `ID ${id} is used twice`, isAlias(id) ? "IDENTIFIERS-4" : "IDENTIFIERS-3");
       entries.set(id, entry);
     }
   }
