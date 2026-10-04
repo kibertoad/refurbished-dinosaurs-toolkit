@@ -1,7 +1,13 @@
-"""Unicorn oracle cases per instruction group (ADR 0003). Synthetic machine code only."""
+"""Unicorn oracle cases per instruction group (ADR 0003). Synthetic machine code only.
+
+INT1 (F1, ICEBP) has no oracle case, because Unicorn rejects F1 as an invalid instruction.
+ADR 0003 records this exception; ``Interrupts.test_int1_vector_without_an_oracle`` pins the
+vector p-code names for it instead.
+"""
 import unittest
 
 from capstone import CS_ARCH_X86, CS_MODE_16, Cs
+from unicorn import UcError
 
 from oracle import STACK, check, configuration, interrupt, run_report
 from scientific_method_engine.x86.pcode_backend import interrupt_vector
@@ -260,13 +266,24 @@ class Interrupts(unittest.TestCase):
     """The vector the engine reports from p-code is the interrupt Unicorn raises."""
 
     def test_interrupt_vectors(self):
-        # Unicorn rejects INT1 (F1) as an invalid instruction, so it has no oracle case.
+        # INT1 has no oracle case; see the module docstring.
         for code in ("b4 4c cd 21", "cd 10", "cc"):
             with self.subTest(code=code):
                 data = bytes.fromhex(code + " c3")
                 result = run_report(data, configuration(data, STACK), "trace")
                 row, = [e for e in result["paths"][0]["events"] if e["kind"] == "hardware-boundary"]
                 self.assertEqual(row["vector"], interrupt(code))
+
+    def test_int1_vector_without_an_oracle(self):
+        # This pins the vector p-code names (the debug exception, 1), so a SLEIGH or pypcode change
+        # that names another fails here. If Unicorn starts running F1, the first check fails and
+        # INT1 joins the oracle cases above.
+        with self.assertRaisesRegex(UcError, "Invalid instruction"):
+            interrupt("f1")
+        data = bytes.fromhex("f1 c3")
+        result = run_report(data, configuration(data, STACK), "trace")
+        row, = [e for e in result["paths"][0]["events"] if e["kind"] == "hardware-boundary"]
+        self.assertEqual((row["mnemonic"], row["vector"]), ("int1", 1))
 
     def test_into_vector_and_stop(self):
         # INTO raises its vector only when OF is set. The engine does not model that branch, so
