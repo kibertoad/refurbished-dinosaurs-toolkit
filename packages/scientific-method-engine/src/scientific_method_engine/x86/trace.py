@@ -323,7 +323,7 @@ def validate_continuation_budget(config):
             for key, value in budget.items()}
 
 
-def trace(image, config, continue_declared_jumps=True, track_loops=True):
+def trace(image, config, continue_declared_jumps=True, track_loops=True, call_stacks=False):
     """Trace bounded paths, preserving declared-table continuations as separate conditional evidence.
 
     Ordinary paths run first. A path stopped at a declared indirect jump is then
@@ -333,6 +333,9 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True):
     Callers that read only ordinary paths pass continue_declared_jumps=False.
     Callers that never report the paths pass track_loops=False, and their paths
     carry no ``loops`` record.
+    Callers that continue past a stop at the return sites of its callers pass
+    call_stacks=True, and each stopped path carries ``callStack``: the traced
+    calls still open at the stop, outermost first, with each one's return site.
     """
     entry = integer(config.get("entry"), 0, len(image.data) - 1, "entry")
     if not any(entry in r["entries"] for r in image.regions):
@@ -419,6 +422,8 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True):
                 "registers": snapshot(s), "conditionalModels": s.conditional}
         if s.loops is not None:
             path["loops"] = s.loops.report()
+        if call_stacks and not returned:
+            path["callStack"] = [{"callSite": f["callSite"], "continuation": f["continuation"]} for f in s.frames[1:]]
         assumptions = getattr(s, "declared_jump_assumptions", [])
         if assumptions:
             path["declaredJumpAssumptions"] = assumptions

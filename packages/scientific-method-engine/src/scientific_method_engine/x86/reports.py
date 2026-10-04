@@ -204,6 +204,90 @@ CFG_OPERAND = "entry-CFG operand past a stop; values and callee effects unresolv
 PORT_OPERAND = "operand past a PE32 port access; values and continuation unresolved"
 
 
+# dependsOn reasons in ``uses`` for the calls and port accesses a conditionalAccesses row is reached past.
+STEPPED_CALL = "call past a stop; assumed to return"
+STEPPED_PORT = "port access past a stop; assumed to continue"
+OPEN_CALL = "call open at a stop inside its callee; continued at its return site, assumed to return"
+
+
+def _function_exit(image, start, limit, follow_flat_ports):
+    """Walk one function's CFG from ``start``, stepping over calls, and say whether it reaches a return.
+
+    Returns the decoded sites, whether a return instruction was reached, and whether the walk
+    stopped at ``limit`` first. A PE32 port access ends its branch unless ``follow_flat_ports``.
+    """
+    pending, seen, exits = [start], {}, False
+    while pending:
+        at = pending.pop()
+        if at in seen:
+            continue
+        if len(seen) >= limit:
+            return seen, exits, True
+        ins = image.decode(at)
+        if ins is None:
+            continue
+        seen[at] = ins
+        m = base_mnemonic(ins)
+        if unsupported_transfer(image, ins):
+            continue
+        declaration = image.indirect_jumps.get(at)
+        if declaration is not None:
+            pending.extend(row["target"] for row in declaration["rows"])
+            continue
+        if m in RETURNS:
+            exits = True
+            continue
+        if m in ("jmp", "ljmp") or (m.startswith("j") or m.startswith("loop")):
+            target, _ = call_target(image, at, ins)
+            if target is not None:
+                pending.append(target)
+            if m in ("jmp", "ljmp"):
+                continue
+        if m in INTERRUPTS or m == "hlt" or (m in PORTS and image.flat and not follow_flat_ports):
+            continue
+        pending.append(at + ins.size)
+    return seen, exits, False
+
+
+def _caller_continuations(image, stop, reason, stack, limit):
+    """Return sites at which ``uses`` continues its inventory past a stop inside a called function.
+
+    ``stack`` holds the traced calls still open at ``stop`` as (call site, return site) pairs,
+    outermost first. A return site is continued only when the CFG from the stop, or from the
+    return site inside it, reaches a return of the called function. Each continuation depends on
+    the stop, on every open call from the stop out to that return site, and on every call or PE32
+    port access stepped over on the way to those returns. Returns (return site, dependsOn,
+    reached without crossing a PE32 port access) rows and the gaps of walks that reached ``limit``.
+    """
+    rows = []
+    ins = image.decode(stop)
+    # A stop at a return instruction is the return itself failing, so no caller continuation is assumed.
+    if ins is None or base_mnemonic(ins) in RETURNS:
+        return rows, []
+    depends = [{"site": stop, "reason": reason}]
+    start, port_free = stop, not (image.flat and base_mnemonic(ins) in PORTS)
+    for call_site, return_site in reversed(stack):
+        seen, exits, truncated = _function_exit(image, start, limit, True)
+        if truncated:
+            return rows, [{"site": start, "reason": "instruction limit"}]
+        if not exits:
+            break
+        if port_free:
+            _, port_free, truncated = _function_exit(image, start, limit, False)
+            port_free = port_free and not truncated
+        for at, ins in sorted(seen.items()):
+            if at == stop:
+                continue
+            if ins.mnemonic in ("call", "lcall"):
+                depends.append({"site": at, "reason": STEPPED_CALL})
+            elif image.flat and base_mnemonic(ins) in PORTS:
+                depends.append({"site": at, "reason": STEPPED_PORT})
+        depends.append({"site": call_site, "reason": OPEN_CALL})
+        start = return_site
+        rows.append((start, list(depends), port_free))
+    return rows, []
+
+
 def uses(image, config):
     query = config.get("query", {})
     offset = integer(query.get("offset"), 0, image.mask, "query offset")
@@ -233,6 +317,8 @@ def uses(image, config):
     entry_limit = integer(config.get("entryLimit", 64), 1, 256, "entryLimit")
     # CFG points where value propagation stopped (or never started), with why; operands after them are inventoried below.
     stops = {}
+    # The traced calls still open at each stop, so the inventory can continue at their return sites.
+    open_calls = {}
     established = entries(image)
     for index, at in enumerate(established):
         if remaining <= 0 or index >= entry_limit:
@@ -241,7 +327,7 @@ def uses(image, config):
                 stops.setdefault(root, "entry not traced: entry or total instruction budget exhausted")
             break
         report = trace(image, {**config, "entry": at, "totalSteps": remaining, "stringIterations": string_remaining},
-                       continue_declared_jumps=False, track_loops=False)
+                       continue_declared_jumps=False, track_loops=False, call_stacks=True)
         remaining -= report["stepsUsed"]
         string_remaining -= report["stringIterationsUsed"]
         if not report["completeWithinModel"]:
@@ -249,6 +335,9 @@ def uses(image, config):
         for p in report["paths"]:
             if p["stop"] and p["stopSite"] is not None:
                 stops.setdefault(p["stopSite"], p["stop"])
+                if p["callStack"]:
+                    open_calls.setdefault(p["stopSite"], set()).add(
+                        tuple((f["callSite"], f["continuation"]) for f in p["callStack"]))
         for g in report["gaps"]:
             if "site" in g:
                 stops.setdefault(g["site"], g["reason"])
@@ -289,29 +378,46 @@ def uses(image, config):
     instruction_limit = config.get("instructionLimit", 10000)
     # This inventory assumes execution continues past each stop, so it also follows PE32 port accesses
     # and names each one below.
-    after_stop, stop_gaps, _, _, _ = (walk(image, list(stops), instruction_limit, follow_flat_ports=True)
-                                      if stops else ({}, [], None, None, None))
+    # A stop inside a called function would end the inventory at that function's return. The code
+    # after each call still open at the stop is inventoried too, from the call's return site, and
+    # depends on the stop and on every call between them returning.
+    returning = []
+    for root, stacks in sorted(open_calls.items()):
+        for stack in sorted(stacks):
+            rows, frame_gaps = _caller_continuations(image, root, stops[root], stack, instruction_limit)
+            returning.extend(rows)
+            gaps.extend(g for g in frame_gaps if g not in gaps)
+    seeds = list(stops) + [start for start, _, _ in returning]
+    after_stop, stop_gaps, _, _, _ = (walk(image, seeds, instruction_limit, follow_flat_ports=True)
+                                      if seeds else ({}, [], None, None, None))
     gaps.extend(g for g in stop_gaps if g["reason"] == "instruction limit")
     # In PE32 a site the stops reach only by continuing past a port access is named as such, even when
     # it also depends on an unread call. The walk that ends at port accesses must finish within the
-    # limit for that claim; otherwise every row keeps the shared value.
+    # limit for that claim; otherwise every row keeps the shared value. A return site counts as
+    # reached without a port access only when its callees return without crossing one.
     port_only = set()
-    if image.flat and any(base_mnemonic(ins) in PORTS for ins in after_stop.values()):
-        before_ports, port_gaps, _, _, _ = walk(image, list(stops), instruction_limit)
+    if image.flat and (any(base_mnemonic(ins) in PORTS for ins in after_stop.values())
+                       or any(not port_free for _, _, port_free in returning)):
+        port_free_seeds = list(stops) + [start for start, _, port_free in returning if port_free]
+        before_ports, port_gaps, _, _, _ = walk(image, port_free_seeds, instruction_limit)
         if not any(g["reason"] == "instruction limit" for g in port_gaps):
             port_only = set(after_stop) - set(before_ports)
     # A call past a stop was never traced either, so code after it also depends on it returning.
-    starts = [(root, root, reason) for root, reason in stops.items()]
-    starts += [(at, at + ins.size, "call past a stop; assumed to return")
+    starts = [(root, [{"site": root, "reason": reason}]) for root, reason in stops.items()]
+    starts += [(at + ins.size, [{"site": at, "reason": STEPPED_CALL}])
                for at, ins in after_stop.items() if ins.mnemonic in ("call", "lcall") and at not in stops]
     if image.flat:
-        starts += [(at, at + ins.size, "port access past a stop; assumed to continue")
+        starts += [(at + ins.size, [{"site": at, "reason": STEPPED_PORT}])
                    for at, ins in after_stop.items() if base_mnemonic(ins) in PORTS and at not in stops]
+    starts += [(start, row_depends) for start, row_depends, _ in returning]
     depends = {}
-    for site, start, reason in sorted(starts):
+    for start, row_depends in starts:
         reached, _, _, _, _ = walk(image, [start], instruction_limit, follow_flat_ports=True)
         for at in reached:
-            depends.setdefault(at, []).append({"site": site, "reason": reason})
+            named = depends.setdefault(at, [])
+            named.extend(d for d in row_depends if d not in named)
+    for named in depends.values():
+        named.sort(key=lambda d: (d["site"], d["reason"]))
     conditional = []
     for at, ins in sorted(after_stop.items()):
         if ins.mnemonic == "lea":

@@ -200,6 +200,30 @@ test("PE32 uses classifies a store reached only past a port access apart from on
   ]);
 });
 
+test("PE32 uses continues at the caller's return site when the trace stops inside a callee", (t) => {
+  // call f; mov [0x402000], eax; ret; f: call eax; ret
+  const { dir, config } = pe32Fixture(t, [0xe8, 6, 0, 0, 0, 0xa3, 0x00, 0x20, 0x40, 0x00, 0xc3, 0xff, 0xd0, 0xc3]);
+  writeFileSync(
+    join(dir, "config.json"),
+    JSON.stringify({ ...config, query: { offset: 0x402000, width: 4 }, controls: [0x205] }),
+  );
+  const report = run(["uses", join(dir, "config.json")]);
+  assert.deepEqual(report.matches, []);
+  assert.deepEqual(
+    report.conditionalAccesses.map((r: Report) => [r.site, r.dependsOn.map((d: Report) => [d.site, d.reason])]),
+    [
+      [
+        0x205,
+        [
+          [0x200, "call open at a stop inside its callee; continued at its return site, assumed to return"],
+          [0x20b, "unresolved call: computed transfer remains unresolved"],
+        ],
+      ],
+    ],
+  );
+  assert.equal(report.negativeUsable, false);
+});
+
 test("PE32 uses takes the access direction of an x87 or INS operand from its mnemonic", (t) => {
   const kinds = (code: number[], access: string) => {
     const { dir, config } = pe32Fixture(t, code);
