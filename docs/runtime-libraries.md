@@ -56,9 +56,12 @@ LegacyFormats parts of it:
   them with `VolumeIdentifier`, `VolumeBlocks` and `VolumeXxh3`, which tells apart two pressings
   that carry the same files. The pins add checks; every file is still verified.
 - `OriginalContentSource.OpenInstallShieldCabinet` lists and reads the members of an InstallShield 5
-  or 6 cabinet set, on disk or inside a disc source, through the same interface. It checks every
-  member's path, extent and the set's limits when it opens, and each member's size (and MD5 for
-  version 6) when it is read to the end. Decode into the staging directory and verify the output
+  or 6 cabinet set, on disk or inside a disc source, through the same interface. It opens from a
+  `dataN.hdr`, or from a `dataN.cab` that holds the header, reading only that file's header region.
+  It checks every member's path, extent and the set's limits when it opens, and each member's size
+  (and MD5 for version 6) when it is read to the end. Entries it does not list are in
+  `SkippedFiles` with a reason: entries marked invalid or without data, version 6 links to them,
+  and version 6 copies of a listed member at the same path with the same size and MD5. Decode into the staging directory and verify the output
   there as for any other source; [InstallShield cabinets](../packages/dotnet/README.md#installshield-cabinets)
   lists the supported subset.
 - `AssetManifest` describes a supported edition by paths, sizes and XXH3-128 hashes, the same

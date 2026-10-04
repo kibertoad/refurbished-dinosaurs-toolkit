@@ -185,7 +185,9 @@ libraries that cannot read BI_RLE8.
 ## InstallShield cabinets
 
 `OriginalContentSource.OpenInstallShieldCabinet(path)` opens a set from its `dataN.hdr` header, or
-from a `dataN.cab` that holds the header. `OpenInstallShieldCabinet(container, headerPath)` opens a set
+from a `dataN.cab` that holds the header. From a `.cab`, only the header region (up to the end of the
+cabinet descriptor the common header places) is read as the header, and the same file is read as
+volume 1. `OpenInstallShieldCabinet(container, headerPath)` opens a set
 inside another source, such as the ISO 9660 volume of a cue/bin image, and reads the volumes through
 that source whenever a member is read. Volumes are `data1.cab`, `data2.cab` and so on beside the header,
 matched ignoring case.
@@ -197,9 +199,19 @@ matched ignoring case.
 Opening reads the header and the volume headers and checks every listed member before any member is
 read: its directory and name joined must pass `PortableAssetPath.Relative`, its data must lie inside the
 volumes, and the set must stay within `InstallShieldCabinetLimits` (100,000 members, 8 GiB expanded
-and a 64 MiB header by default). Two different members at the same path, ignoring case, are rejected;
-a member that links to one already listed at its path is listed once. Entries the cabinet marks invalid,
-or that have no name or no data offset, are left out and listed in `SkippedFiles`. Names are read as
+and a 64 MiB header region by default; the header region is the whole `.hdr` file).
+
+Entries the cabinet marks invalid, or that have no name or no data offset, are left out and listed in
+`SkippedFiles` with the reason. So is a version 6 entry whose link chain ends at such an entry; its
+reason names the entry it links to. A link outside the file table or a link cycle fails the open.
+
+Two entries at the same path, ignoring case, are listed once when one links to the other's data. In a
+version 6 set, two entries stored apart at one path with the same expanded size and header MD5 are
+taken as one file: the first in table order is listed, and the other goes to `SkippedFiles` as its
+duplicate without its stored bytes being read. Any other pair at one path is rejected, and so is
+every pair in a version 5 set, which records no MD5.
+
+Names are read as
 ISO 8859-1. A malformed or truncated header or volume throws `InvalidDataException`; a missing volume
 throws `FileNotFoundException`.
 
