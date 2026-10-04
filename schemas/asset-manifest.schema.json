@@ -25,7 +25,31 @@
         },
         "additionalProperties": false
       }
+    },
+    "audioTracks": {
+      "type": "array",
+      "$comment": "CD audio tracks identified across drive read offsets. Samples are 16-bit stereo pairs, 588 to a sector. Two rules the schema cannot express: each track appears once, and the anchor lies at least toleranceSamples inside both ends of the track.",
+      "items": {
+        "type": "object",
+        "required": ["track", "samples", "toleranceSamples", "anchorOffset", "anchorSamples", "anchorXxh3", "centralXxh3"],
+        "properties": {
+          "track": { "type": "integer", "minimum": 2, "maximum": 99 },
+          "samples": { "type": "integer", "minimum": 1 },
+          "toleranceSamples": { "type": "integer", "minimum": 0, "maximum": 5880 },
+          "anchorOffset": { "type": "integer", "minimum": 0 },
+          "anchorSamples": { "type": "integer", "minimum": 1, "maximum": 44100 },
+          "anchorXxh3": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+          "centralXxh3": { "type": "string", "pattern": "^[0-9a-f]{32}$" }
+        },
+        "additionalProperties": false
+      }
     }
+  },
+  "if": {
+    "not": { "required": ["sourceKind"], "properties": { "sourceKind": { "const": "cue-bin" } } }
+  },
+  "then": {
+    "properties": { "audioTracks": { "maxItems": 0 } }
   },
   "additionalProperties": false
 }

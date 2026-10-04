@@ -32,7 +32,7 @@ on an undocumented public member.
 
 | Namespace | Types | Use |
 |---|---|---|
-| `Assets` | `AssetManifest`, `AssetFileSpec` | One supported edition: its files' paths, sizes and XXH3-128 hashes, how the copy is read, and the edition's `Fingerprint()`. |
+| `Assets` | `AssetManifest`, `AssetFileSpec`, `CddaTrackFingerprint` | One supported edition: its files' paths, sizes and XXH3-128 hashes, for a cue/bin source the fingerprints of its CD audio tracks, how the copy is read, and the edition's `Fingerprint()`. |
 | `Assets` | `FileFingerprint` | XXH3-128 of bytes, a file or a stream, in the documentation standard's form. |
 | `Assets` | `ImportDiskPlanner` | Free space an import needs, counting files it will replace. |
 | `Assets` | `StagedAssetPack` | Build a content directory beside the live one and swap it in, restoring the old one on failure. |
@@ -88,7 +88,8 @@ contexts outside per-frame loops.
 |---|---|
 | `AssetVerifier` | Check the player's original against an `AssetManifest` through any `OriginalContentSource`, and `IdentifyAsync` the supported edition it is, or that several editions match. |
 | `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image or a cue/bin raw disc image behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660` and `OpenCueBin` take it explicitly. |
-| `CueBinSheet`, `CueBinTrack` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order and the data track's end. |
+| `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
+| `CddaTrackFingerprints`, `CddaTrackVerification` | Record and check the fingerprint of a CD audio track in a cue/bin image, accepting a rip shifted by a drive read offset up to the fingerprint's tolerance. See [CD audio across read offsets](#cd-audio-across-read-offsets). |
 | `CueSheet`, `RawMode1Image`, `Iso9660` | Cue/bin raw disc images and the ISO 9660 file system on their data track. |
 | `CddaWave` | A CD audio track of a raw image, written out as WAVE. |
 | `WavePcm16Reader` | 16-bit mono or stereo PCM WAVE files. |
@@ -96,6 +97,33 @@ contexts outside per-frame loops.
 | `WavePcm16Writer` | Writes canonical 16-bit mono or stereo PCM WAVE files. |
 | `PcxDecoder`, `RawIndexedImageDecoder`, `IndexedImage` | 8-bit RLE PCX, and headerless indexed pixels, with RGBA conversion. |
 | `Rle8BitmapDecoder` | 8-bit BMP (BI_RLE8 or BI_RGB), rewritten as uncompressed BI_RGB. |
+
+## CD audio across read offsets
+
+A drive's read offset shifts every sample of a ripped audio track by the same amount, so the exact
+hash of a track differs between two rips of one disc. A `CddaTrackFingerprint` records, for one
+track, its length in samples (16-bit stereo pairs, 588 to a sector), a tolerance, an anchor's offset,
+length and XXH3-128, and the XXH3-128 of the central samples, which leave out the tolerance at each
+end. Record one from a reference rip with `CddaTrackFingerprints.RecordAsync`, which refuses an
+anchor whose samples repeat within the tolerance, and list it in a `cue-bin` manifest's
+`AudioTracks`.
+
+`AssetVerifier` checks each track after the files. A track starts at its `INDEX 01` and ends at the
+next track's `INDEX 00`, that track's `INDEX 01` without one, or the end of the image. The checks
+run in order, and each problem carries `AudioTrack`:
+
+| Check | Problem when it fails |
+|---|---|
+| The sheet has the track and marks it `AUDIO` | `Missing` |
+| The length differs from the fingerprint by at most the tolerance | `WrongSize` |
+| The anchor matches at one shift within the tolerance | `AudioOffsetOutOfRange` at none, `AudioAlignmentAmbiguous` at several |
+| The central samples at that shift hash to the fingerprint | `AudioHashMismatch` |
+
+A shifted rip moves the end of a track into the sectors after it, so the checks read past the
+track's extent into the rest of the image. When a check needs samples past the end of the image, the
+track is reported as `Unreadable`, with the check that was not made. A source that is not a cue/bin
+image reports each track as `Unreadable`. The tolerance is at most 5880 samples and the anchor at
+most 44100 samples, since the anchor is hashed once per shift.
 
 ## Media packages
 

@@ -13,17 +13,39 @@ public enum AssetProblem
     Unreadable,
     /// <summary>A required file does not exist.</summary>
     Missing,
-    /// <summary>The file's size differs from the manifest.</summary>
+    /// <summary>
+    /// The file's size differs from the manifest, or a CD audio track's length differs from its
+    /// fingerprint by more than the tolerance.
+    /// </summary>
     WrongSize,
     /// <summary>The file's XXH3-128 fingerprint differs from the manifest.</summary>
-    WrongHash
+    WrongHash,
+    /// <summary>
+    /// A CD audio track's anchor matched at no shift within the fingerprint's tolerance: the rip is
+    /// shifted further than the tolerance, or the track holds other audio.
+    /// </summary>
+    AudioOffsetOutOfRange,
+    /// <summary>
+    /// A CD audio track's anchor matched at more than one shift within the tolerance, so the track's
+    /// alignment is unknown and its central samples were not checked.
+    /// </summary>
+    AudioAlignmentAmbiguous,
+    /// <summary>A CD audio track's anchor matched at one shift, and the central samples at that shift differ from the fingerprint.</summary>
+    AudioHashMismatch
 }
 
 /// <summary>One problem verification found.</summary>
-/// <param name="Path">The manifest path, normalized to <c>/</c> separators, or <see langword="null"/> for the source itself.</param>
+/// <param name="Path">
+/// The manifest path, normalized to <c>/</c> separators, or <see langword="null"/> for the source
+/// itself or an audio track.
+/// </param>
 /// <param name="Problem">What was wrong.</param>
 /// <param name="Detail">A sentence giving the expected and found values.</param>
-public sealed record AssetVerificationIssue(string? Path, AssetProblem Problem, string Detail);
+public sealed record AssetVerificationIssue(string? Path, AssetProblem Problem, string Detail)
+{
+    /// <summary>The number of the manifest's audio track the problem is with, or <see langword="null"/> for a file or the source.</summary>
+    public int? AudioTrack { get; init; }
+}
 
 /// <summary>The outcome of <see cref="AssetVerifier.VerifyAsync(OriginalContentSource, AssetManifest, CancellationToken)"/>.</summary>
 /// <param name="Issues">Every problem, in manifest order.</param>
@@ -64,7 +86,12 @@ public static class AssetVerifier
     /// Checks each manifest file in <paramref name="source"/>: present when required, the exact size,
     /// and the XXH3-128 fingerprint when the manifest gives one. Hashing is skipped for a file of the
     /// wrong size. A file that cannot be read to the end is reported as
-    /// <see cref="AssetProblem.Unreadable"/>.
+    /// <see cref="AssetProblem.Unreadable"/>. Then each of the manifest's
+    /// <see cref="AssetManifest.AudioTracks"/> is checked against the source's cue sheet and image as
+    /// <see cref="CddaTrackFingerprints.VerifyAsync"/> describes. Its problems carry
+    /// <see cref="AssetVerificationIssue.AudioTrack"/>; a track the sheet lacks or does not mark
+    /// <c>AUDIO</c> is <see cref="AssetProblem.Missing"/>, and a source that is not a cue/bin image
+    /// reports each track as <see cref="AssetProblem.Unreadable"/>.
     /// </summary>
     /// <param name="source">The opened original.</param>
     /// <param name="manifest">The manifest, validated before any file is read.</param>
@@ -222,7 +249,63 @@ public static class AssetVerifier
             if (!actual.Equals(spec.Xxh3, StringComparison.Ordinal))
                 issues.Add(new(relative, AssetProblem.WrongHash, $"Expected xxh3 {spec.Xxh3}; found {actual}."));
         }
+        if (manifest.AudioTracks is { Count: > 0 } tracks)
+            await CheckAudioAsync(source, tracks, issues, cancellationToken).ConfigureAwait(false);
         return issues;
+    }
+
+    private static async Task CheckAudioAsync(
+        OriginalContentSource source,
+        IReadOnlyList<CddaTrackFingerprint> tracks,
+        List<AssetVerificationIssue> issues,
+        CancellationToken cancellationToken)
+    {
+        if (source.Cue is not { } sheet || source.OpenRawImage is not { } openImage)
+        {
+            foreach (var track in tracks)
+                issues.Add(new(null, AssetProblem.Unreadable,
+                    $"A {source.Kind} source holds no CD audio track {track.Track:D2}.") { AudioTrack = track.Track });
+            return;
+        }
+
+        Stream image;
+        try { image = openImage(); }
+        catch (Exception exception) when (IsReadFailure(exception))
+        {
+            foreach (var track in tracks)
+                issues.Add(new(null, AssetProblem.Unreadable, $"The image could not be read: {exception.Message}")
+                    { AudioTrack = track.Track });
+            return;
+        }
+
+        await using (image.ConfigureAwait(false))
+        {
+            var imageSectors = image.Length / CueBinSheet.RawSectorSize;
+            foreach (var track in tracks)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (track.Track > sheet.Tracks.Count || sheet.Tracks[track.Track - 1].Type != "AUDIO")
+                {
+                    issues.Add(new(null, AssetProblem.Missing,
+                        $"The cue sheet has no audio track {track.Track:D2}.") { AudioTrack = track.Track });
+                    continue;
+                }
+                CddaTrackVerification result;
+                try
+                {
+                    result = await CddaTrackFingerprints.VerifyAsync(image,
+                        sheet.TrackExtent(track.Track, imageSectors), track, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (IsReadFailure(exception))
+                {
+                    issues.Add(new(null, AssetProblem.Unreadable, $"The track could not be read: {exception.Message}")
+                        { AudioTrack = track.Track });
+                    continue;
+                }
+                if (result.Problem is { } problem)
+                    issues.Add(new(null, problem, result.Detail) { AudioTrack = track.Track });
+            }
+        }
     }
 
     private static bool IsReadFailure(Exception exception) =>
