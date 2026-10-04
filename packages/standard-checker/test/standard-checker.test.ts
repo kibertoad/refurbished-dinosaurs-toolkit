@@ -123,7 +123,25 @@ test("each link a rule's related field lacks names ENTRY-TYPES-6", (t) => {
   assert.match(output, /RULE-SCORE-001\.md: uses FMT-SCORE-001; add it to related \[ENTRY-TYPES-6\]$/m);
 });
 
-test("a numbered ID used twice names IDENTIFIERS-3, and an alias used twice names no rule", (t) => {
+test("a row status that is no status names STATUS-1, and a superseded row names no rule", (t) => {
+  const row = "| `0x00` | 2 | `UINT16LE` | `best` | The best score. | sourced | SRC-MANUAL |";
+  for (const [st, label] of [
+    ["bogus", " \\[STATUS-1\\]"],
+    ["superseded", ""],
+  ]) {
+    const root = broken(t, (r) =>
+      replaceIn(r, "spec/formats/FMT-SCORE-001.md", row, row.replace("| sourced |", `| ${st} |`)),
+    );
+    const { status, output } = run(root);
+    assert.equal(status, 1);
+    assert.match(
+      output,
+      new RegExp("FMT-SCORE-001\\.md: layout row `best`: status " + st + " is not allowed in a row" + label + "$", "m"),
+    );
+  }
+});
+
+test("a numbered ID used twice names IDENTIFIERS-3, and an alias used twice names IDENTIFIERS-4", (t) => {
   const root = broken(t, (r) => {
     cpSync(join(r, "spec/rules/RULE-SCORE-001.md"), join(r, "spec/rules/RULE-SCORE-002.md"));
     cpSync(join(r, "spec/sources/SRC-MANUAL.md"), join(r, "spec/sources/SRC-MANUAL-2.md"));
@@ -131,7 +149,7 @@ test("a numbered ID used twice names IDENTIFIERS-3, and an alias used twice name
   const { status, output } = run(root);
   assert.equal(status, 1);
   assert.match(output, /: ID RULE-SCORE-001 is used twice \[IDENTIFIERS-3\]$/m);
-  assert.match(output, /: ID SRC-MANUAL is used twice$/m);
+  assert.match(output, /: ID SRC-MANUAL is used twice \[IDENTIFIERS-4\]$/m);
 });
 
 test("a data path in the wrong case is reported", (t) => {

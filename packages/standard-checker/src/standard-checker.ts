@@ -755,8 +755,8 @@ for (const [kind, { dir }] of Object.entries(KINDS)) {
       continue;
     }
     if (kindOf(id) !== kind) problem(file, `a ${kindOf(id)} entry does not belong in spec/${dir}/`);
-    // IDENTIFIERS-3 makes a number unique within its kind and area. No numbered rule says so of an alias.
-    if (entries.has(id)) problem(file, `ID ${id} is used twice`, isAlias(id) ? undefined : "IDENTIFIERS-3");
+    // IDENTIFIERS-3 makes a number unique within its kind and area, and IDENTIFIERS-4 an alias.
+    if (entries.has(id)) problem(file, `ID ${id} is used twice`, isAlias(id) ? "IDENTIFIERS-4" : "IDENTIFIERS-3");
     entries.set(id, entry);
   }
 }
@@ -1521,7 +1521,13 @@ function checkFormat(e: Entry) {
       if (isTotal) continue;
       const st = row[statusCol];
       if (!ROW_STATUSES.includes(st)) {
-        problem(file, `${kindLabel} row ${row[nameCol] ?? row[0]}: status ${st} is not allowed in a row`, "STATUS-1");
+        // STATUS-1 lists the statuses. That a row is never superseded is a rule of Formats, which has no
+        // numbered rules yet.
+        problem(
+          file,
+          `${kindLabel} row ${row[nameCol] ?? row[0]}: status ${st} is not allowed in a row`,
+          CLAIM_STATUSES.includes(st) ? undefined : "STATUS-1",
+        );
         continue;
       }
       if (st === "disputed") disputed = true;
