@@ -200,6 +200,23 @@ test("PE32 uses classifies a store reached only past a port access apart from on
   ]);
 });
 
+test("PE32 uses takes the access direction of an x87 or INS operand from its mnemonic", (t) => {
+  const kinds = (code: number[], access: string) => {
+    const { dir, config } = pe32Fixture(t, code);
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({ ...config, query: { offset: 0x402000, width: 4, access } }),
+    );
+    return run(["uses", join(dir, "config.json")]).conditionalAccesses.map((r: Report) => [r.site, r.kind]);
+  };
+  // call eax; fstp dword [0x402000]; ret
+  const fstp = [0xff, 0xd0, 0xd9, 0x1d, 0x00, 0x20, 0x40, 0x00, 0xc3];
+  assert.deepEqual(kinds(fstp, "write"), [[0x202, "write"]]);
+  assert.deepEqual(kinds(fstp, "read"), []);
+  // call eax; rep insb; ret
+  assert.deepEqual(kinds([0xff, 0xd0, 0xf3, 0x6c, 0xc3], "both"), [[0x202, "write"]]);
+});
+
 function overlayFixture(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "bounded-overlay-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

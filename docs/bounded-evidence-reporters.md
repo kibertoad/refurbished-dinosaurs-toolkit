@@ -182,9 +182,12 @@ numeric `segment`. It traces each established entry instead of linearly decoding
 a region. `controls` names known matching instruction offsets; a missed control
 is an error. The report separates matching accesses, possible unknown aliases,
 raw operand candidates and undecoded ranges. After a stopped effect trace,
-explicit memory operands reached by the entry CFG are still inventoried, in
+explicit memory operands reached from the stops are still inventoried (in the PE32
+model also those reached only by continuing past a port access, see
+[hardware boundaries](#hardware-boundaries)), in
 `conditionalAccesses` rather than `matches`, with unknown values and segment state.
-Their default or overridden segment-register name is retained. Each one's
+Their default or overridden segment-register name is retained, and x87 and
+INS/OUTS operands take their access direction from the mnemonic. Each one's
 `dependsOn` names the stops whose CFG reaches it (an unread call, an unsupported
 instruction, an exhausted budget) and every call, and in the PE32 model every
 port access, it is reached past, since those were never traced either. Once a
@@ -827,8 +830,9 @@ boundary is usable until all declared entries have been checked for conflicts.
 A shared-node positive control also requires usable caller/callee boundaries,
 usable bodies for every node the reused node reaches, no reached node on the
 active path, and no limit-omitted or instruction-capped route beneath the reused
-node, any of which could lead back into the active path. x87 stores and loads
-take their access direction from the mnemonic, since Capstone misreports some.
+node, any of which could lead back into the active path. x87 stores and loads,
+and the memory operands of INS and OUTS, take their access direction from the
+mnemonic, since Capstone misreports some and flags none on INS and OUTS.
 
 `ghidraCallEdges` takes the JSON that the packaged `ExportCallEdges.java` writes. Run it with an
 output path, a function limit (1..128) and the entries to start from. Ghidra walks breadth first
