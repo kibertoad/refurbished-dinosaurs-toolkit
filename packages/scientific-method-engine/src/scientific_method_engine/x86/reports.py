@@ -231,7 +231,7 @@ def uses(image, config):
                 stops.setdefault(root, "entry not traced: entry or total instruction budget exhausted")
             break
         report = trace(image, {**config, "entry": at, "totalSteps": remaining, "stringIterations": string_remaining},
-                       continue_declared_jumps=False)
+                       continue_declared_jumps=False, track_loops=False)
         remaining -= report["stepsUsed"]
         string_remaining -= report["stringIterationsUsed"]
         if not report["completeWithinModel"]:
@@ -501,7 +501,8 @@ def dispatch(image, config):
         raise ValueError("Dispatch table mapping differs from PE source sections")
     for value in values:
         integer(value, 0, (1 << ALIASES[input_reg][2]) - 1, "input value")
-        report = trace(image, {**config, "registers": {**config.get("registers", {}), input_reg: value}}, continue_declared_jumps=False)
+        report = trace(image, {**config, "registers": {**config.get("registers", {}), input_reg: value}}, continue_declared_jumps=False,
+                       track_loops=False)
         outcomes = []
         for path in report["paths"]:
             reached = bool(path["instructionPath"]) and path["instructionPath"][-1] == site

@@ -22,6 +22,7 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "Declared table continuations are separate conditional paths; ordinary computed transfers remain stopped.\n"
          "Port accesses and interrupts are hardware-boundary events; portInputs supplies port reads as assumptions.\n"
          "callModels[].preservesMemory keeps explicit, bounded pre-call byte scopes across a modeled call; other memory stays unknown.\n"
+         "Each traced path's loops record lists restart edges and what changed between iterations (loopIterationLimit).\n"
          "       scientific-method-engine ghidra-scripts")
 
 

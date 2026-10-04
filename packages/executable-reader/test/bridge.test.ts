@@ -873,6 +873,31 @@ test("effects reports port accesses as hardware boundaries apart from RAM writes
   );
 });
 
+test("effects reports a loop's restart edge and an iteration that changed nothing through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // head: cmp si, 16; jae out; jmp head; out: ret
+  data.set([0x83, 0xfe, 0x10, 0x73, 0x02, 0xeb, 0xf9, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const query = { ...config, xxh3: sourceXxh3(data), loopIterationLimit: 8 };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const result = run(["effects", join(dir, "config.json")]);
+  const path = result.paths.find((p: Report) => !p.returned);
+  assert.match(path.stop, /visitLimit/);
+  const loops = path.loops;
+  assert.deepEqual(
+    loops.restartEdges.map((e: Report) => [e.site, e.target, e.kind]),
+    [[69, 64, "jmp"]],
+  );
+  assert.equal(loops.iterationLimit, 8);
+  assert.equal(loops.allIterationsRecorded, true);
+  const last = loops.iterations.at(-1);
+  assert.deepEqual(last.registers.changed, []);
+  assert.equal(last.gates[0].predicateDomain, "unsigned");
+  assert.equal(last.gateOperandsRepeated, true);
+  assert.equal(last.stateRepeatsArrival, 2);
+});
+
 test("effects retains stopped dispatch beside separate conditional table paths", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);

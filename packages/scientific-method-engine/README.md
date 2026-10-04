@@ -109,6 +109,12 @@ pre-call write prefixes and bounded local restoration witnesses. Unknown modeled
 or nested service effects stay separate; no return code establishes rollback or
 transactionality. See [the full contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#ordered-effect-path-summaries).
 
+Each traced path carries a `loops` record: the restart edges the path took and, between
+consecutive arrivals at a loop head, which registers, flags and written bytes changed, the
+signedness and operands of each gate, and whether the state repeats an earlier arrival. It never
+reports that a loop terminates or that a retry succeeded. `loopIterationLimit` caps the records.
+See [loop progress](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#loop-restart-edges-and-iteration-changes).
+
 Evidenced segmented16 `indirectJumps` declarations also expose separate
 `declaredContinuationPaths`. Ordinary paths retain their unresolved transfer;
 conditional routes preserve prefix/child effects with target-choice, live-table
