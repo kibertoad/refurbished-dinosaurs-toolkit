@@ -15,7 +15,7 @@ limits and exceptions of each type.
 | Package | Use it for | References |
 |---|---|---|
 | `RefurbishedDinosaurs.Core` | Identifying, importing, installing and checking content from the player's original; content and settings locations; startup diagnostics; input snapshots and action bindings; deterministic randomness; recoverable saves and settings; viewport and palette helpers. | nothing |
-| `RefurbishedDinosaurs.LegacyFormats` | Game-independent PCX, BMP RLE8, CUE/CDDA, raw Mode 1, ISO 9660 and PCM WAVE readers, a canonical PCM WAVE writer, a streaming WAVE reader, and `OriginalContentSource`. | Core |
+| `RefurbishedDinosaurs.LegacyFormats` | Game-independent PCX, BMP RLE8, CUE/CDDA, raw Mode 1, ISO 9660, InstallShield 5 and 6 cabinet and PCM WAVE readers, a canonical PCM WAVE writer, a streaming WAVE reader, and `OriginalContentSource`. | Core |
 | `RefurbishedDinosaurs.Media.Smacker`, `.Avi`, `.Fli` | Movie decoding. | nothing |
 | `RefurbishedDinosaurs.Media.Playback` | Frame cadence for any of the movie decoders. | nothing |
 | `RefurbishedDinosaurs.Media.Audio` | PCM sample conversion and the lifetimes of backend voices and cached audio resources. | nothing |
@@ -48,12 +48,26 @@ LegacyFormats parts of it:
 - `OriginalContentSource` reads the player's original from an installed directory, an `.iso`
   image or a cue/bin raw image through one file listing. It checks a cue sheet strictly and fails
   on a line it cannot read rather than skipping it.
+- An `.iso` or cue/bin source also gives its ISO 9660 volume: the identifier (`Label`), the size in
+  blocks (`VolumeBlocks`) and the bytes (`OpenVolume`). An `iso9660` or `cue-bin` manifest can pin
+  them with `VolumeIdentifier`, `VolumeBlocks` and `VolumeXxh3`, which tells apart two pressings
+  that carry the same files. The pins add checks; every file is still verified.
+- `OriginalContentSource.OpenInstallShieldCabinet` lists and reads the members of an InstallShield 5
+  or 6 cabinet set, on disk or inside a disc source, through the same interface. It checks every
+  member's path, extent and the set's limits when it opens, and each member's size (and MD5 for
+  version 6) when it is read to the end. Decode into the staging directory and verify the output
+  there as for any other source; [InstallShield cabinets](../packages/dotnet/README.md#installshield-cabinets)
+  lists the supported subset.
 - `AssetManifest` describes a supported edition by paths, sizes and XXH3-128 hashes, the same
   `xxh3` values the spec's build entries give, and names the source kind to read it as.
   `AssetVerifier.IdentifyAsync` tries every edition against the player's copy and reports why the
   others did not match. It names an edition only when exactly one matches, and sets `IsAmbiguous`
   when the manifests cannot tell two apart. A file it cannot read is reported as `Unreadable`.
   `AssetManifest.Fingerprint()` names the edition in the installed manifest.
+- A `cue-bin` manifest can also list `AudioTracks`, each a `CddaTrackFingerprint` recorded with
+  `CddaTrackFingerprints.RecordAsync`. `AssetVerifier` accepts a track shifted by a drive read
+  offset up to the fingerprint's tolerance, and reports a shift past it, an anchor that matches at
+  several shifts and changed audio as separate problems.
 - The importer decodes into `StagedAssetPack.StagingDirectory`, verifies all of its output there,
   then calls `Commit`, which swaps the pack in and keeps the old one on failure.
 - `ContentOverlay` brings the staged content to a patched version before `Commit`. It replaces

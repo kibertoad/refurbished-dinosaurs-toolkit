@@ -4,10 +4,37 @@
   "title": "Original asset source manifest",
   "type": "object",
   "required": ["gameId", "sourceEdition", "files"],
+  "$comment": "Only a source kind that holds an ISO 9660 volume may pin one.",
+  "dependentSchemas": {
+    "volumeIdentifier": { "$ref": "#/$defs/holdsVolume" },
+    "volumeBlocks": { "$ref": "#/$defs/holdsVolume" },
+    "volumeXxh3": { "$ref": "#/$defs/holdsVolume" }
+  },
+  "$defs": {
+    "holdsVolume": {
+      "required": ["sourceKind"],
+      "properties": { "sourceKind": { "enum": ["iso9660", "cue-bin"] } }
+    }
+  },
   "properties": {
     "gameId": { "type": "string", "minLength": 1 },
     "sourceEdition": { "type": "string", "minLength": 1 },
-    "sourceKind": { "enum": ["directory", "iso9660", "cue-bin"], "default": "directory" },
+    "sourceKind": { "enum": ["directory", "iso9660", "cue-bin", "installshield-cabinet"], "default": "directory" },
+    "volumeIdentifier": {
+      "type": "string",
+      "$comment": "The ISO 9660 primary volume descriptor's identifier, without its trailing padding.",
+      "pattern": "^[ -~]{0,31}[!-~]$"
+    },
+    "volumeBlocks": {
+      "type": "integer",
+      "$comment": "The ISO 9660 volume space size in 2048-byte logical blocks.",
+      "minimum": 18
+    },
+    "volumeXxh3": {
+      "type": "string",
+      "$comment": "XXH3-128 of the ISO 9660 volume's declared logical blocks from block 0. An .iso image and a cue/bin image of one disc give the same value.",
+      "pattern": "^[0-9a-f]{32}$"
+    },
     "files": {
       "type": "array",
       "$comment": "At least one file must be required, or the manifest would match any copy.",
@@ -25,7 +52,31 @@
         },
         "additionalProperties": false
       }
+    },
+    "audioTracks": {
+      "type": "array",
+      "$comment": "CD audio tracks identified across drive read offsets. Samples are 16-bit stereo pairs, 588 to a sector. Two rules the schema cannot express: each track appears once, and the anchor lies at least toleranceSamples inside both ends of the track.",
+      "items": {
+        "type": "object",
+        "required": ["track", "samples", "toleranceSamples", "anchorOffset", "anchorSamples", "anchorXxh3", "centralXxh3"],
+        "properties": {
+          "track": { "type": "integer", "minimum": 2, "maximum": 99 },
+          "samples": { "type": "integer", "minimum": 1 },
+          "toleranceSamples": { "type": "integer", "minimum": 0, "maximum": 5880 },
+          "anchorOffset": { "type": "integer", "minimum": 0 },
+          "anchorSamples": { "type": "integer", "minimum": 1, "maximum": 44100 },
+          "anchorXxh3": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+          "centralXxh3": { "type": "string", "pattern": "^[0-9a-f]{32}$" }
+        },
+        "additionalProperties": false
+      }
     }
+  },
+  "if": {
+    "not": { "required": ["sourceKind"], "properties": { "sourceKind": { "const": "cue-bin" } } }
+  },
+  "then": {
+    "properties": { "audioTracks": { "maxItems": 0 } }
   },
   "additionalProperties": false
 }

@@ -6,7 +6,8 @@
 - `RefurbishedDinosaurs.Core`: dependency-free building blocks for importing, installing and checking
   content from the user's original, plus deterministic randomness, state comparison and display
   helpers.
-- `RefurbishedDinosaurs.LegacyFormats`: PCX, bitmap, optical-disc and PCM WAVE readers, and a PCM WAVE writer.
+- `RefurbishedDinosaurs.LegacyFormats`: PCX, bitmap, optical-disc, InstallShield cabinet and PCM WAVE readers, and a PCM
+  WAVE writer.
 - `RefurbishedDinosaurs.Media.Smacker`: SMK containers, palette/video decoding and packed audio.
 - `RefurbishedDinosaurs.Media.Avi`: AVI containers, Cinepak, cumulative RLE8 and Microsoft ADPCM.
 - `RefurbishedDinosaurs.Media.Fli`: AF11 FLI indexing, streaming and indexed frame decoding.
@@ -32,7 +33,7 @@ on an undocumented public member.
 
 | Namespace | Types | Use |
 |---|---|---|
-| `Assets` | `AssetManifest`, `AssetFileSpec` | One supported edition: its files' paths, sizes and XXH3-128 hashes, how the copy is read, and the edition's `Fingerprint()`. |
+| `Assets` | `AssetManifest`, `AssetFileSpec`, `CddaTrackFingerprint` | One supported edition: its files' paths, sizes and XXH3-128 hashes, for a cue/bin source the fingerprints of its CD audio tracks, how the copy is read, and the edition's `Fingerprint()`. |
 | `Assets` | `FileFingerprint` | XXH3-128 of bytes, a file or a stream, in the documentation standard's form. |
 | `Assets` | `ImportDiskPlanner` | Free space an import needs, counting files it will replace. |
 | `Assets` | `StagedAssetPack` | Build a content directory beside the live one and swap it in, restoring the old one on failure. |
@@ -80,8 +81,8 @@ have first (`baseXxh3`, null for an added file that must not exist) and the payl
 Opening rejects a manifest with a duplicate path (ignoring case), a path `PortableAssetPath.Relative`
 rejects, a path that is also a directory of another record, a missing, unlisted or linked payload,
 a payload of another size than its record, an `overlay.json` or `files` directory that is a link,
-and anything over `ContentOverlayLimits` (100,000 files,
-1 GiB a file, 4 GiB in all and a 4 MiB manifest by default).
+and anything over `ContentOverlayLimits` (100,000 files, 1 GiB a file, 4 GiB in all and a 4 MiB
+manifest by default).
 
 `ApplyAsync` checks every target before it writes anything, finding each path component ignoring
 case. A target that already has the payload's size and hash counts as applied and is not written,
@@ -100,6 +101,33 @@ an `AssetConversion` whose method is the overlay's `name`.
 
 An overlay cannot delete a file. The overlay's payloads, hashes and version names are the
 restoration's data.
+
+## Pinning a disc image's volume
+
+Two pressings of a disc can carry the same files in different ISO 9660 volumes. An `iso9660` or
+`cue-bin` manifest can pin the volume as well as the files, with any of three fields:
+
+| Field | Checked against | Problem when it differs |
+|---|---|---|
+| `VolumeIdentifier` | `OriginalContentSource.Label`, the primary volume descriptor's identifier without its trailing padding | `WrongVolumeIdentifier` |
+| `VolumeBlocks` | `OriginalContentSource.VolumeBlocks`, the declared volume space size in 2048-byte blocks | `WrongVolumeSize` |
+| `VolumeXxh3` | XXH3-128 of `OriginalContentSource.OpenVolume()`, the declared blocks from block 0 | `WrongVolumeHash` |
+
+`OpenVolume` reads the same bytes from an `.iso` image and from the data track of a cue/bin image
+of one disc, and leaves out padding after the declared volume, so one `VolumeXxh3` serves both.
+Record it from a reference copy with `FileFingerprint.Xxh3Async(source.OpenVolume())`.
+`AssetVerifier` checks the pins before the files, skips the hash when the identifier or size
+already differs, and reports a source with no volume, or a volume it cannot read, as `Unreadable`.
+It checks every file whatever the pins found. The pins enter `Fingerprint()`, so editions that
+differ only in their volume get different fingerprints. Adding a pin to a manifest that has shipped
+changes its fingerprint, so a copy installed with the unpinned manifest has a `SourceFingerprint`
+that no longer matches and has to be imported again. `Validate` rejects a pin on any other source
+kind.
+
+The `.bin`, `.cue` and `.iso` files themselves cannot be pinned: the cue's text and the `.bin`'s
+audio sectors change between rips of one disc.
+[ADR 0015](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/decisions/0015-iso-volume-pins.md)
+gives the reasons.
 
 ## Input snapshots and bindings
 
@@ -121,8 +149,10 @@ contexts outside per-frame loops.
 | Types | Reads |
 |---|---|
 | `AssetVerifier` | Check the player's original against an `AssetManifest` through any `OriginalContentSource`, and `IdentifyAsync` the supported edition it is, or that several editions match. |
-| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image or a cue/bin raw disc image behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660` and `OpenCueBin` take it explicitly. |
-| `CueBinSheet`, `CueBinTrack` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order and the data track's end. |
+| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image or an InstallShield cabinet set behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin` and `OpenInstallShieldCabinet` take it explicitly. |
+| `InstallShieldCabinetSource`, `InstallShieldCabinetLimits` | The members of an InstallShield 5 or 6 cabinet set (`dataN.hdr` and `dataN.cab`), on disk or inside another source. See [InstallShield cabinets](#installshield-cabinets). |
+| `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
+| `CddaTrackFingerprints`, `CddaTrackVerification` | Record and check the fingerprint of a CD audio track in a cue/bin image, accepting a rip shifted by a drive read offset up to the fingerprint's tolerance. See [CD audio across read offsets](#cd-audio-across-read-offsets). |
 | `CueSheet`, `RawMode1Image`, `Iso9660` | Cue/bin raw disc images and the ISO 9660 file system on their data track. |
 | `CddaWave` | A CD audio track of a raw image, written out as WAVE. |
 | `WavePcm16Reader` | 16-bit mono or stereo PCM WAVE files. |
@@ -130,6 +160,66 @@ contexts outside per-frame loops.
 | `WavePcm16Writer` | Writes canonical 16-bit mono or stereo PCM WAVE files. |
 | `PcxDecoder`, `RawIndexedImageDecoder`, `IndexedImage` | 8-bit RLE PCX, and headerless indexed pixels, with RGBA conversion. |
 | `Rle8BitmapDecoder` | 8-bit BMP (BI_RLE8 or BI_RGB), rewritten as uncompressed BI_RGB. |
+
+## InstallShield cabinets
+
+`OriginalContentSource.OpenInstallShieldCabinet(path)` opens a set from its `dataN.hdr` header, or
+from a `dataN.cab` that holds the header. `OpenInstallShieldCabinet(container, headerPath)` opens a set
+inside another source, such as the ISO 9660 volume of a cue/bin image, and reads the volumes through
+that source whenever a member is read. Volumes are `data1.cab`, `data2.cab` and so on beside the header,
+matched ignoring case.
+
+| Supported | Not supported |
+|---|---|
+| Major versions 5 and 6, as the header's version word gives them. Stored and compressed members, obfuscated members, members split across volumes, and version 6 members that link to another member's data. | Every other version, which throws `NotSupportedException`. Compressed data delimited by `00 00 FF FF` markers with no chunk lengths (what Unshield reads with `-O`). Members stored outside the cabinet. File groups and components: members are listed by directory and name only. |
+
+Opening reads the header and the volume headers and checks every listed member before any member is
+read: its directory and name joined must pass `PortableAssetPath.Relative`, its data must lie inside the
+volumes, and the set must stay within `InstallShieldCabinetLimits` (100,000 members, 8 GiB expanded
+and a 64 MiB header by default). Two different members at the same path, ignoring case, are rejected;
+a member that links to one already listed at its path is listed once. Entries the cabinet marks invalid,
+or that have no name or no data offset, are left out and listed in `SkippedFiles`. Names are read as
+ISO 8859-1. A malformed or truncated header or volume throws `InvalidDataException`; a missing volume
+throws `FileNotFoundException`.
+
+`OpenRead` decodes a member while it is read. The stream seeks: forward seeks decode the skipped bytes,
+and backward seeks decode again from the start. Reading a member to its end checks that it expands to
+exactly its declared size and, for version 6, that its bytes match the MD5 the header records; a failed
+check throws `InvalidDataException` before the last bytes are returned, so `AssetVerifier` reports the
+file as `Unreadable`. Version 5 headers carry no checksum the reader checks, so version 5 members are
+checked by size only.
+
+The reader is managed code in this package, under its MIT license, with no third-party parser. Its
+reading of the layout follows [Unshield](https://github.com/twogood/unshield) (MIT). No open tool writes
+the format, so the tests build their cabinets with a writer in the test project that follows the same
+layout; a restoration's own set, compared against another extractor, is the check against real media.
+
+## CD audio across read offsets
+
+A drive's read offset shifts every sample of a ripped audio track by the same amount, so the exact
+hash of a track differs between two rips of one disc. A `CddaTrackFingerprint` records, for one
+track, its length in samples (16-bit stereo pairs, 588 to a sector), a tolerance, an anchor's offset,
+length and XXH3-128, and the XXH3-128 of the central samples, which leave out the tolerance at each
+end. Record one from a reference rip with `CddaTrackFingerprints.RecordAsync`, which refuses an
+anchor whose samples repeat within twice the tolerance (the range a rip shifted by up to the
+tolerance shows the verifier), and list it in a `cue-bin` manifest's `AudioTracks`.
+
+`AssetVerifier` checks each track after the files. A track starts at its `INDEX 01` and ends at the
+next track's `INDEX 00`, that track's `INDEX 01` without one, or the end of the image. The checks
+run in order, and each problem carries `AudioTrack`:
+
+| Check | Problem when it fails |
+|---|---|
+| The sheet has the track and marks it `AUDIO` | `Missing` |
+| The length differs from the fingerprint by at most the tolerance | `WrongSize` |
+| The anchor matches at one shift within the tolerance | `AudioOffsetOutOfRange` at none, `AudioAlignmentAmbiguous` at several |
+| The central samples at that shift hash to the fingerprint | `AudioHashMismatch` |
+
+A shifted rip moves the end of a track into the sectors after it, so the checks read past the
+track's extent into the rest of the image. When a check needs samples past the end of the image, the
+track is reported as `Unreadable`, with the check that was not made. A source that is not a cue/bin
+image reports each track as `Unreadable`. The tolerance is at most 5880 samples and the anchor at
+most 44100 samples, since the anchor is hashed once per shift.
 
 ## Media packages
 

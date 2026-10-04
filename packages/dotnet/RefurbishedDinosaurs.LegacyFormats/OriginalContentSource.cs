@@ -18,14 +18,19 @@ public static class ContentSourceKinds
     public const string Iso9660 = "iso9660";
     /// <summary>A <c>.cue</c> sheet and the raw <c>.bin</c> image with 2352-byte sectors it describes.</summary>
     public const string CueBin = "cue-bin";
+    /// <summary>
+    /// An InstallShield 5 or 6 cabinet set, opened from its <c>dataN.hdr</c> header (or a
+    /// <c>dataN.cab</c> that holds the header) with its <c>dataN.cab</c> volumes beside it.
+    /// </summary>
+    public const string InstallShieldCabinet = "installshield-cabinet";
 
     /// <summary>Whether <paramref name="kind"/> is one of the kinds above.</summary>
-    public static bool IsSupported(string kind) => kind is Directory or Iso9660 or CueBin;
+    public static bool IsSupported(string kind) => kind is Directory or Iso9660 or CueBin or InstallShieldCabinet;
 }
 
 /// <summary>
-/// Read access to the user's original files, from an installed directory, an ISO 9660 image or a
-/// cue/bin raw disc image, behind one interface. Paths are relative with <c>/</c> or <c>\</c>
+/// Read access to the user's original files, from an installed directory, an ISO 9660 image, a
+/// cue/bin raw disc image or an InstallShield cabinet set, behind one interface. Paths are relative with <c>/</c> or <c>\</c>
 /// separators and match ignoring case.
 /// </summary>
 public abstract class OriginalContentSource : IDisposable
@@ -36,6 +41,8 @@ public abstract class OriginalContentSource : IDisposable
     public abstract string? Label { get; }
     /// <summary>The cue sheet of a <see cref="ContentSourceKinds.CueBin"/> source, otherwise <see langword="null"/>.</summary>
     public virtual CueBinSheet? Cue => null;
+    // Opens the raw 2352-byte-sector image of a cue/bin source, for its audio tracks.
+    internal virtual Func<Stream>? OpenRawImage => null;
     /// <summary>Every file, sorted by path ignoring case.</summary>
     public abstract IReadOnlyList<ContentSourceEntry> Files { get; }
     /// <summary>Looks up a file.</summary>
@@ -45,14 +52,33 @@ public abstract class OriginalContentSource : IDisposable
     /// <exception cref="FileNotFoundException">The source has no such file.</exception>
     /// <exception cref="InvalidDataException"><paramref name="relativePath"/> is not accepted by <see cref="PortableAssetPath.Relative"/>.</exception>
     public abstract Stream OpenRead(string relativePath);
+    /// <summary>
+    /// The volume space size the ISO 9660 primary volume descriptor declares, in 2048-byte logical
+    /// blocks, or <see langword="null"/> for a source with no ISO 9660 volume, such as a directory.
+    /// </summary>
+    public virtual long? VolumeBlocks => null;
+    /// <summary>
+    /// Opens the ISO 9660 volume as a read-only seekable stream of <see cref="VolumeBlocks"/> times
+    /// 2048 bytes from logical block 0: the image's bytes for <see cref="ContentSourceKinds.Iso9660"/>,
+    /// and the user data of the data track's sectors for <see cref="ContentSourceKinds.CueBin"/>.
+    /// Bytes past the declared volume, such as padding at the end of an image, are left out, so an
+    /// <c>.iso</c> image and a cue/bin image of one disc read the same bytes. Hash it with
+    /// <c>FileFingerprint.Xxh3Async</c> to record <c>AssetManifest.VolumeXxh3</c>.
+    /// </summary>
+    /// <exception cref="NotSupportedException">The source has no ISO 9660 volume.</exception>
+    public virtual Stream OpenVolume() =>
+        throw new NotSupportedException($"A {Kind} source has no ISO 9660 volume.");
     /// <summary>Releases the source. Streams already opened stay usable.</summary>
     public abstract void Dispose();
 
     /// <summary>
     /// Opens <paramref name="path"/> as a directory source when it is a directory, as a cue/bin image
-    /// (see <see cref="OpenCueBin"/>) when it is a <c>.cue</c> file, and as an ISO 9660 image (see
+    /// (see <see cref="OpenCueBin"/>) when it is a <c>.cue</c> file, as an InstallShield cabinet set
+    /// (see <see cref="OpenInstallShieldCabinet(string, InstallShieldCabinetLimits?)"/>) with the
+    /// default limits when it is a <c>.hdr</c> file, and as an ISO 9660 image (see
     /// <see cref="OpenIso9660"/>) when it is any other file.
     /// </summary>
+    /// <exception cref="NotSupportedException">The cabinet set's InstallShield version is not 5 or 6.</exception>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="InvalidDataException">The image is not a valid volume of its kind.</exception>
     public static OriginalContentSource Open(string path)
@@ -60,8 +86,12 @@ public abstract class OriginalContentSource : IDisposable
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         if (Directory.Exists(path)) return new DirectoryContentSource(path);
         if (File.Exists(path))
-            return Path.GetExtension(path).Equals(".cue", StringComparison.OrdinalIgnoreCase)
-                ? OpenCueBin(path) : OpenIso9660(path);
+        {
+            var extension = Path.GetExtension(path);
+            if (extension.Equals(".cue", StringComparison.OrdinalIgnoreCase)) return OpenCueBin(path);
+            if (extension.Equals(".hdr", StringComparison.OrdinalIgnoreCase)) return OpenInstallShieldCabinet(path);
+            return OpenIso9660(path);
+        }
         throw new FileNotFoundException("Original-content source does not exist.", path);
     }
 
@@ -70,11 +100,13 @@ public abstract class OriginalContentSource : IDisposable
     /// <param name="kind">One of <see cref="ContentSourceKinds"/>.</param>
     /// <exception cref="InvalidDataException"><paramref name="kind"/> is unsupported, or the image is not a valid volume of that kind.</exception>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
+    /// <exception cref="NotSupportedException">The cabinet set's InstallShield version is not 5 or 6.</exception>
     public static OriginalContentSource Open(string path, string kind) => kind switch
     {
         ContentSourceKinds.Directory => OpenDirectory(path),
         ContentSourceKinds.Iso9660 => OpenIso9660(path),
         ContentSourceKinds.CueBin => OpenCueBin(path),
+        ContentSourceKinds.InstallShieldCabinet => OpenInstallShieldCabinet(path),
         _ => throw new InvalidDataException($"Unsupported original-content source kind '{kind}'.")
     };
 
@@ -129,7 +161,56 @@ public abstract class OriginalContentSource : IDisposable
         return new Iso9660ContentSource(
             () => new RawMode1UserDataStream(
                 new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read), dataSectors),
-            ContentSourceKinds.CueBin, sheet);
+            ContentSourceKinds.CueBin, sheet, () => CddaTrackFingerprints.OpenImage(binPath));
+    }
+
+    /// <summary>
+    /// Opens an InstallShield 5 or 6 cabinet set from a file. <paramref name="path"/> is the
+    /// <c>dataN.hdr</c> header, or a <c>dataN.cab</c> that holds the header. The volumes are the files
+    /// in the same directory named like the header up to its first dot or digit, then the volume
+    /// number and <c>.cab</c>, matched ignoring case: <c>data1.cab</c>, <c>data2.cab</c> and so on.
+    /// The set is checked when opened, as <see cref="InstallShieldCabinetSource"/> describes.
+    /// </summary>
+    /// <param name="path">The header file.</param>
+    /// <param name="limits">The bounds to apply, or <see langword="null"/> for <see cref="InstallShieldCabinetLimits.Default"/>.</param>
+    /// <exception cref="FileNotFoundException">The header or a volume a member needs does not exist.</exception>
+    /// <exception cref="InvalidDataException">
+    /// The header or a volume is truncated or malformed, a member's path is not relative, two different
+    /// members share a path, or the set exceeds <paramref name="limits"/>.
+    /// </exception>
+    /// <exception cref="NotSupportedException">The header's InstallShield version is not 5 or 6.</exception>
+    public static InstallShieldCabinetSource OpenInstallShieldCabinet(string path, InstallShieldCabinetLimits? limits = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        limits ??= InstallShieldCabinetLimits.Default;
+        limits.Validate();
+        return InstallShieldCabinetOpener.FromDirectory(path, limits);
+    }
+
+    /// <summary>
+    /// Opens an InstallShield 5 or 6 cabinet set held in another source, such as the ISO 9660 volume of
+    /// a disc image. Volumes are looked up in <paramref name="container"/> as
+    /// <see cref="OpenInstallShieldCabinet(string, InstallShieldCabinetLimits?)"/> describes, and are
+    /// opened through it whenever a member is read, so keep <paramref name="container"/> usable while
+    /// the cabinet set is in use.
+    /// </summary>
+    /// <param name="container">The source holding the header and its volumes.</param>
+    /// <param name="headerPath">The header's path in <paramref name="container"/>.</param>
+    /// <param name="limits">The bounds to apply, or <see langword="null"/> for <see cref="InstallShieldCabinetLimits.Default"/>.</param>
+    /// <exception cref="FileNotFoundException">The header or a volume a member needs is not in <paramref name="container"/>.</exception>
+    /// <exception cref="InvalidDataException">
+    /// <paramref name="headerPath"/> is not accepted by <see cref="PortableAssetPath.Relative"/>, the
+    /// header or a volume is truncated or malformed, a member's path is not relative, two different
+    /// members share a path, or the set exceeds <paramref name="limits"/>.
+    /// </exception>
+    /// <exception cref="NotSupportedException">The header's InstallShield version is not 5 or 6.</exception>
+    public static InstallShieldCabinetSource OpenInstallShieldCabinet(
+        OriginalContentSource container, string headerPath, InstallShieldCabinetLimits? limits = null)
+    {
+        ArgumentNullException.ThrowIfNull(container);
+        limits ??= InstallShieldCabinetLimits.Default;
+        limits.Validate();
+        return InstallShieldCabinetOpener.FromSource(container, headerPath, limits);
     }
 }
 
@@ -197,11 +278,12 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     private readonly Dictionary<string, IsoEntry> files = new(StringComparer.OrdinalIgnoreCase);
 
     // openImage returns a new seekable stream of 2048-byte sectors each time.
-    public Iso9660ContentSource(Func<Stream> openImage, string kind, CueBinSheet? cue)
+    public Iso9660ContentSource(Func<Stream> openImage, string kind, CueBinSheet? cue, Func<Stream>? openRawImage = null)
     {
         this.openImage = openImage;
         Kind = kind;
         Cue = cue;
+        OpenRawImage = openRawImage;
         using var stream = openImage();
         var imageLength = stream.Length;
         if (imageLength < 18L * SectorSize)
@@ -226,6 +308,7 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     public override string Kind { get; }
     public override string? Label { get; }
     public override CueBinSheet? Cue { get; }
+    internal override Func<Stream>? OpenRawImage { get; }
     public override IReadOnlyList<ContentSourceEntry> Files { get; }
 
     public override bool TryGetFile(string relativePath, out ContentSourceEntry? entry)
@@ -245,6 +328,10 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
             throw new FileNotFoundException("Source file was not found in the ISO image.", relativePath);
         return new ExtentReadStream(openImage(), checked((long)value.Extent * SectorSize), value.Entry.Size);
     }
+
+    public override long? VolumeBlocks => volumeLength / SectorSize;
+
+    public override Stream OpenVolume() => new ExtentReadStream(openImage(), 0, volumeLength);
 
     public override void Dispose() { }
 
@@ -415,7 +502,7 @@ internal sealed class ExtentReadStream : Stream
         if (buffer.Length - offset < count) throw new ArgumentException("Buffer range is invalid.");
         var bounded = (int)Math.Min(count, length - position);
         if (bounded <= 0) return 0;
-        var read = stream.Read(buffer, offset, bounded);
+        var read = Counted(stream.Read(buffer, offset, bounded));
         position += read;
         return read;
     }
@@ -424,7 +511,7 @@ internal sealed class ExtentReadStream : Stream
     {
         var bounded = (int)Math.Min(buffer.Length, length - position);
         if (bounded <= 0) return 0;
-        var read = stream.Read(buffer[..bounded]);
+        var read = Counted(stream.Read(buffer[..bounded]));
         position += read;
         return read;
     }
@@ -434,10 +521,15 @@ internal sealed class ExtentReadStream : Stream
     {
         var bounded = (int)Math.Min(buffer.Length, length - position);
         if (bounded <= 0) return 0;
-        var read = await stream.ReadAsync(buffer[..bounded], cancellationToken);
+        var read = Counted(await stream.ReadAsync(buffer[..bounded], cancellationToken));
         position += read;
         return read;
     }
+
+    // The image was checked to hold the extent when it was opened, so an image that ends inside the
+    // extent has changed since. Ending the stream early would hash a prefix as if it were the whole.
+    private static int Counted(int read) =>
+        read > 0 ? read : throw new EndOfStreamException("The image ended inside an ISO9660 extent.");
 
     public override long Seek(long offset, SeekOrigin origin)
     {
