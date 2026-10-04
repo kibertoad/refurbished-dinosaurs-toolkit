@@ -52,6 +52,22 @@ public abstract class OriginalContentSource : IDisposable
     /// <exception cref="FileNotFoundException">The source has no such file.</exception>
     /// <exception cref="InvalidDataException"><paramref name="relativePath"/> is not accepted by <see cref="PortableAssetPath.Relative"/>.</exception>
     public abstract Stream OpenRead(string relativePath);
+    /// <summary>
+    /// The volume space size the ISO 9660 primary volume descriptor declares, in 2048-byte logical
+    /// blocks, or <see langword="null"/> for a source with no ISO 9660 volume, such as a directory.
+    /// </summary>
+    public virtual long? VolumeBlocks => null;
+    /// <summary>
+    /// Opens the ISO 9660 volume as a read-only seekable stream of <see cref="VolumeBlocks"/> times
+    /// 2048 bytes from logical block 0: the image's bytes for <see cref="ContentSourceKinds.Iso9660"/>,
+    /// and the user data of the data track's sectors for <see cref="ContentSourceKinds.CueBin"/>.
+    /// Bytes past the declared volume, such as padding at the end of an image, are left out, so an
+    /// <c>.iso</c> image and a cue/bin image of one disc read the same bytes. Hash it with
+    /// <c>FileFingerprint.Xxh3Async</c> to record <c>AssetManifest.VolumeXxh3</c>.
+    /// </summary>
+    /// <exception cref="NotSupportedException">The source has no ISO 9660 volume.</exception>
+    public virtual Stream OpenVolume() =>
+        throw new NotSupportedException($"A {Kind} source has no ISO 9660 volume.");
     /// <summary>Releases the source. Streams already opened stay usable.</summary>
     public abstract void Dispose();
 
@@ -313,6 +329,10 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
         return new ExtentReadStream(openImage(), checked((long)value.Extent * SectorSize), value.Entry.Size);
     }
 
+    public override long? VolumeBlocks => volumeLength / SectorSize;
+
+    public override Stream OpenVolume() => new ExtentReadStream(openImage(), 0, volumeLength);
+
     public override void Dispose() { }
 
     private static byte[] FindPrimaryVolumeDescriptor(Stream stream)
@@ -482,7 +502,7 @@ internal sealed class ExtentReadStream : Stream
         if (buffer.Length - offset < count) throw new ArgumentException("Buffer range is invalid.");
         var bounded = (int)Math.Min(count, length - position);
         if (bounded <= 0) return 0;
-        var read = stream.Read(buffer, offset, bounded);
+        var read = Counted(stream.Read(buffer, offset, bounded));
         position += read;
         return read;
     }
@@ -491,7 +511,7 @@ internal sealed class ExtentReadStream : Stream
     {
         var bounded = (int)Math.Min(buffer.Length, length - position);
         if (bounded <= 0) return 0;
-        var read = stream.Read(buffer[..bounded]);
+        var read = Counted(stream.Read(buffer[..bounded]));
         position += read;
         return read;
     }
@@ -501,10 +521,15 @@ internal sealed class ExtentReadStream : Stream
     {
         var bounded = (int)Math.Min(buffer.Length, length - position);
         if (bounded <= 0) return 0;
-        var read = await stream.ReadAsync(buffer[..bounded], cancellationToken);
+        var read = Counted(await stream.ReadAsync(buffer[..bounded], cancellationToken));
         position += read;
         return read;
     }
+
+    // The image was checked to hold the extent when it was opened, so an image that ends inside the
+    // extent has changed since. Ending the stream early would hash a prefix as if it were the whole.
+    private static int Counted(int read) =>
+        read > 0 ? read : throw new EndOfStreamException("The image ended inside an ISO9660 extent.");
 
     public override long Seek(long offset, SeekOrigin origin)
     {

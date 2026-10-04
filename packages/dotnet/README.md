@@ -68,6 +68,33 @@ use the same rules. A null or blank reference from data, a blank manifest game o
 missing file list throw `InvalidDataException`, like every other rejected reference; a blank root
 or source path passed by the caller still throws `ArgumentException`.
 
+## Pinning a disc image's volume
+
+Two pressings of a disc can carry the same files in different ISO 9660 volumes. An `iso9660` or
+`cue-bin` manifest can pin the volume as well as the files, with any of three fields:
+
+| Field | Checked against | Problem when it differs |
+|---|---|---|
+| `VolumeIdentifier` | `OriginalContentSource.Label`, the primary volume descriptor's identifier without its trailing padding | `WrongVolumeIdentifier` |
+| `VolumeBlocks` | `OriginalContentSource.VolumeBlocks`, the declared volume space size in 2048-byte blocks | `WrongVolumeSize` |
+| `VolumeXxh3` | XXH3-128 of `OriginalContentSource.OpenVolume()`, the declared blocks from block 0 | `WrongVolumeHash` |
+
+`OpenVolume` reads the same bytes from an `.iso` image and from the data track of a cue/bin image
+of one disc, and leaves out padding after the declared volume, so one `VolumeXxh3` serves both.
+Record it from a reference copy with `FileFingerprint.Xxh3Async(source.OpenVolume())`.
+`AssetVerifier` checks the pins before the files, skips the hash when the identifier or size
+already differs, and reports a source with no volume, or a volume it cannot read, as `Unreadable`.
+It checks every file whatever the pins found. The pins enter `Fingerprint()`, so editions that
+differ only in their volume get different fingerprints. Adding a pin to a manifest that has shipped
+changes its fingerprint, so a copy installed with the unpinned manifest has a `SourceFingerprint`
+that no longer matches and has to be imported again. `Validate` rejects a pin on any other source
+kind.
+
+The `.bin`, `.cue` and `.iso` files themselves cannot be pinned: the cue's text and the `.bin`'s
+audio sectors change between rips of one disc.
+[ADR 0015](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/decisions/0015-iso-volume-pins.md)
+gives the reasons.
+
 ## Input snapshots and bindings
 
 `InputState<TButton>` copies down-button snapshots and answers held, pressed and released queries;

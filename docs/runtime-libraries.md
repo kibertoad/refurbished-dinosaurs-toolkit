@@ -48,6 +48,10 @@ LegacyFormats parts of it:
 - `OriginalContentSource` reads the player's original from an installed directory, an `.iso`
   image or a cue/bin raw image through one file listing. It checks a cue sheet strictly and fails
   on a line it cannot read rather than skipping it.
+- An `.iso` or cue/bin source also gives its ISO 9660 volume: the identifier (`Label`), the size in
+  blocks (`VolumeBlocks`) and the bytes (`OpenVolume`). An `iso9660` or `cue-bin` manifest can pin
+  them with `VolumeIdentifier`, `VolumeBlocks` and `VolumeXxh3`, which tells apart two pressings
+  that carry the same files. The pins add checks; every file is still verified.
 - `OriginalContentSource.OpenInstallShieldCabinet` lists and reads the members of an InstallShield 5
   or 6 cabinet set, on disk or inside a disc source, through the same interface. It checks every
   member's path, extent and the set's limits when it opens, and each member's size (and MD5 for
