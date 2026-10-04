@@ -122,6 +122,9 @@ def op(name, a, b, site=None):
         return Value(bits, const(n, bits).term, origin)
     if name in ("sub", "xor") and a.term == b.term:
         return Value(bits, const(0, bits).term, origin)
+    if name == "add" and a.number is not None:
+        # c + x is x + c, so an address built as a constant plus a register keeps the register's base.
+        a, b = b, a
     if name in ("add", "sub") and b.number is not None:
         delta = b.number if name == "add" else -b.number
         base = a.term

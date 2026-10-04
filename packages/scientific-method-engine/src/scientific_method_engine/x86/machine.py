@@ -18,6 +18,13 @@ class StopPath(Exception):
     pass
 
 
+class Shared(dict):
+    """Read-only query configuration that every copy of a path shares instead of copying."""
+
+    def __deepcopy__(self, memo):
+        return self
+
+
 def segment_register(ins, mem):
     """Name the segment register an explicit memory operand uses (override or stack/data default)."""
     if mem.segment:
@@ -87,6 +94,8 @@ class State:
         self.visits = {}
         self.path = []
         self.conditional = []
+        # Values the query supplies for port reads, by site; trace validates them.
+        self.port_inputs = Shared({row["site"]: row for row in config.get("portInputs", [])})
         flags = config.get("flags", {})
         if not isinstance(flags, dict) or set(flags) - {"direction"}:
             raise ValueError("Only an explicit starting direction flag is supported")
@@ -334,8 +343,9 @@ for names, condition in ((("jne", "jnz"), "z"), (("jae", "jnb", "jnc"), "c"), ((
     for name in names:
         BRANCH_CONDITIONS[name] = (condition, True)
 
-# One-byte opcodes of the string forms; CMPS and SCAS repeat while a comparison holds.
-STRING_OPCODES = (0xA4, 0xA5, 0xAA, 0xAB, 0xAC, 0xAD)
+# One-byte opcodes of the string forms (MOVS, STOS, LODS, INS, OUTS); CMPS and SCAS repeat while a
+# comparison holds.
+STRING_OPCODES = (0xA4, 0xA5, 0xAA, 0xAB, 0xAC, 0xAD, 0x6C, 0x6D, 0x6E, 0x6F)
 COMPARE_STRING_OPCODES = (0xA6, 0xA7, 0xAE, 0xAF)
 
 
@@ -350,6 +360,16 @@ def compare_string(ins):
 
 def repeated(ins):
     return 0xF3 in ins.prefix or (0xF2 in ins.prefix and compare_string(ins))
+
+
+def string_width(ins, flat):
+    """The element width of a string form: a byte for even opcodes, else the operand size."""
+    return 1 if ins.opcode[0] % 2 == 0 else (4 if (0x66 in ins.prefix) != flat else 2)
+
+
+def string_operation(ins):
+    """The string operation's name without its width suffix: movs, stos, lods, cmps, scas, ins or outs."""
+    return ins.mnemonic.split()[-1][:-1]
 
 
 def string_count(state, ins):
@@ -370,8 +390,8 @@ def string_effect(state, ins, count, remaining, charge=None):
     the count runs out, within ``remaining`` iterations, and calls ``charge(1)`` for each one,
     because it cannot reserve its iterations before they run.
     """
-    width = 1 if ins.opcode[0] % 2 == 0 else (4 if (0x66 in ins.prefix) != state.flat else 2)
-    operation = ins.mnemonic.split()[-1][:4]
+    width = string_width(ins, state.flat)
+    operation = string_operation(ins)
     compare = compare_string(ins)
     state.event("string-operation", operation=operation, width=width, repetitions=count.report(),
                 direction=state.direction_flag.report(), repeat=repeated(ins),
@@ -384,9 +404,9 @@ def string_effect(state, ins, count, remaining, charge=None):
         return 0
     if state.direction_flag.number is None:
         raise StopPath("Direction flag unresolved; conditional string paths required")
-    # MOVS/LODS decode their source as the second memory operand and CMPS as the first, carrying
-    # any segment override.
-    source_name = (segment_register(ins, ins.operands[1].mem) if operation in ("movs", "lods") else
+    # MOVS/LODS/OUTS decode their source as the second operand and CMPS as the first, carrying any
+    # segment override.
+    source_name = (segment_register(ins, ins.operands[1].mem) if operation in ("movs", "lods", "outs") else
                    segment_register(ins, ins.operands[0].mem) if operation == "cmps" else None)
     counter = "ecx" if state.flat else "cx"
     if not compare or not repeated(ins):

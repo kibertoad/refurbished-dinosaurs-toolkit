@@ -77,3 +77,44 @@ remain explicit. Consumer PRs use published packages, never copied toolkit sourc
 Exit: each slice is released, consumer version pins and lock hashes are updated, and each affected
 restoration's own controls pass against the released version. Candidate-package tests do not close
 this work on behalf of consumers.
+
+## Hardware boundaries and effective segments
+
+Request: Dark Sun gaps 37 (port I/O as a hardware boundary on each path) and 39 (the effective
+segment of frame-indexed accesses).
+
+Tooling outcome: IN, OUT, INS and OUTS run their p-code. SLEIGH lifts them to the `in` and `out`
+user operations, which the interpreter hands to the evidence layer; the port number, width and
+written value come from the p-code. Each access is a `hardware-boundary` event, kept apart from
+`read` and `write`, and the path continues past it. A port read is unknown, named per event, unless
+`portInputs` supplies a value with evidence, which is then a listed assumption on the path. INS and
+OUTS run as bounded string forms, with their RAM side as ordinary string-source and
+string-destination accesses. INT, INT1 and INT3 report their vector as an interrupt boundary and
+stop the path. `trace` places each boundary site on every traced path, on some of them, or as
+unresolved when stopped or dropped paths leave it open, and `bounds` lists the boundary
+instructions statically. The PE32 model stops after a port event, because I/O privilege decides
+whether it faults. Effect summaries list hardware boundary orders separately from writes, and a
+path with one is not effect-complete within the model.
+
+Gap 39 was already met: an access through BX uses DS whether BX got a BP-derived offset by LEA,
+MOV or ADD, the offset keeps its entry-SP expression, and DS equals SS only through `registers` or
+instructions on the path. One precision fix came out of the pinning tests: `c + x` is now the term
+`x + c`, so `mov bx, -4; add bx, bp` addresses the same storage key as `[bp-4]` when the segments
+are equal.
+
+Not built: anything about rendered pixels, device state or what a fixture with substituted RAM or
+mocked ports proves. Those are rules for writing findings, now a short paragraph in
+[validation and fidelity](validation-and-fidelity.md).
+
+Synthetic acceptance: port output with immediate, DX and unknown ports; unknown and supplied port
+reads, including each `portInputs` rejection and its 64-row limit; placement on every path, a
+conditional path, a stopped path and a dropped path; REP OUTS and REP INS with their RAM events;
+INS/OUTS under an unknown direction, unknown count and an exhausted string budget; `uses` past a
+port access; interrupts, with Unicorn oracle cases for their vectors, and
+INTO; the static `bounds` list; the PE32 stop; Unicorn oracle cases for IN/OUT/INS/OUTS port values
+and SI/DI steps; and a reader bridge case. For gap 39: LEA, MOV+ADD and constant+BP forms into BX,
+an index register, SS overrides, aliasing under unknown, different and equal DS/SS, a DS store that
+invalidates frame bytes, and callee and modeled-call segment changes.
+
+Exit: toolkit gates pass. Gaps 37 and 39 close only after Dark Sun reruns its FND-CONFIG-192 and
+FND-CONFIG-198 cases against the released engine.
