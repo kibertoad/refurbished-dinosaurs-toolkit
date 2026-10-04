@@ -292,7 +292,6 @@ def trace(image, config, continue_declared_jumps=True):
     ordinary_max_paths = max_paths
     # Set once every ordinary path has finished. From then on every traced state is a continuation.
     continuing = False
-    ordinary_steps = ordinary_string_steps = 0
     first_continuation_gap = None
 
     def charge(n):
