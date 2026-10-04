@@ -244,8 +244,9 @@ def hardware_placement(outputs, conditional_outputs, gaps):
     """Each hardware boundary site with the traced paths that reach it.
 
     ``gaps`` are the ordinary paths' gaps. ``placement`` is ``everyTracedPath`` when every
-    ordinary path reaches the site and no ordinary path was dropped, ``conditional`` when a path returned without reaching it, and ``unresolved`` when only
-    stopped paths lack it or a limit dropped paths.
+    ordinary path reaches the site and no ordinary path was dropped, ``conditional`` when a path
+    returned without reaching it, and ``unresolved`` when only stopped paths lack it or a limit
+    dropped paths.
     """
     rows = {}
     for group, paths in (("paths", outputs), ("declaredContinuationPaths", conditional_outputs)):
@@ -256,11 +257,13 @@ def hardware_placement(outputs, conditional_outputs, gaps):
                 row = rows.setdefault((e["site"], e["boundary"]), {
                     "site": e["site"], "boundary": e["boundary"], "mnemonic": e["mnemonic"],
                     "paths": [], "declaredContinuationPaths": []})
-                if index not in row[group]:
+                # Paths are visited in index order, so a repeat visit is always the last one listed.
+                if row[group][-1:] != [index]:
                     row[group].append(index)
     result = []
     for (site, _), row in sorted(rows.items()):
-        missing = [i for i in range(len(outputs)) if i not in row["paths"]]
+        reached = set(row["paths"])
+        missing = [i for i in range(len(outputs)) if i not in reached]
         returned = [i for i in missing if outputs[i]["returned"]]
         stopped = [i for i in missing if not outputs[i]["returned"]]
         row["pathsWithout"] = {"returned": returned, "stopped": stopped}

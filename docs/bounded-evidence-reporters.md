@@ -386,7 +386,8 @@ unless the query's `portInputs` supplies one: `portInputs` is a list of at most
 64 rows with `site` (an IN or INS instruction), `value` (fitting its width) and
 `evidence`. A supplied value is reported with `valueSource: "query assumption"`
 and its evidence, and every path that uses it lists it in `conditionalModels`.
-Every read at that site returns the same value. A port event is never a `read`
+Every read at that site returns the same value, and a path lists the supplied
+value once however often the site runs. A port event is never a `read`
 or `write`: INS and OUTS also report the RAM access of each iteration as its own
 `write` or `read` with role `string-destination` or `string-source`, and the
 `memory` report keeps RAM accesses only. In the PE32 model the path stops after
@@ -405,8 +406,8 @@ boundary site with the `paths` and `declaredContinuationPaths` that reach it,
 `everyTracedPath` when every ordinary path reaches the site and no limit dropped
 an ordinary path, `conditional` when a path returned without reaching it, and
 `unresolved` when only stopped paths lack it or a limit dropped ordinary paths.
-A supplied port value is listed once per path, however often the site runs. Placement covers the
-traced paths within the model; native reachability stays unconfirmed.
+Placement covers the traced paths within the model; native reachability stays
+unconfirmed.
 
 `bounds` lists the same instructions statically in `hardwareBoundaries`: the
 `site`, `boundary` and `mnemonic`, and for a port its `port` (`immediate` with

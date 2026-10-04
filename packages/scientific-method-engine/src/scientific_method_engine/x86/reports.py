@@ -4,14 +4,13 @@ from bisect import bisect_right
 from collections import deque
 from capstone import CS_AC_READ, CS_AC_WRITE
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
-from .machine import State, StopPath, REGISTERS, ALIASES, segment_register
+from .machine import State, StopPath, REGISTERS, ALIASES, segment_register, string_instruction
 from .values import unknown
 from .effect_order import effect_ordering
 from .result_flow import return_flows
 from .image import Image, integer
 from .trace import (trace, walk, call_target, unsupported_transfer, uncovered, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
                     RETURNS, INTERRUPTS, PORTS, PORT_INPUTS, port_width)
-from .machine import string_instruction
 from .pcode_backend import interrupt_vector
 
 

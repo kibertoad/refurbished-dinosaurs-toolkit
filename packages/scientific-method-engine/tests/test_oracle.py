@@ -1,7 +1,10 @@
 """Unicorn oracle cases per instruction group (ADR 0003). Synthetic machine code only."""
 import unittest
 
+from capstone import CS_ARCH_X86, CS_MODE_16, Cs
+
 from oracle import STACK, check, configuration, interrupt, run_report
+from scientific_method_engine.x86.pcode_backend import interrupt_vector
 
 DATA = {"ds": 0x3000, "es": 0x4000}
 SAME = {"ds": 0x4000, "es": 0x4000}
@@ -264,6 +267,21 @@ class Interrupts(unittest.TestCase):
                 result = run_report(data, configuration(data, STACK), "trace")
                 row, = [e for e in result["paths"][0]["events"] if e["kind"] == "hardware-boundary"]
                 self.assertEqual(row["vector"], interrupt(code))
+
+    def test_into_vector_and_stop(self):
+        # INTO raises its vector only when OF is set. The engine does not model that branch, so
+        # the path stops at INTO; the vector p-code names must still be the one Unicorn raises.
+        overflow, clear = "b0 7f 04 01 ce", "b0 00 04 01 ce"
+        self.assertIsNone(interrupt(clear))
+        into, = Cs(CS_ARCH_X86, CS_MODE_16).disasm(bytes.fromhex("ce"), 4)
+        vector, conditional = interrupt_vector(False, into, 4)
+        self.assertTrue(conditional)
+        self.assertEqual(vector, interrupt(overflow))
+        data = bytes.fromhex(overflow + " c3")
+        result = run_report(data, configuration(data, STACK), "trace")
+        path, = result["paths"]
+        self.assertFalse(path["returned"])
+        self.assertEqual(path["stop"], "Unsupported instruction semantics: into")
 
 
 if __name__ == "__main__":

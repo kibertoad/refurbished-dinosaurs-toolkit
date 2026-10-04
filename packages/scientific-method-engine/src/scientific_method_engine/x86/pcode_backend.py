@@ -471,7 +471,8 @@ class Pypcode:
     def string_iteration(self, state, ins, operation, width, source_segment):
         """Apply one iteration of an accepted string form; see ``machine.string_effect``.
 
-        ``source_segment`` names the source operand's segment register (MOVS, LODS and CMPS only).
+        ``source_segment`` names the source operand's segment register (MOVS, LODS, OUTS and CMPS
+        only).
         p-code steps SI and DI by the direction flag. For a repeated CMPS or SCAS, returns whether
         the repeat condition holds afterwards (1, 0 or unknown); otherwise None.
         """
