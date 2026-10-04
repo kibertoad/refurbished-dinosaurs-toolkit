@@ -1302,7 +1302,7 @@ def _ghidra_cross_check(image, export, nodes, outgoing, omitted):
         reads_on = flow.get(g["site"], {}).get("readsOn")
         if reads_on is None:
             return row
-        row |= _ghidra_falls_through(g)
+        row |= _ghidra_falls_through(g) | {"engineReadsOn": reads_on}
         if row["ghidraFallsThroughTo"] is not None:
             # Ghidra neither ends the function here nor reads on to the next instruction, whatever the engine does.
             elsewhere.append(row)
@@ -1367,9 +1367,9 @@ def _ghidra_cross_check(image, export, nodes, outgoing, omitted):
                               "to the next instruction there (ghidraFallsThrough), read from the export's fallsThrough or, in an export "
                               "without it, from the flow name (ghidraFallsThroughBasis), and where a fall-through override sends Ghidra to "
                               "another address (ghidraFallsThroughTo), read from the export's fallsThroughTo, or null with "
-                              "ghidraFallsThroughToBasis notExported for an export without it. The engine's side is whether its body reading "
-                              "queued the next instruction at the site; a transfer outside the frame model carries no fall-through "
-                              "comparison. A row where Ghidra ends the function at an instruction "
+                              "ghidraFallsThroughToBasis notExported for an export without it. The engine's side is engineReadsOn, whether its "
+                              "body reading queued the next instruction as the fall-through at the site; a transfer outside the frame "
+                              "model carries no fall-through comparison. A row where Ghidra ends the function at an instruction "
                               "the engine reads past (ghidraEndsFunction), continues past one the engine stops at (ghidraContinues) "
                               "or continues at another address (ghidraFallsThroughElsewhere) counts against agreed. A ghidraOnly edge "
                               "is Ghidra's claim: the engine did not check it and never adds it to its graph. Agreement means both "

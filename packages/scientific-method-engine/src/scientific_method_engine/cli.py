@@ -17,6 +17,7 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "effects|returns|memory|incoming|call-order|guards|allocation|dispatch> <config.json|->\n"
          "effects includes ordered path writes/calls and local restoration witnesses; transactionality remains unestablished.\n"
          "callees compares its edges with an ExportCallEdges.java export given as ghidraCallEdges;\n"
+         "each row it compares fall-through at carries the engine's side as engineReadsOn;\n"
          "agreed is false where Ghidra ends the function at an instruction the engine reads past (ghidraEndsFunction),\n"
          "continues past one the engine stops at (ghidraContinues),\n"
          "or continues at another address than the next instruction (ghidraFallsThroughElsewhere).\n"

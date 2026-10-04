@@ -292,7 +292,15 @@ A tool that parses the output sees these changes. Existing line prefixes are kep
 
 ## Engine upgrades
 
-Breaking engine releases that need a change in a restoration are listed here, newest first.
+Engine releases that need a change in a restoration are listed here, newest first.
+
+### The Ghidra cross-check rows carry the engine's side
+
+Each `callees` `ghidraCrossCheck` row that carries `ghidraFallsThrough` now also carries
+`engineReadsOn`: `true` where the engine's body reading continues to the next instruction at the
+site and `false` where it stops. A row at a transfer outside the frame model, or at an instruction
+the engine did not read, carries neither field. No result, count or `agreed` value changes. A test
+that compares such a row as a whole adds `engineReadsOn`.
 
 ### The Ghidra cross-check reports a redirected fall-through
 
@@ -319,7 +327,8 @@ packaged script:
 Check the rows with `ghidraFallsThroughTo` set. Where the redirect is a leftover, clear the
 fall-through override in Ghidra and export again. A site you keep the override at stays
 `agreed: false`; remove it from `ghidraAgreementSites` controls. A test that compares `counts` as a
-whole adds `ghidraFallsThroughElsewhere`.
+whole adds `ghidraFallsThroughElsewhere`. A test that compares a row carrying `ghidraFallsThrough` as a
+whole adds `ghidraFallsThroughTo` and `ghidraFallsThroughToBasis`, also for an older export.
 
 ### The Ghidra cross-check compares fall-through at jumps and Ghidra-only edges
 
