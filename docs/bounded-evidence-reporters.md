@@ -331,16 +331,19 @@ says what that trace found:
 | `meaning` | how to read `sp` and `bp` |
 
 An established frame starts the query with SP and BP at those offsets from an entry SP, and that
-entry SP is the root frame's: the function's return must use `returnBytes` and leave SP there,
-and `argument` offsets count from it. Memory and every other register stay unknown at the entry,
-as without `entryFrame`. A frame that states BP makes BP an offset from the entry SP, so an
-`origin` control that expects the entry register BP among a value's inputs is undecided, as for a
-register `registers` supplies. A frame that is not established leaves the query as it would run
-without the input, and relational controls left undecided by its stopped paths name the reasons.
-The frame is observed under the query's inputs; a `registers` value that steers the trace from
-`from` steers which arrivals it read. The trace from `from` reads ordinary paths only: it does not
-continue through declared table jumps, so a route to the entry through an indirect jump stops there
-and leaves the frame unestablished, even when the query declares that jump.
+entry SP is the root frame's: the function's return must use `returnBytes` and leave SP there, and
+`argument` offsets count from it. Memory and every other register stay unknown at the entry, as
+without `entryFrame`. A call model's `preservesMemory` scope on SP or BP resolves against these
+offsets, in the trace from `from` and in the query, so it keeps frame bytes across a modeled call
+without a concrete SP ([limits and assumptions](#limits-and-assumptions)). A frame that states BP
+makes BP an offset from the entry SP, so an `origin` control that expects the entry register BP
+among a value's inputs is undecided, as for a register `registers` supplies. A frame that is not
+established leaves the query as it would run without the input, and relational controls left
+undecided by its stopped paths name the reasons. The frame is observed under the query's inputs; a
+`registers` value that steers the trace from `from` steers which arrivals it read. The trace from
+`from` reads ordinary paths only: it does not continue through declared table jumps, so a route to
+the entry through an indirect jump stops there and leaves the frame unestablished, even when the
+query declares that jump.
 
 ## Limits and assumptions
 
@@ -416,18 +419,26 @@ model's `preserves`: the model replaces every other segment register with an unk
 read after the call could address the scope through it.
 
 On a path that reaches the call, each scope resolves against the pre-call state, before a pushed CS
-word is consumed and before a case sets registers. The segment and base must be concrete; PE32 uses
-segment bases, and FS/GS bases stay unknown. An unknown address, an interval that crosses the end of
-the address space, and two scopes that share a linear byte (through different base registers or
-segment values) stop the path. The model then invalidates memory as before and puts back only the
-scoped bytes. A byte the model had a value for keeps that value. A byte it had no value for keeps
-its pre-call unknown term and stays unread: a later read lists it in `missingByteProducers` with the
-reading instruction as its producer, and a later scope counts it in `uncachedBytes`. The model
-restores no register or return target as such. A traced `pop` or `ret` must still read the full
-value, so a scope that covers part of a return word stops at the return, and a later write or
-possible-alias write still replaces or invalidates a scoped byte. A possible-alias write counts a
-dropped scoped byte in `uncertainAliasesInvalidated` when it had a value and in
-`uncertainScopeBytesInvalidated` when it had none. `preserves` alone never keeps a
+word is consumed and before a case sets registers. The segment must be concrete; PE32 uses segment
+bases, and FS/GS bases stay unknown. The base may be concrete, or a symbolic value such as SP or BP
+at an offset from an unknown entry SP, which is how every query starts unless `registers` gives SP,
+and how an [`entryFrame`](#a-narrower-entry-inside-its-functions-frame) query starts
+([ADR 0013](decisions/0013-memory-scopes-on-symbolic-bases.md)). A scope on a symbolic base keeps
+the bytes at those offsets from that value, which later reads and writes through the same value
+address. Its offsets wrap within the segment, as an access through that value does. An unknown
+segment, a concrete interval that crosses the end of the address space, and two scopes that may
+share a byte stop the path. Two scopes share a byte when they overlap on one base value (through
+different base registers too) or overlap in linear memory (through different segment values). A
+scope on a symbolic base may address any byte of its segment, so it stops the path beside any scope
+on another base value whose segment range overlaps that segment. The model then invalidates memory
+as before and puts back only the scoped bytes. A byte the model had a value for keeps that value. A
+byte it had no value for keeps its pre-call unknown term and stays unread: a later read lists it in
+`missingByteProducers` with the reading instruction as its producer, and a later scope counts it in
+`uncachedBytes`. The model restores no register or return target as such. A traced `pop` or `ret`
+must still read the full value, so a scope that covers part of a return word stops at the return,
+and a later write or possible-alias write still replaces or invalidates a scoped byte. A
+possible-alias write counts a dropped scoped byte in `uncertainAliasesInvalidated` when it had a
+value and in `uncertainScopeBytesInvalidated` when it had none. `preserves` alone never keeps a
 saved stack byte.
 
 Each resolved scope is reported once, in `preservedMemoryScopes` on the path's `conditionalModels`
@@ -438,15 +449,18 @@ path, which the site alone would not. Every `effects` call summary has the field
 unless the call was modeled. The summary's `conditionalModels` lists the path's entries in the same
 order without `preservedMemoryScopes`; the summary's `path` names the path that holds them (in
 `declaredContinuationPaths` for a continuation summary), and an allocation entry's `path` does the
-same. A scope entry holds
-`segmentRegister`, `segment`, `baseRegister`, `base` (values and producers), `displacement`,
-`offset`, `linearStart`, `linearEnd`, `bytes`, `evidence`, `cachedBytes`, `uncachedBytes` and a
-fixed `meaning` text. The two counts describe the model's cache: an uncached byte is labelled
-uncached and says nothing about whether the original program wrote it. Memory outside the scopes,
-flags, unpreserved registers and the service's native effects stay unknown, so the call keeps
-`unknownEffects: true` and the path's `effectCompleteWithinModel` stays false. Without
-`preservesMemory`, a model invalidates the whole frame as before. The input needs prepared protocol 3
-in both the reader and the engine. How to cite a finding that rests on a model or a scope is in
+same. A scope entry holds `segmentRegister`, `segment`, `baseRegister`, `base` (values and
+producers), `displacement`, `offset`, `interval`, `linearStart`, `linearEnd`, `bytes`, `evidence`,
+`cachedBytes`, `uncachedBytes` and a fixed `meaning` text. `interval` names the bytes as a read or
+write event's `interval` does: the segment and base terms and the start and end offsets from that
+base, or `linear`/`absolute` and linear addresses when both are concrete. On a symbolic base,
+`offset`, `linearStart` and `linearEnd` are `null`. The two counts describe the model's cache: an
+uncached byte is labelled uncached and says nothing about whether the original program wrote it.
+Memory outside the scopes, flags, unpreserved registers and the service's native effects stay
+unknown, so the call keeps `unknownEffects: true` and the path's `effectCompleteWithinModel` stays
+false. Without `preservesMemory`, a model invalidates the whole frame as before. The input needs
+prepared protocol 3 in both the reader and the engine. How to cite a finding that rests on a model
+or a scope is in
 [validation and fidelity](validation-and-fidelity.md#citing-bounded-evidence-reports).
 
 Defaults cap each path at 512 instructions, the query at 20,000 steps, paths at
@@ -1351,7 +1365,7 @@ instead.
 | Gap | Request | Controls |
 |---|---|---|
 | 32 | a guard precedes and controls the access it protects; a checked snapshot versus a later reload | `order` with `before` the guard's `branch`, `branch.taken` the protecting direction and `sameValue: { "before": "left", "at": "offset" }` (or `"at": "indirectValue"` on a `call` anchor). A reload after a modeled call is undecided; the occurrence lists the intervening calls and writes. Failure-flag writes and calls on the rejected direction are `reach` controls on that branch's paths |
-| 40 | assignment on each cleanup edge | `lastWriter` on the cleanup read with the assignment's write site. An edge where the assignment was skipped violates it; add `entryState` to accept the frame's prior contents and read each edge's `via` and `unwritten` cause. A slot dropped by an unread service is undecided. From an entry inside the function, name the function in `entryFrame` so its return balances; without it every path stops at that return and the control stays undecided |
+| 40 | assignment on each cleanup edge | `lastWriter` on the cleanup read with the assignment's write site. An edge where the assignment was skipped violates it; add `entryState` to accept the frame's prior contents and read each edge's `via` and `unwritten` cause. A slot dropped by an unread service is undecided; a `preservesMemory` scope on BP keeps it across a modeled service, with or without `entryFrame`. From an entry inside the function, name the function in `entryFrame` so its return balances; without it every path stops at that return and the control stays undecided |
 | 31 | aliased outputs; the register a loop predicate comes from | `lastWriter` on the read after both stores names the later store. `origin` on the loop branch's `left` with `inputs.include` the modeled service's register and `producers.exclude` the scratch read |
 | 33 | a propagated result traced to the leaf that produced it | `returnContracts` on the helper, then `origin` on the caller's test with `originatingReturns.entries` the helper and `producers.include` the base case's site. A value made in the caller violates it; each return it passed through is listed with its depth |
 | 30 | runtime mode carried through cleanup; which tables and indirect calls a branch reaches | the mode is a query assumption the engine already accepts: `registers` at entry, or a `callModels` case for the call that returns it. `reach` with `never` on the table loop or indirect call shows the branch bypasses it under that mode, and the assumption is listed in `queryAssumptions`. A stop before the site leaves it undecided, and so does a modeled call on the path, the one that supplies the mode included, because the anchor could lie in its callee. To decide it, start at an entry after that call with the mode in `registers` and the function in `entryFrame` |

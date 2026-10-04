@@ -132,10 +132,12 @@ partial evidence, never complete dispatch or native-reachability claims. See the
 A call model may declare `preservesMemory`: up to 32 scopes (4,096 bytes in total), each naming a
 segment register, an address-width base register, an optional displacement, a byte count and the
 evidence for assuming the service leaves those bytes alone. Scopes resolve against the pre-call
-registers. An unknown, wrapping or overlapping interval stops the path. Only the scoped bytes
-survive the model's memory invalidation, and each scope is reported with the model, the modeled
-return and the effect summary. Everything else the service may do stays unknown. This input needs
-prepared protocol 3, so upgrade the reader and the engine together. See the
+registers. The base may be symbolic, such as BP in an `entryFrame` query, and then keeps the bytes
+at those offsets from its value. An unknown segment, a concrete interval that crosses the end of
+the address space, or two scopes that may share a byte stop the path. Only the scoped bytes survive
+the model's memory invalidation, and each scope is reported with the model, the modeled return and
+the effect summary. Everything else the service may do stays unknown. This input needs prepared
+protocol 3, so upgrade the reader and the engine together. See the
 [call model contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#limits-and-assumptions).
 
 The trace-family commands (`trace`, `arguments`, `effects`, `returns`, `guards`, `memory`,
