@@ -156,7 +156,8 @@ frame holds:
 - `calleeCleanupBytes` (`RET n`) and `callerCleanupBytes` (an immediate `ADD SP` right after the
   call). `mappedBytes` is the larger of these and the highest byte read, at most 256.
 - `settledOnThisPath` and `openReasons`. A frame is open when the callee did not return on the
-  path, a written slot was not read, reads overlap with different widths, a read covers part of a
+  path, a written slot was not read, reads overlap with different widths, reads of the same bytes
+  use different groupings (a far-pointer load and a plain dword), a read covers part of a
   slot or sees other bytes than the caller wrote, no cleanup amount bounds the frame, or the frame
   is wider than 256 bytes.
 
@@ -167,9 +168,20 @@ ordinary `paths`; `declaredContinuationPaths` get no frames and do not count tow
 `readWidthSets` lists each distinct set of reads, each read with its offset, width and grouping,
 and `agreed` holds only when one set remains and every frame settled. A far-pointer load and a
 plain dword read of the same four bytes are different sets. Paths that never reached the call are not represented, so a
-grouping settled on the traced paths says nothing about the others. A decompiler's parameter
-list is an inference and does not settle a grouping; use the `callees` Ghidra cross-check to
-confirm that both analyses reach the same callee, then read its widths here.
+grouping settled on the traced paths says nothing about the others.
+
+A callee that returns early on some paths without reading every argument leaves those frames
+open and the site not `agreed`, even when every read it made matches. `readWidths` lists each
+distinct read across the site's frames with the `paths` that made it, and `conflictingWidths`
+pairs distinct reads that share a byte: different intervals, or one interval read with two
+groupings. `widthsConsistent` holds when the traced paths made at least one read and there are no
+such pairs; a site whose callee read nothing is not consistent. It says only that the reads the
+traced paths made fit one grouping. It does not say a path that skipped a read would have read
+the same width, and it does not settle a frame or the site: a skipped slot stays in that frame's
+`openReasons`, and the paths that read each width are listed so a finding can name them.
+
+A decompiler's parameter list is an inference and does not settle a grouping; use the `callees`
+Ghidra cross-check to confirm that both analyses reach the same callee, then read its widths here.
 
 Return snapshots retain full and partial registers. Optional `returnContracts`
 contain `entry`, `register`, `failures` (numeric encodings) and `evidence`. Only
