@@ -63,10 +63,9 @@ export interface SuffixRule {
 
 /**
  * Files under a directory with a given suffix that also turn an area on. The TypeScript job lints,
- * format-checks and typechecks every .ts file under tools/, and runs the tests one directory below
- * it (`tools/<dir>/*.test.ts`), so a new tool in its own directory runs it without an entry in
- * AREAS. Other files under tools/ (the repository policy script and its settings, the Python
- * oracles) run no area.
+ * format-checks and typechecks every .ts file under tools/ and runs every `*.test.ts` file at any
+ * depth under it, so a new tool runs it without an entry in AREAS. Other files under tools/ (the
+ * repository policy script and its settings, the Python oracles) run no area.
  */
 export const AREA_SUFFIXES: Partial<Record<Area, SuffixRule[]>> = {
   typescript: [{ prefix: "tools/", suffix: ".ts" }],

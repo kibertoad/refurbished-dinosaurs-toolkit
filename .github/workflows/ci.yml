@@ -74,7 +74,7 @@ jobs:
       - run: pnpm run typecheck
       - run: pnpm exec tsc -p tools/tsconfig.json
       - run: pnpm run test
-      - run: node --test "tools/*/*.test.ts"
+      - run: node --test "tools/**/*.test.ts"
       - name: Composite action tests
         run: node --test "actions/*/*.test.ts"
       # Builds the npm packages and packs them as they would be published.
