@@ -661,9 +661,13 @@ def evaluate_controls(report, config, image):
     limit = integer(config.get("controlOccurrenceLimit", 4096), 1, 100000, "control occurrence limit")
     spent = 0
     entry_state = State(config["entry"], image, config)
+    frame = report.get("entryFrame")
     # Entry register references read the entry as the trace started it, inside the observed frame.
-    entry_state.enter_frame(report.get("entryFrame"))
+    entry_state.enter_frame(frame)
     supplied = {ALIASES[r][0] for r in config.get("registers", {})}
+    if frame and frame["established"] and frame["bp"] is not None:
+        # The frame states BP as an offset from the entry SP, so no unknown input names BP.
+        supplied.add("ebp")
     case_supplied = {(m["site"], ALIASES[r][0]) for m in config.get("callModels", [])
                      for case in m["cases"] for r in case.get("registers", {})}
     paths = [_Path(p, entry_state, supplied, case_supplied) for p in report["paths"]]
@@ -718,7 +722,6 @@ def evaluate_controls(report, config, image):
             if capped:
                 break
         reasons = []
-        frame = report.get("entryFrame")
         if frame and not frame["established"] and any(not r["returned"] for r in rows):
             reasons.append("entryFrame was not established: " + "; ".join(frame["reasons"]))
         if unread:

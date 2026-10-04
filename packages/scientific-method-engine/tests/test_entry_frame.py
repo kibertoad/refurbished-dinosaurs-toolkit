@@ -121,6 +121,22 @@ class EntryFrameTests(unittest.TestCase):
         self.assertEqual((r["entryFrame"]["established"], r["entryFrame"]["sp"], r["entryFrame"]["bp"]), (True, -2, None))
         self.assertTrue(r["paths"][0]["returned"])
 
+    def test_an_entry_bp_input_the_frame_states_is_undecided(self):
+        # BP enters as an offset from the entry SP, so no unknown input names it; that never violates.
+        c = (Code().emit(PROLOGUE).label("narrow").emit("89 e8 85 c0").label("branch").branch("74", "out").label("out")
+             .emit(EPILOGUE))
+        rule = {"name": "frame pointer", "kind": "origin", "at": {"site": c.labels["branch"], "event": "branch"},
+                "value": {"field": "left"}, "expect": {"inputs": {"include": [{"entryRegister": "bp"}]}}}
+        r = run(c, relationalControls=[rule], entryFrame={"from": 0})
+        self.assertEqual(r["entryFrame"]["bp"], -2)
+        result = verdict(r)
+        self.assertEqual(result["verdict"], "undecided")
+        self.assertIn("supplies its entry value", result["paths"][0]["occurrences"][0]["reason"])
+        # SP stays an unknown input, so a value derived from it holds.
+        held = run(c, relationalControls=[{**rule, "expect": {"inputs": {"include": [{"entryRegister": "sp"}]}}}],
+                   entryFrame={"from": 0})
+        self.assertEqual(verdict(held)["verdict"], "held")
+
     def test_rejected_inputs(self):
         c = cleanup()
         for value, message in (({"from": 0, "sp": -8}, "takes only from"), (0, "takes only from"),

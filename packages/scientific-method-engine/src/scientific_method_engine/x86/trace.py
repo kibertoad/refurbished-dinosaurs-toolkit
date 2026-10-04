@@ -345,7 +345,9 @@ def entry_frame(image, config, entry):
     registers = config.get("registers", {})
     if isinstance(registers, dict) and any(ALIASES.get(r, ("",))[0] in ("esp", "ebp") for r in registers):
         raise ValueError("entryFrame observes SP and BP at the entry; registers cannot also supply them")
-    prefix = {k: v for k, v in config.items() if k not in ("entryFrame", "relationalControls", "controlOccurrenceLimit")}
+    # Checkpoints and return contracts only add report detail, which this trace never reports.
+    prefix = {k: v for k, v in config.items()
+              if k not in ("entryFrame", "relationalControls", "controlOccurrenceLimit", "checkpoints", "returnContracts")}
     report = trace(image, {**prefix, "entry": start}, continue_declared_jumps=False, track_loops=False, arrive=entry)
     arrivals = [p["arrival"] for p in report["paths"] if p["stop"] == ENTRY_ARRIVAL]
     reasons = [f"a path from {start} stopped at {p['stopSite']} before reaching the entry: {p['stop']}"

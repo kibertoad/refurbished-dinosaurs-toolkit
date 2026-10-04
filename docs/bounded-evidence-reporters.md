@@ -275,16 +275,20 @@ says what that trace found:
 
 | Field | Meaning |
 |---|---|
+| `from` | the function entry the trace started at |
 | `established` | every path from `from` was read until it arrived or returned, at least one arrived, each arrival was in a frame of that function (not inside a call to another function), and SP was at one offset from that frame's entry SP at every arrival |
 | `sp` | SP at the entry as a signed offset from the function's entry SP, which points at the return address |
 | `bp` | BP as such an offset when it was at the same one at every arrival; `null` leaves BP unknown |
 | `arrivals`, `pathsRead`, `stepsUsed` | what the trace from `from` read |
 | `reasons` | why the frame is not established: a path that stopped before reaching the entry, a limit gap, no arrival, an arrival inside another function, SP at different offsets or at no offset |
+| `meaning` | how to read `sp` and `bp` |
 
 An established frame starts the query with SP and BP at those offsets from an entry SP, and that
 entry SP is the root frame's: the function's return must use `returnBytes` and leave SP there,
 and `argument` offsets count from it. Memory and every other register stay unknown at the entry,
-as without `entryFrame`. A frame that is not established leaves the query as it would run
+as without `entryFrame`. A frame that states BP makes BP an offset from the entry SP, so an
+`origin` control that expects the entry register BP among a value's inputs is undecided, as for a
+register `registers` supplies. A frame that is not established leaves the query as it would run
 without the input, and relational controls left undecided by its stopped paths name the reasons.
 The frame is observed under the query's inputs; a `registers` value that steers the trace from
 `from` steers which arrivals it read.
