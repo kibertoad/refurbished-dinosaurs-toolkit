@@ -29,7 +29,12 @@ ghidra-scripts` prints their directory, for Ghidra's `-scriptPath`:
 ```
 
 Addresses are Ghidra addresses (`0x00401000`, or `1028:d820` for segmented programs). Report scripts
-print to the analyzer log and cap their output. The scripts compile against Ghidra 12.1.
+print to the analyzer log and cap their output. `ReportScalarConstants`, `ReportCallsToRange`,
+`ReportConstantFirstArgumentCalls` and `ReportCallSitesWithScalars` say when a cap stopped their scan;
+for the other report scripts, a result count equal to the cap means the same.
+`analyzeHeadless` can exit with code 0 after a script failed to load, so check the log for the
+script's own result lines ([the Ghidra workflow](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/ghidra-workflow.md)
+says what a run must show). The scripts compile against Ghidra 12.1.
 
 Reading code and data:
 
@@ -38,8 +43,8 @@ Reading code and data:
 | `ReportInstructionContext` | one or more instruction addresses | a bounded instruction window around each |
 | `ReportInstructionWindow` | address, instruction count | instructions from the address onward |
 | `ReportDataBytes` | address, byte count (1..256) | the bytes at the address |
-| `ReportFunctionSummary` | one or more addresses | focused decompiler output of each containing function |
-| `ReportDecompileWindow` | address, first line (1-based), line count | a window of one function's decompilation |
+| `ReportFunctionSummary` | one or more addresses | focused decompiler output of each containing function, its body ranges and each call without a fall-through (a sign of a wrong no-return flag), then the addresses with no function or a failed decompile |
+| `ReportDecompileWindow` | address, first line (1-based), line count (a count above 160 is cut to 160) | a window of one function's decompilation, its total line count and where the next window starts |
 | `ReportDecompileMatches` | address, one or more literal text patterns | decompilation lines around each match |
 | `ReportMemoryBlocks` | nothing, `page <start> <count>`, or `name <exact-name>` | memory block indexes, names, ranges and sizes, never bytes |
 | `ReportFilePatternInMemory` | file offset (hex), optional pattern length (default 8) | where the bytes at that file offset occur in loaded memory |
@@ -51,14 +56,14 @@ Finding references and calls:
 |---|---|---|
 | `ReportReferences` | one or more addresses | references to each, with the referring instruction and function |
 | `ReportStringReferences` | one or more literal string fragments | strings containing a fragment and their references |
-| `ReportSymbolReferences` | one or more symbol-name fragments | matching symbols and their references |
-| `ReportScalarConstants` | one or more scalar values | instructions using any of them, unsigned or signed |
+| `ReportSymbolReferences` | one or more symbol-name fragments, matched as case-insensitive substrings of the full name | matching symbols, default labels included, and their references. Default labels end in their address, so an address fragment such as `0089d4a4` finds the `PTR_<name>_0089d4a4` import slot there |
+| `ReportScalarConstants` | optional operand kind (`immediate` or `memory`), one or more scalar values | instructions using any of them, unsigned or signed, as an immediate or inside a memory operand (a displacement such as `[ECX + 0x44]`, an absolute address such as `[0x41c000]`, or an index scale), with the kind on each line |
 | `ReportFunctionScalarConstants` | function address, one or more scalar values | instructions inside one function using any of them, compared unsigned |
-| `ReportCallArguments` | callee address | the three nearest pushed arguments at every direct call |
-| `ReportCallSitesWithScalars` | callee address, one or more scalar values | calls whose argument setup contains a requested value |
-| `ReportConstantFirstArgumentCalls` | callee address, constant | cdecl calls whose first argument is the constant |
-| `ReportFirstArgumentCallSummary` | callee address | the literal first argument of every call, and calls without one |
-| `ReportCallsToRange` | start address, end address (inclusive) | calls and jumps whose target lies in the range |
+| `ReportCallArguments` | callee address | the three nearest pushed arguments at every call Ghidra references to the callee |
+| `ReportCallSitesWithScalars` | callee address, one or more scalar values | calls whose argument setup contains a requested value as an immediate, never as a memory-operand displacement or address. The setup is up to 12 instructions that fall through to the call, ending after a function entry or a jump or call target, and before an earlier call. Then the counts or the cap |
+| `ReportConstantFirstArgumentCalls` | callee address, constant | cdecl calls whose first argument is the constant: the nearest `PUSH` before the call, past instructions that fall through, are no function entry or jump or call target, and write neither the stack pointer nor memory addressed through it. Only calls Ghidra references to the callee are read |
+| `ReportFirstArgumentCallSummary` | callee address | the literal first argument of every call, read as in `ReportConstantFirstArgumentCalls`, and each call without one with the reason |
+| `ReportCallsToRange` | start address, end address (inclusive), optional kind (`all`, `calls` or `jumps`; default `all`) | calls and jumps whose target lies in the range, each labelled `[call]` or `[jump]`, then the counts or the cap |
 | `ReportCallPaths` | start function, target function, maximum depth | direct-call paths between the two |
 | `ReportRandomnessCandidates` | none | references to C runtime and Windows random and timing functions |
 
@@ -69,7 +74,7 @@ Exporting for comparison (each writes one file and refuses to overwrite where no
 | `ExportBoundedFlow` | entry, instruction limit (1..10000), output path under `analysis/original/` | instruction metadata of one bounded flow as JSON |
 | `ExportFunctionInventory` | output TSV path (must not exist) | every function's start and body size |
 | `ExportCallEdges` | output JSON path (must not exist), function limit (1..128), one or more function entries | the call and tail-jump edges of the functions Ghidra reaches breadth-first from the entries, with file offsets, as the `ghidraCallEdges` input of `callees` |
-| `ExportFunctionFingerprints` | output TSV path | per-function and per-instruction fingerprints with addresses normalized, for matching functions across versions |
+| `ExportFunctionFingerprints` | output TSV path (replaced only when the export completes) | per-function and per-instruction fingerprints with addresses normalized, for matching functions across versions |
 
 Repairing the analysis (these change the Ghidra program, so run them before reports and keep the
 argument lists with the evidence that justifies them):
