@@ -337,10 +337,15 @@ dropped scoped byte in `uncertainAliasesInvalidated` when it had a value and in
 `uncertainScopeBytesInvalidated` when it had none. `preserves` alone never keeps a
 saved stack byte.
 
-Each resolved scope is reported in `preservedMemoryScopes` on the path's `conditionalModels` entry
-and on the modeled `call-return` event, in the `effects` summary on the call and the summary's
-`conditionalModels`, and in the `allocation` entry of a modeled allocator. Every `effects` call
-summary has the field; it is empty unless the call was modeled with scopes. An entry holds
+Each resolved scope is reported once, in `preservedMemoryScopes` on the path's `conditionalModels`
+entry for that call. The modeled `call-return` event, the `effects` summary's call and the
+`allocation` entry of a modeled allocator carry `conditionalModel` instead: the index of that entry
+in the same path's `conditionalModels`. The index tells apart two visits to one model site on a
+path, which the site alone would not. Every `effects` call summary has the field; it is `null`
+unless the call was modeled. The summary's `conditionalModels` lists the path's entries in the same
+order without `preservedMemoryScopes`; the summary's `path` names the path that holds them (in
+`declaredContinuationPaths` for a continuation summary), and an allocation entry's `path` does the
+same. A scope entry holds
 `segmentRegister`, `segment`, `baseRegister`, `base` (values and producers), `displacement`,
 `offset`, `linearStart`, `linearEnd`, `bytes`, `evidence`, `cachedBytes`, `uncachedBytes` and a
 fixed `meaning` text. The two counts describe the model's cache: an uncached byte is labelled
@@ -358,7 +363,9 @@ maximum 1,048,576); use inventories stop after 64 entries (`entryLimit`, maximum
 Caps, undecoded ranges and unsupported cases are explicit. Source size is capped
 at 256 MiB, config size at 1 MiB (16 MiB for the relocation-expanded config the
 Node wrapper pipes to Python) and each symbolic expression at 1,024 tuple nodes.
-The Node wrapper caps output at 32 MiB and execution at 120 seconds. A limit never
+The Node wrapper caps output at 32 MiB and execution at 120 seconds. The engine writes compact
+JSON to the wrapper, which prints the parsed report indented; run on a config file, the engine
+prints indented JSON itself. A limit never
 turns a partial search into an absence claim. `completeWithinModel` means all
 explored paths reached a return within these assumptions, not a complete reading
 under the documentation standard.

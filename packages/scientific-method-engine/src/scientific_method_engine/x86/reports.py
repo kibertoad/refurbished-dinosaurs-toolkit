@@ -9,6 +9,7 @@ from .values import unknown
 from .effect_order import effect_ordering
 from .relational import validate_controls, evaluate_controls
 from .argument_frames import argument_frames, stack_cleanup
+from .memory_scopes import model_scopes
 from .result_flow import return_flows
 from .image import Image, integer
 from .trace import (trace, walk, call_target, unsupported_transfer, uncovered, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
@@ -603,9 +604,11 @@ def allocations(report, config):
                                 "arithmetic": [e for e in path["events"] if e["kind"] == "arithmetic"],
                                 "guards": path["guards"], "pathStop": path["stop"],
                                 "allocatorEffects": ("see path writes and unresolved exits" if not (returns and returns.get("modeled")) else
-                                                     "conditional model; memory unresolved outside its preservedMemoryScopes" if returns.get("preservedMemoryScopes") else
+                                                     "conditional model; memory unresolved outside its preservedMemoryScopes"
+                                                     if model_scopes(path["conditionalModels"], returns) else
                                                      "conditional model; memory unresolved"),
-                                "preservedMemoryScopes": returns.get("preservedMemoryScopes", []) if returns else [],
+                                # Indexes paths[path].conditionalModels, which holds the model's scopes.
+                                "conditionalModel": returns.get("conditionalModel") if returns else None,
                                 "extentObservation": extent, "pointerObservation": pointer, "writeComparisons": comparisons,
                                 "observedExtentBytes": capacity,
                                 "capacity": "conditional on evidenced extent units and pointer identity" if extent else "unresolved: request units and bounded writes do not establish allocated extent",

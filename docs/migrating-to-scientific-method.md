@@ -294,6 +294,31 @@ A tool that parses the output sees these changes. Existing line prefixes are kep
 
 Breaking engine releases that need a change in a restoration are listed here, newest first.
 
+### Preserved memory scopes appear once per modeled call
+
+A modeled call's `preservedMemoryScopes` descriptions are now reported only on the path's
+`conditionalModels` entry. The other places that repeated them cite that entry by its index in the
+same path's `conditionalModels` list:
+
+| Report location | Before | Now |
+|---|---|---|
+| modeled `call-return` event in `paths[].events` and in `effectOrdering.paths[].timeline` | `preservedMemoryScopes` | `conditionalModel` |
+| `effectOrdering.paths[].calls[]` | `preservedMemoryScopes`, `[]` unless modeled with scopes | `conditionalModel`, `null` unless modeled |
+| `effectOrdering.paths[].conditionalModels[]` | entries with `preservedMemoryScopes` | the same entries in the same order, without `preservedMemoryScopes` |
+| `allocations[]` | `preservedMemoryScopes` | `conditionalModel`, `null` unless the allocator was modeled |
+
+To read the scopes of a modeled call, look up `paths[p].conditionalModels[i].preservedMemoryScopes`,
+where `i` is the `conditionalModel` value and `p` is the path the reference belongs to: the event's
+own path, the effect summary's `path` (an index into `declaredContinuationPaths` for a summary in
+`effectOrdering.declaredContinuationPaths`), or the allocation entry's `path`. Use the index rather
+than the model site: a loop can reach one model site more than once on a path, and each visit has
+its own entry and scopes. A modeled call without `preservesMemory` still cites its entry, whose
+`preservedMemoryScopes` is `[]`.
+
+The engine also writes compact JSON when the reader runs it, so a report that exceeded the reader's
+32 MiB output cap through indentation alone may now complete. The reader still prints its report
+indented, and running the engine on a config file still prints indented JSON.
+
 ### Declared-table continuations spend `continuationBudget`
 
 Continuations of a declared `indirectJumps` site used to share `maxPaths`, `totalSteps`,

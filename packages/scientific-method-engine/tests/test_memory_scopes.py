@@ -1,4 +1,5 @@
 """Bounded call-memory hypotheses over synthetic near, far and PE32 frames."""
+import json
 import unittest
 
 from test_x86 import Code, report, events, configuration
@@ -45,15 +46,16 @@ class MemoryScopeTests(unittest.TestCase):
                 p = r["effectOrdering"]["paths"][0]
                 self.assertFalse(p["effectCompleteWithinModel"])
                 self.assertTrue(all(call["unknownEffects"] for call in p["calls"]))
-                # Every call summary has the field; only the modeled call carries scopes.
-                self.assertEqual([bool(call["preservedMemoryScopes"]) for call in p["calls"]],
-                                 [call["site"] == model["site"] for call in p["calls"]])
+                # Every call summary has the field; only the modeled call cites a conditional model.
+                self.assertEqual([call["conditionalModel"] for call in p["calls"]],
+                                 [0 if call["site"] == model["site"] else None for call in p["calls"]])
                 service = next(call for call in p["calls"] if call["site"] == model["site"])
-                declared = service["preservedMemoryScopes"]
-                self.assertEqual(declared, r["paths"][0]["conditionalModels"][0]["preservedMemoryScopes"])
-                self.assertEqual(declared, p["conditionalModels"][0]["preservedMemoryScopes"])
+                declared = r["paths"][0]["conditionalModels"][service["conditionalModel"]]["preservedMemoryScopes"]
+                self.assertEqual(len(declared), 1)
+                self.assertNotIn("preservedMemoryScopes", p["conditionalModels"][0])
                 returned = next(e for e in events(r, "call-return") if e.get("modeled"))
-                self.assertEqual(declared, returned["preservedMemoryScopes"])
+                self.assertEqual(returned["conditionalModel"], 0)
+                self.assertNotIn("preservedMemoryScopes", returned)
                 self.assertEqual(declared[0]["segment"]["value"], REGISTERS["ss"])
                 self.assertEqual(declared[0]["cachedBytes"], 6 if far else 4)
                 self.assertEqual(declared[0]["uncachedBytes"], 0)
@@ -304,7 +306,38 @@ class MemoryScopeTests(unittest.TestCase):
             r = report(c, "allocation", registers=REGISTERS, allocations=allocations, callModels=[model])
             a = r["allocations"][0]
             self.assertTrue(a["allocatorEffects"].endswith(text))
-            self.assertEqual(len(a["preservedMemoryScopes"]), len(declared))
+            self.assertNotIn("preservedMemoryScopes", a)
+            cited = r["paths"][a["path"]]["conditionalModels"][a["conditionalModel"]]
+            self.assertEqual((cited["site"], len(cited["preservedMemoryScopes"])), (c.labels["call"], len(declared)))
+
+    def test_each_reference_resolves_to_its_own_conditional_model_entry(self):
+        # One model site reached twice on a path, after an unrelated conditional entry: the site alone
+        # would not tell the two calls apart, and the reference must skip the divide assumption.
+        c = Code().emit("f7 f6 b9 02 00 bb 00 10").label("service").branch("e8", "external")
+        c.emit("80 c7 10").branch("e2", "service").emit("c3").label("external").emit("c3")
+        model = {"site": c.labels["service"], "preserves": ["ds", "ss", "ebx", "ecx"], "cases": [{}],
+                 "evidence": "synthetic service called twice", "preservesMemory": [scope(segment="ds", base="bx", bytes=2)]}
+        for command in ("effects", "trace"):
+            with self.subTest(command=command):
+                r = report(c, command, registers=REGISTERS, callModels=[model])
+                self.assertTrue(r["completeWithinModel"])
+                path = r["paths"][0]
+                models = path["conditionalModels"]
+                self.assertEqual([m["site"] for m in models], [0, c.labels["service"], c.labels["service"]])
+                returned = [e for e in path["events"] if e["kind"] == "call-return"]
+                self.assertEqual([e["conditionalModel"] for e in returned], [1, 2])
+                for event, base in zip(returned, (0x1000, 0x2000)):
+                    cited = models[event["conditionalModel"]]
+                    self.assertEqual(cited["site"], event["callSite"])
+                    self.assertEqual(cited["preservedMemoryScopes"][0]["linearStart"], REGISTERS["ds"] * 16 + base)
+                if command == "effects":
+                    summary = r["effectOrdering"]["paths"][0]
+                    self.assertEqual([call["conditionalModel"] for call in summary["calls"]], [1, 2])
+                    self.assertEqual(summary["conditionalModels"],
+                                     [{k: v for k, v in m.items() if k != "preservedMemoryScopes"} for m in models])
+                    self.assertTrue(all("outside its preservedMemoryScopes" in call["continuation"] for call in summary["calls"]))
+                # The full descriptions appear once per modeled call, on the path's conditionalModels entries.
+                self.assertEqual(json.dumps(r).count('"preservedMemoryScopes"'), 2)
 
     def test_modeled_push_cs_uses_sp_before_consuming_the_segment_word(self):
         c = Code().branch("e8", "child").label("after").emit("c3")

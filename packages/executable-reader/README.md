@@ -61,6 +61,7 @@ import { pointerInventory } from "@scientific-method/executable-reader/pointer-i
 | `run(args)` | `.` | Runs one report, exactly as the command does, and returns it. `args` is `[command, configPath]`. |
 | `prepare(config, base)` | `.` | Verifies the source hash and builds the prepared config the engine receives. |
 | `PREPARED_PROTOCOL` | `.` | The prepared-config protocol number this reader speaks. |
+| `MAX_REPORT_MIB` | `.` | The most engine output, in MiB, that `run` reads before it fails. |
 | `sourceXxh3(bytes)` | `.` | The XXH3-128 hash `xxh3` must equal, as 32 lower-case hex digits. |
 | `Region`, `ReportConfig`, `PreparedConfig`, `Report` | `.` | Types of the query, the prepared config and the report. |
 | `readMz(bytes, loadSegment?)` | `legacy-image` | Parses and bounds-checks an MZ executable and its FBOV envelope into an `MzImage`. |

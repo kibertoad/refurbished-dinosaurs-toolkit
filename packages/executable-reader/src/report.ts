@@ -159,7 +159,8 @@ export function prepare(config: ReportConfig, base: string): PreparedConfig {
   return { ...config, source, relocations, formatTables, overlayExports };
 }
 
-const MAX_REPORT_MIB = 32;
+/** The most engine output, in MiB, that {@link run} reads. A larger report fails with an error and no partial report. */
+export const MAX_REPORT_MIB = 32;
 /** The prepared-config protocol this reader speaks. It must equal `scientific_method_engine.PREPARED_PROTOCOL`; the engine refuses any other number. */
 export const PREPARED_PROTOCOL = 3;
 
