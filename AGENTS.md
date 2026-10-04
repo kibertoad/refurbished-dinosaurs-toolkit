@@ -78,9 +78,8 @@ Update in the same PR:
 - **The migration guide**, when downstream projects have to change something. Changes to the
   .NET runtime packages go in the migrations of
   [the shared runtime libraries guide](docs/runtime-libraries.md).
-- **[The implementation plan](docs/IMPLEMENTATION-PLAN.md)**, for work that takes several PRs. Add
-  a section stating the outcome, the tests and the exit condition, update its status line as slices
-  merge, and delete it once the exit condition is met.
+- **A tracking issue**, for work that takes several PRs. Open one stating the outcome, the tests and
+  the exit condition, link each slice's PR to it, and close it once the exit condition is met.
 - **ADRs.** A durable design decision gets one in `docs/decisions/`. Check the next free number.
 - **The architecture doc and root README**, when packages, layout or contracts change.
 
