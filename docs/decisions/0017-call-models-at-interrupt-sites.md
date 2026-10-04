@@ -44,10 +44,21 @@ A raised budget cannot cross the stop either.
    at the interrupt's site, and effect summaries count it among the unknown effects. It has no
    `call` event and no result contracts, since no entry is called.
 5. Without a model, the path stops at the interrupt as before. INT1, INT3 and INTO, and every
-   interrupt in the PE32 model, stop with or without a model at their site: INT1 and INT3 are debug
+   interrupt in the PE32 model, stop with or without a model at their site. So do `INT 1` and
+   `INT 3` in their two-byte `INT n` encoding, which raise the same vectors. INT1 and INT3 are debug
    traps, INTO interrupts only on OF, and in protected mode the descriptor tables and privilege
    checks decide what an interrupt does.
-6. The prepared config does not change. An engine from before this decision ignores the model and
+6. A model may set `leavesFlags: true` for a service that returns with a far return and leaves the
+   interrupt's FLAGS word on the stack, as DOS INT 25h and 26h do. Each case then returns with SP
+   two bytes below its value before the interrupt, and the word at SS:SP is the pre-interrupt FLAGS,
+   saved as a `pushf` saves them, so the caller's `popf` restores them. Without it, that `popf`
+   would take a word of the caller's frame and every later frame read would be wrong. The field is
+   rejected on a call model, on a model at an interrupt that stops, and with any value but `true`.
+7. A `preservesMemory` scope that shares a byte with the FLAGS, CS and IP the interrupt pushes at
+   SS:SP-6..SP-1, on the same segment and base value, stops the path, and the boundary event is
+   reported without `modeled`. The same rule holds at a modeled call for its return address. A scope
+   on another base value that only may alias the frame stays the query's hypothesis.
+8. The prepared config does not change. An engine from before this decision ignores the model and
    stops at the interrupt.
 
 ## Consequences
@@ -62,6 +73,8 @@ A raised budget cannot cross the stop either.
   can produce, stays outside the report.
 - A query that placed a model at an `INT n` site, which had no effect before, now continues past the
   interrupt.
+- A call model whose scope covered its own return address, which kept pre-call bytes the call had
+  overwritten, now stops the path at the call.
 
 ## Alternatives rejected
 
@@ -69,5 +82,11 @@ A raised budget cannot cross the stop either.
   model, and every consumer of modeled returns would need a second case.
 - Executing the handler from the interrupt vector table. The table is runtime state the image does
   not hold, and a resident handler's effects on device and DOS state are outside the model.
+- `returnBytes` on an interrupt model for the FLAGS word left behind. At a call the field names the
+  bytes the return pops, so reusing it for bytes the return leaves would give one field two
+  meanings.
+- Leaving the FLAGS word left by INT 25h and 26h to the requester. The model would describe the stack
+  wrongly with no way to correct it, and controls after the caller's `popf` could hold on a frame
+  the program never had.
 - Letting flags or memory pass through the interrupt unchanged. A handler can change anything, and
   carrying state across it would let a control hold on a value the program never kept.

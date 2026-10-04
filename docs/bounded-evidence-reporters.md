@@ -432,8 +432,11 @@ segment, a concrete interval that crosses the end of the address space, and two 
 share a byte stop the path. Two scopes share a byte when they overlap on one base value (through
 different base registers too) or overlap in linear memory (through different segment values). A
 scope on a symbolic base may address any byte of its segment, so it stops the path beside any scope
-on another base value whose segment range overlaps that segment. The model then invalidates memory
-as before and puts back only the scoped bytes. A byte the model had a value for keeps that value. A
+on another base value whose segment range overlaps that segment. A scope that shares a byte, on the
+same segment and base value, with the return frame the processor writes below SS:SP also stops the
+path, since after the return those bytes hold the frame: the return address of a near call (2 bytes
+for MZ, 4 for PE32) or a far call (4 bytes), or the FLAGS, CS and IP of an interrupt (6 bytes). The
+model then invalidates memory as before and puts back only the scoped bytes. A byte the model had a value for keeps that value. A
 byte it had no value for keeps its pre-call unknown term and stays unread: a later read lists it in
 `missingByteProducers` with the reading instruction as its producer, and a later scope counts it in
 `uncachedBytes`. The model restores no register or return target as such. A traced `pop` or `ret`
@@ -647,8 +650,14 @@ unknown. The return is a modeled `call-return` event whose `callSite` is the int
 same two fields. Relational controls, effect summaries and `origin` inputs (`modeledCall` with the
 interrupt's site) read it as they read a modeled call. The model's cases are the query's assumption
 about the handler: they are not the service's result sequence, and the path stays not
-effect-complete. An interrupt model takes no `returnBytes`. A model at INT1, INT3, INTO or at any
-interrupt in the PE32 model is not used, and the path stops there as without it.
+effect-complete. An interrupt model takes no `returnBytes`. A service that returns with a far
+return and leaves the interrupt's FLAGS word on the stack, as DOS INT 25h and 26h do, takes
+`leavesFlags: true`: each case then returns with SP two bytes below its value before the interrupt,
+and the word at SS:SP is the pre-interrupt FLAGS, reported as a `flags-save` event, so a later
+`popf` restores them. `leavesFlags` is rejected on any other model and with any value but `true`.
+A model at INT1, INT3 (also written as `INT 1` or `INT 3`), INTO or at any interrupt in the PE32
+model is not used, and the path stops there as without it. A path that stops on the model's `preservesMemory` scopes reports the boundary event
+without `modeled`.
 
 `trace` and every command built on it return `hardwareBoundaries`, one row per
 boundary site with the `paths` and `declaredContinuationPaths` that reach it,

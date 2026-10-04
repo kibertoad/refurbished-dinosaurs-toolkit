@@ -132,8 +132,9 @@ partial evidence, never complete dispatch or native-reachability claims. See the
 A call model may also sit at an `INT n` instruction in the real-mode model. The interrupt is
 still reported as a hardware boundary with its vector, the handler is not executed, and each case
 returns to the next instruction with SP and CS as before the interrupt. Registers, flags and memory
-the model does not preserve or set are unknown. Without a model, and at INT1, INT3, INTO or any PE32 interrupt, the path
-stops at the interrupt as before. See
+the model does not preserve or set are unknown. `leavesFlags: true` describes a service that returns
+with a far return and leaves the interrupt's FLAGS word on the stack. Without a model, and at INT1,
+INT3 (in either encoding), INTO or any PE32 interrupt, the path stops at the interrupt as before. See
 [ADR 0017](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/decisions/0017-call-models-at-interrupt-sites.md).
 
 A call model may declare `preservesMemory`: up to 32 scopes (4,096 bytes in total), each naming a

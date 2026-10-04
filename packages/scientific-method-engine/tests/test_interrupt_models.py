@@ -71,7 +71,9 @@ class InterruptModelTests(unittest.TestCase):
             self.assertEqual(r["paths"][0]["stop"], "interrupt handler is not modeled; later effects are not read")
 
     def test_a_model_at_int3_into_or_a_pe32_interrupt_is_not_consumed(self):
-        for code, stop in (("cc c3", "interrupt handler is not modeled; later effects are not read"),
+        unmodeled = "interrupt handler is not modeled; later effects are not read"
+        # INT 1 and INT 3 written as INT n are the same debug traps as INT1 and INT3.
+        for code, stop in (("cc c3", unmodeled), ("f1 c3", unmodeled), ("cd 03 c3", unmodeled), ("cd 01 c3", unmodeled),
                            ("ce c3", "Unsupported instruction semantics: into")):
             r = report(code, registers=FRAME, callModels=[model(0)])
             self.assertEqual(r["paths"][0]["stop"], stop, code)
@@ -84,6 +86,57 @@ class InterruptModelTests(unittest.TestCase):
         for width in (2, 4):
             with self.assertRaisesRegex(ValueError, "interrupt model takes no returnBytes"):
                 report("cd 21 c3", registers=FRAME, callModels=[model(0, returnBytes=width)])
+
+    def test_a_scope_that_does_not_resolve_stops_with_the_boundary_unmodeled(self):
+        scope = {"segment": "ds", "base": "si", "bytes": 2, "evidence": "synthetic scope"}
+        r = report("cd 21 c3", registers={"ss": 0x3000, "sp": 0xff00},
+                   callModels=[model(0, preserves=["ds", "ss"], preservesMemory=[scope])])
+        path = r["paths"][0]
+        self.assertTrue(path["stop"].startswith("preservesMemory address unresolved"))
+        boundary = next(e for e in path["events"] if e["kind"] == "hardware-boundary")
+        self.assertEqual((boundary["vector"], "modeled" in boundary), (0x21, False))
+        self.assertEqual(path["conditionalModels"], [])
+
+    def test_leaves_flags_keeps_the_interrupts_flags_word_for_a_later_popf(self):
+        # int 25h; popf; ret. The service returns with a far return and leaves FLAGS on the stack.
+        r = report("cd 25 9d c3", registers=FRAME, callModels=[model(0, leavesFlags=True)])
+        path = r["paths"][0]
+        self.assertTrue(path["returned"])
+        # The POPF takes the word the interrupt left, so the RET finds SP as before the interrupt.
+        self.assertEqual(path["registers"]["sp"]["value"], FRAME["sp"])
+        self.assertTrue(path["conditionalModels"][0]["assumption"].startswith(
+            "interrupt returns to the next instruction with its FLAGS word left on the stack"))
+        saved = next(e for e in path["events"] if e["kind"] == "flags-save")
+        restored = next(e for e in path["events"] if e["kind"] == "flags-restore")
+        self.assertEqual(saved["value"], restored["value"])
+        self.assertTrue(restored["intactLocalSnapshot"])
+        # Without it, the POPF takes the caller's word and the RET reads past the caller's frame.
+        r = report("cd 25 9d c3", registers=FRAME, callModels=[model(0)])
+        self.assertEqual(r["paths"][0]["registers"]["sp"]["value"], FRAME["sp"] + 2)
+        restored = next(e for e in r["paths"][0]["events"] if e["kind"] == "flags-restore")
+        self.assertFalse(restored["intactLocalSnapshot"])
+
+    def test_leaves_flags_needs_true_on_an_interrupt_model(self):
+        for code, value in (("cd 25 c3", 1), ("cd 25 c3", False), ("e8 00 00 c3", True), ("cd 03 c3", True)):
+            with self.assertRaisesRegex(ValueError, "leavesFlags must be true"):
+                report(code, registers=FRAME, callModels=[model(0, leavesFlags=value)])
+
+    def test_a_scope_over_the_frame_the_processor_writes_stops_the_path(self):
+        def scope(displacement, size):
+            return {"segment": "ss", "base": "sp", "displacement": displacement, "bytes": size, "evidence": "synthetic stack scope"}
+        # FLAGS, CS and IP of an interrupt fill SS:SP-6..SP-1; a near call's return address fills SS:SP-2..SP-1.
+        for code, displacement, size in (("cd 21 c3", -6, 1), ("cd 21 c3", -2, 4), ("e8 00 00 c3", -2, 1), ("e8 00 00 c3", -4, 8)):
+            r = report(code, registers=FRAME, callModels=[model(0, preserves=["ss"], preservesMemory=[scope(displacement, size)])])
+            path = r["paths"][0]
+            self.assertEqual(path["stop"], "preservesMemory scope covers the return frame the processor writes below SP", code)
+            self.assertEqual(path["conditionalModels"], [])
+        r = report("cd 21 c3", registers=FRAME, callModels=[model(0, preserves=["ss"], preservesMemory=[scope(-6, 1)])])
+        boundary = next(e for e in r["paths"][0]["events"] if e["kind"] == "hardware-boundary")
+        self.assertNotIn("modeled", boundary)
+        # Bytes at and above SP, and below the frame, stay the query's hypothesis.
+        for code, displacement in (("cd 21 c3", 0), ("cd 21 c3", -8), ("e8 00 00 c3", 0), ("e8 00 00 c3", -4)):
+            r = report(code, registers=FRAME, callModels=[model(0, preserves=["ss"], preservesMemory=[scope(displacement, 2)])])
+            self.assertTrue(r["paths"][0]["returned"], (code, displacement))
 
     def test_the_path_limit_drops_cases_at_the_interrupt_as_a_gap(self):
         r = report("cd 21 c3", registers=FRAME, maxPaths=1, callModels=[model(0, [{"registers": {"ax": 0}}, {"registers": {"ax": 1}}])])
@@ -136,7 +189,7 @@ class InterruptModelTests(unittest.TestCase):
         self.assertFalse(r["relationalControls"]["allHeld"])
         with self.assertRaisesRegex(ValueError, "later store violated"):
             report(c, registers=FRAME, callModels=[service], relationalControls=self.wrapper_controls(c, "first")[:1])
-        # A caller that tests the scratch word instead takes its predicate from the read, not the service.
+        # A caller that tests the scratch word instead takes its predicate from the scratch read.
         scratch, service = wrapper_case("f6 c1 01")
         for rule in self.wrapper_controls(scratch)[1:]:
             with self.assertRaisesRegex(ValueError, rule["name"] + " violated"):

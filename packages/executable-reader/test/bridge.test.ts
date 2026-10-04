@@ -1541,6 +1541,35 @@ test("a call model at an INT n site returns past the interrupt through the real 
   assert.throws(() => execute({ ...query, callModels: [{ ...model, returnBytes: 2 }] }), /takes no returnBytes/);
 });
 
+test("an interrupt model with leavesFlags keeps the FLAGS word for the caller's popf through the real MZ prepared bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(20, 28);
+  // int 25h; popf; ret
+  data.set([0xcd, 0x25, 0x9d, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const query = {
+    ...config,
+    xxh3: sourceXxh3(data),
+    regions: [{ ...config.regions[0]!, end: 68 }],
+    registers: { ds: 0x2000, ss: 0x3000, sp: 0xff00 },
+    callModels: [
+      { site: 64, preserves: ["ss"], leavesFlags: true, evidence: "synthetic sector service hypothesis", cases: [{}] },
+    ],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const result = run(["trace", join(dir, "config.json")]);
+  const path = result.paths[0];
+  assert.equal(path.returned, true);
+  assert.equal(path.registers.sp.value, 0xff00);
+  const restored = path.events.find((e: Report) => e.kind === "flags-restore");
+  assert.equal(restored.intactLocalSnapshot, true);
+  writeFileSync(
+    join(dir, "config.json"),
+    JSON.stringify({ ...query, callModels: [{ ...query.callModels[0], site: 66 }] }),
+  );
+  assert.throws(() => run(["trace", join(dir, "config.json")]), /leavesFlags must be true/);
+});
+
 test("explicit memory scopes join nested frames through the real MZ prepared bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.set([0xc6, 0x06, 0x30, 0, 0, 0xc3], 69);
