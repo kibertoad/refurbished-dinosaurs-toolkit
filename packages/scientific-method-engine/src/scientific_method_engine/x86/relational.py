@@ -4,6 +4,7 @@ A control names anchor events and a relation over facts the paths already report
 occurrence is held, violated or undecided. A violation on any path fails the query. A control
 whose paths were not all read (a stop, a limit, a dropped path) is undecided, never held.
 """
+from bisect import bisect_right
 from .image import integer
 from .machine import ALIASES, State
 
@@ -94,6 +95,8 @@ def validate_controls(config, image):
     controls = config.get("relationalControls", [])
     if not isinstance(controls, list) or len(controls) > 64:
         raise ValueError("relationalControls must be a list of at most 64 controls")
+    if "controlOccurrenceLimit" in config:
+        integer(config["controlOccurrenceLimit"], 1, 100000, "control occurrence limit")
     names = set()
     contracts = {c.get("entry") for c in config.get("returnContracts", []) if isinstance(c, dict)}
     for control in controls:
@@ -312,17 +315,53 @@ def _field(event, path):
 
 
 class _Path:
+    """One reported path with the indexes the controls look events up by, built once."""
+
     def __init__(self, path, entry_state):
         self.path = path
         self.events = path["events"]
         self.entry_state = entry_state
+        self.instructions = set(path["instructionPath"])
+        # (site, kind) -> the orders of those events, ascending.
+        self.by_site = {}
+        # Orders of modeled call returns, ascending.
+        self.modeled = []
+        # Unknown memory term name -> the first order of a read that showed its bytes had no
+        # modeled value for a reason other than "no write on this path".
+        self.first_drop = {}
+        # For each event, the most recent branch earlier in the same frame (same entry and depth,
+        # completed callee frames skipped), or None.
+        self.frame_branch = []
+        frames = []
+        for e in self.events:
+            self.by_site.setdefault((e["site"], e["kind"]), []).append(e["order"])
+            if e["kind"] == "call-return" and e.get("modeled"):
+                self.modeled.append(e["order"])
+            if e["kind"] == "read" and any((r.get("unwritten") or {}).get("cause", "no write on this path") != "no write on this path"
+                                           for r in e.get("byteProducers", ())):
+                for n in _leaves(e["value"]["expression"], set()):
+                    if n.startswith("memory:"):
+                        self.first_drop.setdefault(n, e["order"])
+            depth = e["depth"]
+            del frames[depth + 1:]
+            if len(frames) == depth + 1 and frames[depth][0] != e["entry"]:
+                frames.pop()
+            while len(frames) <= depth:
+                frames.append([e["entry"], None])
+            self.frame_branch.append(frames[depth][1])
+            if e["kind"] == "branch":
+                frames[depth][1] = e
 
     def last(self, site, kind, before):
-        for index in range(before, -1, -1):
-            e = self.events[index]
-            if e["site"] == site and e["kind"] == kind:
-                return e
-        return None
+        orders = self.by_site.get((site, kind), ())
+        index = bisect_right(orders, before)
+        return self.events[orders[index - 1]] if index else None
+
+    def count(self, site, kind, through):
+        return bisect_right(self.by_site.get((site, kind), ()), through)
+
+    def modeled_before(self, order):
+        return [self.events[o]["callSite"] for o in self.modeled[:bisect_right(self.modeled, order - 1)]]
 
     def value(self, term, anchor):
         if "entryRegister" in term:
@@ -335,8 +374,8 @@ class _Path:
             raise _Unresolved(f"no {term['event']} event at {term['site']} before order {anchor['order']}")
         return _field(event, term["field"])
 
-    def form(self, operand, anchor, ranges, modular=False):
-        """The operand's integer value as a linear form; with modular, a form congruent to each term."""
+    def form(self, operand, anchor, ranges, modular=None):
+        """The operand's integer value as a linear form; with modular bits, a form congruent to it modulo 2**bits."""
         if type(operand) is int:
             return operand, {}
         if "add" in operand:
@@ -351,22 +390,31 @@ class _Path:
             return _scaled(self.form(operand["mul"][0], anchor, ranges, modular), operand["mul"][1])
         if "occurrences" in operand:
             o = operand["occurrences"]
-            return sum(1 for e in self.events[:anchor["order"] + 1] if e["site"] == o["site"] and e["kind"] == o["event"]), {}
+            return self.count(o["site"], o["event"], anchor["order"]), {}
         value = self.value(operand, anchor)
-        if modular:
+        # A form congruent modulo the value's own width is congruent modulo any narrower modulus.
+        # A narrower value needs its integer value, which only a wrap-free range gives.
+        if modular is not None and value["bits"] >= modular:
             return _modular(value["expression"], value["bits"], ranges)
         return _integer(value["expression"], value["bits"], operand.get("signed", False), ranges)
 
 
 def _ranges(control, path, anchor):
+    """The assumed ranges by atom. Raises _Unresolved when this occurrence cannot apply one."""
     ranges = {}
     for a in control.get("assume", []):
         value = path.value(a["value"], anchor)
         form = _modular(value["expression"], value["bits"], {})
+        if not form[1]:
+            if not a["min"] <= form[0] <= a["max"]:
+                raise _Unresolved(f"the assumed value is {form[0]} here, outside the assumed range {a['min']}..{a['max']}")
+            continue
         if form[0] != 0 or list(form[1].values()) != [1]:
-            raise ValueError(f"Relational control {control['name']} assumptions must name an unknown value, "
-                             f"not a computed or known one")
+            raise _Unresolved("an assumption names a value computed from unknown inputs here; assume the unknown input itself")
         atom = next(iter(form[1]))
+        if atom[0] == "signed":
+            raise ValueError(f"Relational control {control['name']} assumptions cannot name a sign-extended value; "
+                             f"assume the value before the extension")
         if a["max"] >= 1 << atom[1]:
             raise ValueError(f"Relational control {control['name']} assumption range exceeds the value's width")
         ranges[atom] = (a["min"], a["max"])
@@ -389,7 +437,7 @@ def _input(name, dropped):
     if name == "entry:sp":
         return {"kind": "entryRegister", "register": "esp"}
     if name.startswith("memory:"):
-        return {"kind": "memory", "name": name, "dropped": name in dropped}
+        return {"kind": "memory", "name": name, "dropped": dropped}
     if name.startswith("modeled-call:"):
         _, site, register = name.split(":", 2)
         return {"kind": "modeledCall", "site": int(site), "register": register}
@@ -413,7 +461,7 @@ def _occurrence(control, path, anchor, image):
         before = control["before"]
         found = path.last(before["site"], before["event"], order - 1)
         if found is None:
-            modeled = [e["callSite"] for e in events[:order] if e["kind"] == "call-return" and e.get("modeled")]
+            modeled = path.modeled_before(order)
             if modeled:
                 return "undecided", {"reason": "no earlier event at the before site; a modeled call before the anchor is unread",
                                      "modeledCalls": modeled}
@@ -461,14 +509,17 @@ def _occurrence(control, path, anchor, image):
                            else "undecided")
                 rows.append({"index": row["index"], "verdict": verdict, "writer": None, "unwritten": unwritten})
             verdicts.append(verdict)
-        via = next((e for e in reversed(events[:order]) if e["kind"] == "branch"), None)
+        via = path.frame_branch[order]
         return _worst(verdicts), {"bytes": rows, "via": via and {"site": via["site"], "taken": via["taken"], "order": via["order"]}}
-    ranges = _ranges(control, path, anchor)
+    try:
+        ranges = _ranges(control, path, anchor)
+    except _Unresolved as error:
+        return "undecided", {"reason": str(error)}
     if kind == "relation":
         modulo = control.get("modulo")
         try:
-            left = path.form(control["left"], anchor, ranges, modulo is not None)
-            right = path.form(control["right"], anchor, ranges, modulo is not None)
+            left = path.form(control["left"], anchor, ranges, modulo)
+            right = path.form(control["right"], anchor, ranges, modulo)
         except _Unresolved as error:
             return "undecided", {"reason": str(error)}
         difference = _combine(left, right, -1)
@@ -506,19 +557,13 @@ def _occurrence(control, path, anchor, image):
         room = _combine(_combine(length, relative, -1), (anchor["width"], {}), -1)
         rlo, rhi = _interval(relative, ranges)
         llo, lhi = _interval(length, ranges)
-        verdict = "held" if _interval(room, ranges)[0] >= 0 else "violated" if _interval(room, ranges)[1] < 0 else "undecided"
-        return verdict, {"relativeStart": {"min": rlo, "max": rhi}, "width": anchor["width"], "length": {"min": llo, "max": lhi}}
+        return _decide(room, "ge", ranges), {"relativeStart": {"min": rlo, "max": rhi}, "width": anchor["width"], "length": {"min": llo, "max": lhi}}
     # origin
     try:
         value = path.value(control["value"], anchor)
     except _Unresolved as error:
         return "undecided", {"reason": str(error)}
-    dropped = set()
-    for e in events[:order + 1]:
-        if e["kind"] == "read" and any((r.get("unwritten") or {}).get("cause", "no write on this path") != "no write on this path"
-                                       for r in e.get("byteProducers", ())):
-            dropped |= {n for n in _leaves(e["value"]["expression"], set()) if n.startswith("memory:")}
-    inputs = [_input(n, dropped) for n in sorted(_leaves(value["expression"], set()))]
+    inputs = [_input(n, path.first_drop.get(n, order + 1) <= order) for n in sorted(_leaves(value["expression"], set()))]
     opaque = any(_opaque(i) for i in inputs)
     producers = set(value.get("producers", ()))
     expect = control["expect"]
@@ -599,18 +644,23 @@ def evaluate_controls(report, config, image):
             p = path.path
             stopped = not p["returned"]
             if control["kind"] == "reach":
-                hits = [a["site"] for a in anchors if a["event"] is None and a["site"] in p["instructionPath"]]
-                hits += [e["order"] for e in path.events if _matches([a for a in anchors if a["event"]], e)]
+                hits = [a["site"] for a in anchors if a["event"] is None and a["site"] in path.instructions]
+                hits += [o for a in anchors if a["event"] for o in path.by_site.get((a["site"], a["event"]), ())]
                 if spent >= limit:
                     capped = True
                     break
                 spent += 1
                 occurrences += bool(hits)
-                if control["expect"] == "never":
-                    verdict = "violated" if hits else "undecided" if stopped else "held"
+                # The anchor may lie inside a modeled callee, which the path did not read.
+                modeled = [path.events[o]["callSite"] for o in path.modeled]
+                if hits:
+                    verdict = "violated" if control["expect"] == "never" else "held"
+                elif stopped or modeled:
+                    verdict = "undecided"
                 else:
-                    verdict = "held" if hits else "undecided" if stopped else "violated"
-                rows.append({"path": index, "returned": p["returned"], "stop": p["stop"], "verdict": verdict, "reached": bool(hits)})
+                    verdict = "held" if control["expect"] == "never" else "violated"
+                rows.append({"path": index, "returned": p["returned"], "stop": p["stop"], "verdict": verdict, "reached": bool(hits),
+                             "modeledCalls": modeled})
                 verdicts.append(verdict)
                 continue
             found = []

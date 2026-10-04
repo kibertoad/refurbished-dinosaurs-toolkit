@@ -62,8 +62,10 @@ starting assumptions. Each access reports its effective segment, offset expressi
 width, full interval, byte producers and missing producers. Each `byteProducers` row
 also gives `writeOrder`, the event order of the write that stored the byte. A byte
 with no modeled value has `writeOrder: null` and `unwritten`, whose `cause` is
-`no write on this path`, `dropped by a possibly aliasing write` or `dropped by a
-modeled call`, with the `order` of that write or modeled return. BP-derived offsets
+`no write on this path`, `possibly written by an aliasing write`, `dropped by a
+possibly aliasing write` or `dropped by a modeled call`, with the `order` of that
+write or modeled return. A byte a `preservesMemory` scope kept keeps its writer, or
+its cause from before the modeled call. BP-derived offsets
 accessed through BX use DS, whether BX got the offset by LEA, MOV or ADD; the
 offset keeps its entry-SP expression and the segment is DS's own value. Only
 `registers` values or instructions such as `push ss; pop ds` make DS equal to SS,
@@ -944,18 +946,19 @@ of that site and kind on the path up to the anchor. Operands hold at most 64 nod
 
 | Kind | Fields | Holds at an occurrence when |
 |---|---|---|
-| `reach` | `expect`: `never` or `always`; an anchor may omit `event` to match the instruction itself | `never`: the path does not reach an anchor. `always`: it does |
+| `reach` | `expect`: `never` or `always`; an anchor may omit `event` to match the instruction itself | `never`: the path does not reach an anchor. `always`: it does. A path that does not reach it but passes a modeled call is undecided, since the anchor may lie in the callee |
 | `order` | `before` (site and event), optional `branch: { "taken": bool }` (needs a `branch` event in `before`), optional `sameValue: { "before": field, "at": field }` | an earlier `before` event exists; its most recent execution went the stated way; the value it tested equals the value the anchor uses |
 | `lastWriter` | `writers` (sites, or `entryState`), or `byteWriters` (one list per byte read); anchors are `read` events | each byte read was stored by a listed write site, or was not written on this path and `entryState` is listed |
 | `containment` | `interval: { "segment": reference, "start": operand, "length": operand }`; anchors are `write` events | the write has the interval's segment and lies in `[start, start + length)` |
-| `relation` | `left`, `op` (`eq`, `ne`, `lt`, `le`, `gt`, `ge`), `right`, optional `modulo` (bits, with `eq` or `ne` only) | `left op right` for every value the unknowns allow; with `modulo`, congruence in that width |
+| `relation` | `left`, `op` (`eq`, `ne`, `lt`, `le`, `gt`, `ge`), `right`, optional `modulo` (bits, with `eq` or `ne` only) | `left op right` for every value the unknowns allow; with `modulo`, congruence in that width. A value narrower than `modulo` takes part as its integer value, so it must be shown not to wrap |
 | `origin` | `value` (reference), `expect` with any of `producers: { "include", "exclude" }`, `inputs: { "include": [{ "entryRegister" } or { "modeledCall", "register" }] }`, `originatingReturns: { "entries" }` | the producer sites, unknown inputs and originating returns match |
 
 Each occurrence row carries the facts behind its verdict. `order` gives the branch's `taken`,
 `decidedBy` or `branchReason`, and the calls and writes between the two events
 (`interveningCalls`, `interveningWrites`). `lastWriter` gives each byte's writer (site, order,
-entry, depth) or its `unwritten` cause, and `via`, the last branch before the read, which names the
-incoming edge. `containment` gives the write's start relative to the interval and the length's
+entry, depth) or its `unwritten` cause, and `via`, the last branch before the read in the read's own
+frame (branches inside callees that returned before the read are skipped), which names the incoming
+edge. `containment` gives the write's start relative to the interval and the length's
 range. `origin` gives the value's `inputs` (entry registers, modeled-call registers, memory, with
 `dropped` for memory a modeled call or possible alias dropped) and the declared `returns` it came
 through, with `originating` marking the return that produced it rather than passing it up from a
@@ -977,11 +980,12 @@ Otherwise it is held.
 - A control whose anchor no path reached fails as a missed control when every path was read.
 
 These cases are undecided, never violated: a byte a modeled call or a possibly aliasing write
-dropped before the read (`lastWriter`); an `order` anchor with no earlier `before` event behind a
-modeled call; a `sameValue` pair whose terms differ but are not known to be different numbers (a
-reload after an unknown effect); a containment write through a segment not shown equal to the
-interval's; an `origin` expectation hidden behind a modeled-call register, dropped memory or other
-unread input.
+dropped before the read, or that a write through an unknown address may have stored (`lastWriter`);
+a `reach` anchor not reached on a path that passed a modeled call; an `order` anchor with no earlier
+`before` event behind a modeled call; a `sameValue` pair whose terms differ but are not known to be
+different numbers (a reload after an unknown effect); a containment write through a segment not
+shown equal to the interval's; an `origin` expectation hidden behind a modeled-call register,
+dropped memory or other unread input; an occurrence where an assumption cannot apply (see below).
 
 ### Arithmetic and assumptions
 
@@ -993,16 +997,20 @@ unknowns allow satisfies it, is violated when none does, and is undecided otherw
 path took are not solved, so a relation that fails for part of a range is undecided.
 
 `assume` lists at most 16 ranges, each `{ "value": reference, "min", "max", "evidence" }`, with an
-unsigned range inside the value's width. The value must be one unknown, such as an entry register
-or a loaded word, never a computed or known value. Every result repeats the control's
-`assumptions` and the query's own (`queryAssumptions`: `registers`, `flags` and the `callModels`
-sites). A conclusion under an assumption is only as good as the assumption's evidence.
+unsigned range inside the value's width. The value should be one unknown, such as an entry register
+or a loaded word. Each occurrence resolves it again: a known value inside the range needs no
+assumption, while a known value outside it, a value computed from unknowns or a reference the path
+does not supply leaves that occurrence undecided. An assumption on a sign-extended value is
+rejected; assume the value before the extension. Every result repeats the control's `assumptions`
+and the query's own (`queryAssumptions`: `registers`, `flags` and the `callModels` sites). A
+conclusion under an assumption is only as good as the assumption's evidence.
 
 `controlOccurrenceLimit` (1..100000, default 4096) bounds the anchor occurrences evaluated across
-all controls of a query (a `reach` control charges one per path). Declared table continuation
-paths are not evaluated; the ordinary path stopped at the declared jump is undecided. The reader
-passes `relationalControls` through unchanged. An engine release from before relational controls
-ignores the field, so a report without `relationalControls` did not evaluate the controls.
+all controls of a query (a `reach` control charges one per path). It is checked whenever it is
+present, also with an empty control list. Declared table continuation paths are not evaluated; the
+ordinary path stopped at the declared jump is undecided. The reader passes `relationalControls`
+through unchanged. An engine release from before relational controls ignores the field, so a report
+without `relationalControls` did not evaluate the controls.
 
 ### Expressing the requests as controls
 
@@ -1017,7 +1025,7 @@ instead.
 | 40 | assignment on each cleanup edge | `lastWriter` on the cleanup read with the assignment's write site. An edge where the assignment was skipped violates it; add `entryState` to accept the frame's prior contents and read each edge's `via` and `unwritten` cause. A slot dropped by an unread service is undecided |
 | 31 | aliased outputs; the register a loop predicate comes from | `lastWriter` on the read after both stores names the later store. `origin` on the loop branch's `left` with `inputs.include` the modeled service's register and `producers.exclude` the scratch read |
 | 33 | a propagated result traced to the leaf that produced it | `returnContracts` on the helper, then `origin` on the caller's test with `originatingReturns.entries` the helper and `producers.include` the base case's site. A value made in the caller violates it; each return it passed through is listed with its depth |
-| 30 | runtime mode carried through cleanup; which tables and indirect calls a branch reaches | the mode is a query assumption the engine already accepts: `registers` at entry, or a `callModels` case for the call that returns it. `reach` with `never` on the table loop or indirect call shows the branch bypasses it under that mode, and the assumption is listed in `queryAssumptions`. A stop before the site leaves it undecided |
+| 30 | runtime mode carried through cleanup; which tables and indirect calls a branch reaches | the mode is a query assumption the engine already accepts: `registers` at entry, or a `callModels` case for the call that returns it. `reach` with `never` on the table loop or indirect call shows the branch bypasses it under that mode, and the assumption is listed in `queryAssumptions`. A stop before the site leaves it undecided, and so does a modeled call on the path, the one that supplies the mode included, because the anchor could lie in its callee. To decide it, start at an entry after that call with the mode in `registers` |
 | 41 | terminator write versus returned length and capacity | `relation` with `modulo` 16: the terminator write's `offset` equals the buffer start plus the returned length. `containment` of the copy and terminator writes in `[start, start + capacity)`; a terminator at the capacity violates it |
 | 42 | requested bytes, allocator extent, clearing capacity | `allocation` places checkpoints at its `extent` and `pointer` sites; `containment` of the clearing writes with the pointer's registers as `segment` and `start` and `{ "mul": [extent, 16] }` as `length`, and `relation` between the request and the extent. A fill chunk inside the extent says nothing of total capacity |
 | 43 | caller ranges in arithmetic admission | `relation` over the admission arithmetic (`signed` where the gate is signed) with the callers' range in `assume` and its evidence. Without the range it is undecided; with a range it holds or is violated for that range only |
@@ -1025,10 +1033,10 @@ instead.
 | 36 | overlapping access widths across calls | `lastWriter` with `byteWriters` on the wider read: the byte store's site for the low byte, `entryState` or the other producer for the high byte |
 
 A loop whose count is unknown forks at each test and stops at `visitLimit`, so a control over its
-writes stays undecided. State the count's producer as an existing input instead
-(the decision record on forking routes beyond budgets, proposed in PR 76): the count in `registers`, or a
-narrower entry at the loop body where the index is an entry register with an assumed range. A
-`containment` control then checks that every fill write stays inside `[base, base + n)`.
+writes stays undecided. State the count's producer as an existing input instead (the decision record
+on forking routes beyond budgets, proposed in PR 76): the count in `registers`, or a narrower entry
+at the loop body where the index is an entry register with an assumed range. A `containment` control
+then checks that every fill write stays inside `[base, base + n)`.
 
 ```json
 {

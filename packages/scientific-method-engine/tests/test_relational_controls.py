@@ -48,6 +48,15 @@ class ReachTests(unittest.TestCase):
         self.assertEqual(sorted(p["verdict"] for p in result["paths"]), ["held", "undecided"])
         self.assertIn("stopped", " ".join(result["reasons"]))
 
+    def test_an_anchor_inside_a_modeled_callee_leaves_reach_undecided(self):
+        # The store lies in the modeled service, which the path passes without reading.
+        c = Code().label("service").branch("e8", "external").emit("c3").label("external").label("store").emit("c7 06 20 00 01 00 c3")
+        model = [{"site": c.labels["service"], "evidence": "synthetic unread service", "cases": [{}]}]
+        for expect in ("never", "always"):
+            result = verdict(run(c, [control("inside", "reach", at={"site": c.labels["store"]}, expect=expect)], callModels=model), "inside")
+            self.assertEqual(result["verdict"], "undecided", expect)
+            self.assertEqual(result["paths"][0]["modeledCalls"], [c.labels["service"]])
+
 
 class OrderTests(unittest.TestCase):
     def guard(self, name="guard", **extra):
@@ -118,6 +127,46 @@ class LastWriterTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "undecided")
         byte = result["paths"][0]["occurrences"][0]["bytes"][0]
         self.assertEqual(byte["unwritten"]["cause"], "dropped by a modeled call")
+
+    def test_a_byte_an_unknown_address_write_may_have_stored_leaves_the_writer_undecided(self):
+        # mov [si],ax with an unknown DS may store the word read next from [22h].
+        c = Code().label("store").emit("89 04").label("read").emit("a1 22 00 c3")
+        result = verdict(run(c, [control("slot", "lastWriter", at={"site": c.labels["read"], "event": "read"}, writers=["entryState"])]), "slot")
+        self.assertEqual(result["verdict"], "undecided")
+        byte = result["paths"][0]["occurrences"][0]["bytes"][0]
+        self.assertEqual(byte["unwritten"], {"cause": "possibly written by an aliasing write", "order": 0})
+        # The read value's memory input is opaque, so excluding the store as a producer stays open.
+        excluded = control("producer", "origin", at={"site": c.labels["read"], "event": "read"}, value={"field": "value"},
+                           expect={"producers": {"exclude": [c.labels["store"]]}})
+        self.assertEqual(verdict(run(c, [excluded]), "producer")["verdict"], "undecided")
+        # The same read through a concrete DS that the store cannot reach keeps the entry state.
+        c = Code().label("store").emit("36 89 07").label("read").emit("a1 22 00 c3")
+        regs = {"ds": 0x2000, "ss": 0x3000, "bx": 0x40}
+        self.assertEqual(verdict(run(c, [control("slot", "lastWriter", at={"site": c.labels["read"], "event": "read"},
+                                                 writers=["entryState"])], registers=regs), "slot")["verdict"], "held")
+
+    def test_a_preserved_scope_keeps_the_write_before_the_service(self):
+        c = (Code().label("assign").emit("c7 06 22 00 05 00").label("service").branch("e8", "external")
+             .label("read").emit("a1 22 00").label("other").emit("a1 40 00 c3").label("external").emit("c3"))
+        model = [{"site": c.labels["service"], "preserves": ["ds", "ebx"], "evidence": "synthetic service",
+                  "preservesMemory": [{"segment": "ds", "base": "bx", "bytes": 2, "evidence": "synthetic kept slot"},
+                                      {"segment": "ds", "base": "bx", "displacement": 0x1e, "bytes": 2, "evidence": "synthetic kept slot"}],
+                  "cases": [{}]}]
+        regs = {**FRAME, "bx": 0x22}
+        controls = [control("slot", "lastWriter", at={"site": c.labels["read"], "event": "read"}, writers=[c.labels["assign"]]),
+                    control("uncached", "lastWriter", at={"site": c.labels["other"], "event": "read"}, writers=["entryState"])]
+        r = run(c, controls, registers=regs, callModels=model)
+        self.assertEqual(verdict(r, "slot")["verdict"], "held")
+        self.assertEqual(verdict(r, "uncached")["verdict"], "held")
+
+    def test_the_incoming_edge_is_the_last_branch_in_the_reads_frame(self):
+        # A helper with its own branch runs between the caller's branch and the read.
+        c = (Code().emit("85 c0").label("edge").branch("74", "call").label("assign").emit("c7 06 22 00 05 00").label("call")
+             .branch("e8", "helper").label("read").emit("a1 22 00 c3")
+             .label("helper").emit("85 db").label("inner").branch("74", "done").label("done").emit("c3"))
+        result = verdict(run(c, [control("slot", "lastWriter", at={"site": c.labels["read"], "event": "read"},
+                                         writers=[c.labels["assign"], "entryState"])], registers=FRAME), "slot")
+        self.assertEqual({o["via"]["site"] for p in result["paths"] for o in p["occurrences"]}, {c.labels["edge"]})
 
     def test_aliased_outputs_keep_the_later_store_as_the_writer(self):
         c = Code().label("first").emit("a3 22 00").label("second").emit("89 1e 22 00").label("read").emit("a1 22 00 c3")
@@ -218,10 +267,33 @@ class RelationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bytes violated"):
             run(Code().emit("c3"), [self.admission((0x1000, 0x1fff))])
 
-    def test_an_assumption_must_name_an_unknown_value(self):
+    def test_a_known_assumed_value_is_checked_against_its_range(self):
         rule = self.admission((0, 4))
-        with self.assertRaisesRegex(ValueError, "must name an unknown value"):
-            run(Code().emit("c3"), [rule], registers={"cx": 3})
+        self.assertEqual(verdict(run(Code().emit("c3"), [rule], registers={"cx": 3}), "bytes")["verdict"], "held")
+        result = verdict(run(Code().emit("c3"), [rule], registers={"cx": 5}), "bytes")
+        self.assertEqual(result["verdict"], "undecided")
+        self.assertIn("outside the assumed range", result["paths"][0]["occurrences"][0]["reason"])
+
+    def test_an_assumption_the_occurrence_cannot_apply_is_undecided(self):
+        # The assumed value is computed from CX, and a second assumption reads an event the path lacks.
+        c = Code().emit("41").label("return").emit("c3")
+        computed = control("computed", "relation", at={"site": c.labels["return"], "event": "return"}, op="le",
+                           left={"field": "registers.cx"}, right=65535,
+                           assume=[{"value": {"field": "registers.cx"}, "min": 0, "max": 4, "evidence": "synthetic"}])
+        missing = control("missing", "relation", at={"site": c.labels["return"], "event": "return"}, op="le", left=0, right=1,
+                          assume=[{"value": {"site": 0, "event": "write", "field": "value"}, "min": 0, "max": 4, "evidence": "synthetic"}])
+        r = run(c, [computed, missing])
+        self.assertIn("computed from unknown inputs", verdict(r, "computed")["paths"][0]["occurrences"][0]["reason"])
+        self.assertIn("no write event", verdict(r, "missing")["paths"][0]["occurrences"][0]["reason"])
+        self.assertEqual([verdict(r, n)["verdict"] for n in ("computed", "missing")], ["undecided", "undecided"])
+
+    def test_an_assumption_on_a_sign_extended_value_is_rejected(self):
+        # cbw; mov [30h],ax: the stored word is AL sign-extended.
+        c = Code().emit("98").label("write").emit("a3 30 00 c3")
+        rule = control("extended", "relation", at={"site": c.labels["write"], "event": "write"}, op="le", left={"field": "value"}, right=65535,
+                       assume=[{"value": {"field": "value"}, "min": 0, "max": 4, "evidence": "synthetic"}])
+        with self.assertRaisesRegex(ValueError, "sign-extended"):
+            run(c, [rule], registers=FRAME)
 
     def appends(self, capacity):
         # mov [bx],al; inc bx; loop: one append per input record.
@@ -242,6 +314,17 @@ class RelationTests(unittest.TestCase):
         rule = self.terminator("c6 00 00")
         with self.assertRaisesRegex(ValueError, "modulo"):
             run(self.c, [{**rule, "op": "le"}])
+
+    def test_a_byte_operand_is_not_congruent_modulo_a_wider_power(self):
+        # mov al,bl; add al,80h; mov [30h],al stores (BL + 80h) mod 256, which differs from BL + 80h
+        # modulo 2**16 whenever BL is 80h or above.
+        c = Code().emit("88 d8 04 80").label("write").emit("a2 30 00 c3")
+        rule = control("byte", "relation", at={"site": c.labels["write"], "event": "write"}, op="eq", modulo=16,
+                       left={"field": "value"}, right={"add": [{"entryRegister": "bl"}, 0x80]})
+        self.assertEqual(verdict(run(c, [rule], registers=FRAME), "byte")["verdict"], "undecided")
+        self.assertEqual(verdict(run(c, [{**rule, "modulo": 8}], registers=FRAME), "byte")["verdict"], "held")
+        bounded = {**rule, "assume": [{"value": {"entryRegister": "bl"}, "min": 0, "max": 0x7f, "evidence": "synthetic"}]}
+        self.assertEqual(verdict(run(c, [bounded], registers=FRAME), "byte")["verdict"], "held")
 
 
 class OriginTests(unittest.TestCase):
@@ -363,6 +446,13 @@ class FrameworkTests(unittest.TestCase):
         c = self.code()
         with self.assertRaisesRegex(ValueError, "apply only to"):
             run(c, [self.writer(c)], "bounds", registers=FRAME)
+
+    def test_the_occurrence_limit_is_checked_without_controls(self):
+        c = self.code()
+        with self.assertRaisesRegex(ValueError, "control occurrence limit"):
+            run(c, [], registers=FRAME, controlOccurrenceLimit=0)
+        with self.assertRaisesRegex(ValueError, "control occurrence limit"):
+            report(c, "trace", registers=FRAME, controlOccurrenceLimit="many")
 
 
 if __name__ == "__main__":

@@ -67,12 +67,17 @@ class State:
         # Keys grouped by (segment, base) so a write scans only groups that can alias it.
         self.memory_groups = {}
         self.memory_epoch = 0
-        # The order of the write event that stored each modeled byte, and for bytes a possibly
-        # aliasing write dropped, the order of that write. memory_cleared is the order of the event
-        # that dropped every byte (a modeled call), or None.
+        # The order of the write event that stored each modeled byte. lost_memory holds the
+        # byteProducers "unwritten" row of bytes with no value that an ordinary write explains (a
+        # possibly aliasing write dropped them) or that a preservesMemory scope kept without a
+        # value. memory_cleared is the order of the event that dropped every byte (a modeled call),
+        # or None. writes maps (alias group, domain) to the order of the last write with them since
+        # that event, so a read of a byte this path never stored can name a write that may have
+        # stored it.
         self.memory_writers = {}
         self.lost_memory = {}
         self.memory_cleared = None
+        self.writes = {}
         # Bytes a preservesMemory scope kept without a value (ADR 0009): key -> the unknown term
         # name they had before the modeled call. They stay unread: no value, no producer.
         self.unread_memory = {}
@@ -169,6 +174,7 @@ class State:
         self.unread_memory.clear()
         self.memory_writers.clear()
         self.lost_memory.clear()
+        self.writes.clear()
         # The caller records the event that explains the loss right after clearing.
         self.memory_cleared = len(self.events)
         self.memory_epoch += 1
@@ -181,17 +187,34 @@ class State:
         """The modeled value of one memory byte, or an unknown term produced by the current site."""
         return self.memory[key] if key in self.memory else unknown(self.unread_term(key), 8, self.at)
 
+    def domain(self, key):
+        """The linear bytes a memory key can name, or None when its segment is not concrete."""
+        if key[0] == ("linear",):
+            return key[2], key[2] + 1
+        if key[0][0] == "constant":
+            start = key[0][1] * (1 if self.flat else 16)
+            return start, start + (1 << self.bits)
+        return None
+
+    def unwritten(self, key):
+        """Why a byte has no modeled value: the cause and the order of the event behind it."""
+        if key in self.lost_memory:
+            return dict(self.lost_memory[key])
+        # Writes to the key's own (segment, base) group store other offsets; any other write may alias.
+        group, a = key[:2], self.domain(key)
+        aliasing = [order for (other, b), order in self.writes.items()
+                    if other != group and (a is None or b is None or not (a[1] <= b[0] or b[1] <= a[0]))]
+        if aliasing:
+            return {"cause": "possibly written by an aliasing write", "order": max(aliasing)}
+        if self.memory_cleared is not None:
+            return {"cause": "dropped by a modeled call", "order": self.memory_cleared}
+        return {"cause": "no write on this path", "order": None}
+
     def byte_writer(self, index, key):
         """The byteProducers row of one accessed byte: its producers and the write that stored it."""
         if key in self.memory:
             return {"index": index, "producers": producers(self.memory[key]), "writeOrder": self.memory_writers.get(key)}
-        if key in self.lost_memory:
-            unwritten = {"cause": "dropped by a possibly aliasing write", "order": self.lost_memory[key]}
-        elif self.memory_cleared is not None:
-            unwritten = {"cause": "dropped by a modeled call", "order": self.memory_cleared}
-        else:
-            unwritten = {"cause": "no write on this path", "order": None}
-        return {"index": index, "producers": [], "writeOrder": None, "unwritten": unwritten}
+        return {"index": index, "producers": [], "writeOrder": None, "unwritten": self.unwritten(key)}
 
     def reg(self, name):
         root, low, bits = alias(name)
@@ -246,28 +269,22 @@ class State:
             write = Value(write.bits, write.term, sources(write, site=self.at))
             self.memory_epoch += 1
 
-            def domain(k):
-                if k[0] == ("linear",):
-                    return k[2], k[2] + 1
-                if k[0][0] == "constant":
-                    start = k[0][1] * (1 if self.flat else 16)
-                    return start, start + (1 << self.bits)
-                return None
             # A concrete write covers every byte it stores, not only its first byte.
-            written = (keys[0][2], keys[-1][2] + 1) if seg == ("linear",) else domain(keys[0])
+            written = (keys[0][2], keys[-1][2] + 1) if seg == ("linear",) else self.domain(keys[0])
+            self.writes[((seg, base), written)] = len(self.events)
             for group, members in list(self.memory_groups.items()):
                 if group == (seg, base):
                     continue
                 for key in list(members):
                     # Different symbolic segments/bases may alias. Concrete linear locations do not.
-                    a, b = domain(key), written
+                    a, b = self.domain(key), written
                     disjoint = a is not None and b is not None and (a[1] <= b[0] or b[1] <= a[0])
                     if not disjoint:
                         uncertain.append(key)
                         self.memory.pop(key, None)
                         self.unread_memory.pop(key, None)
                         self.memory_writers.pop(key, None)
-                        self.lost_memory[key] = len(self.events)
+                        self.lost_memory[key] = {"cause": "dropped by a possibly aliasing write", "order": len(self.events)}
                         members.discard(key)
                 if not members:
                     del self.memory_groups[group]

@@ -95,12 +95,22 @@ def capture_scopes(state, model):
     return values, unread, descriptions
 
 
-def retain_scopes(state, values, unread):
+def scope_history(state, values, unread):
+    """Snapshot, before the call, the write that stored each captured byte and why each uncached one has no value."""
+    return ({key: state.memory_writers[key] for key in values if key in state.memory_writers},
+            {key: state.unwritten(key) for key in unread})
+
+
+def retain_scopes(state, values, unread, history=None):
     """Put the captured bytes back after the model invalidated memory. Later writes still apply.
 
-    All scoped keys are concrete linear bytes, so they share one alias group.
+    All scoped keys are concrete linear bytes, so they share one alias group. ``history`` from
+    ``scope_history`` keeps each byte's reported writer, or its reason for having no value.
     """
     state.memory.update(values)
     state.unread_memory.update(unread)
+    if history is not None:
+        state.memory_writers.update(history[0])
+        state.lost_memory.update(history[1])
     if values or unread:
         state.memory_groups.setdefault((("linear",), ("absolute",)), set()).update(values, unread)

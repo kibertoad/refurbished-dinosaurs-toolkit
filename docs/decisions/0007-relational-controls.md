@@ -23,10 +23,10 @@ The existing controls are positive controls: `uses` and `incoming` take known si
 `ghidraAgreementSites`, and MZ sources take `formatControls`. A missed control fails the query.
 None of them states a relation between two facts.
 
-[ADR 0006](0006-forking-routes-beyond-budgets.md) proposes that a researcher who cannot bound a
-forking loop states the producer of the forking value as an existing input (a register at entry,
-a narrower entry) and checks the resulting claim with a relational control. These controls must
-be able to express "this fill writes inside `[base, base + n)`" for an assumed count.
+The decision record on forking routes beyond budgets, proposed in PR 76, has a researcher who cannot
+bound a forking loop state the producer of the forking value as an existing input (a register at
+entry, a narrower entry) and check the resulting claim with a relational control. These controls
+must be able to express "this fill writes inside `[base, base + n)`" for an assumed count.
 
 ## Decision
 
@@ -71,11 +71,14 @@ be able to express "this fill writes inside `[base, base + n)`" for an assumed c
    control. An undecided verdict is not a failure because it is a statement about what was not
    read, and the report is what tells the researcher which stop, limit or unread callee to address.
    Consumers treat anything but `held` as not established, which is the "fails or stays undecided"
-   condition ADR 0006 relies on.
+   condition that decision record relies on.
 
 4. **Undecided rules per kind.** A value that crosses an unread effect is not decided:
    - a byte dropped by a modeled call or a possibly aliasing write has no known writer, so
-     `lastWriter` is undecided for it, while a byte no write on the path touched is the entry state;
+     `lastWriter` is undecided for it, and so is a byte a write through an unknown address may
+     have stored, while a byte no write on the path can have touched is the entry state;
+   - a `reach` anchor not reached on a path that passed a modeled call is undecided, since the
+     anchor may lie in the callee;
    - an `order` anchor with no earlier `before` event is undecided when a modeled call precedes it;
    - `sameValue` holds only for equal terms and is violated only for values known to differ;
    - a containment write through a segment not shown equal to the interval's is undecided;
@@ -84,19 +87,23 @@ be able to express "this fill writes inside `[base, base + n)`" for an assumed c
 
    To support this, the engine reports a new fact: each `byteProducers` row of an access carries
    `writeOrder`, the event order of the write that stored the byte, and for a byte with no
-   modeled value `unwritten`, whose `cause` is `no write on this path`, `dropped by a possibly
-   aliasing write` or `dropped by a modeled call`, with that event's order.
+   modeled value `unwritten`, whose `cause` is `no write on this path`, `possibly written by an
+   aliasing write`, `dropped by a possibly aliasing write` or `dropped by a modeled call`, with
+   that event's order.
 
-5. **Arithmetic is interval arithmetic over linear forms, with stated assumptions.** Each
-   reported term becomes a linear form over atoms (unknown subterms) by reading `add`, `sub`,
-   `offset`, multiplication and shifts by constants and extensions. A term is used as an integer
-   only when the bounds of its atoms show it cannot wrap; otherwise it is one opaque atom of its
-   width. A relation holds when every value the atoms allow satisfies it, is violated when none
-   does, and is undecided otherwise. Atoms are bounded by their width unless the control's
-   `assume` states an unsigned range for an unknown value, with evidence. The assumption is
-   echoed in the result. Path conditions (the branches a path took) are not solved, so a relation
-   that holds only for part of the range is undecided, never violated. Query inputs that already
-   exist (`registers`, `flags`, `callModels`) are listed in each result as `queryAssumptions`.
+5. **Arithmetic is interval arithmetic over linear forms, with stated assumptions.** Each reported
+   term becomes a linear form over atoms (unknown subterms) by reading `add`, `sub`, `offset`,
+   multiplication and shifts by constants and extensions. A term is used as an integer only when the
+   bounds of its atoms show it cannot wrap; otherwise it is one opaque atom of its width. A relation
+   holds when every value the atoms allow satisfies it, is violated when none does, and is undecided
+   otherwise. Atoms are bounded by their width unless the control's `assume` states an unsigned
+   range for an unknown value, with evidence. The assumption is echoed in the result, and an
+   occurrence it cannot apply to (a known value outside the range, a computed value, a missing
+   reference) is undecided. `modulo` reads a value narrower than the modulus as its integer value,
+   since its own width's congruence says nothing about a wider one. Path conditions (the branches a
+   path took) are not solved, so a relation that holds only for part of the range is undecided,
+   never violated. Query inputs that already exist (`registers`, `flags`, `callModels`) are listed
+   in each result as `queryAssumptions`.
 
 6. **A new limit.** `controlOccurrenceLimit` (1..100000, default 4096) bounds the anchor
    occurrences evaluated across all controls. A control cut short is undecided with the limit as
@@ -104,8 +111,8 @@ be able to express "this fill writes inside `[base, base + n)`" for an assumed c
 
 7. **No protocol change.** The reader passes `relationalControls` and `controlOccurrenceLimit`
    through unchanged, as it does `returnContracts`, `callModels` and `ghidraCallEdges`, so
-   `PREPARED_PROTOCOL` stays 1. An engine older than this change ignores the fields, so a report
-   without `relationalControls` means the controls were not evaluated.
+   `PREPARED_PROTOCOL` does not change. An engine older than this change ignores the fields, so a
+   report without `relationalControls` means the controls were not evaluated.
 
 ## Consequences
 
