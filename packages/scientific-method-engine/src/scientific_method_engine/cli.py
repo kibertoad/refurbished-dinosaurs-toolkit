@@ -19,6 +19,7 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "callees compares its edges with an ExportCallEdges.java export given as ghidraCallEdges.\n"
          "Declared table continuations are separate conditional paths that spend continuationBudget\n"
          "(paths, totalSteps, maxSteps, visitLimit, stringIterations); ordinary computed transfers remain stopped.\n"
+         "Port accesses and interrupts are hardware-boundary events; portInputs supplies port reads as assumptions.\n"
          "callModels[].preservesMemory keeps explicit, bounded pre-call byte scopes across a modeled call; other memory stays unknown.\n"
          "       scientific-method-engine ghidra-scripts")
 

@@ -3,7 +3,8 @@ from bisect import bisect_right
 
 
 KINDS = {"read", "write", "call", "call-return", "return", "branch", "compare", "flag-assumption",
-         "arithmetic", "value-transfer", "conversion", "flag-write", "flags-save", "flags-restore", "local-iret", "string-operation", "declared-jump-continuation"}
+         "arithmetic", "value-transfer", "conversion", "flag-write", "flags-save", "flags-restore", "local-iret", "string-operation", "declared-jump-continuation",
+         "hardware-boundary"}
 
 
 def _storage(event):
@@ -29,7 +30,7 @@ def effect_ordering(report):
     combined = [(False, i, p) for i, p in enumerate(report["paths"])]
     combined += [(True, i, p) for i, p in enumerate(report.get("declaredContinuationPaths", []))]
     for conditional, index, path in combined:
-        timeline, writes, calls, witnesses = [], [], [], []
+        timeline, writes, calls, witnesses, hardware = [], [], [], [], []
         snapshots = {}
         pending = {}
         unknown_orders = []
@@ -38,7 +39,9 @@ def effect_ordering(report):
             kind = event["kind"]
             if kind in KINDS:
                 timeline.append(event)
-            if kind == "read":
+            if kind == "hardware-boundary":
+                hardware.append(event["order"])
+            elif kind == "read":
                 key = _storage(event)
                 if key is not None:
                     snapshots.setdefault(key, {})[event["value"].get("expression")] = event
@@ -91,7 +94,9 @@ def effect_ordering(report):
                           "conditionalModels": path.get("conditionalModels", []),
                           "writeOrders": [w["order"] for w in writes], "calls": calls,
                           "localRestorationWitnesses": witnesses,
-                          "effectCompleteWithinModel": bool(path["returned"] and not unknown_orders and not conditional),
+                          # Port and interrupt effects stay out of writeOrders: RAM writes never stand for device state.
+                          "hardwareBoundaryOrders": hardware,
+                          "effectCompleteWithinModel": bool(path["returned"] and not unknown_orders and not conditional and not hardware),
                           "transactionality": "not established; local writes and result codes cannot prove external rollback"})
     report["effectOrdering"] = {"paths": summaries, "declaredContinuationPaths": conditional_summaries,
                                 "allPathsRead": report["completeWithinModel"],

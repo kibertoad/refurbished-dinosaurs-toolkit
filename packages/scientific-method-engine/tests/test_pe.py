@@ -88,6 +88,18 @@ class PEReporterTests(unittest.TestCase):
         roles = [e['role'] for e in events(r, 'read') if e['role'] and e['role'].startswith('string')]
         self.assertEqual(sorted(roles), ['string-destination', 'string-source'])
 
+    def test_port_access_reports_its_boundary_and_stops_on_io_privilege(self):
+        # mov dx, 0x3c8; out dx, al; ret
+        r = report('66 ba c8 03 ee c3')
+        path, = r['paths']
+        self.assertFalse(path['returned'])
+        self.assertIn('I/O privilege', path['stop'])
+        row, = events(r, 'hardware-boundary')
+        self.assertEqual((row['boundary'], row['port']['value'], row['width']), ('port-output', 0x3c8, 1))
+        self.assertEqual(r['hardwareBoundaries'][0]['placement'], 'everyTracedPath')
+        with self.assertRaisesRegex(ValueError, 'flat model'):
+            report('ec c3', portInputs=[{'site': CODE_RAW, 'value': 1, 'evidence': 'synthetic'}])
+
     def test_pop_addresses_its_destination_after_the_stack_pointer_moves(self):
         # push 1; push 2; push 3; pop dword [esp+4]; pop eax; pop ebx; ret
         regs = report('6a 01 6a 02 6a 03 8f 44 24 04 58 5b c3')['paths'][0]['registers']

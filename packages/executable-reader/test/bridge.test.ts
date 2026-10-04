@@ -582,6 +582,57 @@ test("callee graph through the source bridge compares its edges with a Ghidra ex
   assert.throws(() => run(["callees", join(dir, "config.json")]), /ghidraAgreementSites/);
 });
 
+test("the Ghidra cross-check reports an interrupt Ghidra lifts to a call as an interrupt row", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // int 21h; call 70; ret; at 70: ret
+  data.set([0xcd, 0x21, 0xe8, 1, 0, 0xc3, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  // ExportCallEdges records Ghidra's own SHA-256 of the program, not the prepared-config hash.
+  const sha256 = createHash("sha256").update(data).digest("hex");
+  const edge = (site: number, target: number | null, flow: string) => ({
+    site,
+    siteAddress: `1000:${site.toString(16)}`,
+    target,
+    targetAddress: target === null ? null : `1000:${target.toString(16)}`,
+    flow,
+  });
+  const cfg = {
+    ...config,
+    xxh3: sourceXxh3(data),
+    regions: [{ ...config.regions[0]!, entries: [64, 70] }],
+    controls: { ghidraAgreementSites: [66] },
+    ghidraCallEdges: {
+      format: "scientific-method-ghidra-call-edges",
+      version: 1,
+      sha256,
+      functionLimit: 8,
+      missingEntries: [],
+      unreadFunctions: [],
+      functions: [
+        {
+          entry: 64,
+          address: "1000:0040",
+          edges: [edge(64, null, "COMPUTED_CALL"), edge(66, 70, "UNCONDITIONAL_CALL")],
+        },
+        { entry: 70, address: "1000:0046", edges: [] },
+      ],
+    },
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  const check = run(["callees", join(dir, "config.json")]).ghidraCrossCheck;
+  assert.deepEqual(
+    check.edges.map((e: Report) => [e.site, e.result]),
+    [
+      [66, "agreement"],
+      [64, "interrupt"],
+    ],
+  );
+  assert.equal(check.counts.interrupt, 1);
+  assert.equal(check.edges[1].ghidraFallsThrough, true);
+  assert.equal(check.agreed, true);
+});
+
 test("operand candidates preserve prefixed widths and reject interior starts through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);
@@ -744,6 +795,52 @@ test("trace decides a decrement loop's exit from p-code flags through the source
     assert.equal(branch.reason, undefined);
   }
   assert.equal(path.registers.cx.value, 0);
+});
+
+test("effects reports port accesses as hardware boundaries apart from RAM writes through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // in al, 0x60; mov [0x200], al; mov dx, 0x3c8; out dx, al; ret
+  data.set([0xe4, 0x60, 0xa2, 0, 2, 0xba, 0xc8, 3, 0xee, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const query = {
+    ...config,
+    xxh3: sourceXxh3(data),
+    registers: { ds: 0x2000 },
+    portInputs: [{ site: 64, value: 7, evidence: "synthetic device reply" }],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const result = run(["effects", join(dir, "config.json")]);
+  const path = result.paths[0];
+  assert.equal(path.returned, true);
+  const boundaries = path.events.filter((e: Report) => e.kind === "hardware-boundary");
+  assert.deepEqual(
+    boundaries.map((e: Report) => [e.boundary, e.port.value, e.value.value]),
+    [
+      ["port-input", 0x60, 7],
+      ["port-output", 0x3c8, 7],
+    ],
+  );
+  assert.equal(boundaries[0].valueSource, "query assumption");
+  assert.equal(path.conditionalModels[0].site, 64);
+  const writes = path.events.filter((e: Report) => e.kind === "write");
+  assert.deepEqual(
+    writes.map((e: Report) => e.offset.value),
+    [0x200],
+  );
+  const summary = result.effectOrdering.paths[0];
+  assert.deepEqual(
+    summary.hardwareBoundaryOrders,
+    boundaries.map((e: Report) => e.order),
+  );
+  assert.equal(summary.effectCompleteWithinModel, false);
+  assert.deepEqual(
+    result.hardwareBoundaries.map((row: Report) => [row.site, row.placement]),
+    [
+      [64, "everyTracedPath"],
+      [72, "everyTracedPath"],
+    ],
+  );
 });
 
 test("effects retains stopped dispatch beside separate conditional table paths", (t) => {
