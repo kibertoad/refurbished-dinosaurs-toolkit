@@ -194,6 +194,120 @@ class PEReporterTests(unittest.TestCase):
         r = report('ff d0 d9 1d 00 20 40 00 c3', 'uses', query={'offset': DATA_VA, 'width': 4, 'access': 'read'})
         self.assertEqual(r['conditionalAccesses'], [])
 
+    def test_uses_continues_at_the_return_site_of_a_call_open_at_a_stop(self):
+        cfg = 'entry-CFG operand past a stop; values and callee effects unresolved'
+        port = 'operand past a PE32 port access; values and continuation unresolved'
+        port_reason = 'port access in the flat model depends on I/O privilege, which is not modeled'
+        call_reason = 'unresolved call: computed transfer remains unresolved'
+        open_call = 'call open at a stop inside its callee; continued at its return site, assumed to return'
+        # call f; mov [DATA_VA], eax; ret; f: <stop>; ret
+        for name, code, stop, reason, classification in (
+                ('port access', 'e8 06 00 00 00 a3 00 20 40 00 c3 66 ba c8 03 ee c3', 15, port_reason, port),
+                ('unread call', 'e8 06 00 00 00 a3 00 20 40 00 c3 ff d0 c3', 11, call_reason, cfg)):
+            with self.subTest(name):
+                r = report(code, 'uses', query={'offset': DATA_VA, 'width': 4}, controls=[CODE_RAW + 5])
+                self.assertEqual(r['matches'], [])
+                row, = r['conditionalAccesses']
+                self.assertEqual((row['site'] - CODE_RAW, row['classification']), (5, classification))
+                self.assertEqual([(d['site'] - CODE_RAW, d['reason']) for d in row['dependsOn']],
+                                 [(0, open_call), (stop, reason)])
+                self.assertFalse(r['negativeUsable'])
+
+    def test_uses_continues_at_every_return_site_of_a_nested_stop(self):
+        # call f; mov [DATA_VA], eax; ret; f: call g; mov [DATA_VA+4], eax; ret; g: push eax; call eax; pop eax; ret
+        c = Code().branch('e8', 'f').emit('a3 00 20 40 00 c3')
+        c.label('f').branch('e8', 'g').emit('a3 04 20 40 00 c3')
+        c.label('g').emit('50 ff d0 58 c3')
+        f, g = c.labels['f'], c.labels['g']
+        stop = g + 1
+        open_call = 'call open at a stop inside its callee; continued at its return site, assumed to return'
+        r = report(c, 'uses', query={'offset': DATA_VA, 'width': 8}, controls=[CODE_RAW + 5, CODE_RAW + f + 5])
+        rows = [(e['site'] - CODE_RAW, e['classification'], [(d['site'] - CODE_RAW, d['reason']) for d in e['dependsOn']])
+                for e in r['conditionalAccesses']]
+        unread = (stop, 'unresolved call: computed transfer remains unresolved')
+        cfg = 'entry-CFG operand past a stop; values and callee effects unresolved'
+        # Each caller's store depends on the stop and on every open call from the stop out to it.
+        self.assertEqual(rows, [(5, cfg, [(0, open_call), (f, open_call), unread]),
+                                (f + 5, cfg, [(f, open_call), unread])])
+        self.assertFalse(r['negativeUsable'])
+
+    def test_uses_names_a_call_stepped_over_on_the_way_to_a_return_site(self):
+        # call f; mov [DATA_VA], eax; ret; f: call eax; call h; ret; h: ret
+        c = Code().branch('e8', 'f').emit('a3 00 20 40 00 c3')
+        c.label('f').emit('ff d0').branch('e8', 'h').emit('c3').label('h').emit('c3')
+        f = c.labels['f']
+        r = report(c, 'uses', query={'offset': DATA_VA, 'width': 4}, controls=[CODE_RAW + 5])
+        row, = r['conditionalAccesses']
+        self.assertEqual([(d['site'] - CODE_RAW, d['reason']) for d in row['dependsOn']],
+                         [(0, 'call open at a stop inside its callee; continued at its return site, assumed to return'),
+                          (f, 'unresolved call: computed transfer remains unresolved'),
+                          (f + 2, 'call past a stop; assumed to return')])
+
+    def test_uses_leaves_out_a_call_on_a_branch_that_never_returns(self):
+        # call f; mov [DATA_VA], eax; ret; f: call eax; test eax, eax; jz L; ret; L: call g; jmp $; g: ret
+        c = Code().branch('e8', 'f').emit('a3 00 20 40 00 c3')
+        c.label('f').emit('ff d0 85 c0').branch('74', 'L').emit('c3')
+        c.label('L').branch('e8', 'g').emit('eb fe').label('g').emit('c3')
+        f = c.labels['f']
+        r = report(c, 'uses', query={'offset': DATA_VA, 'width': 4}, controls=[CODE_RAW + 5])
+        row, = r['conditionalAccesses']
+        self.assertEqual([(d['site'] - CODE_RAW, d['reason']) for d in row['dependsOn']],
+                         [(0, 'call open at a stop inside its callee; continued at its return site, assumed to return'),
+                          (f, 'unresolved call: computed transfer remains unresolved')])
+
+    def test_uses_continues_at_the_return_site_of_a_path_limit_inside_a_callee(self):
+        # call f; mov [ebx], eax; ret; f: test eax, eax; jz L; mov ebx, DATA_VA; ret; L: mov ebx, CODE_VA; ret
+        # One path: the branch that points ebx at the query is dropped at the path limit.
+        c = Code().branch('e8', 'f').emit('89 03 c3')
+        c.label('f').emit('85 c0').branch('74', 'L').emit('bb 00 20 40 00 c3').label('L').emit('bb 00 10 40 00 c3')
+        branch = c.labels['f'] + 2
+        r = report(c, 'uses', query={'offset': DATA_VA, 'width': 4}, maxPaths=1)
+        self.assertEqual([(e['site'] - CODE_RAW, e['address'], [(d['site'] - CODE_RAW, d['reason']) for d in e['dependsOn']])
+                          for e in r['conditionalAccesses']],
+                         [(5, 'possible alias',
+                           [(0, 'call open at a stop inside its callee; continued at its return site, assumed to return'),
+                            (branch, 'path limit')])])
+        self.assertFalse(r['negativeUsable'])
+        # The trace command's gaps carry no call stack.
+        self.assertNotIn('callStack', report(c, maxPaths=1)['gaps'][0])
+
+    def test_uses_does_not_continue_past_a_pe32_iret(self):
+        # call f; mov [DATA_VA], eax; ret; f: call eax; iretd. IRET stops the PE32 trace, so it returns to no caller.
+        r = report('e8 06 00 00 00 a3 00 20 40 00 c3 ff d0 cf', 'uses', query={'offset': DATA_VA, 'width': 4})
+        self.assertEqual(r['conditionalAccesses'], [])
+        self.assertFalse(r['negativeUsable'])
+
+    def test_uses_keeps_a_stop_in_the_entry_function_without_a_caller_continuation(self):
+        # call eax; mov [DATA_VA], eax; ret: no call is open at the stop, so dependsOn names the stop alone.
+        r = report('ff d0 a3 00 20 40 00 c3', 'uses', query={'offset': DATA_VA, 'width': 4}, controls=[CODE_RAW + 2])
+        row, = r['conditionalAccesses']
+        self.assertEqual(row['dependsOn'], [{'site': CODE_RAW, 'reason': 'unresolved call: computed transfer remains unresolved'}])
+        self.assertFalse(r['negativeUsable'])
+
+    def test_uses_does_not_continue_past_a_callee_that_cannot_return(self):
+        # call f; mov [DATA_VA], eax; ret; f: call eax; jmp $
+        code = 'e8 06 00 00 00 a3 00 20 40 00 c3 ff d0 eb fe'
+        r = report(code, 'uses', query={'offset': DATA_VA, 'width': 4})
+        self.assertEqual(r['conditionalAccesses'], [])
+        self.assertFalse(r['negativeUsable'])
+        with self.assertRaisesRegex(ValueError, 'Positive variable-use control 517 missed'):
+            report(code, 'uses', query={'offset': DATA_VA, 'width': 4}, controls=[CODE_RAW + 5])
+        # A stop at the callee's return is that return failing, so its caller is not continued either.
+        # call f; mov [DATA_VA], eax; ret; f: push 0; ret
+        r = report('e8 06 00 00 00 a3 00 20 40 00 c3 6a 00 c3', 'uses', query={'offset': DATA_VA, 'width': 4})
+        self.assertEqual(r['conditionalAccesses'], [])
+        self.assertFalse(r['negativeUsable'])
+
+    def test_uses_records_the_limit_of_a_walk_to_a_callee_return(self):
+        # call f; mov [DATA_VA], eax; ret; f: mov dx, 0x3c8; out dx, al; nop * 10; ret
+        code = 'e8 06 00 00 00 a3 00 20 40 00 c3 66 ba c8 03 ee' + ' 90' * 10 + ' c3'
+        for limit, rows in ((100, [5]), (6, [])):
+            with self.subTest(limit=limit):
+                r = report(code, 'uses', query={'offset': DATA_VA, 'width': 4}, instructionLimit=limit)
+                self.assertEqual([e['site'] - CODE_RAW for e in r['conditionalAccesses']], rows)
+                self.assertEqual({'site': CODE_RAW + 15, 'reason': 'instruction limit'} in r['gaps'], limit == 6)
+                self.assertFalse(r['negativeUsable'])
+
     def test_pop_addresses_its_destination_after_the_stack_pointer_moves(self):
         # push 1; push 2; push 3; pop dword [esp+4]; pop eax; pop ebx; ret
         regs = report('6a 01 6a 02 6a 03 8f 44 24 04 58 5b c3')['paths'][0]['registers']

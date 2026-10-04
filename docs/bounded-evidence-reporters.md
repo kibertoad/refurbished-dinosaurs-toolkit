@@ -93,7 +93,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 |---|---|---|
 | `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; declared-table continuations run on their own `continuationBudget`; checks `relationalControls`; `entryFrame` starts an entry inside its function's frame | this section, [narrower entries](#a-narrower-entry-inside-its-functions-frame), [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
-| `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path` | this section, [hardware boundaries](#hardware-boundaries) |
+| `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; a stop inside a called function also continues the inventory at the return site of each call open at the stop, named in `dependsOn` | this section, [hardware boundaries](#hardware-boundaries) |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
 | `dispatch` | the target of each input through a switch's jump table | this section, [jump tables](#evidenced-indirect-jump-tables) |
@@ -211,7 +211,26 @@ INS/OUTS operands take their access direction from the mnemonic. Each one's
 `dependsOn` names the stops whose CFG reaches it (an unread call, an unsupported
 instruction, an exhausted budget) and every call, and in the PE32 model every
 port access, it is reached past, since those were never traced either. Once a
-named callee has been read, those are the accesses to re-check. Reachability is conditional on encoded guards and on
+named callee has been read, those are the accesses to re-check.
+
+A stop inside a directly called function does not end the inventory at that
+function's return. For each traced call still open at the stop, the inventory
+continues at the call's return site in the caller, and for a nested stop at the
+return site of every open call out to the entry. A path dropped at a path limit
+inside a called function counts as a stop there. A return site is continued only
+when the called function's CFG from the stop (or from the inner return site)
+reaches a return instruction, with calls inside it stepped over; a callee that
+cannot return on its encoded CFG leaves its caller's continuation out. In the
+PE32 model an IRET stops the trace, so it is no such return. A stop at a
+return instruction is that return failing, so it continues no caller. The
+`dependsOn` of a row reached this way names the stop, each open call between the
+stop and the row with `call open at a stop inside its callee; continued at its
+return site, assumed to return`, and every call and PE32 port access stepped
+over on the way to those returns. In the PE32 model such a row counts as reached
+past a port access when the stop is one or when every route to a callee's return
+crosses one. A walk to a callee's return that exhausts `instructionLimit` records
+an `instruction limit` gap at its start and continues no caller beyond it.
+Reachability is conditional on encoded guards and on
 execution continuing past every named stop; these observations do not prove callee
 preservation, effective-address values, or feasible native execution. A concrete
 segment query marks their `address` as a possible alias. They still satisfy a
