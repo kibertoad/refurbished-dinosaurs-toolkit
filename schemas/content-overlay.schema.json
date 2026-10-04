@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kibertoad/toad-discovery-center/schemas/content-overlay.schema.json",
+  "title": "Content overlay manifest",
+  "description": "overlay.json at the root of a content overlay, read by RefurbishedDinosaurs.Core's ContentOverlay. The payload for each file is files/<path> in the same zip archive or directory.",
+  "type": "object",
+  "required": ["formatVersion", "name", "gameId", "fromVersion", "toVersion", "files"],
+  "properties": {
+    "formatVersion": { "const": 1 },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The overlay's identifier, recorded as the conversion method of every installed file it writes."
+    },
+    "gameId": { "type": "string", "minLength": 1 },
+    "fromVersion": { "type": "string", "minLength": 1, "description": "The content version the overlay applies to." },
+    "toVersion": { "type": "string", "minLength": 1, "description": "The content version once it is applied." },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "description": "Paths are unique ignoring case, and no path is a directory of another.",
+      "items": {
+        "type": "object",
+        "required": ["path", "bytes", "baseXxh3", "xxh3"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The target relative to the content root, a path PortableAssetPath.Relative accepts."
+          },
+          "bytes": { "type": "integer", "minimum": 0, "description": "The payload's size." },
+          "baseXxh3": {
+            "type": ["string", "null"],
+            "pattern": "^[0-9a-f]{32}$",
+            "description": "The XXH3-128 the target must have before it is replaced, or null when the file is added and must not exist."
+          },
+          "xxh3": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$",
+            "description": "The XXH3-128 of the payload. It differs from baseXxh3."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

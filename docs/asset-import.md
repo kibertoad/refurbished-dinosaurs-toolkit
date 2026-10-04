@@ -41,5 +41,10 @@ channel unless relevant), source fingerprints, every generated relative path, le
 and hash. Never copy executables when decoded data is sufficient. Never place imported
 content in build output by default; packaging must explicitly prove it is absent.
 
+When the restoration targets a patched version of the original, apply the patch to the staged
+output with `ContentOverlay` before verifying it. The overlay replaces a file only when it holds the
+hash of the version the overlay starts from, so an unexpected edition or an edited file stops the
+import instead of being overwritten.
+
 Exit codes should distinguish success, unsupported/missing source, invalid output,
 and unexpected failure. Installers need that distinction for retry and skip flows.

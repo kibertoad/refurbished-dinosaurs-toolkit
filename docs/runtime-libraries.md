@@ -70,6 +70,11 @@ LegacyFormats parts of it:
   several shifts and changed audio as separate problems.
 - The importer decodes into `StagedAssetPack.StagingDirectory`, verifies all of its output there,
   then calls `Commit`, which swaps the pack in and keeps the old one on failure.
+- `ContentOverlay` brings the staged content to a patched version before `Commit`. It replaces
+  or adds a file only when the target holds the hash the overlay records for it, verifies every
+  payload before replacing anything, and returns records for the installed manifest. The overlay's
+  files and hashes are the restoration's data. See
+  [content overlays](../packages/dotnet/README.md#content-overlays).
 - `InstalledContentWriter` suits incremental extractors: it replaces changed files atomically and
   skips byte-identical ones. `InstalledContentUninstaller` removes only the paths the installed
   manifest lists, so logs, mods, saves and other files survive.
