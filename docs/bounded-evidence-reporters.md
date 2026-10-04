@@ -28,8 +28,10 @@ synthetic data or already checked mappings. Its relocation metadata is supplied
 input, not independently verified evidence. Use the reader for originals.
 
 `xxh3` is the source's XXH3-128 hash as 32 lower-case hex digits, the value its build entry in
-the spec gives (`xxhsum -H2` prints it). The reader and the engine both refuse a source with another
-hash, and the report's `sourceIdentity` repeats the `size` and `xxh3` they checked.
+the spec gives (`xxhsum -H2` prints it). For a packed executable it is the hash of the form
+`source` names, so an unpacked source takes the entry's `unpacked.xxh3`. The reader and the engine
+both refuse a hash in another form, a source with another hash and a config that still names a
+`sha256`. The report's `sourceIdentity` repeats the `size` and `xxh3` they checked.
 
 ```json
 {
@@ -635,8 +637,9 @@ take their access direction from the mnemonic, since Capstone misreports some.
 output path, a function limit (1..128) and the entries to start from. Ghidra walks breadth first
 from those entries through its call targets and its jumps to other functions' entry points. The
 export records each function's edges as file offsets. It is accepted only when its `sha256`, the
-SHA-256 Ghidra records for the program it analysed, equals the source's. It can hold at most 128 functions and 8192 edges, and every offset must lie inside the
-source. Paste the export into the config as the value of `ghidraCallEdges`. The command then reports
+SHA-256 Ghidra records for the program it analysed, equals the source's. It can hold at most 128
+functions and 8192 edges, and every offset must lie inside the source. Paste the export into the
+config as the value of `ghidraCallEdges`. The command then reports
 `ghidraCrossCheck`. For each caller that both the engine read and the export lists
 (`comparedCallers`), every edge is matched on site and target:
 

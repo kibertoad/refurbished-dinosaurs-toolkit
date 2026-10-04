@@ -5,11 +5,12 @@ ignored project created by `analyzeHeadless`; scripts in `/ghidra` emit determin
 text reports that can be reviewed and summarized without committing the database or
 original executable.
 
-For each finding, record the executable's XXH3-128 hash (its `xxh3`), image base/address, symbol or function,
-script and arguments, relevant output, interpretation, confidence, and unanswered
-questions. Decompiled pseudocode is evidence, not ground truth: corroborate it with
-callers, data references, instruction context, runtime observations, manuals, and file
-formats. Rename symbols and types in the local project as understanding improves.
+For each finding, record the executable's XXH3-128 hash (its `xxh3`), image
+base/address, symbol or function, script and arguments, relevant output,
+interpretation, confidence, and unanswered questions. Decompiled pseudocode is
+evidence, not ground truth: corroborate it with callers, data references,
+instruction context, runtime observations, manuals, and file formats. Rename
+symbols and types in the local project as understanding improves.
 
 Do not commit Ghidra projects, memory dumps, extracted binaries, or large raw reports.
 Commit concise factual notes and small scripts. Keep third-party reverse-engineering

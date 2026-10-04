@@ -36,7 +36,9 @@ Release paths and tag prefixes are defined in `tools/release/plan.ts`.
    When all of them carry `release:skip`, the run ends.
 3. Otherwise the next version is the latest tag's version (`0.0.0` when there is none) bumped by
    the largest of those labels. The publish job writes that version into the build, tests,
-   publishes, then creates the tag and a GitHub release with the built files attached.
+   publishes, then creates the tag and a GitHub release with the built files attached. For
+   `scientific-method-engine` a separate job without publishing or write permission runs the
+   tests, because they install the reader's npm packages, and the publish job waits for it.
 
 `release-disc-archiver.yml` then builds the standalone downloads on Windows, macOS and Linux and
 attaches them to the same GitHub release. A failed bundle job can be rerun on its own; it

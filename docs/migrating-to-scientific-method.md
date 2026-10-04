@@ -46,10 +46,10 @@ semantics, publishes wheels only for 3.12 and later. Move CI and research enviro
 older Python to 3.12 in the same change.
 
 A requirements file that also pins the engine's dependencies, such as `capstone==5.0.7`, adds
-`pypcode==4.0.0` beside it. pypcode has no runtime dependencies of its own. Under
-`pip install --require-hashes` every dependency needs its hashes, so list the hash of each pypcode
-wheel for the platforms you install on, or pip refuses the whole file. A validation script that
-asserts the installed Capstone version should assert pypcode's too.
+`pypcode==4.0.0` and, from engine 1.0, `xxhash==4.0.1` beside it. Neither has runtime dependencies
+of its own. Under `pip install --require-hashes` every dependency needs its hashes, so list the hash
+of each of their wheels for the platforms you install on, or pip refuses the whole file. A
+validation script that asserts the installed Capstone version should assert pypcode's too.
 
 The reader and the engine have independent versions. Any engine works with any reader that
 speaks the same prepared-config protocol; a mismatch stops with an error naming both packages, and
@@ -207,21 +207,6 @@ These packages were later renamed to `RefurbishedDinosaurs.*`. Follow
 [the runtime package migration](runtime-libraries.md#from-the-scientificmethod-runtime-packages)
 after this one.
 
-## Prepared-config protocol 2
-
-Reader 1.0 and engine 1.0 speak prepared-config protocol 2, which names the source by its
-XXH3-128 hash, the hash the documentation standard uses for every file. Neither accepts protocol 1,
-so upgrade both together.
-
-| Before | After |
-|---|---|
-| config `sha256` | config `xxh3`: 32 lower-case hex digits, from the build entry in the spec or `xxhsum -H2` |
-| report `sourceIdentity.sha256` | report `sourceIdentity.xxh3` |
-| error `Source SHA-256 differs from supplied baseline` | error `Source xxh3 differs from supplied baseline` |
-
-`ghidraCallEdges` exports keep their `sha256`: `ExportCallEdges.java` records the SHA-256 Ghidra
-holds for the program, and the engine compares it with the source's.
-
 ## 6. Verify
 
 - No file under `tools/evidence/x86-reporter/`, `vendor/check-documentation.mjs`, `x86-lock.json`
@@ -230,3 +215,25 @@ holds for the program, and the engine compares it with the source's.
 - A report from a recorded case gives the same JSON as before the move, apart from fields that
   name the reporter's location.
 - CI passes, including the documentation check with `--check`.
+
+## Prepared-config protocol 2
+
+Reader 1.0 and engine 1.0 speak prepared-config protocol 2, which names the source by its
+XXH3-128 hash, the hash the documentation standard uses for every file. Neither accepts protocol 1,
+so upgrade both together. Reports from these releases differ from earlier ones in `sourceIdentity`.
+
+| Before | After |
+|---|---|
+| config `sha256` | config `xxh3`: 32 lower-case hex digits, from the build entry in the spec or `xxhsum -H2`. A config that still has `sha256` is refused. |
+| report `sourceIdentity.sha256` | report `sourceIdentity.xxh3` |
+| `read_source(config, base)` returns `{"size", "sha256"}` | `read_source(config, base)` returns `{"size", "xxh3"}` |
+| error `Source SHA-256 differs from supplied baseline` | error `Source xxh3 differs from the supplied baseline` |
+
+1. Replace `sha256` with `xxh3` in every report config. For a packed executable, use the `xxh3` of
+   the form the config's `source` names: the build entry's `unpacked.xxh3` for the unpacked file.
+2. A requirements file that pins the engine's dependencies adds `xxhash==4.0.1`, with the hash of
+   each wheel under `--require-hashes`.
+3. A tool that reads `sourceIdentity` or the return of `read_source` reads `xxh3`.
+
+`ghidraCallEdges` exports keep their `sha256`: `ExportCallEdges.java` records the SHA-256 Ghidra
+holds for the program, and the engine compares it with the source's.

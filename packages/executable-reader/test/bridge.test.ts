@@ -78,11 +78,14 @@ test("sourceXxh3 gives the canonical XXH3-128 that xxhsum -H2 prints", () => {
 });
 
 test("source loader rejects mapping and identity conflicts", (t) => {
-  const { dir, config } = fixture(t);
+  const { dir, data, config } = fixture(t);
   assert.throws(() => prepare({ ...config, xxh3: "0".repeat(32) }, dir), /baseline/);
   // A SHA-256 or an upper-case hash is not the standard's form, so it is refused before any read.
   for (const xxh3 of ["0".repeat(64), config.xxh3.toUpperCase(), undefined])
     assert.throws(() => prepare({ ...config, xxh3 } as typeof config, dir), /32 lower-case hex digits/);
+  // A protocol 1 config is refused even beside a correct xxh3, so its sha256 never passes unchecked.
+  const sha256 = createHash("sha256").update(data).digest("hex");
+  assert.throws(() => prepare({ ...config, sha256 }, dir), /sha256 is no longer read/);
   assert.throws(() => prepare({ ...config, sourceKind: "pe" }, dir), /unsupported/);
   assert.throws(() => prepare({ ...config, regions: [{ ...config.regions[0]!, segment: 4097 }] }, dir), /mapping/);
   assert.throws(() => prepare({ ...config, targetSelector: { descriptor: 0, trampoline: 80 } }, dir), /trampoline/);
@@ -724,7 +727,8 @@ test("trace decides a decrement loop's exit from p-code flags through the source
   const query = { ...config, xxh3: sourceXxh3(data) };
   writeFileSync(join(dir, "config.json"), JSON.stringify(query));
   const result = run(["trace", join(dir, "config.json")]);
-  // The report names the decoder and the instruction semantics the engine ran.
+  // The report names the source the engine checked, the decoder and the instruction semantics it ran.
+  assert.deepEqual(result.sourceIdentity, { size: data.length, xxh3: query.xxh3 });
   assert.match(result.decoder, /^capstone \d+\.\d+\.\d+$/);
   assert.match(result.instructionSemantics, /^pypcode \d+\.\d+\.\d+ \(Ghidra SLEIGH x86\)$/);
   assert.equal(result.paths.length, 1);

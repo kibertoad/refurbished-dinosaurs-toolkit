@@ -136,6 +136,9 @@ through matching version numbers.
   instruction specification they used.
   Its `test` extra adds Unicorn, the concrete oracle for synthetic tests. Unicorn's core is GPLv2,
   so it is never a runtime dependency.
+- The source hash is XXH3-128, as the documentation standard uses. The engine pins `xxhash` and
+  the reader pins `@node-rs/xxhash`, the reader's only runtime dependency; its synchronous API
+  keeps `run` and `prepare` synchronous.
 - The .NET packages keep the existing build settings, including the source-file line limit.
 
 ## Releasing

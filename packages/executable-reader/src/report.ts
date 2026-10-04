@@ -23,8 +23,9 @@ export interface Region {
 }
 /**
  * The researcher's JSON query. `source` is resolved against the config file's directory and its
- * XXH3-128 hash must equal `xxh3`, as the spec's build entry gives it. Fields only the engine reads
- * pass through unchanged; the bounded evidence reporter guide lists them per command.
+ * XXH3-128 hash must equal `xxh3`, as the spec's build entry gives it; a config that still names a
+ * `sha256` is refused. Fields only the engine reads pass through unchanged; the bounded evidence
+ * reporter guide lists them per command.
  */
 export interface ReportConfig {
   source: string;
@@ -60,13 +61,16 @@ export function sourceXxh3(bytes: Uint8Array): string {
 // The hash-guarded source read every command shares; no format table is interpreted here.
 function readVerifiedSource(config: ReportConfig, base: string) {
   if (!config || typeof config.source !== "string") throw new Error("Source path required");
+  // A hash from before prepared-config protocol 2 is refused, never passed on unchecked.
+  if ("sha256" in config)
+    throw new Error("sha256 is no longer read; name the source by its xxh3 (prepared-config protocol 2)");
+  if (typeof config.xxh3 !== "string" || !/^[0-9a-f]{32}$/.test(config.xxh3))
+    throw new Error("xxh3 must be the source's XXH3-128 hash as 32 lower-case hex digits");
   const source = resolve(base, config.source),
     stat = statSync(source);
   if (!stat.isFile() || stat.size > 256 * 1024 * 1024) throw new Error("Source exceeds 256 MiB");
-  if (typeof config.xxh3 !== "string" || !/^[0-9a-f]{32}$/.test(config.xxh3))
-    throw new Error("xxh3 must be the source's XXH3-128 hash as 32 lower-case hex digits");
   const bytes = readFileSync(source);
-  if (sourceXxh3(bytes) !== config.xxh3) throw new Error("Source xxh3 differs from supplied baseline");
+  if (sourceXxh3(bytes) !== config.xxh3) throw new Error("Source xxh3 differs from the supplied baseline");
   // Overlay exports and format-table counts are derived from MZ/FBOV source tables only; a supplied copy would read as loader output.
   if (config.overlayExports !== undefined) throw new Error("overlayExports is source-derived and cannot be supplied");
   if (config.formatTables !== undefined)

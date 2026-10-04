@@ -1533,13 +1533,26 @@ class ReporterTests(unittest.TestCase):
             result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 0, result.stderr)
             header = json.loads(result.stdout)
-            self.assertEqual(header["sourceIdentity"]["size"], 4)
+            self.assertEqual(header["sourceIdentity"], {"size": 4, "xxh3": cfg["xxh3"]})
             self.assertEqual((header["decoder"], header["instructionSemantics"]),
                              ("capstone " + capstone.__version__, f"pypcode {pypcode.__version__} (Ghidra SLEIGH x86)"))
             cfg["xxh3"] = "0" * 32; path.write_text(json.dumps(cfg))
             result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 1)
             self.assertIn("baseline", result.stderr)
+            # A SHA-256, an upper-case or a missing hash is not the standard's form.
+            for value in ("0" * 64, xxhash.xxh3_128_hexdigest(data).upper(), None):
+                with self.subTest(xxh3=value):
+                    path.write_text(json.dumps({**cfg, "xxh3": value}))
+                    result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("32 lower-case hex digits", result.stderr)
+            # A protocol 1 hash is refused beside a correct xxh3, so it is never taken as checked.
+            path.write_text(json.dumps({**cfg, "xxh3": xxhash.xxh3_128_hexdigest(data),
+                                        "sha256": hashlib.sha256(data).hexdigest()}))
+            result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("sha256 is no longer read", result.stderr)
             cfg["xxh3"] = xxhash.xxh3_128_hexdigest(data); cfg["overlayExports"] = []
             path.write_text(json.dumps(cfg))
             result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)

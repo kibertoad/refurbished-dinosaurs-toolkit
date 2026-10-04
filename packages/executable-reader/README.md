@@ -25,8 +25,8 @@ scientific-method <command> <config.json>
 ```
 
 The config is JSON with at least `source` (a path relative to the config file), its `xxh3` (the
-XXH3-128 hash the spec's build entry gives, as 32 lower-case hex digits), and
-`sourceKind`: `mz` for DOS executables, `pe32` for 32-bit Windows executables (parsed by the engine),
+XXH3-128 hash the spec's build entry gives, as 32 lower-case hex digits; a `sha256` is refused),
+and `sourceKind`: `mz` for DOS executables, `pe32` for 32-bit Windows executables (parsed by the engine),
 or `synthetic-raw` for test data. The report is printed as JSON. On failure the command prints
 `Evidence report: <reason>` to stderr and exits with 1.
 
