@@ -27,7 +27,7 @@ public sealed class StagedAssetPack : IDisposable
         // Without trimming, "pack/" has "pack" as its parent, so staging would land inside the
         // destination and Commit would move the destination into itself.
         var fullDestination = Path.TrimEndingDirectorySeparator(Path.GetFullPath(destination));
-        var parent = Directory.GetParent(fullDestination)?.FullName
+        var parent = Path.GetDirectoryName(fullDestination)
             ?? throw new ArgumentException("Destination must have a parent directory.", nameof(destination));
         Directory.CreateDirectory(parent);
         var staging = Path.Combine(parent,

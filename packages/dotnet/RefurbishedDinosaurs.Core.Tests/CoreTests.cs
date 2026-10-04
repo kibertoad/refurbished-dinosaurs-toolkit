@@ -82,7 +82,7 @@ public sealed class CoreTests
             Directory.CreateDirectory(destination);
             File.WriteAllText(Path.Combine(destination, "old.txt"), "old");
             using var pack = StagedAssetPack.Create(destination + Path.DirectorySeparatorChar);
-            Assert.Equal(root, Path.GetDirectoryName(pack.StagingDirectory));
+            Assert.Equal(Path.GetFullPath(root), Path.GetDirectoryName(pack.StagingDirectory));
             File.WriteAllText(Path.Combine(pack.StagingDirectory, "new.txt"), "new");
             pack.Commit();
             Assert.Equal(["new.txt"], Directory.GetFiles(destination).Select(Path.GetFileName));
@@ -107,6 +107,23 @@ public sealed class CoreTests
             var result = RestorationPaths.ResolveImportedContent(
                 new("ExampleGame"), app, root, Path.Combine(root, "Local"));
             Assert.Equal(content, result);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void PathsSearchParentOfApplicationDirectoryWithTrailingSeparator()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var app = Path.Combine(root, "Game");
+            var content = Path.Combine(root, "UserContent");
+            Directory.CreateDirectory(app);
+            Directory.CreateDirectory(content);
+            var result = RestorationPaths.ResolveImportedContent(new("ExampleGame"),
+                app + Path.DirectorySeparatorChar, Path.Combine(root, "Elsewhere"), Path.Combine(root, "Local"));
+            Assert.Equal(Path.GetFullPath(content), result);
         }
         finally { Directory.Delete(root, true); }
     }
