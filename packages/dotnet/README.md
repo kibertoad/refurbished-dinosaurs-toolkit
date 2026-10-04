@@ -120,11 +120,11 @@ Record it from a reference copy with `FileFingerprint.Xxh3Async(source.OpenVolum
 already differs, and reports a source with no volume, or a volume it cannot read, as `Unreadable`.
 `AssetManifest.PinsVolume` is true when a manifest gives any of the three fields, and only then is
 the volume checked. `IdentifyAsync` reads the volume once per source and reports that read's hash,
-or its failure, for every pinned edition. It checks every file whatever the pins found. The pins enter `Fingerprint()`, so editions that
-differ only in their volume get different fingerprints. Adding a pin to a manifest that has shipped
-changes its fingerprint, so a copy installed with the unpinned manifest has a `SourceFingerprint`
-that no longer matches and has to be imported again. `Validate` rejects a pin on any other source
-kind.
+or its failure, for every pinned edition. It checks every file whatever the pins found. The pins
+enter `Fingerprint()`, so editions that differ only in their volume get different fingerprints.
+Adding a pin to a manifest that has shipped changes its fingerprint, so a copy installed with the
+unpinned manifest has a `SourceFingerprint` that no longer matches and has to be imported again.
+`Validate` rejects a pin on any other source kind.
 
 The `.bin`, `.cue` and `.iso` files themselves cannot be pinned: the cue's text and the `.bin`'s
 audio sectors change between rips of one disc.
@@ -242,8 +242,9 @@ A shifted rip moves the end of a track into the sectors after it, so the checks 
 track's extent into the rest of the image. When a check needs samples past the end of the image, the
 track is reported as `Unreadable`, with the check that was not made. A source that is not a cue/bin
 image reports each track as `Unreadable`. `IdentifyAsync` verifies a track once per source and
-reports the outcome, a failed read included, for every edition that lists the same fingerprint. The tolerance is at most 5880 samples and the anchor at
-most 44100 samples, since the anchor is hashed once per shift.
+reports the outcome, a failed read included, for every edition that lists the same fingerprint.
+The tolerance is at most 5880 samples and the anchor at most 44100 samples, since the anchor is
+hashed once per shift.
 
 ## Media packages
 

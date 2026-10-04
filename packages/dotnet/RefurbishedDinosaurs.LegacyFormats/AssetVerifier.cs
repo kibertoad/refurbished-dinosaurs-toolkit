@@ -160,9 +160,10 @@ public static class AssetVerifier
     /// Verifies <paramref name="path"/> against every edition, in the order given, and returns the
     /// editions it matched and why each other edition did not. Every manifest is validated before the
     /// source is opened. The source is opened once per source kind. From each opened source, the
-    /// volume, a file and a CD audio track that several editions check are each read once, and a read
-    /// that fails is reported for every edition that checks it, so all editions get the answer of
-    /// that one read.
+    /// volume and a file that several editions check are each read once, and a CD audio track is
+    /// verified once per <see cref="CddaTrackFingerprint"/>, so editions that list the same
+    /// fingerprint share one verification. A read that fails is reported for every edition that
+    /// checks it, so all editions get the answer of that one read.
     /// </summary>
     /// <remarks>
     /// <see cref="EditionIdentification.Edition"/> is set only when exactly one edition matched. When

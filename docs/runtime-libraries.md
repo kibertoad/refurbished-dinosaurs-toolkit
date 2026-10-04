@@ -66,9 +66,10 @@ LegacyFormats parts of it:
   `AssetVerifier.IdentifyAsync` tries every edition against the player's copy and reports why the
   others did not match. It names an edition only when exactly one matches, and sets `IsAmbiguous`
   when the manifests cannot tell two apart. A file it cannot read is reported as `Unreadable`.
-  The volume, each file and each CD audio track are read once per source however many editions
-  check them, and a failed read is reported for every edition that checks it, so all editions get
-  the answer of one read.
+  The volume and each file are read once per source however many editions check them, and a CD
+  audio track is verified once per source for each `CddaTrackFingerprint` the editions list. A
+  failed read is reported for every edition that checks it, so all editions get the answer of one
+  read.
   `AssetManifest.Fingerprint()` names the edition in the installed manifest.
 - A `cue-bin` manifest can also list `AudioTracks`, each a `CddaTrackFingerprint` recorded with
   `CddaTrackFingerprints.RecordAsync`. `AssetVerifier` accepts a track shifted by a drive read

@@ -113,7 +113,7 @@ public sealed class IdentifyReadsTests
             var otherTrack3 = reference with
             {
                 SourceEdition = "other",
-                AudioTracks = [reference.AudioTracks![0], reference.AudioTracks[1] with { CentralXxh3 = new string('0', 32) }]
+                AudioTracks = [reference.AudioTracks![0], reference.AudioTracks[1] with { CentralXxh3 = new string('0', FileFingerprint.Xxh3Length) }]
             };
             var mixed = await CountImageReadsAsync(root, [reference, otherTrack3]);
             Assert.Same(reference, mixed.Found.Edition);
@@ -152,6 +152,31 @@ public sealed class IdentifyReadsTests
                 Assert.All(found.Mismatches, mismatch => Assert.Equal(first, mismatch.Issues));
                 Assert.Equal(1, source!.ImageReads.Opens);
             }
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task ATrackTheSheetLacksIsMissingWhenTheImageCannotBeOpened()
+    {
+        var root = CddaTrackFingerprintTests.CreateTemporaryDirectory();
+        try
+        {
+            var reference = await ReferenceAsync(root) with { VolumeXxh3 = null };
+            var withExtra = reference with
+            {
+                AudioTracks = [.. reference.AudioTracks!, reference.AudioTracks![1] with { Track = 4 }]
+            };
+            CountingSource? source = null;
+
+            var found = await AssetVerifier.IdentifyAsync(
+                kind => source = new CountingSource(OriginalContentSource.Open(root, kind)) { ImageFailsToOpen = true },
+                [withExtra], TestContext.Current.CancellationToken);
+
+            var issues = Assert.Single(found.Mismatches).Issues;
+            Assert.Equal([(2, AssetProblem.Unreadable), (3, AssetProblem.Unreadable), (4, AssetProblem.Missing)],
+                issues.Select(issue => (issue.AudioTrack!.Value, issue.Problem)));
+            Assert.Equal(1, source!.ImageReads.Opens);
         }
         finally { Directory.Delete(root, true); }
     }
