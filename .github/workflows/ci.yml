@@ -14,6 +14,13 @@ jobs:
           persist-credentials: false
       - shell: pwsh
         run: ./tools/Verify-Repository.ps1
+      # Before the engine tests: one of them runs the reader's command line, which needs its packages.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.x
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
@@ -21,28 +28,60 @@ jobs:
       - name: Engine tests
         working-directory: packages/scientific-method-engine
         run: python -B -m unittest discover -s tests -p 'test*.py'
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24.x
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - run: python -m pip install './packages/disc-archiver'
+      # The window's tests that need a display run under Xvfb; the rest run without one.
+      - name: Disc archiver tests
+        working-directory: packages/disc-archiver
+        run: xvfb-run -a python -B -m unittest discover -s tests -p 'test*.py'
       - run: pnpm run lint
       - run: pnpm run format:check
       - run: pnpm run typecheck
       - run: pnpm exec tsc -p tools/tsconfig.json
       - run: pnpm run test
       - run: node --test "tools/release/*.test.ts"
+      - name: Composite action tests
+        run: node --test "actions/*/*.test.ts"
       # Builds the npm packages and packs them as they would be published.
       - run: pnpm run build
       - run: pnpm -r exec pnpm pack --pack-destination "$RUNNER_TEMP/npm"
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
-      - run: dotnet restore packages/dotnet/ScientificMethod.slnx
-      - run: dotnet build packages/dotnet/ScientificMethod.slnx --no-restore -v minimal
-      - run: dotnet test --project packages/dotnet/ScientificMethod.Core.Tests/ScientificMethod.Core.Tests.csproj --no-restore --no-progress -v minimal
-      - run: dotnet pack packages/dotnet/ScientificMethod.slnx --no-build -c Debug --output artifacts
+      - run: dotnet restore packages/dotnet/RefurbishedDinosaurs.slnx
+      - run: dotnet build packages/dotnet/RefurbishedDinosaurs.slnx --no-restore -v minimal
+      - run: dotnet test --project packages/dotnet/RefurbishedDinosaurs.Core.Tests/RefurbishedDinosaurs.Core.Tests.csproj --no-restore --no-progress -v minimal
+      - run: dotnet pack packages/dotnet/RefurbishedDinosaurs.slnx --no-build -c Debug --output artifacts
+  # Builds the standalone Disc Archiver download (no Python needed) on each platform players use,
+  # with the pinned redumper, and starts both executables. The zips are kept for a week for trying.
+  disc-archiver-bundle:
+    name: disc-archiver bundle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install ./packages/disc-archiver -r packages/disc-archiver/packaging/requirements.txt
+      - name: Build
+        shell: bash
+        working-directory: packages/disc-archiver
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then run=(xvfb-run -a); else run=(); fi
+          "${run[@]}" python packaging/build_bundle.py --out "$RUNNER_TEMP/bundle"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: disc-archiver-${{ matrix.os }}
+          path: ${{ runner.temp }}/bundle/*.zip
+          retention-days: 7
   # Runs the check-documentation action as a restoration would, against the test fixture, so the
   # Kaitai Struct compiler install and the .ksy compilation run on both runner platforms.
   documentation-action:
@@ -60,3 +99,33 @@ jobs:
       - uses: ./actions/check-documentation
         with:
           root: packages/standard-checker/test/valid
+
+  software-opengl-action:
+    name: Software OpenGL action
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./actions/setup-software-opengl
+        id: software-gl
+      # Loads the driver the way docs/actions.md tells hosts to, so a Mesa update that adds a
+      # library outside the staged directory, or stages the wrong architecture, fails here.
+      - name: Load the staged driver
+        shell: pwsh
+        env:
+          SOFTWARE_GL_DRIVER: ${{ steps.software-gl.outputs.driver-path }}
+          SOFTWARE_GL_DIRECTORY: ${{ steps.software-gl.outputs.directory }}
+        run: |
+          if (-not (Test-Path -LiteralPath $env:SOFTWARE_GL_DRIVER -PathType Leaf)) { throw 'Driver is missing.' }
+          if (-not $env:SOFTWARE_GL_DRIVER.StartsWith($env:RUNNER_TEMP, [StringComparison]::OrdinalIgnoreCase)) { throw 'Driver escaped runner temp.' }
+          if ((Split-Path -Parent $env:SOFTWARE_GL_DRIVER) -ne $env:SOFTWARE_GL_DIRECTORY) { throw 'Driver is not in the reported directory.' }
+          $env:PATH = "$env:SOFTWARE_GL_DIRECTORY;$env:PATH"
+          Add-Type -Namespace Native -Name Loader -MemberDefinition @'
+          [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)] public static extern IntPtr LoadLibraryW(string path);
+          [DllImport("kernel32", CharSet = CharSet.Ansi)] public static extern IntPtr GetProcAddress(IntPtr module, string name);
+          '@
+          $module = [Native.Loader]::LoadLibraryW($env:SOFTWARE_GL_DRIVER)
+          if ($module -eq [IntPtr]::Zero) { throw "The driver did not load: Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())." }
+          if ([Native.Loader]::GetProcAddress($module, 'wglCreateContext') -eq [IntPtr]::Zero) { throw 'The driver exports no wglCreateContext.' }

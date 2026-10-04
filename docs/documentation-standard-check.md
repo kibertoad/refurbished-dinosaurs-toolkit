@@ -220,6 +220,14 @@ inputs: `--code`, `--references`, `--images`, `--max-range`, `--data-dirs` and `
 and `--glossary <path>` to accept the terms of a draft term file or a directory of them. Set `KSC` to the compiler's
 launcher, or put `kaitai-struct-compiler` on `PATH`, to compile the `.ksy` definitions.
 
+Each problem is one line that starts with the path it concerns, or `spec` for a problem with the
+spec as a whole, such as a deleted ID. When the problem breaks a numbered rule of the standard, the
+line ends with the rule's label, such as `[STATUS-4]`. The standard opens each rule with a
+sixth-level heading of that label, anchored at `#status-4`, and a restoration's vendored copy keeps
+the same anchors, so an agent can read that rule alone: its upstream link tooling gives the heading
+a line range like any other. Only Identifiers, Status and the shared part of Entry types are
+numbered so far, and problems under other sections have no label yet.
+
 ## Recording a validation run
 
 A listed test runs in CI unless it needs content that cannot be committed: the shipped files a
@@ -290,6 +298,11 @@ review:
 
 The tests in `packages/standard-checker/test/` run the checker over a small fixture restoration and
 over broken copies of it.
+
+The checker's entry point is `packages/standard-checker/src/standard-checker.ts`. It reads the
+options and runs the phases in `src/load/`, `src/checks/` and `src/generate/` in a fixed order, so
+problems are always reported in the same order. The standard's kinds, sections, fields and limits
+are in `src/standard.ts`.
 
 ## Version 1 evidence locations and historical rules
 
@@ -375,5 +388,5 @@ left to review.
 A file in any other format fails the manifest check, and so does a packed file whose unpacked
 form is in any other format. Before such a file is documented, the Standard must decide how
 locations in that format are given and record that decision. Only then is the format added to
-the `LOCATIONS` table in `packages/standard-checker/src/standard-checker.ts` and to this table. These rules
+the `LOCATIONS` table in `packages/standard-checker/src/standard.ts` and to this table. These rules
 implement Standard v1.

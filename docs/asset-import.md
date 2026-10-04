@@ -9,9 +9,14 @@ platform uninstall records, known storefront metadata, mounted media, or common
 installation folders. Discovery only proposes candidates; fingerprints decide whether
 an edition is supported. Always allow manual selection.
 
-Use several stable fingerprints: archive/executable size and SHA-256, required file
-set, volume/container metadata, and (when needed) a small internal signature. Give a
+Use several stable fingerprints: archive/executable size and XXH3-128 (the spec's `xxh3`),
+required file set, volume/container metadata, and (when needed) a small internal signature. Give a
 precise unsupported-edition error. Do not modify the source installation.
+
+Players hold a disc in many forms: the disc itself, split or one-file BIN/CUE, CloneCD, CHD, an
+ISO with or without audio files, or the copied files. Point players at
+[`dinorefurb-disc-archiver`](disc-archiving.md) with the restoration's disc profile, so they copy
+their disc into a form the importer reads, and use it to test identification against every form.
 
 ## Transactional pipeline
 

@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="RefurbishedDinosaurs.Media.Audio/RefurbishedDinosaurs.Media.Audio.csproj" />
+    <Project Path="RefurbishedDinosaurs.Core/RefurbishedDinosaurs.Core.csproj" />
+    <Project Path="RefurbishedDinosaurs.LegacyFormats/RefurbishedDinosaurs.LegacyFormats.csproj" />
+    <Project Path="RefurbishedDinosaurs.Media.Playback/RefurbishedDinosaurs.Media.Playback.csproj" />
+    <Project Path="RefurbishedDinosaurs.Media.Avi/RefurbishedDinosaurs.Media.Avi.csproj" />
+    <Project Path="RefurbishedDinosaurs.Media.Fli/RefurbishedDinosaurs.Media.Fli.csproj" />
+    <Project Path="RefurbishedDinosaurs.Media.Smacker/RefurbishedDinosaurs.Media.Smacker.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="RefurbishedDinosaurs.Core.Tests/RefurbishedDinosaurs.Core.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>RefurbishedDinosaurs.Media.Smacker</PackageId>
+    <Description>Bounded managed Smacker container, video and packed audio decoders.</Description>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+</Project>
