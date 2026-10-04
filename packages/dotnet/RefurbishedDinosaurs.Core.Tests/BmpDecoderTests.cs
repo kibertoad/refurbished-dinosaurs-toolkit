@@ -181,6 +181,12 @@ public sealed class BmpDecoderTests
         Assert.True(GC.GetAllocatedBytesForCurrentThread() - before < 1024 * 1024);
         Assert.Throws<InvalidDataException>(() => BmpDecoder.Decode(Bmp(3, 2, 24, Rows24(3, 2, Colour)), maximumPixels: 5));
         Assert.Throws<ArgumentOutOfRangeException>(() => BmpDecoder.Decode(Bmp(1, 1, 24, new byte[4]), maximumPixels: -1));
+
+        // The default is ImageLimits.DefaultMaximumPixels: 4097x4096 is past it, 4096x4096 fails later.
+        var over = Assert.Throws<InvalidDataException>(() => BmpDecoder.Decode(Bmp(4097, 4096, 24, new byte[4])));
+        Assert.Contains("configured limit", over.Message);
+        var at = Assert.Throws<InvalidDataException>(() => BmpDecoder.Decode(Bmp(4096, 4096, 24, new byte[4])));
+        Assert.DoesNotContain("configured limit", at.Message);
     }
 
     [Fact]

@@ -68,7 +68,7 @@ public static class CddaTrackFingerprints
         int anchorSamples,
         CancellationToken cancellationToken = default)
     {
-        var (_, binPath, sheet) = CueBinSheet.Resolve(cueBinPath);
+        var (_, binPath, sheet, _) = CueBinSheet.Resolve(cueBinPath);
         sheet.ValidateBin(binPath);
         if (track < 1 || track > sheet.Tracks.Count || sheet.Tracks[track - 1].Type != "AUDIO")
             throw new ArgumentException($"Track {track:D2} is not an audio track of the cue sheet.", nameof(track));

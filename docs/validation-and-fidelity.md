@@ -115,6 +115,11 @@ person writing the finding:
 - An error value passed up through a recursive call does not show a local error origin, and an
   encoded error edge alone does not show a reachable failure. Keep finite-traversal and valid-state
   assumptions as stated assumptions.
+- A fresh encoding written after a test of a recursive result has the writing instruction as its
+  producer. That names where the value was written. Write it as "re-encodes a tested recursive
+  failure", and name a failure's origin only from a traced leaf with its own `origin` control. A
+  modeled recursive call whose case supplies the encoding assumes the failure and shows no leaf
+  that failed ([a tested and re-encoded recursive result](bounded-evidence-reporters.md#a-tested-and-re-encoded-recursive-result)).
 - A relation decided under `assume` holds for that range. Cite the range's evidence, keep a static
   counterexample labelled as an arithmetic example until native inputs reach it, and do not turn a
   caller's narrower range into a universal bound.

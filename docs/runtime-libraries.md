@@ -50,17 +50,31 @@ LegacyFormats parts of it:
   on a line it cannot read rather than skipping it. A cue/bin source names the cue sheet and the raw
   image file it chose from a directory, a `.cue` or a `.bin` input as `CuePath` and `BinPath` (the
   image is the file the sheet's `FILE` names, whatever its extension), so the importer hashes and
-  reads the same files instead of repeating the selection.
+  reads the same files instead of repeating the selection. The source reads the `.cue` once, when it
+  opens, and gives those bytes as `CueSheetBytes`: hash them, since the file at `CuePath` may have
+  been replaced after the sheet was parsed. An `.iso` or cue/bin source records the image's length
+  and last-write time when it opens, and every read of the `.iso` or BIN through the source,
+  including `OpenBin`, fails with an `IOException` when either has changed. A rewrite that keeps
+  both is not detected. A stream the importer opens from `BinPath` itself is not checked.
 - An `.iso` or cue/bin source also gives its ISO 9660 volume: the identifier (`Label`), the size in
   blocks (`VolumeBlocks`) and the bytes (`OpenVolume`). An `iso9660` or `cue-bin` manifest can pin
   them with `VolumeIdentifier`, `VolumeBlocks` and `VolumeXxh3`, which tells apart two pressings
   that carry the same files. The pins add checks; every file is still verified.
 - `OriginalContentSource.OpenInstallShieldCabinet` lists and reads the members of an InstallShield 5
-  or 6 cabinet set, on disk or inside a disc source, through the same interface. It checks every
-  member's path, extent and the set's limits when it opens, and each member's size (and MD5 for
-  version 6) when it is read to the end. Decode into the staging directory and verify the output
-  there as for any other source; [InstallShield cabinets](../packages/dotnet/README.md#installshield-cabinets)
+  or 6 cabinet set, on disk or inside a disc source, through the same interface. It opens from a
+  `dataN.hdr`, or from a `dataN.cab` that holds the header, reading only that file's header region.
+  It checks every member's path, extent and the set's limits when it opens, and each member's size
+  (and MD5 for version 6) when it is read to the end. Entries it does not list are in `SkippedFiles`
+  with a reason: entries marked invalid or without data, version 6 links to them, entries at a
+  listed member's path that share its data, and version 6 copies of a listed member at the same path
+  with the same size and MD5. Decode into the staging directory and verify the output there as for
+  any other source; [InstallShield cabinets](../packages/dotnet/README.md#installshield-cabinets)
   lists the supported subset.
+- `ContentSourceExtractor.ExtractAsync` copies the files of any source, or a selection, into the
+  staging directory below a prefix, hashes each while it copies, and returns the `InstalledAsset`
+  records for the installed manifest. It checks file-count and byte limits and every path before it
+  writes, and removes what it wrote when it fails or is cancelled. See
+  [extracting a source into a stage](../packages/dotnet/README.md#extracting-a-source-into-a-stage).
 - `AssetManifest` describes a supported edition by paths, sizes and XXH3-128 hashes, the same
   `xxh3` values the spec's build entries give, and names the source kind to read it as.
   `AssetVerifier.IdentifyAsync` tries every edition against the player's copy and reports why the
@@ -75,8 +89,9 @@ LegacyFormats parts of it:
   then calls `Commit`, which swaps the pack in and keeps the old one on failure.
 - `ContentOverlay` brings the staged content to a patched version before `Commit`. It replaces
   or adds a file only when the target holds the hash the overlay records for it, verifies every
-  payload before replacing anything, and returns records for the installed manifest. The overlay's
-  files and hashes are the restoration's data. See
+  payload before replacing anything, and returns records for the installed manifest. It throws
+  for an importer record list with an unsafe or duplicate path; `InstalledAssetVerifier` checks
+  the rest of each record. The overlay's files and hashes are the restoration's data. See
   [content overlays](../packages/dotnet/README.md#content-overlays).
 - `InstalledContentWriter` suits incremental extractors: it replaces changed files atomically and
   skips byte-identical ones. `InstalledContentUninstaller` removes only the paths the installed
@@ -98,7 +113,8 @@ Pass every file reference that comes from data, such as a manifest, a script or 
 through `PortableAssetPath.Relative`, which rejects the same names on every host. Call
 `WithoutDriveRoot` only when the original format stores an installation path with a drive root.
 `ResolveFile` then finds the file in the verified content directory, ignoring case and refusing an
-ambiguous match. The rules are in [portable asset references](../packages/dotnet/README.md#portable-asset-references).
+ambiguous match, and `ResolveDirectory` does the same for a directory. The rules are in
+[portable asset references](../packages/dotnet/README.md#portable-asset-references).
 
 ## Saves and settings
 
@@ -244,3 +260,70 @@ Replace unsigned-eight-bit widening loops with `Media.Audio.Pcm16.FromUnsigned8`
 `Pcm16.Encode` and `LegacyFormats.WavePcm16Writer` instead of host-endian WAVE construction.
 `WavePcm16Stream` owns its input by default, supports aligned buffers and looped reads, and exposes
 format metadata for game-specific CDDA admission. Dispose voices before cached resources.
+
+### CddaWave sector ranges
+
+`CddaWave.Write` takes `long` sector values, so a track's `CueBinTrackExtent` passes in without a
+cast. Source that passes `int` values compiles unchanged; rebuild against the new release, since
+code compiled against the `int` signature fails to find the method. A range longer than
+`CddaWave.MaximumSectors` throws `ArgumentOutOfRangeException` before anything is written, where
+the old method threw `OverflowException` above about 913,000 sectors. A range that ends past the
+image now throws `EndOfStreamException` before the header is written instead of after it, and
+null streams throw `ArgumentNullException`. Remove local byte-count checks made before calling it,
+and use `WriteAsync` to cancel a copy mid-track.
+
+### Overlay installed records
+
+`ContentOverlayResult.UpdateInstalledFiles` now runs each record's path through
+`PortableAssetPath.Relative` before matching it to an output. A record no output matches is
+returned under that path, so `\` separators become `/`; a matched record takes the output's
+spelling, as before. It throws `InvalidDataException` for a list it used to pass
+through:
+
+- a record whose path `Relative` rejects, such as a blank path, `./data/main.bin`, `../x` or a
+  rooted path;
+- two records that name the same path ignoring case and separators, such as `data/main.bin` and
+  `DATA/main.bin`. The message names both spellings.
+
+`InstalledAssetVerifier` already reported these records as `UnsafePath` or `DuplicatePath`, so a
+manifest built from such a list never verified. Fix the importer so each installed file has one
+record with a portable relative path, or catch `InvalidDataException` where the overlay is applied
+and report it as an import failure.
+
+### Shared image pixel limit
+
+`BmpDecoder.DefaultMaximumPixels` is removed. Use `ImageLimits.DefaultMaximumPixels` in
+RefurbishedDinosaurs.LegacyFormats, which holds the same value (16,777,216) and is the default
+`maximumPixels` of `BmpDecoder`, `PcxDecoder` and `RawIndexedImageDecoder`.
+
+`PcxDecoder` and `RawIndexedImageDecoder` now throw `InvalidDataException` for dimensions whose
+product passes `int` range, where they threw `OverflowException`. `PcxDecoder` checks a negative
+`maximumPixels` before reading the file, so it throws `ArgumentOutOfRangeException` for a short or
+malformed file too. It also stops allocating a padded scanline buffer, so memory stays within the
+pixel limit however wide the declared scanlines are. Drop any `OverflowException` handling around
+these calls.
+
+### Latin-1 volume identifiers
+
+`OriginalContentSource.Label` on an `.iso` or cue/bin source now reads each byte of the primary
+volume descriptor's identifier as the Latin-1 (ISO-8859-1) character of the same value. It read the
+identifier as ASCII before, which turned every byte above 0x7F into `?`. Byte 0xC9 now gives `É`
+(U+00C9), so two identifiers that differ only in such a byte give different labels. Trailing
+spaces and NULs are still removed, and an identifier with only ASCII bytes reads as before.
+
+`AssetManifest.Validate` and `schemas/asset-manifest.schema.json` now accept a `VolumeIdentifier`
+of 1 to 32 characters from U+0000 to U+00FF that does not end in a space or NUL. That is every
+label a descriptor can give, control bytes included: a Shift-JIS lead byte 0x85 is `"\u0085"`.
+Characters above U+00FF are rejected.
+
+The `WrongVolumeIdentifier` detail now writes both identifiers as JSON strings (`"DISC\u0085"`,
+with `"` and `\` escaped and each control character as a `\u` escape) where it used single quotes.
+Code that parses the detail reads the JSON string instead.
+
+This affects code that compares `Label`, and manifests whose `VolumeIdentifier` writes `?` for a
+byte above 0x7F. Such a pin no longer matches the disc and fails with `WrongVolumeIdentifier`.
+Replace each `?` that stands for a high byte with that byte's Latin-1 character (in JSON, `"\u00C9"`
+or the character itself, and `"\u0085"` for a control byte), reading the value from `Label` of a
+reference copy or from the `WrongVolumeIdentifier` detail. Changing the pin changes the manifest's
+`Fingerprint()`, so copies installed with the old manifest are imported again. Code that compares
+`Label` with a string holding `?` for those bytes changes the same way.
