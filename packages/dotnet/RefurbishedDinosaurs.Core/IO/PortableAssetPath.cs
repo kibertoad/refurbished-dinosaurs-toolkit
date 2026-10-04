@@ -1,5 +1,3 @@
-using System.IO.Enumeration;
-
 namespace RefurbishedDinosaurs.Core.IO;
 
 /// <summary>Interprets legacy asset references consistently on Windows, Linux and macOS.</summary>
@@ -11,15 +9,6 @@ public static class PortableAssetPath
         "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "COM¹", "COM²", "COM³",
         "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9", "LPT¹", "LPT²", "LPT³"
     ];
-
-    private static readonly EnumerationOptions EntryOptions = new()
-    {
-        AttributesToSkip = 0,
-        IgnoreInaccessible = false,
-        MatchType = MatchType.Simple,
-        RecurseSubdirectories = false,
-        ReturnSpecialDirectories = false
-    };
 
     /// <summary>
     /// Normalizes separators and rejects roots, drive-relative names, traversal, empty components, and
@@ -60,48 +49,46 @@ public static class PortableAssetPath
     /// rejected, including the root. Returns the actual relative spelling with forward slashes.
     /// This is a read-time check, not protection against concurrent directory replacement.
     /// </summary>
+    /// <param name="root">The directory the reference is relative to.</param>
+    /// <param name="relative">The reference, checked with <see cref="Relative"/>.</param>
+    /// <returns>The file's path below <paramref name="root"/> as the file system spells it.</returns>
     /// <exception cref="ArgumentException"><paramref name="root"/> is null or blank.</exception>
     /// <exception cref="InvalidDataException">
     /// The root is not a directory, or the reference is unsafe, missing, ambiguous, linked or not a file.
     /// </exception>
-    public static string ResolveFile(string root, string relative)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(root);
-        var parts = Relative(relative).Split('/');
-        var rootInfo = new DirectoryInfo(Path.GetFullPath(root));
-        if (!rootInfo.Exists) throw new InvalidDataException("Asset root directory does not exist.");
-        RejectLink(rootInfo.Attributes);
-        var current = rootInfo.FullName;
-        for (var index = 0; index < parts.Length; index++)
-        {
-            var match = SingleEntry(current, parts[index]);
-            RejectLink(match.Attributes);
-            var last = index == parts.Length - 1;
-            if (match.IsDirectory == last)
-                throw new InvalidDataException(last ? "Asset reference is not a file." : "Asset directory does not exist.");
-            current = match.FullPath;
-        }
-        return Path.GetRelativePath(rootInfo.FullName, current).Replace('\\', '/');
-    }
+    public static string ResolveFile(string root, string relative) => Resolve(root, relative, directory: false);
 
     /// <summary>
-    /// Finds the one entry of <paramref name="directory"/> named <paramref name="name"/> ignoring case.
-    /// Hidden, system and reparse entries are listed and an unreadable directory throws, so nothing a
-    /// different host would see is skipped. Only matching entries build a full path.
+    /// Resolves an existing directory with the rules of <see cref="ResolveFile"/>: each component
+    /// matches exactly one entry ignoring ordinal case, even when one of the matches is spelled
+    /// exactly, and symbolic links and reparse points are rejected, including the root. Returns the
+    /// actual relative spelling with forward slashes. This is a read-time check, not protection
+    /// against concurrent directory replacement.
     /// </summary>
-    private static (string FullPath, FileAttributes Attributes, bool IsDirectory) SingleEntry(string directory, string name)
+    /// <param name="root">The directory the reference is relative to.</param>
+    /// <param name="relative">The reference, checked with <see cref="Relative"/>.</param>
+    /// <returns>The directory's path below <paramref name="root"/> as the file system spells it.</returns>
+    /// <exception cref="ArgumentException"><paramref name="root"/> is null or blank.</exception>
+    /// <exception cref="InvalidDataException">
+    /// The root is not a directory, or the reference is unsafe, missing, ambiguous, linked or not a directory.
+    /// </exception>
+    public static string ResolveDirectory(string root, string relative) => Resolve(root, relative, directory: true);
+
+    private static string Resolve(string root, string relative, bool directory)
     {
-        var matches = new FileSystemEnumerable<(string, FileAttributes, bool)>(
-            directory,
-            (ref FileSystemEntry entry) => (entry.ToFullPath(), entry.Attributes, entry.IsDirectory),
-            EntryOptions)
-        {
-            ShouldIncludePredicate = (ref FileSystemEntry entry) =>
-                entry.FileName.Equals(name, StringComparison.OrdinalIgnoreCase)
-        }.Take(2).ToArray();
-        return matches.Length == 1
-            ? matches[0]
-            : throw new InvalidDataException(matches.Length == 0 ? "Asset does not exist." : "Asset spelling is ambiguous.");
+        ArgumentException.ThrowIfNullOrWhiteSpace(root);
+        var reference = Relative(relative);
+        var rootInfo = new DirectoryInfo(Path.GetFullPath(root));
+        if (!rootInfo.Exists) throw new InvalidDataException("Asset root directory does not exist.");
+        if ((rootInfo.Attributes & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException("Asset root is a symbolic link or reparse point.");
+        var (spelled, isDirectory) = new AssetPathWalker(rootInfo.FullName, cacheListings: false).Walk(reference);
+        var path = string.Join('/', spelled);
+        if (spelled.Count < reference.Count(character => character == '/') + 1)
+            throw new InvalidDataException($"Asset does not exist: {reference}");
+        if (isDirectory != directory)
+            throw new InvalidDataException(directory ? $"Asset reference is not a directory: {path}" : $"Asset reference is not a file: {path}");
+        return path;
     }
 
     private static string Present(string reference) => string.IsNullOrWhiteSpace(reference)
@@ -113,11 +100,5 @@ public static class PortableAssetPath
         if (part.Length == 0 || part[^1] is '.' or ' ') return false;
         var stem = part.Split('.')[0].TrimEnd(' ');
         return !DeviceNames.Contains(stem, StringComparer.OrdinalIgnoreCase);
-    }
-
-    private static void RejectLink(FileAttributes attributes)
-    {
-        if ((attributes & FileAttributes.ReparsePoint) != 0)
-            throw new InvalidDataException("Asset path contains a symbolic link or reparse point.");
     }
 }
