@@ -204,6 +204,107 @@ CFG_OPERAND = "entry-CFG operand past a stop; values and callee effects unresolv
 PORT_OPERAND = "operand past a PE32 port access; values and continuation unresolved"
 
 
+# dependsOn reasons in ``uses`` for the calls and port accesses a conditionalAccesses row is reached past.
+STEPPED_CALL = "call past a stop; assumed to return"
+STEPPED_PORT = "port access past a stop; assumed to continue"
+OPEN_CALL = "call open at a stop inside its callee; continued at its return site, assumed to return"
+
+
+def _function_exit(image, start, limit, follow_flat_ports, cache):
+    """Walk one function's CFG from ``start``, stepping over calls, and say whether it reaches a return.
+
+    Returns the decoded sites on a route from ``start`` to a return instruction, whether one was
+    reached, and whether the walk stopped at ``limit`` first. A PE32 port access ends its branch
+    unless ``follow_flat_ports``. In the PE32 model an IRET stops ``trace``, so it is no return here.
+    ``cache`` keeps each walk's result, as several open calls and stops share the same walks.
+    """
+    key = (start, follow_flat_ports)
+    if key in cache:
+        return cache[key]
+    pending, seen, successors, exits = [start], {}, {}, []
+    while pending:
+        at = pending.pop()
+        if at in seen:
+            continue
+        if len(seen) >= limit:
+            cache[key] = {}, False, True
+            return cache[key]
+        ins = image.decode(at)
+        if ins is None:
+            continue
+        seen[at] = ins
+        m = base_mnemonic(ins)
+        if unsupported_transfer(image, ins):
+            continue
+        following = successors[at] = []
+        if at in image.indirect_jumps:
+            following.extend(row["target"] for row in image.indirect_jumps[at]["rows"])
+        elif m in RETURNS:
+            if not (image.flat and m in ("iret", "iretd")):
+                exits.append(at)
+        else:
+            if m == "ljmp" or m.startswith(("j", "loop")):
+                target, _ = call_target(image, at, ins)
+                if target is not None:
+                    following.append(target)
+            if not (m in ("jmp", "ljmp") or m in INTERRUPTS or m == "hlt"
+                    or (m in PORTS and image.flat and not follow_flat_ports)):
+                following.append(at + ins.size)
+        pending.extend(following)
+    # Only the sites a return is reachable from lie on the way to it; a branch that never returns is left out.
+    callers = {}
+    for at, following in successors.items():
+        for target in following:
+            callers.setdefault(target, []).append(at)
+    on_route, pending = set(exits), list(exits)
+    while pending:
+        for at in callers.get(pending.pop(), ()):
+            if at not in on_route:
+                on_route.add(at)
+                pending.append(at)
+    cache[key] = {at: seen[at] for at in on_route}, bool(exits), False
+    return cache[key]
+
+
+def _caller_continuations(image, stop, reason, stack, limit, cache):
+    """Return sites at which ``uses`` continues its inventory past a stop inside a called function.
+
+    ``stack`` holds the traced calls still open at ``stop`` as (call site, return site) pairs,
+    outermost first. A return site is continued only when the CFG from the stop, or from the
+    return site inside it, reaches a return of the called function. Each continuation depends on
+    the stop, on every open call from the stop out to that return site, and on every call or PE32
+    port access stepped over on the way to those returns. Returns (return site, dependsOn,
+    reached without crossing a PE32 port access) rows and the gaps of walks that reached ``limit``.
+    """
+    rows = []
+    ins = image.decode(stop)
+    # A stop at a return instruction is the return itself failing, so no caller continuation is assumed.
+    if ins is None or base_mnemonic(ins) in RETURNS:
+        return rows, []
+    depends = [{"site": stop, "reason": reason}]
+    start, port_free = stop, not (image.flat and base_mnemonic(ins) in PORTS)
+    for call_site, return_site in reversed(stack):
+        route, exits, truncated = _function_exit(image, start, limit, True, cache)
+        if truncated:
+            return rows, [{"site": start, "reason": "instruction limit"}]
+        if not exits:
+            break
+        if port_free:
+            # This walk decodes a subset of the one above, so it cannot reach the limit.
+            port_free = _function_exit(image, start, limit, False, cache)[1]
+        for at, ins in sorted(route.items()):
+            if at == stop:
+                continue
+            if ins.mnemonic in ("call", "lcall"):
+                depends.append({"site": at, "reason": STEPPED_CALL})
+            elif image.flat and base_mnemonic(ins) in PORTS:
+                depends.append({"site": at, "reason": STEPPED_PORT})
+        depends.append({"site": call_site, "reason": OPEN_CALL})
+        start = return_site
+        rows.append((start, list(depends), port_free))
+    return rows, []
+
+
 def uses(image, config):
     query = config.get("query", {})
     offset = integer(query.get("offset"), 0, image.mask, "query offset")
@@ -233,6 +334,8 @@ def uses(image, config):
     entry_limit = integer(config.get("entryLimit", 64), 1, 256, "entryLimit")
     # CFG points where value propagation stopped (or never started), with why; operands after them are inventoried below.
     stops = {}
+    # The traced calls still open at each stop, so the inventory can continue at their return sites.
+    open_calls = {}
     established = entries(image)
     for index, at in enumerate(established):
         if remaining <= 0 or index >= entry_limit:
@@ -241,17 +344,18 @@ def uses(image, config):
                 stops.setdefault(root, "entry not traced: entry or total instruction budget exhausted")
             break
         report = trace(image, {**config, "entry": at, "totalSteps": remaining, "stringIterations": string_remaining},
-                       continue_declared_jumps=False, track_loops=False)
+                       continue_declared_jumps=False, track_loops=False, call_stacks=True)
         remaining -= report["stepsUsed"]
         string_remaining -= report["stringIterationsUsed"]
         if not report["completeWithinModel"]:
             gaps.append({"entry": at, "reason": "incomplete path effects", "stops": list({p["stop"] for p in report["paths"] if p["stop"]})})
-        for p in report["paths"]:
-            if p["stop"] and p["stopSite"] is not None:
-                stops.setdefault(p["stopSite"], p["stop"])
-        for g in report["gaps"]:
-            if "site" in g:
-                stops.setdefault(g["site"], g["reason"])
+        stopped = [(p["stopSite"], p["stop"], p["callStack"]) for p in report["paths"]
+                   if p["stop"] and p["stopSite"] is not None]
+        stopped += [(g["site"], g["reason"], g.get("callStack")) for g in report["gaps"] if "site" in g]
+        for site, reason, stack in stopped:
+            stops.setdefault(site, reason)
+            if stack:
+                open_calls.setdefault(site, set()).add(tuple((f["callSite"], f["continuation"]) for f in stack))
         for path in report["paths"]:
             for e in path["events"]:
                 if e["kind"] not in ("read", "write") or mode not in ("both", e["kind"]):
@@ -289,29 +393,51 @@ def uses(image, config):
     instruction_limit = config.get("instructionLimit", 10000)
     # This inventory assumes execution continues past each stop, so it also follows PE32 port accesses
     # and names each one below.
-    after_stop, stop_gaps, _, _, _ = (walk(image, list(stops), instruction_limit, follow_flat_ports=True)
-                                      if stops else ({}, [], None, None, None))
+    # A stop inside a called function would end the inventory at that function's return. The code
+    # after each call still open at the stop is inventoried too, from the call's return site, and
+    # depends on the stop and on every call between them returning.
+    returning, exit_walks = [], {}
+    for root, stacks in sorted(open_calls.items()):
+        for stack in sorted(stacks):
+            rows, frame_gaps = _caller_continuations(image, root, stops[root], stack, instruction_limit, exit_walks)
+            returning.extend(rows)
+            gaps.extend(g for g in frame_gaps if g not in gaps)
+    seeds = list(stops) + [start for start, _, _ in returning]
+    after_stop, stop_gaps, _, _, _ = (walk(image, seeds, instruction_limit, follow_flat_ports=True)
+                                      if seeds else ({}, [], None, None, None))
     gaps.extend(g for g in stop_gaps if g["reason"] == "instruction limit")
     # In PE32 a site the stops reach only by continuing past a port access is named as such, even when
     # it also depends on an unread call. The walk that ends at port accesses must finish within the
-    # limit for that claim; otherwise every row keeps the shared value.
+    # limit for that claim; otherwise every row keeps the shared value. A return site counts as
+    # reached without a port access only when its callees return without crossing one.
     port_only = set()
-    if image.flat and any(base_mnemonic(ins) in PORTS for ins in after_stop.values()):
-        before_ports, port_gaps, _, _, _ = walk(image, list(stops), instruction_limit)
+    if image.flat and (any(base_mnemonic(ins) in PORTS for ins in after_stop.values())
+                       or any(not port_free for _, _, port_free in returning)):
+        port_free_seeds = list(stops) + [start for start, _, port_free in returning if port_free]
+        before_ports, port_gaps, _, _, _ = walk(image, port_free_seeds, instruction_limit)
         if not any(g["reason"] == "instruction limit" for g in port_gaps):
             port_only = set(after_stop) - set(before_ports)
     # A call past a stop was never traced either, so code after it also depends on it returning.
-    starts = [(root, root, reason) for root, reason in stops.items()]
-    starts += [(at, at + ins.size, "call past a stop; assumed to return")
+    starts = [(root, [{"site": root, "reason": reason}]) for root, reason in stops.items()]
+    starts += [(at + ins.size, [{"site": at, "reason": STEPPED_CALL}])
                for at, ins in after_stop.items() if ins.mnemonic in ("call", "lcall") and at not in stops]
     if image.flat:
-        starts += [(at, at + ins.size, "port access past a stop; assumed to continue")
+        starts += [(at + ins.size, [{"site": at, "reason": STEPPED_PORT}])
                    for at, ins in after_stop.items() if base_mnemonic(ins) in PORTS and at not in stops]
+    starts += [(start, row_depends) for start, row_depends, _ in returning]
+    # Several rows can share a start (one return site of many open calls), so each start is walked once.
+    by_start = {}
+    for start, row_depends in starts:
+        named = by_start.setdefault(start, [])
+        named.extend(d for d in row_depends if d not in named)
     depends = {}
-    for site, start, reason in sorted(starts):
+    for start, row_depends in by_start.items():
         reached, _, _, _, _ = walk(image, [start], instruction_limit, follow_flat_ports=True)
         for at in reached:
-            depends.setdefault(at, []).append({"site": site, "reason": reason})
+            named = depends.setdefault(at, [])
+            named.extend(d for d in row_depends if d not in named)
+    for named in depends.values():
+        named.sort(key=lambda d: (d["site"], d["reason"]))
     conditional = []
     for at, ins in sorted(after_stop.items()):
         if ins.mnemonic == "lea":
@@ -1041,7 +1167,7 @@ def callees(image, config):
                 and not s["omittedRoutes"]
                 and not any(d.get("reason") in capped for at in s["entries"] for d in nodes[at]["dependencies"])
                 and not any(d.get("reason") in capped for i in s["dependencyEdges"] for d in edges[i]["dependencies"]))
-    cross_check = _ghidra_cross_check(export, nodes, outgoing, omitted) if export is not None else None
+    cross_check = _ghidra_cross_check(image, export, nodes, outgoing, omitted) if export is not None else None
     known = {"sharedSites": {e["site"] for e in edges if shared_control(e)},
              "recursiveSites": {e["site"] for e in edges if e["classification"] == "recursivePath"},
              "writeSites": {o["site"] for n in nodes.values() for o in n["memoryObservations"] if o["boundaryUsable"] and "write" in o["access"]},
@@ -1121,22 +1247,60 @@ def _ghidra_key(g):
     return g["site"], g["target"]
 
 
+# The flow types Ghidra's RefType builds with a fall-through (FlowType.hasFallthrough). Every other flow type ends the
+# function at its instruction, CONDITIONAL_CALL_TERMINATOR included.
+GHIDRA_FALL_THROUGH_FLOWS = frozenset((
+    "FALL_THROUGH", "CONDITIONAL_JUMP", "UNCONDITIONAL_CALL", "CONDITIONAL_CALL", "CONDITIONAL_TERMINATOR",
+    "COMPUTED_CALL", "CONDITIONAL_COMPUTED_CALL", "CONDITIONAL_COMPUTED_JUMP", "CALL_OVERRIDE_UNCONDITIONAL",
+    "CALLOTHER_OVERRIDE_CALL"))
+
+
 def _ghidra_falls_through(g):
     """Whether Ghidra continues to the next instruction at an exported edge's site, and what that was read from.
 
     The export's fallsThrough also reflects a user's fall-through override. Copies of the script that leave it out
-    are read by the flow type's name, which misses such an override.
+    are read by the flow type's name, which misses such an override: a flow type Ghidra gives a fall-through
+    (GHIDRA_FALL_THROUGH_FLOWS) continues, and every other one ends the function.
     """
     exported = g["fallsThrough"] is not None
-    return {"ghidraFallsThrough": g["fallsThrough"] if exported else "TERMINATOR" not in g["flow"],
+    named = g["flow"] in GHIDRA_FALL_THROUGH_FLOWS
+    return {"ghidraFallsThrough": g["fallsThrough"] if exported else named,
             "ghidraFallsThroughBasis": "fallsThrough" if exported else "flowName"}
 
 
-def _ghidra_cross_check(export, nodes, outgoing, omitted):
+def _engine_reads_on(image, ins):
+    """Whether the engine's body reading continues to the instruction after ins.
+
+    It stops at a jmp, ljmp, return or hlt, and reads on past every other instruction, including a call, a conditional
+    jump and an interrupt. At a transfer outside the frame model it stops with a gap, so the result is None: the engine
+    decided nothing there. It is None too when the engine did not read ins.
+    """
+    if ins is None or unsupported_transfer(image, ins):
+        return None
+    m = base_mnemonic(ins)
+    return not (m in RETURNS or m in ("hlt", "jmp", "ljmp"))
+
+
+def _ghidra_cross_check(image, export, nodes, outgoing, omitted):
     """Compare the engine's edges with Ghidra's for each caller both read; a Ghidra-only edge stays unchecked."""
     callers = export["callers"]
     compared = sorted(nodes.keys() & callers.keys())
     rows = []
+    # Rows where Ghidra ends the function at an instruction the engine reads past, and rows where Ghidra continues past
+    # an instruction the engine stops at. Either way the two analyses disagree on the function's extent.
+    ends, continues = [], []
+
+    def compare_extent(row, g, ins):
+        reads_on = _engine_reads_on(image, ins)
+        if reads_on is None:
+            return row
+        row |= _ghidra_falls_through(g)
+        if reads_on and row["ghidraFallsThrough"] is False:
+            ends.append(row)
+        elif not reads_on and row["ghidraFallsThrough"] is True:
+            continues.append(row)
+        return row
+
     for caller in compared:
         ours = outgoing.get(caller, [])
         theirs = callers[caller]
@@ -1148,12 +1312,9 @@ def _ghidra_cross_check(export, nodes, outgoing, omitted):
             g = matches.get((e["site"], e["target"]))
             row = {"caller": caller, "site": e["site"], "target": e["target"], "engineEdge": e["id"],
                    "result": "engineOnly" if g is None else "agreement", "ghidraFlow": g["flow"] if g else None}
-            # The engine reads on past every call and every conditional tail transfer, and stops at a jmp or ljmp.
             # Ghidra ends the function at a call to a callee it treats as non-returning (CALL_TERMINATOR) or at an
-            # instruction whose fall-through a user cleared.
-            if g is not None and (e["kind"] != "tail transfer" or base_mnemonic(instructions[e["site"]]) not in ("jmp", "ljmp")):
-                row |= _ghidra_falls_through(g)
-            rows.append(row)
+            # instruction whose fall-through a user cleared, and continues past a jmp a user gave a fall-through.
+            rows.append(row if g is None else compare_extent(row, g, instructions[e["site"]]))
         for g in theirs:
             if g["site"] is not None and _ghidra_key(g) in read:
                 continue
@@ -1162,35 +1323,40 @@ def _ghidra_cross_check(export, nodes, outgoing, omitted):
                 # SLEIGH lifts INT, INT1, INT3 and INTO to a computed call with no target, while the engine assumes the
                 # interrupt returns to the next instruction and records no edge. At INT1 and INT3 Ghidra's flow is a
                 # terminator that ends the function there.
-                rows.append({"caller": caller, "site": g["site"], "target": None, "siteAddress": g["siteAddress"],
-                             "targetAddress": None, "ghidraFlow": g["flow"], "result": "interrupt", "engineEdge": None,
-                             **_ghidra_falls_through(g)})
+                rows.append(compare_extent({"caller": caller, "site": g["site"], "target": None, "siteAddress": g["siteAddress"],
+                                            "targetAddress": None, "ghidraFlow": g["flow"], "result": "interrupt",
+                                            "engineEdge": None}, g, ins))
                 continue
-            # Ghidra's edge is evidence the engine did not check; it never becomes an engine edge.
-            rows.append({"caller": caller, "site": g["site"], "target": g["target"], "siteAddress": g["siteAddress"],
-                         "targetAddress": g["targetAddress"], "ghidraFlow": g["flow"], "result": "ghidraOnly", "checked": False,
-                         "engineEdge": next((e["id"] for e in ours if g["site"] is not None and e["site"] == g["site"]), None)})
+            # Ghidra's edge is evidence the engine did not check; it never becomes an engine edge. Its fall-through is
+            # still compared where the engine read the instruction at its site.
+            engine_edge = next((e["id"] for e in ours if g["site"] is not None and e["site"] == g["site"]), None)
+            rows.append(compare_extent({"caller": caller, "site": g["site"], "target": g["target"], "siteAddress": g["siteAddress"],
+                                        "targetAddress": g["targetAddress"], "ghidraFlow": g["flow"], "result": "ghidraOnly",
+                                        "checked": False, "engineEdge": engine_edge}, g, ins))
     counts = {kind: sum(r["result"] == kind for r in rows) for kind in ("agreement", "engineOnly", "ghidraOnly", "interrupt")}
-    counts["ghidraEndsFunction"] = sum(r.get("ghidraFallsThrough") is False for r in rows)
+    counts["ghidraEndsFunction"] = len(ends)
+    counts["ghidraContinues"] = len(continues)
     not_compared = {"engineCallers": sorted(nodes.keys() - callers.keys()), "ghidraCallers": sorted(callers.keys() - nodes.keys()),
                     "unmappedGhidraFunctions": export["unmappedFunctions"], "missingGhidraEntries": export["missingEntries"],
                     "unreadGhidraFunctions": export["unreadFunctions"],
                     "omittedEngineRoutes": [o["id"] for o in omitted if o["entry"] in callers]}
-    # A site agrees only when every edge either analysis read there agrees and Ghidra continues past it as the engine does.
-    disputed = {r["site"] for r in rows if r["result"] != "agreement" or r.get("ghidraFallsThrough") is False}
+    # A site agrees only when every edge either analysis read there agrees and Ghidra continues past it exactly when the
+    # engine does.
+    disputed = {r["site"] for r in rows if r["result"] != "agreement"} | {r["site"] for r in ends + continues}
     return {"comparedCallers": compared, "edges": rows, "counts": counts, "notCompared": not_compared,
             "agreed": (not counts["engineOnly"] and not counts["ghidraOnly"] and not any(not_compared.values())
-                       and not counts["ghidraEndsFunction"]),
+                       and not counts["ghidraEndsFunction"] and not counts["ghidraContinues"]),
             "agreementSites": {r["site"] for r in rows if r["result"] == "agreement"} - disputed,
             "interpretation": "Edges of each caller that both the engine and the Ghidra export read, matched by site and target "
                               "file offset; an unresolved call matches an unresolved call at its site, and a Ghidra target without a file offset "
                               "matches no engine edge. An interrupt row is Ghidra's targetless call at an instruction the engine read as an "
-                              "interrupt and assumed to return. The engine reads on past every call, conditional jump and interrupt, so an "
-                              "interrupt row or an agreement at a call or conditional tail transfer counts against agreed when Ghidra "
-                              "ends the function there (ghidraFallsThrough false, counted in ghidraEndsFunction), read from the export's "
-                              "fallsThrough or, in an export without it, from the flow name (ghidraFallsThroughBasis). "
-                              "A ghidraOnly edge is Ghidra's claim: the engine did not check it and never adds it to its graph. Agreement "
-                              "means both analyses read the edge, not that it executes."}
+                              "interrupt and assumed to return. A row at an instruction the engine read carries whether Ghidra continues "
+                              "to the next instruction there (ghidraFallsThrough), read from the export's fallsThrough or, in an export "
+                              "without it, from the flow name (ghidraFallsThroughBasis). The engine reads on past every call, conditional jump "
+                              "and interrupt and stops at a jmp, ljmp, return or hlt. A row where Ghidra ends the function at an instruction "
+                              "the engine reads past (ghidraEndsFunction) or continues past one the engine stops at (ghidraContinues) "
+                              "counts against agreed. A ghidraOnly edge is Ghidra's claim: the engine did not check it and never adds it "
+                              "to its graph. Agreement means both analyses read the edge, not that it executes."}
 
 
 # These branches test CX/ECX (LOOPE/LOOPNE also ZF), so an adjacent CMP/TEST never describes their predicate.
@@ -1538,6 +1704,8 @@ def _run_report(image, config, command):
         raise ValueError("relationalControls apply only to " + ", ".join(TRACE_COMMANDS))
     if "controlOccurrenceLimit" in config and command not in TRACE_COMMANDS:
         raise ValueError("controlOccurrenceLimit applies only to " + ", ".join(TRACE_COMMANDS))
+    if "entryFrame" in config and command not in TRACE_COMMANDS:
+        raise ValueError("entryFrame applies only to " + ", ".join(TRACE_COMMANDS))
     if command == "operand":
         return operand_provenance(image, config)
     if command == "target":
@@ -1577,6 +1745,8 @@ def _run_report(image, config, command):
         report = argument_frames(report, image)
     if command == "allocation":
         result = allocations(report, config)
+        if "entryFrame" in report:
+            result["entryFrame"] = report["entryFrame"]
         if controls is not None:
             result["relationalControls"] = controls
         return result

@@ -5,6 +5,7 @@ import {
   PULL_LINK_SETTLE_MS,
   bump,
   combinedBump,
+  gatedPackages,
   latestVersion,
   packageNamed,
   releaseLabel,
@@ -12,6 +13,7 @@ import {
   setPyprojectVersion,
   touched,
 } from "./plan.ts";
+import { testRepo } from "../lib/test-repo.ts";
 
 const engine = PACKAGES.find((p) => p.name === "scientific-method-engine")!;
 const dotnet = PACKAGES.find((p) => p.name === "scientific-method-dotnet")!;
@@ -24,6 +26,39 @@ test("a package is touched by a file under its path prefix or by an exact file p
   assert.ok(!touched(dotnet, ["tools/global.json"]));
   assert.ok(touched(archiver, ["packages/disc-archiver/src/dinorefurb_disc_archiver/cli.py"]));
   assert.ok(!touched(engine, ["packages/disc-archiver/README.md"]));
+});
+
+test("a file moved out of a package marks the package touched", (t) => {
+  const repo = testRepo(t);
+  repo.write("packages/dotnet/RefurbishedDinosaurs.Core/Moved.cs", "class Moved {}\n".repeat(20));
+  const base = repo.commit("base");
+  repo.move("packages/dotnet/RefurbishedDinosaurs.Core/Moved.cs", "docs/Moved.cs");
+  repo.commit("move");
+  assert.deepEqual(
+    gatedPackages(base, "HEAD", repo.root).map((p) => p.name),
+    ["scientific-method-dotnet"],
+  );
+});
+
+test("a path with non-ASCII characters marks its package touched", (t) => {
+  const repo = testRepo(t);
+  repo.write("README.md", "base\n");
+  const base = repo.commit("base");
+  repo.write("packages/disc-archiver/tests/café disc.py", "\n");
+  repo.commit("add");
+  assert.deepEqual(
+    gatedPackages(base, "HEAD", repo.root).map((p) => p.name),
+    ["dinorefurb-disc-archiver"],
+  );
+});
+
+test("a change outside every package gates none", (t) => {
+  const repo = testRepo(t);
+  repo.write("README.md", "base\n");
+  const base = repo.commit("base");
+  repo.write("docs/releasing.md", "\n");
+  repo.commit("docs");
+  assert.deepEqual(gatedPackages(base, "HEAD", repo.root), []);
 });
 
 test("a release is planned for one package by name, so an ecosystem may hold several", () => {

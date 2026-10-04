@@ -323,7 +323,55 @@ def validate_continuation_budget(config):
             for key, value in budget.items()}
 
 
-def trace(image, config, continue_declared_jumps=True, track_loops=True, argument_window=0):
+# The stop of an entryFrame trace's path at its first arrival at the query's entry.
+ENTRY_ARRIVAL = "reached the query's entry"
+
+
+def entry_frame(image, config, entry):
+    """The query entry's place in the frame of the function that holds it, observed on a trace from that function's entry.
+
+    Returns None without an ``entryFrame`` input. Each path from ``entryFrame.from`` stops at its first
+    arrival at the entry, since the query itself traces everything after it. The frame is established
+    when every path was read until it arrived or returned, at least one arrived, every arrival was in
+    a frame of that function, and SP sat at one offset from that frame's entry SP at all of them. BP is
+    stated only when it also sat at one offset at all of them.
+    """
+    spec = config.get("entryFrame")
+    if spec is None:
+        return None
+    if not isinstance(spec, dict) or set(spec) != {"from"}:
+        raise ValueError("entryFrame takes only from, the entry of the function that holds the query's entry")
+    start = integer(spec["from"], 0, len(image.data) - 1, "entryFrame.from")
+    registers = config.get("registers", {})
+    if isinstance(registers, dict) and any(ALIASES.get(r, ("",))[0] in ("esp", "ebp") for r in registers):
+        raise ValueError("entryFrame observes SP and BP at the entry; registers cannot also supply them")
+    # Checkpoints and return contracts only add report detail, which this trace never reports.
+    prefix = {k: v for k, v in config.items()
+              if k not in ("entryFrame", "relationalControls", "controlOccurrenceLimit", "checkpoints", "returnContracts")}
+    report = trace(image, {**prefix, "entry": start}, continue_declared_jumps=False, track_loops=False, arrive=entry)
+    arrivals = [p["arrival"] for p in report["paths"] if p["stop"] == ENTRY_ARRIVAL]
+    reasons = [f"a path from {start} stopped at {p['stopSite']} before reaching the entry: {p['stop']}"
+               for p in report["paths"] if not p["returned"] and p["stop"] != ENTRY_ARRIVAL]
+    reasons += [f"the trace from {start} left paths unread: {g['reason']}" for g in report["gaps"]]
+    reasons += [f"the entry was reached inside a call to {a['frameEntry']}" for a in arrivals if a["frameEntry"] != start]
+    if not arrivals:
+        reasons.append(f"no path from {start} reached the entry")
+    offsets = sorted({a["sp"] for a in arrivals if a["sp"] is not None})
+    if any(a["sp"] is None for a in arrivals):
+        reasons.append("SP at an arrival is not an offset from the function's entry SP")
+    elif len(offsets) > 1:
+        reasons.append("arrivals reach the entry with SP at different offsets: " + ", ".join(map(str, offsets)))
+    established = not reasons
+    bp = {a["bp"] for a in arrivals}
+    return {"from": start, "established": established, "sp": offsets[0] if established else None,
+            "bp": next(iter(bp)) if established and len(bp) == 1 else None,
+            "arrivals": len(arrivals), "pathsRead": len(report["paths"]), "stepsUsed": report["stepsUsed"],
+            "reasons": reasons,
+            "meaning": "offsets from the entry SP of the function at from, observed at each first arrival on the "
+                       "traced paths under the query's own inputs; bp null leaves BP unknown"}
+
+
+def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=None, call_stacks=False, argument_window=0):
     """Trace bounded paths, preserving declared-table continuations as separate conditional evidence.
 
     Ordinary paths run first. A path stopped at a declared indirect jump is then
@@ -332,7 +380,12 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, argumen
     what the ordinary paths spend never leaves the continuations without budget.
     Callers that read only ordinary paths pass continue_declared_jumps=False.
     Callers that never report the paths pass track_loops=False, and their paths
-    carry no ``loops`` record.
+    carry no ``loops`` record. entry_frame passes arrive, the query entry:
+    each path stops at its first arrival at the site with an ``arrival`` record.
+    Callers that continue past a stop at the return sites of its callers pass
+    call_stacks=True, and each stopped path carries ``callStack``: the traced
+    calls still open at the stop, outermost first, with each one's return site.
+    A path limit gap inside a called function carries the same ``callStack``.
     A positive ``argument_window`` gives each traced call event an ``argumentSlots`` entry: the
     first ``argument_window`` bytes above its return frame as ``State.argument_slots`` saw them
     when the call ran. ``argument_frames`` reads and removes it.
@@ -372,7 +425,9 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, argumen
                 if r not in ALIASES or type(n) is not int or not 0 <= n < 1 << ALIASES[r][2]:
                     raise ValueError("Invalid model register")
     explicit_continuation_budget = validate_continuation_budget(config)
+    observed_frame = entry_frame(image, config, entry) if arrive is None else None
     root = State(entry, image, config)
+    root.enter_frame(observed_frame)
     root.argument_window = argument_window
     # Each path carries its own loop record; forks copy it with the rest of the state.
     root.loops = (LoopTracker(integer(config.get("loopIterationLimit", 64), 1, 1024, "loopIterationLimit"))
@@ -414,6 +469,16 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, argumen
             charge(count.number)
         string_effect(s, ins, count, remaining)
 
+    def open_calls(s):
+        return [{"callSite": f["callSite"], "continuation": f["continuation"]} for f in s.frames[1:]]
+
+    def path_limit(site, s, reason):
+        # A path dropped at site shares the open calls of s; a caller continuing past it needs them.
+        gap = {"site": site, "reason": reason}
+        if call_stacks and len(s.frames) > 1:
+            gap["callStack"] = open_calls(s)
+        global_gaps.append(gap)
+
     def finish(s, reason=None, returned=False):
         if continuing and reason and reason.startswith(STRING_BUDGET_STOP):
             # machine.py names no budget; a continuation's string iterations come from continuationBudget.
@@ -421,8 +486,13 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, argumen
         path = {"returned": returned, "stop": reason, "stopSite": None if returned else s.at, "steps": s.steps,
                 "instructionPath": s.path, "guards": s.guards, "events": s.events,
                 "registers": snapshot(s), "conditionalModels": s.conditional}
+        if reason == ENTRY_ARRIVAL:
+            path["arrival"] = {"frameEntry": s.frames[-1]["entry"], "sp": s.frame_offset(s.reg(s.sp)),
+                               "bp": s.frame_offset(s.reg(s.bp))}
         if s.loops is not None:
             path["loops"] = s.loops.report()
+        if call_stacks and not returned:
+            path["callStack"] = open_calls(s)
         assumptions = getattr(s, "declared_jump_assumptions", [])
         if assumptions:
             path["declaredJumpAssumptions"] = assumptions
@@ -528,6 +598,9 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, argumen
         state = pending.pop()
         try:
             while True:
+                if arrive is not None and state.at == arrive:
+                    finish(state, ENTRY_ARRIVAL)
+                    break
                 if continuing:
                     if state.continuation_steps >= continuation_budget["maxSteps"]:
                         raise StopPath("continuation step limit; loop progress unresolved")
@@ -584,7 +657,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, argumen
                             for choice in (0, 1):
                                 if choice == 0:
                                     if created >= max_paths:
-                                        global_gaps.append({"site": at, "reason": "path limit at unknown direction flag"})
+                                        path_limit(at, state, "path limit at unknown direction flag")
                                         continue
                                     child = deepcopy(state); created += 1
                                 else:
@@ -644,7 +717,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, argumen
                                 raise StopPath("modeled far return segment changed")
                         for case in model["cases"]:
                             if created >= max_paths:
-                                global_gaps.append({"site": at, "reason": "path limit at modeled call"})
+                                path_limit(at, state, "path limit at modeled call")
                                 break
                             child = deepcopy(state)
                             created += 1
@@ -796,7 +869,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, argumen
                     state = branches.pop()
                     for child in branches:
                         if created >= max_paths:
-                            global_gaps.append({"site": at, "reason": "path limit"})
+                            path_limit(at, state, "path limit")
                         else:
                             pending.append(child)
                             created += 1
@@ -814,10 +887,13 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, argumen
     else:
         ordinary_steps, ordinary_string_steps = total_steps, total_string_steps
         continuation_steps = continuation_string_steps = 0
-    return {"paths": outputs, "declaredContinuationPaths": conditional_outputs, "gaps": global_gaps,
-            "hardwareBoundaries": hardware_placement(outputs, conditional_outputs, global_gaps[:first_continuation_gap]),
-            "completeWithinModel": not global_gaps[:first_continuation_gap] and bool(outputs) and all(p["returned"] for p in outputs),
-            "nativeReachability": "unconfirmed", "stepsUsed": ordinary_steps, "stringIterationsUsed": ordinary_string_steps,
-            "continuationStepsUsed": continuation_steps, "continuationStringIterationsUsed": continuation_string_steps,
-            "limits": {"steps": max_steps, "paths": ordinary_max_paths, "depth": max_depth,
-                       "continuation": continuation_budget}}
+    result = {"paths": outputs, "declaredContinuationPaths": conditional_outputs, "gaps": global_gaps,
+              "hardwareBoundaries": hardware_placement(outputs, conditional_outputs, global_gaps[:first_continuation_gap]),
+              "completeWithinModel": not global_gaps[:first_continuation_gap] and bool(outputs) and all(p["returned"] for p in outputs),
+              "nativeReachability": "unconfirmed", "stepsUsed": ordinary_steps, "stringIterationsUsed": ordinary_string_steps,
+              "continuationStepsUsed": continuation_steps, "continuationStringIterationsUsed": continuation_string_steps,
+              "limits": {"steps": max_steps, "paths": ordinary_max_paths, "depth": max_depth,
+                         "continuation": continuation_budget}}
+    if observed_frame is not None:
+        result["entryFrame"] = observed_frame
+    return result

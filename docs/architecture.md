@@ -17,7 +17,8 @@ packages/
                                    RefurbishedDinosaurs.Media.{Smacker,Avi,Fli,Playback,Audio} C#
   disc-archiver/             PyPI  dinorefurb-disc-archiver               Python
 actions/    composite GitHub Actions, consumed by commit SHA
-tools/      repository-level scripts (Verify-Repository.ps1, release planning)
+tools/      repository-level scripts (Verify-Repository.ps1, release planning, CI area
+            selection, and lib/ for the changed-file reading both share)
 schemas/    JSON schemas for asset and repository-policy contracts
 docs/       the restoration handbook, this document and the decision records
 ```

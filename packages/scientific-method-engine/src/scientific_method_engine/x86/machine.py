@@ -173,6 +173,29 @@ class State:
             self.event("flag-assumption", flag="DF", value=self.direction_flag.report(),
                        evidence="explicit query starting hypothesis, not native state")
 
+    def enter_frame(self, frame):
+        """Place the entry inside the enclosing function's frame that an entryFrame trace established.
+
+        The root frame keeps the function's entry SP, so the function's own return balances against
+        it. SP, and BP when the trace found it at one offset, become offsets from that SP. A frame
+        that is absent or not established leaves the state as it was.
+        """
+        if not frame or not frame["established"]:
+            return
+        base = self.frames[0]["sp"]
+        self.setreg(self.sp, op("add", base, const(frame["sp"], self.bits)), None)
+        if frame["bp"] is not None:
+            self.setreg(self.bp, op("add", base, const(frame["bp"], self.bits)), None)
+
+    def frame_offset(self, value):
+        """A register value as a signed offset from the current frame's entry SP, or None when it is not one."""
+        base, delta = address_parts(self.frames[-1]["sp"])
+        other, other_delta = address_parts(value)
+        if other != base or base == ("absolute",):
+            return None
+        offset = (other_delta - delta) % (1 << self.bits)
+        return offset - (1 << self.bits) if offset >> (self.bits - 1) else offset
+
     def forget_flags(self, keep_carry=False):
         carry = self.carry_value() if keep_carry else None
         self.flags = None

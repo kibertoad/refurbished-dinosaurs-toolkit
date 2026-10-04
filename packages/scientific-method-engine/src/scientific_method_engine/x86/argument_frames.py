@@ -21,6 +21,11 @@ def stack_cleanup(ins):
     return amount if 0 < amount < 1 << (bits - 1) else None
 
 
+def _overlap(a, b):
+    """Whether the reads or intervals `a` and `b`, each starting (offset, width, ...), share a byte."""
+    return a[0] < b[0] + b[1] and b[0] < a[0] + a[1]
+
+
 def _covered(event, segment, base, start, width, modulus):
     """The frame offsets below `width` that a write event stored, counted from stack byte `start`."""
     interval = event.get("interval")
@@ -151,9 +156,16 @@ def _frame(image, events, index):
                                              "offsetFromEntrySP": event["argument"]["offsetFromEntrySP"], "bytes": hits})
 
     intervals = sorted({(g["offset"], g["width"]) for g in groupings})
-    competing = [[list(a), list(b)] for i, a in enumerate(intervals) for b in intervals[i + 1:] if a[0] < b[0] + b[1] and b[0] < a[0] + a[1]]
+    competing = [[list(a), list(b)] for i, a in enumerate(intervals) for b in intervals[i + 1:] if _overlap(a, b)]
     if competing:
         open_reasons.append("reads of different widths overlap")
+    # A far-pointer load and a plain dword of the same bytes do not settle one grouping either.
+    grouped_as = {}
+    for g in groupings:
+        grouped_as.setdefault((g["offset"], g["width"]), set()).add(g["grouping"])
+    for (offset, read_width), kinds in sorted(grouped_as.items()):
+        if len(kinds) > 1:
+            open_reasons.append(f"the {read_width} bytes at {offset} are read with more than one grouping")
     for slot in slots:
         if slot["writerSite"] is not None and not slot["consumedBy"]:
             open_reasons.append(f"the slot at {slot['offset']} was not read by the callee on this path")
@@ -170,9 +182,11 @@ def argument_frames(report, image):
 
     A path gets one map per traced call, from caller-written slots to callee reads. A site's
     groupings agree only when every path that traced a call there settled on the same read widths
-    and groupings. The report must come from ``trace`` with ``argument_window=WINDOW_BYTES``: each
-    traced call's slots come from its ``argumentSlots`` record, which this removes from every path,
-    declared continuations included.
+    and groupings. Separately, a site's widths are consistent when its paths made at least one read
+    and no two reads on any of them cover the same byte with a different offset, width or grouping;
+    a path that skipped a read leaves the site consistent but not agreed. The report must come from
+    ``trace`` with ``argument_window=WINDOW_BYTES``: each traced call's slots come from its
+    ``argumentSlots`` record, which this removes from every path, declared continuations included.
     """
     sites = {}
     for path_index, path in enumerate(report["paths"]):
@@ -188,10 +202,21 @@ def argument_frames(report, image):
     for site, rows in sorted(sites.items()):
         # A set holds each read's grouping too: a far-pointer load and a plain dword over the same bytes disagree.
         widths = sorted({tuple(sorted({(g["offset"], g["width"], g["grouping"]) for g in f["groupings"]})) for _, f in rows})
+        read_on = {}
+        for i, f in rows:
+            for g in f["groupings"]:
+                read_on.setdefault((g["offset"], g["width"], g["grouping"]), set()).add(i)
+        reads = sorted(read_on)
+        # Distinct reads that share a byte conflict: different intervals, or one interval grouped two ways.
+        conflicting = [[{"offset": o, "width": w, "grouping": k} for o, w, k in (a, b)]
+                       for n, a in enumerate(reads) for b in reads[n + 1:] if _overlap(a, b)]
         report["argumentFrameSites"].append({
             "callSite": site, "paths": sorted({i for i, _ in rows}), "frames": len(rows),
             "unsettledPaths": sorted({i for i, f in rows if not f["settledOnThisPath"]}),
             "readWidthSets": [[{"offset": o, "width": w, "grouping": k} for o, w, k in group] for group in widths],
+            "readWidths": [{"offset": o, "width": w, "grouping": k, "paths": sorted(read_on[(o, w, k)])} for o, w, k in reads],
+            "conflictingWidths": conflicting,
+            "widthsConsistent": bool(reads) and not conflicting,
             "agreed": len(widths) == 1 and all(f["settledOnThisPath"] for _, f in rows),
             "interpretation": "read widths per traced path; paths that never reached this call are not represented"})
     return report
