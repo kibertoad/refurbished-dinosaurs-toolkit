@@ -3,15 +3,15 @@
 //
 //   node tools/ci/changes.ts <base-sha> <head-sha>
 //     Writes `<area>=true|false` for every area in AREAS to GITHUB_OUTPUT (or prints it without
-//     one). A change to a path in EVERYTHING turns every area on, so a change to the workflow or
-//     to this file runs every job.
+//     one). A change to a path in EVERYTHING turns every area on, so a change to the workflow, to
+//     this file or to the shared module it reads changes with runs every job.
 //
 //   node tools/ci/changes.ts
 //     Without commits, as for a manual run, turns every area on.
 //
 // The repository policy check is no area: it runs on every pull request.
-import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
+import { changedFiles, matchesPath } from "../lib/changed-files.ts";
 
 // Path prefixes (ending in "/") or exact paths, relative to the repository root, that each area's
 // jobs test. A file outside every list runs only the repository policy check.
@@ -51,33 +51,14 @@ export const AREAS = {
 
 export type Area = keyof typeof AREAS;
 
-export const EVERYTHING = [".github/workflows/ci.yml", "tools/ci/"];
-
-const matches = (prefixes: string[], file: string) =>
-  prefixes.some((p) => (p.endsWith("/") ? file.startsWith(p) : file === p));
+export const EVERYTHING = [".github/workflows/ci.yml", "tools/ci/", "tools/lib/"];
 
 /** Returns, for each area, whether any of `files` falls under its paths. */
 export function changedAreas(files: string[]): Record<Area, boolean> {
-  const all = files.some((f) => matches(EVERYTHING, f));
+  const all = files.some((f) => matchesPath(EVERYTHING, f));
   return Object.fromEntries(
-    Object.entries(AREAS).map(([area, paths]) => [area, all || files.some((f) => matches(paths, f))]),
+    Object.entries(AREAS).map(([area, paths]) => [area, all || files.some((f) => matchesPath(paths, f))]),
   ) as Record<Area, boolean>;
-}
-
-/**
- * Returns the paths that `head` changes since it forked from `base`, read in the repository at
- * `cwd`. A moved file yields both its old and its new path, so moving a file out of an area still
- * runs that area's jobs. `-z` keeps git from quoting paths with unusual characters, which would
- * stop them matching a prefix.
- */
-export function changedFiles(base: string, head: string, cwd?: string): string[] {
-  return execFileSync("git", ["diff", "--name-only", "--no-renames", "-z", `${base}...${head}`], {
-    cwd,
-    encoding: "utf8",
-    maxBuffer: 256 * 1024 * 1024,
-  })
-    .split("\0")
-    .filter(Boolean);
 }
 
 function main(argv: string[]): void {

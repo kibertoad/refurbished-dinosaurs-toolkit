@@ -27,7 +27,10 @@ Release paths and tag prefixes are defined in `tools/release/plan.ts`.
 1. A pull request that changes `packages/scientific-method-engine/`, `packages/disc-archiver/`,
    `packages/dotnet/` or `global.json` carries exactly one of the labels `release:major`,
    `release:minor`, `release:patch` or `release:skip`. `release-label.yml` fails the pull request otherwise. The
-   paths are listed in `tools/release/plan.ts`.
+   paths are listed in `tools/release/plan.ts`. The check reads the changed files with
+   `tools/lib/changed-files.ts`, the same module CI uses to pick its jobs, so a file moved out of
+   a package counts as a change to that package, and a path with non-ASCII characters matches as
+   written.
 2. When it merges, `release-python.yml`, `release-disc-archiver.yml` or `release-dotnet.yml`
    starts because its paths changed. Its plan job (`plan.ts release <package>`) lists every pull
    request merged into the package's paths since the package's latest tag
