@@ -71,8 +71,9 @@ offset keeps its entry-SP expression and the segment is DS's own value. Only
 `registers` values or instructions such as `push ss; pop ds` make DS equal to SS,
 along the path that runs them; otherwise a DS store over a frame offset
 invalidates the frame bytes it may alias and never merges with them.
-Unknown segment/base aliases invalidate cached bytes; concrete disjoint address
-domains can retain them. Every write event counts the bytes it dropped this way in two fields,
+Unknown segment/base aliases invalidate cached bytes and the bytes a `preservesMemory` scope kept;
+concrete disjoint address domains can retain them. Every write event counts the bytes it dropped
+this way in two fields,
 both present on every write and 0 when it dropped none. `uncertainAliasesInvalidated` counts bytes
 that held a modeled value. `uncertainScopeBytesInvalidated` counts bytes a `preservesMemory` scope
 kept without a value: they lost no value, but the scope no longer holds them after the write.
