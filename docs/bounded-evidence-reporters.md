@@ -1310,7 +1310,8 @@ zero for CS, DS, ES and SS, unknown for FS and GS. Each path row also lists the 
 `origin` gives the value's `inputs` (entry registers, modeled-call registers, memory, with
 `dropped` for memory a modeled call or possible alias dropped) and the declared `returns` it came
 through, with `originating` marking the return that produced it rather than passing it up from a
-deeper return. `originatingReturns` needs a `returnContracts` declaration for each entry it names.
+deeper return and `modeled` marking a modeled call's return. `originatingReturns` needs a
+`returnContracts` declaration for each entry it names.
 A `modeledCall` input without `register` matches any unknown that call produced, its flags included.
 
 ### Verdicts
@@ -1379,7 +1380,7 @@ instead.
 | 32 | a guard precedes and controls the access it protects; a checked snapshot versus a later reload | `order` with `before` the guard's `branch`, `branch.taken` the protecting direction and `sameValue: { "before": "left", "at": "offset" }` (or `"at": "indirectValue"` on a `call` anchor). A reload after a modeled call is undecided; the occurrence lists the intervening calls and writes. Failure-flag writes and calls on the rejected direction are `reach` controls on that branch's paths |
 | 40 | assignment on each cleanup edge | `lastWriter` on the cleanup read with the assignment's write site. An edge where the assignment was skipped violates it; add `entryState` to accept the frame's prior contents and read each edge's `via` and `unwritten` cause. A slot dropped by an unread service is undecided; a `preservesMemory` scope on BP keeps it across a modeled service, with or without `entryFrame`. From an entry inside the function, name the function in `entryFrame` so its return balances; without it every path stops at that return and the control stays undecided |
 | 31 | aliased outputs; the register a loop predicate comes from | `lastWriter` on the read after both stores names the later store. `origin` on the loop branch's `left` with `inputs.include` the modeled service's register and `producers.exclude` the scratch read |
-| 33 | a propagated result traced to the leaf that produced it | `returnContracts` on the helper, then `origin` on the caller's test with `originatingReturns.entries` the helper and `producers.include` the base case's site. A value made in the caller violates it; each return it passed through is listed with its depth |
+| 33 | a propagated result traced to the leaf that produced it | `returnContracts` on the helper, then `origin` on the caller's test with `originatingReturns.entries` the helper and `producers.include` the base case's site. A value made in the caller violates it; each return it passed through is listed with its depth. This recipe fits a result copied up unchanged; a helper that tests the recursive result and writes a fresh encoding needs the controls in [a tested and re-encoded recursive result](#a-tested-and-re-encoded-recursive-result) |
 | 30 | runtime mode carried through cleanup; which tables and indirect calls a branch reaches | the mode is a query assumption the engine already accepts: `registers` at entry, or a `callModels` case for the call that returns it. `reach` with `never` on the table loop or indirect call shows the branch bypasses it under that mode, and the assumption is listed in `queryAssumptions`. A stop before the site leaves it undecided, and so does a modeled call on the path, the one that supplies the mode included, because the anchor could lie in its callee. To decide it, start at an entry after that call with the mode in `registers` and the function in `entryFrame` |
 | 41 | terminator write versus returned length and capacity | `relation` with `modulo` 16: the terminator write's `offset` equals the buffer start plus the returned length. `containment` of the copy and terminator writes in `[start, start + capacity)`; a terminator at the capacity violates it |
 | 42 | requested bytes, allocator extent, clearing capacity | `allocation` places checkpoints at its `extent` and `pointer` sites; `containment` of the clearing writes with the pointer's registers as `segment` and `start` and `{ "mul": [extent, 16] }` as `length`, and `relation` between the request and the extent. A fill chunk inside the extent says nothing of total capacity |
@@ -1407,3 +1408,45 @@ assumed range. A `containment` control then checks that every fill write stays i
   }]
 }
 ```
+
+#### A tested and re-encoded recursive result
+
+Some recursive helpers do not pass the recursive call's result up. They compare it with the
+failure encoding and, on a match, write a fresh constant with the same encoding before returning.
+`origin` reports value provenance: the instructions, inputs and declared returns a value was
+computed from. The fresh constant is computed from none of the recursive call's outputs, so the
+Gap 33 recipe above, applied to the caller's test, names the helper's own return as originating and
+the re-encoding instruction as the producer. Both are correct, and neither says where the failure
+began. The recursive result decides which constant is written through the branch, and `origin` does
+not follow branches. State the three facts separately:
+
+| Fact | Control | Query |
+|---|---|---|
+| the helper tested the recursive result | `origin` at the helper's `compare`, `value: { "field": "left" }`, `inputs.include` `{ "modeledCall": <recursive call site>, "register": "ax" }` | the recursive call's case gives no value for the register |
+| the fresh encoding is written only after a match | `order` anchored at a `checkpoint` on the instruction after the re-encoding write, `before` the test's `branch`, `branch.taken` the matching direction | the case supplies the encoding |
+| the helper's own instruction wrote the output | `origin` at the same checkpoint, `value: { "field": "registers.ax" }`, `producers.include` the re-encoding site | the case supplies the encoding |
+
+The facts need two queries. With the register unknown the test forks, and the mismatching path
+passes the modeled recursive call without reaching the checkpoint, so the two controls anchored
+there stay undecided: the anchor may lie in the callee. With the encoding supplied, the first
+control is undecided, because the supplied value enters the path as a constant that names no
+input. The modeled call needs a `preservesMemory` scope on the helper's return address and `ss` in
+`preserves`, or the helper's own return stops.
+
+Two checks rule out a wrong origin. With the register unknown, an `origin` at the checkpoint with
+`inputs.include` the recursive call's register is violated, so it goes in a query of its own: the
+output does not carry the recursive value. On the caller's test, with the encoding supplied, the
+Gap 33 control with `producers.include` the re-encoding site holds. Its `originatingReturns` with
+the helper holds too, but that verdict alone does not separate the helper's own return from the
+modeled recursive return, since both belong to the helper. Read the occurrence's `returns`: the
+originating return is the helper's own, and no entry has `modeled` set. Do not use `sameValue` for
+this shape. It compares numbers, so with the encoding supplied the tested value and the fresh
+constant are the same number and it holds, which says nothing about where the output came from.
+
+Held controls here describe the helper under the model: what it tested, when it re-encodes and
+which instruction wrote its output. The recursive result is still the call model's hypothesis,
+listed in `queryAssumptions` and `conditionalModels`. A leaf that produces the encoding needs its
+own trace and its own `origin` control on the leaf's producer, and the traversal assumptions
+(finite children, valid records, no cycles) stay stated assumptions. See
+[validation and fidelity](validation-and-fidelity.md#writing-findings-from-relational-controls) for
+how to write the finding.
