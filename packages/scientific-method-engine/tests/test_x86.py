@@ -953,18 +953,27 @@ class GhidraCrossCheckTests(unittest.TestCase):
             "jumps": code(Code().emit("eb 00").branch("eb", "on").emit("c3").label("on").branch("e9", "callee")
                           .label("callee").emit("c3")),
             "unresolved jump": code(Code().emit("ff e0")),
-            "far jump": code(Code().emit("ea 00 00 00 10")),
+            # jmp far 1000:0005 through a declared relocation, to the entry at 5.
+            "far jump": (bytes.fromhex("ea 05 00 00 00 c3"), {"entries": [0, 5], "relocations": [
+                {"site": 3, "segment": 0x1000, "evidence": "synthetic relocated jump"}]}),
             "unsupported transfer": code(Code().emit("66 e8 01 00 00 00 c3 c3")),
             "declared table": table(True),
             "partly declared table": table(False),
         }
+        # The targets body() records at the entry: none at a call or a return, the jump or branch target, None for an
+        # unresolved jump, and a declared table's distinct row targets.
+        first_targets = {"near return": [], "call, interrupt and ports": [], "conditional branches": [3], "jumps": [2],
+                         "unresolved jump": [None], "far jump": [5], "unsupported transfer": [], "declared table": [2, 3],
+                         "partly declared table": [2, 3]}
         body, kinds, decisions = reports.body, set(), set()
         for name, (data, region) in cases.items():
-            cfg = configuration(data, indirectJumps=region.pop("indirectJumps", []))
+            cfg = configuration(data, **{key: region.pop(key) for key in ("indirectJumps", "relocations") if key in region})
             cfg["regions"][0].update(region)
             b = body(Image(data, cfg), 0)
             kinds |= {e["kind"] for e in b["exits"]}
             self.assertEqual(b["flow"].keys(), b["instructions"].keys())
+            if name in first_targets:
+                self.assertEqual(b["flow"][0]["targets"], first_targets[name], name)
             for site, step in b["flow"].items():
                 decisions.add(step["readsOn"])
                 if step["readsOn"]:

@@ -927,11 +927,11 @@ gives a fall-through (`FALL_THROUGH`, `CONDITIONAL_JUMP`, `UNCONDITIONAL_CALL`, 
 `CONDITIONAL_TERMINATOR`, `COMPUTED_CALL`, `CONDITIONAL_COMPUTED_CALL`,
 `CONDITIONAL_COMPUTED_JUMP`, `CALL_OVERRIDE_UNCONDITIONAL` and `CALLOTHER_OVERRIDE_CALL`) and false
 for every other flow, which misses such an override. The engine's side is what its body reading
-recorded at the site: it reads on past every call, conditional jump and interrupt, and stops at a
-`JMP`, `LJMP`, return or `HLT`. A row whose site is a transfer outside the frame model, or an
-instruction the engine did not read, carries neither field. The two
-analyses disagree on the function's extent in two ways, and either way the row counts against
-`agreed` and its site is no agreement site:
+recorded at the site: it stops at a `JMP`, `LJMP`, return or `HLT`, and reads on past every other
+instruction, including a call, a conditional jump, an interrupt and a port access. A row
+whose site is a transfer outside the frame model, or an instruction the engine did not read, carries
+neither field. The two analyses disagree on the function's extent in two ways, and either way the
+row counts against `agreed` and its site is no agreement site:
 
 - Ghidra ends the function where the engine reads on (`ghidraFallsThrough` false at a call,
   conditional jump or interrupt): the callee is one Ghidra treats as non-returning
