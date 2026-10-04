@@ -193,6 +193,16 @@ class PEReporterTests(unittest.TestCase):
         self.assertEqual([(e['width'], e['value']['value']) for e in args], [(2, 7), (4, DATA_VA)])
         self.assertTrue(all(e['argument']['grouping'] == 'consumed width only' for e in args))
 
+    def test_argument_frame_maps_a_word_and_a_pointer_under_callee_cleanup(self):
+        # A dword push and a word push, read as a word and a dword, released by RET 6.
+        c = Code().emit('68 00 20 40 00 66 68 07 00').branch('e8', 'callee').emit('c3')
+        c.label('callee').emit('55 89 e5 66 8b 45 08 8b 55 0a c9 c2 06 00')
+        frame = report(c, 'arguments')['paths'][0]['argumentFrames'][0]
+        self.assertEqual((frame['returnFrameBytes'], frame['calleeCleanupBytes'], frame['mappedBytes']), (4, 6, 6))
+        self.assertEqual([(s['offset'], s['width'], s['writerWidth']) for s in frame['slots']], [(0, 2, 2), (2, 4, 4)])
+        self.assertEqual([(g['offset'], g['width']) for g in frame['groupings']], [(0, 2), (2, 4)])
+        self.assertTrue(frame['settledOnThisPath'], frame['openReasons'])
+
     def test_returns_preserve_low_byte_predicate_and_discarded_width(self):
         for value in ('01 00 ff ff', '00 01 00 00'):
             c = Code().branch('e8', 'callee').emit('84 c0').branch('74', 'zero').emit('c3')

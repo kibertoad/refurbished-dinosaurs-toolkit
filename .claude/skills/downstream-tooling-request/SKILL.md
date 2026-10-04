@@ -62,8 +62,8 @@ Two checks that HEAD alone cannot answer:
   `tests/test_x86.py` builders). If you cannot make it fail synthetically, the finding is not
   confirmed yet: either the cause is something else, or the trigger needs more provenance.
 
-Before deciding anything, search [the implementation plan](../../../docs/IMPLEMENTATION-PLAN.md),
-`docs/decisions/`, open PRs (`gh pr list`) and open issues. Another request may already own the
+Before deciding anything, search `docs/decisions/`, open PRs (`gh pr list`) and open issues,
+including the tracking issues for work that takes several PRs. Another request may already own the
 capability, or an earlier one may have been declined for a stated reason.
 
 Each finding lands on one of:
@@ -130,14 +130,13 @@ Pick by the amount of work, not the number of findings:
   dispositions in the PR description.
 - **One PR that sets a lasting design decision.** Also write an ADR in `docs/decisions/`, numbered
   after the highest existing one.
-- **Several PRs.** Add a section to [the implementation plan](../../../docs/IMPLEMENTATION-PLAN.md)
-  in its existing form: the outcome, the synthetic tests, what the reports must keep explicit, and
-  the exit condition, ending with the request closing only after the requester's own case passes.
-  Then land one PR per slice, update the section's status line as slices merge, and delete the
-  section once its exit condition is met.
+- **Several PRs.** Open a tracking issue: the outcome, the synthetic tests, what the reports must
+  keep explicit, and the exit condition, ending with the request closing only after the
+  requester's own case passes. Then land one PR per slice, link each to the issue, and close the
+  issue once its exit condition is met.
 
 What you commit is our revision of the request, in our terms. Do not commit their document, and do
-not copy game-specific details from it into the plan, tests or ADRs.
+not copy game-specific details from it into the tracking issue, tests or ADRs.
 
 ## 5. Answer the requester
 
