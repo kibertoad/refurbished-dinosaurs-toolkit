@@ -203,8 +203,11 @@ def argument_frames(report, image):
     A path gets one map per traced call, from caller-written slots to callee reads. A site's
     groupings agree only when every path that traced a call there settled on the same read widths
     and groupings. Separately, a site's widths are consistent when its paths made at least one read
-    and no two reads on any of them cover the same byte with a different offset, width or grouping;
-    a path that skipped a read leaves the site consistent but not agreed.
+    whose bytes all came from the caller and no two such reads cover the same byte with a different
+    offset, width or grouping; a path that skipped a read leaves the site consistent but not agreed.
+    A read that saw bytes the callee stored itself, or bytes with no known caller writer, stays
+    listed and marked with the paths it was made on that way, and its conflicts stay listed, but it
+    does not decide whether the widths are consistent.
     """
     sites = {}
     for path_index, path in enumerate(report["paths"]):
@@ -217,21 +220,29 @@ def argument_frames(report, image):
     for site, rows in sorted(sites.items()):
         # A set holds each read's grouping too: a far-pointer load and a plain dword over the same bytes disagree.
         widths = sorted({tuple(sorted({(g["offset"], g["width"], g["grouping"]) for g in f["groupings"]})) for _, f in rows})
-        read_on = {}
+        # Each read's paths, split by whether every byte it saw came from the caller's slot writer.
+        read_on, from_caller, not_from_caller = {}, {}, {}
         for i, f in rows:
             for g in f["groupings"]:
-                read_on.setdefault((g["offset"], g["width"], g["grouping"]), set()).add(i)
+                key = (g["offset"], g["width"], g["grouping"])
+                read_on.setdefault(key, set()).add(i)
+                (not_from_caller if g["bytesNotFromSlotWriter"] else from_caller).setdefault(key, set()).add(i)
         reads = sorted(read_on)
         # Distinct reads that share a byte conflict: different intervals, or one interval grouped two ways.
-        conflicting = [[{"offset": o, "width": w, "grouping": k} for o, w, k in (a, b)]
-                       for n, a in enumerate(reads) for b in reads[n + 1:] if _overlap(a, b)]
+        pairs = [(a, b) for n, a in enumerate(reads) for b in reads[n + 1:] if _overlap(a, b)]
+        conflicting = [[{"offset": o, "width": w, "grouping": k} for o, w, k in pair] for pair in pairs]
+        # Only reads that saw the caller's bytes on some path decide consistency: a callee reusing its
+        # argument slot as a local neither breaks nor supplies the width the caller's argument is read at.
+        caller_conflict = any(a in from_caller and b in from_caller for a, b in pairs)
         report["argumentFrameSites"].append({
             "callSite": site, "paths": sorted({i for i, _ in rows}), "frames": len(rows),
             "unsettledPaths": sorted({i for i, f in rows if not f["settledOnThisPath"]}),
             "readWidthSets": [[{"offset": o, "width": w, "grouping": k} for o, w, k in group] for group in widths],
-            "readWidths": [{"offset": o, "width": w, "grouping": k, "paths": sorted(read_on[(o, w, k)])} for o, w, k in reads],
+            "readWidths": [{"offset": o, "width": w, "grouping": k, "paths": sorted(read_on[(o, w, k)]),
+                            "fromCallerOnPaths": sorted(from_caller.get((o, w, k), ())),
+                            "notFromCallerOnPaths": sorted(not_from_caller.get((o, w, k), ()))} for o, w, k in reads],
             "conflictingWidths": conflicting,
-            "widthsConsistent": bool(reads) and not conflicting,
+            "widthsConsistent": bool(from_caller) and not caller_conflict,
             "agreed": len(widths) == 1 and all(f["settledOnThisPath"] for _, f in rows),
             "interpretation": "read widths per traced path; paths that never reached this call are not represented"})
     return report

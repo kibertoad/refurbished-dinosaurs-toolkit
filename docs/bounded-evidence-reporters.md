@@ -173,11 +173,18 @@ grouping settled on the traced paths says nothing about the others.
 
 A callee that returns early on some paths without reading every argument leaves those frames
 open and the site not `agreed`, even when every read it made matches. `readWidths` lists each
-distinct read across the site's frames with the `paths` that made it, and `conflictingWidths`
-pairs distinct reads that share a byte: different intervals, or one interval read with two
-groupings. `widthsConsistent` holds when the traced paths made at least one read and there are no
-such pairs; a site whose callee read nothing is not consistent. It says only that the reads the
-traced paths made fit one grouping. It does not say a path that skipped a read would have read
+distinct read across the site's frames with the `paths` that made it, split into
+`fromCallerOnPaths`, the paths on which a read of it saw only bytes from the slot writers, and
+`notFromCallerOnPaths`, the paths on which a read of it had `bytesNotFromSlotWriter`. A path that
+read the same interval both ways is in both lists. A read the callee made after storing to its own
+argument slot is on `notFromCallerOnPaths`, so a finding can name the paths that reused the slot as
+a local. `conflictingWidths` pairs distinct reads that share a byte: different intervals, or one
+interval read with two groupings. It lists every pair, whatever the reads' bytes came from.
+`widthsConsistent` holds when at least one read saw only the caller's bytes on some path and no
+listed pair joins two such reads. A pair with a read that never saw the caller's bytes does not
+make the site inconsistent, and such a read does not make it consistent either: a site whose
+callee read nothing, or read only bytes it stored itself, is not consistent. It says only that the
+reads the traced paths made of the caller's bytes fit one grouping. It does not say a path that skipped a read would have read
 the same width, and it does not settle a frame or the site: a skipped slot stays in that frame's
 `openReasons`, and the paths that read each width are listed so a finding can name them.
 
