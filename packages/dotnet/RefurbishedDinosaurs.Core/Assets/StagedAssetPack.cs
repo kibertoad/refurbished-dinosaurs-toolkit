@@ -16,11 +16,17 @@ public sealed class StagedAssetPack : IDisposable
     public string StagingDirectory { get; }
 
     /// <summary>Creates an empty staging directory next to <paramref name="destination"/>.</summary>
-    /// <param name="destination">The directory the pack will replace on <see cref="Commit"/>.</param>
+    /// <param name="destination">
+    /// The directory the pack will replace on <see cref="Commit"/>. A trailing directory separator is
+    /// ignored.
+    /// </param>
+    /// <exception cref="ArgumentException">The destination is empty or a filesystem root.</exception>
     public static StagedAssetPack Create(string destination)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(destination);
-        var fullDestination = Path.GetFullPath(destination);
+        // Without trimming, "pack/" has "pack" as its parent, so staging would land inside the
+        // destination and Commit would move the destination into itself.
+        var fullDestination = Path.TrimEndingDirectorySeparator(Path.GetFullPath(destination));
         var parent = Directory.GetParent(fullDestination)?.FullName
             ?? throw new ArgumentException("Destination must have a parent directory.", nameof(destination));
         Directory.CreateDirectory(parent);

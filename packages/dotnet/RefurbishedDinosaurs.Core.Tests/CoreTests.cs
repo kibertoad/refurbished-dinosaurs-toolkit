@@ -73,6 +73,29 @@ public sealed class CoreTests
     }
 
     [Fact]
+    public void StagedPackIgnoresTrailingSeparatorOnDestination()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var destination = Path.Combine(root, "UserContent");
+            Directory.CreateDirectory(destination);
+            File.WriteAllText(Path.Combine(destination, "old.txt"), "old");
+            using var pack = StagedAssetPack.Create(destination + Path.DirectorySeparatorChar);
+            Assert.Equal(root, Path.GetDirectoryName(pack.StagingDirectory));
+            File.WriteAllText(Path.Combine(pack.StagingDirectory, "new.txt"), "new");
+            pack.Commit();
+            Assert.Equal(["new.txt"], Directory.GetFiles(destination).Select(Path.GetFileName));
+            Assert.Equal(["UserContent"], Directory.GetFileSystemEntries(root).Select(Path.GetFileName));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void StagedPackRejectsFilesystemRoot() =>
+        Assert.Throws<ArgumentException>(() => StagedAssetPack.Create(Path.GetPathRoot(Path.GetTempPath())!));
+
+    [Fact]
     public void PathsPreferContentBesideApplication()
     {
         var root = CreateTemporaryDirectory();
