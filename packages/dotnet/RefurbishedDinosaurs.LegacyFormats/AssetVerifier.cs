@@ -264,7 +264,7 @@ public static class AssetVerifier
         {
             foreach (var track in tracks)
                 issues.Add(new(null, AssetProblem.Unreadable,
-                    $"A {source.Kind} source holds no CD audio track {track.Track:D2}.") { AudioTrack = track.Track });
+                    $"The {source.Kind} source holds no CD audio track {track.Track:D2}.") { AudioTrack = track.Track });
             return;
         }
 

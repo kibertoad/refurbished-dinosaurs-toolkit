@@ -135,14 +135,16 @@ public sealed record AssetManifest(
 
     /// <summary>
     /// The edition's fingerprint: XXH3-128 of every file's normalized path, size and hash, ordered by
-    /// path. It names the edition an import read, for the installed manifest's
-    /// <see cref="InstalledAssetManifest.SourceFingerprint"/>.
+    /// path, followed by every audio track's values. It names the edition an import read, for the
+    /// installed manifest's <see cref="InstalledAssetManifest.SourceFingerprint"/>.
     /// </summary>
     /// <remarks>
-    /// It leaves out <see cref="SourceKind"/>, so the same edition read from a disc image and from a
-    /// directory it was copied into has one fingerprint, and <see cref="AssetFileSpec.Required"/>.
-    /// Each of the <see cref="AudioTracks"/> adds its values, ordered by track number; a manifest
-    /// without audio tracks hashes its files alone.
+    /// It leaves out <see cref="SourceKind"/> and <see cref="AssetFileSpec.Required"/>, so a disc image
+    /// manifest and a directory manifest that list the same files and no audio tracks share one
+    /// fingerprint. Each of the <see cref="AudioTracks"/> adds all of its values, ordered by track
+    /// number, including how it was recorded (tolerance and anchor), so a <c>cue-bin</c> manifest with
+    /// audio tracks has a fingerprint no directory manifest shares, and re-recording a track with other
+    /// parameters changes it.
     /// </remarks>
     /// <exception cref="InvalidDataException"><see cref="Validate"/> rejects the manifest.</exception>
     public string Fingerprint()

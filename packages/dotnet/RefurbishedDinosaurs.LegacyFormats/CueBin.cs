@@ -57,32 +57,34 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     /// with <c>INDEX 00</c> is stored in the image ahead of the audio, so <c>INDEX 00</c>, not
     /// <c>INDEX 01</c>, is the boundary; taking <c>INDEX 01</c> would read the pregap as data.
     /// </remarks>
-    public int? DataTrackSectors => Tracks.Count > 1
-        ? (Tracks[1].Indices.TryGetValue(0, out var pregap) ? pregap : Tracks[1].Indices[1])
-        : null;
+    public int? DataTrackSectors => Tracks.Count > 1 ? StoredStart(1) : null;
 
     /// <summary>
     /// The sectors of track <paramref name="number"/>: from its <c>INDEX 01</c> to the next track's
     /// <c>INDEX 00</c>, that track's <c>INDEX 01</c> when it has no <c>INDEX 00</c>, or the end of the
-    /// image for the last track. A track's own pregap, before its <c>INDEX 01</c>, is left out.
+    /// image for the last track. A track's own pregap, before its <c>INDEX 01</c>, is left out. A
+    /// track whose next track's pregap or audio begins at its own <c>INDEX 01</c> has no sectors.
     /// </summary>
     /// <param name="number">The track number, from 1 to the number of tracks.</param>
     /// <param name="imageSectors">Raw sectors in the image, which bound the last track.</param>
     /// <exception cref="ArgumentOutOfRangeException">The sheet has no such track, or <paramref name="imageSectors"/> is negative.</exception>
-    /// <exception cref="InvalidDataException">The track holds no sectors, or ends past the image.</exception>
+    /// <exception cref="InvalidDataException">The track ends past the image or before it starts.</exception>
     public CueBinTrackExtent TrackExtent(int number, long imageSectors)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(number, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(number, Tracks.Count);
         ArgumentOutOfRangeException.ThrowIfNegative(imageSectors);
         long start = Tracks[number - 1].Indices[1];
-        long end = number < Tracks.Count
-            ? (Tracks[number].Indices.TryGetValue(0, out var pregap) ? pregap : Tracks[number].Indices[1])
-            : imageSectors;
-        if (end > imageSectors || start >= end)
-            throw new InvalidDataException($"Track {number:D2} is empty or ends past the BIN image.");
+        long end = number < Tracks.Count ? StoredStart(number) : imageSectors;
+        if (end > imageSectors || start > end)
+            throw new InvalidDataException($"Track {number:D2} ends past the BIN image or before it starts.");
         return new(number, start, end);
     }
+
+    // The first sector the image stores for the track at this list position: its INDEX 00 when it
+    // declares a pregap, else its INDEX 01.
+    private int StoredStart(int position) =>
+        Tracks[position].Indices.TryGetValue(0, out var pregap) ? pregap : Tracks[position].Indices[1];
 
     /// <summary>Reads and parses a <c>.cue</c> file.</summary>
     /// <exception cref="FileNotFoundException">The file does not exist.</exception>

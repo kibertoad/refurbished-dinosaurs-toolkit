@@ -55,15 +55,19 @@ public sealed record CddaTrackFingerprint(
     public const int MaximumAnchorSamples = 75 * SamplesPerSector;
 
     /// <summary>
-    /// Throws unless the track is 2 to 99, the tolerance and anchor lengths are in range, the anchor
-    /// lies at least <see cref="ToleranceSamples"/> inside both ends of the track, so every shift
-    /// tried reads samples of the track, and both hashes are XXH3-128 fingerprints.
+    /// Throws unless the track is 2 to 99, the length is positive, the tolerance and anchor lengths
+    /// are in range, the anchor lies at least <see cref="ToleranceSamples"/> inside both ends of the
+    /// track, so every shift tried reads samples of the track, and both hashes are XXH3-128
+    /// fingerprints.
     /// </summary>
     /// <exception cref="InvalidDataException">A value breaks one of these rules.</exception>
     public void Validate()
     {
         if (Track is < 2 or > 99)
             throw new InvalidDataException($"Audio track number {Track} is outside 2 to 99.");
+        // A positive length also keeps the anchor bound below from overflowing.
+        if (Samples < 1)
+            throw new InvalidDataException($"Audio track {Track:D2} length must be positive.");
         if (ToleranceSamples is < 0 or > MaximumToleranceSamples)
             throw new InvalidDataException(
                 $"Audio track {Track:D2} tolerance must be 0 to {MaximumToleranceSamples} samples.");

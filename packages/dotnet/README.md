@@ -105,8 +105,8 @@ hash of a track differs between two rips of one disc. A `CddaTrackFingerprint` r
 track, its length in samples (16-bit stereo pairs, 588 to a sector), a tolerance, an anchor's offset,
 length and XXH3-128, and the XXH3-128 of the central samples, which leave out the tolerance at each
 end. Record one from a reference rip with `CddaTrackFingerprints.RecordAsync`, which refuses an
-anchor whose samples repeat within the tolerance, and list it in a `cue-bin` manifest's
-`AudioTracks`.
+anchor whose samples repeat within twice the tolerance (the range a rip shifted by up to the
+tolerance shows the verifier), and list it in a `cue-bin` manifest's `AudioTracks`.
 
 `AssetVerifier` checks each track after the files. A track starts at its `INDEX 01` and ends at the
 next track's `INDEX 00`, that track's `INDEX 01` without one, or the end of the image. The checks

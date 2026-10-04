@@ -127,6 +127,23 @@ public sealed class CddaTrackFingerprintTests
     }
 
     [Fact]
+    public async Task AnEmptyTrackIsWrongSize()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var manifest = await RecordAsync(root);
+            // Track 3's pregap begins at track 2's INDEX 01, so track 2 holds no sectors.
+            await WriteAsync(root, Rip(0), TwoTrackCue.Replace("TRACK 03 AUDIO\n", "TRACK 03 AUDIO\nINDEX 00 00:00:23\n",
+                StringComparison.Ordinal));
+            var result = await AssetVerifier.VerifyAsync(root, manifest, TestContext.Current.CancellationToken);
+            var issue = Assert.Single(result.Issues);
+            Assert.Equal((2, AssetProblem.WrongSize), (issue.AudioTrack!.Value, issue.Problem));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task SamplesPastTheEndOfTheImageAreUnreadableAndNotAMismatch()
     {
         var root = CreateTemporaryDirectory();
@@ -184,6 +201,25 @@ public sealed class CddaTrackFingerprintTests
         finally { Directory.Delete(root, true); }
     }
 
+    [Fact]
+    public async Task RecordingRefusesAnAnchorThatRepeatsWithinTwiceTheTolerance()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            // 1000 samples later is past the tolerance, but a rip shifted by -700 would show the
+            // verifier both copies, at shifts -700 and 300.
+            var image = Rip(0);
+            var anchor = (DataSectors * SamplesPerSector + AnchorOffset) * Bytes;
+            image.AsSpan(anchor, AnchorSamples * Bytes).CopyTo(image.AsSpan(anchor + 1000 * Bytes));
+            await WriteAsync(root, image, TwoTrackCue);
+            var failure = await Assert.ThrowsAsync<ArgumentException>(() => CddaTrackFingerprints.RecordAsync(
+                root, 2, Tolerance, AnchorOffset, AnchorSamples, TestContext.Current.CancellationToken));
+            Assert.Contains("shifts 1000;", failure.Message, StringComparison.Ordinal);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     [Theory]
     [InlineData(1, Tolerance, AnchorOffset, AnchorSamples)]
     [InlineData(4, Tolerance, AnchorOffset, AnchorSamples)]
@@ -202,6 +238,21 @@ public sealed class CddaTrackFingerprintTests
                 root, track, tolerance, anchorOffset, anchorSamples, TestContext.Current.CancellationToken));
         }
         finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData(-5, 15)]
+    [InlineData(30, 10)]
+    public async Task AnExtentBeforeTheImageOrEndingBeforeItStartsIsRejected(long startSector, long endSector)
+    {
+        using var image = new MemoryStream(Rip(0));
+        var extent = new CueBinTrackExtent(2, startSector, endSector);
+        var track = new CddaTrackFingerprint(2, TrackSamples, Tolerance, AnchorOffset, AnchorSamples,
+            new string('0', FileFingerprint.Xxh3Length), new string('0', FileFingerprint.Xxh3Length));
+        Assert.Equal("extent", (await Assert.ThrowsAsync<ArgumentException>(() => CddaTrackFingerprints.VerifyAsync(
+            image, extent, track, TestContext.Current.CancellationToken))).ParamName);
+        Assert.Equal("extent", (await Assert.ThrowsAsync<ArgumentException>(() => CddaTrackFingerprints.RecordAsync(
+            image, extent, Tolerance, AnchorOffset, AnchorSamples, TestContext.Current.CancellationToken))).ParamName);
     }
 
     [Fact]
@@ -232,7 +283,8 @@ public sealed class CddaTrackFingerprintTests
         Assert.Equal(10, sheet.TrackExtent(4, 70).Sectors);
         Assert.Throws<ArgumentOutOfRangeException>(() => sheet.TrackExtent(0, 70));
         Assert.Throws<ArgumentOutOfRangeException>(() => sheet.TrackExtent(5, 70));
-        Assert.Throws<InvalidDataException>(() => sheet.TrackExtent(4, 60));
+        Assert.Equal(0, sheet.TrackExtent(4, 60).Sectors);
+        Assert.Throws<InvalidDataException>(() => sheet.TrackExtent(4, 59));
         Assert.Throws<InvalidDataException>(() => sheet.TrackExtent(3, 50));
     }
 
@@ -266,6 +318,7 @@ public sealed class CddaTrackFingerprintTests
         ("directory", ValidTrack),
         ("cue-bin", ValidTrack with { Track = 1 }),
         ("cue-bin", ValidTrack with { Track = 100 }),
+        ("cue-bin", ValidTrack with { Samples = long.MinValue }),
         ("cue-bin", ValidTrack with { ToleranceSamples = CddaTrackFingerprint.MaximumToleranceSamples + 1 }),
         ("cue-bin", ValidTrack with { AnchorSamples = CddaTrackFingerprint.MaximumAnchorSamples + 1 }),
         ("cue-bin", ValidTrack with { AnchorOffset = Tolerance - 1 }),

@@ -56,7 +56,7 @@ public static class CddaTrackFingerprints
     /// <param name="cancellationToken">Cancels the reads.</param>
     /// <exception cref="ArgumentException">
     /// The track is not an audio track of the sheet, the values would make an invalid fingerprint, or
-    /// the anchor's samples also match at another shift within the tolerance.
+    /// the anchor's samples also match at another shift within twice the tolerance.
     /// </exception>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="cueBinPath"/>.</exception>
     /// <exception cref="InvalidDataException">The sheet or image is not valid, or the files are ambiguous.</exception>
@@ -80,8 +80,9 @@ public static class CddaTrackFingerprints
 
     /// <summary>
     /// Records the fingerprint of the audio track at <paramref name="extent"/> of a raw image. The
-    /// anchor must match at no shift within the tolerance other than its own, or the fingerprint
-    /// could never verify unambiguously.
+    /// anchor must match at no shift within twice the tolerance other than its own: a rip shifted by
+    /// up to the tolerance shows the verifier's search the reference's samples up to twice the
+    /// tolerance from the anchor, so a repeat there would make that rip's alignment ambiguous.
     /// </summary>
     /// <param name="image">The raw image, readable and seekable, positioned anywhere. It is not disposed.</param>
     /// <param name="extent">The track's sectors, from <see cref="CueBinSheet.TrackExtent"/>.</param>
@@ -90,8 +91,9 @@ public static class CddaTrackFingerprints
     /// <param name="anchorSamples">See <see cref="CddaTrackFingerprint.AnchorSamples"/>.</param>
     /// <param name="cancellationToken">Cancels the reads.</param>
     /// <exception cref="ArgumentException">
-    /// The stream cannot read or seek, the values would make an invalid fingerprint, or the anchor's
-    /// samples also match at another shift within the tolerance.
+    /// The stream cannot read or seek, the extent starts before sector 0 or ends before it starts, the
+    /// values would make an invalid fingerprint, or the anchor's samples also match at another shift
+    /// within twice the tolerance.
     /// </exception>
     /// <exception cref="InvalidDataException">The extent ends past the image.</exception>
     public static async Task<CddaTrackFingerprint> RecordAsync(
@@ -103,7 +105,7 @@ public static class CddaTrackFingerprints
         CancellationToken cancellationToken = default)
     {
         CheckImage(image);
-        ArgumentNullException.ThrowIfNull(extent);
+        CheckExtent(extent);
         var samples = checked(extent.Sectors * CddaTrackFingerprint.SamplesPerSector);
         var zero = new string('0', FileFingerprint.Xxh3Length);
         var fingerprint = new CddaTrackFingerprint(
@@ -112,19 +114,27 @@ public static class CddaTrackFingerprints
         catch (InvalidDataException exception) { throw new ArgumentException(exception.Message, exception); }
 
         var trackStart = checked(extent.StartSector * CddaTrackFingerprint.SamplesPerSector);
-        if (trackStart + samples > image.Length / Bytes)
+        var imageSamples = image.Length / Bytes;
+        if (trackStart + samples > imageSamples)
             throw new InvalidDataException($"Track {extent.Track:D2} ends past the image.");
-        var window = await ReadAsync(image, trackStart + anchorOffset - toleranceSamples,
-            anchorSamples + 2 * toleranceSamples, cancellationToken).ConfigureAwait(false);
-        var anchor = XxHash128.HashToUInt128(window.AsSpan(toleranceSamples * Bytes, anchorSamples * Bytes));
-        var shifts = FindAnchor(window, fingerprint, anchor);
-        if (shifts.Count != 1)
+        // A rip shifted by s shows the verifier's search the reference samples from shift
+        // -tolerance - s to tolerance - s, so across every s within the tolerance the anchor must not
+        // repeat within twice the tolerance. Samples past either end of the image cannot be checked.
+        var anchorStart = trackStart + anchorOffset;
+        var windowStart = Math.Max(0, anchorStart - 2L * toleranceSamples);
+        var windowEnd = Math.Min(imageSamples, anchorStart + anchorSamples + 2L * toleranceSamples);
+        var window = await ReadAsync(image, windowStart, (int)(windowEnd - windowStart), cancellationToken)
+            .ConfigureAwait(false);
+        var anchorAt = (int)(anchorStart - windowStart);
+        var repeats = FindRepeats(window, anchorAt, anchorSamples);
+        if (repeats.Count > 0)
             throw new ArgumentException(
-                $"Track {extent.Track:D2} anchor also matches at shifts {Describe(shifts)}; choose an anchor " +
-                "whose samples do not repeat within the tolerance.", nameof(anchorOffset));
+                $"Track {extent.Track:D2} anchor also matches at shifts {Describe(repeats)}; choose an anchor " +
+                "whose samples do not repeat within twice the tolerance.", nameof(anchorOffset));
+        var anchor = FileFingerprint.Xxh3(window.AsSpan(anchorAt * Bytes, anchorSamples * Bytes));
         var central = await HashAsync(image, trackStart + toleranceSamples, samples - 2L * toleranceSamples,
             cancellationToken).ConfigureAwait(false);
-        return fingerprint with { AnchorXxh3 = Format(anchor), CentralXxh3 = Format(central) };
+        return fingerprint with { AnchorXxh3 = anchor, CentralXxh3 = Format(central) };
     }
 
     /// <summary>
@@ -137,7 +147,10 @@ public static class CddaTrackFingerprints
     /// <param name="extent">The track's sectors in this image, from <see cref="CueBinSheet.TrackExtent"/>.</param>
     /// <param name="fingerprint">The recorded fingerprint, validated before anything is read.</param>
     /// <param name="cancellationToken">Cancels the reads.</param>
-    /// <exception cref="ArgumentException">The stream cannot read or seek, or the extent is of another track.</exception>
+    /// <exception cref="ArgumentException">
+    /// The stream cannot read or seek, the extent starts before sector 0 or ends before it starts, or
+    /// it is of another track.
+    /// </exception>
     /// <exception cref="InvalidDataException">The fingerprint is invalid.</exception>
     /// <exception cref="IOException">The image could not be read.</exception>
     public static async Task<CddaTrackVerification> VerifyAsync(
@@ -147,7 +160,7 @@ public static class CddaTrackFingerprints
         CancellationToken cancellationToken = default)
     {
         CheckImage(image);
-        ArgumentNullException.ThrowIfNull(extent);
+        CheckExtent(extent);
         ArgumentNullException.ThrowIfNull(fingerprint);
         fingerprint.Validate();
         if (extent.Track != fingerprint.Track)
@@ -199,6 +212,16 @@ public static class CddaTrackFingerprints
             throw new ArgumentException("The image stream must be readable and seekable.", nameof(image));
     }
 
+    // TrackExtent never gives such an extent; a hand-built one would otherwise fail on a seek.
+    private static void CheckExtent(CueBinTrackExtent extent)
+    {
+        ArgumentNullException.ThrowIfNull(extent);
+        if (extent.StartSector < 0 || extent.EndSector < extent.StartSector)
+            throw new ArgumentException(
+                $"Track {extent.Track:D2} extent {extent.StartSector}..{extent.EndSector} starts before sector 0 or ends before it starts.",
+                nameof(extent));
+    }
+
     // window holds the samples from AnchorOffset - ToleranceSamples, so the anchor at shift s starts
     // at sample ToleranceSamples + s of it.
     private static List<int> FindAnchor(byte[] window, CddaTrackFingerprint fingerprint, UInt128 anchor)
@@ -209,6 +232,19 @@ public static class CddaTrackFingerprints
             if (XxHash128.HashToUInt128(window.AsSpan((fingerprint.ToleranceSamples + shift) * Bytes, length)) == anchor)
                 shifts.Add(shift);
         return shifts;
+    }
+
+    // Every other shift, relative to anchorAt, at which window holds the anchor's bytes. Comparing
+    // bytes stops at the first difference, so audio that does not repeat costs little per shift.
+    private static List<int> FindRepeats(byte[] window, int anchorAt, int anchorSamples)
+    {
+        var repeats = new List<int>();
+        var length = anchorSamples * Bytes;
+        var anchor = window.AsSpan(anchorAt * Bytes, length);
+        for (var at = 0; (at + anchorSamples) * Bytes <= window.Length; at++)
+            if (at != anchorAt && window.AsSpan(at * Bytes, length).SequenceEqual(anchor))
+                repeats.Add(at - anchorAt);
+        return repeats;
     }
 
     private static async Task<byte[]> ReadAsync(Stream image, long firstSample, int samples, CancellationToken cancellationToken)
