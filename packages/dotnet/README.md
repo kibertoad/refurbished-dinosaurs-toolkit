@@ -151,6 +151,7 @@ contexts outside per-frame loops.
 | `AssetVerifier` | Check the player's original against an `AssetManifest` through any `OriginalContentSource`, and `IdentifyAsync` the supported edition it is, or that several editions match. |
 | `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image or an InstallShield cabinet set behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin` and `OpenInstallShieldCabinet` take it explicitly. |
 | `InstallShieldCabinetSource`, `InstallShieldCabinetLimits` | The members of an InstallShield 5 or 6 cabinet set (`dataN.hdr` and `dataN.cab`), on disk or inside another source. See [InstallShield cabinets](#installshield-cabinets). |
+| `ContentSourceExtractor`, `ContentExtractionOptions` | Copy the files of any `OriginalContentSource`, or a selection of them, into a staging directory and get an `InstalledAsset` record for each. See [Extracting a source into a stage](#extracting-a-source-into-a-stage). |
 | `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
 | `CddaTrackFingerprints`, `CddaTrackVerification` | Record and check the fingerprint of a CD audio track in a cue/bin image, accepting a rip shifted by a drive read offset up to the fingerprint's tolerance. See [CD audio across read offsets](#cd-audio-across-read-offsets). |
 | `CueSheet`, `RawMode1Image`, `Iso9660` | Cue/bin raw disc images and the ISO 9660 file system on their data track. |
@@ -214,6 +215,31 @@ The reader is managed code in this package, under its MIT license, with no third
 reading of the layout follows [Unshield](https://github.com/twogood/unshield) (MIT). No open tool writes
 the format, so the tests build their cabinets with a writer in the test project that follows the same
 layout; a restoration's own set, compared against another extractor, is the check against real media.
+
+## Extracting a source into a stage
+
+`ContentSourceExtractor.ExtractAsync(source, root, options)` copies the files of an
+`OriginalContentSource` of any kind into `root`, usually `StagedAssetPack.StagingDirectory`, below
+`ContentExtractionOptions.Prefix` when one is given. `Include` selects files, for example to leave
+out executables the restoration does not need. It returns one `InstalledAsset` per file, in the
+source's file order: the path relative to `root` with the prefix, the size, the XXH3-128 computed
+while the file is copied, the file's path in the source as `SourcePath`, and `Conversion` from the
+options (null by default, since the bytes are copied unchanged). The records go straight into an
+`InstalledAssetManifest` for `root`, and through `ContentOverlayResult.UpdateInstalledFiles` when an
+overlay follows.
+
+Before it writes anything, the call checks the selection against `MaximumFiles` and
+`MaximumTotalBytes` (100,000 files and 8 GiB by default), every source path with
+`PortableAssetPath.Relative`, and that the prefix directory is absent or empty with no link on the
+way to it. Without a prefix the root itself must be empty. A file whose path is also another file's
+directory, ignoring case, is rejected. A directory spelled two ways ignoring case is written once,
+with the spelling of the first file under it, so a case-sensitive file system gets the same tree as
+Windows. Each file must yield exactly the size the source lists; more or fewer bytes throw
+`InvalidDataException`.
+
+When the call throws, cancellation included, it returns no records and removes what it wrote: the
+directories it created for the prefix, or the contents of a prefix directory that already existed.
+Dispose the stage without committing it after any exception.
 
 ## CD audio across read offsets
 
