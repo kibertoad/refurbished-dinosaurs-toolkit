@@ -74,6 +74,39 @@ public sealed class PortableAssetPathTests
     }
 
     [Fact]
+    public void ResolvesDirectoriesWithTheFileRules()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(root, "A", "b", "C"));
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "A", "b", "C", "Tile.dat"), "synthetic");
+            Assert.Equal("A/b/C", PortableAssetPath.ResolveDirectory(root, "a/B/c"));
+            Assert.Equal("A/b/C", PortableAssetPath.ResolveDirectory(root, "a\\B\\c"));
+            Assert.Equal("A", PortableAssetPath.ResolveDirectory(root, "a"));
+            Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveDirectory(root, "a/B/c/tile.dat"));
+            Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveDirectory(root, "a/missing"));
+            Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveDirectory(root, "a/missing/c"));
+            Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveDirectory(root, "a/B/c/tile.dat/d"));
+            Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveDirectory(root, "a/../A"));
+            Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveDirectory(root, " "));
+            Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveDirectory(Path.Combine(root, "absent"), "a"));
+            Assert.Throws<ArgumentException>(() => PortableAssetPath.ResolveDirectory(" ", "a"));
+            if (!OperatingSystem.IsWindows() && !OperatingSystem.IsMacOS())
+            {
+                Directory.CreateDirectory(Path.Combine(root, "A", "B"));
+                Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveDirectory(root, "A/b"));
+                Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveDirectory(root, "a/b/C"));
+                Directory.CreateSymbolicLink(Path.Combine(root, "linked"), Path.Combine(root, "A", "b"));
+                Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveDirectory(root, "linked"));
+                Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveDirectory(root, "Linked/C"));
+                Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveDirectory(Path.Combine(root, "linked"), "C"));
+            }
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public void ResolvesHiddenAndSystemEntries()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));

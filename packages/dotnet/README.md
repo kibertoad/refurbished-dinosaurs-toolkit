@@ -60,9 +60,12 @@ traversal references on every host, along with components Windows reads differen
 or space, or a reserved device name such as `CON` or `nul.dat`). `WithoutDriveRoot` explicitly
 discards an ASCII Windows drive root when a game stores installation paths. `ResolveFile` matches
 every component ignoring ordinal case, rejects a missing root, ambiguous matches and links, and
-returns the actual relative spelling. It lists hidden and system entries and fails on an unreadable
-directory, so it never skips a name another host would match. The resolver is for trusted, stable
-content directories; concurrent filesystem replacement needs host controls.
+returns the actual relative spelling. A component with two matches is ambiguous even when one of
+them is spelled exactly. It lists hidden and system entries and fails on an unreadable directory, so
+it never skips a name another host would match. `ResolveDirectory` applies the same rules to a
+directory, for a game that names a directory and then opens files in it by name, and throws when the
+last component is a file. Both resolvers are for trusted, stable content directories; concurrent
+filesystem replacement needs host controls.
 
 `AssetManifest`, `AssetVerifier`, `OriginalContentSource` lookups and the cue sheet `FILE` check
 use the same rules. A null or blank reference from data, a blank manifest game or edition and a
@@ -84,11 +87,11 @@ a payload of another size than its record, an `overlay.json` or `files` director
 and anything over `ContentOverlayLimits` (100,000 files, 1 GiB a file, 4 GiB in all and a 4 MiB
 manifest by default).
 
-`ApplyAsync` checks every target before it writes anything, finding each path component ignoring
-case. A target that already has the payload's size and hash counts as applied and is not written,
-so a rerun writes nothing. A target with neither hash, a replaced file that is missing, or an added
-file that exists throws `ContentOverlayException` with a `ContentOverlayProblem`, the path and the
-hash found. Then every payload is copied into a scratch directory under the root and hashed as it
+`ApplyAsync` checks every target before it writes anything, finding each path component with the
+rules of `PortableAssetPath.ResolveFile`. A target that already has the payload's size and hash
+counts as applied and is not written, so a rerun writes nothing. A target with neither hash, a
+replaced file that is missing, or an added file that exists throws `ContentOverlayException` with a
+`ContentOverlayProblem`, the path and the hash found. Then every payload is copied into a scratch directory under the root and hashed as it
 is copied; a payload whose size or hash differs from its record throws before any target is
 replaced, and the scratch directory is always removed. Only then are the copies moved over their
 targets. Those moves are not one transaction, so after any exception dispose the stage without
@@ -118,6 +121,16 @@ Two pressings of a disc can carry the same files in different ISO 9660 volumes. 
 | `VolumeIdentifier` | `OriginalContentSource.Label`, the primary volume descriptor's identifier without its trailing padding | `WrongVolumeIdentifier` |
 | `VolumeBlocks` | `OriginalContentSource.VolumeBlocks`, the declared volume space size in 2048-byte blocks | `WrongVolumeSize` |
 | `VolumeXxh3` | XXH3-128 of `OriginalContentSource.OpenVolume()`, the declared blocks from block 0 | `WrongVolumeHash` |
+
+`Label` reads each byte of the descriptor's 32-byte identifier as the Latin-1 (ISO-8859-1) character
+of the same value and drops the trailing spaces and NULs, so byte 0xC9 is `É` (U+00C9) and
+identifiers that differ in a byte before their trailing padding give different labels.
+`VolumeIdentifier` writes those characters and is compared with `Label` ordinally. A control byte
+reads as its control character, so a Shift-JIS lead byte 0x85 is written `"\u0085"` in JSON.
+`Validate` accepts 1 to 32 characters from U+0000 to U+00FF that do not end in a space or NUL,
+which is every label a descriptor can give. The `WrongVolumeIdentifier` detail writes both
+identifiers as JSON strings with control characters escaped, so the found value can be copied into
+the manifest.
 
 `OpenVolume` reads the same bytes from an `.iso` image and from the data track of a cue/bin image
 of one disc, and leaves out padding after the declared volume, so one `VolumeXxh3` serves both.

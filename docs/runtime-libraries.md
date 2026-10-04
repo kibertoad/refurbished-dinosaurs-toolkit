@@ -108,7 +108,8 @@ Pass every file reference that comes from data, such as a manifest, a script or 
 through `PortableAssetPath.Relative`, which rejects the same names on every host. Call
 `WithoutDriveRoot` only when the original format stores an installation path with a drive root.
 `ResolveFile` then finds the file in the verified content directory, ignoring case and refusing an
-ambiguous match. The rules are in [portable asset references](../packages/dotnet/README.md#portable-asset-references).
+ambiguous match, and `ResolveDirectory` does the same for a directory. The rules are in
+[portable asset references](../packages/dotnet/README.md#portable-asset-references).
 
 ## Saves and settings
 
@@ -296,3 +297,28 @@ product passes `int` range, where they threw `OverflowException`. `PcxDecoder` c
 malformed file too. It also stops allocating a padded scanline buffer, so memory stays within the
 pixel limit however wide the declared scanlines are. Drop any `OverflowException` handling around
 these calls.
+
+### Latin-1 volume identifiers
+
+`OriginalContentSource.Label` on an `.iso` or cue/bin source now reads each byte of the primary
+volume descriptor's identifier as the Latin-1 (ISO-8859-1) character of the same value. It read the
+identifier as ASCII before, which turned every byte above 0x7F into `?`. Byte 0xC9 now gives `É`
+(U+00C9), so two identifiers that differ only in such a byte give different labels. Trailing
+spaces and NULs are still removed, and an identifier with only ASCII bytes reads as before.
+
+`AssetManifest.Validate` and `schemas/asset-manifest.schema.json` now accept a `VolumeIdentifier`
+of 1 to 32 characters from U+0000 to U+00FF that does not end in a space or NUL. That is every
+label a descriptor can give, control bytes included: a Shift-JIS lead byte 0x85 is `"\u0085"`.
+Characters above U+00FF are rejected.
+
+The `WrongVolumeIdentifier` detail now writes both identifiers as JSON strings (`"DISC\u0085"`,
+with `"` and `\` escaped and each control character as a `\u` escape) where it used single quotes.
+Code that parses the detail reads the JSON string instead.
+
+This affects code that compares `Label`, and manifests whose `VolumeIdentifier` writes `?` for a
+byte above 0x7F. Such a pin no longer matches the disc and fails with `WrongVolumeIdentifier`.
+Replace each `?` that stands for a high byte with that byte's Latin-1 character (in JSON, `"\u00C9"`
+or the character itself, and `"\u0085"` for a control byte), reading the value from `Label` of a
+reference copy or from the `WrongVolumeIdentifier` detail. Changing the pin changes the manifest's
+`Fingerprint()`, so copies installed with the old manifest are imported again. Code that compares
+`Label` with a string holding `?` for those bytes changes the same way.
