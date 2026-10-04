@@ -2,7 +2,7 @@
   <PropertyGroup>
     <PackageId>RefurbishedDinosaurs.LegacyFormats</PackageId>
     <Description>Bounded decoders for file formats commonly found in legacy games.</Description>
-    <PackageTags>game-restoration;pcx;rle8;iso9660</PackageTags>
+    <PackageTags>game-restoration;pcx;rle8;iso9660;installshield</PackageTags>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
   <ItemGroup>

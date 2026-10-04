@@ -114,7 +114,9 @@ public static class AssetVerifier
     /// it as <see cref="VerifyAsync(OriginalContentSource, AssetManifest, CancellationToken)"/> does. A
     /// source that cannot be opened is reported as <see cref="AssetProblem.Unreadable"/>.
     /// </summary>
-    /// <param name="path">The directory, <c>.iso</c> image or <c>.cue</c> sheet holding the original.</param>
+    /// <param name="path">
+    /// The directory, <c>.iso</c> image, <c>.cue</c> sheet or InstallShield <c>.hdr</c> header holding the original.
+    /// </param>
     /// <param name="manifest">The manifest, validated before the source is opened.</param>
     /// <param name="cancellationToken">Cancels between files and during hashing.</param>
     /// <exception cref="InvalidDataException">The manifest is invalid or names an unsupported source kind.</exception>
@@ -144,7 +146,9 @@ public static class AssetVerifier
     /// several match, for example because one edition's files are a subset of another's, the
     /// manifests cannot tell them apart and <see cref="EditionIdentification.IsAmbiguous"/> is set.
     /// </remarks>
-    /// <param name="path">The directory, <c>.iso</c> image or <c>.cue</c> sheet holding the original.</param>
+    /// <param name="path">
+    /// The directory, <c>.iso</c> image, <c>.cue</c> sheet or InstallShield <c>.hdr</c> header holding the original.
+    /// </param>
     /// <param name="editions">The supported editions' manifests.</param>
     /// <param name="cancellationToken">Cancels between files and during hashing.</param>
     /// <exception cref="ArgumentException"><paramref name="editions"/> contains <see langword="null"/>.</exception>
@@ -199,7 +203,7 @@ public static class AssetVerifier
         {
             return new(OriginalContentSource.Open(path, kind), null);
         }
-        catch (Exception exception) when (IsReadFailure(exception) || exception is ArgumentException)
+        catch (Exception exception) when (IsReadFailure(exception) || exception is ArgumentException or NotSupportedException)
         {
             return new(null, new(null, AssetProblem.Unreadable, exception.Message));
         }

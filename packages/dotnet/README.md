@@ -6,7 +6,8 @@
 - `RefurbishedDinosaurs.Core`: dependency-free building blocks for importing, installing and checking
   content from the user's original, plus deterministic randomness, state comparison and display
   helpers.
-- `RefurbishedDinosaurs.LegacyFormats`: PCX, bitmap, optical-disc and PCM WAVE readers, and a PCM WAVE writer.
+- `RefurbishedDinosaurs.LegacyFormats`: PCX, bitmap, optical-disc, InstallShield cabinet and PCM WAVE readers, and a PCM
+  WAVE writer.
 - `RefurbishedDinosaurs.Media.Smacker`: SMK containers, palette/video decoding and packed audio.
 - `RefurbishedDinosaurs.Media.Avi`: AVI containers, Cinepak, cumulative RLE8 and Microsoft ADPCM.
 - `RefurbishedDinosaurs.Media.Fli`: AF11 FLI indexing, streaming and indexed frame decoding.
@@ -87,7 +88,8 @@ contexts outside per-frame loops.
 | Types | Reads |
 |---|---|
 | `AssetVerifier` | Check the player's original against an `AssetManifest` through any `OriginalContentSource`, and `IdentifyAsync` the supported edition it is, or that several editions match. |
-| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image or a cue/bin raw disc image behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660` and `OpenCueBin` take it explicitly. |
+| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image or an InstallShield cabinet set behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin` and `OpenInstallShieldCabinet` take it explicitly. |
+| `InstallShieldCabinetSource`, `InstallShieldCabinetLimits` | The members of an InstallShield 5 or 6 cabinet set (`dataN.hdr` and `dataN.cab`), on disk or inside another source. See [InstallShield cabinets](#installshield-cabinets). |
 | `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
 | `CddaTrackFingerprints`, `CddaTrackVerification` | Record and check the fingerprint of a CD audio track in a cue/bin image, accepting a rip shifted by a drive read offset up to the fingerprint's tolerance. See [CD audio across read offsets](#cd-audio-across-read-offsets). |
 | `CueSheet`, `RawMode1Image`, `Iso9660` | Cue/bin raw disc images and the ISO 9660 file system on their data track. |
@@ -97,6 +99,39 @@ contexts outside per-frame loops.
 | `WavePcm16Writer` | Writes canonical 16-bit mono or stereo PCM WAVE files. |
 | `PcxDecoder`, `RawIndexedImageDecoder`, `IndexedImage` | 8-bit RLE PCX, and headerless indexed pixels, with RGBA conversion. |
 | `Rle8BitmapDecoder` | 8-bit BMP (BI_RLE8 or BI_RGB), rewritten as uncompressed BI_RGB. |
+
+## InstallShield cabinets
+
+`OriginalContentSource.OpenInstallShieldCabinet(path)` opens a set from its `dataN.hdr` header, or
+from a `dataN.cab` that holds the header. `OpenInstallShieldCabinet(container, headerPath)` opens a set
+inside another source, such as the ISO 9660 volume of a cue/bin image, and reads the volumes through
+that source whenever a member is read. Volumes are `data1.cab`, `data2.cab` and so on beside the header,
+matched ignoring case.
+
+| Supported | Not supported |
+|---|---|
+| Major versions 5 and 6, as the header's version word gives them. Stored and compressed members, obfuscated members, members split across volumes, and version 6 members that link to another member's data. | Every other version, which throws `NotSupportedException`. Compressed data delimited by `00 00 FF FF` markers with no chunk lengths (what Unshield reads with `-O`). Members stored outside the cabinet. File groups and components: members are listed by directory and name only. |
+
+Opening reads the header and the volume headers and checks every listed member before any member is
+read: its directory and name joined must pass `PortableAssetPath.Relative`, its data must lie inside the
+volumes, and the set must stay within `InstallShieldCabinetLimits` (100,000 members, 8 GiB expanded
+and a 64 MiB header by default). Two different members at the same path, ignoring case, are rejected;
+a member that links to one already listed at its path is listed once. Entries the cabinet marks invalid,
+or that have no name or no data offset, are left out and listed in `SkippedFiles`. Names are read as
+ISO 8859-1. A malformed or truncated header or volume throws `InvalidDataException`; a missing volume
+throws `FileNotFoundException`.
+
+`OpenRead` decodes a member while it is read. The stream seeks: forward seeks decode the skipped bytes,
+and backward seeks decode again from the start. Reading a member to its end checks that it expands to
+exactly its declared size and, for version 6, that its bytes match the MD5 the header records; a failed
+check throws `InvalidDataException` before the last bytes are returned, so `AssetVerifier` reports the
+file as `Unreadable`. Version 5 headers carry no checksum the reader checks, so version 5 members are
+checked by size only.
+
+The reader is managed code in this package, under its MIT license, with no third-party parser. Its
+reading of the layout follows [Unshield](https://github.com/twogood/unshield) (MIT). No open tool writes
+the format, so the tests build their cabinets with a writer in the test project that follows the same
+layout; a restoration's own set, compared against another extractor, is the check against real media.
 
 ## CD audio across read offsets
 
