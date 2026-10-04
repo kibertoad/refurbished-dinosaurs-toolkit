@@ -1075,9 +1075,7 @@ def _ghidra_cross_check(export, nodes, outgoing, omitted):
     for caller in compared:
         ours = outgoing.get(caller, [])
         theirs = callers[caller]
-        # SLEIGH lifts INT, INT1, INT3 and INTO to a computed call with no target. The engine reads the same
-        # instruction as an interrupt and assumes it returns to the next instruction, with no edge.
-        interrupts = {at for at, ins in nodes[caller]["body"]["instructions"].items() if base_mnemonic(ins) in INTERRUPTS}
+        instructions = nodes[caller]["body"]["instructions"]
         # A call neither analysis resolved matches on its site with no target.
         flows = {_ghidra_key(g): g["flow"] for g in theirs if g["site"] is not None}
         read = {(e["site"], e["target"]) for e in ours}
@@ -1088,8 +1086,11 @@ def _ghidra_cross_check(export, nodes, outgoing, omitted):
         for g in theirs:
             if g["site"] is not None and _ghidra_key(g) in read:
                 continue
-            if g["site"] in interrupts and _ghidra_key(g)[1] is None:
-                # Ghidra ends the function at a terminator flow (INT1, INT3); the engine assumed the interrupt returns.
+            ins = instructions.get(g["site"])
+            if ins is not None and base_mnemonic(ins) in INTERRUPTS and _ghidra_key(g)[1] is None:
+                # SLEIGH lifts INT, INT1, INT3 and INTO to a computed call with no target, while the engine assumes the
+                # interrupt returns to the next instruction and records no edge. At INT1 and INT3 Ghidra's flow is a
+                # terminator that ends the function there.
                 rows.append({"caller": caller, "site": g["site"], "target": None, "siteAddress": g["siteAddress"],
                              "targetAddress": None, "ghidraFlow": g["flow"], "result": "interrupt", "engineEdge": None,
                              "ghidraFallsThrough": "TERMINATOR" not in g["flow"]})

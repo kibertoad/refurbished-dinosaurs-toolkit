@@ -318,16 +318,3 @@ engine tests and through the reader bridge. The script compiles against Ghidra 1
 reports of a real program stay in its `GAME_DIR`.
 Exit: the option ships with tests, the reporter guide documents it, and the script has its row in
 the engine README catalog.
-
-Interrupts: SLEIGH lifts `INT`, `INT1`, `INT3` and `INTO` to a computed call with no target, so the
-export lists every interrupt as an unresolved call while the engine records none. Each such Ghidra
-edge at an instruction the engine decoded as an interrupt is reported as an `interrupt` row. It
-leaves `agreed` unaffected unless Ghidra's flow ends the function there (`INT1`, `INT3`), where the
-two analyses disagree on the function's extent. The engine classifies them, so exports written by
-earlier copies of the script compare the same way. An export with a missing `entry`, `site`,
-`target` or `targetAddress` key is rejected instead of being read as an address without file bytes.
-Synthetic acceptance: `INT` and `INTO` agreeing beside a call, `INT1` and `INT3` ending Ghidra's
-function and keeping `agreed` false, a resolved Ghidra target at an interrupt and a targetless
-Ghidra call elsewhere staying `ghidraOnly`, an interrupt site failing an agreement control, each
-missing key rejected, and the bridge case. Exit: the tests pass and the reporter guide lists the
-row.
