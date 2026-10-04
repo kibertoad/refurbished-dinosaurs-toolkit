@@ -244,3 +244,14 @@ Replace unsigned-eight-bit widening loops with `Media.Audio.Pcm16.FromUnsigned8`
 `Pcm16.Encode` and `LegacyFormats.WavePcm16Writer` instead of host-endian WAVE construction.
 `WavePcm16Stream` owns its input by default, supports aligned buffers and looped reads, and exposes
 format metadata for game-specific CDDA admission. Dispose voices before cached resources.
+
+### CddaWave sector ranges
+
+`CddaWave.Write` takes `long` sector values, so a track's `CueBinTrackExtent` passes in without a
+cast. Source that passes `int` values compiles unchanged; rebuild against the new release, since
+code compiled against the `int` signature fails to find the method. A range longer than
+`CddaWave.MaximumSectors` throws `ArgumentOutOfRangeException` before anything is written, where
+the old method threw `OverflowException` above about 913,000 sectors. A range that ends past the
+image now throws `EndOfStreamException` before the header is written instead of after it, and
+null streams throw `ArgumentNullException`. Remove local byte-count checks made before calling it,
+and use `WriteAsync` to cancel a copy mid-track.
