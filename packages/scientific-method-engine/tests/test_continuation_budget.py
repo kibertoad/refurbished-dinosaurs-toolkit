@@ -4,7 +4,7 @@ import unittest
 import test_dispatch  # noqa: F401  (puts the engine sources on sys.path)
 from scientific_method_engine.x86.image import Image
 from scientific_method_engine.x86.reports import run_report
-from scientific_method_engine.x86.trace import trace
+from scientific_method_engine.x86.trace import trace, PATH_BUDGET_INPUTS
 
 RETURN_ONE = bytes.fromhex("b8 01 00 c3")
 SPIN = bytes.fromhex("eb fe")
@@ -186,12 +186,22 @@ class ContinuationBudgetTests(unittest.TestCase):
 
         fields = {"paths": "maxPaths", "totalSteps": "totalSteps", "maxSteps": "maxSteps",
                   "visitLimit": "visitLimit", "stringIterations": "stringIterations"}
+        # Both sides of every input's range boundaries, so a changed range is still probed at its edges.
+        values = sorted({v for low, high, _ in PATH_BUDGET_INPUTS.values() for v in (low - 1, low, high, high + 1)})
         for field, ordinary in fields.items():
-            for value in (-1, 0, 1, 2, 256, 257, 4096, 4097, 10000, 10001, 65536, 65537, 100000, 100001):
+            for value in values:
                 expected = accepted({ordinary: value}) or (field == "paths" and value == 0)
                 self.assertEqual(accepted({"continuationBudget": {field: value}}), expected, (field, value))
         self.assertFalse(accepted({"maxPaths": 0}))
         self.assertTrue(accepted({"continuationBudget": {"paths": 0}}))
+
+    def test_out_of_range_budget_inputs_name_the_input(self):
+        data, config, _ = fan_out(1)
+        for name in ("stringIterations", "totalSteps"):
+            for command in ("trace", "uses"):
+                change = {name: -1, "query": {"segment": 0x2000, "offset": 0x100}} if command == "uses" else {name: -1}
+                with self.assertRaisesRegex(ValueError, "^" + name + " must be an integer in", msg=(name, command)):
+                    run_report(data, {**config, **change}, command)
 
 
 if __name__ == "__main__":
