@@ -371,7 +371,7 @@ def entry_frame(image, config, entry):
                        "traced paths under the query's own inputs; bp null leaves BP unknown"}
 
 
-def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=None, call_stacks=False):
+def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=None, call_stacks=False, argument_window=0):
     """Trace bounded paths, preserving declared-table continuations as separate conditional evidence.
 
     Ordinary paths run first. A path stopped at a declared indirect jump is then
@@ -386,6 +386,9 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
     call_stacks=True, and each stopped path carries ``callStack``: the traced
     calls still open at the stop, outermost first, with each one's return site.
     A path limit gap inside a called function carries the same ``callStack``.
+    A positive ``argument_window`` gives each traced call event an ``argumentSlots`` entry: the
+    first ``argument_window`` bytes above its return frame as ``State.argument_slots`` saw them
+    when the call ran. ``argument_frames`` reads and removes it.
     """
     entry = integer(config.get("entry"), 0, len(image.data) - 1, "entry")
     if not any(entry in r["entries"] for r in image.regions):
@@ -425,6 +428,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
     observed_frame = entry_frame(image, config, entry) if arrive is None else None
     root = State(entry, image, config)
     root.enter_frame(observed_frame)
+    root.argument_window = argument_window
     # Each path carries its own loop record; forks copy it with the rest of the state.
     root.loops = (LoopTracker(integer(config.get("loopIterationLimit", 64), 1, 1024, "loopIterationLimit"))
                   if track_loops else None)
@@ -760,6 +764,8 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                             flags_frame = False
                     # A traced call records its return-frame width; argumentFrames maps the slots above it.
                     call_event["returnFrameBytes"] = 4 if m == "lcall" or push_cs else image.bits // 8
+                    if state.argument_window:
+                        call_event["argumentSlots"] = state.argument_slots(call_event["returnFrameBytes"], state.argument_window)
                     state.frames.append({"entry": target, "sp": state.reg(state.sp), "returnBytes": call_event["returnFrameBytes"],
                                          "frameSource": "push-CS/near-call; matching far return required" if push_cs else m,
                                          "continuation": following, "returnIP": return_ip, "callSite": at,
