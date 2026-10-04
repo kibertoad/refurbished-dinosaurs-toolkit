@@ -34,7 +34,7 @@ on an undocumented public member.
 | Namespace | Types | Use |
 |---|---|---|
 | `Assets` | `AssetManifest`, `AssetFileSpec`, `CddaTrackFingerprint` | One supported edition: its files' paths, sizes and XXH3-128 hashes, for a cue/bin source the fingerprints of its CD audio tracks, how the copy is read, and the edition's `Fingerprint()`. |
-| `Assets` | `FileFingerprint` | XXH3-128 of bytes, a file or a stream, in the documentation standard's form. |
+| `Assets` | `FileFingerprint` | XXH3-128 of bytes, a file or a stream, in the documentation standard's form, and a bounded copy that hashes what it copies (`CopyXxh3Async`). |
 | `Assets` | `ImportDiskPlanner` | Free space an import needs, counting files it will replace. |
 | `Assets` | `StagedAssetPack` | Build a content directory beside the live one and swap it in, restoring the old one on failure. |
 | `Assets` | `InstalledContentWriter` | Write or copy one installed file atomically, skipping identical files. |
@@ -44,7 +44,7 @@ on an undocumented public member.
 | `Determinism` | `IRandomSource`, `MsvcRandom` | The legacy Microsoft C `rand()` sequence, with saveable state. |
 | `Diagnostics` | `StartupFailure` | Log a failed start and show the player what to do, without the Windows dialog for an unattended run. |
 | `Discovery` | `KnownDirectorySourceLocator`, `CompositeSourceLocator` | Offer likely install directories of the original. |
-| `IO` | `AtomicFile`, `SafePath`, `PortableAssetPath` | Atomic writes, paths from untrusted names that cannot leave their root, and legacy asset references resolved the same way on every host. |
+| `IO` | `AtomicFile`, `SafePath`, `PortableAssetPath`, `PortablePathLayout` | Atomic writes, paths from untrusted names that cannot leave their root, legacy asset references resolved the same way on every host, and a set of relative paths given one spelling per directory ignoring case, with paths that clash ignoring case refused. |
 | `Imaging` | `IndexedPalette`, `IndexedPaletteDecoder` | 256-colour palettes, including 6-bit VGA values. |
 | `Imaging` | `IndexedPngWriter` | Write 8-bit indexed pixels as a palette PNG. |
 | `Input` | `InputState<TButton>`, `InputBindings<TAction,TButton>` | Held, pressed and released queries over copied button snapshots; immutable OR bindings with rebinding and context overlays. |
@@ -90,8 +90,8 @@ manifest by default).
 `ApplyAsync` checks every target before it writes anything, finding each path component with the
 rules of `PortableAssetPath.ResolveFile`. A target that already has the payload's size and hash
 counts as applied and is not written, so a rerun writes nothing. A target with neither hash, a
-replaced file that is missing, or an added file that exists throws `ContentOverlayException` with a `ContentOverlayProblem`, the path and the
-hash found. Then every payload is copied into a scratch directory under the root and hashed as it
+replaced file that is missing, or an added file that exists throws `ContentOverlayException` with a
+`ContentOverlayProblem`, the path and the hash found. Then every payload is copied into a scratch directory under the root and hashed as it
 is copied; a payload whose size or hash differs from its record throws before any target is
 replaced, and the scratch directory is always removed. Only then are the copies moved over their
 targets. Those moves are not one transaction, so after any exception dispose the stage without
@@ -100,7 +100,13 @@ committing it.
 `ContentOverlayResult.Outputs` lists each record's actual spelling, size, hash and
 `ContentOverlayAction`. `UpdateInstalledFiles` puts the outputs into the importer's
 `InstalledAsset` list: a matching record takes the new size and hash, keeps its media type, and gets
-an `AssetConversion` whose method is the overlay's `name`.
+an `AssetConversion` whose method is the overlay's `name`. Each record's path goes through
+`PortableAssetPath.Relative` before it is matched, so `data\main.bin` matches the output
+`DATA/MAIN.BIN` and comes back under the output's spelling, and an unmatched `docs\readme.txt` comes
+back as `docs/readme.txt`. It throws `InvalidDataException` for a null record, a path `Relative`
+rejects (such as `./data/main.bin` or `../x`), or two records that name the same path ignoring case
+and separators, with both spellings in the message. It does not check sizes, fingerprints or source
+paths; `InstalledAssetVerifier` reports those.
 
 An overlay cannot delete a file. The overlay's payloads, hashes and version names are the
 restoration's data.
@@ -154,10 +160,11 @@ contexts outside per-frame loops.
 | `AssetVerifier` | Check the player's original against an `AssetManifest` through any `OriginalContentSource`, and `IdentifyAsync` the supported edition it is, or that several editions match. |
 | `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image or an InstallShield cabinet set behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin` and `OpenInstallShieldCabinet` take it explicitly. A cue/bin source gives the sheet as `Cue` and the full paths of the files `OpenCueBin` chose as `CuePath` and `BinPath`. |
 | `InstallShieldCabinetSource`, `InstallShieldCabinetLimits` | The members of an InstallShield 5 or 6 cabinet set (`dataN.hdr` and `dataN.cab`), on disk or inside another source. See [InstallShield cabinets](#installshield-cabinets). |
+| `ContentSourceExtractor`, `ContentExtractionOptions` | Copy the files of any `OriginalContentSource`, or a selection of them, into a staging directory and get an `InstalledAsset` record for each. See [Extracting a source into a stage](#extracting-a-source-into-a-stage). |
 | `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
 | `CddaTrackFingerprints`, `CddaTrackVerification` | Record and check the fingerprint of a CD audio track in a cue/bin image, accepting a rip shifted by a drive read offset up to the fingerprint's tolerance. See [CD audio across read offsets](#cd-audio-across-read-offsets). |
 | `CueSheet`, `RawMode1Image`, `Iso9660` | Cue/bin raw disc images and the ISO 9660 file system on their data track. |
-| `CddaWave` | A CD audio track of a raw image, written out as WAVE. |
+| `CddaWave` | A CD audio track of a raw image, written out as WAVE, synchronously or with `WriteAsync`. See [Writing a CD audio track as WAVE](#writing-a-cd-audio-track-as-wave). |
 | `WavePcm16Reader` | 16-bit mono or stereo PCM WAVE files. |
 | `WavePcm16Stream` | 16-bit mono or stereo PCM WAVE files, indexed and read in frame-aligned buffers without loading the track. |
 | `WavePcm16Writer` | Writes canonical 16-bit mono or stereo PCM WAVE files. |
@@ -188,10 +195,12 @@ libraries that cannot read BI_RLE8.
 ## InstallShield cabinets
 
 `OriginalContentSource.OpenInstallShieldCabinet(path)` opens a set from its `dataN.hdr` header, or
-from a `dataN.cab` that holds the header. `OpenInstallShieldCabinet(container, headerPath)` opens a set
+from a `dataN.cab` that holds the header. From a `.cab`, only the header region (up to the end of
+the cabinet descriptor the common header places) is read as the header; a `data1.cab` that holds the
+header is also read as volume 1. `OpenInstallShieldCabinet(container, headerPath)` opens a set
 inside another source, such as the ISO 9660 volume of a cue/bin image, and reads the volumes through
-that source whenever a member is read. Volumes are `data1.cab`, `data2.cab` and so on beside the header,
-matched ignoring case.
+that source whenever a member is read. Volumes are `data1.cab`, `data2.cab` and so on beside the
+header, matched ignoring case.
 
 | Supported | Not supported |
 |---|---|
@@ -200,11 +209,21 @@ matched ignoring case.
 Opening reads the header and the volume headers and checks every listed member before any member is
 read: its directory and name joined must pass `PortableAssetPath.Relative`, its data must lie inside the
 volumes, and the set must stay within `InstallShieldCabinetLimits` (100,000 members, 8 GiB expanded
-and a 64 MiB header by default). Two different members at the same path, ignoring case, are rejected;
-a member that links to one already listed at its path is listed once. Entries the cabinet marks invalid,
-or that have no name or no data offset, are left out and listed in `SkippedFiles`. Names are read as
-ISO 8859-1. A malformed or truncated header or volume throws `InvalidDataException`; a missing volume
-throws `FileNotFoundException`.
+and a 64 MiB header region by default; the header region is the whole `.hdr` file).
+
+Entries the cabinet marks invalid, or that have no name or no data offset, are left out and listed in
+`SkippedFiles` with the reason. So is a version 6 entry whose link chain ends at such an entry; its
+reason names the entry it links to. A link outside the file table or a link cycle fails the open.
+
+Two entries at the same path, ignoring case, are listed once when one links to the other's data; the
+other goes to `SkippedFiles` with a reason naming the listed entry. In a version 6 set, two entries
+stored apart at one path with the same expanded size and header MD5 are taken as one file: the first
+in table order is listed, and the other goes to `SkippedFiles` as its duplicate without its stored
+bytes being read. Any other pair at one path is rejected, and so is every pair in a version 5 set,
+which records no MD5.
+
+Names are read as ISO 8859-1. A malformed or truncated header or volume throws
+`InvalidDataException`; a missing volume throws `FileNotFoundException`.
 
 `OpenRead` decodes a member while it is read. The stream seeks: forward seeks decode the skipped bytes,
 and backward seeks decode again from the start. Reading a member to its end checks that it expands to
@@ -217,6 +236,34 @@ The reader is managed code in this package, under its MIT license, with no third
 reading of the layout follows [Unshield](https://github.com/twogood/unshield) (MIT). No open tool writes
 the format, so the tests build their cabinets with a writer in the test project that follows the same
 layout; a restoration's own set, compared against another extractor, is the check against real media.
+
+## Extracting a source into a stage
+
+`ContentSourceExtractor.ExtractAsync(source, root, options)` copies the files of an
+`OriginalContentSource` of any kind into `root`, usually `StagedAssetPack.StagingDirectory`, below
+`ContentExtractionOptions.Prefix` when one is given. `Include` selects files, for example to leave
+out executables the restoration does not need. It returns one `InstalledAsset` per file, in the
+source's file order: the path relative to `root` with the prefix, the size, the XXH3-128 computed
+while the file is copied, the file's path in the source as `SourcePath`, and `Conversion` from the
+options (null by default, since the bytes are copied unchanged). The records go straight into an
+`InstalledAssetManifest` for `root`, and through `ContentOverlayResult.UpdateInstalledFiles` when an
+overlay follows.
+
+Before it writes anything, the call checks the selection against `MaximumFiles` and
+`MaximumTotalBytes` (100,000 files and 8 GiB by default), every source path with
+`PortableAssetPath.Relative`, and that the prefix directory is absent or empty with no link on the
+way to it. A prefix part that names an existing entry with different case is rejected, since
+Windows would reuse that entry and a case-sensitive file system would create a second one beside it,
+and so is a part that matches two entries ignoring case. A negative listed size is rejected.
+Without a prefix the root itself must be empty. A file whose path is also another file's
+directory, ignoring case, is rejected. A directory spelled two ways ignoring case is written once,
+with the spelling of the first file under it, so a case-sensitive file system gets the same tree as
+Windows. Each file must yield exactly the size the source lists; more or fewer bytes throw
+`InvalidDataException`.
+
+When the call throws, cancellation included, it returns no records and removes what it wrote: the
+directories it created for the prefix, or the contents of a prefix directory that already existed.
+Dispose the stage without committing it after any exception.
 
 ## CD audio across read offsets
 
@@ -244,6 +291,19 @@ track's extent into the rest of the image. When a check needs samples past the e
 track is reported as `Unreadable`, with the check that was not made. A source that is not a cue/bin
 image reports each track as `Unreadable`. The tolerance is at most 5880 samples and the anchor at
 most 44100 samples, since the anchor is hashed once per shift.
+
+## Writing a CD audio track as WAVE
+
+`CddaWave.Write(source, output, startSector, sectorCount)` and `WriteAsync`, which also takes a
+`CancellationToken`, copy raw sectors of an image into a 16-bit stereo 44.1 kHz WAVE file. For a
+track of a cue/bin image, pass the `StartSector` and `Sectors` of `CueBinSheet.TrackExtent`.
+`WriteAsync` checks the token before each read of up to 128 KiB, so a cancelled copy stops within a
+read and leaves a partial file for the caller to delete.
+
+A WAVE file holds at most `CddaWave.MaximumSectors` sectors (1,826,091, about 6.8 hours), since the
+32-bit RIFF size counts the audio and 36 header bytes. A longer range, a negative value, or a range
+that ends past the image's length throws before anything is written: `ArgumentOutOfRangeException`
+for the first two, `EndOfStreamException` for the last.
 
 ## Media packages
 

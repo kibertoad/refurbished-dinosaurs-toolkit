@@ -348,4 +348,62 @@ public sealed class ContentOverlayTests : IDisposable
                 "application/octet-stream", new AssetConversion("synthetic-overlay-1"))
         ], files);
     }
+
+    [Fact]
+    public async Task InstalledRecordPathsAreNormalizedBeforeMatching()
+    {
+        using var overlay = ContentOverlay.OpenZip(Zip(StandardManifest(), StandardPayloads));
+        var result = await overlay.ApplyAsync(_content, Token);
+        InstalledAsset[] imported =
+        [
+            new(@"data\main.bin", Base.Length, FileFingerprint.Xxh3(Base), "DATA/MAIN.BIN", "application/x-synthetic"),
+            new(@"docs\readme.txt", 4, FileFingerprint.Xxh3("text"u8), "README.TXT", "text/plain")
+        ];
+
+        var files = result.UpdateInstalledFiles(imported);
+
+        Assert.Equal(
+        [
+            new InstalledAsset("DATA/MAIN.BIN", Patched.Length, FileFingerprint.Xxh3(Patched), "DATA/MAIN.BIN",
+                "application/x-synthetic", new AssetConversion("synthetic-overlay-1")),
+            imported[1] with { Path = "docs/readme.txt" },
+            new InstalledAsset("extra/new/added.dat", Added.Length, FileFingerprint.Xxh3(Added), "extra/new/added.dat",
+                "application/octet-stream", new AssetConversion("synthetic-overlay-1"))
+        ], files);
+    }
+
+    [Theory]
+    [InlineData("data/main.bin", "DATA/main.bin")]
+    [InlineData(@"DATA\MAIN.BIN", "DATA/MAIN.BIN")]
+    [InlineData("docs/readme.txt", @"DOCS\README.TXT")]
+    public async Task InstalledRecordsNamingOnePathTwiceAreRejected(string first, string second)
+    {
+        using var overlay = ContentOverlay.OpenZip(Zip(StandardManifest(), StandardPayloads));
+        var result = await overlay.ApplyAsync(_content, Token);
+        InstalledAsset[] imported =
+        [
+            new(first, Base.Length, FileFingerprint.Xxh3(Base), "a"),
+            new(second, Base.Length, FileFingerprint.Xxh3(Base), "b")
+        ];
+
+        var error = Assert.Throws<InvalidDataException>(() => result.UpdateInstalledFiles(imported));
+
+        Assert.Contains($"'{first}'", error.Message);
+        Assert.Contains($"'{second}'", error.Message);
+    }
+
+    [Theory]
+    [InlineData("./DATA/MAIN.BIN")]
+    [InlineData("../outside.bin")]
+    [InlineData("/DATA/MAIN.BIN")]
+    [InlineData("")]
+    [InlineData(null)]
+    public async Task InstalledRecordsTheVerifierWouldRejectAreRejected(string? path)
+    {
+        using var overlay = ContentOverlay.OpenZip(Zip(StandardManifest(), StandardPayloads));
+        var result = await overlay.ApplyAsync(_content, Token);
+        InstalledAsset[] imported = [new(path!, Base.Length, FileFingerprint.Xxh3(Base), "DATA/MAIN.BIN")];
+
+        Assert.Throws<InvalidDataException>(() => result.UpdateInstalledFiles(imported));
+    }
 }

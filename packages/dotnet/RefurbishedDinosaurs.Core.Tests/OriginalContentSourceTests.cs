@@ -196,7 +196,7 @@ public sealed class OriginalContentSourceTests
         return image;
     }
 
-    private static int WriteDirectoryRecord(
+    internal static int WriteDirectoryRecord(
         Span<byte> destination, int offset, uint extent, int length, bool isDirectory,
         ReadOnlySpan<byte> identifier)
     {
@@ -212,19 +212,19 @@ public sealed class OriginalContentSourceTests
         return recordLength;
     }
 
-    private static void WriteBothEndianUInt32(Span<byte> destination, int offset, uint value)
+    internal static void WriteBothEndianUInt32(Span<byte> destination, int offset, uint value)
     {
         BinaryPrimitives.WriteUInt32LittleEndian(destination[offset..], value);
         BinaryPrimitives.WriteUInt32BigEndian(destination[(offset + 4)..], value);
     }
 
-    private static void WriteBothEndianUInt16(Span<byte> destination, int offset, ushort value)
+    internal static void WriteBothEndianUInt16(Span<byte> destination, int offset, ushort value)
     {
         BinaryPrimitives.WriteUInt16LittleEndian(destination[offset..], value);
         BinaryPrimitives.WriteUInt16BigEndian(destination[(offset + 2)..], value);
     }
 
-    private static void WritePaddedAscii(Span<byte> destination, string value)
+    internal static void WritePaddedAscii(Span<byte> destination, string value)
     {
         destination.Fill((byte)' ');
         System.Text.Encoding.ASCII.GetBytes(value).CopyTo(destination);

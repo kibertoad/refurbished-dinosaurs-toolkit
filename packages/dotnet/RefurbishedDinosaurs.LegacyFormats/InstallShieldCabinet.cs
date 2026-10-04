@@ -11,7 +11,13 @@ namespace RefurbishedDinosaurs.LegacyFormats;
 /// </summary>
 /// <param name="MaximumFiles">The most members the set may list.</param>
 /// <param name="MaximumExpandedBytes">The most bytes all listed members may expand to together.</param>
-/// <param name="MaximumHeaderBytes">The largest header file that is read into memory.</param>
+/// <param name="MaximumHeaderBytes">
+/// The largest header region that is read into memory. For a <c>.hdr</c> header the region is the
+/// whole file. For a <c>.cab</c> that holds the header, it runs from the file's start to the end of
+/// the cabinet descriptor the common header places. Header data past that end is reported as
+/// truncated. The volumes are found by name, so a <c>data1.cab</c> that holds the header is also
+/// read as volume 1.
+/// </param>
 public sealed record InstallShieldCabinetLimits(
     int MaximumFiles = 100_000,
     long MaximumExpandedBytes = 8L * 1024 * 1024 * 1024,
@@ -49,6 +55,13 @@ public sealed record InstallShieldSkippedFile(int Index, string? Path, string Re
 /// decoded only when read.
 /// </para>
 /// <para>
+/// Two entries at one path, ignoring case, that share data through a link are listed once: the
+/// first in table order is listed, and the other goes to <see cref="SkippedFiles"/>. In a version 6 set, two entries stored apart at one path with the same expanded size and the same
+/// MD5 are taken as one file: the first in table order is listed, and the other goes to
+/// <see cref="SkippedFiles"/> without its stored bytes being read. Any other pair of entries at one
+/// path fails the open, and so does every such pair in a version 5 set, which records no MD5.
+/// </para>
+/// <para>
 /// Reading a member to its end checks that its data expands to exactly the declared size and, for
 /// a version 6 set, that the expanded bytes match the MD5 the header records. A failed check throws
 /// <see cref="InvalidDataException"/> from the read that would have returned the member's last bytes.
@@ -59,9 +72,9 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
 {
     // The layout (common header, cabinet descriptor, file table, volume headers, chunked deflate and
     // the obfuscation) follows Unshield's reading of the format: https://github.com/twogood/unshield.
-    private const uint Signature = 0x28635349;
+    internal const uint Signature = 0x28635349;
     private const uint MicrosoftCabinetSignature = 0x4643534d;
-    private const int CommonHeaderSize = 20;
+    internal const int CommonHeaderSize = 20;
     private const int DescriptorFieldsSize = 0x30;
     private const int Version6DescriptorSize = 0x57;
     private const int Version5DescriptorSize = 0x3a;
@@ -150,20 +163,44 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 continue;
             }
 
-            var (dataIndex, data) = ResolveLink(descriptors, index);
+            var dataIndex = ResolveLink(descriptors, index);
+            var data = descriptors[dataIndex];
+            var linkReason = (data.Flags & InvalidFlag) != 0 ? $"The file links to file {dataIndex}, which the cabinet marks invalid."
+                : data.DataOffset == 0 ? $"The file links to file {dataIndex}, which has no data offset."
+                : null;
+            if (linkReason is not null)
+            {
+                skipped.Add(new(index, path, linkReason));
+                continue;
+            }
+
             if (data.ExpandedSize < 0 || data.CompressedSize < 0)
                 throw new InvalidDataException($"InstallShield file {index} declares a size beyond 2^63 bytes.");
-            var segments = Segments(dataIndex, data, descriptors.Length);
-            var member = new Member(
-                new ContentSourceEntry(path!, data.ExpandedSize), dataIndex, (data.Flags & CompressedFlag) != 0,
-                (data.Flags & ObfuscatedFlag) != 0, MajorVersion >= 6 ? data.Md5 : null, segments);
+            var md5 = MajorVersion >= 6 ? data.Md5 : null;
             if (members.TryGetValue(path!, out var existing))
             {
-                if (existing.DataIndex == dataIndex) continue;
+                if (existing.DataIndex == dataIndex)
+                {
+                    skipped.Add(new(index, path,
+                        $"The file shares the data of file {existing.Index} at '{existing.Entry.Path}', which is listed."));
+                    continue;
+                }
+                // Version 6 records each file's MD5, so two copies stored apart can be told to be the
+                // same file. The copy listed is the one checked when read; the other is not read, and
+                // neither are its volumes, so a duplicate in a missing or damaged volume is still skipped.
+                if (existing.Md5 is not null && md5 is not null && existing.Entry.Size == data.ExpandedSize &&
+                    existing.Md5.AsSpan().SequenceEqual(md5))
+                {
+                    skipped.Add(new(index, path,
+                        $"The file duplicates file {existing.Index} at '{existing.Entry.Path}': same expanded size and MD5."));
+                    continue;
+                }
                 throw new InvalidDataException(
                     $"InstallShield cabinet holds two different files at '{path}' (file {existing.DataIndex} and file {dataIndex}).");
             }
-            members.Add(path!, member);
+            members.Add(path!, new Member(
+                new ContentSourceEntry(path!, data.ExpandedSize), index, dataIndex, (data.Flags & CompressedFlag) != 0,
+                (data.Flags & ObfuscatedFlag) != 0, md5, Segments(dataIndex, data, descriptors.Length)));
             // Compared this way round, the total cannot overflow even when the limit is near long.MaxValue.
             if (data.ExpandedSize > limits.MaximumExpandedBytes - expandedTotal)
                 throw new InvalidDataException(
@@ -185,8 +222,11 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     /// <summary>The InstallShield major version the header's version word gives: 5 or 6.</summary>
     public int MajorVersion { get; }
     /// <summary>
-    /// File-table entries that are not listed, in table order: entries the cabinet marks invalid, and
-    /// entries with no name or no data offset.
+    /// File-table entries that are not listed, in table order: entries the cabinet marks invalid,
+    /// entries with no name or no data offset, version 6 entries whose link ends at an entry the
+    /// cabinet marks invalid or that has no data offset, entries that share a listed member's data
+    /// at the same path, and version 6 entries stored apart from a listed member at the same path
+    /// with the same expanded size and MD5. Each reason names the entry it refers to.
     /// </summary>
     public IReadOnlyList<InstallShieldSkippedFile> SkippedFiles { get; }
 
@@ -260,19 +300,15 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
             Volume: reader.UInt16(offset + 0x55));
     }
 
-    // A version 6 entry can link to an earlier entry whose data it shares.
-    private static (int Index, FileDescriptor Descriptor) ResolveLink(FileDescriptor[] descriptors, int index)
+    // A version 6 entry can link to an earlier entry whose data it shares. Returns the index of the
+    // entry the chain ends at; a link outside the table or a cycle means the header is damaged.
+    private static int ResolveLink(FileDescriptor[] descriptors, int index)
     {
         var current = index;
         for (var step = 0; step <= descriptors.Length; step++)
         {
             var descriptor = descriptors[current];
-            if ((descriptor.LinkFlags & LinkPreviousFlag) == 0)
-            {
-                if ((descriptor.Flags & InvalidFlag) != 0 || descriptor.DataOffset == 0)
-                    throw new InvalidDataException($"InstallShield file {index} links to file {current}, which has no data.");
-                return (current, descriptor);
-            }
+            if ((descriptor.LinkFlags & LinkPreviousFlag) == 0) return current;
             if (descriptor.LinkPrevious >= descriptors.Length || descriptor.LinkPrevious == current)
                 throw new InvalidDataException($"InstallShield file {current} links to file {descriptor.LinkPrevious}, which does not exist.");
             current = (int)descriptor.LinkPrevious;
@@ -368,7 +404,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         long LastOffset, long LastExpanded, long LastCompressed);
 
     private sealed record Member(
-        ContentSourceEntry Entry, int DataIndex, bool Compressed, bool Obfuscated, byte[]? Md5,
+        ContentSourceEntry Entry, int Index, int DataIndex, bool Compressed, bool Obfuscated, byte[]? Md5,
         InstallShieldSegment[] Segments);
 
     private sealed class HeaderReader(byte[] data)
@@ -376,7 +412,8 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         public void Require(long offset, long length, string what)
         {
             if (offset < 0 || length < 0 || offset > data.Length - length)
-                throw new InvalidDataException($"InstallShield header is truncated: its {what} lies past the end.");
+                throw new InvalidDataException(
+                    $"InstallShield header is truncated: its {what} lies past the end of the {data.Length}-byte header region.");
         }
 
         public byte Byte(long offset)
@@ -429,8 +466,9 @@ internal static class InstallShieldCabinetOpener
         var fullPath = Path.GetFullPath(path);
         if (!File.Exists(fullPath)) throw new FileNotFoundException("InstallShield cabinet header does not exist.", fullPath);
         var directory = Path.GetDirectoryName(fullPath)!;
-        var prefix = VolumePrefix(Path.GetFileName(fullPath));
-        var header = ReadHeader(new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read), limits);
+        var fileName = Path.GetFileName(fullPath);
+        var prefix = VolumePrefix(fileName);
+        var header = ReadHeader(new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read), fileName, limits);
         // Each volume's file is looked up once, not on every member read.
         var found = new ConcurrentDictionary<int, string>();
         return new InstallShieldCabinetSource(header, volume =>
@@ -456,10 +494,11 @@ internal static class InstallShieldCabinetOpener
         var relative = PortableAssetPath.Relative(headerPath);
         var separator = relative.LastIndexOf('/');
         var directory = separator < 0 ? string.Empty : relative[..(separator + 1)];
-        var prefix = VolumePrefix(relative[(separator + 1)..]);
+        var fileName = relative[(separator + 1)..];
+        var prefix = VolumePrefix(fileName);
         if (!container.TryGetFile(relative, out _))
             throw new FileNotFoundException("InstallShield cabinet header was not found in the source.", relative);
-        var header = ReadHeader(container.OpenRead(relative), limits);
+        var header = ReadHeader(container.OpenRead(relative), fileName, limits);
         return new InstallShieldCabinetSource(header, volume =>
         {
             var name = $"{directory}{prefix}{volume}.cab";
@@ -478,14 +517,37 @@ internal static class InstallShieldCabinetOpener
         return prefix.Length > 0 ? prefix : throw new InvalidDataException($"InstallShield header name '{fileName}' has no volume prefix.");
     }
 
-    private static byte[] ReadHeader(Stream stream, InstallShieldCabinetLimits limits)
+    // A .hdr file is read whole. A .cab that holds the header is also volume 1, so only its header
+    // region is read: the common header up to the end of the cabinet descriptor it places.
+    private static byte[] ReadHeader(Stream stream, string fileName, InstallShieldCabinetLimits limits)
     {
         using (stream)
         {
-            if (stream.Length > limits.MaximumHeaderBytes)
+            var length = stream.Length;
+            if (Path.GetExtension(fileName).Equals(".cab", StringComparison.OrdinalIgnoreCase))
+            {
+                var common = new byte[(int)Math.Min(length, InstallShieldCabinetSource.CommonHeaderSize)];
+                stream.ReadExactly(common);
+                // Anything else is refused by the source with the reason the common header gives.
+                if (common.Length < InstallShieldCabinetSource.CommonHeaderSize ||
+                    BinaryPrimitives.ReadUInt32LittleEndian(common) != InstallShieldCabinetSource.Signature)
+                    return common;
+                var end = (long)BinaryPrimitives.ReadUInt32LittleEndian(common.AsSpan(12)) +
+                          BinaryPrimitives.ReadUInt32LittleEndian(common.AsSpan(16));
+                if (end > limits.MaximumHeaderBytes)
+                    throw new InvalidDataException(
+                        $"InstallShield header region of '{fileName}' is {end} bytes, more than the limit of {limits.MaximumHeaderBytes}.");
+                // A region that runs past the file is reported as a truncated header by the source.
+                var region = new byte[Math.Max(InstallShieldCabinetSource.CommonHeaderSize, Math.Min(end, length))];
+                common.CopyTo(region, 0);
+                stream.ReadExactly(region.AsSpan(InstallShieldCabinetSource.CommonHeaderSize));
+                return region;
+            }
+
+            if (length > limits.MaximumHeaderBytes)
                 throw new InvalidDataException(
-                    $"InstallShield header is {stream.Length} bytes, more than the limit of {limits.MaximumHeaderBytes}.");
-            var bytes = new byte[stream.Length];
+                    $"InstallShield header is {length} bytes, more than the limit of {limits.MaximumHeaderBytes}.");
+            var bytes = new byte[length];
             stream.ReadExactly(bytes);
             return bytes;
         }
