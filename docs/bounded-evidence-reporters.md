@@ -561,7 +561,8 @@ Unknown fields are rejected. Every gap raised while continuations run carries
 `route: "declaredContinuation"`, so it is never mistaken for an ordinary gap. Each
 continuation path still reports `steps` and `instructionPath` from `entry`, and
 `maxDepth` applies to the whole path. Once the path budget is spent (or with `paths: 0`),
-each further ordinary path stopped at a declared jump leaves one `path limit` gap at the jump.
+each further ordinary path stopped at a declared jump leaves one `path limit` gap at the jump,
+unless its operand matches no table row, in which case there is no route to drop.
 The report adds `continuationStepsUsed`, `continuationStringIterationsUsed` and
 `limits.continuation` with the effective values. When continuations stop at a limit, raise
 the matching `continuationBudget` field. Unset fields follow the ordinary inputs, so raising

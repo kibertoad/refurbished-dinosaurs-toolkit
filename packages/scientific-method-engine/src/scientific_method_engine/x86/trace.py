@@ -329,27 +329,8 @@ def trace(image, config, continue_declared_jumps=True):
         # keeps its traced value; no register or table word is assigned. s is a copy taken
         # at the jump, so the operand read below never enters the stopped ordinary path.
         nonlocal created, boundary_budget
-        if created >= max_paths:
-            # Spent or zero path budget: no route is read, so no boundary walk or operand read is needed.
-            global_gaps.append({"site": s.at, "reason": "path limit"})
-            return
         declaration = image.indirect_jumps[s.at]
         ins = image.decode(s.at)
-        root_entry = s.frames[-1]["entry"]
-        if root_entry not in boundary_cache:
-            if boundary_budget < 1:
-                global_gaps.append({"site": s.at, "reason": "conditional table boundary instruction limit"})
-                return
-            seen, walk_gaps, _, _, contested = walk(image, [root_entry], boundary_budget)
-            # walk drops rejected overlapping starts and contested instructions from seen,
-            # but it decoded them, so they are charged with the established ones.
-            overlapping = sum(g["reason"] == OVERLAP_REASON for g in walk_gaps)
-            boundary_budget -= max(1, len(seen) + len(contested) + overlapping)
-            # A truncated walk never saw the instructions that could contest a target start.
-            if any(g["reason"] == "instruction limit" for g in walk_gaps):
-                seen = {}
-            boundary_cache[root_entry] = seen
-        seen = boundary_cache[root_entry]
         try:
             value = s.get(ins, ins.operands[0], image)
             address = s.address(ins, ins.operands[0]) if ins.operands[0].type == X86_OP_MEM else None
@@ -375,6 +356,28 @@ def trace(image, config, continue_declared_jumps=True):
             if previous is not None and row["rawOffset"] not in previous:
                 continue
             groups.setdefault(row["target"], []).append(row)
+        if not groups:
+            # No table row agrees with the operand, so no route exists to drop or to walk to.
+            return
+        if created >= max_paths:
+            # Spent or zero path budget: the routes are not followed, so no boundary walk is needed.
+            global_gaps.append({"site": s.at, "reason": "path limit"})
+            return
+        root_entry = s.frames[-1]["entry"]
+        if root_entry not in boundary_cache:
+            if boundary_budget < 1:
+                global_gaps.append({"site": s.at, "reason": "conditional table boundary instruction limit"})
+                return
+            seen, walk_gaps, _, _, contested = walk(image, [root_entry], boundary_budget)
+            # walk drops rejected overlapping starts and contested instructions from seen,
+            # but it decoded them, so they are charged with the established ones.
+            overlapping = sum(g["reason"] == OVERLAP_REASON for g in walk_gaps)
+            boundary_budget -= max(1, len(seen) + len(contested) + overlapping)
+            # A truncated walk never saw the instructions that could contest a target start.
+            if any(g["reason"] == "instruction limit" for g in walk_gaps):
+                seen = {}
+            boundary_cache[root_entry] = seen
+        seen = boundary_cache[root_entry]
         for target, rows in groups.items():
             if target not in seen:
                 global_gaps.append({"site": s.at, "target": target,

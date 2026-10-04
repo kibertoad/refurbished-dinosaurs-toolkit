@@ -107,6 +107,15 @@ class ContinuationBudgetTests(unittest.TestCase):
         self.assertEqual([g for g in r["gaps"] if g.get("route")],
                          [{"site": dispatcher, "reason": "path limit", "route": "declaredContinuation"}])
 
+    def test_a_spent_path_budget_leaves_no_gap_where_no_row_matches(self):
+        # A concrete operand outside the table has no route to drop, whatever the path budget.
+        data, config, _ = fan_out(1)
+        config = {**config, "registers": {**config["registers"], "bx": 0x7777}}
+        for budget in ({}, {"paths": 0}):
+            r = run_report(data, {**config, "continuationBudget": budget}, "trace")
+            self.assertFalse(r["declaredContinuationPaths"])
+            self.assertFalse([g for g in r["gaps"] if g.get("route")], budget)
+
     def test_forks_inside_a_continuation_spend_its_paths(self):
         fork = bytes.fromhex("80 3e 00 02 00 74 00 c3")
         data, config, _ = fan_out(2, targets=(fork,))

@@ -1,4 +1,4 @@
-# ADR 0006: routes that fork faster than any budget
+# ADR 0008: routes that fork faster than any budget
 
 Status: proposed
 
@@ -6,7 +6,7 @@ This ADR records a question for a maintainer. Nothing in it is built.
 
 ## Context
 
-ADR 0005 gives declared-table continuations their own budget. That recovers a continuation the
+ADR 0007 gives declared-table continuations their own budget. That recovers a continuation the
 ordinary paths used to starve, but a budget only helps when the routes a query needs fit inside
 some budget. Dark Sun gap 27 has a shape where they do not: a fill routine runs a counted loop
 whose body branches on a value the engine cannot know (a byte of unknown memory), then requests
@@ -85,4 +85,4 @@ top level beside the paths. Revisit C if several restorations hit loops that for
 ## Status of the downstream request
 
 Dark Sun gap 27's conditional fill stays open under this ADR. The menu linked-child case is
-retried with the separate continuation budget from ADR 0005 first.
+retried with the separate continuation budget from ADR 0007 first.

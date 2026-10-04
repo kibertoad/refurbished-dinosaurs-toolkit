@@ -1,4 +1,4 @@
-# ADR 0005: declared-table continuations spend a separate budget
+# ADR 0007: declared-table continuations spend a separate budget
 
 Status: accepted
 
@@ -47,14 +47,14 @@ Two remedies were considered:
 
 - Restricting ordinary paths was rejected. A filter that drops routes from the report makes the
   report claim less than was traced without saying where, and a filter that steers tracing toward
-  one site is a path hypothesis in all but name (ADR 0006). The separate budget keeps the ordinary
+  one site is a path hypothesis in all but name (ADR 0008). The separate budget keeps the ordinary
   report the size the ordinary inputs choose, so the larger shared budget that caused the overflow
   is no longer needed.
 - Unset fields follow the ordinary inputs, so a query that sets none can produce up to twice the
   paths it did before. The migration guide tells queries near the reader's output limit to set
   `continuationBudget.paths`.
 - A budget does not help when the ordinary paths never reach the jump, or when the routes after it
-  fork faster than any budget can follow. ADR 0006 covers that case.
+  fork faster than any budget can follow. ADR 0008 covers that case.
 - The meaning of `maxPaths`, `totalSteps`, `maxSteps`, `visitLimit`, `stringIterations` and
   `stepsUsed` changes for continuations, so the change ships as a major engine release with an
   entry in [the migration guide](../migrating-to-scientific-method.md).

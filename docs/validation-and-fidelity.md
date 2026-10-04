@@ -39,5 +39,5 @@ has not read every route. Treat the limit as a sign that the query is too broad 
 - A claim that needs every route of a function whose routes cannot be read stays open. Record the
   limit and the measured report size, and say what evidence would settle it.
 
-[ADR 0006](decisions/0006-forking-routes-beyond-budgets.md) weighs an input that picks branch
+[ADR 0008](decisions/0008-forking-routes-beyond-budgets.md) weighs an input that picks branch
 outcomes against this practice and is open for a maintainer's decision.

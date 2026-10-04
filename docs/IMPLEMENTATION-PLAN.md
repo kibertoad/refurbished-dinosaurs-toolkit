@@ -321,7 +321,7 @@ the engine README catalog.
 
 ## Separate continuation budget
 
-Tooling outcome (ADR 0005): declared-table continuations spend `continuationBudget` (`paths`,
+Tooling outcome (ADR 0007): declared-table continuations spend `continuationBudget` (`paths`,
 `totalSteps`, `maxSteps`, `visitLimit`, `stringIterations`), each defaulting to the ordinary input
 of the same name and counted apart from it. Per-path steps and visits count from the first
 declared jump a path continues past. Ordinary paths, their gaps and their step counts are the same
@@ -335,9 +335,9 @@ continuation budgets and with continuations off; each continuation limit is reac
 (`paths` 0 and 1, forks inside a continuation, `totalSteps`, `maxSteps`, `visitLimit`,
 `stringIterations`); invalid budgets are rejected; a reader bridge case runs the same shape
 through the prepared-config protocol. A per-element forking loop (the conditional fill shape)
-cannot be read whole by any budget and is left to ADR 0006 (proposed) and the handbook's guidance
+cannot be read whole by any budget and is left to ADR 0008 (proposed) and the handbook's guidance
 on limits.
 
 Exit: a major engine release with the migration-guide entry. Dark Sun gap 27's menu linked-child
 part closes only when its own case passes against the released engine with a continuation budget
-and the ordinary paths unchanged; its conditional fill part stays open under ADR 0006.
+and the ordinary paths unchanged; its conditional fill part stays open under ADR 0008.
