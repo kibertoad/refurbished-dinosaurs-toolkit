@@ -64,12 +64,30 @@ export interface SuffixRule {
 /**
  * Files under a directory with a given suffix that also turn an area on. The TypeScript job lints,
  * format-checks and typechecks every .ts file under tools/ and runs every `*.test.ts` file at any
- * depth under it, so a new tool runs it without an entry in AREAS. Other files under tools/ (the
- * repository policy script and its settings, the Python oracles) run no area.
+ * depth under it (TYPESCRIPT_TEST_GLOBS), so a new tool runs it without an entry in AREAS. Other
+ * files under tools/ (the repository policy script and its settings, the Python oracles) run no
+ * area.
  */
 export const AREA_SUFFIXES: Partial<Record<Area, SuffixRule[]>> = {
   typescript: [{ prefix: "tools/", suffix: ".ts" }],
 };
+
+/**
+ * The directories whose `*.test.ts` files, at any depth, the TypeScript job runs through
+ * tools/ci/run-tests.ts: the prefixes in AREA_SUFFIXES.typescript and the directories in
+ * AREAS.typescript outside packages/. The packages' tests run through their own `test` scripts.
+ * A directory added to either list is run without a further edit.
+ */
+export const TYPESCRIPT_TEST_ROOTS: readonly string[] = [
+  ...(AREA_SUFFIXES.typescript ?? []).map((rule) => rule.prefix),
+  ...AREAS.typescript.filter((path) => path.endsWith("/") && !path.startsWith("packages/")),
+];
+
+/**
+ * The `node --test` globs, relative to the repository root, that tools/ci/run-tests.ts runs in
+ * CI and locally: every `*.test.ts` file at any depth under TYPESCRIPT_TEST_ROOTS.
+ */
+export const TYPESCRIPT_TEST_GLOBS: readonly string[] = TYPESCRIPT_TEST_ROOTS.map((root) => `${root}**/*.test.ts`);
 
 const matchesSuffix = (rules: SuffixRule[], file: string) =>
   rules.some((r) => matchesPath([r.prefix], file) && file.endsWith(r.suffix));
