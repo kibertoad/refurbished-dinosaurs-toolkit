@@ -190,7 +190,9 @@ def argument_frames(report, image):
 
     A path gets one map per traced call, from caller-written slots to callee reads. A site's
     groupings agree only when every path that traced a call there settled on the same read widths
-    and groupings.
+    and groupings. Separately, a site's widths are consistent when no two reads on any of its paths
+    cover the same byte with a different offset, width or grouping; a path that skipped a read
+    leaves the site consistent but not agreed.
     """
     sites = {}
     for path_index, path in enumerate(report["paths"]):
@@ -203,10 +205,21 @@ def argument_frames(report, image):
     for site, rows in sorted(sites.items()):
         # A set holds each read's grouping too: a far-pointer load and a plain dword over the same bytes disagree.
         widths = sorted({tuple(sorted({(g["offset"], g["width"], g["grouping"]) for g in f["groupings"]})) for _, f in rows})
+        read_on = {}
+        for i, f in rows:
+            for g in f["groupings"]:
+                read_on.setdefault((g["offset"], g["width"], g["grouping"]), set()).add(i)
+        reads = sorted(read_on)
+        # Distinct reads that share a byte conflict: different intervals, or one interval grouped two ways.
+        conflicting = [[{"offset": o, "width": w, "grouping": k} for o, w, k in (a, b)]
+                       for n, a in enumerate(reads) for b in reads[n + 1:] if a[0] < b[0] + b[1] and b[0] < a[0] + a[1]]
         report["argumentFrameSites"].append({
             "callSite": site, "paths": sorted({i for i, _ in rows}), "frames": len(rows),
             "unsettledPaths": sorted({i for i, f in rows if not f["settledOnThisPath"]}),
             "readWidthSets": [[{"offset": o, "width": w, "grouping": k} for o, w, k in group] for group in widths],
+            "readWidths": [{"offset": o, "width": w, "grouping": k, "paths": sorted(read_on[(o, w, k)])} for o, w, k in reads],
+            "conflictingWidths": conflicting,
+            "widthsConsistent": not conflicting,
             "agreed": len(widths) == 1 and all(f["settledOnThisPath"] for _, f in rows),
             "interpretation": "read widths per traced path; paths that never reached this call are not represented"})
     return report

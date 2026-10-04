@@ -727,6 +727,42 @@ test("argument frames map pushed words onto the callee's read widths through the
   );
   assert.equal(frame.settledOnThisPath, true);
   assert.equal(r.argumentFrameSites[0].agreed, true);
+  assert.equal(r.argumentFrameSites[0].widthsConsistent, true);
+});
+
+test("a callee that skips a read leaves the site consistent but not agreed through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // push 1; push 2; call 75; add sp,4; ret; at 75: push bp; mov bp,sp; mov ax,[bp+4]; test si,si; jz 88;
+  // mov bx,[bp+6]; at 88: pop bp; ret
+  data.set(
+    [
+      0x6a, 1, 0x6a, 2, 0xe8, 4, 0, 0x83, 0xc4, 4, 0xc3, 0x55, 0x89, 0xe5, 0x8b, 0x46, 4, 0x85, 0xf6, 0x74, 3, 0x8b,
+      0x5e, 6, 0x5d, 0xc3,
+    ],
+    64,
+  );
+  writeFileSync(join(dir, "source.bin"), data);
+  const cfg = {
+    ...config,
+    xxh3: sourceXxh3(data),
+    regions: [{ ...config.regions[0]!, end: 96, entries: [64, 75] }],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  const r = run(["arguments", join(dir, "config.json")]);
+  const site = r.argumentFrameSites[0];
+  assert.equal(site.callSite, 68);
+  assert.equal(site.agreed, false);
+  assert.equal(site.unsettledPaths.length, 1);
+  assert.equal(site.widthsConsistent, true);
+  assert.deepEqual(site.conflictingWidths, []);
+  assert.deepEqual(
+    site.readWidths.map((w: Report) => [w.offset, w.width, w.paths.length]),
+    [
+      [0, 2, 2],
+      [2, 2, 1],
+    ],
+  );
 });
 
 test("an argument slot names a possibly aliasing store that dropped nothing, as the callee's read does", (t) => {

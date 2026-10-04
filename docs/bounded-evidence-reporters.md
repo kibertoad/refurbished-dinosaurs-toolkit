@@ -167,7 +167,16 @@ ordinary `paths`; `declaredContinuationPaths` get no frames and do not count tow
 `readWidthSets` lists each distinct set of reads, each read with its offset, width and grouping,
 and `agreed` holds only when one set remains and every frame settled. A far-pointer load and a
 plain dword read of the same four bytes are different sets. Paths that never reached the call are not represented, so a
-grouping settled on the traced paths says nothing about the others. A decompiler's parameter
+grouping settled on the traced paths says nothing about the others.
+
+A callee that returns early on some paths without reading every argument leaves those frames
+open and the site not `agreed`, even when every read it made matches. `readWidths` lists each
+distinct read across the site's frames with the `paths` that made it, and `conflictingWidths`
+pairs distinct reads that share a byte: different intervals, or one interval read with two
+groupings. `widthsConsistent` holds when there are no such pairs. It says only that the reads the
+traced paths made fit one grouping. It does not say a path that skipped a read would have read
+the same width, and it does not settle a frame or the site: a skipped slot stays in that frame's
+`openReasons`, and the paths that read each width are listed so a finding can name them. A decompiler's parameter
 list is an inference and does not settle a grouping; use the `callees` Ghidra cross-check to
 confirm that both analyses reach the same callee, then read its widths here.
 

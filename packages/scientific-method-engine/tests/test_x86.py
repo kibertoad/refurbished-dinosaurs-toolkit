@@ -421,7 +421,7 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertEqual(r["argumentFrameSites"][0]["readWidthSets"], [[{"offset": 0, "width": 2, "grouping": "consumed width only"},
                                                                          {"offset": 2, "width": 4, "grouping": "far-pointer"},
                                                                          {"offset": 6, "width": 2, "grouping": "consumed width only"}]])
-        self.assertTrue(all(site["agreed"] for site in r["argumentFrameSites"]))
+        self.assertTrue(all(site["agreed"] and site["widthsConsistent"] for site in r["argumentFrameSites"]))
 
     def test_the_report_keeps_the_writes_its_slots_cite(self):
         c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("83 c4 04 c3").label("callee").emit("55 89 e5 8b 46 04 8b 46 06 5d c3")
@@ -586,6 +586,25 @@ class ArgumentFrameTests(unittest.TestCase):
                                                  [{"offset": 0, "width": 4, "grouping": "far-pointer"}]])
         self.assertFalse(site["agreed"])
         self.assertEqual(len(site["unsettledPaths"]), 1)
+        self.assertFalse(site["widthsConsistent"])
+        self.assertEqual(site["conflictingWidths"], [[{"offset": 0, "width": 2, "grouping": "consumed width only"},
+                                                      {"offset": 0, "width": 4, "grouping": "far-pointer"}]])
+
+    def test_a_path_that_skips_a_read_leaves_the_site_consistent_but_not_agreed(self):
+        # The callee always reads the first word and reads the second only when SI is nonzero.
+        c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("83 c4 04 c3")
+        c.label("callee").emit("55 89 e5 8b 46 04 85 f6").branch("74", "skip").emit("8b 5e 06").label("skip").emit("5d c3")
+        r, frames = self.frames(c)
+        self.assertEqual(len(frames), 2)
+        site = r["argumentFrameSites"][0]
+        self.assertFalse(site["agreed"])
+        bypass = next(i for i, path in enumerate(r["paths"]) if not path["argumentFrames"][0]["settledOnThisPath"])
+        self.assertEqual(site["unsettledPaths"], [bypass])
+        self.assertIn("the slot at 2 was not read by the callee on this path", r["paths"][bypass]["argumentFrames"][0]["openReasons"])
+        self.assertTrue(site["widthsConsistent"])
+        self.assertEqual(site["conflictingWidths"], [])
+        self.assertEqual(site["readWidths"], [{"offset": 0, "width": 2, "grouping": "consumed width only", "paths": [0, 1]},
+                                              {"offset": 2, "width": 2, "grouping": "consumed width only", "paths": [1 - bypass]}])
 
     def test_paths_that_group_the_same_bytes_differently_keep_the_site_open(self):
         # Both paths read four bytes at offset 0: one as a far pointer with LES, one as a 32-bit dword.
@@ -599,6 +618,8 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertEqual(site["readWidthSets"], [[{"offset": 0, "width": 4, "grouping": "consumed width only"}],
                                                  [{"offset": 0, "width": 4, "grouping": "far-pointer"}]])
         self.assertFalse(site["agreed"])
+        self.assertFalse(site["widthsConsistent"])
+        self.assertEqual(len(site["conflictingWidths"]), 1)
 
     def test_a_write_through_another_address_drops_the_slot_writer(self):
         # A DS write between the push and the call may alias the symbolic stack, so the pushed word
