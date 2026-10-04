@@ -15,7 +15,7 @@ limits and exceptions of each type.
 | Package | Use it for | References |
 |---|---|---|
 | `RefurbishedDinosaurs.Core` | Identifying, importing, installing and checking content from the player's original; content and settings locations; startup diagnostics; input snapshots and action bindings; deterministic randomness; recoverable saves and settings; viewport and palette helpers. | nothing |
-| `RefurbishedDinosaurs.LegacyFormats` | Game-independent PCX, BMP RLE8, CUE/CDDA, raw Mode 1, ISO 9660, InstallShield 5 and 6 cabinet and PCM WAVE readers, a canonical PCM WAVE writer, a streaming WAVE reader, and `OriginalContentSource`. | Core |
+| `RefurbishedDinosaurs.LegacyFormats` | Game-independent PCX, BMP, CUE/CDDA, raw Mode 1, ISO 9660, InstallShield 5 and 6 cabinet and PCM WAVE readers, a canonical PCM WAVE writer, a streaming WAVE reader, and `OriginalContentSource`. | Core |
 | `RefurbishedDinosaurs.Media.Smacker`, `.Avi`, `.Fli` | Movie decoding. | nothing |
 | `RefurbishedDinosaurs.Media.Playback` | Frame cadence for any of the movie decoders. | nothing |
 | `RefurbishedDinosaurs.Media.Audio` | PCM sample conversion and the lifetimes of backend voices and cached audio resources. | nothing |

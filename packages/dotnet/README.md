@@ -160,6 +160,27 @@ contexts outside per-frame loops.
 | `WavePcm16Writer` | Writes canonical 16-bit mono or stereo PCM WAVE files. |
 | `PcxDecoder`, `RawIndexedImageDecoder`, `IndexedImage` | 8-bit RLE PCX, and headerless indexed pixels, with RGBA conversion. |
 | `Rle8BitmapDecoder` | 8-bit BMP (BI_RLE8 or BI_RGB), rewritten as uncompressed BI_RGB. |
+| `BmpDecoder`, `BmpImage` | 8-bit BMP (BI_RGB or BI_RLE8) and 24-bit or 32-bit BI_RGB BMP, decoded to opaque RGBA rows top to bottom. See [BMP images](#bmp-images). |
+
+## BMP images
+
+`BmpDecoder.Decode(bytes)` reads a whole BMP file with a BITMAPINFOHEADER, or its V4 or V5 form, and
+returns a `BmpImage` of RGBA pixels, four bytes each, rows top to bottom with no padding.
+
+| Read | Rejected with `InvalidDataException` |
+|---|---|
+| 8-bit BI_RGB and BI_RLE8 through the file's palette of up to 256 colours. 24-bit and 32-bit BI_RGB, whose blue, green, red byte order becomes red, green, blue. Bottom-up rows, and top-down rows (negative height) for BI_RGB. | 1, 4 and 16-bit images, BI_RLE4, BI_BITFIELDS and every other compression. The 12-byte OS/2 header and other header sizes. A top-down BI_RLE8 image. |
+
+Every pixel is opaque: the fourth byte of a 32-bit BI_RGB pixel is unused by the format and is ignored.
+Pixels a BI_RLE8 stream skips take palette index 0. The file is checked before any pixel buffer is
+allocated: the `BM` signature, a declared file size equal to the length, a positive width, a nonzero
+height, one plane, a palette that ends before the pixel data, rows padded to 4 bytes that fit in the
+file, and at most `maximumPixels` pixels (16,777,216 by default). A pixel whose palette index is past
+the palette's last colour also throws. Pass `requireDeclaredFileSize: false` for files whose writer
+left the size field zero or wrong.
+
+`Rle8BitmapDecoder` keeps a different job: it rewrites an 8-bit BMP as an uncompressed 8-bit BMP for
+libraries that cannot read BI_RLE8.
 
 ## InstallShield cabinets
 
