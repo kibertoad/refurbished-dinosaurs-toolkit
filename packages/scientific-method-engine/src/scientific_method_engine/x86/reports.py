@@ -31,12 +31,16 @@ def memory_width(ins, operand):
 X87_MEMORY_STORES = {"fst", "fstp", "fist", "fistp", "fisttp", "fbstp", "fnstcw", "fstcw", "fnstsw", "fstsw",
                      "fnstenv", "fstenv", "fnsave", "fsave"}
 X87_MEMORY_LOADS = {"fldcw", "fldenv", "frstor"}
+# Capstone gives the memory operand of INS and OUTS no access flags: INS writes ES:[(E)DI], OUTS reads [(E)SI].
+PORT_MEMORY_STORES = {"insb", "insw", "insd"}
+PORT_MEMORY_LOADS = {"outsb", "outsw", "outsd"}
 
 
 def memory_access(ins, operand):
-    if ins.mnemonic in X87_MEMORY_STORES:
+    m = base_mnemonic(ins)
+    if m in X87_MEMORY_STORES or m in PORT_MEMORY_STORES:
         return ["write"]
-    if ins.mnemonic in X87_MEMORY_LOADS:
+    if m in X87_MEMORY_LOADS or m in PORT_MEMORY_LOADS:
         return ["read"]
     return [name for flag, name in ((CS_AC_READ, "read"), (CS_AC_WRITE, "write")) if operand.access & flag]
 
@@ -195,6 +199,11 @@ def incoming(image, config):
             "scope": "All bytes of declared search regions; verified calls are reachable from accepted starts. Never proves universal absence."}
 
 
+# Classifications of a conditionalAccesses row in ``uses``.
+CFG_OPERAND = "entry-CFG operand past a stop; values and callee effects unresolved"
+PORT_OPERAND = "operand past a PE32 port access; values and continuation unresolved"
+
+
 def uses(image, config):
     query = config.get("query", {})
     offset = integer(query.get("offset"), 0, image.mask, "query offset")
@@ -283,6 +292,14 @@ def uses(image, config):
     after_stop, stop_gaps, _, _, _ = (walk(image, list(stops), instruction_limit, follow_flat_ports=True)
                                       if stops else ({}, [], None, None, None))
     gaps.extend(g for g in stop_gaps if g["reason"] == "instruction limit")
+    # In PE32 a site the stops reach only by continuing past a port access is named as such, even when
+    # it also depends on an unread call. The walk that ends at port accesses must finish within the
+    # limit for that claim; otherwise every row keeps the shared value.
+    port_only = set()
+    if image.flat and any(base_mnemonic(ins) in PORTS for ins in after_stop.values()):
+        before_ports, port_gaps, _, _, _ = walk(image, list(stops), instruction_limit)
+        if not any(g["reason"] == "instruction limit" for g in port_gaps):
+            port_only = set(after_stop) - set(before_ports)
     # A call past a stop was never traced either, so code after it also depends on it returning.
     starts = [(root, root, reason) for root, reason in stops.items()]
     starts += [(at, at + ins.size, "call past a stop; assumed to return")
@@ -305,8 +322,7 @@ def uses(image, config):
         for operand in ins.operands:
             if operand.type != X86_OP_MEM:
                 continue
-            kinds = [kind for flag, kind in ((CS_AC_READ, "read"), (CS_AC_WRITE, "write"))
-                     if operand.access & flag and mode in ("both", kind) and (at, kind) not in reported]
+            kinds = [kind for kind in memory_access(ins, operand) if mode in ("both", kind) and (at, kind) not in reported]
             if not kinds:
                 continue
             if state is None:
@@ -332,7 +348,7 @@ def uses(image, config):
                                     "effectiveSegmentRegister": segment_name,
                                     "address": "overlaps query" if overlaps and segment is None else "possible alias",
                                     "classification": ("unverified overlapping instruction path" if at in unverified else
-                                                       "entry-CFG operand past a stop; values and callee effects unresolved"),
+                                                       PORT_OPERAND if at in port_only else CFG_OPERAND),
                                     "dependsOn": depends.get(at, []),
                                     "reachability": "conditional on encoded branch outcomes and on execution continuing past every named stop"})
     # A control proves the search reaches a known use, which an operand found past a stop still shows.

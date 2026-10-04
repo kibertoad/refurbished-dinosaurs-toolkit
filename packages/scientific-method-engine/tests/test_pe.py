@@ -120,6 +120,7 @@ class PEReporterTests(unittest.TestCase):
         self.assertEqual(r['matches'], [])
         row, = r['conditionalAccesses']
         self.assertEqual((row['site'], row['dependsOn']), (store, [{'site': out, 'reason': gap['reason']}]))
+        self.assertEqual(row['classification'], 'operand past a PE32 port access; values and continuation unresolved')
         # The inventoried store is not reported a second time as a raw candidate.
         self.assertEqual(r['rawCandidates'], [])
         self.assertIn(gap, r['gaps'])
@@ -142,6 +143,56 @@ class PEReporterTests(unittest.TestCase):
         row, = r['conditionalAccesses']
         self.assertEqual([d['site'] for d in row['dependsOn']], [CODE_RAW + 4, CODE_RAW + 5])
         self.assertEqual(row['dependsOn'][1]['reason'], 'port access past a stop; assumed to continue')
+
+    def test_uses_classifies_an_operand_reached_only_past_a_port_access(self):
+        cfg = 'entry-CFG operand past a stop; values and callee effects unresolved'
+        port = 'operand past a PE32 port access; values and continuation unresolved'
+        def row(code):
+            r = report(code, 'uses', query={'offset': DATA_VA, 'width': 4})
+            found, = r['conditionalAccesses']
+            return found['site'] - CODE_RAW, found['classification'], [d['site'] - CODE_RAW for d in found['dependsOn']]
+        # call eax; mov [DATA_VA], eax; ret: past an unread call only.
+        self.assertEqual(row('ff d0 a3 00 20 40 00 c3'), (2, cfg, [0]))
+        # mov dx, 0x3c8; out dx, al; mov [DATA_VA], eax; ret: past a port access only.
+        self.assertEqual(row('66 ba c8 03 ee a3 00 20 40 00 c3'), (5, port, [4]))
+        # call eax; mov dx, 0x3c8; out dx, al; mov [DATA_VA], eax; ret: every route from the unread call
+        # crosses the port access, so the row is outside the entry CFG and dependsOn names both.
+        self.assertEqual(row('ff d0 66 ba c8 03 ee a3 00 20 40 00 c3'), (7, port, [0, 6]))
+        # call eax; test eax, eax; jz store; mov dx, 0x3c8; out dx, al; store: mov [DATA_VA], eax; ret
+        # One route from the unread call skips the port access, so the row keeps the shared value.
+        c = Code().emit('ff d0 85 c0').branch('74', 'store').emit('66 ba c8 03 ee').label('store').emit('a3 00 20 40 00 c3')
+        self.assertEqual(row(c), (c.labels['store'], cfg, [0, c.labels['store'] - 1]))
+
+    def test_uses_claims_no_port_access_route_when_the_walk_reaches_its_limit(self):
+        # call eax; jz far; mov dx, 0x3c8; out dx, al; store: mov [DATA_VA], eax; ret; far: nop; nop; nop; ret
+        c = Code().emit('ff d0').branch('74', 'far').emit('66 ba c8 03 ee').label('store').emit('a3 00 20 40 00 c3')
+        c.label('far').emit('90 90 90 c3')
+        store = c.labels['store']
+        for limit, classification in ((100, 'operand past a PE32 port access; values and continuation unresolved'),
+                                      (5, 'entry-CFG operand past a stop; values and callee effects unresolved')):
+            with self.subTest(limit=limit):
+                r = report(c, 'uses', query={'offset': DATA_VA, 'width': 4}, instructionLimit=limit)
+                found, = r['conditionalAccesses']
+                self.assertEqual((found['site'] - CODE_RAW, found['classification']), (store, classification))
+                self.assertEqual(any(g.get('reason') == 'instruction limit' for g in r['gaps']), limit == 5)
+                self.assertFalse(r['negativeUsable'])
+
+    def test_uses_takes_the_access_direction_of_a_string_port_or_x87_operand_from_its_mnemonic(self):
+        # Capstone flags no access on an INS or OUTS memory operand and reports FSTP's store as a read.
+        cfg = 'entry-CFG operand past a stop; values and callee effects unresolved'
+        port = 'operand past a PE32 port access; values and continuation unresolved'
+        for name, code, expected in (('call eax; rep insb', 'ff d0 f3 6c c3', [(2, 'write', cfg)]),
+                                     ('call eax; outsd', 'ff d0 6f c3', [(2, 'read', cfg)]),
+                                     ('call eax; fstp dword [DATA_VA]', 'ff d0 d9 1d 00 20 40 00 c3', [(2, 'write', cfg)]),
+                                     ('mov dx, 0x3c8; out dx, al; insb', '66 ba c8 03 ee 6c c3', [(5, 'write', port)])):
+            with self.subTest(name):
+                r = report(code, 'uses', query={'offset': DATA_VA, 'width': 4})
+                self.assertEqual([(e['site'] - CODE_RAW, e['kind'], e['classification']) for e in r['conditionalAccesses']],
+                                 expected)
+                self.assertFalse(r['negativeUsable'])
+        # A read query no longer lists the FSTP store.
+        r = report('ff d0 d9 1d 00 20 40 00 c3', 'uses', query={'offset': DATA_VA, 'width': 4, 'access': 'read'})
+        self.assertEqual(r['conditionalAccesses'], [])
 
     def test_pop_addresses_its_destination_after_the_stack_pointer_moves(self):
         # push 1; push 2; push 3; pop dword [esp+4]; pop eax; pop ebx; ret
