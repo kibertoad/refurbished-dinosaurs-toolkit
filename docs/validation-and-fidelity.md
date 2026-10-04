@@ -19,6 +19,14 @@ source behavior, package inspection for proprietary content, installer installat
 shortcut launch, and uninstall. Test on Windows x64, Linux x64, macOS arm64, and macOS
 x64 when those packages are offered.
 
+Instruction reports stop at the hardware. A port write in an evidence report shows the port and
+value the code produced, not what a device did with it, so a finding about rendered output needs
+a capture of the device result. A fixture that substitutes RAM or answers port reads with chosen
+values tests the code's handling of those values; name the substitutes in the finding and leave
+native output unconfirmed. Treat two segment registers as equal only when a report shows the
+instructions or the stated starting assumption that make them equal, and keep slot, segment,
+count and alias assumptions listed apart from what the algorithm itself computes.
+
 ## Loops, retries and termination claims
 
 A bounded reporter can show the restart edges a path took and what changed between the traced
@@ -44,3 +52,19 @@ success of a retry stay research claims, and each one needs its own argument:
 An iteration with `gateOperandsRepeated: true` is a fact about one path under the query's
 assumptions. Cite it as such, beside the assumptions, and never as a proof that the native program
 hangs.
+
+## Citing bounded evidence reports
+
+A finding built on a [bounded evidence report](bounded-evidence-reporters.md) cites the query's
+assumptions along with its result. Call models, their `preservesMemory` scopes, declared jump
+tables and assumed register values are inputs the researcher supplied; the report lists each one
+it used on the path it affected. A path completed through one of them is conditional on it.
+
+- Write a register preserved by a call model, or a balanced return, as an assumption about that
+  register. It does not establish the stack bytes the frame holds. Only a `preservesMemory` scope
+  carries saved bytes across the call, and it is a hypothesis with its own cited evidence.
+- `uncachedBytes` and `missingByteProducers` mean the model had no value for those bytes. They are
+  not evidence that the original program left them unwritten.
+- A modeled service's effects outside its scopes stay unknown, so a joined parent path still has
+  unknown effects. Do not describe it as effect-complete, transactional or natively reachable.
+- A stopped path, an exhausted limit or an unread callee is reported as such. It is not a negative.

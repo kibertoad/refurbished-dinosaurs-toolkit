@@ -1,12 +1,12 @@
 # Bounded instruction reports
 
-The reports come from two published packages built in this repository's `packages/`:
+The reports use the published reader and engine:
 `@scientific-method/executable-reader` on npm reads and hash-checks the original and runs the
 reports, and `scientific-method-engine` on PyPI decodes the instructions. Run
 `python -m pip install scientific-method-engine` once in the Python environment used for
 research, and add the reader to the project (`pnpm add -D @scientific-method/executable-reader`).
-Python 3.12 or later and Node 22 or later are required; the engine pins Capstone 5.0.7 and
-pypcode 4.0.0.
+Python 3.12 or later and Node 22 or later are required. The engine pins its decoder dependencies
+in [pyproject.toml](../packages/scientific-method-engine/pyproject.toml).
 `EVIDENCE_PYTHON` selects another Python executable. The reader refuses an engine whose
 prepared-config protocol differs from its own, so upgrade the two together.
 See [moving from the vendored reporters](migrating-to-scientific-method.md).
@@ -27,11 +27,17 @@ targets from the source. The engine's own command line
 synthetic data or already checked mappings. Its relocation metadata is supplied
 input, not independently verified evidence. Use the reader for originals.
 
+`xxh3` is the source's XXH3-128 hash as 32 lower-case hex digits, the value its build entry in
+the spec gives (`xxhsum -H2` prints it). For a packed executable it is the hash of the form
+`source` names, so an unpacked source takes the entry's `unpacked.xxh3`. The reader and the engine
+both refuse a hash in another form, a source with another hash and a config that still names a
+`sha256`. The report's `sourceIdentity` repeats the `size` and `xxh3` they checked.
+
 ```json
 {
   "source": "../owned.exe",
   "sourceKind": "mz",
-  "sha256": "replace-with-the-source-sha256",
+  "xxh3": "replace-with-the-source-xxh3",
   "entry": 64,
   "regions": [{
     "name": "resident-helper",
@@ -54,7 +60,11 @@ formats are rejected. `synthetic-raw` is for constructed test inputs.
 Initial registers are unknown. An optional `registers` object supplies explicit
 starting assumptions. Each access reports its effective segment, offset expression,
 width, full interval, byte producers and missing producers. BP-derived offsets
-accessed through BX use DS. `push ss; pop ds` establishes equality along that path.
+accessed through BX use DS, whether BX got the offset by LEA, MOV or ADD; the
+offset keeps its entry-SP expression and the segment is DS's own value. Only
+`registers` values or instructions such as `push ss; pop ds` make DS equal to SS,
+along the path that runs them; otherwise a DS store over a frame offset
+invalidates the frame bytes it may alias and never merges with them.
 Unknown segment/base aliases invalidate cached bytes; concrete disjoint address
 domains can retain them. All assumptions remain conditional, and matching numeric
 offsets alone never establish storage identity.
@@ -66,8 +76,8 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 
 | Command | Reports | Described in |
 |---|---|---|
-| `trace` | ordered effects and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes | this section, [loop progress](#loop-restart-edges-and-iteration-changes) |
-| `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `effects` also summarizes each path's ordered effects and local restoration witnesses | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries) |
+| `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes | this section, [hardware boundaries](#hardware-boundaries), [loop progress](#loop-restart-edges-and-iteration-changes) |
+| `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries) |
 | `uses` | accesses to one memory offset from every established entry | this section |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
@@ -76,7 +86,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `operand` | the target an instruction-owned segment operand names | [segment operand query](#instruction-owned-segment-operand-query) |
 | `operand-candidates` | encoded displacements and immediates equal to an offset | [function bounds](#function-bounds-and-site-ownership) |
 | `target` | call-target provenance of one call site | [call-target provenance](#call-target-provenance) |
-| `bounds` | the instruction extent reached from one entry | [function bounds](#function-bounds-and-site-ownership) |
+| `bounds` | the instruction extent reached from one entry, with its interrupt and port instructions | [function bounds](#function-bounds-and-site-ownership), [hardware boundaries](#hardware-boundaries) |
 | `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
 | `callees` | the bounded call graph below an entry, with recursion and shared callees, optionally compared with Ghidra's edges | [function bounds](#function-bounds-and-site-ownership) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
@@ -206,8 +216,8 @@ NEG/NOT, bitwise logic, shifts, ROL/ROR/RCL/RCR with a known count, CLC/STC/CMC,
 INC/DEC and effective-size sign extension. It follows direct near/far
 calls, jumps, common conditional branches, JCXZ, the LOOP family and balanced
 returns. Unsupported instructions, repeat prefixes, 32-bit control transfers,
-indirect targets, hardware accesses and recursion/loop limits stop the affected
-path. Branch conditions are decided from the flags p-code computed. A decided
+indirect targets, interrupts and recursion/loop limits stop the affected path.
+Port accesses continue as [hardware boundaries](#hardware-boundaries). Branch conditions are decided from the flags p-code computed. A decided
 branch event carries `decidedBy: "p-code flags"` and has no `reason`. An undecided
 one carries a `reason`: `flag producer unresolved`, `carry unresolved` for a
 CF-only branch on an unknown carry, or `flags unresolved` when the flags the
@@ -242,6 +252,53 @@ it invalidates memory, flags and every unpreserved register. Its assumptions are
 printed on each affected path. A model supplies no evidence about actual external
 services, hardware behavior or native failure reachability.
 
+A model may also declare `preservesMemory`, a list of explicit byte scopes that the query assumes the
+service leaves as they were before the call ([ADR 0009](decisions/0009-scoped-memory-hypotheses-on-call-models.md)).
+Each scope is an object with exactly these fields:
+
+| Field | Type | Rule |
+|---|---|---|
+| `segment` | string | `cs`, `ds`, `es`, `ss`, `fs` or `gs` |
+| `base` | string | a general register of the address width: `sp`, `bp`, `bx` and the other 16-bit registers for MZ, `esp`, `ebp`, `ebx` and the other 32-bit registers for PE32 |
+| `displacement` | integer | optional, default 0; signed address width (-32,768..32,767 for MZ) |
+| `bytes` | integer | 1..4,096 |
+| `evidence` | string | nonempty; why the requester believes the service keeps these bytes |
+
+For example, `{ "segment": "ss", "base": "sp", "bytes": 4, "evidence": "..." }` names the four
+bytes at SS:SP when the call is reached. A model holds at most 32 scopes and 4,096 bytes in total.
+Every model's scopes are checked before tracing, including a model no path reaches. The query fails
+on a malformed scope, an exceeded budget, two scopes on the same segment and base register whose
+ranges overlap, and, for MZ, a scope whose segment register is neither `cs` nor listed in the
+model's `preserves`: the model replaces every other segment register with an unknown value, so no
+read after the call could address the scope through it.
+
+On a path that reaches the call, each scope resolves against the pre-call state, before a pushed CS
+word is consumed and before a case sets registers. The segment and base must be concrete; PE32 uses
+segment bases, and FS/GS bases stay unknown. An unknown address, an interval that crosses the end of
+the address space, and two scopes that share a linear byte (through different base registers or
+segment values) stop the path. The model then invalidates memory as before and puts back only the
+scoped bytes. A byte the model had a value for keeps that value. A byte it had no value for keeps
+its pre-call unknown term and stays unread: a later read lists it in `missingByteProducers` with the
+reading instruction as its producer, and a later scope counts it in `uncachedBytes`. The model
+restores no register or return target as such. A traced `pop` or `ret` must still read the full
+value, so a scope that covers part of a return word stops at the return, and a later write or
+possible-alias write still replaces or invalidates a scoped byte. `preserves` alone never keeps a
+saved stack byte.
+
+Each resolved scope is reported in `preservedMemoryScopes` on the path's `conditionalModels` entry
+and on the modeled `call-return` event, in the `effects` summary on the call and the summary's
+`conditionalModels`, and in the `allocation` entry of a modeled allocator. Every `effects` call
+summary has the field; it is empty unless the call was modeled with scopes. An entry holds
+`segmentRegister`, `segment`, `baseRegister`, `base` (values and producers), `displacement`,
+`offset`, `linearStart`, `linearEnd`, `bytes`, `evidence`, `cachedBytes`, `uncachedBytes` and a
+fixed `meaning` text. The two counts describe the model's cache: an uncached byte is labelled
+uncached and says nothing about whether the original program wrote it. Memory outside the scopes,
+flags, unpreserved registers and the service's native effects stay unknown, so the call keeps
+`unknownEffects: true` and the path's `effectCompleteWithinModel` stays false. Without
+`preservesMemory`, a model invalidates the whole frame as before. The input needs prepared protocol 3
+in both the reader and the engine. How to cite a finding that rests on a model or a scope is in
+[validation and fidelity](validation-and-fidelity.md#citing-bounded-evidence-reports).
+
 Defaults cap each path at 512 instructions, the query at 20,000 steps, paths at
 64 and call depth at 8. Raw scans stop after 65,536 byte positions (`scanLimit`,
 maximum 1,048,576); use inventories stop after 64 entries (`entryLimit`, maximum
@@ -260,7 +317,7 @@ Run `python -B -m unittest discover -s tests -p 'test*.py'` in
 `packages/scientific-method-engine` and `pnpm --filter @scientific-method/executable-reader test`. The fixtures are entirely synthetic. The paired segment test reads distinct
 values through the same BP-derived BX offset before and after `push ss; pop ds`;
 the incoming-call test places a caller at a higher address than the target's code.
-Restorations depend on released versions of the two packages; refine the reporters here and
+Restorations depend on released versions of the reader and engine; refine the reporters here and
 release them (see [releasing](releasing.md)). The website describes acceptance
 contracts, while these executable tests establish delivered reporter behavior.
 A reporter need not support every query. Each supported query must meet its
@@ -343,7 +400,7 @@ not a solver, loader emulator or whole-program analysis.
 
 ## Bounded string effects and saved flags
 
-MOVS/STOS/LODS/CMPS/SCAS report sequential memory accesses in segmented16 and
+MOVS/STOS/LODS/CMPS/SCAS and INS/OUTS report sequential memory accesses in segmented16 and
 flat32, with operand widths, source overrides, fixed ES destination and modular
 pointers. REP requires a concrete count. `stringIterations` bounds the entire query
 (default 4096, maximum 65536), including reserved iterations of paths that stop.
@@ -370,6 +427,50 @@ only. Unknown returning call models invalidate DF/IF as well as arithmetic flags
 These are memory effects, not pixels, timing or interrupt observations. External IRET,
 interrupt scheduling and hardware presentation remain unsupported. A stopped
 prefix does not establish the behavior of the full caller or helper.
+
+## Hardware boundaries
+
+IN, OUT, INS and OUTS run their p-code, and each port access adds a
+`hardware-boundary` event with `boundary` (`port-input` or `port-output`), the
+`mnemonic`, the `port` value with its producers, `portKnown` and the data
+`width` in bytes. An output carries the `value` written. An input's `value` is
+an unknown named by its site and event order, so two reads never share a value,
+unless the query's `portInputs` supplies one: `portInputs` is a list of at most
+64 rows with `site` (an IN or INS instruction), `value` (fitting its width) and
+`evidence`. A supplied value is reported with `valueSource: "query assumption"`
+and its evidence, and every path that uses it lists it in `conditionalModels`.
+Every read at that site returns the same value, and a path lists the supplied
+value once however often the site runs. A port event is never a `read`
+or `write`: INS and OUTS also report the RAM access of each iteration as its own
+`write` or `read` with role `string-destination` or `string-source`, and the
+`memory` report keeps RAM accesses only. In the PE32 model the path stops after
+the event, because I/O privilege decides whether the access faults, and
+`portInputs` is rejected. The entry-path walk behind `uses`, `incoming` and the
+operand inventories also continues past a port access.
+
+INT, INT1 and INT3 add a `hardware-boundary` event with `boundary: "interrupt"`
+and the `vector` p-code names, then stop the path, since the handler is not
+modeled. INTO still stops as an unsupported instruction, because whether it
+interrupts depends on OF.
+
+`trace` and every command built on it return `hardwareBoundaries`, one row per
+boundary site with the `paths` and `declaredContinuationPaths` that reach it,
+`pathsWithout` (split into `returned` and `stopped`) and a `placement`:
+`everyTracedPath` when every ordinary path reaches the site and no limit dropped
+an ordinary path, `conditional` when a path returned without reaching it, and
+`unresolved` when only stopped paths lack it or a limit dropped ordinary paths.
+Placement covers the traced paths within the model; native reachability stays
+unconfirmed.
+
+`bounds` lists the same instructions statically in `hardwareBoundaries`: the
+`site`, `boundary` and `mnemonic`, and for a port its `port` (`immediate` with
+the value, or `register` `dx`), `width`, `stringForm` and `repeated`; for an
+interrupt the `vector` and whether it is `conditional`. Each one is still a
+listed continuation assumption.
+
+A hardware boundary reports what the instructions did at the port. Device state,
+timing, the value a device returns and rendered output are outside the model, and
+a supplied input value only shows what the code does with that value.
 
 
 ## Explicit overlapping entries and local flag-return frames
@@ -477,6 +578,8 @@ fall-through is still followed. Repeat and BND prefixes do not hide a return or
 port access. Calls, interrupts and port accesses continue at the next
 instruction, and each such continuation is listed in `assumedContinuations`.
 `sharedEntries` lists other established entries the body runs into.
+Interrupt and port instructions are also listed in `hardwareBoundaries` (see
+[hardware boundaries](#hardware-boundaries)).
 `complete` means every path ended in a listed exit with no gap; it is not a
 complete reading under the standard.
 
@@ -630,10 +733,12 @@ take their access direction from the mnemonic, since Capstone misreports some.
 `ghidraCallEdges` takes the JSON that the packaged `ExportCallEdges.java` writes. Run it with an
 output path, a function limit (1..128) and the entries to start from. Ghidra walks breadth first
 from those entries through its call targets and its jumps to other functions' entry points. The
-export records each function's edges as file offsets. It is accepted only when its `sha256` equals
-the source's. It can hold at most 128 functions and 8192 edges, and every offset must lie inside the
-source. Paste the export into the config as the value of `ghidraCallEdges`. The command then reports
-`ghidraCrossCheck`. For each caller that both the engine read and the export lists
+export records each function's edges as file offsets. It is accepted only when its `sha256`, the
+SHA-256 Ghidra records for the program it analysed, equals the source's. It can hold at most 128
+functions and 8192 edges, and every offset must lie inside the source. The script writes `null` for
+an address without file bytes, and a function or edge that lacks one of the keys it writes is
+rejected. Paste the export into the config as the value of `ghidraCallEdges`. The command then
+reports `ghidraCrossCheck`. For each caller that both the engine read and the export lists
 (`comparedCallers`), every edge is matched on site and target:
 
 - `agreement`: both have the edge. An unresolved call matches an unresolved call at the same site.
@@ -641,12 +746,21 @@ source. Paste the export into the config as the value of `ghidraCallEdges`. The 
 - `engineOnly`: only the engine has it.
 - `ghidraOnly`: only Ghidra has it. It carries `checked: false` and the id of any engine edge at the
   same site. The engine's graph, classifications and summaries never take it in.
+- `interrupt`: Ghidra's call with no target address at an `INT`, `INT1`, `INT3` or `INTO` that the
+  engine decoded in the same caller's body. SLEIGH lifts each interrupt to a computed call, while
+  the engine assumes the interrupt returns to the next instruction and records no edge. Its site is
+  never an agreement site. `ghidraFallsThrough` is false when Ghidra's flow ends the function there,
+  as it does at `INT1` and `INT3` (`COMPUTED_CALL_TERMINATOR`). The two analyses then disagree on
+  the function's extent: the row counts against `agreed`, and edges the engine reads after the
+  interrupt show as `engineOnly`. A Ghidra edge with a target address at an interrupt stays
+  `ghidraOnly`.
 
 `notCompared` lists the engine callers missing from the export, exported callers the engine did not
 read, exported functions without a file offset, and the `omittedRoutes` ids of compared callers
 (`omittedEngineRoutes`), which the edge limit kept out of the graph. It also passes on the export's
 `missingEntries` (requested addresses with no function) and `unreadFunctions` (functions the limit
-cut off). `agreed` is true only when every compared edge agrees and nothing is left uncompared.
+cut off). `counts` holds the number of rows of each result. `agreed` is true only when no row is
+`engineOnly` or `ghidraOnly`, every `interrupt` row falls through, and nothing is left uncompared.
 Agreement means both analyses read the edge, never that it executes. A `ghidraAgreementSites`
 control lists call sites that must agree, and fails the report otherwise. A site agrees only when
 every edge either side read there agrees. Requires
@@ -766,11 +880,12 @@ separate traced returns, conditional modeled returns and unresolved/stopped
 requests. Modeled services and nested unknown effects remain explicitly unknown;
 continuations never establish process survival or successful resource contents.
 
-A `stop` names its boundary and the preceding write prefix. Ports, interrupts,
-unsupported instructions and limits leave subsequent work unread. `allPathsRead`
-is the existing bounded traversal result, under every explicit model/assumption;
-`effectCompleteWithinModel` additionally rejects unknown service effects on that
-path. Neither field confirms native execution, timing or hardware behavior.
+A `stop` names its boundary and the preceding write prefix. Interrupts,
+unsupported instructions and limits leave subsequent work unread.
+`hardwareBoundaryOrders` lists the path's port and interrupt events, which stay out
+of `writeOrders`. `allPathsRead` is the existing bounded traversal result, under
+every explicit model/assumption; `effectCompleteWithinModel` additionally rejects
+unknown service effects and any hardware boundary on that path. Neither field confirms native execution, timing or hardware behavior.
 
 `localRestorationWitnesses` identifies a prior read and a later write with equal
 complete storage and value expressions, whose written value has the read among its
