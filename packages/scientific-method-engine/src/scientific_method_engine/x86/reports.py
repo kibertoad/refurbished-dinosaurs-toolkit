@@ -1073,10 +1073,13 @@ def _ghidra_call_edges(image, export):
         for edge in function["edges"]:
             if (not isinstance(edge, dict) or not {"site", "target", "targetAddress"} <= edge.keys()
                     or not isinstance(edge.get("siteAddress"), str) or not isinstance(edge.get("flow"), str)
-                    or not (edge["targetAddress"] is None or isinstance(edge["targetAddress"], str))):
+                    or not (edge["targetAddress"] is None or isinstance(edge["targetAddress"], str))
+                    or not isinstance(edge.get("fallsThrough", False), bool)):
                 raise ValueError("Invalid ghidraCallEdges edge")
+            # Copies of the script before fallsThrough was added leave it out; the cross-check then reads the flow name.
             rows.append({"site": offset(edge["site"], "site"), "siteAddress": edge["siteAddress"],
-                         "target": offset(edge["target"], "target"), "targetAddress": edge["targetAddress"], "flow": edge["flow"]})
+                         "target": offset(edge["target"], "target"), "targetAddress": edge["targetAddress"], "flow": edge["flow"],
+                         "fallsThrough": edge.get("fallsThrough")})
         entry = offset(function["entry"], "entry")
         if entry is None:
             unmapped.append(function["address"])
@@ -1122,10 +1125,13 @@ def _ghidra_cross_check(export, nodes, outgoing, omitted):
             if ins is not None and base_mnemonic(ins) in INTERRUPTS and _ghidra_key(g)[1] is None:
                 # SLEIGH lifts INT, INT1, INT3 and INTO to a computed call with no target, while the engine assumes the
                 # interrupt returns to the next instruction and records no edge. At INT1 and INT3 Ghidra's flow is a
-                # terminator that ends the function there.
+                # terminator that ends the function there. Ghidra's own fallsThrough also reflects a user override; an
+                # export without it is read by the flow type's name.
+                exported = g["fallsThrough"] is not None
                 rows.append({"caller": caller, "site": g["site"], "target": None, "siteAddress": g["siteAddress"],
                              "targetAddress": None, "ghidraFlow": g["flow"], "result": "interrupt", "engineEdge": None,
-                             "ghidraFallsThrough": "TERMINATOR" not in g["flow"]})
+                             "ghidraFallsThrough": g["fallsThrough"] if exported else "TERMINATOR" not in g["flow"],
+                             "ghidraFallsThroughBasis": "fallsThrough" if exported else "flowName"})
                 continue
             # Ghidra's edge is evidence the engine did not check; it never becomes an engine edge.
             rows.append({"caller": caller, "site": g["site"], "target": g["target"], "siteAddress": g["siteAddress"],
@@ -1145,7 +1151,8 @@ def _ghidra_cross_check(export, nodes, outgoing, omitted):
             "interpretation": "Edges of each caller that both the engine and the Ghidra export read, matched by site and target "
                               "file offset; an unresolved call matches an unresolved call at its site, and a Ghidra target without a file offset "
                               "matches no engine edge. An interrupt row is Ghidra's targetless call at an instruction the engine read as an "
-                              "interrupt and assumed to return; it counts against agreed only when Ghidra's flow ends the function there. "
+                              "interrupt and assumed to return; it counts against agreed only when Ghidra's flow ends the function there, read "
+                              "from the export's fallsThrough or, in an export without it, from the flow name (ghidraFallsThroughBasis). "
                               "A ghidraOnly edge is Ghidra's claim: the engine did not check it and never adds it to its graph. Agreement "
                               "means both analyses read the edge, not that it executes."}
 

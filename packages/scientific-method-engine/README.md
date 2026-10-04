@@ -34,7 +34,10 @@ print to the analyzer log and cap their output. `ReportScalarConstants`, `Report
 for the other report scripts, a result count equal to the cap means the same.
 `analyzeHeadless` can exit with code 0 after a script failed to load, so check the log for the
 script's own result lines ([the Ghidra workflow](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/ghidra-workflow.md)
-says what a run must show). The scripts compile against Ghidra 12.1.
+says what a run must show). The scripts compile against Ghidra 12.1. `ReportConstantFirstArgumentCalls`,
+`ReportFirstArgumentCallSummary` and `ReportCallSitesWithScalars` load a shared helper from the
+`scientificmethod/` directory beside them, so pass the directory the command prints as `-scriptPath`,
+or copy that subdirectory along with the scripts.
 
 Reading code and data:
 
@@ -73,7 +76,7 @@ Exporting for comparison (each writes one file and refuses to overwrite where no
 |---|---|---|
 | `ExportBoundedFlow` | entry, instruction limit (1..10000), output path under `analysis/original/` | instruction metadata of one bounded flow as JSON |
 | `ExportFunctionInventory` | output TSV path (must not exist) | every function's start and body size |
-| `ExportCallEdges` | output JSON path (must not exist), function limit (1..128), one or more function entries | the call and tail-jump edges of the functions Ghidra reaches breadth-first from the entries, with file offsets, as the `ghidraCallEdges` input of `callees` |
+| `ExportCallEdges` | output JSON path (must not exist), function limit (1..128), one or more function entries | the call and tail-jump edges of the functions Ghidra reaches breadth-first from the entries, with file offsets, Ghidra's flow type (after any flow override) and `fallsThrough` (whether Ghidra continues to the next instruction at the site, after any fall-through override), as the `ghidraCallEdges` input of `callees` |
 | `ExportFunctionFingerprints` | output TSV path (replaced only when the export completes) | per-function and per-instruction fingerprints with addresses normalized, for matching functions across versions |
 
 Repairing the analysis (these change the Ghidra program, so run them before reports and keep the

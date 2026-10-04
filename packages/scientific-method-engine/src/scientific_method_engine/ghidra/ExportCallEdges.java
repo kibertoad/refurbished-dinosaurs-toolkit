@@ -104,12 +104,19 @@ public class ExportCallEdges extends GhidraScript {
         println("Exported the call edges of " + exported + " functions to " + output);
     }
 
+    // The flow is Ghidra's flow type after any flow override. fallsThrough is true when Ghidra continues to
+    // the next instruction at the site. getFallThrough() reflects a fall-through override, which can clear it
+    // or send it to another address; hasFallthrough() stays true for the second, so it is not used.
     private String edge(Instruction instruction, Address target, FlowType flow) {
+        Address fallThrough = instruction.getFallThrough();
+        boolean fallsThrough = fallThrough != null
+            && fallThrough.equals(instruction.getAddress().addWrap(instruction.getDefaultFallThroughOffset()));
         return "{\"site\": " + offset(instruction.getAddress())
             + ", \"siteAddress\": " + quote(instruction.getAddress().toString())
             + ", \"target\": " + (target == null ? "null" : offset(target))
             + ", \"targetAddress\": " + (target == null ? "null" : quote(target.toString()))
-            + ", \"flow\": " + quote(flow.toString()) + "}";
+            + ", \"flow\": " + quote(flow.toString())
+            + ", \"fallsThrough\": " + fallsThrough + "}";
     }
 
     // The file offset the engine uses for an address, or null when the address has no file bytes.

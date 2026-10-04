@@ -373,12 +373,21 @@ class CalleeGraphTests(unittest.TestCase):
         self.assertEqual([o["access"] for o in r["nodes"][0]["memoryObservations"]], [["write"], ["write"], ["read"]])
 
 
+_OLDER_SCRIPT = object()
+
+
 def ghidra_export(data, functions, **extra):
-    """A synthetic ExportCallEdges.java export: functions maps an entry offset to (site, target, flow) edges."""
+    """A synthetic ExportCallEdges.java export: functions maps an entry offset to (site, target, flow) edges.
+
+    An edge may add a fourth item, the fallsThrough the current script writes; without it the edge has the
+    shape older copies of the script wrote.
+    """
+    def edge(site, target, flow, falls_through=_OLDER_SCRIPT):
+        row = {"site": site, "siteAddress": f"1000:{site:04x}", "target": target,
+               "targetAddress": None if target is None else f"1000:{target:04x}", "flow": flow}
+        return row if falls_through is _OLDER_SCRIPT else {**row, "fallsThrough": falls_through}
     rows = [{"entry": entry, "address": "2000:0000" if entry is None else f"1000:{entry:04x}",
-             "edges": [{"site": site, "siteAddress": f"1000:{site:04x}", "target": target,
-                        "targetAddress": None if target is None else f"1000:{target:04x}", "flow": flow}
-                       for site, target, flow in edges]}
+             "edges": [edge(*e) for e in edges]}
             for entry, edges in functions.items()]
     return {"format": "scientific-method-ghidra-call-edges", "version": 1, "sha256": hashlib.sha256(data).hexdigest(),
             "functionLimit": 128, "missingEntries": [], "unreadFunctions": [], "functions": rows, **extra}
@@ -676,6 +685,31 @@ class GhidraCrossCheckTests(unittest.TestCase):
         self.assertEqual(check["counts"], {"agreement": 0, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 1})
         self.assertFalse(check["agreed"])
 
+    def test_the_exported_falls_through_decides_an_interrupt_over_the_flow_name(self):
+        # int 21h; call 5; ret; ret. A user override can end the function at an interrupt while Ghidra's flow keeps a name
+        # without TERMINATOR (a cleared fall-through on COMPUTED_CALL), or keep it going at a COMPUTED_CALL_TERMINATOR.
+        data = bytes.fromhex("cd 21 e8 01 00 c3 c3")
+        for flow, falls_through, agreed in (("COMPUTED_CALL", False, False), ("COMPUTED_CALL_TERMINATOR", True, True),
+                                            ("COMPUTED_CALL", True, True)):
+            with self.subTest(flow=flow, fallsThrough=falls_through):
+                edges = [(0, None, flow, falls_through), (2, 6, "UNCONDITIONAL_CALL", True)]
+                cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: edges, 6: []}))
+                cfg["regions"][0]["entries"] = [0, 6]
+                check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
+                row = next(e for e in check["edges"] if e["result"] == "interrupt")
+                self.assertEqual((row["ghidraFallsThrough"], row["ghidraFallsThroughBasis"]), (falls_through, "fallsThrough"))
+                self.assertEqual(check["agreed"], agreed)
+
+    def test_an_export_without_falls_through_reads_the_flow_name(self):
+        # Copies of ExportCallEdges.java written before fallsThrough was added: the flow name decides, and the row says so.
+        data = bytes.fromhex("cd 21 cc c3")
+        cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: [(0, None, "COMPUTED_CALL"),
+                                                                           (2, None, "COMPUTED_CALL_TERMINATOR")]}))
+        check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
+        rows = [(e["site"], e["ghidraFallsThrough"], e["ghidraFallsThroughBasis"]) for e in check["edges"]]
+        self.assertEqual(rows, [(0, True, "flowName"), (2, False, "flowName")])
+        self.assertFalse(check["agreed"])
+
     def test_a_ghidra_target_at_an_interrupt_or_a_targetless_call_elsewhere_stays_ghidra_only(self):
         # int 21h; int 10h; nop; call 8; ret. Ghidra resolves the first interrupt to a file offset and the second to an
         # address without file bytes, and claims a call at the nop.
@@ -727,6 +761,8 @@ class GhidraCrossCheckTests(unittest.TestCase):
                                 ({**ghidra_export(data, {}), "version": 2}, "format version 1"),
                                 (ghidra_export(data, {len(data): []}), "file offset"),
                                 (ghidra_export(data, {0: [(0, None, 3)]}), "Invalid ghidraCallEdges edge"),
+                                (ghidra_export(data, {0: [(0, None, "COMPUTED_CALL", None)]}), "Invalid ghidraCallEdges edge"),
+                                (ghidra_export(data, {0: [(0, None, "COMPUTED_CALL", "false")]}), "Invalid ghidraCallEdges edge"),
                                 ({**ghidra_export(data, {}), "functions": [{}] * 129}, "at most 128"),
                                 (ghidra_export(data, {0: [(0, None, "COMPUTED_CALL")] * 8193}), "more than 8192 edges")):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
