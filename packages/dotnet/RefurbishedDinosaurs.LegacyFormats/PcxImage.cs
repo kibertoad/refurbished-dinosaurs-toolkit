@@ -48,10 +48,10 @@ public static class RawIndexedImageDecoder
     /// <param name="paletteRgb">768 bytes of 8-bit RGB.</param>
     /// <param name="width">Width in pixels.</param>
     /// <param name="height">Height in pixels.</param>
-    /// <param name="maximumPixels">The largest image accepted.</param>
+    /// <param name="maximumPixels">The largest image accepted, in pixels. Defaults to <see cref="ImageLimits.DefaultMaximumPixels"/>.</param>
     public static IndexedImage Decode(
         ReadOnlySpan<byte> indices, ReadOnlySpan<byte> paletteRgb,
-        int width, int height, int maximumPixels = 16_777_216)
+        int width, int height, int maximumPixels = ImageLimits.DefaultMaximumPixels)
     {
         if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
         if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
@@ -75,9 +75,9 @@ public static class PcxDecoder
 
     /// <summary>Decodes a whole PCX file. Scanline padding is removed.</summary>
     /// <param name="source">The file.</param>
-    /// <param name="maximumPixels">The largest image accepted.</param>
+    /// <param name="maximumPixels">The largest image accepted, in pixels. Defaults to <see cref="ImageLimits.DefaultMaximumPixels"/>.</param>
     /// <exception cref="InvalidDataException">The file is another PCX variant or malformed, or exceeds the pixel limit.</exception>
-    public static PcxImage Decode(ReadOnlySpan<byte> source, int maximumPixels = 16_777_216)
+    public static PcxImage Decode(ReadOnlySpan<byte> source, int maximumPixels = ImageLimits.DefaultMaximumPixels)
     {
         if (source.Length < HeaderSize + 1 + PaletteSize) throw new InvalidDataException("PCX resource is too short.");
         if (source[0] != 0x0A || source[2] != 1 || source[3] != 8)

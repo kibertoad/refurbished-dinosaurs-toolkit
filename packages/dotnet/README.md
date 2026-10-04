@@ -159,6 +159,7 @@ contexts outside per-frame loops.
 | `WavePcm16Stream` | 16-bit mono or stereo PCM WAVE files, indexed and read in frame-aligned buffers without loading the track. |
 | `WavePcm16Writer` | Writes canonical 16-bit mono or stereo PCM WAVE files. |
 | `PcxDecoder`, `RawIndexedImageDecoder`, `IndexedImage` | 8-bit RLE PCX, and headerless indexed pixels, with RGBA conversion. |
+| `ImageLimits` | `DefaultMaximumPixels`, the pixel limit `BmpDecoder`, `PcxDecoder` and `RawIndexedImageDecoder` apply when no `maximumPixels` is passed. |
 | `Rle8BitmapDecoder` | 8-bit BMP (BI_RLE8 or BI_RGB), rewritten as uncompressed BI_RGB. |
 | `BmpDecoder`, `BmpImage` | 8-bit BMP (BI_RGB or BI_RLE8) and 24-bit or 32-bit BI_RGB BMP, decoded to opaque RGBA rows top to bottom. See [BMP images](#bmp-images). |
 
@@ -175,7 +176,7 @@ Every pixel is opaque: the fourth byte of a 32-bit BI_RGB pixel is unused by the
 Pixels a BI_RLE8 stream skips take palette index 0. The file is checked before any pixel buffer is
 allocated: the `BM` signature, a declared file size equal to the length, a positive width, a nonzero
 height, one plane, a palette that ends before the pixel data, rows padded to 4 bytes that fit in the
-file, and at most `maximumPixels` pixels (16,777,216 by default). A pixel whose palette index is past
+file, and at most `maximumPixels` pixels (`ImageLimits.DefaultMaximumPixels`, 16,777,216, by default). A pixel whose palette index is past
 the palette's last colour also throws. Pass `requireDeclaredFileSize: false` for files whose writer
 left the size field zero or wrong.
 

@@ -244,3 +244,9 @@ Replace unsigned-eight-bit widening loops with `Media.Audio.Pcm16.FromUnsigned8`
 `Pcm16.Encode` and `LegacyFormats.WavePcm16Writer` instead of host-endian WAVE construction.
 `WavePcm16Stream` owns its input by default, supports aligned buffers and looped reads, and exposes
 format metadata for game-specific CDDA admission. Dispose voices before cached resources.
+
+### Shared image pixel limit
+
+`BmpDecoder.DefaultMaximumPixels` is removed. Use `ImageLimits.DefaultMaximumPixels` in
+RefurbishedDinosaurs.LegacyFormats, which holds the same value (16,777,216) and is the default
+`maximumPixels` of `BmpDecoder`, `PcxDecoder` and `RawIndexedImageDecoder`.

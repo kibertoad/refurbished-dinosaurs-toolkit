@@ -191,6 +191,29 @@ public sealed class CoreTests
     }
 
     [Fact]
+    public void ImageDecodersShareTheDefaultPixelLimit()
+    {
+        Assert.Equal(4096 * 4096, ImageLimits.DefaultMaximumPixels);
+        var palette = new byte[IndexedPalette.ByteSize];
+
+        // 4097x4096 is one column past the default; 4096x4096 is at it and fails later on its pixel count.
+        var rawOver = Assert.Throws<InvalidDataException>(() => RawIndexedImageDecoder.Decode([0], palette, 4097, 4096));
+        Assert.Contains("pixel limit", rawOver.Message);
+        var rawAt = Assert.Throws<InvalidDataException>(() => RawIndexedImageDecoder.Decode([0], palette, 4096, 4096));
+        Assert.DoesNotContain("pixel limit", rawAt.Message);
+
+        var pcx = new byte[128 + 1 + IndexedPalette.ByteSize];
+        pcx[0] = 0x0A; pcx[2] = 1; pcx[3] = 8; pcx[65] = 1;
+        BinaryPrimitives.WriteUInt16LittleEndian(pcx.AsSpan(8), 4096);
+        BinaryPrimitives.WriteUInt16LittleEndian(pcx.AsSpan(10), 4095);
+        BinaryPrimitives.WriteUInt16LittleEndian(pcx.AsSpan(66), 4098);
+        var pcxOver = Assert.Throws<InvalidDataException>(() => PcxDecoder.Decode(pcx));
+        Assert.Contains("pixel limit", pcxOver.Message);
+        var pcxRaised = Assert.Throws<InvalidDataException>(() => PcxDecoder.Decode(pcx, maximumPixels: int.MaxValue));
+        Assert.DoesNotContain("pixel limit", pcxRaised.Message);
+    }
+
+    [Fact]
     public void SmackerIndexAndFrameSegmentsAreBounded()
     {
         var source = SyntheticSmacker();
