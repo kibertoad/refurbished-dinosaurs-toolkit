@@ -1,9 +1,11 @@
+#Requires -Version 7
 <#
 .SYNOPSIS
 Installs a checksum-verified x64 Mesa driver outside the game package.
 .DESCRIPTION
-Downloads an exact mesa-dist-win archive, verifies it before extraction, and copies the
-x64 driver's directory, including dependent libraries. The caller owns the destination.
+Downloads an exact mesa-dist-win archive, verifies it before extraction, and copies the archive's
+x64 directory: opengl32.dll and the libraries it loads, such as libgallium_wgl.dll. The destination
+must not exist yet; it is created only once the driver is in place and removed if copying fails.
 Returns the absolute opengl32.dll path. Requires 7-Zip and leaves no download staging.
 #>
 [CmdletBinding()]
@@ -14,6 +16,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $destination = [IO.Path]::GetFullPath($DestinationPath)
+if (Test-Path -LiteralPath $destination) { throw "Destination $destination already exists." }
 $staging = Join-Path ([IO.Path]::GetTempPath()) ('mesa-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $staging | Out-Null
 try {
@@ -25,19 +28,28 @@ try {
         throw "Unexpected SHA-256 for $name."
     }
     $zipper = Get-Command 7z -ErrorAction SilentlyContinue
-    $zipCommand = if ($zipper.Source) { $zipper.Source } else { $zipper.Name }
-    if (-not $zipCommand -and $env:ProgramFiles) { $zipCommand = Join-Path $env:ProgramFiles '7-Zip/7z.exe' }
+    $zipCommand = if ($zipper) { if ($zipper.Source) { $zipper.Source } else { $zipper.Name } }
+    elseif ($env:ProgramFiles -and (Test-Path -LiteralPath (Join-Path $env:ProgramFiles '7-Zip/7z.exe') -PathType Leaf)) {
+        Join-Path $env:ProgramFiles '7-Zip/7z.exe'
+    }
     if (-not $zipCommand) { throw '7-Zip is required to expand the Mesa archive.' }
     $extracted = Join-Path $staging 'extracted'
-    & $zipCommand x $archive "-o$extracted" -y | Out-Null
+    # Only the x64 directory is needed; the archive also holds the x86 build.
+    & $zipCommand x $archive "-o$extracted" -y x64 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Mesa archive extraction failed.' }
-    $drivers = @(Get-ChildItem -LiteralPath $extracted -Recurse -File -Filter 'opengl32.dll' |
-        Where-Object { $_.FullName -match '(\\|/)x64(\\|/)' })
-    if ($drivers.Count -ne 1) { throw 'Expected exactly one x64 OpenGL driver in the archive.' }
-    New-Item -ItemType Directory -Path $destination -Force | Out-Null
-    Copy-Item -Path (Join-Path $drivers[0].DirectoryName '*') -Destination $destination -Recurse -Force
-    $installed = Join-Path $destination 'opengl32.dll'
-    if (-not (Test-Path -LiteralPath $installed -PathType Leaf)) { throw 'Mesa driver installation failed.' }
-    $installed
+    $driverDirectory = Join-Path $extracted 'x64'
+    if (-not (Test-Path -LiteralPath (Join-Path $driverDirectory 'opengl32.dll') -PathType Leaf)) {
+        throw 'The archive has no x64/opengl32.dll.'
+    }
+    try {
+        New-Item -ItemType Directory -Path $destination | Out-Null
+        Get-ChildItem -LiteralPath $driverDirectory -Force |
+            Copy-Item -Destination $destination -Recurse -Force
+    }
+    catch {
+        Remove-Item -LiteralPath $destination -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    }
+    Join-Path $destination 'opengl32.dll'
 }
 finally { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }

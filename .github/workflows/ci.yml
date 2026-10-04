@@ -38,8 +38,8 @@ jobs:
       - run: pnpm exec tsc -p tools/tsconfig.json
       - run: pnpm run test
       - run: node --test "tools/release/*.test.ts"
-      - name: Software OpenGL provisioning controls
-        run: node --test actions/setup-software-opengl/install.test.mjs
+      - name: Composite action tests
+        run: node --test "actions/*/*.test.ts"
       # Builds the npm packages and packs them as they would be published.
       - run: pnpm run build
       - run: pnpm -r exec pnpm pack --pack-destination "$RUNNER_TEMP/npm"
@@ -109,10 +109,22 @@ jobs:
           persist-credentials: false
       - uses: ./actions/setup-software-opengl
         id: software-gl
-      - name: Verify staged driver
+      # Loads the driver the way docs/actions.md tells hosts to, so a Mesa update that adds a
+      # library outside the staged directory, or stages the wrong architecture, fails here.
+      - name: Load the staged driver
         shell: pwsh
         env:
           SOFTWARE_GL_DRIVER: ${{ steps.software-gl.outputs.driver-path }}
+          SOFTWARE_GL_DIRECTORY: ${{ steps.software-gl.outputs.directory }}
         run: |
           if (-not (Test-Path -LiteralPath $env:SOFTWARE_GL_DRIVER -PathType Leaf)) { throw 'Driver is missing.' }
           if (-not $env:SOFTWARE_GL_DRIVER.StartsWith($env:RUNNER_TEMP, [StringComparison]::OrdinalIgnoreCase)) { throw 'Driver escaped runner temp.' }
+          if ((Split-Path -Parent $env:SOFTWARE_GL_DRIVER) -ne $env:SOFTWARE_GL_DIRECTORY) { throw 'Driver is not in the reported directory.' }
+          $env:PATH = "$env:SOFTWARE_GL_DIRECTORY;$env:PATH"
+          Add-Type -Namespace Native -Name Loader -MemberDefinition @'
+          [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)] public static extern IntPtr LoadLibraryW(string path);
+          [DllImport("kernel32", CharSet = CharSet.Ansi)] public static extern IntPtr GetProcAddress(IntPtr module, string name);
+          '@
+          $module = [Native.Loader]::LoadLibraryW($env:SOFTWARE_GL_DRIVER)
+          if ($module -eq [IntPtr]::Zero) { throw "The driver did not load: Win32 error $([Runtime.InteropServices.Marshal]::GetLastWin32Error())." }
+          if ([Native.Loader]::GetProcAddress($module, 'wglCreateContext') -eq [IntPtr]::Zero) { throw 'The driver exports no wglCreateContext.' }

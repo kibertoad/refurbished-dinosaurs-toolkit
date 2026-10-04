@@ -4,6 +4,9 @@ outputs:
   driver-path:
     description: Absolute path to the provisioned opengl32.dll.
     value: ${{ steps.install.outputs.driver-path }}
+  directory:
+    description: Directory holding opengl32.dll and the libraries it loads. Put it on PATH for a process that loads driver-path explicitly, so those libraries resolve.
+    value: ${{ steps.install.outputs.directory }}
 runs:
   using: composite
   steps:
@@ -13,7 +16,7 @@ runs:
       env:
         TOOLKIT_ACTION_PATH: ${{ github.action_path }}
       run: |
-        if (-not $IsWindows) { throw 'Software OpenGL setup requires a Windows runner.' }
+        if (-not $IsWindows -or $env:RUNNER_ARCH -ne 'X64') { throw 'Software OpenGL setup requires a Windows x64 runner.' }
         $destination = Join-Path $env:RUNNER_TEMP ('software-opengl-' + [Guid]::NewGuid().ToString('N'))
         $driver = & (Join-Path $env:TOOLKIT_ACTION_PATH 'install.ps1') -DestinationPath $destination
-        "driver-path=$driver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        "driver-path=$driver", "directory=$destination" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
