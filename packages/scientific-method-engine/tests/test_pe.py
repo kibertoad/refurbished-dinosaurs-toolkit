@@ -120,8 +120,21 @@ class PEReporterTests(unittest.TestCase):
         self.assertEqual(r['matches'], [])
         row, = r['conditionalAccesses']
         self.assertEqual((row['site'], row['dependsOn']), (store, [{'site': out, 'reason': gap['reason']}]))
+        # The inventoried store is not reported a second time as a raw candidate.
+        self.assertEqual(r['rawCandidates'], [])
         self.assertIn(gap, r['gaps'])
         self.assertFalse(r['negativeUsable'])
+
+    def test_entry_walk_records_a_gap_at_each_port_instruction(self):
+        # mov dx, 0x3c8; <port access>; mov [DATA_VA], eax; ret
+        reason = 'port access in the flat model depends on I/O privilege, which is not modeled'
+        for name, port in (('in al, dx', 'ec'), ('rep insb', 'f3 6c'), ('outsd', '6f'), ('rep outsb', 'f3 6e')):
+            with self.subTest(name):
+                store = CODE_RAW + 4 + len(port.split())
+                r = report(f'66 ba c8 03 {port} a3 00 20 40 00 c3', 'operand-candidates', query={'offset': DATA_VA})
+                self.assertEqual([(x['site'], x['classification']) for x in r['candidates']],
+                                 [(store, 'unresolvedBoundary')])
+                self.assertIn({'site': CODE_RAW + 4, 'reason': reason}, r['gaps'])
 
     def test_uses_names_each_port_access_past_a_stop(self):
         # mov dx, 0x3c8; out dx, al; out dx, al; mov [DATA_VA], eax; ret

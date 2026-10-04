@@ -349,7 +349,8 @@ def uses(image, config):
                 break
             scanned_bytes += 1
             ins = image.decode(at)
-            if ins and at not in seen and any(o.type == X86_OP_MEM and max(offset, o.mem.disp & image.mask) < min(offset + width, (o.mem.disp & image.mask) + max(o.size, 1))
+            # An instruction the walk past a stop decoded (one past a PE32 port access) is already inventoried above.
+            if ins and at not in seen and at not in after_stop and any(o.type == X86_OP_MEM and max(offset, o.mem.disp & image.mask) < min(offset + width, (o.mem.disp & image.mask) + max(o.size, 1))
                                               for o in ins.operands):
                 if len(raw) < result_limit:
                     raw.append({"site": at, "size": ins.size, "classification": "unverified operand candidate"})
