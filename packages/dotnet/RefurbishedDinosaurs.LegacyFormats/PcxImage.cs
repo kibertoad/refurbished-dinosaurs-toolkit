@@ -48,15 +48,17 @@ public static class RawIndexedImageDecoder
     /// <param name="paletteRgb">768 bytes of 8-bit RGB.</param>
     /// <param name="width">Width in pixels.</param>
     /// <param name="height">Height in pixels.</param>
-    /// <param name="maximumPixels">The largest image accepted.</param>
+    /// <param name="maximumPixels">The largest image accepted, in pixels. Defaults to <see cref="ImageLimits.DefaultMaximumPixels"/>.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="width"/> or <paramref name="height"/> is not positive, or <paramref name="maximumPixels"/> is negative.</exception>
+    /// <exception cref="InvalidDataException">The image exceeds the pixel limit, or the index or palette size does not match.</exception>
     public static IndexedImage Decode(
         ReadOnlySpan<byte> indices, ReadOnlySpan<byte> paletteRgb,
-        int width, int height, int maximumPixels = 16_777_216)
+        int width, int height, int maximumPixels = ImageLimits.DefaultMaximumPixels)
     {
         if (width <= 0) throw new ArgumentOutOfRangeException(nameof(width));
         if (height <= 0) throw new ArgumentOutOfRangeException(nameof(height));
         if (maximumPixels < 0) throw new ArgumentOutOfRangeException(nameof(maximumPixels));
-        var pixelCount = checked(width * height);
+        var pixelCount = (long)width * height;
         if (pixelCount > maximumPixels)
             throw new InvalidDataException("Raw indexed image dimensions exceed the configured pixel limit.");
         if (indices.Length != pixelCount)
@@ -75,10 +77,12 @@ public static class PcxDecoder
 
     /// <summary>Decodes a whole PCX file. Scanline padding is removed.</summary>
     /// <param name="source">The file.</param>
-    /// <param name="maximumPixels">The largest image accepted.</param>
+    /// <param name="maximumPixels">The largest image accepted, in pixels. Defaults to <see cref="ImageLimits.DefaultMaximumPixels"/>.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maximumPixels"/> is negative.</exception>
     /// <exception cref="InvalidDataException">The file is another PCX variant or malformed, or exceeds the pixel limit.</exception>
-    public static PcxImage Decode(ReadOnlySpan<byte> source, int maximumPixels = 16_777_216)
+    public static PcxImage Decode(ReadOnlySpan<byte> source, int maximumPixels = ImageLimits.DefaultMaximumPixels)
     {
+        if (maximumPixels < 0) throw new ArgumentOutOfRangeException(nameof(maximumPixels));
         if (source.Length < HeaderSize + 1 + PaletteSize) throw new InvalidDataException("PCX resource is too short.");
         if (source[0] != 0x0A || source[2] != 1 || source[3] != 8)
             throw new InvalidDataException("Only 8-bit RLE PCX resources are supported.");
@@ -93,16 +97,18 @@ public static class PcxDecoder
         var height = yMax - yMin + 1;
         var bytesPerLine = BinaryPrimitives.ReadUInt16LittleEndian(source[66..]);
         if (bytesPerLine < width) throw new InvalidDataException("PCX scanline is narrower than its image.");
-        var pixelCount = checked(width * height);
-        if (maximumPixels < 0) throw new ArgumentOutOfRangeException(nameof(maximumPixels));
-        if (pixelCount > maximumPixels) throw new InvalidDataException("PCX dimensions exceed the configured pixel limit.");
+        if ((long)width * height > maximumPixels) throw new InvalidDataException("PCX dimensions exceed the configured pixel limit.");
+        var pixelCount = width * height;
 
         var paletteOffset = source.Length - PaletteSize - 1;
         if (source[paletteOffset] != 0x0C) throw new InvalidDataException("PCX 256-color palette marker is missing.");
-        var scanlines = new byte[checked(bytesPerLine * height)];
+        // Runs are written straight into the unpadded pixels, so a wide bytesPerLine cannot allocate
+        // past the pixel limit. A run may cross the end of a scanline.
+        var indices = new byte[pixelCount];
+        var scanlineBytes = (long)bytesPerLine * height;
+        var output = 0L;
         var input = HeaderSize;
-        var output = 0;
-        while (output < scanlines.Length)
+        while (output < scanlineBytes)
         {
             if (input >= paletteOffset) throw new InvalidDataException("PCX pixel stream ended early.");
             var token = source[input++];
@@ -114,15 +120,20 @@ public static class PcxDecoder
                 if (count == 0 || input >= paletteOffset) throw new InvalidDataException("PCX contains an invalid RLE run.");
                 value = source[input++];
             }
-            if (count > scanlines.Length - output) throw new InvalidDataException("PCX RLE run exceeds the scanline buffer.");
-            scanlines.AsSpan(output, count).Fill(value);
-            output += count;
+            if (count > scanlineBytes - output) throw new InvalidDataException("PCX RLE run exceeds the scanline buffer.");
+            while (count > 0)
+            {
+                var row = (int)(output / bytesPerLine);
+                var column = (int)(output % bytesPerLine);
+                var span = Math.Min(count, bytesPerLine - column);
+                if (column < width)
+                    indices.AsSpan(row * width + column, Math.Min(span, width - column)).Fill(value);
+                output += span;
+                count -= span;
+            }
         }
         if (input != paletteOffset) throw new InvalidDataException("PCX has unexpected bytes between pixels and palette.");
 
-        var indices = new byte[pixelCount];
-        for (var row = 0; row < height; row++)
-            scanlines.AsSpan(row * bytesPerLine, width).CopyTo(indices.AsSpan(row * width, width));
         return new PcxImage(width, height, indices, source[(paletteOffset + 1)..].ToArray());
     }
 }

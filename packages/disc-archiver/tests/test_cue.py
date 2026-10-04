@@ -62,6 +62,20 @@ class LayoutTests(CueTestCase):
         self.assertEqual(disc.tracks[0].storage, "cooked")
         self.assertEqual(fingerprint(disc)["volumeIdentifier"], "SYNTH_DISC")
 
+    def test_the_volume_identifier_reads_each_byte_as_latin_1(self) -> None:
+        def with_identifier(name: str, field: bytes) -> str | None:
+            image = bytearray(self.synthetic.iso)
+            image[16 * 2048 + 40 : 16 * 2048 + 72] = field.ljust(32, b" ")
+            path = self.dir / name
+            path.write_bytes(bytes(image))
+            return fingerprint(read_iso(path))["volumeIdentifier"]  # type: ignore[return-value]
+
+        # 0xC9 and 0xCA differ only above 0x7F; 0x85 is a Shift-JIS lead byte and a C1 control.
+        self.assertEqual(with_identifier("e9.iso", b"PRESSING_\xc9"), "PRESSING_\u00c9")
+        self.assertEqual(with_identifier("ea.iso", b"PRESSING_\xca"), "PRESSING_\u00ca")
+        self.assertEqual(with_identifier("c1.iso", b"DISC\x85\x00B\x00\x00"), "DISC\u0085\u0000B")
+        self.assertIsNone(with_identifier("blank.iso", b"\x00 \x00"))
+
     def test_a_pregap_command_is_a_pregap_no_file_stores(self) -> None:
         data = self.synthetic.data_raw
         sheet = self.sheet(

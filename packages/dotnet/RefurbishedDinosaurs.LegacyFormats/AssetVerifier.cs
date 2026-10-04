@@ -33,7 +33,11 @@ public enum AssetProblem
     AudioAlignmentAmbiguous,
     /// <summary>A CD audio track's anchor matched at one shift, and the central samples at that shift differ from the fingerprint.</summary>
     AudioHashMismatch,
-    /// <summary>The ISO 9660 volume identifier differs from the manifest's <see cref="AssetManifest.VolumeIdentifier"/>.</summary>
+    /// <summary>
+    /// The ISO 9660 volume identifier differs from the manifest's <see cref="AssetManifest.VolumeIdentifier"/>.
+    /// The detail writes both identifiers as JSON strings, with each control character as a <c>\u</c>
+    /// escape, so the found value can be copied into a manifest.
+    /// </summary>
     WrongVolumeIdentifier,
     /// <summary>The ISO 9660 volume space size differs from the manifest's <see cref="AssetManifest.VolumeBlocks"/>.</summary>
     WrongVolumeSize,
@@ -230,6 +234,20 @@ public static class AssetVerifier
     // The key hashes stores the volume's fingerprint under. A normalized path cannot contain ':'.
     private const string VolumeHashKey = ":volume";
 
+    // Writes an identifier as a JSON string, so a control character in a label (C0, DEL or C1)
+    // stays on one line of the report and the value can be copied into a manifest as it stands.
+    private static string JsonString(string value)
+    {
+        var text = new System.Text.StringBuilder("\"", value.Length + 2);
+        foreach (var c in value)
+        {
+            if (c is '"' or '\\') text.Append('\\').Append(c);
+            else if (char.IsControl(c)) text.Append($"\\u{(int)c:X4}");
+            else text.Append(c);
+        }
+        return text.Append('"').ToString();
+    }
+
     private static async Task CheckVolumeAsync(
         OriginalContentSource source,
         AssetManifest manifest,
@@ -247,9 +265,9 @@ public static class AssetVerifier
         var decided = false;
         if (manifest.VolumeIdentifier is { } identifier && !identifier.Equals(source.Label, StringComparison.Ordinal))
         {
-            var found = source.Label is null ? "none" : $"'{source.Label}'";
+            var found = source.Label is null ? "none" : JsonString(source.Label);
             issues.Add(new(null, AssetProblem.WrongVolumeIdentifier,
-                $"Expected volume identifier '{identifier}'; found {found}."));
+                $"Expected volume identifier {JsonString(identifier)}; found {found}."));
             decided = true;
         }
         if (manifest.VolumeBlocks is { } expected && expected != blocks)
@@ -333,21 +351,23 @@ public static class AssetVerifier
         List<AssetVerificationIssue> issues,
         CancellationToken cancellationToken)
     {
-        if (source.Cue is not { } sheet || source.OpenRawImage is not { } openImage)
-        {
-            foreach (var track in tracks)
-                issues.Add(new(null, AssetProblem.Unreadable,
-                    $"The {source.Kind} source holds no CD audio track {track.Track:D2}.") { AudioTrack = track.Track });
-            return;
-        }
-
-        Stream image;
-        try { image = openImage(); }
+        var sheet = source.Cue;
+        Stream? image = null;
+        // A source without a BIN image refuses OpenBin with NotSupportedException.
+        try { if (sheet is not null) image = source.OpenBin(); }
+        catch (NotSupportedException) { }
         catch (Exception exception) when (IsReadFailure(exception))
         {
             foreach (var track in tracks)
                 issues.Add(new(null, AssetProblem.Unreadable, $"The image could not be read: {exception.Message}")
                     { AudioTrack = track.Track });
+            return;
+        }
+        if (sheet is null || image is null)
+        {
+            foreach (var track in tracks)
+                issues.Add(new(null, AssetProblem.Unreadable,
+                    $"The {source.Kind} source holds no CD audio track {track.Track:D2}.") { AudioTrack = track.Track });
             return;
         }
 

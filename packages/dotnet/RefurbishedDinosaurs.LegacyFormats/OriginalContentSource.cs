@@ -37,27 +37,54 @@ public abstract class OriginalContentSource : IDisposable
 {
     /// <summary>One of <see cref="ContentSourceKinds"/>.</summary>
     public abstract string Kind { get; }
-    /// <summary>The ISO volume identifier, or <see langword="null"/> for a directory.</summary>
+    /// <summary>
+    /// The ISO 9660 primary volume descriptor's volume identifier without its trailing spaces and NULs,
+    /// or <see langword="null"/> for a source with no volume or an identifier that is all padding.
+    /// Each of the 32 bytes reads as the Latin-1 (ISO-8859-1) character of the same value, so a byte
+    /// above 0x7F gives the character U+0080 to U+00FF and two identifiers that differ in a byte
+    /// before their trailing padding give different labels.
+    /// </summary>
     public abstract string? Label { get; }
     /// <summary>The cue sheet of a <see cref="ContentSourceKinds.CueBin"/> source, otherwise <see langword="null"/>.</summary>
     public virtual CueBinSheet? Cue => null;
     /// <summary>
     /// The full path of the <c>.cue</c> file a <see cref="ContentSourceKinds.CueBin"/> source was
-    /// opened from, as <see cref="OpenCueBin"/> chose it, otherwise <see langword="null"/>.
+    /// opened from, as <see cref="OpenCueBin"/> chose it, otherwise <see langword="null"/>. The source
+    /// reads the file once, when it opens. Reading the path again can see a file replaced since then,
+    /// so hash <see cref="CueSheetBytes"/> to record the sheet <see cref="Cue"/> was parsed from.
     /// </summary>
     public virtual string? CuePath => null;
     /// <summary>
+    /// The bytes of the <c>.cue</c> file that <see cref="OpenCueBin"/> read and parsed into
+    /// <see cref="Cue"/>, for a <see cref="ContentSourceKinds.CueBin"/> source, otherwise
+    /// <see langword="null"/>. Hash them with <c>FileFingerprint.Xxh3(source.CueSheetBytes.Value.Span)</c>
+    /// to record the sheet as a role file.
+    /// </summary>
+    public virtual ReadOnlyMemory<byte>? CueSheetBytes => null;
+    /// <summary>
     /// The full path of the <c>.bin</c> image a <see cref="ContentSourceKinds.CueBin"/> source reads,
-    /// as <see cref="OpenCueBin"/> chose it, otherwise <see langword="null"/>. Its audio tracks are
-    /// read from this file. To record a track's fingerprint from the same file, open it and pass it with
-    /// the track's <see cref="CueBinSheet.TrackExtent"/> to
+    /// as <see cref="OpenCueBin"/> chose it, otherwise <see langword="null"/>. The source records the
+    /// file's length and last-write time when it opens and checks them each time it opens the file
+    /// again, so a rewrite that keeps both is not detected. A stream opened from this path is not checked, so read the image through
+    /// <see cref="OpenBin"/>. To record an audio track's fingerprint from the image the source checked,
+    /// pass <see cref="OpenBin"/> with the track's <see cref="CueBinSheet.TrackExtent"/> to
     /// <see cref="CddaTrackFingerprints.RecordAsync(Stream, CueBinTrackExtent, int, long, int, CancellationToken)"/>:
     /// the overload that takes a path resolves the files again, and given <see cref="CuePath"/> for a
     /// source opened from a <c>.bin</c> it can choose another BIN.
     /// </summary>
     public virtual string? BinPath => null;
-    // Opens the raw 2352-byte-sector image of a cue/bin source, for its audio tracks.
-    internal virtual Func<Stream>? OpenRawImage => null;
+    /// <summary>
+    /// Opens the raw image of a <see cref="ContentSourceKinds.CueBin"/> source, the file at
+    /// <see cref="BinPath"/>, as a read-only seekable stream of 2352-byte sectors. The stream reads
+    /// the whole file.
+    /// </summary>
+    /// <exception cref="NotSupportedException">The source is not a cue/bin image.</exception>
+    /// <exception cref="IOException">
+    /// The image's length or last-write time differs from when the source was opened, or the file
+    /// cannot be opened.
+    /// </exception>
+    public virtual Stream OpenBin() =>
+        throw new NotSupportedException($"A {Kind} source has no BIN image.");
     /// <summary>Every file, sorted by path ignoring case.</summary>
     public abstract IReadOnlyList<ContentSourceEntry> Files { get; }
     /// <summary>Looks up a file.</summary>
@@ -137,18 +164,22 @@ public abstract class OriginalContentSource : IDisposable
     /// <summary>
     /// Opens an ISO 9660 image with 2048-byte sectors. It is checked when opened: block size, volume size
     /// against the file, both-endian fields agreeing, and every directory and file extent inside the
-    /// volume.
+    /// volume. The source records the image's length and last-write time here, and every later read
+    /// of the image through it (<see cref="OpenRead"/> and <see cref="OpenVolume"/>) compares them with
+    /// the file when it opens it and fails with an <see cref="IOException"/> when either has changed.
+    /// A rewrite that keeps both the length and the last-write time is not detected.
     /// </summary>
     /// <exception cref="FileNotFoundException">The file does not exist.</exception>
+    /// <exception cref="IOException">The image changed while the source was being opened.</exception>
     /// <exception cref="InvalidDataException">The image is not a valid ISO 9660 volume.</exception>
     public static OriginalContentSource OpenIso9660(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var fullPath = Path.GetFullPath(path);
         if (!File.Exists(fullPath)) throw new FileNotFoundException("ISO image does not exist.", fullPath);
-        return new Iso9660ContentSource(
-            () => new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read),
-            ContentSourceKinds.Iso9660, null);
+        // Recorded before the volume is checked, so the source describes only the image it checked.
+        var image = ImageSnapshot.Take(fullPath);
+        return new Iso9660ContentSource(image.OpenBuffered, ContentSourceKinds.Iso9660, null);
     }
 
     /// <summary>
@@ -179,28 +210,37 @@ public abstract class OriginalContentSource : IDisposable
     /// is the <c>.cue</c> file, the <c>.bin</c> file, or the directory holding them; the other file is
     /// the one the sheet's <c>FILE</c> names, else the one with the same name, else the only one there.
     /// A sheet found for a given <c>.bin</c> must not name a different BIN that is present.
-    /// The returned source gives the chosen files as <see cref="CuePath"/> and <see cref="BinPath"/>.
+    /// The returned source gives the chosen files as <see cref="CuePath"/> and <see cref="BinPath"/>,
+    /// and the bytes of the sheet it parsed as <see cref="CueSheetBytes"/>. It records the BIN's length
+    /// and last-write time here. Every later read of the BIN through the source
+    /// (<see cref="OpenRead"/>, <see cref="OpenVolume"/>, <see cref="OpenBin"/> and the audio checks
+    /// of <c>AssetVerifier</c>) compares them with the file when it opens it, and fails with an
+    /// <see cref="IOException"/> when either has changed. A rewrite that keeps both the length and the
+    /// last-write time is not detected.
     /// The sheet is checked as <see cref="CueBinSheet.Parse"/> and <see cref="CueBinSheet.ValidateBin"/>
     /// describe, the data track ends where the second track's pregap or audio begins, every raw sector
     /// read is checked to be MODE1, and the volume is checked as <see cref="OpenIso9660(string)"/> describes.
     /// </summary>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
+    /// <exception cref="IOException">The BIN changed while the source was being opened.</exception>
     /// <exception cref="InvalidDataException">
     /// The sheet, image or volume is not valid, the input is not a directory or a <c>.cue</c> or <c>.bin</c>
     /// file, a sheet or BIN cannot be found next to the other, or the files are ambiguous.
     /// </exception>
     public static OriginalContentSource OpenCueBin(string path)
     {
-        var (cuePath, binPath, sheet) = CueBinSheet.Resolve(path);
-        sheet.ValidateBin(binPath);
-        var sectors = new FileInfo(binPath).Length / CueBinSheet.RawSectorSize;
+        var (cuePath, binPath, sheet, cueBytes) = CueBinSheet.Resolve(path);
+        // The sheet is checked against the recorded length, and every read below compares the file
+        // with this record, so the source describes only the BIN it checked.
+        var bin = ImageSnapshot.Take(binPath);
+        sheet.ValidateBinLength(bin.Length);
+        var sectors = bin.Length / CueBinSheet.RawSectorSize;
         long dataSectors = sheet.DataTrackSectors ?? sectors;
         if (dataSectors <= 16 || dataSectors > sectors)
             throw new InvalidDataException("Cue data track does not hold an ISO 9660 volume inside the BIN image.");
         return new Iso9660ContentSource(
-            () => new RawMode1UserDataStream(
-                new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read), dataSectors),
-            ContentSourceKinds.CueBin, sheet, cuePath, binPath);
+            () => new RawMode1UserDataStream(bin.OpenBuffered(), dataSectors),
+            ContentSourceKinds.CueBin, new CueBinFiles(sheet, cuePath, cueBytes, bin));
     }
 
     /// <summary>
@@ -315,20 +355,17 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     private const uint MaximumDirectoryBytes = 64 * 1024 * 1024;
 
     private readonly Func<Stream> openImage;
+    private readonly CueBinFiles? cueBin;
     private readonly long volumeLength;
     private readonly Dictionary<string, IsoEntry> files = new(StringComparer.OrdinalIgnoreCase);
 
     // openImage returns a new seekable stream of 2048-byte sectors each time. A cue/bin source passes
-    // the files it chose; its audio tracks are read from binPath.
-    public Iso9660ContentSource(Func<Stream> openImage, string kind, CueBinSheet? cue,
-        string? cuePath = null, string? binPath = null)
+    // the files it chose; its audio tracks are read from the BIN.
+    public Iso9660ContentSource(Func<Stream> openImage, string kind, CueBinFiles? cueBin)
     {
         this.openImage = openImage;
         Kind = kind;
-        Cue = cue;
-        CuePath = cuePath;
-        BinPath = binPath;
-        OpenRawImage = binPath is null ? null : () => CddaTrackFingerprints.OpenImage(binPath);
+        this.cueBin = cueBin;
         using var stream = openImage();
         var imageLength = stream.Length;
         if (imageLength < 18L * SectorSize)
@@ -352,10 +389,13 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
 
     public override string Kind { get; }
     public override string? Label { get; }
-    public override CueBinSheet? Cue { get; }
-    public override string? CuePath { get; }
-    public override string? BinPath { get; }
-    internal override Func<Stream>? OpenRawImage { get; }
+    public override CueBinSheet? Cue => cueBin?.Sheet;
+    public override string? CuePath => cueBin?.CuePath;
+    public override ReadOnlyMemory<byte>? CueSheetBytes =>
+        cueBin is null ? default(ReadOnlyMemory<byte>?) : cueBin.CueBytes;
+    public override string? BinPath => cueBin?.Bin.Path;
+
+    public override Stream OpenBin() => cueBin is null ? base.OpenBin() : cueBin.Bin.Open();
     public override IReadOnlyList<ContentSourceEntry> Files { get; }
 
     public override bool TryGetFile(string relativePath, out ContentSourceEntry? entry)
@@ -493,9 +533,10 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
         return name;
     }
 
+    // Latin-1 maps each byte to the character of the same value, so the label keeps every byte.
     private static string? DecodeIdentifier(ReadOnlySpan<byte> bytes)
     {
-        var value = Encoding.ASCII.GetString(bytes).TrimEnd(' ', '\0');
+        var value = Encoding.Latin1.GetString(bytes).TrimEnd(' ', '\0');
         return value.Length == 0 ? null : value;
     }
 
@@ -513,6 +554,60 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     private sealed record IsoEntry(ContentSourceEntry Entry, uint Extent);
     private sealed record DirectoryRecord(
         uint Extent, uint DataLength, string Identifier, bool IsDirectory, bool IsMultiExtent);
+}
+
+// The files a cue/bin source chose and what it read from them when it opened.
+internal sealed record CueBinFiles(CueBinSheet Sheet, string CuePath, byte[] CueBytes, ImageSnapshot Bin);
+
+// The length and last-write time of an .iso or BIN image when its source opened. The source checked
+// that file, so each time it opens the file again it compares both, and reading a file that changed
+// fails instead of describing bytes the source never checked.
+internal sealed class ImageSnapshot
+{
+    private readonly DateTime lastWriteTimeUtc;
+
+    private ImageSnapshot(string path, long length, DateTime lastWriteTimeUtc)
+    {
+        Path = path;
+        Length = length;
+        this.lastWriteTimeUtc = lastWriteTimeUtc;
+    }
+
+    public string Path { get; }
+    public long Length { get; }
+
+    public static ImageSnapshot Take(string path)
+    {
+        using var stream = CddaTrackFingerprints.OpenImage(path);
+        return new(path, stream.Length, File.GetLastWriteTimeUtc(stream.SafeFileHandle));
+    }
+
+    // For the audio checks and OpenBin, which read large ranges asynchronously.
+    public Stream Open() => Checked(CddaTrackFingerprints.OpenImage(Path));
+
+    // For the data track, which reads one raw sector at a time.
+    public Stream OpenBuffered() => Checked(new FileStream(Path, FileMode.Open, FileAccess.Read, FileShare.Read));
+
+    // One stat of the open handle per stream, so the check describes the file the stream reads.
+    private FileStream Checked(FileStream stream)
+    {
+        try
+        {
+            var length = stream.Length;
+            var lastWrite = File.GetLastWriteTimeUtc(stream.SafeFileHandle);
+            if (length != Length || lastWrite != lastWriteTimeUtc)
+                throw new IOException(
+                    $"The image {Path} changed after the source was opened: it was {Length} bytes " +
+                    $"written at {lastWriteTimeUtc:O} and is now {length} bytes written at {lastWrite:O}. " +
+                    "Open the source again.");
+            return stream;
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+    }
 }
 
 internal sealed class ExtentReadStream : Stream

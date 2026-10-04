@@ -14,7 +14,7 @@
       "enum": ["data-only", "mixed-mode"],
       "description": "data-only: one ISO 9660 data track. mixed-mode: a data track followed by CD audio tracks."
     },
-    "volumeIdentifier": { "type": "string", "minLength": 1, "description": "The primary volume descriptor's volume identifier; compared ignoring case." },
+    "volumeIdentifier": { "type": "string", "minLength": 1, "description": "The primary volume descriptor's volume identifier without its trailing spaces and NULs, each byte read as the Latin-1 character of the same value; compared ignoring case." },
     "audioTracks": { "type": "integer", "minimum": 0, "maximum": 98 },
     "expectedPaths": {
       "type": "array",

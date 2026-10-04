@@ -41,6 +41,64 @@ public sealed class OriginalContentSourceTests
     }
 
     [Fact]
+    public async Task Iso9660SourceReadsAnUnchangedImageAgain()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var imagePath = Path.Combine(root, "game.iso");
+            var payload = new byte[] { 5, 8 };
+            await File.WriteAllBytesAsync(imagePath, BuildIso(payload), TestContext.Current.CancellationToken);
+            using var source = OriginalContentSource.OpenIso9660(imagePath);
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                await using (var stream = source.OpenRead("EI/TEST.BIN"))
+                {
+                    var actual = new byte[payload.Length];
+                    await stream.ReadExactlyAsync(actual, TestContext.Current.CancellationToken);
+                    Assert.Equal(payload, actual);
+                }
+                await using (var volume = source.OpenVolume())
+                    Assert.Equal(source.VolumeBlocks * SectorSize, volume.Length);
+            }
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData("truncated")]
+    [InlineData("grown")]
+    [InlineData("rewritten")]
+    public async Task Iso9660SourceRefusesAnImageThatChangedAfterItOpened(string change)
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var imagePath = Path.Combine(root, "game.iso");
+            var image = BuildIso([2, 7]);
+            await File.WriteAllBytesAsync(imagePath, image, TestContext.Current.CancellationToken);
+            var written = File.GetLastWriteTimeUtc(imagePath);
+            using var source = OriginalContentSource.OpenIso9660(imagePath);
+
+            var replacement = image.ToArray();
+            if (change == "truncated") Array.Resize(ref replacement, image.Length - SectorSize);
+            else if (change == "grown") Array.Resize(ref replacement, image.Length + SectorSize);
+            else replacement[^1] ^= 0xFF;
+            await File.WriteAllBytesAsync(imagePath, replacement, TestContext.Current.CancellationToken);
+            // A rewrite of the same length is told apart by its last-write time. Set it apart
+            // explicitly so the test does not rely on the file system's timestamp resolution.
+            if (change == "rewritten") File.SetLastWriteTimeUtc(imagePath, written.AddMinutes(1));
+
+            foreach (var read in new Func<Stream>[] { () => source.OpenRead("EI/TEST.BIN"), source.OpenVolume })
+            {
+                var failure = Assert.Throws<IOException>(read);
+                Assert.Contains("changed after the source was opened", failure.Message, StringComparison.Ordinal);
+            }
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task DirectorySourceListsFilesCaseInsensitively()
     {
         var root = CreateTemporaryDirectory();
@@ -157,6 +215,25 @@ public sealed class OriginalContentSourceTests
         {
             using var source = OriginalContentSource.Open(path);
             Assert.Equal("SYNTHETIC_EI", source.Label);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task Iso9660SourceReadsEachLabelByteAsTheLatin1CharacterOfTheSameValue()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"toad-iso-label-{Guid.NewGuid():N}.iso");
+        var image = BuildIso([1]);
+        var field = image.AsSpan(16 * SectorSize + 40, 32);
+        field.Fill((byte)' ');
+        // A high byte, a C1 control byte, NBSP and 0xFF, then a NUL before the trailing spaces.
+        byte[] identifier = [(byte)'A', 0xC9, 0x85, 0xA0, 0xFF, (byte)'Z', 0x00];
+        identifier.CopyTo(field);
+        await File.WriteAllBytesAsync(path, image, TestContext.Current.CancellationToken);
+        try
+        {
+            using var source = OriginalContentSource.Open(path);
+            Assert.Equal("A\u00C9\u0085\u00A0\u00FFZ", source.Label);
         }
         finally { File.Delete(path); }
     }
