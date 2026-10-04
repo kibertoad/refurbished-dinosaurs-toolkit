@@ -61,6 +61,11 @@ LegacyFormats parts of it:
   version 6) when it is read to the end. Decode into the staging directory and verify the output
   there as for any other source; [InstallShield cabinets](../packages/dotnet/README.md#installshield-cabinets)
   lists the supported subset.
+- `ContentSourceExtractor.ExtractAsync` copies the files of any source, or a selection, into the
+  staging directory below a prefix, hashes each while it copies, and returns the `InstalledAsset`
+  records for the installed manifest. It checks file-count and byte limits and every path before it
+  writes, and removes what it wrote when it fails or is cancelled. See
+  [extracting a source into a stage](../packages/dotnet/README.md#extracting-a-source-into-a-stage).
 - `AssetManifest` describes a supported edition by paths, sizes and XXH3-128 hashes, the same
   `xxh3` values the spec's build entries give, and names the source kind to read it as.
   `AssetVerifier.IdentifyAsync` tries every edition against the player's copy and reports why the

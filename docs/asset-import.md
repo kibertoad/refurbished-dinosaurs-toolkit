@@ -30,6 +30,10 @@ matching destination can be a no-op unless `--force` is supplied. Support separa
 `--verify-source`, `--verify-output`, and catalog/report modes so diagnosis never
 requires rewriting content.
 
+When the original's files are installed as they are, `ContentSourceExtractor` copies them from
+any `OriginalContentSource` into the staging directory and returns the records for the output
+manifest.
+
 Use `InstalledContentWriter` when an extractor emits files incrementally: it
 atomically replaces changed output and reuses byte-identical output. If imported
 content can be removed separately from the remake, use
