@@ -820,7 +820,40 @@ test("a callee reusing its argument slot does not decide the site's consistency 
     ],
   );
   assert.equal(site.widthsConsistent, true);
+  assert.deepEqual(site.undecidedWidths, []);
   assert.equal(site.agreed, false);
+});
+
+test("a pair of reads that conflicts only on bytes of unknown origin leaves the site undecided through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // push 1; test di,di; jz 81; mov word [0x100],5; mov si,1; jmp 83; at 81: xor si,si; at 83: call 90;
+  // add sp,2; ret; at 90: push bp; mov bp,sp; test si,si; jnz 102; mov ax,[bp+4]; jmp 106;
+  // at 102: mov eax,[bp+4]; at 106: pop bp; ret
+  data.set(
+    [
+      0x6a, 1, 0x85, 0xff, 0x74, 0x0b, 0xc7, 0x06, 0, 1, 5, 0, 0xbe, 1, 0, 0xeb, 2, 0x31, 0xf6, 0xe8, 4, 0, 0x83, 0xc4,
+      2, 0xc3, 0x55, 0x89, 0xe5, 0x85, 0xf6, 0x75, 5, 0x8b, 0x46, 4, 0xeb, 4, 0x66, 0x8b, 0x46, 4, 0x5d, 0xc3,
+    ],
+    64,
+  );
+  writeFileSync(join(dir, "source.bin"), data);
+  const cfg = {
+    ...config,
+    xxh3: sourceXxh3(data),
+    regions: [{ ...config.regions[0]!, end: 108, entries: [64, 90] }],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  const r = run(["arguments", join(dir, "config.json")]);
+  const site = r.argumentFrameSites[0];
+  assert.equal(site.callSite, 83);
+  const pair = [
+    { offset: 0, width: 2, grouping: "consumed width only" },
+    { offset: 0, width: 4, grouping: "consumed width only" },
+  ];
+  assert.deepEqual(site.conflictingWidths, [pair]);
+  assert.deepEqual(site.undecidedWidths, [pair]);
+  assert.equal(site.widthsConsistent, null);
 });
 
 test("an argument slot names a possibly aliasing store that dropped nothing, as the callee's read does", (t) => {

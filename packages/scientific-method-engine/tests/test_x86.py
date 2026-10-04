@@ -431,7 +431,7 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertEqual(r["argumentFrameSites"][0]["readWidthSets"], [[{"offset": 0, "width": 2, "grouping": "consumed width only"},
                                                                          {"offset": 2, "width": 4, "grouping": "far-pointer"},
                                                                          {"offset": 6, "width": 2, "grouping": "consumed width only"}]])
-        self.assertTrue(all(site["agreed"] and site["widthsConsistent"] for site in r["argumentFrameSites"]))
+        self.assertTrue(all(site["agreed"] and site["widthsConsistent"] is True for site in r["argumentFrameSites"]))
 
     def test_the_report_keeps_the_writes_its_slots_cite(self):
         c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("83 c4 04 c3").label("callee").emit("55 89 e5 8b 46 04 8b 46 06 5d c3")
@@ -510,8 +510,10 @@ class ArgumentFrameTests(unittest.TestCase):
         frame = frames[0]
         self.assertEqual((frame["slots"][0]["writerSite"], frame["slots"][0]["reason"]), (None, "memory invalidated by the modeled call at 2"))
         self.assertEqual(frame["groupings"][0]["bytesNotFromSlotWriter"], [0, 1])
+        self.assertEqual(frame["groupings"][0]["bytesOfUnknownOrigin"], [0, 1])
         self.assertFalse(frame["settledOnThisPath"])
         self.assertFalse(r["argumentFrameSites"][0]["agreed"])
+        self.assertIsNone(r["argumentFrameSites"][0]["widthsConsistent"])
 
     def test_a_word_a_modeled_call_preserved_keeps_its_writer(self):
         # The model keeps the pushed word on a concrete stack, so the callee reads the push.
@@ -596,7 +598,7 @@ class ArgumentFrameTests(unittest.TestCase):
                                                  [{"offset": 0, "width": 4, "grouping": "far-pointer"}]])
         self.assertFalse(site["agreed"])
         self.assertEqual(len(site["unsettledPaths"]), 1)
-        self.assertFalse(site["widthsConsistent"])
+        self.assertIs(site["widthsConsistent"], False)
         self.assertEqual(site["conflictingWidths"], [[{"offset": 0, "width": 2, "grouping": "consumed width only"},
                                                       {"offset": 0, "width": 4, "grouping": "far-pointer"}]])
 
@@ -611,7 +613,7 @@ class ArgumentFrameTests(unittest.TestCase):
         bypass = next(i for i, path in enumerate(r["paths"]) if not path["argumentFrames"][0]["settledOnThisPath"])
         self.assertEqual(site["unsettledPaths"], [bypass])
         self.assertIn("the slot at 2 was not read by the callee on this path", r["paths"][bypass]["argumentFrames"][0]["openReasons"])
-        self.assertTrue(site["widthsConsistent"])
+        self.assertIs(site["widthsConsistent"], True)
         self.assertEqual(site["conflictingWidths"], [])
         self.assertEqual(site["readWidths"], [{"offset": 0, "width": 2, "grouping": "consumed width only", "paths": [0, 1],
                                                "fromCallerOnPaths": [0, 1], "notFromCallerOnPaths": []},
@@ -628,6 +630,8 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertEqual(len(frames), 2)
         reuse = next(i for i, path in enumerate(r["paths"]) if path["argumentFrames"][0]["groupings"][0]["width"] == 4)
         self.assertEqual(r["paths"][reuse]["argumentFrames"][0]["groupings"][0]["bytesNotFromSlotWriter"], [0, 1])
+        # The callee stored those bytes itself, so they are not of unknown origin.
+        self.assertEqual(r["paths"][reuse]["argumentFrames"][0]["groupings"][0]["bytesOfUnknownOrigin"], [])
         site = r["argumentFrameSites"][0]
         self.assertEqual(site["readWidths"], [{"offset": 0, "width": 2, "grouping": "consumed width only", "paths": [1 - reuse],
                                                "fromCallerOnPaths": [1 - reuse], "notFromCallerOnPaths": []},
@@ -635,7 +639,8 @@ class ArgumentFrameTests(unittest.TestCase):
                                                "fromCallerOnPaths": [], "notFromCallerOnPaths": [reuse]}])
         self.assertEqual(site["conflictingWidths"], [[{"offset": 0, "width": 2, "grouping": "consumed width only"},
                                                       {"offset": 0, "width": 4, "grouping": "consumed width only"}]])
-        self.assertTrue(site["widthsConsistent"])
+        self.assertEqual(site["undecidedWidths"], [])
+        self.assertIs(site["widthsConsistent"], True)
         self.assertFalse(site["agreed"])
         # Control: when the dword read sees the caller's bytes, the same pair makes the site inconsistent.
         c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("83 c4 04 c3")
@@ -644,7 +649,7 @@ class ArgumentFrameTests(unittest.TestCase):
         site = self.frames(c)[0]["argumentFrameSites"][0]
         self.assertEqual(len(site["conflictingWidths"]), 1)
         self.assertEqual([w["notFromCallerOnPaths"] for w in site["readWidths"]], [[], []])
-        self.assertFalse(site["widthsConsistent"])
+        self.assertIs(site["widthsConsistent"], False)
 
     def test_a_read_past_the_callers_bytes_still_conflicts_on_the_bytes_it_saw(self):
         # One pushed word, read as a dword on one path and as a word on the other. The dword's upper
@@ -655,11 +660,14 @@ class ArgumentFrameTests(unittest.TestCase):
         r, _ = self.frames(c)
         wide = next(i for i, path in enumerate(r["paths"]) if path["argumentFrames"][0]["groupings"][0]["width"] == 4)
         self.assertEqual(r["paths"][wide]["argumentFrames"][0]["groupings"][0]["bytesNotFromSlotWriter"], [2, 3])
+        # Nothing on the path wrote the upper bytes, so the caller did not: they are not of unknown origin.
+        self.assertEqual(r["paths"][wide]["argumentFrames"][0]["groupings"][0]["bytesOfUnknownOrigin"], [])
         site = r["argumentFrameSites"][0]
         self.assertEqual([(w["width"], w["fromCallerOnPaths"], w["notFromCallerOnPaths"]) for w in site["readWidths"]],
                          [(2, [1 - wide], []), (4, [], [wide])])
         self.assertEqual(len(site["conflictingWidths"]), 1)
-        self.assertFalse(site["widthsConsistent"])
+        self.assertEqual(site["undecidedWidths"], [])
+        self.assertIs(site["widthsConsistent"], False)
         # A dword over a stored first word and the caller's second word conflicts with a word read of the second.
         c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("83 c4 04 c3")
         c.label("callee").emit("55 89 e5 85 f6").branch("74", "reuse").emit("8b 46 04 8b 5e 06").branch("eb", "done")
@@ -667,7 +675,64 @@ class ArgumentFrameTests(unittest.TestCase):
         site = self.frames(c)[0]["argumentFrameSites"][0]
         self.assertEqual([(w["offset"], w["width"]) for w in site["readWidths"]], [(0, 2), (0, 4), (2, 2)])
         self.assertEqual(len(site["conflictingWidths"]), 2)
-        self.assertFalse(site["widthsConsistent"])
+        self.assertIs(site["widthsConsistent"], False)
+
+    def test_reads_that_share_only_bytes_nothing_wrote_do_not_conflict(self):
+        # One pushed word. One path reads a dword over it, the other reads the word above it, which
+        # nothing on the path wrote. The pair shares only those bytes, so it neither conflicts nor
+        # leaves the site undecided, and the dword's lower bytes are the caller's word.
+        c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3")
+        c.label("callee").emit("55 89 e5 85 f6").branch("74", "wide").emit("8b 46 06").branch("eb", "done")
+        c.label("wide").emit("66 8b 46 04").label("done").emit("5d c3")
+        r, frames = self.frames(c)
+        self.assertEqual(sorted((g["offset"], g["width"], g["bytesNotFromSlotWriter"], g["bytesOfUnknownOrigin"])
+                                for f in frames for g in f["groupings"]), [(0, 4, [2, 3], []), (2, 2, [0, 1], [])])
+        site = r["argumentFrameSites"][0]
+        self.assertEqual(site["conflictingWidths"], [[{"offset": 0, "width": 4, "grouping": "consumed width only"},
+                                                      {"offset": 2, "width": 2, "grouping": "consumed width only"}]])
+        self.assertEqual(site["undecidedWidths"], [])
+        self.assertIs(site["widthsConsistent"], True)
+
+    def test_a_pair_that_would_conflict_only_on_bytes_of_unknown_origin_is_undecided(self):
+        # The caller pushes a word. On one path a DS store before the call may alias the symbolic stack
+        # and the callee reads a dword; on the other the callee reads the caller's word. The dword's
+        # bytes may still be the caller's word, so the site is neither consistent nor inconsistent.
+        def build():
+            c = Code().emit("6a 01 85 ff").branch("74", "plain").emit("c7 06 00 01 05 00 be 01 00").branch("eb", "call")
+            c.label("plain").emit("31 f6").label("call").branch("e8", "callee").emit("83 c4 02 c3")
+            c.label("callee").emit("55 89 e5 85 f6").branch("75", "wide").emit("8b 46 04").branch("eb", "done")
+            c.label("wide").emit("66 8b 46 04").label("done").emit("5d c3")
+            return c
+        pair = [[{"offset": 0, "width": 2, "grouping": "consumed width only"}, {"offset": 0, "width": 4, "grouping": "consumed width only"}]]
+        r, frames = self.frames(build())
+        wide = next(f for f in frames if f["groupings"][0]["width"] == 4)
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"], s.get("reason")) for s in wide["slots"]],
+                         [(0, 4, None, "memory possibly overwritten through another address by the write at 6")])
+        self.assertEqual(wide["groupings"][0]["bytesOfUnknownOrigin"], [0, 1, 2, 3])
+        site = r["argumentFrameSites"][0]
+        self.assertEqual(site["conflictingWidths"], pair)
+        self.assertEqual(site["undecidedWidths"], pair)
+        self.assertIsNone(site["widthsConsistent"])
+        # Control: on a concrete stack the DS store lands elsewhere, so the dword saw the caller's word.
+        site = self.frames(build(), registers={"ss": 0x2000, "sp": 0x100, "ds": 0x3000})[0]["argumentFrameSites"][0]
+        self.assertEqual(site["conflictingWidths"], pair)
+        self.assertEqual(site["undecidedWidths"], [])
+        self.assertIs(site["widthsConsistent"], False)
+
+    def test_a_callee_store_through_another_address_leaves_its_slot_undecided(self):
+        # As with a callee reusing its slot, but the store goes through ES:[BX] (both unknown), which may
+        # or may not alias the slot. The dword read may still see the caller's words.
+        c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("83 c4 04 c3")
+        c.label("callee").emit("55 89 e5 85 f6").branch("74", "reuse").emit("8b 46 04").branch("eb", "done")
+        c.label("reuse").emit("26 c7 07 00 00 66 8b 46 04").label("done").emit("5d c3")
+        r, frames = self.frames(c)
+        wide = next(f for f in frames if f["groupings"][0]["width"] == 4)
+        self.assertEqual([s["writerSite"] for s in wide["slots"]], [2, 0])
+        self.assertEqual((wide["groupings"][0]["bytesNotFromSlotWriter"], wide["groupings"][0]["bytesOfUnknownOrigin"]),
+                         ([0, 1, 2, 3], [0, 1, 2, 3]))
+        site = r["argumentFrameSites"][0]
+        self.assertEqual(len(site["undecidedWidths"]), 1)
+        self.assertIsNone(site["widthsConsistent"])
 
     def test_a_site_read_only_after_the_callee_stored_its_slot_is_not_consistent(self):
         # The callee stores over its argument and then reads it: the read is listed, but none saw the caller's word.
@@ -676,13 +741,13 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertEqual(site["readWidths"], [{"offset": 0, "width": 2, "grouping": "consumed width only", "paths": [0],
                                                "fromCallerOnPaths": [], "notFromCallerOnPaths": [0]}])
         self.assertEqual(site["conflictingWidths"], [])
-        self.assertFalse(site["widthsConsistent"])
+        self.assertIs(site["widthsConsistent"], False)
         # A path that reads the caller's word and then the stored word at the same width lists the path both ways.
         c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3")
         c.label("callee").emit("55 89 e5 8b 46 04 c7 46 04 09 00 8b 5e 04 5d c3")
         site = self.frames(c)[0]["argumentFrameSites"][0]
         self.assertEqual([(w["paths"], w["fromCallerOnPaths"], w["notFromCallerOnPaths"]) for w in site["readWidths"]], [([0], [0], [0])])
-        self.assertTrue(site["widthsConsistent"])
+        self.assertIs(site["widthsConsistent"], True)
 
     def test_paths_that_group_the_same_bytes_differently_keep_the_site_open(self):
         # Both paths read four bytes at offset 0: one as a far pointer with LES, one as a 32-bit dword.
@@ -696,7 +761,7 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertEqual(site["readWidthSets"], [[{"offset": 0, "width": 4, "grouping": "consumed width only"}],
                                                  [{"offset": 0, "width": 4, "grouping": "far-pointer"}]])
         self.assertFalse(site["agreed"])
-        self.assertFalse(site["widthsConsistent"])
+        self.assertIs(site["widthsConsistent"], False)
         self.assertEqual(len(site["conflictingWidths"]), 1)
 
     def test_one_path_that_groups_the_same_bytes_two_ways_stays_open(self):
@@ -709,7 +774,7 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertIn("the 4 bytes at 0 are read with more than one grouping", frames[0]["openReasons"])
         site = r["argumentFrameSites"][0]
         self.assertFalse(site["agreed"])
-        self.assertFalse(site["widthsConsistent"])
+        self.assertIs(site["widthsConsistent"], False)
 
     def test_a_site_whose_callee_reads_nothing_is_not_consistent(self):
         # A pushed word the callee never reads leaves no read to be consistent with.
@@ -717,7 +782,7 @@ class ArgumentFrameTests(unittest.TestCase):
         r, _ = self.frames(c)
         site = r["argumentFrameSites"][0]
         self.assertEqual(site["readWidths"], [])
-        self.assertFalse(site["widthsConsistent"])
+        self.assertIs(site["widthsConsistent"], False)
         self.assertFalse(site["agreed"])
 
     def test_a_write_through_another_address_drops_the_slot_writer(self):
@@ -730,11 +795,16 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertEqual([(s["offset"], s["width"], s["writerSite"], s.get("reason")) for s in frame["slots"]],
                          [(0, 2, None, "memory possibly overwritten through another address by the write at 2")])
         self.assertEqual(frame["groupings"][0]["bytesNotFromSlotWriter"], [0, 1])
+        self.assertEqual(frame["groupings"][0]["bytesOfUnknownOrigin"], [0, 1])
         self.assertFalse(frame["settledOnThisPath"])
+        # The only read may or may not have seen the caller's word.
+        self.assertIsNone(r["argumentFrameSites"][0]["widthsConsistent"])
         # On a concrete stack the DS write lands elsewhere, so the push stays the slot's writer.
-        frame = self.frames(c, registers={"ss": 0x2000, "sp": 0x100, "ds": 0x3000})[1][0]
+        r, frames = self.frames(c, registers={"ss": 0x2000, "sp": 0x100, "ds": 0x3000})
+        frame = frames[0]
         self.assertEqual([(s["offset"], s["width"], s["writerSite"]) for s in frame["slots"]], [(0, 2, 0)])
         self.assertTrue(frame["settledOnThisPath"], frame["openReasons"])
+        self.assertIs(r["argumentFrameSites"][0]["widthsConsistent"], True)
 
     def test_every_slot_agrees_with_the_callee_read_of_the_same_byte(self):
         # Each caller fills a frame through pushes, a reserved word, stores through DS or ES and a

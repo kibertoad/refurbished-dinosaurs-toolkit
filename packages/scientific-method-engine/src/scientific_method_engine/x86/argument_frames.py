@@ -9,6 +9,8 @@ from capstone.x86 import X86_OP_IMM, X86_OP_REG
 
 # The argument bytes one frame maps; a wider frame is mapped up to here and stays open.
 WINDOW_BYTES = 256
+# The ``unwritten`` cause of a byte that no write on the path stored, so nothing the caller did put it there.
+NO_WRITE = "no write on this path"
 
 
 def stack_cleanup(ins):
@@ -131,12 +133,27 @@ def _frame(image, events, index):
         # A read byte with no known caller writer, one the callee stored to first, or one whose producers
         # lack the slot's writer saw something other than the caller's bytes. The store check catches an
         # overwrite derived from the argument itself, which keeps the writer among its producers.
-        stale = [i for i, at in enumerate(span) if by_byte[at]["writerSite"] is None or first_store.get(at, read["order"]) < read["order"]
-                 or by_byte[at]["writerSite"] not in read["byteProducers"][i]["producers"]]
+        stale, unknown = [], []
+        for i, at in enumerate(span):
+            slot = by_byte[at]
+            if first_store.get(at, read["order"]) < read["order"]:
+                stale.append(i)
+            elif slot["writerSite"] is None:
+                stale.append(i)
+                # Nothing on the path wrote a byte with no write, so the caller did not. A byte a modeled
+                # call invalidated or another address may have stored could still hold the caller's value.
+                if slot["reason"] != NO_WRITE:
+                    unknown.append(i)
+            elif slot["writerSite"] not in read["byteProducers"][i]["producers"]:
+                # No callee store through the frame's segment and base explains the missing writer: a callee
+                # write through another address or a modeled call in the callee may or may not have replaced it.
+                stale.append(i)
+                unknown.append(i)
         partial = [s["offset"] for s in covered if s["offset"] < offset or s["offset"] + s["width"] > offset + read["argument"]["width"]]
         groupings.append({"readSite": read["site"], "readOrder": read["order"], "offset": offset, "width": read["argument"]["width"],
                           "grouping": read["argument"]["grouping"], "slotOffsets": [s["offset"] for s in covered],
-                          "partialSlots": partial, "bytesNotFromSlotWriter": stale})
+                          "partialSlots": partial, "bytesNotFromSlotWriter": stale,
+                          "bytesOfUnknownOrigin": unknown})
         if stale:
             open_reasons.append(f"bytes {stale} of the read at {read['site']} do not come from the slot's writer")
         if partial:
@@ -182,12 +199,15 @@ def argument_frames(report, image):
 
     A path gets one map per traced call, from caller-written slots to callee reads. A site's
     groupings agree only when every path that traced a call there settled on the same read widths
-    and groupings. Separately, a site's widths are consistent when its paths read at least one byte
-    the caller wrote and no two reads with a different offset, width or grouping both saw one shared
-    byte from the caller; a path that skipped a read leaves the site consistent but not agreed.
-    A read that saw bytes the callee stored itself, or bytes with no known caller writer, stays
-    listed and marked with the paths it was made on that way, and its conflicts stay listed, but
-    those bytes do not decide whether the widths are consistent. The report must come from
+    and groupings. Separately, a site's widths are consistent (``True``) when its paths read at
+    least one byte the caller wrote and no two reads with a different offset, width or grouping
+    both saw one shared byte from the caller; a path that skipped a read leaves the site consistent
+    but not agreed. Bytes the callee stored itself and bytes no write on the path stored are not
+    the caller's and do not decide consistency. A byte of unknown origin (invalidated by a modeled
+    call, possibly stored through another address, or missing the slot writer among its producers
+    without a callee store) may be the caller's: a pair of reads that would conflict on such a byte
+    is listed in ``undecidedWidths`` and leaves the site's ``widthsConsistent`` ``None`` unless
+    another pair conflicts on the caller's bytes. The report must come from
     ``trace`` with ``argument_window=WINDOW_BYTES``: each traced call's slots come from its
     ``argumentSlots`` record, which this removes from every path, declared continuations included.
     """
@@ -207,7 +227,7 @@ def argument_frames(report, image):
         widths = sorted({tuple(sorted({(g["offset"], g["width"], g["grouping"]) for g in f["groupings"]})) for _, f in rows})
         # Each read's paths, split by whether every byte it saw came from the caller's slot writer, and the
         # frame bytes it saw from the slot writer on any path.
-        read_on, from_caller, not_from_caller, caller_bytes = {}, {}, {}, {}
+        read_on, from_caller, not_from_caller, caller_bytes, unknown_bytes = {}, {}, {}, {}, {}
         for i, f in rows:
             for g in f["groupings"]:
                 key = (g["offset"], g["width"], g["grouping"])
@@ -215,14 +235,27 @@ def argument_frames(report, image):
                 (not_from_caller if g["bytesNotFromSlotWriter"] else from_caller).setdefault(key, set()).add(i)
                 mapped = range(min(g["width"], f["mappedBytes"] - g["offset"]))
                 caller_bytes.setdefault(key, set()).update(g["offset"] + at for at in mapped if at not in g["bytesNotFromSlotWriter"])
+                unknown_bytes.setdefault(key, set()).update(g["offset"] + at for at in g["bytesOfUnknownOrigin"])
         reads = sorted(read_on)
         # Distinct reads that share a byte conflict: different intervals, or one interval grouped two ways.
         pairs = [(a, b) for n, a in enumerate(reads) for b in reads[n + 1:] if _overlap(a, b)]
         conflicting = [[{"offset": o, "width": w, "grouping": k} for o, w, k in pair] for pair in pairs]
-        # Only the caller's bytes decide consistency: a pair counts when both reads saw one shared byte from
+        # Only the caller's bytes decide consistency: a pair conflicts when both reads saw one shared byte from
         # the slot writer. A callee reusing its argument slot as a local neither breaks nor supplies the
-        # width the caller's argument is read at, but a read past the caller's bytes still reads them.
+        # width the caller's argument is read at, but a read past the caller's bytes still reads them. A pair
+        # that would conflict if bytes of unknown origin were the caller's is undecided.
         caller_conflict = any(caller_bytes[a] & caller_bytes[b] for a, b in pairs)
+        undecided = [(a, b) for a, b in pairs if not caller_bytes[a] & caller_bytes[b]
+                     and (caller_bytes[a] | unknown_bytes[a]) & (caller_bytes[b] | unknown_bytes[b])]
+        if caller_conflict:
+            consistent = False
+        elif undecided:
+            consistent = None
+        elif any(caller_bytes.values()):
+            consistent = True
+        else:
+            # No read saw a byte from the slot writers; one of unknown origin leaves open whether any read did.
+            consistent = None if any(unknown_bytes.values()) else False
         report["argumentFrameSites"].append({
             "callSite": site, "paths": sorted({i for i, _ in rows}), "frames": len(rows),
             "unsettledPaths": sorted({i for i, f in rows if not f["settledOnThisPath"]}),
@@ -231,7 +264,8 @@ def argument_frames(report, image):
                             "fromCallerOnPaths": sorted(from_caller.get((o, w, k), ())),
                             "notFromCallerOnPaths": sorted(not_from_caller.get((o, w, k), ()))} for o, w, k in reads],
             "conflictingWidths": conflicting,
-            "widthsConsistent": any(caller_bytes.values()) and not caller_conflict,
+            "undecidedWidths": [[{"offset": o, "width": w, "grouping": k} for o, w, k in pair] for pair in undecided],
+            "widthsConsistent": consistent,
             "agreed": len(widths) == 1 and all(f["settledOnThisPath"] for _, f in rows),
             "interpretation": "read widths per traced path; paths that never reached this call are not represented"})
     return report
