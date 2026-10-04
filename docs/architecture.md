@@ -79,7 +79,7 @@ Dependency-free .NET libraries for the restored games themselves. Core holds ass
 manifests, staged installation, content locations, diagnostics, deterministic validation, safe
 persistence, viewport math, input snapshots and action bindings, indexed palettes and an indexed
 PNG writer. LegacyFormats holds
-bounded PCX, BMP RLE8, CUE/CDDA, raw Mode 1, ISO-9660, InstallShield 5 and 6 cabinet and 16-bit PCM
+bounded PCX, BMP, CUE/CDDA, raw Mode 1, ISO-9660, InstallShield 5 and 6 cabinet and 16-bit PCM
 WAVE readers, and `OriginalContentSource`, which reads the original from a directory, an `.iso` image,
 a cue/bin raw disc image or an InstallShield cabinet set through one interface (ADR 0014). LegacyFormats references Core, so the two are built, versioned and published together.
 Media.Smacker, Media.Avi, Media.Fli, Media.Playback and Media.Audio are independent, dependency-free NuGet

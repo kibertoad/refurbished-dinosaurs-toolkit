@@ -57,7 +57,8 @@ public static class Rle8BitmapDecoder
         return output;
     }
 
-    private static byte[] DecodeIndices(ReadOnlySpan<byte> encoded, int width, int height)
+    /// <summary>Decodes a BI_RLE8 stream into one index per pixel, bottom row first, no padding.</summary>
+    internal static byte[] DecodeIndices(ReadOnlySpan<byte> encoded, int width, int height)
     {
         var pixels = new byte[checked(width * height)];
         var sourceIndex = 0;
