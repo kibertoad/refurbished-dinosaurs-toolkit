@@ -1099,6 +1099,33 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(report("ba 05 00 21 d8 83 d2 00 c3")["paths"][0]["registers"]["dx"]["value"], 5)
         self.assertIn("Operand-size", report("b9 02 00 66 e2 fd c3")["paths"][0]["stop"])
 
+    def test_carry_reads_the_producers_pcode_carry_without_a_branch_condition(self):
+        from unittest import mock
+        from scientific_method_engine.x86.pcode_backend import Pypcode
+
+        cases = [
+            ("b8 01 00 05 ff ff", 6),  # ADD AX, 0FFFFh carries.
+            ("b8 01 00 05 01 00", 5),  # ADD AX, 1 does not.
+            ("b8 01 00 bb 02 00 39 d8", 6),  # CMP AX, BX borrows.
+            ("b8 02 00 bb 01 00 39 d8", 5),  # CMP AX, BX does not.
+            ("b8 01 00 f7 d8", 6),  # NEG of nonzero sets CF.
+            ("b8 00 00 f7 d8", 5),  # NEG of zero clears it.
+        ]
+        with mock.patch.object(Pypcode, "condition", autospec=True, side_effect=Pypcode.condition) as condition:
+            for producer, dx in cases:
+                with self.subTest(producer=producer):
+                    # The producer, MOV DX, 5 (flags untouched), ADC DX, 0.
+                    r = report(producer + " ba 05 00 83 d2 00 c3")
+                    self.assertEqual(r["paths"][0]["registers"]["dx"]["value"], dx)
+                    self.assertEqual(events(r, "arithmetic")[-1]["carryIn"]["value"], dx - 5)
+            # An unknown producer's carry stays named by the producer's operands.
+            unresolved = events(report("39 d8 83 d2 00 c3"), "arithmetic")[-1]["carryIn"]
+            self.assertIsNone(unresolved["value"])
+            condition.assert_not_called()
+            # A JB still runs its own condition once; its assumption key reads CF without another.
+            self.assertEqual(len(report("39 d8 72 00 c3")["paths"]), 2)
+            self.assertEqual([call.args[2] for call in condition.call_args_list], ["jb"])
+
     def test_incoming_coverage_counts_straddled_segments_scan_limits_and_contested_starts(self):
         data = bytes.fromhex("e8 01 00 c3 c3 e8 fc ff c3")
         cfg = configuration(data, target=4, controls=[5], segments=[{"name": "code", "start": 0, "end": 6, "evidence": "synthetic segment"}])
