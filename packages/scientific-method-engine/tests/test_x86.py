@@ -1164,6 +1164,8 @@ class GhidraCrossCheckTests(unittest.TestCase):
                  (export(fallsThroughToAddress=3), "Invalid ghidraCallEdges edge"),
                  (export(fallsThrough=True), "Invalid ghidraCallEdges edge"),
                  (export(fallsThrough=_OLDER_SCRIPT), "Invalid ghidraCallEdges edge"),
+                 (export(fallsThroughTo=None, fallsThroughToAddress=None, fallsThrough=_OLDER_SCRIPT),
+                  "Invalid ghidraCallEdges edge"),
                  (export(fallsThroughTo=len(data)), "fall-through file offset"),
                  (export(fallsThroughTo="3"), "fall-through file offset"))
         for e, message in cases:

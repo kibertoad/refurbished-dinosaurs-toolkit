@@ -1112,12 +1112,12 @@ def _ghidra_call_edges(image, export):
             row = {"site": offset(edge["site"], "site"), "siteAddress": edge["siteAddress"],
                    "target": offset(edge["target"], "target"), "targetAddress": edge["targetAddress"], "flow": edge["flow"],
                    "fallsThrough": edge.get("fallsThrough")}
-            # Copies of the script before fallsThroughTo was added leave out both keys; the script writes both, null
-            # unless a fall-through override sends Ghidra to another address, where fallsThrough is false.
+            # Copies of the script before fallsThroughTo was added leave out both keys; the script writes both with
+            # fallsThrough, null unless a fall-through override sends Ghidra to another address, where fallsThrough is false.
             redirect = {"fallsThroughTo", "fallsThroughToAddress"} & edge.keys()
             if redirect:
                 to, address = edge.get("fallsThroughTo"), edge.get("fallsThroughToAddress")
-                if (len(redirect) != 2 or not (address is None or isinstance(address, str))
+                if (len(redirect) != 2 or "fallsThrough" not in edge or not (address is None or isinstance(address, str))
                         or (address is None and to is not None) or (address is not None and edge.get("fallsThrough") is not False)):
                     raise ValueError("Invalid ghidraCallEdges edge")
                 row["fallsThroughTo"] = None if address is None else {"target": offset(to, "fall-through"), "targetAddress": address}
@@ -1256,8 +1256,9 @@ def _ghidra_cross_check(image, export, nodes, outgoing, omitted):
                               "ghidraFallsThroughToBasis notExported for an export without it. The engine reads on past every call, conditional jump "
                               "and interrupt and stops at a jmp, ljmp, return or hlt. A row where Ghidra ends the function at an instruction "
                               "the engine reads past (ghidraEndsFunction), continues past one the engine stops at (ghidraContinues) "
-                              "or continues at another address (ghidraFallsThroughElsewhere) counts against agreed. A ghidraOnly edge is Ghidra's claim: the engine did not check it and never adds it "
-                              "to its graph. Agreement means both analyses read the edge, not that it executes."}
+                              "or continues at another address (ghidraFallsThroughElsewhere) counts against agreed. A ghidraOnly edge "
+                              "is Ghidra's claim: the engine did not check it and never adds it to its graph. Agreement means both "
+                              "analyses read the edge, not that it executes."}
 
 
 # These branches test CX/ECX (LOOPE/LOOPNE also ZF), so an adjacent CMP/TEST never describes their predicate.

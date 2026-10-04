@@ -902,10 +902,10 @@ the SHA-256 Ghidra records for the program it analysed, equals the source's. It 
 128 functions and 8192 edges, and every offset must lie inside the source. The script writes `null`
 for an address without file bytes, and a function or edge that lacks one of the keys it writes is
 rejected. An edge without `fallsThrough`, which older copies of the script leave out, is accepted.
-A `fallsThrough` other than true or false is rejected. An edge without both `fallsThroughTo` and
+A `fallsThrough` other than true or false is rejected. An edge with neither `fallsThroughTo` nor
 `fallsThroughToAddress`, which older copies leave out, is accepted. An edge with only one of them,
-with a `fallsThroughTo` but no address, or with an address while `fallsThrough` is not false, is
-rejected. Paste the export into the config as the
+with both but no `fallsThrough`, with a `fallsThroughTo` but no address, or with an address while
+`fallsThrough` is not false, is rejected. Paste the export into the config as the
 value of `ghidraCallEdges`. The command then reports `ghidraCrossCheck`. For each caller that both
 the engine read and the export lists (`comparedCallers`), every edge is matched on site and target:
 
@@ -934,7 +934,7 @@ gives a fall-through (`FALL_THROUGH`, `CONDITIONAL_JUMP`, `UNCONDITIONAL_CALL`, 
 for every other flow, which misses such an override. The row also carries `ghidraFallsThroughTo`,
 `{"target", "targetAddress"}` from the edge's `fallsThroughTo` and `fallsThroughToAddress` where a
 fall-through override sends Ghidra to another address, and `null` otherwise, with
-`ghidraFallsThroughToBasis`. That basis is `fallsThroughTo` when the edge has the field, and
+`ghidraFallsThroughToBasis`. That basis is `fallsThroughTo` when the edge has the fields, and
 `notExported` for an edge from an older copy of the script. Such an export writes a redirected
 fall-through as `fallsThrough: false`, so the row reads as one Ghidra does not take: it agrees at a
 `JMP` and counts in `ghidraEndsFunction` at a call. Export again with the packaged script to see
