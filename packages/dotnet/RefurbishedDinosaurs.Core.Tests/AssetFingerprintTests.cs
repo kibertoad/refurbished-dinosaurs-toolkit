@@ -174,6 +174,20 @@ public sealed class AssetFingerprintTests
     }
 
     [Fact]
+    public void InstalledManifestIsWrittenInTheSchemaFieldNames()
+    {
+        var root = CreateInstalledContent();
+        try
+        {
+            var json = File.ReadAllText(Path.Combine(root, "manifest.json"));
+            foreach (var field in new[] { "\"formatVersion\"", "\"sourceFingerprint\"", "\"xxh3\"", "\"sourcePath\"" })
+                Assert.Contains(field, json);
+            Assert.DoesNotContain("\"FormatVersion\"", json);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task InstalledVerifierReportsUnlistedFilesOnlyWhenAsked()
     {
         var root = CreateInstalledContent();

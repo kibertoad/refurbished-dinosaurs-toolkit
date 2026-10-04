@@ -191,6 +191,9 @@ build entry, or compute it with `xxhsum -H2`. Installed manifests written before
 longer verify, so give the importer's manifest a new `FormatVersion` and have the game ask the
 player to import again. `InstalledAssetVerifier` now also checks the product name, rejects a
 record with no source path, and rejects paths `PortableAssetPath.Relative` rejects.
+`InstalledAssetManifest.Write` now writes camelCase field names, as
+`schemas/installed-asset-manifest.schema.json` gives them; `Read` matches names ignoring case.
+Both schemas use `xxh3`, and the asset manifest schema adds `sourceKind`.
 
 ### Portable asset paths
 

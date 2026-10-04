@@ -26,11 +26,16 @@ public sealed record InstalledAssetManifest(
     /// <summary>The largest manifest <see cref="Read"/> accepts by default.</summary>
     public const long DefaultMaximumBytes = 4 * 1024 * 1024;
 
-    /// <summary>Writes the manifest as indented JSON, replacing <paramref name="path"/> atomically.</summary>
-    public void Write(string path) => AtomicFile.WriteAllText(path,
-        JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
+    // camelCase, as schemas/installed-asset-manifest.schema.json names the fields.
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
 
-    /// <summary>Reads a manifest written by <see cref="Write"/>.</summary>
+    /// <summary>
+    /// Writes the manifest as indented camelCase JSON, the form
+    /// <c>schemas/installed-asset-manifest.schema.json</c> describes, replacing <paramref name="path"/> atomically.
+    /// </summary>
+    public void Write(string path) => AtomicFile.WriteAllText(path, JsonSerializer.Serialize(this, JsonOptions));
+
+    /// <summary>Reads a manifest written by <see cref="Write"/>. Property names match ignoring case.</summary>
     /// <param name="path">The manifest file.</param>
     /// <param name="maximumBytes">The largest file to read.</param>
     /// <exception cref="InvalidDataException">The file is larger than <paramref name="maximumBytes"/>, holds JSON <c>null</c>, or is not a manifest.</exception>
@@ -42,7 +47,7 @@ public sealed record InstalledAssetManifest(
             throw new InvalidDataException($"Installed-content manifest is {length} bytes; the limit is {maximumBytes}.");
         try
         {
-            return JsonSerializer.Deserialize<InstalledAssetManifest>(File.ReadAllBytes(path))
+            return JsonSerializer.Deserialize<InstalledAssetManifest>(File.ReadAllBytes(path), JsonOptions)
                 ?? throw new InvalidDataException("Installed-content manifest is empty.");
         }
         catch (JsonException exception)
