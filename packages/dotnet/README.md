@@ -32,12 +32,12 @@ on an undocumented public member.
 
 | Namespace | Types | Use |
 |---|---|---|
-| `Assets` | `AssetManifest`, `AssetFileSpec`, `AssetVerifier` | Check the user's original against expected paths, sizes and SHA-256 hashes. |
-| `Assets` | `FileFingerprint` | SHA-256 of a file as lowercase hex. |
+| `Assets` | `AssetManifest`, `AssetFileSpec` | One supported edition: its files' paths, sizes and XXH3-128 hashes, how the copy is read, and the edition's `Fingerprint()`. |
+| `Assets` | `FileFingerprint` | XXH3-128 of bytes, a file or a stream, in the documentation standard's form. |
 | `Assets` | `ImportDiskPlanner` | Free space an import needs, counting files it will replace. |
 | `Assets` | `StagedAssetPack` | Build a content directory beside the live one and swap it in, restoring the old one on failure. |
 | `Assets` | `InstalledContentWriter` | Write or copy one installed file atomically, skipping identical files. |
-| `Assets` | `InstalledAssetManifest`, `InstalledAssetVerifier` | Record what an import installed, and check it at startup. |
+| `Assets` | `InstalledAssetManifest`, `InstalledAssetVerifier` | Record what an import installed, and check it at startup, with a reason code per problem. |
 | `Assets` | `InstalledContentUninstaller` | Remove only the files a manifest lists. |
 | `Determinism` | `IRandomSource`, `MsvcRandom` | The legacy Microsoft C `rand()` sequence, with saveable state. |
 | `Diagnostics` | `StartupFailure` | Log a failed start and show the player what to do, without the Windows dialog for an unattended run. |
@@ -86,6 +86,7 @@ contexts outside per-frame loops.
 
 | Types | Reads |
 |---|---|
+| `AssetVerifier` | Check the player's original against an `AssetManifest` through any `OriginalContentSource`, and `IdentifyAsync` the supported edition it is. |
 | `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image or a cue/bin raw disc image behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660` and `OpenCueBin` take it explicitly. |
 | `CueBinSheet`, `CueBinTrack` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order and the data track's end. |
 | `CueSheet`, `RawMode1Image`, `Iso9660` | Cue/bin raw disc images and the ISO 9660 file system on their data track. |

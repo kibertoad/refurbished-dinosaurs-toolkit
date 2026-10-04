@@ -1,17 +1,29 @@
+using System.Text;
 using System.Text.Json;
 using RefurbishedDinosaurs.Core.IO;
 
 namespace RefurbishedDinosaurs.Core.Assets;
 
-/// <summary>Describes the files a restoration needs from the user's legally owned original.</summary>
+/// <summary>
+/// Describes one supported edition of the original: the files a restoration needs from the user's
+/// legally owned copy, and how that copy is read.
+/// </summary>
 /// <param name="GameId">Identifier of the restoration the manifest belongs to.</param>
 /// <param name="SourceEdition">The edition of the original the sizes and hashes describe.</param>
 /// <param name="Files">The expected files, with paths relative to the original's root.</param>
+/// <param name="SourceKind">
+/// How the copy is read, one of the <c>ContentSourceKinds</c> of RefurbishedDinosaurs.LegacyFormats:
+/// <c>directory</c>, <c>iso9660</c> or <c>cue-bin</c>.
+/// </param>
 public sealed record AssetManifest(
     string GameId,
     string SourceEdition,
-    IReadOnlyList<AssetFileSpec> Files)
+    IReadOnlyList<AssetFileSpec> Files,
+    string SourceKind = "directory")
 {
+    /// <summary>The largest manifest <see cref="Load"/> reads.</summary>
+    public const long MaximumBytes = 4 * 1024 * 1024;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -23,10 +35,15 @@ public sealed record AssetManifest(
     /// Reads a manifest from JSON (property names case-insensitive, comments and trailing commas allowed)
     /// and validates it.
     /// </summary>
-    /// <exception cref="InvalidDataException">The JSON is empty or <see cref="Validate"/> rejects it.</exception>
+    /// <exception cref="InvalidDataException">
+    /// A seekable stream holds more than <see cref="MaximumBytes"/>, the JSON is empty, or
+    /// <see cref="Validate"/> rejects it.
+    /// </exception>
     public static AssetManifest Load(Stream json)
     {
         ArgumentNullException.ThrowIfNull(json);
+        if (json.CanSeek && json.Length - json.Position > MaximumBytes)
+            throw new InvalidDataException($"Asset manifest is larger than {MaximumBytes} bytes.");
         var manifest = JsonSerializer.Deserialize<AssetManifest>(json, JsonOptions)
             ?? throw new InvalidDataException("Asset manifest is empty.");
         manifest.Validate();
@@ -34,15 +51,18 @@ public sealed record AssetManifest(
     }
 
     /// <summary>
-    /// Throws unless the game and edition are named, every path passes <see cref="PortableAssetPath.Relative"/>
-    /// and appears once (ignoring case), no size is negative, and every hash is 64 hex digits.
+    /// Throws unless the game, edition and source kind are named, every path passes
+    /// <see cref="PortableAssetPath.Relative"/> and appears once (ignoring case), no size is negative,
+    /// and every hash is an XXH3-128 fingerprint (<see cref="FileFingerprint.IsXxh3"/>).
     /// </summary>
-    /// <exception cref="InvalidDataException">The game or edition is blank, the file list is missing, or a file record is invalid.</exception>
+    /// <exception cref="InvalidDataException">The game, edition or source kind is blank, the file list is missing, or a file record is invalid.</exception>
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(GameId)) throw new InvalidDataException("Asset manifest has no game id.");
         if (string.IsNullOrWhiteSpace(SourceEdition))
             throw new InvalidDataException("Asset manifest has no source edition.");
+        if (string.IsNullOrWhiteSpace(SourceKind))
+            throw new InvalidDataException("Asset manifest has no source kind.");
         if (Files is null) throw new InvalidDataException("Asset manifest has no file list.");
 
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -54,19 +74,40 @@ public sealed record AssetManifest(
                 throw new InvalidDataException($"Duplicate asset path '{normalized}'.");
             if (file.Size < 0)
                 throw new InvalidDataException($"Asset '{normalized}' has a negative size.");
-            if (file.Sha256 is not null && !FileFingerprint.IsSha256(file.Sha256))
-                throw new InvalidDataException($"Asset '{normalized}' has an invalid SHA-256 value.");
+            if (file.Xxh3 is not null && !FileFingerprint.IsXxh3(file.Xxh3))
+                throw new InvalidDataException($"Asset '{normalized}' has an invalid xxh3 value.");
         }
+    }
+
+    /// <summary>
+    /// The edition's fingerprint: XXH3-128 of every file's normalized path, size and hash, ordered by
+    /// path. It names the edition an import read, for the installed manifest's
+    /// <see cref="InstalledAssetManifest.SourceFingerprint"/>.
+    /// </summary>
+    /// <remarks>
+    /// It leaves out <see cref="SourceKind"/>, so the same edition read from a disc image and from a
+    /// directory it was copied into has one fingerprint, and <see cref="AssetFileSpec.Required"/>.
+    /// </remarks>
+    /// <exception cref="InvalidDataException"><see cref="Validate"/> rejects the manifest.</exception>
+    public string Fingerprint()
+    {
+        Validate();
+        // Sorting the normalized path makes the result independent of the separator a manifest uses.
+        var canonical = string.Join('\n', Files
+            .Select(file => (Path: PortableAssetPath.Relative(file.Path), file.Size, file.Xxh3))
+            .OrderBy(file => file.Path, StringComparer.OrdinalIgnoreCase)
+            .Select(file => $"{file.Path}\0{file.Size}\0{file.Xxh3}"));
+        return FileFingerprint.Xxh3(Encoding.UTF8.GetBytes(canonical));
     }
 }
 
 /// <summary>One file the restoration expects in the original.</summary>
 /// <param name="Path">Path relative to the original's root, with <c>/</c> or <c>\</c> separators.</param>
 /// <param name="Size">Exact size in bytes.</param>
-/// <param name="Sha256">Lowercase or uppercase hex SHA-256, or <see langword="null"/> to check the size only.</param>
+/// <param name="Xxh3">Its XXH3-128 fingerprint, or <see langword="null"/> to check the size only.</param>
 /// <param name="Required">Whether a missing file is a problem; an optional file is checked only when present.</param>
 public sealed record AssetFileSpec(
     string Path,
     long Size,
-    string? Sha256 = null,
+    string? Xxh3 = null,
     bool Required = true);

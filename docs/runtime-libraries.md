@@ -48,7 +48,10 @@ LegacyFormats parts of it:
 - `OriginalContentSource` reads the player's original from an installed directory, an `.iso`
   image or a cue/bin raw image through one file listing. It checks a cue sheet strictly and fails
   on a line it cannot read rather than skipping it.
-- `AssetManifest` and `AssetVerifier` identify a supported edition by paths, sizes and SHA-256.
+- `AssetManifest` describes a supported edition by paths, sizes and XXH3-128 hashes, the same
+  `xxh3` values the spec's build entries give, and names the source kind to read it as.
+  `AssetVerifier.IdentifyAsync` tries each edition against the player's copy and reports why the
+  others did not match. `AssetManifest.Fingerprint()` names the edition in the installed manifest.
 - The importer decodes into `StagedAssetPack.StagingDirectory`, verifies all of its output there,
   then calls `Commit`, which swaps the pack in and keeps the old one on failure.
 - `InstalledContentWriter` suits incremental extractors: it replaces changed files atomically and
@@ -56,6 +59,10 @@ LegacyFormats parts of it:
   manifest lists, so logs, mods, saves and other files survive.
 - `RestorationPaths` finds content next to the game before falling back to per-user application
   data.
+- `InstalledAssetVerifier.VerifyDirectoryAsync` checks installed content at startup against its
+  manifest, its format version and the restoration's product name, and returns a reason code for
+  each problem. Set `RejectUnlistedFiles` when the content directory holds nothing else, so a stale
+  or stray file is reported.
 - `StartupFailure.Report` around the game's startup makes native-library and content errors
   visible to a player who has no terminal. Pass `showDialog: false` for a smoke test or other
   unattended run, so a failed start exits instead of waiting on a dialog nobody can dismiss. A
@@ -157,6 +164,33 @@ failure and missing-media policies remain downstream.
 All runtime packages share the existing scientific-method-dotnet tag series. CI and local
 builds now use packages/dotnet/RefurbishedDinosaurs.slnx and the RefurbishedDinosaurs.Core.Tests
 project. No npm, Python or prepared-config protocol names change.
+
+### XXH3-128 asset hashes
+
+Every hash in the asset types is now XXH3-128, the hash the documentation standard uses for every
+file it names, written as 32 lower-case hex digits. SHA-256 is gone from them, with no aliases.
+
+| Before | After |
+|---|---|
+| `FileFingerprint.Sha256`, `Sha256Async`, `IsSha256` | `FileFingerprint.Xxh3`, `Xxh3Async` (also for a stream), `IsXxh3` |
+| `AssetFileSpec.Sha256`, JSON `sha256` | `AssetFileSpec.Xxh3`, JSON `xxh3` |
+| `InstalledAsset.Sha256` | `InstalledAsset.Xxh3` |
+| `InstalledAssetManifest.SourceFingerprintSha256` | `InstalledAssetManifest.SourceFingerprint`, set from `AssetManifest.Fingerprint()` |
+| `InstalledFileResult.Sha256` | `InstalledFileResult.Xxh3` |
+| `RefurbishedDinosaurs.Core.Assets.AssetVerifier.VerifyAsync(root, manifest)` | `RefurbishedDinosaurs.LegacyFormats.AssetVerifier.VerifyAsync(path, manifest)`, or with an open `OriginalContentSource` |
+| `InstalledAssetVerifier.VerifyAsync(root, manifest, formatVersion, verifyHashes)` | `VerifyAsync(root, manifest, new InstalledAssetExpectations(formatVersion, product))`, or `VerifyDirectoryAsync(root, expectations)` |
+| `InstalledAssetVerification.Errors` (strings) | `InstalledAssetVerification.Issues`, each with an `InstalledAssetProblem` |
+
+`AssetVerifier` and its result types moved to RefurbishedDinosaurs.LegacyFormats, because they now
+read the original through `OriginalContentSource`; a manifest's `SourceKind` (default `directory`)
+picks how. `AssetProblem` gains `Unreadable`. `IsXxh3` accepts lower case only, as the standard
+writes hashes.
+
+Rehash every edition manifest and installed manifest: copy each file's `xxh3` from the spec's
+build entry, or compute it with `xxhsum -H2`. Installed manifests written before this release no
+longer verify, so give the importer's manifest a new `FormatVersion` and have the game ask the
+player to import again. `InstalledAssetVerifier` now also checks the product name, rejects a
+record with no source path, and rejects paths `PortableAssetPath.Relative` rejects.
 
 ### Portable asset paths
 

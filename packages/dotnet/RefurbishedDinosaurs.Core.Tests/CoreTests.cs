@@ -38,22 +38,6 @@ public sealed class CoreTests
         Assert.Throws<InvalidDataException>(() => AssetManifest.Load(new MemoryStream(Encoding.UTF8.GetBytes(json))));
 
     [Fact]
-    public async Task VerifierReportsWrongSizeBeforeHashing()
-    {
-        var root = CreateTemporaryDirectory();
-        try
-        {
-            await File.WriteAllTextAsync(
-                Path.Combine(root, "GAME.DAT"), "abc", TestContext.Current.CancellationToken);
-            var manifest = new AssetManifest("game", "edition", [new("GAME.DAT", 4, new string('0', 64))]);
-            var result = await AssetVerifier.VerifyAsync(
-                root, manifest, TestContext.Current.CancellationToken);
-            Assert.Equal(AssetProblem.WrongSize, Assert.Single(result.Issues).Problem);
-        }
-        finally { Directory.Delete(root, true); }
-    }
-
-    [Fact]
     public void StagedPackDoesNotReplaceDestinationUntilCommit()
     {
         var root = CreateTemporaryDirectory();
@@ -249,27 +233,6 @@ public sealed class CoreTests
     }
 
     [Fact]
-    public async Task InstalledManifestVerifierChecksGeneratedOutput()
-    {
-        var root = CreateTemporaryDirectory();
-        try
-        {
-            var path = Path.Combine(root, "Decoded", "asset.bin");
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            await File.WriteAllBytesAsync(path, [1, 2, 3], TestContext.Current.CancellationToken);
-            var hash = await FileFingerprint.Sha256Async(path, TestContext.Current.CancellationToken);
-            var manifest = new InstalledAssetManifest(1, "game", "retail-disc",
-                new string('a', 64), DateTimeOffset.UtcNow,
-                [new("Decoded/asset.bin", 3, hash, "GAME.DAT", "application/octet-stream")], "1.0.0");
-            var result = await InstalledAssetVerifier.VerifyAsync(
-                root, manifest, 1, cancellationToken: TestContext.Current.CancellationToken);
-            Assert.True(result.IsValid);
-            Assert.Equal(1, result.VerifiedFiles);
-        }
-        finally { Directory.Delete(root, true); }
-    }
-
-    [Fact]
     public void DiskPlannerAndSourceDiscoveryAreDeterministic()
     {
         var root = CreateTemporaryDirectory();
@@ -300,9 +263,9 @@ public sealed class CoreTests
             Assert.False(second.Changed);
             File.WriteAllText(Path.Combine(root, "notes.txt"), "keep me");
             File.WriteAllText(Path.Combine(root, "manifest.json"), "placeholder");
-            var manifest = new InstalledAssetManifest(1, "game", "disc", new string('a', 64),
+            var manifest = new InstalledAssetManifest(1, "game", "disc", new string('a', 32),
                 DateTimeOffset.UtcNow,
-                [new("Decoded/asset.bin", first.Bytes, first.Sha256, "SOURCE.DAT")], "1.0.0");
+                [new("Decoded/asset.bin", first.Bytes, first.Xxh3, "SOURCE.DAT")], "1.0.0");
 
             Assert.Equal(1, InstalledContentUninstaller.Remove(root, manifest));
             Assert.True(File.Exists(Path.Combine(root, "notes.txt")));

@@ -5,4 +5,7 @@
     <PackageTags>monogame;game-restoration;clean-room;asset-extraction</PackageTags>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.IO.Hashing" Version="10.0.12" />
+  </ItemGroup>
 </Project>
