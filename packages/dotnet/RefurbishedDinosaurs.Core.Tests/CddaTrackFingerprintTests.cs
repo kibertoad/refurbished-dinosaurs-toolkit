@@ -348,7 +348,7 @@ public sealed class CddaTrackFingerprintTests
         Assert.Throws<InvalidDataException>((manifest with { AudioTracks = [null!] }).Validate);
     }
 
-    private static async Task<AssetManifest> RecordAsync(string root)
+    internal static async Task<AssetManifest> RecordAsync(string root)
     {
         await WriteAsync(root, Rip(0), TwoTrackCue);
         var tracks = new List<CddaTrackFingerprint>();
@@ -388,7 +388,7 @@ public sealed class CddaTrackFingerprintTests
         await File.WriteAllTextAsync(Path.Combine(root, "game.cue"), cue, TestContext.Current.CancellationToken);
     }
 
-    private static string CreateTemporaryDirectory()
+    internal static string CreateTemporaryDirectory()
     {
         var root = Path.Combine(Path.GetTempPath(), "cdda-fingerprint-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);

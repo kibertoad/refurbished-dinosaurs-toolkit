@@ -62,12 +62,15 @@ public sealed record AssetVerificationResult(IReadOnlyList<AssetVerificationIssu
     public bool IsValid => Issues.Count == 0;
 }
 
-/// <summary>Why one edition did not match during <see cref="AssetVerifier.IdentifyAsync"/>.</summary>
+/// <summary>
+/// Why one edition did not match during
+/// <see cref="AssetVerifier.IdentifyAsync(string, IEnumerable{AssetManifest}, CancellationToken)"/>.
+/// </summary>
 /// <param name="Edition">The edition tried.</param>
 /// <param name="Issues">What did not match.</param>
 public sealed record EditionMismatch(AssetManifest Edition, IReadOnlyList<AssetVerificationIssue> Issues);
 
-/// <summary>The outcome of <see cref="AssetVerifier.IdentifyAsync"/>.</summary>
+/// <summary>The outcome of <see cref="AssetVerifier.IdentifyAsync(string, IEnumerable{AssetManifest}, CancellationToken)"/>.</summary>
 /// <param name="Matches">Every edition the copy matched, in the order given.</param>
 /// <param name="Mismatches">Every other edition, in the order given, with what did not match.</param>
 public sealed record EditionIdentification(
@@ -123,7 +126,7 @@ public static class AssetVerifier
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(manifest);
         manifest.Validate();
-        return new(await CheckAsync(source, manifest, new(StringComparer.OrdinalIgnoreCase), cancellationToken)
+        return new(await CheckAsync(source, manifest, new SourceReads(), cancellationToken)
             .ConfigureAwait(false));
     }
 
@@ -146,18 +149,20 @@ public static class AssetVerifier
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         ArgumentNullException.ThrowIfNull(manifest);
         ValidateForOpening(manifest);
-        var opened = Open(path, manifest.SourceKind);
+        var opened = Open(kind => OriginalContentSource.Open(path, kind), manifest.SourceKind);
         if (opened.Source is null) return new([opened.Failure!]);
         using (opened.Source)
-            return new(await CheckAsync(opened.Source, manifest, opened.Hashes, cancellationToken)
+            return new(await CheckAsync(opened.Source, manifest, opened.Reads, cancellationToken)
                 .ConfigureAwait(false));
     }
 
     /// <summary>
     /// Verifies <paramref name="path"/> against every edition, in the order given, and returns the
     /// editions it matched and why each other edition did not. Every manifest is validated before the
-    /// source is opened. The source is opened once per source kind, and a file two editions both
-    /// hash is read once.
+    /// source is opened. The source is opened once per source kind. From each opened source, the
+    /// volume, a file and a CD audio track that several editions check are each read once, and a read
+    /// that fails is reported for every edition that checks it, so all editions get the answer of
+    /// that one read.
     /// </summary>
     /// <remarks>
     /// <see cref="EditionIdentification.Edition"/> is set only when exactly one edition matched. When
@@ -177,6 +182,17 @@ public static class AssetVerifier
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        return await IdentifyAsync(kind => OriginalContentSource.Open(path, kind), editions, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    // IdentifyAsync with the source opened by open, which takes the source kind. The tests pass an
+    // opener whose sources count their reads.
+    internal static async Task<EditionIdentification> IdentifyAsync(
+        Func<string, OriginalContentSource> open,
+        IEnumerable<AssetManifest> editions,
+        CancellationToken cancellationToken)
+    {
         ArgumentNullException.ThrowIfNull(editions);
         var candidates = editions.ToArray();
         foreach (var edition in candidates)
@@ -193,10 +209,10 @@ public static class AssetVerifier
             foreach (var edition in candidates)
             {
                 if (!sources.TryGetValue(edition.SourceKind, out var opened))
-                    sources.Add(edition.SourceKind, opened = Open(path, edition.SourceKind));
+                    sources.Add(edition.SourceKind, opened = Open(open, edition.SourceKind));
                 IReadOnlyList<AssetVerificationIssue> issues = opened.Source is null
                     ? [opened.Failure!]
-                    : await CheckAsync(opened.Source, edition, opened.Hashes, cancellationToken).ConfigureAwait(false);
+                    : await CheckAsync(opened.Source, edition, opened.Reads, cancellationToken).ConfigureAwait(false);
                 if (issues.Count == 0) matches.Add(edition);
                 else mismatches.Add(new(edition, issues));
             }
@@ -215,11 +231,11 @@ public static class AssetVerifier
             throw new InvalidDataException($"Asset manifest names an unsupported source kind '{manifest.SourceKind}'.");
     }
 
-    private static OpenedSource Open(string path, string kind)
+    private static OpenedSource Open(Func<string, OriginalContentSource> open, string kind)
     {
         try
         {
-            return new(OriginalContentSource.Open(path, kind), null);
+            return new(open(kind), null);
         }
         catch (Exception exception) when (IsReadFailure(exception) || exception is ArgumentException or NotSupportedException)
         {
@@ -227,17 +243,14 @@ public static class AssetVerifier
         }
     }
 
-    // The key hashes stores the volume's fingerprint under. A normalized path cannot contain ':'.
-    private const string VolumeHashKey = ":volume";
-
     private static async Task CheckVolumeAsync(
         OriginalContentSource source,
         AssetManifest manifest,
-        Dictionary<string, string> hashes,
+        SourceReads reads,
         List<AssetVerificationIssue> issues,
         CancellationToken cancellationToken)
     {
-        if (manifest.VolumeIdentifier is null && manifest.VolumeBlocks is null && manifest.VolumeXxh3 is null) return;
+        if (!manifest.PinsVolume) return;
         if (source.VolumeBlocks is not { } blocks)
         {
             issues.Add(new(null, AssetProblem.Unreadable, $"The {source.Kind} source has no ISO 9660 volume to check."));
@@ -259,33 +272,23 @@ public static class AssetVerifier
         }
         if (manifest.VolumeXxh3 is not { } expectedHash || decided) return;
 
-        if (!hashes.TryGetValue(VolumeHashKey, out var actual))
-        {
-            try
-            {
-                await using var stream = source.OpenVolume();
-                actual = await FileFingerprint.Xxh3Async(stream, cancellationToken).ConfigureAwait(false);
-            }
-            catch (Exception exception) when (IsReadFailure(exception) || exception is NotSupportedException)
-            {
-                issues.Add(new(null, AssetProblem.Unreadable, $"The volume could not be read: {exception.Message}"));
-                return;
-            }
-            hashes[VolumeHashKey] = actual;
-        }
-        if (!actual.Equals(expectedHash, StringComparison.Ordinal))
-            issues.Add(new(null, AssetProblem.WrongVolumeHash, $"Expected volume xxh3 {expectedHash}; found {actual}."));
+        var volume = reads.Volume ??= await HashAsync(source.OpenVolume,
+            exception => IsReadFailure(exception) || exception is NotSupportedException,
+            cancellationToken).ConfigureAwait(false);
+        if (volume.Failure is { } failure)
+            issues.Add(new(null, AssetProblem.Unreadable, $"The volume could not be read: {failure}"));
+        else if (!volume.Xxh3!.Equals(expectedHash, StringComparison.Ordinal))
+            issues.Add(new(null, AssetProblem.WrongVolumeHash, $"Expected volume xxh3 {expectedHash}; found {volume.Xxh3}."));
     }
 
-    // hashes holds the fingerprint of each file already read from this source, by normalized path.
     private static async Task<List<AssetVerificationIssue>> CheckAsync(
         OriginalContentSource source,
         AssetManifest manifest,
-        Dictionary<string, string> hashes,
+        SourceReads reads,
         CancellationToken cancellationToken)
     {
         var issues = new List<AssetVerificationIssue>();
-        await CheckVolumeAsync(source, manifest, hashes, issues, cancellationToken).ConfigureAwait(false);
+        await CheckVolumeAsync(source, manifest, reads, issues, cancellationToken).ConfigureAwait(false);
         foreach (var spec in manifest.Files)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -305,31 +308,40 @@ public static class AssetVerifier
             }
 
             if (spec.Xxh3 is null) continue;
-            if (!hashes.TryGetValue(relative, out var actual))
-            {
-                try
-                {
-                    await using var stream = source.OpenRead(relative);
-                    actual = await FileFingerprint.Xxh3Async(stream, cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception exception) when (IsReadFailure(exception))
-                {
-                    issues.Add(new(relative, AssetProblem.Unreadable, $"The file could not be read: {exception.Message}"));
-                    continue;
-                }
-                hashes[relative] = actual;
-            }
-            if (!actual.Equals(spec.Xxh3, StringComparison.Ordinal))
-                issues.Add(new(relative, AssetProblem.WrongHash, $"Expected xxh3 {spec.Xxh3}; found {actual}."));
+            if (!reads.Files.TryGetValue(relative, out var read))
+                reads.Files[relative] = read = await HashAsync(() => source.OpenRead(relative), IsReadFailure,
+                    cancellationToken).ConfigureAwait(false);
+            if (read.Failure is { } failure)
+                issues.Add(new(relative, AssetProblem.Unreadable, $"The file could not be read: {failure}"));
+            else if (!read.Xxh3!.Equals(spec.Xxh3, StringComparison.Ordinal))
+                issues.Add(new(relative, AssetProblem.WrongHash, $"Expected xxh3 {spec.Xxh3}; found {read.Xxh3}."));
         }
         if (manifest.AudioTracks is { Count: > 0 } tracks)
-            await CheckAudioAsync(source, tracks, issues, cancellationToken).ConfigureAwait(false);
+            await CheckAudioAsync(source, tracks, reads, issues, cancellationToken).ConfigureAwait(false);
         return issues;
+    }
+
+    // Hashes the stream open returns, or gives the message of an exception isFailure accepts.
+    private static async Task<HashRead> HashAsync(
+        Func<Stream> open,
+        Func<Exception, bool> isFailure,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var stream = open();
+            return new(await FileFingerprint.Xxh3Async(stream, cancellationToken).ConfigureAwait(false), null);
+        }
+        catch (Exception exception) when (isFailure(exception))
+        {
+            return new(null, exception.Message);
+        }
     }
 
     private static async Task CheckAudioAsync(
         OriginalContentSource source,
         IReadOnlyList<CddaTrackFingerprint> tracks,
+        SourceReads reads,
         List<AssetVerificationIssue> issues,
         CancellationToken cancellationToken)
     {
@@ -341,19 +353,11 @@ public static class AssetVerifier
             return;
         }
 
-        Stream image;
-        try { image = openImage(); }
-        catch (Exception exception) when (IsReadFailure(exception))
+        // Opened for the first track this source has not verified yet. An image that fails to open
+        // is tried once per source.
+        Stream? image = null;
+        try
         {
-            foreach (var track in tracks)
-                issues.Add(new(null, AssetProblem.Unreadable, $"The image could not be read: {exception.Message}")
-                    { AudioTrack = track.Track });
-            return;
-        }
-
-        await using (image.ConfigureAwait(false))
-        {
-            var imageSectors = image.Length / CueBinSheet.RawSectorSize;
             foreach (var track in tracks)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -363,22 +367,48 @@ public static class AssetVerifier
                         $"The cue sheet has no audio track {track.Track:D2}.") { AudioTrack = track.Track });
                     continue;
                 }
-                CddaTrackVerification result;
-                try
+                if (!reads.Tracks.TryGetValue(track, out var issue))
                 {
-                    result = await CddaTrackFingerprints.VerifyAsync(image,
-                        sheet.TrackExtent(track.Track, imageSectors), track, cancellationToken).ConfigureAwait(false);
+                    if (image is null && reads.ImageFailure is null)
+                    {
+                        try { image = openImage(); }
+                        catch (Exception exception) when (IsReadFailure(exception)) { reads.ImageFailure = exception.Message; }
+                    }
+                    issue = image is null
+                        ? new(null, AssetProblem.Unreadable, $"The image could not be read: {reads.ImageFailure}")
+                            { AudioTrack = track.Track }
+                        : await VerifyTrackAsync(image, sheet, track, cancellationToken).ConfigureAwait(false);
+                    reads.Tracks[track] = issue;
                 }
-                catch (Exception exception) when (IsReadFailure(exception))
-                {
-                    issues.Add(new(null, AssetProblem.Unreadable, $"The track could not be read: {exception.Message}")
-                        { AudioTrack = track.Track });
-                    continue;
-                }
-                if (result.Problem is { } problem)
-                    issues.Add(new(null, problem, result.Detail) { AudioTrack = track.Track });
+                if (issue is not null) issues.Add(issue);
             }
         }
+        finally
+        {
+            if (image is not null) await image.DisposeAsync().ConfigureAwait(false);
+        }
+    }
+
+    // The problem with one track, or null when it matched.
+    private static async Task<AssetVerificationIssue?> VerifyTrackAsync(
+        Stream image,
+        CueBinSheet sheet,
+        CddaTrackFingerprint track,
+        CancellationToken cancellationToken)
+    {
+        CddaTrackVerification result;
+        try
+        {
+            result = await CddaTrackFingerprints.VerifyAsync(image,
+                sheet.TrackExtent(track.Track, image.Length / CueBinSheet.RawSectorSize), track, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (IsReadFailure(exception))
+        {
+            return new(null, AssetProblem.Unreadable, $"The track could not be read: {exception.Message}")
+                { AudioTrack = track.Track };
+        }
+        return result.Problem is { } problem ? new(null, problem, result.Detail) { AudioTrack = track.Track } : null;
     }
 
     private static bool IsReadFailure(Exception exception) =>
@@ -386,6 +416,27 @@ public static class AssetVerifier
 
     private sealed record OpenedSource(OriginalContentSource? Source, AssetVerificationIssue? Failure)
     {
-        public Dictionary<string, string> Hashes { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public SourceReads Reads { get; } = new();
+    }
+
+    // A fingerprint read from a source, or the message of the exception that stopped the read.
+    private readonly record struct HashRead(string? Xxh3, string? Failure);
+
+    // What has been read from one opened source. Every edition checked against the source gets the
+    // answer of one read, a failed read included.
+    private sealed class SourceReads
+    {
+        public HashRead? Volume { get; set; }
+
+        // By normalized path.
+        public Dictionary<string, HashRead> Files { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        // Why the raw image could not be opened, once an attempt failed.
+        public string? ImageFailure { get; set; }
+
+        // Each verified track's problem, or null for a match, by fingerprint. The fingerprint names
+        // the track, and the source's sheet and image fix that track's extent, so for one source the
+        // fingerprint also determines the extent.
+        public Dictionary<CddaTrackFingerprint, AssetVerificationIssue?> Tracks { get; } = new();
     }
 }

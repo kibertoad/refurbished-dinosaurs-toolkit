@@ -223,6 +223,16 @@ public sealed class VolumePinTests
         Assert.Equal(FileFingerprint.Xxh3(Encoding.UTF8.GetBytes("A\0" + "1\0")), unpinned.Fingerprint());
     }
 
+    [Fact]
+    public void AManifestPinsTheVolumeWhenItGivesAnyPin()
+    {
+        var unpinned = Edition("e");
+        Assert.False(unpinned.PinsVolume);
+        Assert.True((unpinned with { VolumeIdentifier = "DISC" }).PinsVolume);
+        Assert.True((unpinned with { VolumeBlocks = 23 }).PinsVolume);
+        Assert.True((unpinned with { VolumeXxh3 = FileFingerprint.Xxh3(Payload) }).PinsVolume);
+    }
+
     private static AssetManifest Edition(string name, string kind = ContentSourceKinds.Iso9660) =>
         new("game", name, [new("EI/TEST.BIN", Payload.Length, FileFingerprint.Xxh3(Payload))], kind);
 
