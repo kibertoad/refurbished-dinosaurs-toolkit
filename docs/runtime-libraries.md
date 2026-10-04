@@ -244,3 +244,24 @@ Replace unsigned-eight-bit widening loops with `Media.Audio.Pcm16.FromUnsigned8`
 `Pcm16.Encode` and `LegacyFormats.WavePcm16Writer` instead of host-endian WAVE construction.
 `WavePcm16Stream` owns its input by default, supports aligned buffers and looped reads, and exposes
 format metadata for game-specific CDDA admission. Dispose voices before cached resources.
+
+### Latin-1 volume identifiers
+
+`OriginalContentSource.Label` on an `.iso` or cue/bin source now reads each byte of the primary
+volume descriptor's identifier as the Latin-1 (ISO-8859-1) character of the same value. It read the
+identifier as ASCII before, which turned every byte above 0x7F into `?`. Byte 0xC9 now gives `É`
+(U+00C9), so two identifiers that differ only in such a byte give different labels. Trailing
+spaces and NULs are still removed, and an identifier with only ASCII bytes reads as before.
+
+`AssetManifest.Validate` and `schemas/asset-manifest.schema.json` now accept a `VolumeIdentifier`
+of 1 to 32 printable Latin-1 characters (U+0020 to U+007E and U+00A0 to U+00FF) that does not end
+in a space. Control characters, including C1 (U+0080 to U+009F), and characters above U+00FF are
+rejected, so a descriptor whose identifier holds a control byte before its padding is pinned with
+`VolumeXxh3`.
+
+This affects code that compares `Label`, and manifests whose `VolumeIdentifier` writes `?` for a
+byte above 0x7F. Such a pin no longer matches the disc and fails with `WrongVolumeIdentifier`.
+Replace each `?` that stands for a high byte with that byte's Latin-1 character (in JSON, `"\u00C9"`
+or the character itself), reading the value from `Label` of a reference copy. Changing the pin
+changes the manifest's `Fingerprint()`, so copies installed with the old manifest are imported
+again. Code that compares `Label` with a string holding `?` for those bytes changes the same way.

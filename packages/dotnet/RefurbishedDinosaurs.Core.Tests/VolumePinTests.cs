@@ -72,6 +72,37 @@ public sealed class VolumePinTests
     }
 
     [Fact]
+    public async Task IdentifyTellsApartImagesWhoseIdentifiersDifferOnlyInAByteAbove0x7F()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            // Bytes 0xC9 and 0xCA in the last position. An ASCII reading turns both into '?'.
+            var first = await WriteAsync(root, "first.iso", WithIdentifier(OriginalContentSourceTests.BuildIso(Payload), "PRESSING_\u00C9"));
+            var second = await WriteAsync(root, "second.iso", WithIdentifier(OriginalContentSourceTests.BuildIso(Payload), "PRESSING_\u00CA"));
+            using (var source = OriginalContentSource.OpenIso9660(first))
+                Assert.Equal("PRESSING_\u00C9", source.Label);
+            var a = Edition("a") with { VolumeIdentifier = "PRESSING_\u00C9" };
+            var b = Edition("b") with { VolumeIdentifier = "PRESSING_\u00CA" };
+
+            var found = await AssetVerifier.IdentifyAsync(first, [b, a], TestContext.Current.CancellationToken);
+            Assert.Same(a, found.Edition);
+            var issue = Assert.Single(Assert.Single(found.Mismatches).Issues);
+            Assert.Equal(AssetProblem.WrongVolumeIdentifier, issue.Problem);
+            Assert.Equal("Expected volume identifier 'PRESSING_\u00CA'; found 'PRESSING_\u00C9'.", issue.Detail);
+            Assert.Same(b, (await AssetVerifier.IdentifyAsync(second, [a, b], TestContext.Current.CancellationToken)).Edition);
+
+            // A pin written with '?' for the high byte matches neither pressing.
+            var questionMark = Edition("question-mark") with { VolumeIdentifier = "PRESSING_?" };
+            foreach (var image in new[] { first, second })
+                Assert.Equal([AssetProblem.WrongVolumeIdentifier],
+                    (await AssetVerifier.VerifyAsync(image, questionMark, TestContext.Current.CancellationToken))
+                        .Issues.Select(entry => entry.Problem));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task IdentifyTellsApartImagesThatDifferOnlyInVolumeSize()
     {
         var root = CreateTemporaryDirectory();
@@ -195,11 +226,38 @@ public sealed class VolumePinTests
     [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":""}""")]
     [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"DISC "}""")]
     [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456"}""")]
-    [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"DIÉSC"}""")]
+    [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"D\u0000SC"}""")]
+    [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"D\u001FSC"}""")]
+    [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"DISC\n"}""")]
+    [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"D\u007FSC"}""")]
+    [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"D\u0080SC"}""")]
+    [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"D\u009FSC"}""")]
+    [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"DĀSC"}""")]
+    [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"D€SC"}""")]
     [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeBlocks":17}""")]
     [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"cue-bin","files":[{"path":"A","size":1}],"volumeXxh3":"ABC"}""")]
     public void ManifestRejectsVolumePinsOutsideADiscImageAndInvalidValues(string json) =>
         Assert.Throws<InvalidDataException>(() => AssetManifest.Load(new MemoryStream(Encoding.UTF8.GetBytes(json))));
+
+    // Printable Latin-1 is U+0020 to U+007E and U+00A0 to U+00FF, the characters a descriptor byte
+    // outside the control ranges reads as.
+    [Theory]
+    [InlineData("DISC")]
+    [InlineData(" ~")]
+    [InlineData("DI\u00C9SC")]
+    [InlineData("\u00A0")]
+    [InlineData("DISC\u00A0")]
+    [InlineData("\u00FF")]
+    [InlineData("ABCDEFGHIJKLMNOPQRSTUVWXYZ\u00C0\u00C9\u00D6\u00E9\u00F6\u00FF")]
+    public void ManifestAcceptsPrintableLatin1VolumeIdentifiers(string identifier)
+    {
+        var json = $$"""
+            {"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],
+             "volumeIdentifier":{{System.Text.Json.JsonSerializer.Serialize(identifier)}}}
+            """;
+        var manifest = AssetManifest.Load(new MemoryStream(Encoding.UTF8.GetBytes(json)));
+        Assert.Equal(identifier, manifest.VolumeIdentifier);
+    }
 
     [Fact]
     public void ManifestReadsVolumePinsAndTheyEnterTheFingerprint()
@@ -216,6 +274,8 @@ public sealed class VolumePinTests
         var unpinned = new AssetManifest("g", "e", [new("A", 1)]);
         Assert.NotEqual(unpinned.Fingerprint(), manifest.Fingerprint());
         Assert.NotEqual(manifest.Fingerprint(), (manifest with { VolumeIdentifier = "DISC2" }).Fingerprint());
+        Assert.NotEqual((manifest with { VolumeIdentifier = "DISC\u00C9" }).Fingerprint(),
+            (manifest with { VolumeIdentifier = "DISC\u00CA" }).Fingerprint());
         Assert.NotEqual(manifest.Fingerprint(), (manifest with { VolumeBlocks = 24 }).Fingerprint());
         Assert.NotEqual(manifest.Fingerprint(),
             (manifest with { VolumeXxh3 = FileFingerprint.Xxh3("other"u8.ToArray()) }).Fingerprint());
@@ -230,7 +290,7 @@ public sealed class VolumePinTests
     {
         var field = image.AsSpan(DescriptorOffset + 40, 32);
         field.Fill((byte)' ');
-        Encoding.ASCII.GetBytes(identifier).CopyTo(field);
+        Encoding.Latin1.GetBytes(identifier).CopyTo(field);
         return image;
     }
 

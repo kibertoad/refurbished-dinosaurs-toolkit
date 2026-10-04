@@ -161,6 +161,25 @@ public sealed class OriginalContentSourceTests
         finally { File.Delete(path); }
     }
 
+    [Fact]
+    public async Task Iso9660SourceReadsEachLabelByteAsTheLatin1CharacterOfTheSameValue()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"toad-iso-label-{Guid.NewGuid():N}.iso");
+        var image = BuildIso([1]);
+        var field = image.AsSpan(16 * SectorSize + 40, 32);
+        field.Fill((byte)' ');
+        // A high byte, a C1 control byte, NBSP and 0xFF, then a NUL before the trailing spaces.
+        byte[] identifier = [(byte)'A', 0xC9, 0x85, 0xA0, 0xFF, (byte)'Z', 0x00];
+        identifier.CopyTo(field);
+        await File.WriteAllBytesAsync(path, image, TestContext.Current.CancellationToken);
+        try
+        {
+            using var source = OriginalContentSource.Open(path);
+            Assert.Equal("A\u00C9\u0085\u00A0\u00FFZ", source.Label);
+        }
+        finally { File.Delete(path); }
+    }
+
     internal static byte[] BuildIso(byte[] payload)
     {
         const int rootSector = 20;

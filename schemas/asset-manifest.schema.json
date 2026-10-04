@@ -22,8 +22,8 @@
     "sourceKind": { "enum": ["directory", "iso9660", "cue-bin", "installshield-cabinet"], "default": "directory" },
     "volumeIdentifier": {
       "type": "string",
-      "$comment": "The ISO 9660 primary volume descriptor's identifier, without its trailing padding.",
-      "pattern": "^[ -~]{0,31}[!-~]$"
+      "$comment": "The ISO 9660 primary volume descriptor's identifier, without its trailing padding. Each byte reads as the Latin-1 character of the same value; control bytes cannot be pinned.",
+      "pattern": "^[ -~\\u00a0-\\u00ff]{0,31}[!-~\\u00a0-\\u00ff]$"
     },
     "volumeBlocks": {
       "type": "integer",

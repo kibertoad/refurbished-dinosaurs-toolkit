@@ -38,9 +38,15 @@ public sealed record AssetManifest(
     };
 
     /// <summary>
-    /// The identifier the ISO 9660 primary volume descriptor must carry, compared exactly after its
-    /// trailing spaces and NULs are removed, or <see langword="null"/> to leave it unchecked. Only an
-    /// <c>iso9660</c> or <c>cue-bin</c> manifest may give it.
+    /// The identifier the ISO 9660 primary volume descriptor must carry, compared ordinally with
+    /// <c>OriginalContentSource.Label</c> after the descriptor's trailing spaces and NULs are removed,
+    /// or <see langword="null"/> to leave it unchecked. Only an <c>iso9660</c> or <c>cue-bin</c>
+    /// manifest may give it. The label reads each descriptor byte as the Latin-1 character of the
+    /// same value, so a byte above 0x7F is written as that character: byte 0xC9 is <c>É</c>
+    /// (U+00C9). The identifier holds 1 to 32 printable Latin-1 characters (U+0020 to U+007E and
+    /// U+00A0 to U+00FF) and does not end in a space. A descriptor whose identifier holds a control
+    /// byte (0x00 to 0x1F, 0x7F, or 0x80 to 0x9F) before its trailing padding cannot be pinned by
+    /// identifier; pin it with <see cref="VolumeXxh3"/>.
     /// </summary>
     public string? VolumeIdentifier { get; init; }
 
@@ -116,17 +122,22 @@ public sealed record AssetManifest(
             throw new InvalidDataException(
                 $"Asset manifest pins an ISO 9660 volume for source kind '{SourceKind}'; only 'iso9660' and 'cue-bin' hold one.");
         // The descriptor holds 32 bytes, and the reader drops trailing padding, so an identifier
-        // ending in a space could never match.
+        // ending in a space could never match. The reader maps each byte to the Latin-1 character of
+        // the same value. Control characters are refused: the fingerprint separates its fields with
+        // NUL and newline, and a pin could not show them.
         if (VolumeIdentifier is { } identifier &&
-            (identifier.Length is 0 or > 32 || identifier[^1] == ' ' || identifier.Any(c => c is < ' ' or > '~')))
+            (identifier.Length is 0 or > 32 || identifier[^1] == ' ' || !identifier.All(IsPrintableLatin1)))
             throw new InvalidDataException(
-                "Asset manifest volume identifier must be 1 to 32 printable ASCII characters and not end in a space.");
+                "Asset manifest volume identifier must be 1 to 32 printable Latin-1 characters " +
+                "(U+0020 to U+007E, U+00A0 to U+00FF) and not end in a space.");
         if (VolumeBlocks < MinimumVolumeBlocks)
             throw new InvalidDataException(
                 $"Asset manifest volume size must be at least {MinimumVolumeBlocks} logical blocks.");
         if (VolumeXxh3 is not null && !FileFingerprint.IsXxh3(VolumeXxh3))
             throw new InvalidDataException("Asset manifest has an invalid volume xxh3 value.");
     }
+
+    private static bool IsPrintableLatin1(char c) => c is >= ' ' and <= '~' or >= '\u00A0' and <= '\u00FF';
 
     private static InvalidDataException TooLarge() =>
         new($"Asset manifest is larger than {MaximumBytes} bytes.");
@@ -136,8 +147,9 @@ public sealed record AssetManifest(
     /// path passes <see cref="PortableAssetPath.Relative"/> and appears once (ignoring case), no size is
     /// negative, and every hash is an XXH3-128 fingerprint (<see cref="FileFingerprint.IsXxh3"/>).
     /// A volume pin (<see cref="VolumeIdentifier"/>, <see cref="VolumeBlocks"/>, <see cref="VolumeXxh3"/>)
-    /// needs the <c>iso9660</c> or <c>cue-bin</c> source kind, an identifier of 1 to 32 printable ASCII
-    /// characters that does not end in a space, at least 18 blocks, and an XXH3-128 fingerprint.
+    /// needs the <c>iso9660</c> or <c>cue-bin</c> source kind, an identifier of 1 to 32 printable Latin-1
+    /// characters (U+0020 to U+007E, U+00A0 to U+00FF) that does not end in a space, at least 18
+    /// blocks, and an XXH3-128 fingerprint.
     /// <see cref="AudioTracks"/>, when given, needs the <c>cue-bin</c> source kind, and each track must
     /// pass <see cref="CddaTrackFingerprint.Validate"/> and appear once.
     /// </summary>

@@ -37,7 +37,13 @@ public abstract class OriginalContentSource : IDisposable
 {
     /// <summary>One of <see cref="ContentSourceKinds"/>.</summary>
     public abstract string Kind { get; }
-    /// <summary>The ISO volume identifier, or <see langword="null"/> for a directory.</summary>
+    /// <summary>
+    /// The ISO 9660 primary volume descriptor's volume identifier without its trailing spaces and NULs,
+    /// or <see langword="null"/> for a source with no volume or an identifier that is all padding.
+    /// Each of the 32 bytes reads as the Latin-1 (ISO-8859-1) character of the same value, so a byte
+    /// above 0x7F gives the character U+0080 to U+00FF and two identifiers that differ in any byte
+    /// give different labels.
+    /// </summary>
     public abstract string? Label { get; }
     /// <summary>The cue sheet of a <see cref="ContentSourceKinds.CueBin"/> source, otherwise <see langword="null"/>.</summary>
     public virtual CueBinSheet? Cue => null;
@@ -468,9 +474,10 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
         return name;
     }
 
+    // Latin-1 maps each byte to the character of the same value, so the label keeps every byte.
     private static string? DecodeIdentifier(ReadOnlySpan<byte> bytes)
     {
-        var value = Encoding.ASCII.GetString(bytes).TrimEnd(' ', '\0');
+        var value = Encoding.Latin1.GetString(bytes).TrimEnd(' ', '\0');
         return value.Length == 0 ? null : value;
     }
 
