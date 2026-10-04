@@ -31,6 +31,10 @@
 //                       used. Run it only after every test in those files passed, with none
 //                       skipped, against the original's files
 //
+// Each problem is one line that starts with the path it concerns, or spec for the spec as a whole.
+// A problem that breaks a numbered rule of the standard ends with the rule's label, such as
+// [STATUS-4] for the rule whose heading is anchored at #status-4.
+//
 // The KSC environment variable names the Kaitai Struct compiler. Without it, the check looks for
 // kaitai-struct-compiler or ksc on PATH, and warns when it finds neither.
 //
@@ -669,6 +673,8 @@ function readCsv(file: string): { header: string[]; rows: string[][] } | null {
 const idsIn = (text: unknown): string[] => [...new Set(String(text ?? "").match(ID_RE) ?? [])];
 const kindOf = (id: string) => id.split("-")[0];
 const areaOf = (id: string) => id.split("-")[1];
+// Builds and sources have an alias in place of an area and a number.
+const isAlias = (id: string) => ["BLD", "SRC"].includes(kindOf(id));
 // Orders IDs of one kind and area by number, so RULE-A-999 comes before RULE-A-1000. Anything else
 // compares by UTF-16 code unit, as Array.prototype.sort does, so the order does not depend on the
 // machine's locale.
@@ -750,8 +756,7 @@ for (const [kind, { dir }] of Object.entries(KINDS)) {
     }
     if (kindOf(id) !== kind) problem(file, `a ${kindOf(id)} entry does not belong in spec/${dir}/`);
     // IDENTIFIERS-3 makes a number unique within its kind and area. No numbered rule says so of an alias.
-    if (entries.has(id))
-      problem(file, `ID ${id} is used twice`, ["BLD", "SRC"].includes(kindOf(id)) ? undefined : "IDENTIFIERS-3");
+    if (entries.has(id)) problem(file, `ID ${id} is used twice`, isAlias(id) ? undefined : "IDENTIFIERS-3");
     entries.set(id, entry);
   }
 }
@@ -1185,7 +1190,7 @@ for (const [id, e] of entries) {
   const { file, meta, kind } = e;
   checkIdForm(file, id);
   for (const f of FIELDS[kind].required) if (!(f in meta)) problem(file, `front matter lacks ${f}`, FIELD_RULES[f]);
-  if (!Array.isArray(meta.superseded_by)) problem(file, "superseded_by must be a list", "ENTRY-TYPES-4");
+  if (!Array.isArray(meta.superseded_by)) problem(file, "superseded_by must be a list", FIELD_RULES.superseded_by);
   const expectedSections = SECTIONS[kind];
   const got = e.sections.map((s) => s.title);
   if (got.join("|") !== expectedSections.join("|"))
@@ -1383,7 +1388,7 @@ for (const [id, e] of entries) {
   }
 
   if (KINDS[kind].statuses === "claim") {
-    for (const f of CLAIM_LINKS) if (!Array.isArray(meta[f])) problem(file, `${f} must be a list`);
+    for (const f of CLAIM_LINKS) if (!Array.isArray(meta[f])) problem(file, `${f} must be a list`, FIELD_RULES[f]);
     const evidence = asList(meta.evidence);
     const conflicting = asList(meta.conflicting);
     const related = asList(meta.related);
@@ -1817,9 +1822,9 @@ for (const [id, e] of entries) {
   for (const m of code.matchAll(/\bshow\s+(SCR-[A-Z0-9]+-\d+)/g))
     if (!related.includes(m[1])) problem(file, `shows ${m[1]}; add it to related`, "ENTRY-TYPES-6");
   for (const m of code.matchAll(/\b(FMT-[A-Z0-9]+-\d+)/g))
-    if (!related.includes(m[1])) problem(file, `uses ${m[1]}; add it to related`);
+    if (!related.includes(m[1])) problem(file, `uses ${m[1]}; add it to related`, "ENTRY-TYPES-6");
   for (const m of e.code!.matchAll(/# may run: (RULE-[A-Z0-9]+-\d+)/g))
-    if (!related.includes(m[1])) problem(file, `may be interrupted by ${m[1]}; add it to related`);
+    if (!related.includes(m[1])) problem(file, `may be interrupted by ${m[1]}; add it to related`, "ENTRY-TYPES-6");
   if (meta.status === "established" && mayBeInterrupted(e) && onlyEmulatedRuns(e))
     problem(
       file,
@@ -1875,7 +1880,7 @@ for (const [id, e] of entries) {
       continue;
     }
     for (const fmt of enumNames.get(name)!)
-      if (!related.includes(fmt)) problem(file, `uses ${name} from ${fmt}; add it to related`);
+      if (!related.includes(fmt)) problem(file, `uses ${name} from ${fmt}; add it to related`, "ENTRY-TYPES-6");
   }
   // Names read or assigned without let that are neither locals nor glossary terms
   for (const m of code.matchAll(/(?<![.\w])([a-z_][a-z0-9_]*)(?=\s*(?:\.|\[|=[^=]|$))/gm)) {
@@ -2044,7 +2049,8 @@ for (const [id, e] of entries) {
     const group = other ? [x, ...asList(other.meta.split_with).filter((g) => !isSuperseded(g))] : [];
     if (group.length < 2 || group.includes(id)) continue;
     for (const g of group)
-      if (!related.includes(g)) problem(e.file, `relates to ${x}, which is split with ${g}; add ${g} to related`);
+      if (!related.includes(g))
+        problem(e.file, `relates to ${x}, which is split with ${g}; add ${g} to related`, "ENTRY-TYPES-6");
     for (const b of asList(e.meta.builds))
       if (!group.some((g) => asList(entries.get(g)?.meta.builds).includes(b)))
         problem(e.file, `lists ${b}, which no entry of the split ${group.join(", ")} lists`, "ENTRY-TYPES-8");
@@ -2146,7 +2152,7 @@ function runTool(cmd: string, args: string[]) {
 // A generated file that would pass the line limit becomes a directory of the same name, split by
 // area (BLD-SRC for builds and sources, which have no area), then by kind, then by a block of 100
 // numbers, or by the first character of a build's or source's alias.
-const groupOf = (id: string) => (["BLD", "SRC"].includes(kindOf(id)) ? "BLD-SRC" : areaOf(id));
+const groupOf = (id: string) => (isAlias(id) ? "BLD-SRC" : areaOf(id));
 const blockOf = (id: string) => {
   const kind = kindOf(id);
   if (kind === "BLD" || kind === "SRC") return id.charAt(kind.length + 1);
@@ -2625,7 +2631,7 @@ function walk(dir: string, fn: (path: string) => void) {
     });
   for (const { file: f, text } of scan) {
     for (const x of idsIn(text)) {
-      if (["BLD", "SRC"].includes(kindOf(x)) && !entries.has(x)) continue; // aliases can collide with ordinary words
+      if (isAlias(x) && !entries.has(x)) continue; // aliases can collide with ordinary words
       if (!entries.has(x)) problem(f, `cites ${x}, which does not exist in the spec`);
       else if (isSuperseded(x) && !isDeviationFile(f))
         problem(f, `cites ${x}, which is superseded; cite what replaced it`);
@@ -3103,7 +3109,7 @@ function renderReferences(ids: string[], path: string) {
 
 const generated = new Map<string, string>(); // absolute path -> text
 {
-  const areaIds = sortedIds.filter((x) => !["BLD", "SRC"].includes(kindOf(x)));
+  const areaIds = sortedIds.filter((x) => !isAlias(x));
   const indexes: Record<string, [Render, string[]]> = {
     "by-kind": [renderByKind, sortedIds],
     "by-area": [renderByArea, areaIds],
@@ -3212,7 +3218,7 @@ if (unique.length) {
   console.error(`\n${unique.length} problem(s) in ${entries.size} spec entries.`);
   if (citedRule)
     console.error(
-      "A label in brackets, such as [STATUS-14], names the rule of the documentation standard that the problem breaks. The standard opens it with the heading ###### STATUS-14, anchored at #status-14.",
+      "A label in brackets, such as [STATUS-14], names the rule of the documentation standard that the problem breaks. The standard opens it with the heading ###### STATUS-14, anchored at https://dinorefurb.com/documentation-standard/#status-14 and at #status-14 in a vendored copy.",
     );
   process.exit(1);
 }

@@ -64,7 +64,10 @@ test("a problem that breaks a numbered rule names the rule", (t) => {
     output,
     /RULE-SCORE-001\.md: section Edge cases is empty; write None known\. or None\. \[ENTRY-TYPES-2\]$/m,
   );
-  assert.match(output, /names the rule of the documentation standard that the problem breaks/);
+  assert.match(
+    output,
+    /names the rule of the documentation standard that the problem breaks.*https:\/\/dinorefurb\.com\/documentation-standard\/#status-14/,
+  );
 });
 
 test("a problem that no numbered rule covers has no label and no note about labels", (t) => {
@@ -89,6 +92,35 @@ test("a missing field that every claim has names the rule, and a field of one ki
   assert.equal(status, 1);
   assert.match(output, /RULE-SCORE-001\.md: front matter lacks split_with \[ENTRY-TYPES-5\]$/m);
   assert.match(output, /SRC-MANUAL\.md: front matter lacks licence$/m);
+});
+
+test("a claim link that is not a list names the rule that makes the field always present", (t) => {
+  const root = broken(t, (r) =>
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "conflicting: []\n", "conflicting: none\n"),
+  );
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /RULE-SCORE-001\.md: conflicting must be a list \[ENTRY-TYPES-5\]$/m);
+});
+
+test("each link a rule's related field lacks names ENTRY-TYPES-6", (t) => {
+  const root = broken(t, (r) => {
+    copyRule(r, "RULE-SCORE-002");
+    replaceIn(r, "parity/SCORE.md", "| `RULE-SCORE-001` |", `${row("RULE-SCORE-002")}\n| \`RULE-SCORE-001\` |`);
+    replaceIn(
+      r,
+      "spec/rules/RULE-SCORE-001.md",
+      "    return n + 1",
+      "    # may run: RULE-SCORE-002\n    let best = FMT-SCORE-001\n    return n + 1",
+    );
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /RULE-SCORE-001\.md: may be interrupted by RULE-SCORE-002; add it to related \[ENTRY-TYPES-6\]$/m,
+  );
+  assert.match(output, /RULE-SCORE-001\.md: uses FMT-SCORE-001; add it to related \[ENTRY-TYPES-6\]$/m);
 });
 
 test("a numbered ID used twice names IDENTIFIERS-3, and an alias used twice names no rule", (t) => {
@@ -813,7 +845,7 @@ test("emulated calls alone do not establish a rule another rule may interrupt", 
   });
   const { status, output } = run(root);
   assert.equal(status, 1);
-  assert.match(output, /so emulated calls alone cannot establish it/);
+  assert.match(output, /so emulated calls alone cannot establish it \[STATUS-15\]$/m);
 });
 
 test("tests against emulated calls alone do not validate a rule another rule may interrupt", (t) => {

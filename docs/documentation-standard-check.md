@@ -220,12 +220,13 @@ inputs: `--code`, `--references`, `--images`, `--max-range`, `--data-dirs` and `
 and `--glossary <path>` to accept the terms of a draft term file or a directory of them. Set `KSC` to the compiler's
 launcher, or put `kaitai-struct-compiler` on `PATH`, to compile the `.ksy` definitions.
 
-Each problem is one line that starts with the file's path. When the problem breaks a numbered
-rule of the standard, the line ends with the rule's label, such as `[STATUS-4]`. The standard opens
-each rule with a sixth-level heading of that label, anchored at `#status-4`, and a restoration's
-vendored copy keeps the same anchors, so an agent can read that rule alone: its upstream link
-tooling gives the heading a line range like any other. Only Identifiers, Status and the shared
-part of Entry types are numbered so far, and problems under other sections have no label yet.
+Each problem is one line that starts with the path it concerns, or `spec` for a problem with the
+spec as a whole, such as a deleted ID. When the problem breaks a numbered rule of the standard, the
+line ends with the rule's label, such as `[STATUS-4]`. The standard opens each rule with a
+sixth-level heading of that label, anchored at `#status-4`, and a restoration's vendored copy keeps
+the same anchors, so an agent can read that rule alone: its upstream link tooling gives the heading
+a line range like any other. Only Identifiers, Status and the shared part of Entry types are
+numbered so far, and problems under other sections have no label yet.
 
 ## Recording a validation run
 
