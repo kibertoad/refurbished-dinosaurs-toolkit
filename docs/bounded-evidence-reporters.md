@@ -408,7 +408,9 @@ existing CS word is checked and consumed. A mismatched encoded frame fails.
 The model assumes a returning call with balanced stack and preserved CS;
 it invalidates memory, flags and every unpreserved register. Its assumptions are
 printed on each affected path. A model supplies no evidence about actual external
-services, hardware behavior or native failure reachability.
+services, hardware behavior or native failure reachability. A model at an `INT n` site describes
+the interrupt's return instead of a call's; [hardware boundaries](#hardware-boundaries) has the
+rules.
 
 A model may also declare `preservesMemory`, a list of explicit byte scopes that the query assumes the
 service leaves as they were before the call ([ADR 0009](decisions/0009-scoped-memory-hypotheses-on-call-models.md)).
@@ -442,8 +444,11 @@ segment, a concrete interval that crosses the end of the address space, and two 
 share a byte stop the path. Two scopes share a byte when they overlap on one base value (through
 different base registers too) or overlap in linear memory (through different segment values). A
 scope on a symbolic base may address any byte of its segment, so it stops the path beside any scope
-on another base value whose segment range overlaps that segment. The model then invalidates memory
-as before and puts back only the scoped bytes. A byte the model had a value for keeps that value. A
+on another base value whose segment range overlaps that segment. A scope that shares a byte, on the
+same segment and base value, with the return frame the processor writes below SS:SP also stops the
+path, since after the return those bytes hold the frame: the return address of a near call (2 bytes
+for MZ, 4 for PE32) or a far call (4 bytes), or the FLAGS, CS and IP of an interrupt (6 bytes). The
+model then invalidates memory as before and puts back only the scoped bytes. A byte the model had a value for keeps that value. A
 byte it had no value for keeps its pre-call unknown term and stays unread: a later read lists it in
 `missingByteProducers` with the reading instruction as its producer, and a later scope counts it in
 `uncachedBytes`. The model restores no register or return target as such. A traced `pop` or `ret`
@@ -645,6 +650,26 @@ INT, INT1 and INT3 add a `hardware-boundary` event with `boundary: "interrupt"`
 and the `vector` p-code names, then stop the path, since the handler is not
 modeled. INTO still stops as an unsupported instruction, because whether it
 interrupts depends on OF.
+
+In the real-mode model, a `callModels` entry at an `INT n` site continues the path past the
+interrupt under the query's model ([ADR 0017](decisions/0017-call-models-at-interrupt-sites.md)).
+The `hardware-boundary` event is still reported, with its `vector` and `modeled: true`, and the
+handler is not executed. Each case then returns to the next instruction with SP and CS as they were
+before the interrupt, the case's registers set, the model's `preserves` kept and its
+`preservesMemory` scopes put back, and every other register, every flag and all other memory
+unknown. The return is a modeled `call-return` event whose `callSite` is the interrupt, with
+`boundary: "interrupt"` and the `vector`, and the path's `conditionalModels` entry carries the
+same two fields. Relational controls, effect summaries and `origin` inputs (`modeledCall` with the
+interrupt's site) read it as they read a modeled call. The model's cases are the query's assumption
+about the handler: they are not the service's result sequence, and the path stays not
+effect-complete. An interrupt model takes no `returnBytes`. A service that returns with a far
+return and leaves the interrupt's FLAGS word on the stack, as DOS INT 25h and 26h do, takes
+`leavesFlags: true`: each case then returns with SP two bytes below its value before the interrupt,
+and the word at SS:SP is the pre-interrupt FLAGS, reported as a `flags-save` event, so a later
+`popf` restores them. `leavesFlags` is rejected on any other model and with any value but `true`.
+A model at INT1, INT3 (also written as `INT 1` or `INT 3`), INTO or at any interrupt in the PE32
+model is not used, and the path stops there as without it. A path that stops on the model's `preservesMemory` scopes reports the boundary event
+without `modeled`.
 
 `trace` and every command built on it return `hardwareBoundaries`, one row per
 boundary site with the `paths` and `declaredContinuationPaths` that reach it,
@@ -1379,7 +1404,7 @@ instead.
 |---|---|---|
 | 32 | a guard precedes and controls the access it protects; a checked snapshot versus a later reload | `order` with `before` the guard's `branch`, `branch.taken` the protecting direction and `sameValue: { "before": "left", "at": "offset" }` (or `"at": "indirectValue"` on a `call` anchor). A reload after a modeled call is undecided; the occurrence lists the intervening calls and writes. Failure-flag writes and calls on the rejected direction are `reach` controls on that branch's paths |
 | 40 | assignment on each cleanup edge | `lastWriter` on the cleanup read with the assignment's write site. An edge where the assignment was skipped violates it; add `entryState` to accept the frame's prior contents and read each edge's `via` and `unwritten` cause. A slot dropped by an unread service is undecided; a `preservesMemory` scope on BP keeps it across a modeled service, with or without `entryFrame`. From an entry inside the function, name the function in `entryFrame` so its return balances; without it every path stops at that return and the control stays undecided |
-| 31 | aliased outputs; the register a loop predicate comes from | `lastWriter` on the read after both stores names the later store. `origin` on the loop branch's `left` with `inputs.include` the modeled service's register and `producers.exclude` the scratch read |
+| 31 | aliased outputs; the register a loop predicate comes from | One connected query from before the caller's argument pushes, with the service modeled at its CALL or `INT n` site. `lastWriter` on the read after both stores names the later store. `origin` on the predicate's `left` with `inputs.include` the modeled service's register holds when no case supplies that register; a case value enters as a constant and leaves it undecided, so decide the branch directions in a separate query with cases. `producers.exclude` the scratch read is violated when the predicate copies the scratch word, and stays undecided behind a modeled register, which may hide any producer. When the wrapper reloads its pointer arguments after the service, a `preservesMemory` scope on its frame (saved BP, return address and the argument words) keeps them; without it the stores go through unknown pointers and the return stops |
 | 33 | a propagated result traced to the leaf that produced it | `returnContracts` on the helper, then `origin` on the caller's test with `originatingReturns.entries` the helper and `producers.include` the base case's site. A value made in the caller violates it; each return it passed through is listed with its depth. This recipe fits a result copied up unchanged; a helper that tests the recursive result and writes a fresh encoding needs the controls in [a tested and re-encoded recursive result](#a-tested-and-re-encoded-recursive-result) |
 | 30 | runtime mode carried through cleanup; which tables and indirect calls a branch reaches | the mode is a query assumption the engine already accepts: `registers` at entry, or a `callModels` case for the call that returns it. `reach` with `never` on the table loop or indirect call shows the branch bypasses it under that mode, and the assumption is listed in `queryAssumptions`. A stop before the site leaves it undecided, and so does a modeled call on the path, the one that supplies the mode included, because the anchor could lie in its callee. To decide it, start at an entry after that call with the mode in `registers` and the function in `entryFrame` |
 | 41 | terminator write versus returned length and capacity | `relation` with `modulo` 16: the terminator write's `offset` equals the buffer start plus the returned length. `containment` of the copy and terminator writes in `[start, start + capacity)`; a terminator at the capacity violates it |

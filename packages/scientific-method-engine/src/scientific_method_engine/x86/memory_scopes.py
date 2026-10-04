@@ -56,7 +56,7 @@ def validate_scopes(model, bits, flat):
         ranges.append((displacement, displacement + size))
 
 
-def capture_scopes(state, model):
+def capture_scopes(state, model, frame_bytes=0):
     """Resolve each scope against the pre-call state and snapshot its bytes.
 
     Returns ``(values, unread, descriptions)``: the cached bytes, the unknown term names of bytes
@@ -68,8 +68,23 @@ def capture_scopes(state, model):
     share a linear byte (segment aliases included). A symbolic base may address any byte of its
     segment, so it may alias every scope whose segment range overlaps that segment. An uncached
     byte stays uncached after the call.
+
+    ``frame_bytes`` is the size of the return frame the processor writes below SS:SP when the modeled
+    instruction runs: the return address of a call, or FLAGS, CS and IP of an interrupt. Those bytes
+    no longer hold their pre-call values, so a scope that shares a byte with that frame on the same
+    segment and base raises ``StopPath``. A scope that only may alias the frame stays the query's
+    hypothesis.
     """
     values, unread, descriptions, resolved = {}, {}, [], []
+    frame = None
+    if frame_bytes:
+        try:
+            frame_seg, frame_base, _, frame_keys = state.keys(
+                state.segment("ss"), op("sub", state.reg(state.sp), const(frame_bytes, state.bits)), frame_bytes)
+            frame = ((frame_seg, frame_base), set(frame_keys))
+        except StopPath:
+            # A frame that wraps past offset zero of the stack segment is not checked.
+            frame = None
     for scope in model.get("preservesMemory", []):
         segment, base = state.segment(scope["segment"]), state.reg(scope["base"])
         if segment.number is None:
@@ -91,6 +106,8 @@ def capture_scopes(state, model):
                 shared = domains_may_overlap(prior_domain, domain)
             if shared:
                 raise StopPath("preservesMemory intervals overlap or alias")
+        if frame is not None and frame[0] == (seg, group_base) and not frame[1].isdisjoint(keys):
+            raise StopPath("preservesMemory scope covers the return frame the processor writes below SP")
         resolved.append(((seg, group_base), set(keys), domain))
         linear = seg == ("linear",)
         cached = 0

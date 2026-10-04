@@ -27,6 +27,8 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "Declared table continuations are separate conditional paths that spend continuationBudget\n"
          "(paths, totalSteps, maxSteps, visitLimit, stringIterations); ordinary computed transfers remain stopped.\n"
          "Port accesses and interrupts are hardware-boundary events; portInputs supplies port reads as assumptions.\n"
+         "A callModels entry at an INT n site (real mode) returns past the interrupt under its cases (leavesFlags: true\n"
+         "keeps the interrupt's FLAGS word on the stack); other interrupts stop.\n"
          "callModels[].preservesMemory keeps explicit, bounded pre-call byte scopes across a modeled call; other memory stays unknown.\n"
          "A scope needs a concrete segment; its base may be symbolic, such as BP in an entryFrame query.\n"
          "Each traced path's loops record lists restart edges and what changed between iterations (loopIterationLimit).\n"
