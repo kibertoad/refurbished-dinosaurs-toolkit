@@ -1,8 +1,6 @@
 # ADR 0008: routes that fork faster than any budget
 
-Status: proposed
-
-This ADR records a question for a maintainer. Nothing in it is built.
+Status: accepted (option B)
 
 ## Context
 
@@ -73,16 +71,18 @@ with loop length instead of doubling.
   ordering, guards and last-writer controls would need a merged form. That is a larger design
   than this milestone and is listed only so it is not forgotten.
 
-## Proposal
+## Decision
 
-Choose B now and record it as research practice (the handbook's guidance on limits, in
-[validation and fidelity](../validation-and-fidelity.md)). Do not build A unless a maintainer
-accepts its risk in a follow-up revision of this ADR, with these conditions at minimum: every
+B is accepted and recorded as research practice (the handbook's guidance on limits, in
+[validation and fidelity](../validation-and-fidelity.md)). A is not built. Building it needs a
+new ADR that supersedes this one and accepts its risk, with these conditions at minimum: every
 omitted route is a gap with its site and outcome, a contradiction stops the path and is reported,
 `completeWithinModel` is never true under a hypothesis, and the report carries the hypotheses at
 top level beside the paths. Revisit C if several restorations hit loops that fork per element.
 
 ## Status of the downstream request
 
-Dark Sun gap 27's conditional fill stays open under this ADR. The menu linked-child case is
-retried with the separate continuation budget from ADR 0011 first.
+Dark Sun gap 27's conditional fill gets no new engine input. It stays open until Dark Sun reads
+the producers of the forking values and states them through the existing inputs, or records the
+claim as unsettled. The menu linked-child case did not need this ADR: it passes with the separate
+continuation budget from ADR 0011, and its ordinary paths reach the table jump.
