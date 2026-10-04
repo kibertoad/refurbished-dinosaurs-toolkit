@@ -828,7 +828,9 @@ This ancestry is only a dependency candidate:
 a derived value or alias is never unchanged value or storage identity. Unknown
 expressions remain unknown; coincident constants without a shared origin are not
 linked. Both predicate operands are retained; `dependentValueFields` marks which
-depend on the result. Sign and overflow branches are in the signed domain.
+depend on the result. A predicate's `predicateDomain` is `signed` for sign and
+overflow branches, `unsigned` for carry branches and `flags/equality` otherwise,
+LOOP and JCXZ included; the `loops` record names those two `counter`.
 Nothing normalizes a nonzero check into success or proves resource
 contents/extent.
 
@@ -925,17 +927,21 @@ edges to one head. A function called twice is two activations, so its first inst
 restart. A fall-through, a call and a return never form a restart edge.
 
 Each traversal of a restart edge compares the state at this arrival at the head with the state
-at the previous one and appends one record to `iterations`. A record names the `head`, the
+at the previous arrival at that head, by whatever route the path reached it, and appends one
+record to `iterations`. An inner loop's iteration therefore starts where the outer loop last
+entered it and never spans the outer loop's gates. A record names the `head`, the
 `restartEdge`, `fromArrival` and `toArrival` (arrival 1 is the first time the activation reached
 the head, by any route) and the event orders `fromOrder` and `toOrder` the iteration spans:
 
 - `registers.unchanged` lists the registers whose expression is identical. `registers.changed`
   gives the others with `before`, `after` and a `relation`: `changed` when both are known numbers
   that differ, `differentExpression` when the model cannot tell whether the values differ.
-  Segmented16 paths compare 16-bit registers and list a 32-bit register only when its upper half
-  differs.
-- `flags` is `unchanged` when the flag producer, CF and the direction and interrupt flags are
-  identical, and `differ` otherwise.
+  Segmented16 paths compare 16-bit registers and list a 32-bit register only when one of its two
+  upper bytes differs, so a 16-bit write never lists the 32-bit register.
+- `flags` is `unchanged` when the arithmetic flags, CF and the direction and interrupt flags are
+  identical, and `differ` otherwise. The arithmetic flags of a comparison are its operation and
+  operands; after an instruction such as INC, DEC or a shift they are the values its p-code
+  computed. Flags the model forgot are distinct unknowns and always differ.
 - `memory` lists, as byte intervals with the `segment`, `base` and offsets of the event
   `interval` field, every byte the iteration wrote or invalidated: `unchanged`, `changed` and
   `differentExpression` compare the stored bytes; `writtenOverUnmodeled` had no modeled value at
@@ -950,11 +956,14 @@ the head, by any route) and the event orders `fromOrder` and `toOrder` the itera
 - `gateOperandsRepeated` is true when the iteration evaluated the same gates, with the same
   outcomes and identical operand expressions, as the previous iteration: nothing a gate in the
   loop's frame reads changed. It is false when a gate's known operands or the gate sequence
-  changed, and null when the first iteration has nothing to compare with, an operand is unresolved
-  or only differs in expression, or the loop's frame has no gate.
-- `stateRepeatsArrival` names the earliest earlier arrival whose registers, flags and modeled
-  memory are identical to this one, or is null. A byte the model held no value for at either
-  arrival never matches, because its contents may differ. A wrapped index that returns to an
+  changed, including an iteration with no gate after one with gates, and null when the first
+  iteration has nothing to compare with, an operand is unresolved or only differs in expression,
+  or neither iteration has a gate in the loop's frame.
+- `stateRepeatsArrival` names the earliest earlier arrival at the head, by any route, whose
+  registers, flags and modeled memory are identical to this one, or is null. Only bytes written
+  in between are compared, since a byte nothing wrote holds what it held. A byte the model held no
+  value for at either arrival never matches, because its contents may differ, and a call model
+  that forgets memory in between rules out every earlier arrival. A wrapped index that returns to an
   earlier candidate shows here even when no two consecutive iterations repeat.
 
 Unread memory is named by the write generation it was read in, so a loop that writes anything

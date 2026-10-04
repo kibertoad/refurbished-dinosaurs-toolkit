@@ -121,6 +121,9 @@ FND-CONFIG-198 cases against the released engine.
 
 ## Loop restart edges and iteration changes
 
+Status: open. The `loops` record is built; gap 29 waits for Dark Sun to read its own cases with
+the released engine.
+
 Request: Dark Sun gap 29 (FND-SCRIPT-022, FND-CONFIG-161) asks shared loop summaries to identify
 restart edges and the state that must change for progress, to check wrapped arithmetic and no-op
 invalidation before a bounded search or a successful eviction is claimed, to keep comparison
@@ -140,7 +143,8 @@ Synthetic acceptance: a counted LOOP (known changes, a counter gate, no repeat),
 iteration changes nothing and that still stops at `visitLimit`, a wrapped index that returns to an
 earlier state with no consecutive repeat, a no-op rewrite of a free slot, a possibly aliasing write
 reported as invalidation and never matched as a repeat, a restart after a collision as a second
-edge to the same head, a signed gate, two activations of one callee, the iteration limit reached
-and rejected limits. The reader bridge runs the no-change scan through the prepared config.
+edge to the same head, a signed gate, two activations of one callee, a call inside a loop body,
+nested loops, flags recomputed to the same values, a 16-bit write in the segmented model, an
+iteration that loses its gates, the iteration limit reached and rejected limits. The reader bridge runs the no-change scan through the prepared config.
 Exit: the gates pass and the reporter guide documents the record. Gap 29 closes only after Dark
 Sun's own cases are read with the published engine.

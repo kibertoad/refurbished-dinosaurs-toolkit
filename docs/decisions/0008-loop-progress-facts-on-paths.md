@@ -33,15 +33,17 @@ A report that said a loop terminates, or that it cannot, would claim more than t
 4. The report never states that a loop terminates, is bounded, or that a retry or eviction
    succeeded. Those claims, and the rules for making them, are guidance in
    `docs/validation-and-fidelity.md`.
-5. `State` keeps an ordered log of the previous value of every byte a write stores or invalidates.
-   The loop record reads memory at an earlier arrival from it instead of copying memory at every
-   instruction.
+5. `State` keeps an ordered log of the previous value of every register and memory byte a write
+   changes. The loop record rebuilds registers and memory at an earlier arrival from it instead of
+   copying them at every instruction, and a fork shares the entries logged before it. Each call
+   activation is numbered in its frame, so a call inside a loop body never hides the caller's loop.
 6. `loopIterationLimit` caps the iteration records per path. Restart edges are still counted past
    the cap, and the record says how many traversals it omitted.
 
 ## Consequences
 
 Every trace-family path grows by its `loops` record, which is small for straight-line code and
-bounded by the cap for loops. Signedness comes from the same predicate domains the return-flow
-report uses. A restoration cites these facts beside its query assumptions and makes the
+bounded by the cap for loops. Signedness comes from the predicate domain helper the return-flow
+report uses. The loop record names LOOP and JCXZ `counter`; `returnFlows` keeps reporting them as
+`flags/equality`, the value it shipped with, until a major release. A restoration cites these facts beside its query assumptions and makes the
 termination argument itself.

@@ -18,6 +18,49 @@ class StopPath(Exception):
     pass
 
 
+class WriteLog:
+    """Append-only list of (key, previous value) pairs, one per register or memory byte a write changes.
+
+    A memory key is (segment, base, offset); a register key is ("register", root). A previous memory
+    value is None when the model held no value for the byte. ``(("memory-cleared",), None)`` marks a
+    point where the model forgot all memory. Copies made at a fork share the entries
+    recorded before the fork, which are immutable, so forking a path never copies its log.
+    """
+
+    def __init__(self):
+        self.chunks = []  # (absolute index of the first entry, tuple of entries), oldest first
+        self.tail = []
+        self.length = 0
+
+    def __len__(self):
+        return self.length
+
+    def append(self, entry):
+        self.tail.append(entry)
+        self.length += 1
+
+    def extend(self, entries):
+        for entry in entries:
+            self.append(entry)
+
+    def since(self, start):
+        """The entries at absolute index ``start`` and later, oldest first."""
+        for first, chunk in self.chunks:
+            if first + len(chunk) > start:
+                yield from chunk[max(0, start - first):]
+        first = self.length - len(self.tail)
+        yield from self.tail[max(0, start - first):]
+
+    def __deepcopy__(self, memo):
+        if self.tail:
+            self.chunks.append((self.length - len(self.tail), tuple(self.tail)))
+            self.tail = []
+        copy = WriteLog()
+        copy.chunks = list(self.chunks)
+        copy.length = self.length
+        return copy
+
+
 class Shared(dict):
     """Read-only query configuration that every copy of a path shares instead of copying."""
 
@@ -51,6 +94,9 @@ class State:
         self.semantics = BACKEND
         self.sp, self.bp = ("esp", "ebp") if self.flat else ("sp", "bp")
         self.at = entry
+        # Every register and memory byte a write changes, with its previous value, in order, so a
+        # reader can recover the state as it stood at an earlier point of the path (x86/loops.py).
+        self.write_log = WriteLog()
         self.regs = {r: unknown("initial:" + r, ALIASES[r][2]) for r in REGISTERS}
         # Producers per register byte, so a partial write replaces only the bytes it stores.
         self.reg_sources = {r: [()] * (ALIASES[r][2] // 8) for r in REGISTERS}
@@ -67,9 +113,6 @@ class State:
         # Keys grouped by (segment, base) so a write scans only groups that can alias it.
         self.memory_groups = {}
         self.memory_epoch = 0
-        # (key, previous byte or None) for every byte a write stores or invalidates, in order, so a
-        # reader can recover the memory as it stood at an earlier point of the path (x86/loops.py).
-        self.memory_log = []
         # Bytes a preservesMemory scope kept without a value (ADR 0009): key -> the unknown term
         # name they had before the modeled call. They stay unread: no value, no producer.
         self.unread_memory = {}
@@ -161,7 +204,9 @@ class State:
         self.flag_values = None
 
     def clear_memory(self):
-        self.memory_log.extend(self.memory.items())
+        # Bytes the model never held may change too, so the log marks the clear itself.
+        self.write_log.extend(self.memory.items())
+        self.write_log.append((("memory-cleared",), None))
         self.memory.clear()
         self.memory_groups.clear()
         self.unread_memory.clear()
@@ -184,6 +229,7 @@ class State:
         root, low, bits = alias(name)
         value = resize(value, bits)
         value = Value(bits, value.term, sources(value, site=site))
+        self.write_log.append((("register", root), self.regs[root]))
         if bits == ALIASES[root][2]:
             self.regs[root] = value
         else:
@@ -246,13 +292,13 @@ class State:
                     disjoint = a is not None and b is not None and (a[1] <= b[0] or b[1] <= a[0])
                     if not disjoint:
                         uncertain.append(key)
-                        self.memory_log.append((key, self.memory.pop(key, None)))
+                        self.write_log.append((key, self.memory.pop(key, None)))
                         self.unread_memory.pop(key, None)
                         members.discard(key)
                 if not members:
                     del self.memory_groups[group]
             for i, key in enumerate(keys):
-                self.memory_log.append((key, self.memory.get(key)))
+                self.write_log.append((key, self.memory.get(key)))
                 self.memory[key] = extract(write, i * 8, 8)
                 self.unread_memory.pop(key, None)
             self.memory_groups.setdefault((seg, base), set()).update(keys)

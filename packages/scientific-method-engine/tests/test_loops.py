@@ -1,6 +1,9 @@
 """Loop restart edges and iteration changes on synthetic code only."""
 import unittest
+from copy import deepcopy
 from test_x86 import Code, report
+from scientific_method_engine.x86.loops import LoopTracker, _compare_gates
+from scientific_method_engine.x86.result_flow import predicate_domain
 
 
 def stopped(result):
@@ -134,6 +137,82 @@ class LoopProgressTests(unittest.TestCase):
     def test_effects_paths_carry_the_loop_record(self):
         loops = report(self.counted(), "effects")["paths"][0]["loops"]
         self.assertEqual(len(loops["iterations"]), 2)
+
+    def test_a_call_inside_the_loop_body_keeps_the_callers_restart_edge(self):
+        # mov cx, 3; head: call f; loop head; ret; f: ret
+        c = Code().emit("b9 03 00").label("head").branch("e8", "f").label("back").branch("e2", "head").emit("c3")
+        c.label("f").emit("c3")
+        loops = report(c)["paths"][0]["loops"]
+        self.assertEqual([(e["site"], e["target"], e["kind"], e["traversals"], e["depth"]) for e in loops["restartEdges"]],
+                         [(c.labels["back"], c.labels["head"], "loop", 2, 0)])
+        self.assertEqual([(i["fromArrival"], i["toArrival"]) for i in loops["iterations"]], [(1, 2), (2, 3)])
+        self.assertEqual([[g["predicate"] for g in i["gates"]] for i in loops["iterations"]], [["loop"], ["loop"]])
+
+    def test_an_inner_iteration_starts_at_the_previous_arrival_at_its_head(self):
+        # mov bx, 2; outer: mov cx, 2; inner: inc ax; loop inner; dec bx; jnz outer; ret
+        c = Code().emit("bb 02 00").label("outer").emit("b9 02 00").label("inner").emit("40")
+        c.branch("e2", "inner").emit("4b").branch("75", "outer").emit("c3")
+        loops = report(c)["paths"][0]["loops"]
+        inner = [i for i in loops["iterations"] if i["head"] == c.labels["inner"]]
+        self.assertEqual([(i["fromArrival"], i["toArrival"]) for i in inner], [(1, 2), (3, 4)])
+        # The outer gate ran between the inner head's second and third arrivals, outside both inner iterations.
+        self.assertEqual([[g["predicate"] for g in i["gates"]] for i in inner], [["loop"], ["loop"]])
+        outer = [i for i in loops["iterations"] if i["head"] == c.labels["outer"]]
+        self.assertEqual([g["predicate"] for g in outer[0]["gates"]], ["loop", "loop", "jne"])
+
+    def test_flags_recomputed_to_the_same_values_repeat(self):
+        # mov cx, 1; head: dec cx; inc cx; jnz head; ret
+        c = Code().emit("b9 01 00").label("head").emit("49 41").branch("75", "head").emit("c3")
+        iterations = stopped(report(c))["loops"]["iterations"]
+        self.assertEqual(iterations[0]["flags"], "differ")
+        self.assertEqual(iterations[1]["flags"], "unchanged")
+        self.assertEqual(iterations[1]["registers"]["changed"], [])
+        self.assertEqual(iterations[1]["stateRepeatsArrival"], 2)
+
+    def test_a_16_bit_write_leaves_the_32_bit_register_unchanged_in_the_segmented_model(self):
+        # mov cx, 3; head: inc ax; loop head; ret
+        c = Code().emit("b9 03 00").label("head").emit("40").branch("e2", "head").emit("c3")
+        first = report(c)["paths"][0]["loops"]["iterations"][0]
+        self.assertEqual({row["register"] for row in first["registers"]["changed"]}, {"ax", "cx"})
+        # mov cx, 3; head: add eax, 0x10000; loop head; ret
+        c = Code().emit("b9 03 00").label("head").emit("66 05 00 00 01 00").branch("e2", "head").emit("c3")
+        first = report(c)["paths"][0]["loops"]["iterations"][0]
+        self.assertIn("eax", {row["register"] for row in first["registers"]["changed"]})
+
+    def test_an_iteration_without_the_previous_iterations_gates_is_not_a_repeat(self):
+        gate = {"site": 4, "taken": True, "operands": {"count": {"expression": ("constant", 1)}}}
+        self.assertIs(_compare_gates([gate], []), False)
+        self.assertIsNone(_compare_gates([], []))
+        self.assertIsNone(_compare_gates(None, []))
+
+    def test_forking_a_path_shares_its_write_log_and_recorded_arrivals(self):
+        from scientific_method_engine.x86.machine import WriteLog
+        log = WriteLog()
+        log.extend([(("register", "eax"), None), (("register", "ebx"), None)])
+        child = deepcopy(log)
+        child.append((("register", "ecx"), None))
+        log.append((("register", "edx"), None))
+        self.assertIs(child.chunks[0][1], log.chunks[0][1])
+        self.assertEqual([k[1] for k, _ in child.since(1)], ["ebx", "ecx"])
+        self.assertEqual([k[1] for k, _ in log.since(2)], ["edx"])
+        tracker = LoopTracker(4)
+        tracker.frames[1] = {"entry": 0, "tokens": {0: ("arrival",)}, "heads": {}}
+        copy = deepcopy(tracker)
+        self.assertIs(copy.frames[1]["tokens"][0], tracker.frames[1]["tokens"][0])
+        self.assertIsNot(copy.frames[1]["tokens"], tracker.frames[1]["tokens"])
+
+    def test_one_predicate_domain_serves_loop_gates_and_return_flows(self):
+        self.assertEqual([predicate_domain(p) for p in ("loop", "loopne", "jcxz", "jecxz", "jl", "jae", "jne")],
+                         ["counter", "counter", "counter", "counter", "signed", "unsigned", "flags/equality"])
+        # call f; mov cx, ax; L: loop L; ret; f: mov ax, 2; ret
+        c = Code().branch("e8", "f").emit("89 c1").label("L").branch("e2", "L").emit("c3").label("f").emit("b8 02 00 c3")
+        contract = {"entry": c.labels["f"], "register": "ax", "evidence": "synthetic result contract"}
+        path = report(c, "returns", returnContracts=[contract])["paths"][0]
+        consumers = [row for flow in path["returnFlows"]["results"] for row in flow["consumers"] if row["kind"] == "branch"]
+        self.assertTrue(consumers)
+        # returnFlows keeps the value it shipped with for LOOP; the loop record names the counter.
+        self.assertEqual({row["predicateDomain"] for row in consumers}, {"flags/equality"})
+        self.assertEqual({g["predicateDomain"] for i in path["loops"]["iterations"] for g in i["gates"]}, {"counter"})
 
 
 if __name__ == "__main__":
