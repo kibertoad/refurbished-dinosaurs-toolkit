@@ -37,7 +37,13 @@ public abstract class OriginalContentSource : IDisposable
 {
     /// <summary>One of <see cref="ContentSourceKinds"/>.</summary>
     public abstract string Kind { get; }
-    /// <summary>The ISO volume identifier, or <see langword="null"/> for a directory.</summary>
+    /// <summary>
+    /// The ISO 9660 primary volume descriptor's volume identifier without its trailing spaces and NULs,
+    /// or <see langword="null"/> for a source with no volume or an identifier that is all padding.
+    /// Each of the 32 bytes reads as the Latin-1 (ISO-8859-1) character of the same value, so a byte
+    /// above 0x7F gives the character U+0080 to U+00FF and two identifiers that differ in a byte
+    /// before their trailing padding give different labels.
+    /// </summary>
     public abstract string? Label { get; }
     /// <summary>The cue sheet of a <see cref="ContentSourceKinds.CueBin"/> source, otherwise <see langword="null"/>.</summary>
     public virtual CueBinSheet? Cue => null;
@@ -182,9 +188,11 @@ public abstract class OriginalContentSource : IDisposable
 
     /// <summary>
     /// Opens an InstallShield 5 or 6 cabinet set from a file. <paramref name="path"/> is the
-    /// <c>dataN.hdr</c> header, or a <c>dataN.cab</c> that holds the header. The volumes are the files
+    /// <c>dataN.hdr</c> header, or a <c>dataN.cab</c> that holds the header. Of a <c>.cab</c>, only the
+    /// bytes up to the end of the cabinet descriptor are read as the header. The volumes are the files
     /// in the same directory named like the header up to its first dot or digit, then the volume
-    /// number and <c>.cab</c>, matched ignoring case: <c>data1.cab</c>, <c>data2.cab</c> and so on.
+    /// number and <c>.cab</c>, matched ignoring case: <c>data1.cab</c>, <c>data2.cab</c> and so on. A
+    /// <c>data1.cab</c> that holds the header is therefore also read as volume 1.
     /// The set is checked when opened, as <see cref="InstallShieldCabinetSource"/> describes.
     /// </summary>
     /// <param name="path">The header file.</param>
@@ -468,9 +476,10 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
         return name;
     }
 
+    // Latin-1 maps each byte to the character of the same value, so the label keeps every byte.
     private static string? DecodeIdentifier(ReadOnlySpan<byte> bytes)
     {
-        var value = Encoding.ASCII.GetString(bytes).TrimEnd(' ', '\0');
+        var value = Encoding.Latin1.GetString(bytes).TrimEnd(' ', '\0');
         return value.Length == 0 ? null : value;
     }
 
