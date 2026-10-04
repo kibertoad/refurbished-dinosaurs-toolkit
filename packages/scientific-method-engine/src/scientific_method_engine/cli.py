@@ -17,7 +17,7 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "effects|returns|memory|incoming|call-order|guards|allocation|dispatch> <config.json|->\n"
          "effects includes ordered path writes/calls and local restoration witnesses; transactionality remains unestablished.\n"
          "callees compares its edges with an ExportCallEdges.java export given as ghidraCallEdges;\n"
-         "agreed is false where Ghidra ends the function at a call or interrupt the engine reads past (ghidraEndsFunction).\n"
+         "agreed is false where Ghidra ends the function at a call, conditional jump or interrupt the engine reads past (ghidraEndsFunction).\n"
          "trace, arguments, effects, returns, guards, memory and allocation check relationalControls:\n"
          "a violated control fails the report; an undecided one is reported and never counts as held.\n"
          "Declared table continuations are separate conditional paths that spend continuationBudget\n"

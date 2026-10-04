@@ -301,11 +301,11 @@ export's `fallsThrough` said. A call where Ghidra ends the function, because it 
 non-returning (`CALL_TERMINATOR`) or a user cleared the call's fall-through, now counts against
 `ghidraCrossCheck.agreed`, as an interrupt that ends the function already did:
 
-- Each call `agreement` row carries `ghidraFallsThrough` and `ghidraFallsThroughBasis`, read from the
-  export's `fallsThrough` or, for an export without it, from whether the flow name contains
-  `TERMINATOR`.
-- `counts.ghidraEndsFunction` counts the call and `interrupt` rows whose `ghidraFallsThrough` is
-  false. `agreed` is true only when it is 0.
+- Each `agreement` row at a call or a conditional tail transfer carries `ghidraFallsThrough` and
+  `ghidraFallsThroughBasis`, read from the export's `fallsThrough` or, for an export without it, from
+  whether the flow name contains `TERMINATOR`.
+- `counts.ghidraEndsFunction` counts the `agreement` and `interrupt` rows whose `ghidraFallsThrough`
+  is false. `agreed` is true only when it is 0.
 - A call site where Ghidra ends the function is no agreement site, so a `ghidraAgreementSites`
   control naming it fails the report.
 

@@ -838,12 +838,12 @@ the engine read and the export lists (`comparedCallers`), every edge is matched 
 
 - `agreement`: both have the edge. An unresolved call matches an unresolved call at the same site.
   A Ghidra target address without a file offset, such as an import, matches no engine edge. The
-  engine reads on past every call, so a call row also carries `ghidraFallsThrough` and
-  `ghidraFallsThroughBasis`, read as for an `interrupt` row. `ghidraFallsThrough` is false when
-  Ghidra ends the function at the call: its callee is one Ghidra treats as non-returning
-  (`CALL_TERMINATOR`), or a user cleared the call's fall-through. The two analyses then disagree on
-  the function's extent, so the row counts against `agreed` and its site is no agreement site. A
-  tail-transfer row carries neither field.
+  engine reads on past every call and every conditional tail transfer, so such a row also carries
+  `ghidraFallsThrough` and `ghidraFallsThroughBasis`, read as for an `interrupt` row.
+  `ghidraFallsThrough` is false when Ghidra ends the function at the site: the callee is one Ghidra
+  treats as non-returning (`CALL_TERMINATOR`), or a user cleared the instruction's fall-through. The
+  two analyses then disagree on the function's extent, so the row counts against `agreed` and its
+  site is no agreement site. A tail transfer through `JMP` carries neither field.
 - `engineOnly`: only the engine has it.
 - `ghidraOnly`: only Ghidra has it. It carries `checked: false` and the id of any engine edge at the
   same site. The engine's graph, classifications and summaries never take it in.
@@ -864,7 +864,7 @@ read, exported functions without a file offset, and the `omittedRoutes` ids of c
 (`omittedEngineRoutes`), which the edge limit kept out of the graph. It also passes on the export's
 `missingEntries` (requested addresses with no function) and `unreadFunctions` (functions the limit
 cut off). `counts` holds the number of rows of each result, and `ghidraEndsFunction` the number of
-call and `interrupt` rows whose `ghidraFallsThrough` is false. `agreed` is true only when no row is
+rows whose `ghidraFallsThrough` is false. `agreed` is true only when no row is
 `engineOnly` or `ghidraOnly`, `ghidraEndsFunction` is 0, and nothing is left uncompared.
 Agreement means both analyses read the edge, never that it executes. A `ghidraAgreementSites`
 control lists call sites that must agree, and fails the report otherwise. A site agrees only when

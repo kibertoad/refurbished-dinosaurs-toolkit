@@ -761,6 +761,27 @@ class GhidraCrossCheckTests(unittest.TestCase):
         self.assertEqual(check["counts"]["ghidraEndsFunction"], 0)
         self.assertTrue(check["agreed"])
 
+    def test_a_conditional_tail_transfer_ghidra_ends_the_function_at_counts_against_agreed(self):
+        # je 3; ret; ret. The engine reads on past the conditional jump into the entry at 3; Ghidra ends the function
+        # there when a user cleared the jump's fall-through.
+        data = bytes.fromhex("74 01 c3 c3")
+        for falls_through in (True, False):
+            with self.subTest(fallsThrough=falls_through):
+                cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: [(0, 3, "CONDITIONAL_JUMP", falls_through)], 3: []}))
+                cfg["regions"][0]["entries"] = [0, 3]
+                check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
+                [row] = check["edges"]
+                self.assertEqual(row["result"], "agreement")
+                self.assertEqual(row["ghidraFallsThrough"], falls_through)
+                self.assertEqual(check["counts"]["ghidraEndsFunction"], 0 if falls_through else 1)
+                self.assertEqual(check["agreed"], falls_through)
+                cfg["controls"] = {"ghidraAgreementSites": [0]}
+                if falls_through:
+                    run_report(data, cfg, "callees")
+                else:
+                    with self.assertRaisesRegex(ValueError, "positive control missed: ghidraAgreementSites"):
+                        run_report(data, cfg, "callees")
+
     def test_a_ghidra_target_at_an_interrupt_or_a_targetless_call_elsewhere_stays_ghidra_only(self):
         # int 21h; int 10h; nop; call 8; ret. Ghidra resolves the first interrupt to a file offset and the second to an
         # address without file bytes, and claims a call at the nop.
