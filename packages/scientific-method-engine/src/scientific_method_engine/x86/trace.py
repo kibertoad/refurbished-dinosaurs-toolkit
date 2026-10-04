@@ -515,8 +515,8 @@ def trace(image, config, continue_declared_jumps=True):
                             if g.get("right", {}).get("value") == 0:
                                 guard_checks.append({"site": g["site"], "predicate": g["predicate"], "taken": g["taken"],
                                                      "sameTargetValue": g.get("left", {}).get("expression") == indirect_value.term})
-                    state.event("call", target=target, provenance=provenance, registers=snapshot(state),
-                                indirectValue=indirect_value.report() if indirect_value is not None else None, guards=guard_checks)
+                    call_event = state.event("call", target=target, provenance=provenance, registers=snapshot(state),
+                                             indirectValue=indirect_value.report() if indirect_value is not None else None, guards=guard_checks)
                     previous = image.decode(state.path[-2]) if len(state.path) > 1 else None
                     # push cs + near call builds a far frame only in real mode; far transfers stop in the flat model.
                     push_cs = (not image.flat and m == "call" and previous is not None and previous.mnemonic == "push"
@@ -589,7 +589,9 @@ def trace(image, config, continue_declared_jumps=True):
                             flags_frame = (16, flags_word.term) in state.saved_flags
                         except StopPath:
                             flags_frame = False
-                    state.frames.append({"entry": target, "sp": state.reg(state.sp), "returnBytes": 4 if m == "lcall" or push_cs else image.bits // 8,
+                    # A traced call records its return-frame width; argumentFrames maps the slots above it.
+                    call_event["returnFrameBytes"] = 4 if m == "lcall" or push_cs else image.bits // 8
+                    state.frames.append({"entry": target, "sp": state.reg(state.sp), "returnBytes": call_event["returnFrameBytes"],
                                          "frameSource": "push-CS/near-call; matching far return required" if push_cs else m,
                                          "continuation": following, "returnIP": return_ip, "callSite": at,
                                          "callerCS": state.reg("cs"), "localFlagsFrame": flags_frame})

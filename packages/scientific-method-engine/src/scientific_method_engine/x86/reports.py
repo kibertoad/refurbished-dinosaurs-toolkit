@@ -8,6 +8,7 @@ from .machine import State, StopPath, REGISTERS, ALIASES, segment_register, stri
 from .values import unknown
 from .effect_order import effect_ordering
 from .relational import validate_controls, evaluate_controls
+from .argument_frames import argument_frames, stack_cleanup
 from .result_flow import return_flows
 from .image import Image, integer
 from .trace import (trace, walk, call_target, unsupported_transfer, uncovered, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
@@ -1157,16 +1158,6 @@ def _operand_view(ins, o):
     return {"kind": "unresolved"}
 
 
-def _stack_cleanup(ins):
-    """The bytes an immediate ADD SP/ESP releases, or None for any other instruction or a negative immediate."""
-    if (ins is None or ins.mnemonic != "add" or len(ins.operands) != 2 or ins.operands[0].type != X86_OP_REG
-            or ins.reg_name(ins.operands[0].reg) not in ("sp", "esp") or ins.operands[1].type != X86_OP_IMM):
-        return None
-    bits = 8 * ins.operands[0].size
-    amount = ins.operands[1].imm & ((1 << bits) - 1)
-    return amount if 0 < amount < 1 << (bits - 1) else None
-
-
 def call_order(image, config):
     """Group the confirmed incoming calls of each containing entry by necessary guards and CFG order."""
     flat = incoming(image, config)
@@ -1265,7 +1256,7 @@ def call_order(image, config):
         rows = []
         for at in selected:
             following = at + instructions[at].size
-            amount = _stack_cleanup(instructions.get(following))
+            amount = stack_cleanup(instructions.get(following))
             rows.append({"site": at, "necessaryGuards": necessary[at] if not capped else [],
                          "cleanup": {"continuation": following, "site": following if amount is not None else None,
                                      "argumentBytes": amount, "status": "observed after assumed return" if amount is not None else "unread cleanup",
@@ -1531,6 +1522,8 @@ def _run_report(image, config, command):
     controls = evaluate_controls(report, config, image)
     if command in ("arguments", "effects"):
         report = near_pointer_provenance(report, config)
+    if command == "arguments":
+        report = argument_frames(report, image)
     if command == "allocation":
         result = allocations(report, config)
         if controls is not None:
@@ -1551,6 +1544,8 @@ def _run_report(image, config, command):
         for path in report["paths"]:
             # Returns keep the transfers, conversions and reads that depend on a declared result.
             consumed = {c["order"] for f in path.get("returnFlows", {}).get("results", ()) for c in f["consumers"]}
+            # Arguments keeps the writes its argument-frame slots cite as writers.
+            consumed |= {s["writerOrder"] for f in path.get("argumentFrames", ()) for s in f["slots"] if s["writerSite"] is not None}
             path["events"] = [e for e in path["events"] if e["kind"] in kinds or e["order"] in consumed or
                               (command == "effects" and e["kind"] == "read" and (e.get("nearPointerAccessCandidates") or e.get("nearPointerArgumentCandidates")))]
     return report
