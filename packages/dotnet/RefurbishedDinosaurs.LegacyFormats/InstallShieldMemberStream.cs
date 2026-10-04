@@ -1,0 +1,254 @@
+using System.Buffers.Binary;
+using System.IO.Compression;
+using System.Security.Cryptography;
+
+namespace RefurbishedDinosaurs.LegacyFormats;
+
+// Decodes one InstallShield cabinet member while it is read. Stored bytes may be obfuscated; compressed
+// members are a run of chunks, each a 16-bit little-endian length and raw deflate data that expands
+// to at most 64 KiB on its own.
+internal sealed class InstallShieldMemberStream : Stream
+{
+    private const int ChunkLimit = 64 * 1024;
+
+    private readonly string path;
+    private readonly long length;
+    private readonly bool compressed;
+    private readonly bool obfuscated;
+    private readonly byte[]? md5;
+    private readonly InstallShieldSegment[] segments;
+    private readonly Func<int, Stream> openVolume;
+    private readonly long rawLength;
+    private readonly byte[] buffer = new byte[ChunkLimit];
+
+    private Stream? volume;
+    private int openVolumeNumber;
+    private int segment;
+    private long segmentLeft;
+    private long rawRead;
+    private uint seed;
+    private IncrementalHash? hash;
+    private long produced;
+    private long bufferStart;
+    private int bufferCount;
+    private bool verified;
+    private long position;
+
+    public InstallShieldMemberStream(
+        string path, long length, bool compressed, bool obfuscated, byte[]? md5,
+        InstallShieldSegment[] segments, Func<int, Stream> openVolume)
+    {
+        this.path = path;
+        this.length = length;
+        this.compressed = compressed;
+        this.obfuscated = obfuscated;
+        this.md5 = md5;
+        this.segments = segments;
+        this.openVolume = openVolume;
+        rawLength = segments.Sum(item => item.Length);
+        Restart();
+    }
+
+    public override bool CanRead => true;
+    public override bool CanSeek => true;
+    public override bool CanWrite => false;
+    public override long Length => length;
+    public override long Position
+    {
+        get => position;
+        set => Seek(value, SeekOrigin.Begin);
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        ValidateBufferArguments(buffer, offset, count);
+        return Read(buffer.AsSpan(offset, count));
+    }
+
+    public override int Read(Span<byte> destination)
+    {
+        if (destination.IsEmpty) return 0;
+        if (position >= length)
+        {
+            // A seek to the end skips decoding; the member is still checked before reporting its end.
+            if (produced == length && !verified) Finish();
+            while (!verified) DecodeNext();
+            return 0;
+        }
+        while (position >= bufferStart + bufferCount) DecodeNext();
+        var available = (int)(bufferStart + bufferCount - position);
+        var count = Math.Min(available, destination.Length);
+        buffer.AsSpan((int)(position - bufferStart), count).CopyTo(destination);
+        position += count;
+        return count;
+    }
+
+    public override ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return ValueTask.FromResult(Read(destination.Span));
+    }
+
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        ValidateBufferArguments(buffer, offset, count);
+        return ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+    }
+
+    public override long Seek(long offset, SeekOrigin origin)
+    {
+        var next = origin switch
+        {
+            SeekOrigin.Begin => offset,
+            SeekOrigin.Current => checked(position + offset),
+            SeekOrigin.End => checked(length + offset),
+            _ => throw new ArgumentOutOfRangeException(nameof(origin))
+        };
+        if (next < 0 || next > length) throw new IOException("Seek lies outside the InstallShield cabinet member.");
+        if (next < bufferStart) Restart();
+        return position = next;
+    }
+
+    public override void Flush() { }
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            volume?.Dispose();
+            hash?.Dispose();
+        }
+        base.Dispose(disposing);
+    }
+
+    private void Restart()
+    {
+        volume?.Dispose();
+        volume = null;
+        openVolumeNumber = 0;
+        segment = -1;
+        segmentLeft = 0;
+        rawRead = 0;
+        seed = 0;
+        hash?.Dispose();
+        hash = md5 is null ? null : IncrementalHash.CreateHash(HashAlgorithmName.MD5);
+        produced = 0;
+        bufferStart = 0;
+        bufferCount = 0;
+        verified = false;
+    }
+
+    // Decodes the next chunk (or the next block of stored bytes) into the buffer.
+    private void DecodeNext()
+    {
+        int count;
+        if (compressed)
+        {
+            Span<byte> prefix = stackalloc byte[2];
+            ReadRaw(prefix);
+            var chunkLength = BinaryPrimitives.ReadUInt16LittleEndian(prefix);
+            if (chunkLength == 0)
+                throw Invalid("has a compressed chunk of length zero. Chunks delimited by 00 00 FF FF markers are not supported");
+            var chunk = new byte[chunkLength];
+            ReadRaw(chunk);
+            count = Inflate(chunk);
+        }
+        else
+        {
+            count = (int)Math.Min(ChunkLimit, length - produced);
+            ReadRaw(buffer.AsSpan(0, count));
+        }
+
+        bufferStart = produced;
+        bufferCount = count;
+        produced += count;
+        if (produced > length) throw Invalid($"expands past its declared size of {length} bytes");
+        hash?.AppendData(buffer, 0, count);
+        if (produced == length) Finish();
+        else if (rawRead == rawLength) throw Invalid($"ends after {produced} of its {length} bytes");
+    }
+
+    private int Inflate(byte[] chunk)
+    {
+        try
+        {
+            using var inflater = new DeflateStream(new MemoryStream(chunk), CompressionMode.Decompress);
+            var count = 0;
+            int read;
+            while (count < ChunkLimit && (read = inflater.Read(buffer, count, ChunkLimit - count)) > 0) count += read;
+            if (count == ChunkLimit && inflater.ReadByte() >= 0)
+                throw Invalid($"has a compressed chunk that expands past {ChunkLimit} bytes");
+            return count;
+        }
+        catch (InvalidDataException exception) when (!exception.Message.StartsWith("InstallShield", StringComparison.Ordinal))
+        {
+            throw new InvalidDataException($"InstallShield cabinet member '{path}' has a chunk that does not inflate.", exception);
+        }
+    }
+
+    // Called once every expanded byte is decoded, before the last of them is returned.
+    private void Finish()
+    {
+        while (compressed && rawRead < rawLength)
+        {
+            // A zero-length member can still hold chunks; any that expand to bytes overrun it.
+            DecodeNextEmpty();
+        }
+        if (rawRead != rawLength) throw Invalid($"has data left after its declared size of {length} bytes");
+        if (hash is not null && !hash.GetCurrentHash().AsSpan().SequenceEqual(md5!))
+            throw Invalid("does not match the MD5 the cabinet header records");
+        verified = true;
+    }
+
+    private void DecodeNextEmpty()
+    {
+        Span<byte> prefix = stackalloc byte[2];
+        ReadRaw(prefix);
+        var chunkLength = BinaryPrimitives.ReadUInt16LittleEndian(prefix);
+        if (chunkLength == 0)
+            throw Invalid("has a compressed chunk of length zero. Chunks delimited by 00 00 FF FF markers are not supported");
+        var chunk = new byte[chunkLength];
+        ReadRaw(chunk);
+        if (Inflate(chunk) != 0) throw Invalid($"expands past its declared size of {length} bytes");
+    }
+
+    private void ReadRaw(Span<byte> destination)
+    {
+        if (destination.Length > rawLength - rawRead)
+            throw Invalid($"has a compressed chunk that runs past its {rawLength} stored bytes");
+        var filled = 0;
+        while (filled < destination.Length)
+        {
+            if (segmentLeft == 0)
+            {
+                var next = segments[++segment];
+                if (volume is null || openVolumeNumber != next.Volume)
+                {
+                    volume?.Dispose();
+                    volume = openVolume(next.Volume);
+                    openVolumeNumber = next.Volume;
+                }
+                volume.Position = next.Offset;
+                segmentLeft = next.Length;
+            }
+            var want = (int)Math.Min(destination.Length - filled, segmentLeft);
+            var read = volume!.Read(destination.Slice(filled, want));
+            if (read == 0) throw Invalid("ends early: its cabinet volume is shorter than when it was opened");
+            filled += read;
+            segmentLeft -= read;
+        }
+        rawRead += destination.Length;
+        if (!obfuscated) return;
+        for (var index = 0; index < destination.Length; index++, seed++)
+        {
+            var value = (byte)(destination[index] ^ 0xd5);
+            value = (byte)((value >> 2) | (value << 6));
+            destination[index] = (byte)(value - seed % 0x47);
+        }
+    }
+
+    private InvalidDataException Invalid(string problem) =>
+        new($"InstallShield cabinet member '{path}' {problem}.");
+}

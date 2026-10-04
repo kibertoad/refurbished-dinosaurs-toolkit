@@ -7,7 +7,7 @@
   "properties": {
     "gameId": { "type": "string", "minLength": 1 },
     "sourceEdition": { "type": "string", "minLength": 1 },
-    "sourceKind": { "enum": ["directory", "iso9660", "cue-bin"], "default": "directory" },
+    "sourceKind": { "enum": ["directory", "iso9660", "cue-bin", "installshield-cabinet"], "default": "directory" },
     "files": {
       "type": "array",
       "$comment": "At least one file must be required, or the manifest would match any copy.",
