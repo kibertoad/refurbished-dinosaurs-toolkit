@@ -6,10 +6,11 @@ condition. Remove a milestone from this file once it lands.
 
 ## Where things stand
 
-Engine 0.9.0 is published. That release completes ADR 0003: values come from pypcode, the
-handwritten semantics are gone, and the callee graph is cross-checked against Ghidra. Reader 0.2.0
-and checker 0.1.0 are current. PR 60 (conditional table-target continuations), PR 63 (the
-scoped-memory plan) and PR 69 (boundary budget) are merged.
+Engine 0.9.0 completed ADR 0003: values come from pypcode, the handwritten semantics are gone, and
+the callee graph is cross-checked against Ghidra. Reader and engine 2.0.0 and checker 0.2.0 are
+current. The 2.0.0 pair speaks prepared protocol 3 and ships scoped memory hypotheses
+([ADR 0009](decisions/0009-scoped-memory-hypotheses-on-call-models.md)). PR 60 (conditional
+table-target continuations) and PR 69 (boundary budget) are merged.
 
 Dark Sun has committed engine 0.7.0 and is moving to 0.8.0. It has 18 requests open in its
 `gaps.md`, and all of its open engine requests come from Dark Sun alone. Sub-culture-max,
@@ -40,7 +41,7 @@ read here. A gap still closes only when Dark Sun's own case passes against publi
 |---|---|---|---|
 | 5 | Portable manifest paths in coverage files | Template work | none here |
 | 9 | Window image versus copied control data in the UI catalog | Dark Sun's extractor; a game format under ADR 0001 | none here |
-| 27 | Ordered effects at early exits, scoped memory, conditional fill, MENU linked child | Scoped memory is generic (M1). Fill and MENU first need the budget investigation (M2) | M1, M2 |
+| 27 | Ordered effects at early exits, conditional fill, MENU linked child | Fill and MENU first need the budget investigation (M2). Scoped memory is delivered: `preservesMemory` shipped in reader and engine 2.0.0, and Dark Sun's nested caller-bracket case passes against them (issue 73) | M2 |
 | 37 | Port I/O as a hardware boundary | Generic engine fact. The parts about rendered pixels and mocked-port fixtures are writing rules | M3 |
 | 39 | Effective segment of frame-indexed accesses | Looks delivered: the reporter guide already says BP-derived offsets accessed through BX use DS. Verify and pin with tests | M3 |
 | 36 | Overlapping access widths across calls | Mostly delivered: accesses report byte producers and missing producers. The remainder is Dark Sun's case | M4 controls |
@@ -63,15 +64,6 @@ read here. A gap still closes only when Dark Sun's own case passes against publi
 Settle issue 70 (`carry_value` re-runs the JB condition), and triage issues 7 and 25 to 27, closing
 the ones whose behaviour has been delivered. Dark Sun then adopts the latest engine on its own
 schedule.
-
-### M1. Scoped memory hypotheses (gap 27, part; in progress)
-
-Forward-port Dark Sun's local implementation onto main. It adds a prepared-config input with an
-explicit pre-call segment, base, width and evidence. That input increments `PREPARED_PROTOCOL` in
-the reader and the engine, releases both, and comes with a migration-guide entry. The PR 63 plan
-section is the contract.
-
-Exit: the original nested caller-bracket case passes against published packages.
 
 ### M2. Continuation budgets before any path hypotheses (gap 27, rest)
 
