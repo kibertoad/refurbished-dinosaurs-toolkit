@@ -306,7 +306,7 @@ class State:
                 if domain not in aliasing:
                     aliasing[domain] = self.latest_aliasing_write(key[:2], domain)
                 seen = (None, self._unwritten(key, aliasing[domain]))
-            if runs and runs[-1][2:] == seen and runs[-1][0] + runs[-1][1] == at:
+            if runs and runs[-1][2:] == seen:
                 runs[-1] = (runs[-1][0], runs[-1][1] + 1, *seen)
             else:
                 runs.append((at, 1, *seen))

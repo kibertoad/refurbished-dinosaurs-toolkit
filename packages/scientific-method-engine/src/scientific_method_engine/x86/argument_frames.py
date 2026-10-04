@@ -40,11 +40,11 @@ def _slot_states(events, recorded, width):
     """
     writers, reasons = {}, {}
     for offset, run, order, unwritten in recorded["runs"]:
+        if offset >= width:
+            break
+        target, value = (writers, events[order]) if unwritten is None else (reasons, _reason(events, unwritten))
         for at in range(offset, min(offset + run, width)):
-            if unwritten is None:
-                writers[at] = events[order]
-            else:
-                reasons[at] = _reason(events, unwritten)
+            target[at] = value
     return writers, reasons
 
 
