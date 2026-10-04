@@ -1,5 +1,4 @@
 """PE32 acceptance uses constructed headers and instructions only."""
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,6 +7,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+
+import xxhash
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
@@ -87,6 +88,18 @@ class PEReporterTests(unittest.TestCase):
         roles = [e['role'] for e in events(r, 'read') if e['role'] and e['role'].startswith('string')]
         self.assertEqual(sorted(roles), ['string-destination', 'string-source'])
 
+    def test_port_access_reports_its_boundary_and_stops_on_io_privilege(self):
+        # mov dx, 0x3c8; out dx, al; ret
+        r = report('66 ba c8 03 ee c3')
+        path, = r['paths']
+        self.assertFalse(path['returned'])
+        self.assertIn('I/O privilege', path['stop'])
+        row, = events(r, 'hardware-boundary')
+        self.assertEqual((row['boundary'], row['port']['value'], row['width']), ('port-output', 0x3c8, 1))
+        self.assertEqual(r['hardwareBoundaries'][0]['placement'], 'everyTracedPath')
+        with self.assertRaisesRegex(ValueError, 'flat model'):
+            report('ec c3', portInputs=[{'site': CODE_RAW, 'value': 1, 'evidence': 'synthetic'}])
+
     def test_pop_addresses_its_destination_after_the_stack_pointer_moves(self):
         # push 1; push 2; push 3; pop dword [esp+4]; pop eax; pop ebx; ret
         regs = report('6a 01 6a 02 6a 03 8f 44 24 04 58 5b c3')['paths'][0]['registers']
@@ -152,7 +165,7 @@ class PEReporterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             (path / 'source.bin').write_bytes(data)
-            config.update(source='source.bin', sha256=hashlib.sha256(data).hexdigest(), regions=[1])
+            config.update(source='source.bin', xxh3=xxhash.xxh3_128_hexdigest(data), regions=[1])
             (path / 'config.json').write_text(json.dumps(config))
             process = subprocess.run([*ENGINE, 'trace', str(path / 'config.json')],
                                      capture_output=True, text=True, env=ENGINE_ENV)
@@ -324,13 +337,13 @@ class PEReporterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             (path / 'source.bin').write_bytes(data)
-            config.update(source='source.bin', sha256=hashlib.sha256(data).hexdigest())
+            config.update(source='source.bin', xxh3=xxhash.xxh3_128_hexdigest(data))
             environment = {**ENGINE_ENV, 'EVIDENCE_PYTHON': sys.executable}
             (path / 'config.json').write_text(json.dumps(config))
             process = subprocess.run(['node', str(READER), 'trace', str(path / 'config.json')], capture_output=True, text=True, env=environment)
             self.assertEqual(process.returncode, 0, process.stderr)
             r = json.loads(process.stdout)
-            self.assertEqual(r['sourceIdentity']['sha256'], config['sha256'])
+            self.assertEqual(r['sourceIdentity']['xxh3'], config['xxh3'])
             self.assertEqual(r['sourceMapping']['format'], 'PE32/i386')
             config['regions'][0]['ip'] = CODE_VA + 1
             (path / 'config.json').write_text(json.dumps(config))

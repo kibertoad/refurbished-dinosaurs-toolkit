@@ -20,6 +20,8 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "trace, arguments, effects, returns, guards, memory and allocation check relationalControls:\n"
          "a violated control fails the report; an undecided one is reported and never counts as held.\n"
          "Declared table continuations are separate conditional paths; ordinary computed transfers remain stopped.\n"
+         "Port accesses and interrupts are hardware-boundary events; portInputs supplies port reads as assumptions.\n"
+         "callModels[].preservesMemory keeps explicit, bounded pre-call byte scopes across a modeled call; other memory stays unknown.\n"
          "       scientific-method-engine ghidra-scripts")
 
 

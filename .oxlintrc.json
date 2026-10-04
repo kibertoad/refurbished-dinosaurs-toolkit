@@ -13,5 +13,27 @@
   "ignorePatterns": [
     "**/dist/**",
     "packages/standard-checker/test/valid/**"
+  ],
+  "overrides": [
+    {
+      "files": [
+        "packages/*/src/**/*.ts",
+        "packages/*/bin/**/*.ts",
+        "tools/**/*.ts"
+      ],
+      "excludeFiles": [
+        "**/*.test.ts"
+      ],
+      "rules": {
+        "max-lines": [
+          "error",
+          {
+            "max": 500,
+            "skipBlankLines": false,
+            "skipComments": false
+          }
+        ]
+      }
+    }
   ]
 }

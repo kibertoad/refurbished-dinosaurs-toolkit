@@ -97,17 +97,28 @@ class EffectOrderTests(unittest.TestCase):
         # The model invalidates stack memory too; no surviving snapshot value is guessed.
         self.assertFalse(p["localRestorationWitnesses"])
 
-    def test_port_stop_and_path_caps_cannot_prove_absent_later_effects(self):
-        p = self.paths(report("c7 06 20 00 01 00 ee c7 06 22 00 02 00 c3", "effects"))[0]
+    def test_interrupt_stop_and_path_caps_cannot_prove_absent_later_effects(self):
+        p = self.paths(report("c7 06 20 00 01 00 cd 10 c7 06 22 00 02 00 c3", "effects"))[0]
         self.assertFalse(p["returned"])
         self.assertEqual(p["stop"]["writesBeforeCount"], 1)
-        self.assertIn("port", p["stop"]["reason"].lower())
+        self.assertIn("interrupt", p["stop"]["reason"])
+        self.assertEqual(len(p["hardwareBoundaryOrders"]), 1)
         r = report("85 c0 74 06 c7 06 20 00 01 00 c3", "effects", maxPaths=1)
         self.assertFalse(r["effectOrdering"]["allPathsRead"])
         self.assertTrue(r["gaps"])
         r = report("c7 06 20 00 01 00 c3", "effects", maxSteps=1)
         self.assertFalse(self.paths(r)[0]["returned"])
         self.assertEqual(self.paths(r)[0]["stop"]["writesBeforeCount"], 1)
+
+    def test_port_output_is_a_boundary_event_apart_from_ram_writes(self):
+        p = self.paths(report("c7 06 20 00 01 00 ee c7 06 22 00 02 00 c3", "effects"))[0]
+        self.assertTrue(p["returned"])
+        port = next(e for e in p["timeline"] if e["kind"] == "hardware-boundary")
+        self.assertEqual(p["hardwareBoundaryOrders"], [port["order"]])
+        self.assertNotIn(port["order"], p["writeOrders"])
+        self.assertEqual(len(p["writeOrders"]), 2)
+        # Device effects are outside the model, so the path's effects are not complete within it.
+        self.assertFalse(p["effectCompleteWithinModel"])
 
 
 if __name__ == "__main__":

@@ -3,9 +3,10 @@ from copy import deepcopy
 from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
 from .image import integer
 from .machine import (State, StopPath, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
-                      string_count, string_effect, check_string_form, compare_string, repeated)
+                      string_count, string_effect, check_string_form, compare_string, repeated, string_width)
 from .values import const, unknown, sources, op, Value
 from .result_flow import validate_contracts, result_contracts
+from .memory_scopes import validate_scopes, capture_scopes, retain_scopes
 
 def call_target(image, site, ins):
     if ins.mnemonic in ("lcall", "ljmp"):
@@ -20,6 +21,7 @@ OVERLAP_REASON = "overlapping entry-path instructions; boundary unresolved"
 RETURNS = {"ret": "near return", "retf": "far return", "iret": "interrupt return", "iretd": "interrupt return"}
 INTERRUPTS = ("int", "int1", "int3", "into")
 PORTS = ("in", "out", "insb", "insw", "insd", "outsb", "outsw", "outsd")
+PORT_INPUTS = ("in", "insb", "insw", "insd")
 
 
 def base_mnemonic(ins):
@@ -109,9 +111,10 @@ def walk(image, entries, limit=10000):
                 following_sites.append(target)
             if m in ("jmp", "ljmp"):
                 continue
-        if m in INTERRUPTS or m == "hlt" or m in PORTS:
+        if m in INTERRUPTS or m == "hlt":
             gaps.append({"site": at, "reason": "hardware or interrupt boundary"})
             continue
+        # A port access continues at the next instruction, as trace and body() follow it.
         if m in ("call", "lcall") and following not in following_sites:
             returns.add((at, following))
         pending.append(following)
@@ -210,6 +213,67 @@ def uncovered(start, end, spans):
     return missing
 
 
+def port_width(ins, flat):
+    """The data width of a port instruction: its register operand, or its string element."""
+    if base_mnemonic(ins) in ("in", "out"):
+        return ins.operands[0 if base_mnemonic(ins) == "in" else 1].size
+    return string_width(ins, flat)
+
+
+def validate_port_inputs(config, image):
+    """Check ``portInputs``: each row names an IN or INS site, a value that fits its width, and evidence."""
+    rows = config.get("portInputs", [])
+    if not isinstance(rows, list) or len(rows) > 64:
+        raise ValueError("portInputs must be a list of at most 64 rows")
+    if rows and image.flat:
+        raise ValueError("portInputs are outside the PE32 flat model, where a port access stops the path")
+    sites = set()
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("evidence"):
+            raise ValueError("Port input requires site, value and evidence")
+        site = integer(row.get("site"), 0, len(image.data) - 1, "port input site")
+        if site in sites:
+            raise ValueError("Port input sites must be unique")
+        sites.add(site)
+        ins = image.decode(site)
+        if ins is None or base_mnemonic(ins) not in PORT_INPUTS:
+            raise ValueError("Port input site must be an IN or INS instruction")
+        integer(row.get("value"), 0, (1 << 8 * port_width(ins, image.flat)) - 1, "port input value")
+
+
+def hardware_placement(outputs, conditional_outputs, gaps):
+    """Each hardware boundary site with the traced paths that reach it.
+
+    ``gaps`` are the ordinary paths' gaps. ``placement`` is ``everyTracedPath`` when every
+    ordinary path reaches the site and no ordinary path was dropped, ``conditional`` when a path
+    returned without reaching it, and ``unresolved`` when only stopped paths lack it or a limit
+    dropped paths.
+    """
+    rows = {}
+    for group, paths in (("paths", outputs), ("declaredContinuationPaths", conditional_outputs)):
+        for index, path in enumerate(paths):
+            for e in path["events"]:
+                if e["kind"] != "hardware-boundary":
+                    continue
+                row = rows.setdefault((e["site"], e["boundary"]), {
+                    "site": e["site"], "boundary": e["boundary"], "mnemonic": e["mnemonic"],
+                    "paths": [], "declaredContinuationPaths": []})
+                # Paths are visited in index order, so a repeat visit is always the last one listed.
+                if row[group][-1:] != [index]:
+                    row[group].append(index)
+    result = []
+    for (site, _), row in sorted(rows.items()):
+        reached = set(row["paths"])
+        missing = [i for i in range(len(outputs)) if i not in reached]
+        returned = [i for i in missing if outputs[i]["returned"]]
+        stopped = [i for i in missing if not outputs[i]["returned"]]
+        row["pathsWithout"] = {"returned": returned, "stopped": stopped}
+        row["placement"] = ("conditional" if returned else
+                            "everyTracedPath" if not missing and not gaps else "unresolved")
+        result.append(row)
+    return result
+
+
 def snapshot(state):
     return {name: state.reg(name).report() for name in ALIASES}
 
@@ -232,11 +296,14 @@ def trace(image, config, continue_declared_jumps=True):
     if config.get("returnBytes", image.bits // 8) not in ((4,) if image.flat else (2, 4)):
         raise ValueError("returnBytes must agree with the selected near/far frame model")
     contracts = validate_contracts(config, image)
+    validate_port_inputs(config, image)
     models = config.get("callModels", [])
     if not isinstance(models, list) or len(models) > 64:
         raise ValueError("At most 64 explicit call models")
     sites = set()
     for model in models:
+        if not isinstance(model, dict):
+            raise ValueError("Call model must be an object")
         integer(model.get("site"), 0, len(image.data) - 1, "model site")
         if model["site"] in sites or not model.get("evidence"):
             raise ValueError("Call model requires a unique site and evidence")
@@ -248,6 +315,7 @@ def trace(image, config, continue_declared_jumps=True):
             raise ValueError("Modeled returnBytes must be 2 or 4")
         if any(r not in REGISTERS for r in model.get("preserves", [])):
             raise ValueError("Model preserves must name full registers")
+        validate_scopes(model, image.bits, image.flat)
         for case in cases:
             for r, n in case.get("registers", {}).items():
                 if r not in ALIASES or type(n) is not int or not 0 <= n < 1 << ALIASES[r][2]:
@@ -364,8 +432,12 @@ def trace(image, config, continue_declared_jumps=True):
             pending.append(child)
             created += 1
 
+    # Ordinary paths all finish before the first declared continuation runs; their gaps come first.
+    ordinary_gaps = None
     while pending or deferred:
         if not pending:
+            if ordinary_gaps is None:
+                ordinary_gaps = len(global_gaps)
             declared_continuations(deferred.pop(0))
             continue
         state = pending.pop()
@@ -463,6 +535,9 @@ def trace(image, config, continue_declared_jumps=True):
                             raise StopPath("four-byte call model reached without an immediately executed push cs")
                         if push_cs and return_bytes != 4:
                             raise StopPath("push-CS/near-call model requires an explicit four-byte return contract")
+                        # Scopes resolve against the pre-call state: before the modeled frame consumes an
+                        # already-pushed CS word and before a case replaces registers.
+                        kept_values, kept_unread, preserved_scopes = capture_scopes(state, model)
                         if push_cs:
                             actual_cs = state.pop(2)
                             if actual_cs.term != state.reg("cs").term:
@@ -477,16 +552,19 @@ def trace(image, config, continue_declared_jumps=True):
                                 if r not in model.get("preserves", []) and r not in ("esp", "cs"):
                                     child.setreg(r, unknown(f"modeled-call:{at}:{r}", ALIASES[r][2]), at)
                             child.clear_memory()
+                            retain_scopes(child, kept_values, kept_unread)
                             child.forget_flags()
                             child.direction_flag = unknown(f"modeled-call:{at}:DF:{child.flag_serial}", 1, at)
                             child.interrupt_flag = unknown(f"modeled-call:{at}:IF:{child.flag_serial}", 1, at)
                             for r, n in case.get("registers", {}).items():
                                 child.setreg(r, const(n, ALIASES[r][2], at), at)
                             child.conditional.append({"site": at, "evidence": model["evidence"],
-                                                      "assumption": "call returns with balanced stack; memory effects unresolved"})
+                                                      "assumption": "call returns with balanced stack; memory effects unresolved"
+                                                                    + (" outside explicit scopes" if preserved_scopes else ""),
+                                                      "preservedMemoryScopes": preserved_scopes})
                             child.event("call-return", callSite=at, callerEntry=state.frames[-1]["entry"],
                                         resultContracts=result_contracts(child, contracts, target), registers=snapshot(child), modeled=True,
-                                        unknownMemoryEffects=True)
+                                        unknownMemoryEffects=True, preservedMemoryScopes=preserved_scopes)
                             child.at = following
                             pending.append(child)
                         break
@@ -623,6 +701,7 @@ def trace(image, config, continue_declared_jumps=True):
         except StopPath as error:
             finish(state, str(error))
     return {"paths": outputs, "declaredContinuationPaths": conditional_outputs, "gaps": global_gaps,
+            "hardwareBoundaries": hardware_placement(outputs, conditional_outputs, global_gaps[:ordinary_gaps]),
             "completeWithinModel": not global_gaps and bool(outputs) and all(p["returned"] for p in outputs),
             "nativeReachability": "unconfirmed", "stepsUsed": total_steps, "stringIterationsUsed": total_string_steps,
             "limits": {"steps": max_steps, "paths": max_paths, "depth": max_depth}}
