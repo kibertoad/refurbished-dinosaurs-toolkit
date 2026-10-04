@@ -280,8 +280,23 @@ def snapshot(state):
 
 
 STRING_BUDGET_STOP = "String iteration budget exhausted"
-CONTINUATION_BUDGET_RANGES = {"paths": (0, 256), "totalSteps": (1, 100000), "maxSteps": (1, 10000),
-                              "visitLimit": (1, 4096), "stringIterations": (0, 65536)}
+# The accepted range and default of each ordinary path budget input. continuationBudget takes the
+# same ranges under the names in CONTINUATION_BUDGET_FIELDS, except that its paths may be 0.
+PATH_BUDGET_INPUTS = {"maxPaths": (1, 256, 64), "totalSteps": (1, 100000, 20000), "maxSteps": (1, 10000, 512),
+                      "visitLimit": (1, 4096, 4), "stringIterations": (0, 65536, 4096)}
+CONTINUATION_BUDGET_FIELDS = {"paths": "maxPaths", "totalSteps": "totalSteps", "maxSteps": "maxSteps",
+                              "visitLimit": "visitLimit", "stringIterations": "stringIterations"}
+
+
+def budget_input(config, name):
+    """Return the ordinary budget input name from config, or its default, rejecting out-of-range values."""
+    low, high, default = PATH_BUDGET_INPUTS[name]
+    return integer(config.get(name, default), low, high, name)
+
+
+def continuation_range(field):
+    low, high, _ = PATH_BUDGET_INPUTS[CONTINUATION_BUDGET_FIELDS[field]]
+    return (0 if field == "paths" else low), high
 
 
 def validate_continuation_budget(config):
@@ -289,11 +304,11 @@ def validate_continuation_budget(config):
     budget = config.get("continuationBudget", {})
     if not isinstance(budget, dict):
         raise ValueError("continuationBudget must be an object")
-    unknown_keys = sorted(set(budget) - set(CONTINUATION_BUDGET_RANGES))
+    unknown_keys = sorted(set(budget) - set(CONTINUATION_BUDGET_FIELDS))
     if unknown_keys:
-        raise ValueError("continuationBudget accepts only " + ", ".join(CONTINUATION_BUDGET_RANGES)
+        raise ValueError("continuationBudget accepts only " + ", ".join(CONTINUATION_BUDGET_FIELDS)
                          + "; unknown: " + ", ".join(unknown_keys))
-    return {key: integer(value, *CONTINUATION_BUDGET_RANGES[key], "continuationBudget." + key)
+    return {key: integer(value, *continuation_range(key), "continuationBudget." + key)
             for key, value in budget.items()}
 
 
@@ -311,8 +326,8 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True):
     entry = integer(config.get("entry"), 0, len(image.data) - 1, "entry")
     if not any(entry in r["entries"] for r in image.regions):
         raise ValueError("Trace entry must be an established region entry")
-    max_steps = integer(config.get("maxSteps", 512), 1, 10000, "maxSteps")
-    max_paths = integer(config.get("maxPaths", 64), 1, 256, "maxPaths")
+    max_steps = budget_input(config, "maxSteps")
+    max_paths = budget_input(config, "maxPaths")
     max_depth = integer(config.get("maxDepth", 8), 1, 32, "maxDepth")
     integer(config.get("returnBytes", image.bits // 8), 2, 4, "returnBytes")
     if config.get("returnBytes", image.bits // 8) not in ((4,) if image.flat else (2, 4)):
@@ -356,11 +371,11 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True):
     created = 1
     total_steps = 0
     total_string_steps = 0
-    string_limit = integer(config.get("stringIterations", 4096), 0, 65536, "string iteration budget")
-    total_limit = integer(config.get("totalSteps", 20000), 1, 100000, "totalSteps")
+    string_limit = budget_input(config, "stringIterations")
+    total_limit = budget_input(config, "totalSteps")
     checkpoints = set(config.get("checkpoints", []))
     # How often one path may pass the same instruction; a loop with a known bound needs it raised.
-    visit_limit = integer(config.get("visitLimit", 4), 1, 4096, "visitLimit")
+    visit_limit = budget_input(config, "visitLimit")
     # An unset field takes the value of the matching ordinary input.
     continuation_budget = {"paths": max_paths, "totalSteps": total_limit, "maxSteps": max_steps,
                            "visitLimit": visit_limit, "stringIterations": string_limit, **explicit_continuation_budget}

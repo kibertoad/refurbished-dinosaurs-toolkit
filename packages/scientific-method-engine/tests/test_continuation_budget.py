@@ -174,6 +174,25 @@ class ContinuationBudgetTests(unittest.TestCase):
             with self.assertRaises(ValueError, msg=budget):
                 run_report(data, {**config, "continuationBudget": budget}, "trace")
 
+    def test_each_field_accepts_the_range_of_its_ordinary_input(self):
+        data, config, _ = fan_out(1)
+
+        def accepted(change):
+            try:
+                run_report(data, {**config, **change}, "trace")
+                return True
+            except ValueError:
+                return False
+
+        fields = {"paths": "maxPaths", "totalSteps": "totalSteps", "maxSteps": "maxSteps",
+                  "visitLimit": "visitLimit", "stringIterations": "stringIterations"}
+        for field, ordinary in fields.items():
+            for value in (-1, 0, 1, 2, 256, 257, 4096, 4097, 10000, 10001, 65536, 65537, 100000, 100001):
+                expected = accepted({ordinary: value}) or (field == "paths" and value == 0)
+                self.assertEqual(accepted({"continuationBudget": {field: value}}), expected, (field, value))
+        self.assertFalse(accepted({"maxPaths": 0}))
+        self.assertTrue(accepted({"continuationBudget": {"paths": 0}}))
+
 
 if __name__ == "__main__":
     unittest.main()

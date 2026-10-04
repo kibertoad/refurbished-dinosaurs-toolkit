@@ -12,7 +12,7 @@ from .argument_frames import argument_frames, stack_cleanup
 from .result_flow import return_flows
 from .image import Image, integer
 from .trace import (trace, walk, call_target, unsupported_transfer, uncovered, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
-                    RETURNS, INTERRUPTS, PORTS, PORT_INPUTS, port_width)
+                    RETURNS, INTERRUPTS, PORTS, PORT_INPUTS, port_width, budget_input)
 from .pcode_backend import interrupt_vector
 
 
@@ -217,9 +217,9 @@ def uses(image, config):
     unverified = {g["site"] for g in gaps if g.get("reason") == OVERLAP_REASON} | set(contested)
     matches, unresolved, unique = [], [], set()
     # Trace each established entry independently; never decode a whole segment as one stream.
-    remaining = integer(config.get("totalSteps", 20000), 1, 100000, "totalSteps")
+    remaining = budget_input(config, "totalSteps")
     # One string iteration budget spans every traced entry, as totalSteps does.
-    string_remaining = integer(config.get("stringIterations", 4096), 0, 65536, "string iteration budget")
+    string_remaining = budget_input(config, "stringIterations")
     entry_limit = integer(config.get("entryLimit", 64), 1, 256, "entryLimit")
     # CFG points where value propagation stopped (or never started), with why; operands after them are inventoried below.
     stops = {}
