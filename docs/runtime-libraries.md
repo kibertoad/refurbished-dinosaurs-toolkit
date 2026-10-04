@@ -55,6 +55,8 @@ LegacyFormats parts of it:
   blocks (`VolumeBlocks`) and the bytes (`OpenVolume`). An `iso9660` or `cue-bin` manifest can pin
   them with `VolumeIdentifier`, `VolumeBlocks` and `VolumeXxh3`, which tells apart two pressings
   that carry the same files. The pins add checks; every file is still verified.
+  `OpenIso9660(Stream)` opens an `.iso` image held in a seekable stream, such as a modified copy
+  built in memory for a negative control, and reads the same files and volume as the image on disk.
 - `OriginalContentSource.OpenInstallShieldCabinet` lists and reads the members of an InstallShield 5
   or 6 cabinet set, on disk or inside a disc source, through the same interface. It opens from a
   `dataN.hdr`, or from a `dataN.cab` that holds the header, reading only that file's header region.
@@ -86,7 +88,8 @@ LegacyFormats parts of it:
   or adds a file only when the target holds the hash the overlay records for it, verifies every
   payload before replacing anything, and returns records for the installed manifest. It throws
   for an importer record list with an unsafe or duplicate path; `InstalledAssetVerifier` checks
-  the rest of each record. The overlay's files and hashes are the restoration's data. See
+  the rest of each record. The overlay's files and hashes are the restoration's data. It opens
+  from a zip file, a directory, or a seekable stream holding a zip, such as an embedded resource. See
   [content overlays](../packages/dotnet/README.md#content-overlays).
 - `InstalledContentWriter` suits incremental extractors: it replaces changed files atomically and
   skips byte-identical ones. `InstalledContentUninstaller` removes only the paths the installed

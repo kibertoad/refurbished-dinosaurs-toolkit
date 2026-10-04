@@ -55,13 +55,48 @@ public sealed class ContentOverlay : IDisposable
     public static ContentOverlay OpenZip(string path, ContentOverlayLimits? limits = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        limits ??= ContentOverlayLimits.Default;
         ZipArchive archive;
         try { archive = ZipFile.OpenRead(path); }
         catch (InvalidDataException exception)
         {
             throw new InvalidDataException($"Overlay is not a zip archive: {exception.Message}", exception);
         }
+        return OpenZip(archive, limits ?? ContentOverlayLimits.Default);
+    }
+
+    /// <summary>
+    /// Opens an overlay zip archive from a stream, such as an embedded resource, with the checks and
+    /// limits of <see cref="OpenZip(string, ContentOverlayLimits?)"/>. The archive starts at position
+    /// 0 of the stream. The caller keeps ownership: the overlay never disposes
+    /// <paramref name="zip"/>, which must stay open and unchanged until the overlay is disposed,
+    /// since <see cref="ApplyAsync"/> reads the payloads from it.
+    /// </summary>
+    /// <param name="zip">A readable, seekable stream holding the zip archive.</param>
+    /// <param name="limits">The bounds to check, or <see langword="null"/> for <see cref="ContentOverlayLimits.Default"/>.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="zip"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="zip"/> cannot be read or cannot seek.</exception>
+    /// <exception cref="InvalidDataException">
+    /// The stream is not a zip, the manifest is missing or invalid, or a payload is missing, unlisted,
+    /// listed twice or of another size than its record.
+    /// </exception>
+    public static ContentOverlay OpenZip(Stream zip, ContentOverlayLimits? limits = null)
+    {
+        ArgumentNullException.ThrowIfNull(zip);
+        // A ZipArchive copies a stream that cannot seek into memory whole, past every limit.
+        if (!zip.CanRead || !zip.CanSeek)
+            throw new ArgumentException("The overlay stream must be readable and seekable.", nameof(zip));
+        ZipArchive archive;
+        try { archive = new ZipArchive(zip, ZipArchiveMode.Read, leaveOpen: true); }
+        catch (InvalidDataException exception)
+        {
+            throw new InvalidDataException($"Overlay is not a zip archive: {exception.Message}", exception);
+        }
+        return OpenZip(archive, limits ?? ContentOverlayLimits.Default);
+    }
+
+    // Takes ownership of archive and disposes it when the checks fail.
+    private static ContentOverlay OpenZip(ZipArchive archive, ContentOverlayLimits limits)
+    {
         try
         {
             var manifestEntry = archive.GetEntry(ManifestFileName)
