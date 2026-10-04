@@ -534,6 +534,30 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertEqual([(s["offset"], s["width"], s["writerSite"], s.get("reason")) for s in frames[0]["slots"]],
                          [(0, 2, None, "memory possibly overwritten through another address by the write at 6")])
 
+    def test_a_write_that_drops_nothing_still_explains_the_slot(self):
+        # sub sp,2 reserves a slot nothing writes. The DS:[BX] store (DS and BX unknown) runs when
+        # nothing is cached, so it drops nothing, but it may still have stored the slot.
+        c = Code().emit("83 ec 02 88 07").branch("e8", "callee").emit("83 c4 02 c3")
+        c.label("callee").emit("55 89 e5 8b 46 04 5d c3")
+        frames = self.frames(c)[1]
+        traced = report(c, "trace")
+        store = next(e for e in events(traced, "write") if e["site"] == 3)
+        self.assertEqual((store["uncertainAliasesInvalidated"], store["uncertainScopeBytesInvalidated"]), (0, 0))
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"], s.get("reason")) for s in frames[0]["slots"]],
+                         [(0, 2, None, "memory possibly overwritten through another address by the write at 3")])
+        self.assertFalse(frames[0]["settledOnThisPath"])
+        # The callee's read of the same bytes names the same store.
+        read = next(e for e in events(traced, "read") if e.get("argument"))
+        self.assertEqual([b["unwritten"] for b in read["byteProducers"]],
+                         [{"cause": "possibly written by an aliasing write", "order": store["order"]}] * 2)
+        # On a concrete stack the store cannot reach, both reports say no write on this path.
+        regs = {"ss": 0x2000, "sp": 0x100, "ds": 0x3000}
+        frames = self.frames(c, registers=regs)[1]
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"], s.get("reason")) for s in frames[0]["slots"]],
+                         [(0, 2, None, "no write on this path")])
+        read = next(e for e in events(report(c, "trace", registers=regs), "read") if e.get("argument"))
+        self.assertEqual([b["unwritten"]["cause"] for b in read["byteProducers"]], ["no write on this path"] * 2)
+
     def test_a_callee_that_stops_leaves_its_frame_open(self):
         c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("55 89 e5 8b 46 04 ff d3")
         r, frames = self.frames(c)

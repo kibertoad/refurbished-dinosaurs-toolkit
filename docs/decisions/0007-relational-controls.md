@@ -94,7 +94,10 @@ must be able to express "this fill writes inside `[base, base + n)`" for an assu
    `writeOrder`, the event order of the write that stored the byte, and for a byte with no
    modeled value `unwritten`, whose `cause` is `no write on this path`, `possibly written by an
    aliasing write`, `dropped by a possibly aliasing write` or `dropped by a modeled call`, with
-   that event's order.
+   that event's order. `dropped by a possibly aliasing write` is for a byte that held a modeled
+   value and lost it. A byte with no value to lose, including one a `preservesMemory` scope kept
+   without a value, gets `possibly written by an aliasing write`. Both leave `lastWriter`
+   undecided and make the memory input opaque to `origin`.
 
 5. **Arithmetic is interval arithmetic over linear forms, with stated assumptions.** Each reported
    term becomes a linear form over atoms (unknown subterms) by reading `add`, `sub`, `offset`,

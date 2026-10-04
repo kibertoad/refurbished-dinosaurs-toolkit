@@ -64,7 +64,10 @@ also gives `writeOrder`, the event order of the write that stored the byte. A by
 with no modeled value has `writeOrder: null` and `unwritten`, whose `cause` is
 `no write on this path`, `possibly written by an aliasing write`, `dropped by a
 possibly aliasing write` or `dropped by a modeled call`, with the `order` of that
-write or modeled return. A byte a `preservesMemory` scope kept keeps its writer, or
+write or modeled return. `dropped by a possibly aliasing write` names a write that may alias a
+byte that held a modeled value, which the byte lost. `possibly written by an aliasing write` names
+the newest write through another segment or base that may alias a byte with no value to lose,
+including a byte a `preservesMemory` scope kept without one. A byte a `preservesMemory` scope kept keeps its writer, or
 its cause from before the modeled call. BP-derived offsets
 accessed through BX use DS, whether BX got the offset by LEA, MOV or ADD; the
 offset keeps its entry-SP expression and the segment is DS's own value. Only
@@ -134,8 +137,9 @@ frame holds:
   site, order, depth, role (`push` or none), width and value. The report keeps each cited write
   event among the path's events. A byte no write on the path covered, one a modeled call
   invalidated outside its `preservesMemory` scopes, or one a later write through another segment
-  or base may have overwritten (the bytes the machine itself drops as possible aliases), has
-  `writerSite: null` and a reason.
+  or base may have stored, has `writerSite: null` and a reason. A write counts for every frame byte
+  it may alias, whether or not it dropped a cached byte, by the rule a read's `unwritten` uses, so
+  the slot and the callee's read of it name the same write.
   Each slot lists the callee reads that consumed it (`consumedBy`) and `derivedReads`: argument
   reads deeper in the callee whose bytes carry the slot writer's site among their producers, such
   as a setter reading a word the callee forwarded. They match by producer site only.
