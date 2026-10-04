@@ -88,9 +88,9 @@ and anything over `ContentOverlayLimits` (100,000 files, 1 GiB a file, 4 GiB in 
 manifest by default).
 
 `ApplyAsync` checks every target before it writes anything, finding each path component with the
-rules of `PortableAssetPath.ResolveFile`. A target that already has the payload's size and hash counts as applied and is not written,
-so a rerun writes nothing. A target with neither hash, a replaced file that is missing, or an added
-file that exists throws `ContentOverlayException` with a `ContentOverlayProblem`, the path and the
+rules of `PortableAssetPath.ResolveFile`. A target that already has the payload's size and hash
+counts as applied and is not written, so a rerun writes nothing. A target with neither hash, a
+replaced file that is missing, or an added file that exists throws `ContentOverlayException` with a `ContentOverlayProblem`, the path and the
 hash found. Then every payload is copied into a scratch directory under the root and hashed as it
 is copied; a payload whose size or hash differs from its record throws before any target is
 replaced, and the scratch directory is always removed. Only then are the copies moved over their

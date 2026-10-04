@@ -298,7 +298,16 @@ public sealed class ContentOverlay : IDisposable
         public (string Relative, bool Exists) Locate(string relative)
         {
             var parts = relative.Split('/');
-            var (spelled, isDirectory) = _walker.Walk(relative);
+            IReadOnlyList<string> spelled;
+            bool isDirectory;
+            try
+            {
+                (spelled, isDirectory) = _walker.Walk(parts);
+            }
+            catch (InvalidDataException exception)
+            {
+                throw new InvalidDataException($"Overlay target {relative} is rejected: {exception.Message}", exception);
+            }
             var existing = string.Join('/', spelled);
             if (spelled.Count < parts.Length) return (Planned(existing, parts[spelled.Count..]), false);
             if (isDirectory) throw new InvalidDataException($"Overlay target is a directory: {existing}");

@@ -30,11 +30,8 @@ internal sealed class AssetPathWalker(string root, bool cacheListings)
 
     private readonly Dictionary<string, ILookup<string, Entry>> _listings = new(StringComparer.Ordinal);
 
-    /// <summary>The full path of the root the walker resolves below.</summary>
-    public string Root { get; } = root;
-
     /// <summary>
-    /// Matches the components of <paramref name="relative"/>, which must already be portable, until
+    /// Matches <paramref name="parts"/>, the components of a reference that is already portable, until
     /// one does not exist.
     /// </summary>
     /// <returns>
@@ -45,23 +42,23 @@ internal sealed class AssetPathWalker(string root, bool cacheListings)
     /// A component matches more than one entry, matches a link, or matches a file while more
     /// components follow it.
     /// </exception>
-    public (IReadOnlyList<string> Spelled, bool IsDirectory) Walk(string relative)
+    public (IReadOnlyList<string> Spelled, bool IsDirectory) Walk(string[] parts)
     {
-        var parts = relative.Split('/');
         var spelled = new List<string>(parts.Length);
-        var current = Root;
+        var current = root;
         var isDirectory = true;
         for (var index = 0; index < parts.Length; index++)
         {
             var matches = Matches(current, parts[index]);
             if (matches.Length == 0) break;
-            var spelledSoFar = string.Join('/', spelled.Append(parts[index]));
-            if (matches.Length > 1) throw new InvalidDataException($"Asset spelling is ambiguous: {spelledSoFar}");
+            if (matches.Length > 1)
+                throw new InvalidDataException($"Asset spelling is ambiguous: {Shown(spelled, parts[index])}");
             var match = matches[0];
             if ((match.Attributes & FileAttributes.ReparsePoint) != 0)
-                throw new InvalidDataException($"Asset path passes through a symbolic link or reparse point: {spelledSoFar}");
+                throw new InvalidDataException(
+                    $"Asset path passes through a symbolic link or reparse point: {Shown(spelled, parts[index])}");
             if (!match.IsDirectory && index < parts.Length - 1)
-                throw new InvalidDataException($"Asset path passes through a file: {spelledSoFar}");
+                throw new InvalidDataException($"Asset path passes through a file: {Shown(spelled, parts[index])}");
             spelled.Add(match.Name);
             current = Path.Join(current, match.Name);
             isDirectory = match.IsDirectory;
@@ -86,6 +83,10 @@ internal sealed class AssetPathWalker(string root, bool cacheListings)
         }
         return listing[name].Take(2).ToArray();
     }
+
+    /// <summary>The components matched so far followed by <paramref name="next"/>, for a message.</summary>
+    internal static string Shown(IReadOnlyList<string> spelled, string next) =>
+        spelled.Count == 0 ? next : $"{string.Join('/', spelled)}/{next}";
 
     private static Entry Read(ref FileSystemEntry entry) =>
         new(entry.FileName.ToString(), entry.Attributes, entry.IsDirectory);

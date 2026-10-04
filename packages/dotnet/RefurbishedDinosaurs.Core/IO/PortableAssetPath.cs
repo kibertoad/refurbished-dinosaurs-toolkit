@@ -47,7 +47,7 @@ public static class PortableAssetPath
     /// Resolves an existing file component by component, ignoring ordinal case. Multiple matching
     /// names are rejected even when one matches exactly. Symbolic links and reparse points are
     /// rejected, including the root. Returns the actual relative spelling with forward slashes.
-    /// This is a read-time check, not protection against concurrent directory replacement.
+    /// The check reads the tree once; a directory replaced after it is not detected.
     /// </summary>
     /// <param name="root">The directory the reference is relative to.</param>
     /// <param name="relative">The reference, checked with <see cref="Relative"/>.</param>
@@ -62,8 +62,8 @@ public static class PortableAssetPath
     /// Resolves an existing directory with the rules of <see cref="ResolveFile"/>: each component
     /// matches exactly one entry ignoring ordinal case, even when one of the matches is spelled
     /// exactly, and symbolic links and reparse points are rejected, including the root. Returns the
-    /// actual relative spelling with forward slashes. This is a read-time check, not protection
-    /// against concurrent directory replacement.
+    /// actual relative spelling with forward slashes. The check reads the tree once; a directory
+    /// replaced after it is not detected.
     /// </summary>
     /// <param name="root">The directory the reference is relative to.</param>
     /// <param name="relative">The reference, checked with <see cref="Relative"/>.</param>
@@ -77,15 +77,15 @@ public static class PortableAssetPath
     private static string Resolve(string root, string relative, bool directory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
-        var reference = Relative(relative);
+        var parts = Relative(relative).Split('/');
         var rootInfo = new DirectoryInfo(Path.GetFullPath(root));
         if (!rootInfo.Exists) throw new InvalidDataException("Asset root directory does not exist.");
         if ((rootInfo.Attributes & FileAttributes.ReparsePoint) != 0)
             throw new InvalidDataException("Asset root is a symbolic link or reparse point.");
-        var (spelled, isDirectory) = new AssetPathWalker(rootInfo.FullName, cacheListings: false).Walk(reference);
+        var (spelled, isDirectory) = new AssetPathWalker(rootInfo.FullName, cacheListings: false).Walk(parts);
+        if (spelled.Count < parts.Length)
+            throw new InvalidDataException($"Asset does not exist: {AssetPathWalker.Shown(spelled, parts[spelled.Count])}");
         var path = string.Join('/', spelled);
-        if (spelled.Count < reference.Count(character => character == '/') + 1)
-            throw new InvalidDataException($"Asset does not exist: {reference}");
         if (isDirectory != directory)
             throw new InvalidDataException(directory ? $"Asset reference is not a directory: {path}" : $"Asset reference is not a file: {path}");
         return path;
