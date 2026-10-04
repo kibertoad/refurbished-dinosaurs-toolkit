@@ -77,7 +77,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | Command | Reports | Described in |
 |---|---|---|
 | `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`; declared-table continuations run on their own `continuationBudget` | this section, [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables) |
-| `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries) |
+| `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries) |
 | `uses` | accesses to one memory offset from every established entry | this section |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
@@ -113,6 +113,45 @@ stack overwrites and unknown return addresses remain visible. A root query may
 set `returnBytes` to 4 for a far entry (default 2). The root return must use
 that width and leave SP where it was on entry; otherwise the path stops and the
 report is not complete within the model.
+
+`arguments` also maps each traced call's stack slots onto the widths its callee read. Each path
+gets `argumentFrames`, one per traced call (modeled calls have none). Offsets count from the
+first byte above the return frame (`returnFrameBytes`, 2 or 4, also on the traced `call` event). A
+frame holds:
+
+- `slots`: runs of argument bytes that one write last covered before the call, with the writer's
+  site, order, depth, role (`push` or none), width and value. The report keeps each cited write
+  event among the path's events. A byte no write on the path covered, one a modeled call
+  invalidated outside its `preservesMemory` scopes, or one a later write through another segment
+  or base may have overwritten (the bytes the machine itself drops as possible aliases), has
+  `writerSite: null` and a reason.
+  Each slot lists the callee reads that consumed it (`consumedBy`) and `derivedReads`: argument
+  reads deeper in the callee whose bytes carry the slot writer's site among their producers, such
+  as a setter reading a word the callee forwarded. They match by producer site only.
+- `groupings`: one row per callee argument read, with its offset, width, LDS/LES `grouping` and
+  the slots it covers. `partialSlots` names slots the read covers only in part.
+  `bytesNotFromSlotWriter` names read bytes (indices within the read, as in `derivedReads`) that do
+  not come from the slot's writer: bytes with no known writer, bytes the callee stored to before
+  the read (even a value computed from the argument), and bytes whose producers do not include the
+  writer.
+- `competingWidths`: pairs of read intervals that overlap without being equal.
+- `calleeCleanupBytes` (`RET n`) and `callerCleanupBytes` (an immediate `ADD SP` right after the
+  call). `mappedBytes` is the larger of these and the highest byte read, at most 256.
+- `settledOnThisPath` and `openReasons`. A frame is open when the callee did not return on the
+  path, a written slot was not read, reads overlap with different widths, a read covers part of a
+  slot or sees other bytes than the caller wrote, no cleanup amount bounds the frame, or the frame
+  is wider than 256 bytes.
+
+Only reads group slots. Adjacent pushes, a relocated segment word and a cleanup amount never join
+or split them: a segment fixup locates a segment, and the read that consumes it decides which
+words form the pointer. `argumentFrameSites` collects the frames of each call site across the
+ordinary `paths`; `declaredContinuationPaths` get no frames and do not count toward a site.
+`readWidthSets` lists each distinct set of reads, each read with its offset, width and grouping,
+and `agreed` holds only when one set remains and every frame settled. A far-pointer load and a
+plain dword read of the same four bytes are different sets. Paths that never reached the call are not represented, so a
+grouping settled on the traced paths says nothing about the others. A decompiler's parameter
+list is an inference and does not settle a grouping; use the `callees` Ghidra cross-check to
+confirm that both analyses reach the same callee, then read its widths here.
 
 Return snapshots retain full and partial registers. Optional `returnContracts`
 contain `entry`, `register`, `failures` (numeric encodings) and `evidence`. Only
