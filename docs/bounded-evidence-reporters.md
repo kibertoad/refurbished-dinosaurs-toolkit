@@ -243,7 +243,7 @@ printed on each affected path. A model supplies no evidence about actual externa
 services, hardware behavior or native failure reachability.
 
 A model may also declare `preservesMemory`, a list of explicit byte scopes that the query assumes the
-service leaves as they were before the call ([ADR 0004](decisions/0004-scoped-memory-hypotheses-on-call-models.md)).
+service leaves as they were before the call ([ADR 0009](decisions/0009-scoped-memory-hypotheses-on-call-models.md)).
 Each scope is an object with exactly these fields:
 
 | Field | Type | Rule |

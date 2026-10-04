@@ -276,7 +276,7 @@ memory effects invalidate the ancestor return frame. Preserving register values 
 balanced stack does not establish the contents of that frame or the saved registers. The
 conservative stop is correct, and preserving those bytes implicitly is refused.
 
-Tooling outcome ([ADR 0004](decisions/0004-scoped-memory-hypotheses-on-call-models.md)): a call
+Tooling outcome ([ADR 0009](decisions/0009-scoped-memory-hypotheses-on-call-models.md)): a call
 model may declare `preservesMemory`, explicit byte scopes the query assumes the service leaves
 unchanged. Each scope has `segment` (a segment register), `base` (an address-width general
 register), optional signed `displacement` (default 0), `bytes` (1..4,096) and nonempty `evidence`,

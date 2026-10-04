@@ -1,4 +1,4 @@
-# ADR 0004: scoped memory hypotheses on call models
+# ADR 0009: scoped memory hypotheses on call models
 
 Status: accepted
 

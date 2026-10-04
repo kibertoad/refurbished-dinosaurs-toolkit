@@ -60,7 +60,7 @@ class State:
         # Keys grouped by (segment, base) so a write scans only groups that can alias it.
         self.memory_groups = {}
         self.memory_epoch = 0
-        # Bytes a preservesMemory scope kept without a value (ADR 0004): key -> the unknown term
+        # Bytes a preservesMemory scope kept without a value (ADR 0009): key -> the unknown term
         # name they had before the modeled call. They stay unread: no value, no producer.
         self.unread_memory = {}
         self.events = []

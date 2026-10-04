@@ -69,16 +69,14 @@ def effect_ordering(report):
                 if stack:
                     call = stack.pop()
                     modeled = event.get("modeled", False)
+                    scopes = event.get("preservedMemoryScopes", []) if modeled else []
                     call.update(status="modeled-return" if modeled else "traced-return",
                                 unknownEffects=bool(modeled or event.get("unknownMemoryEffects") or len(unknown_orders) > call.pop("_unknownStart")),
-                                returnOrder=event["order"], writesAfterCount=len(writes),
-                                continuation="assumes balanced returning service; its memory/flag effects are unknown" if modeled
-                                else "local callee return reached within the instruction model")
-                    if modeled:
-                        call["preservedMemoryScopes"] = event.get("preservedMemoryScopes", [])
-                        if call["preservedMemoryScopes"]:
-                            call["continuation"] = ("assumes balanced returning service; memory outside its "
-                                                    "preservedMemoryScopes hypotheses and its flag effects are unknown")
+                                returnOrder=event["order"], writesAfterCount=len(writes), preservedMemoryScopes=scopes,
+                                continuation="local callee return reached within the instruction model" if not modeled
+                                else "assumes balanced returning service; memory outside its preservedMemoryScopes "
+                                     "hypotheses and its flag effects are unknown" if scopes
+                                else "assumes balanced returning service; its memory/flag effects are unknown")
                 if event.get("modeled") or event.get("unknownMemoryEffects"):
                     unknown_orders.append(event["order"])
         for call in calls:

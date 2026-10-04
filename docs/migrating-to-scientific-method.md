@@ -215,7 +215,7 @@ file's length, and refuses a volume smaller than 18 sectors.
 ## Prepared protocol 2: scoped memory on call models
 
 The reader and the engine moved from prepared protocol 1 to 2 when call models gained
-`preservesMemory` ([ADR 0004](decisions/0004-scoped-memory-hypotheses-on-call-models.md)). A
+`preservesMemory` ([ADR 0009](decisions/0009-scoped-memory-hypotheses-on-call-models.md)). A
 protocol 2 reader and a protocol 1 engine refuse each other, and so do the reverse pair, with an
 error naming both packages. Upgrade `@scientific-method/executable-reader` and
 `scientific-method-engine` to their protocol 2 majors in the same change. Nothing accepts the old

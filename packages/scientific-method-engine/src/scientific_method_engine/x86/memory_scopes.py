@@ -1,4 +1,4 @@
-"""Explicit, bounded memory hypotheses on modeled calls (ADR 0004).
+"""Explicit, bounded memory hypotheses on modeled calls (ADR 0009).
 
 A scope is a query hypothesis that a modeled service leaves a named byte range as it was before the
 call. It is evidence-layer bookkeeping: it reads and writes no memory on the path, adds no read or
