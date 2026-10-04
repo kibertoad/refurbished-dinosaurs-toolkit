@@ -14,10 +14,11 @@ and engine 4.0.0 gives declared-table continuations their own budget
 ([ADR 0011](decisions/0011-separate-continuation-budget.md)). PR 60 (conditional
 table-target continuations) and PR 69 (boundary budget) are merged.
 
-Dark Sun has committed engine 0.7.0 and is moving to 0.8.0. It has 18 requests open in its
-`gaps.md`, and all of its open engine requests come from Dark Sun alone. Sub-culture-max,
-enemy-reinfestation and reconqueror ask for none of these analyses. Sub-culture-max does have about
-ten open requests against the Ghidra scripts this toolkit ships. They are tracked in M6.
+Dark Sun's MENU linked-child case ran against engine 4.0.0 (issue 112), and Dark Sun adopts new
+engines on its own schedule. It has 18 requests open in its `gaps.md`, and all of its open engine
+requests come from Dark Sun alone. Sub-culture-max, enemy-reinfestation and reconqueror ask for
+none of these analyses. Sub-culture-max does have about ten open requests against the Ghidra
+scripts this toolkit ships. They are tracked in M6.
 
 ## What belongs in the engine
 
