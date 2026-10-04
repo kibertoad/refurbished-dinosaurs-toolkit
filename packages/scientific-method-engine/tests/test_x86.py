@@ -621,6 +621,27 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertFalse(site["widthsConsistent"])
         self.assertEqual(len(site["conflictingWidths"]), 1)
 
+    def test_one_path_that_groups_the_same_bytes_two_ways_stays_open(self):
+        # The callee loads the first four bytes with LES and then reads them again as a 32-bit dword.
+        c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("83 c4 04 c3")
+        c.label("callee").emit("55 89 e5 c4 5e 04 66 8b 46 04 5d c3")
+        r, frames = self.frames(c)
+        self.assertEqual(frames[0]["competingWidths"], [])
+        self.assertFalse(frames[0]["settledOnThisPath"])
+        self.assertIn("the 4 bytes at 0 are read with more than one grouping", frames[0]["openReasons"])
+        site = r["argumentFrameSites"][0]
+        self.assertFalse(site["agreed"])
+        self.assertFalse(site["widthsConsistent"])
+
+    def test_a_site_whose_callee_reads_nothing_is_not_consistent(self):
+        # A pushed word the callee never reads leaves no read to be consistent with.
+        c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("c3")
+        r, _ = self.frames(c)
+        site = r["argumentFrameSites"][0]
+        self.assertEqual(site["readWidths"], [])
+        self.assertFalse(site["widthsConsistent"])
+        self.assertFalse(site["agreed"])
+
     def test_a_write_through_another_address_drops_the_slot_writer(self):
         # A DS write between the push and the call may alias the symbolic stack, so the pushed word
         # has no known writer when the callee reads it.
