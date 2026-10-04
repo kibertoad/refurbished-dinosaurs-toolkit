@@ -1,5 +1,4 @@
 """PE32 acceptance uses constructed headers and instructions only."""
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,6 +7,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+
+import xxhash
 
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
@@ -164,7 +165,7 @@ class PEReporterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             (path / 'source.bin').write_bytes(data)
-            config.update(source='source.bin', sha256=hashlib.sha256(data).hexdigest(), regions=[1])
+            config.update(source='source.bin', xxh3=xxhash.xxh3_128_hexdigest(data), regions=[1])
             (path / 'config.json').write_text(json.dumps(config))
             process = subprocess.run([*ENGINE, 'trace', str(path / 'config.json')],
                                      capture_output=True, text=True, env=ENGINE_ENV)
@@ -336,13 +337,13 @@ class PEReporterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             (path / 'source.bin').write_bytes(data)
-            config.update(source='source.bin', sha256=hashlib.sha256(data).hexdigest())
+            config.update(source='source.bin', xxh3=xxhash.xxh3_128_hexdigest(data))
             environment = {**ENGINE_ENV, 'EVIDENCE_PYTHON': sys.executable}
             (path / 'config.json').write_text(json.dumps(config))
             process = subprocess.run(['node', str(READER), 'trace', str(path / 'config.json')], capture_output=True, text=True, env=environment)
             self.assertEqual(process.returncode, 0, process.stderr)
             r = json.loads(process.stdout)
-            self.assertEqual(r['sourceIdentity']['sha256'], config['sha256'])
+            self.assertEqual(r['sourceIdentity']['xxh3'], config['xxh3'])
             self.assertEqual(r['sourceMapping']['format'], 'PE32/i386')
             config['regions'][0]['ip'] = CODE_VA + 1
             (path / 'config.json').write_text(json.dumps(config))

@@ -1,11 +1,13 @@
 """Bounded explicit code mappings. No guessed linear disassembly domains."""
-import hashlib
+import re
 from pathlib import Path
+import xxhash
 from capstone import Cs, CS_ARCH_X86, CS_MODE_16, CS_MODE_32
 from .pe import prepare_pe
 import capstone
 
 MAX_SOURCE = 256 * 1024 * 1024
+XXH3_FORM = re.compile("[0-9a-f]{32}")
 
 
 def integer(value, low, high, label):
@@ -17,21 +19,28 @@ def integer(value, low, high, label):
 def read_source(config, base):
     """Read the source a report config names and check its hash.
 
-    ``config["source"]`` is a path relative to ``base``; the file must be at most 256 MiB and hash to
-    ``config["sha256"]``. Returns ``(data, identity)`` where ``identity`` is
-    ``{"size": ..., "sha256": ...}``. Raises ``ValueError`` otherwise.
+    ``config["source"]`` is a path relative to ``base``; the file must be at most 256 MiB and its
+    XXH3-128 hash must equal ``config["xxh3"]``, given as 32 lower-case hex digits. A config that
+    still names a ``sha256`` is refused, so a hash from before prepared-config protocol 2 is never
+    taken as checked. Returns ``(data, identity)`` where ``identity`` is
+    ``{"size": ..., "xxh3": ...}``. Raises ``ValueError`` otherwise.
     """
     path = config.get("source")
     if not isinstance(path, str) or not path:
         raise ValueError("source path required")
+    if "sha256" in config:
+        raise ValueError("sha256 is no longer read; name the source by its xxh3 (prepared-config protocol 2)")
+    expected = config.get("xxh3")
+    if not isinstance(expected, str) or not XXH3_FORM.fullmatch(expected):
+        raise ValueError("xxh3 must be the source's XXH3-128 hash as 32 lower-case hex digits")
     path = Path(base) / path
     if not path.is_file() or path.stat().st_size > MAX_SOURCE:
         raise ValueError("source must be a regular file of at most 256 MiB")
     data = path.read_bytes()
-    digest = hashlib.sha256(data).hexdigest()
-    if digest != config.get("sha256"):
-        raise ValueError("Source SHA-256 differs from the supplied baseline")
-    return data, {"size": len(data), "sha256": digest}
+    digest = xxhash.xxh3_128_hexdigest(data)
+    if digest != expected:
+        raise ValueError("Source xxh3 differs from the supplied baseline")
+    return data, {"size": len(data), "xxh3": digest}
 
 
 class Image:

@@ -8,6 +8,8 @@ import sys
 import tempfile
 import unittest
 
+import xxhash
+
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 # The engine CLI runs from this checkout's source whether or not the package is installed.
@@ -1336,6 +1338,33 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(report("ba 05 00 21 d8 83 d2 00 c3")["paths"][0]["registers"]["dx"]["value"], 5)
         self.assertIn("Operand-size", report("b9 02 00 66 e2 fd c3")["paths"][0]["stop"])
 
+    def test_carry_reads_the_producers_pcode_carry_without_a_branch_condition(self):
+        from unittest import mock
+        from scientific_method_engine.x86.pcode_backend import Pypcode
+
+        cases = [
+            ("b8 01 00 05 ff ff", 6),  # ADD AX, 0FFFFh carries.
+            ("b8 01 00 05 01 00", 5),  # ADD AX, 1 does not.
+            ("b8 01 00 bb 02 00 39 d8", 6),  # CMP AX, BX borrows.
+            ("b8 02 00 bb 01 00 39 d8", 5),  # CMP AX, BX does not.
+            ("b8 01 00 f7 d8", 6),  # NEG of nonzero sets CF.
+            ("b8 00 00 f7 d8", 5),  # NEG of zero clears it.
+        ]
+        with mock.patch.object(Pypcode, "condition", autospec=True, side_effect=Pypcode.condition) as condition:
+            for producer, dx in cases:
+                with self.subTest(producer=producer):
+                    # The producer, MOV DX, 5 (flags untouched), ADC DX, 0.
+                    r = report(producer + " ba 05 00 83 d2 00 c3")
+                    self.assertEqual(r["paths"][0]["registers"]["dx"]["value"], dx)
+                    self.assertEqual(events(r, "arithmetic")[-1]["carryIn"]["value"], dx - 5)
+            # An unknown producer's carry stays named by the producer's operands.
+            unresolved = events(report("39 d8 83 d2 00 c3"), "arithmetic")[-1]["carryIn"]
+            self.assertIsNone(unresolved["value"])
+            condition.assert_not_called()
+            # A JB still runs its own condition once; its assumption key reads CF without another.
+            self.assertEqual(len(report("39 d8 72 00 c3")["paths"]), 2)
+            self.assertEqual([call.args[2] for call in condition.call_args_list], ["jb"])
+
     def test_incoming_coverage_counts_straddled_segments_scan_limits_and_contested_starts(self):
         data = bytes.fromhex("e8 01 00 c3 c3 e8 fc ff c3")
         cfg = configuration(data, target=4, controls=[5], segments=[{"name": "code", "start": 0, "end": 6, "evidence": "synthetic segment"}])
@@ -1765,20 +1794,33 @@ class ReporterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); data = bytes.fromhex("b8 01 00 c3")
             (root/"fixture.bin").write_bytes(data)
-            cfg = configuration(data, source="fixture.bin", sha256=hashlib.sha256(data).hexdigest())
+            cfg = configuration(data, source="fixture.bin", xxh3=xxhash.xxh3_128_hexdigest(data))
             path = root/"config.json"; path.write_text(json.dumps(cfg))
             args = [*ENGINE, "trace", str(path)]
             result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 0, result.stderr)
             header = json.loads(result.stdout)
-            self.assertEqual(header["sourceIdentity"]["size"], 4)
+            self.assertEqual(header["sourceIdentity"], {"size": 4, "xxh3": cfg["xxh3"]})
             self.assertEqual((header["decoder"], header["instructionSemantics"]),
                              ("capstone " + capstone.__version__, f"pypcode {pypcode.__version__} (Ghidra SLEIGH x86)"))
-            cfg["sha256"] = "0" * 64; path.write_text(json.dumps(cfg))
+            cfg["xxh3"] = "0" * 32; path.write_text(json.dumps(cfg))
             result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 1)
             self.assertIn("baseline", result.stderr)
-            cfg["sha256"] = hashlib.sha256(data).hexdigest(); cfg["overlayExports"] = []
+            # A SHA-256, an upper-case or a missing hash is not the standard's form.
+            for value in ("0" * 64, xxhash.xxh3_128_hexdigest(data).upper(), None):
+                with self.subTest(xxh3=value):
+                    path.write_text(json.dumps({**cfg, "xxh3": value}))
+                    result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("32 lower-case hex digits", result.stderr)
+            # A protocol 1 hash is refused beside a correct xxh3, so it is never taken as checked.
+            path.write_text(json.dumps({**cfg, "xxh3": xxhash.xxh3_128_hexdigest(data),
+                                        "sha256": hashlib.sha256(data).hexdigest()}))
+            result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("sha256 is no longer read", result.stderr)
+            cfg["xxh3"] = xxhash.xxh3_128_hexdigest(data); cfg["overlayExports"] = []
             path.write_text(json.dumps(cfg))
             result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 1)
@@ -1788,15 +1830,15 @@ class ReporterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); data = bytes.fromhex("b8 01 00 c3")
             (root/"fixture.bin").write_bytes(data)
-            cfg = configuration(data, source=str(root/"fixture.bin"), sha256=hashlib.sha256(data).hexdigest())
+            cfg = configuration(data, source=str(root/"fixture.bin"), xxh3=xxhash.xxh3_128_hexdigest(data))
             stdin = [*ENGINE, "trace", "-"]
-            for protocol, accepted in ((None, False), (0, False), (1, True)):
+            for protocol, accepted in ((None, False), (1, False), (2, True)):
                 prepared = dict(cfg) if protocol is None else {**cfg, "preparedProtocol": protocol}
                 result = subprocess.run(stdin, input=json.dumps(prepared), capture_output=True, text=True, env=ENGINE_ENV)
                 self.assertEqual(result.returncode, 0 if accepted else 1, result.stderr)
                 if not accepted:
                     self.assertIn("protocol", result.stderr)
-            path = root/"config.json"; path.write_text(json.dumps({**cfg, "preparedProtocol": 1}))
+            path = root/"config.json"; path.write_text(json.dumps({**cfg, "preparedProtocol": 2}))
             result = subprocess.run([*ENGINE, "trace", str(path)], capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 1)
             self.assertIn("set by the reader", result.stderr)

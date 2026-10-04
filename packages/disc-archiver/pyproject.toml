@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dinorefurb-disc-archiver"
+# The release workflow writes the published version from the package's release tag.
+version = "0.0.0"
+description = "Personal archival copies of game discs you own, in several image formats, for clean-room restorations."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "kibertoad" }]
+dependencies = ["pycdlib==1.14.0"]
+
+[project.scripts]
+disc-archiver = "dinorefurb_disc_archiver.cli:run"
+
+[project.gui-scripts]
+disc-archiver-gui = "dinorefurb_disc_archiver.gui:run"
+
+[project.urls]
+Source = "https://github.com/kibertoad/refurbished-dinosaurs-toolkit/tree/main/packages/disc-archiver"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dinorefurb_disc_archiver"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "pyproject.toml"]
