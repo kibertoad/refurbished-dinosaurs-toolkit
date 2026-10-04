@@ -24,18 +24,28 @@ internal static class SyntheticInstallShieldCabinet
 
     public static uint VersionWord(int major) => major == 5 ? 0x01005000u : 0x02000000u | (uint)(major * 100);
 
-    /// <summary>Returns each file of the set by name: <c>data1.hdr</c>, <c>data1.cab</c>, <c>data2.cab</c>...</summary>
+    /// <summary>
+    /// Returns each file of the set by name: <c>data1.hdr</c>, <c>data1.cab</c>, <c>data2.cab</c>...
+    /// With <paramref name="headerInCabinet"/>, there is no <c>data1.hdr</c>: <c>data1.cab</c> starts
+    /// with the header region and holds its members after it.
+    /// </summary>
     public static Dictionary<string, byte[]> Build(
-        int major, IReadOnlyList<CabinetFile> files, long volumeCapacity = long.MaxValue, uint? versionWord = null)
+        int major, IReadOnlyList<CabinetFile> files, long volumeCapacity = long.MaxValue, uint? versionWord = null,
+        bool headerInCabinet = false)
     {
+        var word = versionWord ?? VersionWord(major);
         var raws = files.Select(file => file.LinkTo is null && !file.Invalid ? Raw(file) : []).ToArray();
-        var parts = Layout(files, raws, volumeCapacity, out var volumeCount);
-        var result = new Dictionary<string, byte[]>
-        {
-            ["data1.hdr"] = Header(major, files, raws, parts, versionWord ?? VersionWord(major))
-        };
+        // The header's length does not depend on where the members lie, so a first pass sizes it.
+        var dataStart = headerInCabinet
+            ? Header(major, files, raws, Layout(files, raws, volumeCapacity, VolumeDataOffset, out _), word).Length
+            : VolumeDataOffset;
+        var parts = Layout(files, raws, volumeCapacity, dataStart, out var volumeCount);
+        var header = Header(major, files, raws, parts, word);
+        var result = new Dictionary<string, byte[]>();
+        if (!headerInCabinet) result["data1.hdr"] = header;
         for (var volume = 1; volume <= volumeCount; volume++)
-            result[$"data{volume}.cab"] = Volume(major, files, raws, parts, volume, versionWord ?? VersionWord(major));
+            result[$"data{volume}.cab"] = Volume(major, files, raws, parts, volume, word,
+                volume == 1 && headerInCabinet ? header : null, volume == 1 ? dataStart : VolumeDataOffset);
         return result;
     }
 
@@ -75,7 +85,8 @@ internal static class SyntheticInstallShieldCabinet
         return raw;
     }
 
-    private static List<Part>[] Layout(IReadOnlyList<CabinetFile> files, byte[][] raws, long capacity, out int volumeCount)
+    private static List<Part>[] Layout(
+        IReadOnlyList<CabinetFile> files, byte[][] raws, long capacity, long firstDataStart, out int volumeCount)
     {
         var parts = files.Select(_ => new List<Part>()).ToArray();
         var volume = 1;
@@ -93,7 +104,7 @@ internal static class SyntheticInstallShieldCabinet
                     used = 0;
                 }
                 var take = Math.Min(remaining, capacity - used);
-                parts[index].Add(new(volume, VolumeDataOffset + used, start, take));
+                parts[index].Add(new(volume, (volume == 1 ? firstDataStart : VolumeDataOffset) + used, start, take));
                 used += take;
                 start += take;
                 remaining -= take;
@@ -197,14 +208,18 @@ internal static class SyntheticInstallShieldCabinet
     }
 
     private static byte[] Volume(
-        int major, IReadOnlyList<CabinetFile> files, byte[][] raws, List<Part>[] parts, int volume, uint versionWord)
+        int major, IReadOnlyList<CabinetFile> files, byte[][] raws, List<Part>[] parts, int volume, uint versionWord,
+        byte[]? header, long dataStart)
     {
         var held = Enumerable.Range(0, files.Count)
             .Where(index => parts[index].Any(part => part.Volume == volume)).ToArray();
-        var length = VolumeDataOffset + parts.SelectMany(list => list).Where(part => part.Volume == volume)
+        var length = dataStart + parts.SelectMany(list => list).Where(part => part.Volume == volume)
             .Sum(part => part.Length);
         var bytes = new byte[length];
         var span = bytes.AsSpan();
+        // The header's bytes between the common header and the descriptor are zero, so the volume
+        // fields written below fit there.
+        header?.CopyTo(span);
         BinaryPrimitives.WriteUInt32LittleEndian(span, 0x28635349);
         BinaryPrimitives.WriteUInt32LittleEndian(span[4..], versionWord);
         foreach (var index in held)
@@ -225,7 +240,7 @@ internal static class SyntheticInstallShieldCabinet
         {
             uint[] values =
             [
-                VolumeDataOffset, 0, (uint)(held.Length == 0 ? 0 : held[0]), (uint)(held.Length == 0 ? 0 : held[^1]),
+                (uint)dataStart, 0, (uint)(held.Length == 0 ? 0 : held[0]), (uint)(held.Length == 0 ? 0 : held[^1]),
                 (uint)first.Item1, (uint)first.Item2, (uint)first.Item3, (uint)last.Item1, (uint)last.Item2, (uint)last.Item3
             ];
             for (var index = 0; index < values.Length; index++)
@@ -233,7 +248,7 @@ internal static class SyntheticInstallShieldCabinet
         }
         else
         {
-            BinaryPrimitives.WriteUInt64LittleEndian(fields, VolumeDataOffset);
+            BinaryPrimitives.WriteUInt64LittleEndian(fields, (ulong)dataStart);
             BinaryPrimitives.WriteUInt32LittleEndian(fields[8..], (uint)(held.Length == 0 ? 0 : held[0]));
             BinaryPrimitives.WriteUInt32LittleEndian(fields[12..], (uint)(held.Length == 0 ? 0 : held[^1]));
             long[] values = [first.Item1, first.Item2, first.Item3, last.Item1, last.Item2, last.Item3];

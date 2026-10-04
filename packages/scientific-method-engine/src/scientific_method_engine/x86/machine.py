@@ -25,6 +25,9 @@ FLAT_PORT_REASON = "port access in the flat model depends on I/O privilege, whic
 # The write-log key that marks a point where the model forgot all memory.
 MEMORY_CLEARED = ("memory-cleared",)
 
+# The ``unwritten`` cause of a byte that no write on the path stored.
+NO_WRITE = "no write on this path"
+
 
 class WriteLog:
     """Append-only list of (key, previous value) pairs, one per register or memory byte a write changes.
@@ -299,7 +302,7 @@ class State:
             return dict(lost)
         if self.memory_cleared is not None:
             return {"cause": "dropped by a modeled call", "order": self.memory_cleared}
-        return {"cause": "no write on this path", "order": None}
+        return {"cause": NO_WRITE, "order": None}
 
     def byte_writer(self, index, key):
         """The byteProducers row of one accessed byte: its producers and the write that stored it."""

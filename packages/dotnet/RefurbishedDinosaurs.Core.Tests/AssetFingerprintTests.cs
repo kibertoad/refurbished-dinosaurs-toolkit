@@ -32,6 +32,33 @@ public sealed class AssetFingerprintTests
     }
 
     [Theory]
+    [MemberData(nameof(ReferenceHashes))]
+    public async Task ACopyWithinTheMaximumWritesEveryByteAndFingerprintsIt(byte[] data, string expected)
+    {
+        using var input = new MemoryStream(data);
+        using var output = new MemoryStream();
+        var copied = await FileFingerprint.CopyXxh3Async(input, output, data.Length, TestContext.Current.CancellationToken);
+        Assert.Equal(new FingerprintedCopy(data.Length, expected, Exceeded: false), copied);
+        Assert.Equal(data, output.ToArray());
+    }
+
+    [Fact]
+    public async Task ACopyPastTheMaximumStopsBeforeWritingTheReadThatExceedsIt()
+    {
+        using var input = new MemoryStream("abcd"u8.ToArray());
+        using var output = new MemoryStream();
+        var copied = await FileFingerprint.CopyXxh3Async(input, output, 3, TestContext.Current.CancellationToken);
+        Assert.True(copied.Exceeded);
+        Assert.Equal(output.Length, copied.Bytes);
+        Assert.True(copied.Bytes <= 3);
+    }
+
+    [Fact]
+    public async Task ACopyWithANegativeMaximumIsRejected() =>
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => FileFingerprint.CopyXxh3Async(
+            new MemoryStream(), new MemoryStream(), -1, TestContext.Current.CancellationToken));
+
+    [Theory]
     [InlineData("99aa06d3014798d86001c324468d497f", true)]
     [InlineData("99AA06D3014798D86001C324468D497F", false)]
     [InlineData("99aa06d3014798d86001c324468d497", false)]

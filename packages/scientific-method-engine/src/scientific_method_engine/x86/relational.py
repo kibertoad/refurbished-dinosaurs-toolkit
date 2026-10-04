@@ -6,7 +6,7 @@ whose paths were not all read (a stop, a limit, a dropped path) is undecided, ne
 """
 from bisect import bisect_right
 from .image import integer
-from .machine import ALIASES, State
+from .machine import ALIASES, NO_WRITE, State
 
 KINDS = ("reach", "order", "lastWriter", "containment", "relation", "origin")
 OPERATORS = ("eq", "ne", "lt", "le", "gt", "ge")
@@ -333,7 +333,7 @@ class _Path:
         # Orders of modeled call returns, ascending.
         self.modeled = []
         # Unknown memory term name -> the first order of a read that showed its bytes had no
-        # modeled value for a reason other than "no write on this path".
+        # modeled value for a reason other than NO_WRITE.
         self.first_drop = {}
         # For each event, the most recent branch earlier in the same frame (same entry and depth,
         # completed callee frames skipped), or None.
@@ -343,7 +343,7 @@ class _Path:
             self.by_site.setdefault((e["site"], e["kind"]), []).append(e["order"])
             if e["kind"] == "call-return" and e.get("modeled"):
                 self.modeled.append(e["order"])
-            if e["kind"] == "read" and any((r.get("unwritten") or {}).get("cause", "no write on this path") != "no write on this path"
+            if e["kind"] == "read" and any((r.get("unwritten") or {}).get("cause", NO_WRITE) != NO_WRITE
                                            for r in e.get("byteProducers", ())):
                 for n in _leaves(e["value"]["expression"], set()):
                     if n.startswith("memory:"):
@@ -525,7 +525,7 @@ def _occurrence(control, path, anchor, image):
                              "writer": {"site": writer["site"], "order": writer["order"], "entry": writer["entry"], "depth": writer["depth"]}})
             else:
                 unwritten = row.get("unwritten") or {"cause": "unknown", "order": None}
-                verdict = (("held" if ENTRY_STATE in allowed else "violated") if unwritten["cause"] == "no write on this path"
+                verdict = (("held" if ENTRY_STATE in allowed else "violated") if unwritten["cause"] == NO_WRITE
                            else "undecided")
                 rows.append({"index": row["index"], "verdict": verdict, "writer": None, "unwritten": unwritten})
             verdicts.append(verdict)
