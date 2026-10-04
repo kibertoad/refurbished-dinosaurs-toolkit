@@ -176,6 +176,47 @@ test("PE32 incoming claims no call reached only past a port access", (t) => {
   );
 });
 
+test("PE32 uses classifies a store reached only past a port access apart from one past an unread call", (t) => {
+  const query = { offset: 0x402000, width: 4 };
+  const row = (code: number[]) => {
+    const { dir, config } = pe32Fixture(t, code);
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ ...config, query }));
+    const [found, ...rest] = run(["uses", join(dir, "config.json")]).conditionalAccesses;
+    assert.deepEqual(rest, []);
+    return [found.site, found.classification, found.dependsOn.map((d: Report) => d.site)];
+  };
+  const store = [0xa3, 0x00, 0x20, 0x40, 0x00, 0xc3];
+  // mov dx, 0x3c8; out dx, al; mov [0x402000], eax; ret
+  assert.deepEqual(row([0x66, 0xba, 0xc8, 0x03, 0xee, ...store]), [
+    0x205,
+    "operand past a PE32 port access; values and continuation unresolved",
+    [0x204],
+  ]);
+  // call eax; mov [0x402000], eax; ret
+  assert.deepEqual(row([0xff, 0xd0, ...store]), [
+    0x202,
+    "entry-CFG operand past a stop; values and callee effects unresolved",
+    [0x200],
+  ]);
+});
+
+test("PE32 uses takes the access direction of an x87 or INS operand from its mnemonic", (t) => {
+  const kinds = (code: number[], access: string) => {
+    const { dir, config } = pe32Fixture(t, code);
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({ ...config, query: { offset: 0x402000, width: 4, access } }),
+    );
+    return run(["uses", join(dir, "config.json")]).conditionalAccesses.map((r: Report) => [r.site, r.kind]);
+  };
+  // call eax; fstp dword [0x402000]; ret
+  const fstp = [0xff, 0xd0, 0xd9, 0x1d, 0x00, 0x20, 0x40, 0x00, 0xc3];
+  assert.deepEqual(kinds(fstp, "write"), [[0x202, "write"]]);
+  assert.deepEqual(kinds(fstp, "read"), []);
+  // call eax; rep insb; ret
+  assert.deepEqual(kinds([0xff, 0xd0, 0xf3, 0x6c, 0xc3], "both"), [[0x202, "write"]]);
+});
+
 function overlayFixture(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "bounded-overlay-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -688,6 +729,32 @@ test("argument frames map pushed words onto the callee's read widths through the
   assert.equal(r.argumentFrameSites[0].agreed, true);
 });
 
+test("an argument slot names a possibly aliasing store that dropped nothing, as the callee's read does", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // sub sp,2; mov [bx],al; call 76; add sp,2; ret; at 76: push bp; mov bp,sp; mov ax,[bp+4]; pop bp; ret
+  const code = [0x83, 0xec, 2, 0x88, 7, 0xe8, 4, 0, 0x83, 0xc4, 2, 0xc3, 0x55, 0x89, 0xe5, 0x8b, 0x46, 4, 0x5d, 0xc3];
+  data.set(code, 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const cfg = { ...config, xxh3: sourceXxh3(data), regions: [{ ...config.regions[0]!, entries: [64, 76] }] };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  // DS, BX, SS and SP are unknown, so the store at 67 may alias the slot nothing wrote.
+  const frame = run(["arguments", join(dir, "config.json")]).paths[0].argumentFrames[0];
+  assert.deepEqual(
+    frame.slots.map((s: Report) => [s.offset, s.width, s.writerSite, s.reason]),
+    [[0, 2, null, "memory possibly overwritten through another address by the write at 67"]],
+  );
+  assert.equal(frame.settledOnThisPath, false);
+  const events = run(["trace", join(dir, "config.json")]).paths[0].events;
+  const store = events.find((e: Report) => e.kind === "write" && e.site === 67);
+  assert.equal(store.uncertainAliasesInvalidated + store.uncertainScopeBytesInvalidated, 0);
+  const read = events.find((e: Report) => e.kind === "read" && e.argument);
+  assert.deepEqual(
+    read.byteProducers.map((b: Report) => b.unwritten),
+    [0, 1].map(() => ({ cause: "possibly written by an aliasing write", order: store.order })),
+  );
+});
+
 test("the Ghidra cross-check reports an interrupt Ghidra lifts to a call as an interrupt row", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);
@@ -784,6 +851,61 @@ test("the Ghidra cross-check takes an exported fallsThrough over the flow name a
   assert.equal(interrupt.ghidraFallsThrough, false);
   assert.equal(interrupt.ghidraFallsThroughBasis, "fallsThrough");
   assert.equal(check.agreed, false);
+});
+
+test("the Ghidra cross-check counts an agreed call Ghidra ends the function at against agreed", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // call 68; ret; at 68: ret. Both analyses have the call; the engine reads the ret after it.
+  data.set([0xe8, 1, 0, 0xc3, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const sha256 = createHash("sha256").update(data).digest("hex");
+  const exportWith = (call: Record<string, unknown>) => ({
+    format: "scientific-method-ghidra-call-edges",
+    version: 1,
+    sha256,
+    functionLimit: 8,
+    missingEntries: [],
+    unreadFunctions: [],
+    functions: [
+      {
+        entry: 64,
+        address: "1000:0040",
+        edges: [{ site: 64, siteAddress: "1000:40", target: 68, targetAddress: "1000:44", ...call }],
+      },
+      { entry: 68, address: "1000:0044", edges: [] },
+    ],
+  });
+  const check = (call: Record<string, unknown>) => {
+    const cfg = {
+      ...config,
+      xxh3: sourceXxh3(data),
+      regions: [{ ...config.regions[0]!, entries: [64, 68] }],
+      ghidraCallEdges: exportWith(call),
+    };
+    writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+    return run(["callees", join(dir, "config.json")]).ghidraCrossCheck;
+  };
+
+  const continues = check({ flow: "UNCONDITIONAL_CALL", fallsThrough: true });
+  assert.equal(continues.edges[0].result, "agreement");
+  assert.equal(continues.edges[0].ghidraFallsThrough, true);
+  assert.equal(continues.counts.ghidraEndsFunction, 0);
+  assert.equal(continues.agreed, true);
+
+  // A user cleared the call's fall-through in Ghidra.
+  const ends = check({ flow: "UNCONDITIONAL_CALL", fallsThrough: false });
+  assert.equal(ends.edges[0].result, "agreement");
+  assert.equal(ends.edges[0].ghidraFallsThrough, false);
+  assert.equal(ends.edges[0].ghidraFallsThroughBasis, "fallsThrough");
+  assert.equal(ends.counts.ghidraEndsFunction, 1);
+  assert.equal(ends.agreed, false);
+
+  // An export from an older copy of the script, without fallsThrough, is read by the flow name.
+  const older = check({ flow: "CALL_TERMINATOR" });
+  assert.equal(older.edges[0].ghidraFallsThrough, false);
+  assert.equal(older.edges[0].ghidraFallsThroughBasis, "flowName");
+  assert.equal(older.agreed, false);
 });
 
 test("operand candidates preserve prefixed widths and reject interior starts through the source bridge", (t) => {
@@ -1225,11 +1347,11 @@ test("explicit memory scopes join nested frames through the real MZ prepared bri
   );
 });
 
-test("a possibly aliasing write counts dropped values apart from dropped unread scope bytes", (t) => {
+test("a possibly aliasing write counts and reports dropped values apart from dropped unread scope bytes", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(20, 28);
-  // mov word [1000h],1234h; call service; mov byte [bx],1; ret; service: ret
-  data.set([0xc7, 0x06, 0, 0x10, 0x34, 0x12, 0xe8, 4, 0, 0xc6, 0x07, 1, 0xc3, 0xc3], 64);
+  // mov word [1000h],1234h; call service; mov byte [bx],1; mov ax,[1000h]; mov ax,[1002h]; ret; service: ret
+  data.set([0xc7, 0x06, 0, 0x10, 0x34, 0x12, 0xe8, 10, 0, 0xc6, 0x07, 1, 0xa1, 0, 0x10, 0xa1, 2, 0x10, 0xc3, 0xc3], 64);
   writeFileSync(join(dir, "source.bin"), data);
   // DS:[BX] holds the stored word in two of its six bytes; the model has no value for the other four.
   const scope = { segment: "ds", base: "bx", bytes: 6, evidence: "synthetic service keeping DS:[BX]" };
@@ -1240,23 +1362,42 @@ test("a possibly aliasing write counts dropped values apart from dropped unread 
       JSON.stringify({
         ...config,
         xxh3: sourceXxh3(data),
-        regions: [{ ...config.regions[0]!, end: 78 }],
+        regions: [{ ...config.regions[0]!, end: 84 }],
         registers: { ds: 0x2000, ss: 0x3000, sp: 0xff00, bx: 0x1000 },
         callModels: [model],
       }),
     );
-    const r = run(["effects", join(dir, "config.json")]);
+    const r = run(["trace", join(dir, "config.json")]);
     assert.equal(r.completeWithinModel, true);
-    return r.paths[0].events.find((e: Report) => e.kind === "write" && e.site === 73);
+    const events = r.paths[0].events;
+    const read = (site: number) => events.find((e: Report) => e.kind === "read" && e.site === site);
+    return { write: events.find((e: Report) => e.kind === "write" && e.site === 73), read };
   };
   // The model leaves BX unknown, so the store may alias every scoped byte.
   const dropped = store(["ds", "ss"]);
-  assert.equal(dropped.uncertainAliasesInvalidated, 2);
-  assert.equal(dropped.uncertainScopeBytesInvalidated, 4);
+  assert.equal(dropped.write.uncertainAliasesInvalidated, 2);
+  assert.equal(dropped.write.uncertainScopeBytesInvalidated, 4);
+  // The stored word loses its value. The bytes kept without a value lose none, and the store may
+  // have written them.
+  const cause = { order: dropped.write.order };
+  assert.deepEqual(
+    dropped.read(76).byteProducers.map((b: Report) => b.unwritten),
+    [
+      { cause: "dropped by a possibly aliasing write", ...cause },
+      { cause: "dropped by a possibly aliasing write", ...cause },
+    ],
+  );
+  assert.deepEqual(
+    dropped.read(79).byteProducers.map((b: Report) => b.unwritten),
+    [
+      { cause: "possibly written by an aliasing write", ...cause },
+      { cause: "possibly written by an aliasing write", ...cause },
+    ],
+  );
   // With BX preserved the store names one scoped byte and drops nothing.
   const kept = store(["ds", "ss", "ebx"]);
-  assert.equal(kept.uncertainAliasesInvalidated, 0);
-  assert.equal(kept.uncertainScopeBytesInvalidated, 0);
+  assert.equal(kept.write.uncertainAliasesInvalidated, 0);
+  assert.equal(kept.write.uncertainScopeBytesInvalidated, 0);
 });
 
 test("relational controls pass through preparation and fail, hold or stay undecided in the engine", (t) => {

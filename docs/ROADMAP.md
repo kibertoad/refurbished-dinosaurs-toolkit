@@ -7,17 +7,19 @@ condition. Remove a milestone from this file once it lands.
 ## Where things stand
 
 Engine 0.9.0 completed ADR 0003: values come from pypcode, the handwritten semantics are gone, and
-the callee graph is cross-checked against Ghidra. Engine 4.0.0, reader 2.0.0 and checker 0.2.0
+the callee graph is cross-checked against Ghidra. Engine 5.0.0, reader 2.1.0 and checker 0.2.0
 are current, and the engine and reader speak prepared protocol 3. Reader and engine 2.0.0 shipped
 scoped memory hypotheses ([ADR 0009](decisions/0009-scoped-memory-hypotheses-on-call-models.md)),
 and engine 4.0.0 gives declared-table continuations their own budget
 ([ADR 0011](decisions/0011-separate-continuation-budget.md)). PR 60 (conditional
 table-target continuations) and PR 69 (boundary budget) are merged.
 
-Dark Sun has committed engine 0.7.0 and is moving to 0.8.0. It has 18 requests open in its
-`gaps.md`, and all of its open engine requests come from Dark Sun alone. Sub-culture-max,
-enemy-reinfestation and reconqueror ask for none of these analyses. Sub-culture-max does have about
-ten open requests against the Ghidra scripts this toolkit ships. They are tracked in M6.
+Dark Sun's MENU linked-child case passes against engine 4.0.0 (issue 112). When it reported that,
+the engine Dark Sun had adopted was still 2.0.0, and it adopts new engines on its own schedule. It
+has 18 requests open in its `gaps.md`, and all of its open engine requests come from Dark Sun
+alone. Sub-culture-max, enemy-reinfestation and reconqueror ask for none of these analyses.
+Sub-culture-max does have about ten open requests against the Ghidra scripts this toolkit ships.
+They are tracked in M6.
 
 ## What belongs in the engine
 

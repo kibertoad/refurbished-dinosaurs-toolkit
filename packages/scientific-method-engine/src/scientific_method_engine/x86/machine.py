@@ -338,14 +338,19 @@ class State:
                     continue
                 for key in list(members):
                     if may_alias(key, written, self.bits, self.flat):
+                        # A byte with a value loses it. A scope byte kept without one loses no value,
+                        # and the write may have stored it.
                         if key in self.memory:
                             dropped_values += 1
-                        elif key in self.unread_memory:
+                            cause = "dropped by a possibly aliasing write"
+                        else:
+                            # Group members without a value are exactly the scope's unread bytes.
                             dropped_unread += 1
+                            cause = "possibly written by an aliasing write"
                         self.write_log.append((key, self.memory.pop(key, None)))
                         self.unread_memory.pop(key, None)
                         self.memory_writers.pop(key, None)
-                        self.lost_memory[key] = {"cause": "dropped by a possibly aliasing write", "order": len(self.events)}
+                        self.lost_memory[key] = {"cause": cause, "order": len(self.events)}
                         members.discard(key)
                 if not members:
                     del self.memory_groups[group]

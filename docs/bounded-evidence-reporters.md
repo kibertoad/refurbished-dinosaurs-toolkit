@@ -64,7 +64,11 @@ also gives `writeOrder`, the event order of the write that stored the byte. A by
 with no modeled value has `writeOrder: null` and `unwritten`, whose `cause` is
 `no write on this path`, `possibly written by an aliasing write`, `dropped by a
 possibly aliasing write` or `dropped by a modeled call`, with the `order` of that
-write or modeled return. A byte a `preservesMemory` scope kept keeps its writer, or
+write or modeled return. `dropped by a possibly aliasing write` names the write that dropped a
+byte's modeled value, while no newer write through another segment or base may alias the byte.
+`possibly written by an aliasing write` names
+the newest write through another segment or base that may alias a byte with no value to lose,
+including a byte a `preservesMemory` scope kept without one. A byte a `preservesMemory` scope kept keeps its writer, or
 its cause from before the modeled call. BP-derived offsets
 accessed through BX use DS, whether BX got the offset by LEA, MOV or ADD; the
 offset keeps its entry-SP expression and the segment is DS's own value. Only
@@ -89,7 +93,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 |---|---|---|
 | `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; declared-table continuations run on their own `continuationBudget`; checks `relationalControls` | this section, [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
-| `uses` | accesses to one memory offset from every established entry | this section |
+| `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path` | this section, [hardware boundaries](#hardware-boundaries) |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
 | `dispatch` | the target of each input through a switch's jump table | this section, [jump tables](#evidenced-indirect-jump-tables) |
@@ -134,8 +138,11 @@ frame holds:
   site, order, depth, role (`push` or none), width and value. The report keeps each cited write
   event among the path's events. A byte no write on the path covered, one a modeled call
   invalidated outside its `preservesMemory` scopes, or one a later write through another segment
-  or base may have overwritten (the bytes the machine itself drops as possible aliases), has
-  `writerSite: null` and a reason.
+  or base may have stored, has `writerSite: null` and a reason. A write counts for every frame byte
+  it may alias, whether or not it dropped a cached byte, by the rule a read's `unwritten` uses, so
+  a slot and a callee read of it that runs before any callee write through another segment or base
+  name the same write. The slot describes the frame when the call ran: a callee write that may
+  alias it before the read changes the read's `unwritten` and leaves the slot as it was.
   Each slot lists the callee reads that consumed it (`consumedBy`) and `derivedReads`: argument
   reads deeper in the callee whose bytes carry the slot writer's site among their producers, such
   as a setter reading a word the callee forwarded. They match by producer site only.
@@ -182,9 +189,12 @@ numeric `segment`. It traces each established entry instead of linearly decoding
 a region. `controls` names known matching instruction offsets; a missed control
 is an error. The report separates matching accesses, possible unknown aliases,
 raw operand candidates and undecoded ranges. After a stopped effect trace,
-explicit memory operands reached by the entry CFG are still inventoried, in
+explicit memory operands reached from the stops are still inventoried (in the PE32
+model also those reached only by continuing past a port access, see
+[hardware boundaries](#hardware-boundaries)), in
 `conditionalAccesses` rather than `matches`, with unknown values and segment state.
-Their default or overridden segment-register name is retained. Each one's
+Their default or overridden segment-register name is retained, and x87 and
+INS/OUTS operands take their access direction from the mnemonic. Each one's
 `dependsOn` names the stops whose CFG reaches it (an unread call, an unsupported
 instruction, an exhausted budget) and every call, and in the PE32 model every
 port access, it is reached past, since those were never traced either. Once a
@@ -511,7 +521,16 @@ nothing after it: a call reached only past a port access is a raw candidate in
 `incoming` and `target`, and an operand there is `unresolvedBoundary` in
 `operand-candidates`. The `uses` inventory past a stop still lists explicit
 memory operands after a PE32 port access in `conditionalAccesses`, and their
-`dependsOn` names each port access they are reached past.
+`dependsOn` names each port access they are reached past. A row the stops reach
+only by continuing past a port access, on every route, is classified
+`operand past a PE32 port access; values and continuation unresolved`. This holds
+when an unread call is also on the route: the unresolved values include that
+callee's effects, and `dependsOn` names the call. A row that some route from a
+stop reaches without crossing a port access keeps
+`entry-CFG operand past a stop; values and callee effects unresolved`. When the
+walk from the stops that ends at port accesses exhausts `instructionLimit`, it
+has not established which rows lie only past a port access, so every row keeps
+the shared value and the report carries an `instruction limit` gap.
 
 INT, INT1 and INT3 add a `hardware-boundary` event with `boundary: "interrupt"`
 and the `vector` p-code names, then stop the path, since the handler is not
@@ -818,8 +837,9 @@ boundary is usable until all declared entries have been checked for conflicts.
 A shared-node positive control also requires usable caller/callee boundaries,
 usable bodies for every node the reused node reaches, no reached node on the
 active path, and no limit-omitted or instruction-capped route beneath the reused
-node, any of which could lead back into the active path. x87 stores and loads
-take their access direction from the mnemonic, since Capstone misreports some.
+node, any of which could lead back into the active path. x87 stores and loads,
+and the memory operands of INS and OUTS, take their access direction from the
+mnemonic, since Capstone misreports some and flags none on INS and OUTS.
 
 `ghidraCallEdges` takes the JSON that the packaged `ExportCallEdges.java` writes. Run it with an
 output path, a function limit (1..128) and the entries to start from. Ghidra walks breadth first
@@ -837,7 +857,13 @@ value of `ghidraCallEdges`. The command then reports `ghidraCrossCheck`. For eac
 the engine read and the export lists (`comparedCallers`), every edge is matched on site and target:
 
 - `agreement`: both have the edge. An unresolved call matches an unresolved call at the same site.
-  A Ghidra target address without a file offset, such as an import, matches no engine edge.
+  A Ghidra target address without a file offset, such as an import, matches no engine edge. The
+  engine reads on past every call and every conditional tail transfer, so such a row also carries
+  `ghidraFallsThrough` and `ghidraFallsThroughBasis`, read as for an `interrupt` row.
+  `ghidraFallsThrough` is false when Ghidra ends the function at the site: the callee is one Ghidra
+  treats as non-returning (`CALL_TERMINATOR`), or a user cleared the instruction's fall-through. The
+  two analyses then disagree on the function's extent, so the row counts against `agreed` and its
+  site is no agreement site. A tail transfer through `JMP` carries neither field.
 - `engineOnly`: only the engine has it.
 - `ghidraOnly`: only Ghidra has it. It carries `checked: false` and the id of any engine edge at the
   same site. The engine's graph, classifications and summaries never take it in.
@@ -857,8 +883,9 @@ the engine read and the export lists (`comparedCallers`), every edge is matched 
 read, exported functions without a file offset, and the `omittedRoutes` ids of compared callers
 (`omittedEngineRoutes`), which the edge limit kept out of the graph. It also passes on the export's
 `missingEntries` (requested addresses with no function) and `unreadFunctions` (functions the limit
-cut off). `counts` holds the number of rows of each result. `agreed` is true only when no row is
-`engineOnly` or `ghidraOnly`, every `interrupt` row falls through, and nothing is left uncompared.
+cut off). `counts` holds the number of rows of each result, and `ghidraEndsFunction` the number of
+rows whose `ghidraFallsThrough` is false. `agreed` is true only when no row is
+`engineOnly` or `ghidraOnly`, `ghidraEndsFunction` is 0, and nothing is left uncompared.
 Agreement means both analyses read the edge, never that it executes. A `ghidraAgreementSites`
 control lists call sites that must agree, and fails the report otherwise. A site agrees only when
 every edge either side read there agrees. Requires

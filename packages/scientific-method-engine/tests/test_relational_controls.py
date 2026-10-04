@@ -200,6 +200,37 @@ class LastWriterTests(unittest.TestCase):
         store = occurrence["order"] - 1
         self.assertEqual(occurrence["bytes"][0]["unwritten"], {"cause": "dropped by a possibly aliasing write", "order": store})
 
+    def test_an_aliasing_write_drops_a_kept_value_and_may_write_an_unread_scope_byte(self):
+        # The model keeps [22h] with its value and [40h] without one. The store through DS:SI (SI
+        # unknown) after the call may alias both: [22h] loses its value, while [40h] had none to lose.
+        c = (Code().label("assign").emit("c7 06 22 00 05 00").label("service").branch("e8", "external")
+             .label("store").emit("89 04").label("read").emit("a1 22 00").label("other").emit("a1 40 00 c3")
+             .label("external").emit("c3"))
+        model = [{"site": c.labels["service"], "preserves": ["ds", "ebx"], "evidence": "synthetic service",
+                  "preservesMemory": [{"segment": "ds", "base": "bx", "bytes": 2, "evidence": "synthetic kept slot"},
+                                      {"segment": "ds", "base": "bx", "displacement": 0x1e, "bytes": 2, "evidence": "synthetic kept slot"}],
+                  "cases": [{}]}]
+        regs = {**FRAME, "bx": 0x22}
+        controls = [control("slot", "lastWriter", at={"site": c.labels["read"], "event": "read"}, writers=[c.labels["assign"]]),
+                    control("uncached", "lastWriter", at={"site": c.labels["other"], "event": "read"}, writers=["entryState"]),
+                    control("producer", "origin", at={"site": c.labels["other"], "event": "read"}, value={"field": "value"},
+                            expect={"producers": {"exclude": [c.labels["store"]]}})]
+        r = run(c, controls, registers=regs, callModels=model)
+        events = r["paths"][0]["events"]
+        store = next(e for e in events if e["kind"] == "write" and e["site"] == c.labels["store"])
+        self.assertEqual((store["uncertainAliasesInvalidated"], store["uncertainScopeBytesInvalidated"]), (2, 2))
+        kept = next(e for e in events if e["kind"] == "read" and e["site"] == c.labels["read"])
+        self.assertEqual([b["unwritten"] for b in kept["byteProducers"]],
+                         [{"cause": "dropped by a possibly aliasing write", "order": store["order"]}] * 2)
+        unread = next(e for e in events if e["kind"] == "read" and e["site"] == c.labels["other"])
+        self.assertEqual([b["unwritten"] for b in unread["byteProducers"]],
+                         [{"cause": "possibly written by an aliasing write", "order": store["order"]}] * 2)
+        # Neither byte has a known writer, and the store stays a possible producer of the unread one.
+        for name in ("slot", "uncached", "producer"):
+            self.assertEqual(verdict(r, name)["verdict"], "undecided", name)
+        self.assertEqual(verdict(r, "uncached")["paths"][0]["occurrences"][0]["bytes"][0]["unwritten"]["cause"],
+                         "possibly written by an aliasing write")
+
     def test_a_preserved_scope_keeps_the_write_before_the_service(self):
         c = (Code().label("assign").emit("c7 06 22 00 05 00").label("service").branch("e8", "external")
              .label("read").emit("a1 22 00").label("other").emit("a1 40 00 c3").label("external").emit("c3"))

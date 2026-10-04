@@ -534,6 +534,30 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertEqual([(s["offset"], s["width"], s["writerSite"], s.get("reason")) for s in frames[0]["slots"]],
                          [(0, 2, None, "memory possibly overwritten through another address by the write at 6")])
 
+    def test_a_write_that_drops_nothing_still_explains_the_slot(self):
+        # sub sp,2 reserves a slot nothing writes. The DS:[BX] store (DS and BX unknown) runs when
+        # nothing is cached, so it drops nothing, but it may still have stored the slot.
+        c = Code().emit("83 ec 02 88 07").branch("e8", "callee").emit("83 c4 02 c3")
+        c.label("callee").emit("55 89 e5 8b 46 04 5d c3")
+        frames = self.frames(c)[1]
+        traced = report(c, "trace")
+        store = next(e for e in events(traced, "write") if e["site"] == 3)
+        self.assertEqual((store["uncertainAliasesInvalidated"], store["uncertainScopeBytesInvalidated"]), (0, 0))
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"], s.get("reason")) for s in frames[0]["slots"]],
+                         [(0, 2, None, "memory possibly overwritten through another address by the write at 3")])
+        self.assertFalse(frames[0]["settledOnThisPath"])
+        # The callee's read of the same bytes names the same store.
+        read = next(e for e in events(traced, "read") if e.get("argument"))
+        self.assertEqual([b["unwritten"] for b in read["byteProducers"]],
+                         [{"cause": "possibly written by an aliasing write", "order": store["order"]}] * 2)
+        # On a concrete stack the store cannot reach, both reports say no write on this path.
+        regs = {"ss": 0x2000, "sp": 0x100, "ds": 0x3000}
+        frames = self.frames(c, registers=regs)[1]
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"], s.get("reason")) for s in frames[0]["slots"]],
+                         [(0, 2, None, "no write on this path")])
+        read = next(e for e in events(report(c, "trace", registers=regs), "read") if e.get("argument"))
+        self.assertEqual([b["unwritten"]["cause"] for b in read["byteProducers"]], ["no write on this path"] * 2)
+
     def test_a_callee_that_stops_leaves_its_frame_open(self):
         c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("55 89 e5 8b 46 04 ff d3")
         r, frames = self.frames(c)
@@ -615,7 +639,7 @@ class GhidraCrossCheckTests(unittest.TestCase):
         # Ghidra's computed target never becomes an engine edge.
         self.assertIsNone(r["edges"][2]["target"])
         self.assertEqual(r["edges"][2]["classification"], "unresolved")
-        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 2, "ghidraOnly": 1, "interrupt": 0})
+        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 2, "ghidraOnly": 1, "interrupt": 0, "ghidraEndsFunction": 0})
         self.assertEqual(check["comparedCallers"], [0, b])
         self.assertEqual(check["notCompared"]["engineCallers"], [a])
         self.assertFalse(check["agreed"])
@@ -629,7 +653,7 @@ class GhidraCrossCheckTests(unittest.TestCase):
         r = run_report(data, cfg, "callees")
         check = r["ghidraCrossCheck"]
         self.assertTrue(check["agreed"])
-        self.assertEqual(check["counts"], {"agreement": 2, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 0})
+        self.assertEqual(check["counts"], {"agreement": 2, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 0, "ghidraEndsFunction": 0})
         # Agreement on an unresolved call leaves the engine's edge unresolved.
         self.assertEqual(r["edges"][1]["classification"], "unresolved")
 
@@ -641,7 +665,7 @@ class GhidraCrossCheckTests(unittest.TestCase):
         cfg = configuration(data, ghidraCallEdges=export)
         cfg["regions"][0]["entries"] = [0, 6]
         check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
-        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 1, "ghidraOnly": 1, "interrupt": 0})
+        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 1, "ghidraOnly": 1, "interrupt": 0, "ghidraEndsFunction": 0})
         self.assertFalse(check["agreed"])
         cfg["controls"] = {"ghidraAgreementSites": [3]}
         with self.assertRaisesRegex(ValueError, "positive control missed: ghidraAgreementSites"):
@@ -657,7 +681,7 @@ class GhidraCrossCheckTests(unittest.TestCase):
         r = run_report(data, cfg, "callees")
         check = r["ghidraCrossCheck"]
         self.assertTrue(check["agreed"])
-        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 2})
+        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 2, "ghidraEndsFunction": 0})
         rows = [e for e in check["edges"] if e["result"] == "interrupt"]
         self.assertEqual([(e["site"], e["ghidraFallsThrough"]) for e in rows], [(0, True), (2, True)])
         self.assertEqual([e["site"] for e in r["edges"]], [3])
@@ -682,7 +706,7 @@ class GhidraCrossCheckTests(unittest.TestCase):
         data = bytes.fromhex("cc c3")
         cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: [(0, None, "COMPUTED_CALL_TERMINATOR")]}))
         check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
-        self.assertEqual(check["counts"], {"agreement": 0, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 1})
+        self.assertEqual(check["counts"], {"agreement": 0, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 1, "ghidraEndsFunction": 1})
         self.assertFalse(check["agreed"])
 
     def test_the_exported_falls_through_decides_an_interrupt_over_the_flow_name(self):
@@ -710,6 +734,78 @@ class GhidraCrossCheckTests(unittest.TestCase):
         self.assertEqual(rows, [(0, True, "flowName"), (2, False, "flowName")])
         self.assertFalse(check["agreed"])
 
+    def test_a_call_ghidra_ends_the_function_at_counts_against_agreed(self):
+        # call 4; ret; ret. Both analyses have the call. The engine reads on to the ret after it, while Ghidra ends
+        # the function at the call when it treats the callee as non-returning or a user cleared the fall-through.
+        data = bytes.fromhex("e8 01 00 c3 c3")
+        for flow, falls_through, agreed in (("UNCONDITIONAL_CALL", True, True), ("UNCONDITIONAL_CALL", False, False),
+                                            ("CALL_TERMINATOR", False, False), ("CALL_TERMINATOR", True, True)):
+            with self.subTest(flow=flow, fallsThrough=falls_through):
+                cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: [(0, 4, flow, falls_through)], 4: []}))
+                cfg["regions"][0]["entries"] = [0, 4]
+                check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
+                [row] = check["edges"]
+                self.assertEqual(row["result"], "agreement")
+                self.assertEqual((row["ghidraFallsThrough"], row["ghidraFallsThroughBasis"]), (falls_through, "fallsThrough"))
+                self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 0,
+                                                   "ghidraEndsFunction": 0 if falls_through else 1})
+                self.assertEqual(check["agreed"], agreed)
+                # A call Ghidra ends the function at is no agreement site.
+                cfg["controls"] = {"ghidraAgreementSites": [0]}
+                if agreed:
+                    run_report(data, cfg, "callees")
+                else:
+                    with self.assertRaisesRegex(ValueError, "positive control missed: ghidraAgreementSites"):
+                        run_report(data, cfg, "callees")
+
+    def test_a_call_in_an_export_without_falls_through_reads_the_flow_name(self):
+        # Copies of ExportCallEdges.java written before fallsThrough was added: CALL_TERMINATOR ends the function, and a
+        # cleared fall-through on an UNCONDITIONAL_CALL goes unseen. The row names the flow name as its basis.
+        data = bytes.fromhex("e8 01 00 c3 c3")
+        for flow, falls_through in (("UNCONDITIONAL_CALL", True), ("CALL_TERMINATOR", False)):
+            with self.subTest(flow=flow):
+                cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: [(0, 4, flow)], 4: []}))
+                cfg["regions"][0]["entries"] = [0, 4]
+                check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
+                [row] = check["edges"]
+                self.assertEqual((row["ghidraFallsThrough"], row["ghidraFallsThroughBasis"]), (falls_through, "flowName"))
+                self.assertEqual(check["counts"]["ghidraEndsFunction"], 0 if falls_through else 1)
+                self.assertEqual(check["agreed"], falls_through)
+
+    def test_an_agreed_tail_transfer_keeps_agreed_without_a_falls_through(self):
+        # jmp 3; ret; ret. Neither analysis continues past an unconditional jump into another function.
+        data = bytes.fromhex("eb 01 c3 c3")
+        cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: [(0, 3, "UNCONDITIONAL_JUMP", False)], 3: []}),
+                            controls={"ghidraAgreementSites": [0]})
+        cfg["regions"][0]["entries"] = [0, 3]
+        check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
+        [row] = check["edges"]
+        self.assertEqual(row["result"], "agreement")
+        self.assertNotIn("ghidraFallsThrough", row)
+        self.assertEqual(check["counts"]["ghidraEndsFunction"], 0)
+        self.assertTrue(check["agreed"])
+
+    def test_a_conditional_tail_transfer_ghidra_ends_the_function_at_counts_against_agreed(self):
+        # je 3; ret; ret. The engine reads on past the conditional jump into the entry at 3; Ghidra ends the function
+        # there when a user cleared the jump's fall-through.
+        data = bytes.fromhex("74 01 c3 c3")
+        for falls_through in (True, False):
+            with self.subTest(fallsThrough=falls_through):
+                cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: [(0, 3, "CONDITIONAL_JUMP", falls_through)], 3: []}))
+                cfg["regions"][0]["entries"] = [0, 3]
+                check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
+                [row] = check["edges"]
+                self.assertEqual(row["result"], "agreement")
+                self.assertEqual(row["ghidraFallsThrough"], falls_through)
+                self.assertEqual(check["counts"]["ghidraEndsFunction"], 0 if falls_through else 1)
+                self.assertEqual(check["agreed"], falls_through)
+                cfg["controls"] = {"ghidraAgreementSites": [0]}
+                if falls_through:
+                    run_report(data, cfg, "callees")
+                else:
+                    with self.assertRaisesRegex(ValueError, "positive control missed: ghidraAgreementSites"):
+                        run_report(data, cfg, "callees")
+
     def test_a_ghidra_target_at_an_interrupt_or_a_targetless_call_elsewhere_stays_ghidra_only(self):
         # int 21h; int 10h; nop; call 8; ret. Ghidra resolves the first interrupt to a file offset and the second to an
         # address without file bytes, and claims a call at the nop.
@@ -731,7 +827,7 @@ class GhidraCrossCheckTests(unittest.TestCase):
         cfg["regions"][0]["entries"] = [0, 6]
         r = run_report(data, cfg, "callees")
         check = r["ghidraCrossCheck"]
-        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 0})
+        self.assertEqual(check["counts"], {"agreement": 1, "engineOnly": 0, "ghidraOnly": 0, "interrupt": 0, "ghidraEndsFunction": 0})
         self.assertEqual(check["notCompared"]["omittedEngineRoutes"], [r["omittedRoutes"][0]["id"]])
         self.assertFalse(check["agreed"])
 
