@@ -40,7 +40,7 @@ on an undocumented public member.
 | `Assets` | `InstalledAssetManifest`, `InstalledAssetVerifier` | Record what an import installed, and check it at startup. |
 | `Assets` | `InstalledContentUninstaller` | Remove only the files a manifest lists. |
 | `Determinism` | `IRandomSource`, `MsvcRandom` | The legacy Microsoft C `rand()` sequence, with saveable state. |
-| `Diagnostics` | `StartupFailure` | Log a failed start and show the player what to do. |
+| `Diagnostics` | `StartupFailure` | Log a failed start and show the player what to do, without the Windows dialog for an unattended run. |
 | `Discovery` | `KnownDirectorySourceLocator`, `CompositeSourceLocator` | Offer likely install directories of the original. |
 | `IO` | `AtomicFile`, `SafePath`, `PortableAssetPath` | Atomic writes, paths from untrusted names that cannot leave their root, and legacy asset references resolved the same way on every host. |
 | `Imaging` | `IndexedPalette`, `IndexedPaletteDecoder` | 256-colour palettes, including 6-bit VGA values. |
