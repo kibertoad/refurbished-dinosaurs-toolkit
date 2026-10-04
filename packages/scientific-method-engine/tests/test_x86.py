@@ -373,16 +373,19 @@ class CalleeGraphTests(unittest.TestCase):
         self.assertEqual([o["access"] for o in r["nodes"][0]["memoryObservations"]], [["write"], ["write"], ["read"]])
 
 
+_OLDER_SCRIPT = object()
+
+
 def ghidra_export(data, functions, **extra):
     """A synthetic ExportCallEdges.java export: functions maps an entry offset to (site, target, flow) edges.
 
     An edge may add a fourth item, the fallsThrough the current script writes; without it the edge has the
     shape older copies of the script wrote.
     """
-    def edge(site, target, flow, *falls_through):
+    def edge(site, target, flow, falls_through=_OLDER_SCRIPT):
         row = {"site": site, "siteAddress": f"1000:{site:04x}", "target": target,
                "targetAddress": None if target is None else f"1000:{target:04x}", "flow": flow}
-        return {**row, "fallsThrough": falls_through[0]} if falls_through else row
+        return row if falls_through is _OLDER_SCRIPT else {**row, "fallsThrough": falls_through}
     rows = [{"entry": entry, "address": "2000:0000" if entry is None else f"1000:{entry:04x}",
              "edges": [edge(*e) for e in edges]}
             for entry, edges in functions.items()]

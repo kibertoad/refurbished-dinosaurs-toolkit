@@ -805,16 +805,16 @@ take their access direction from the mnemonic, since Capstone misreports some.
 output path, a function limit (1..128) and the entries to start from. Ghidra walks breadth first
 from those entries through its call targets and its jumps to other functions' entry points. The
 export records each function's edges as file offsets, with Ghidra's flow type (`flow`) and whether
-Ghidra continues to the next instruction at the site (`fallsThrough`). Both reflect a user's flow or
-fall-through override. It is accepted only when its `sha256`, the
-SHA-256 Ghidra records for the program it analysed, equals the source's. It can hold at most 128
-functions and 8192 edges, and every offset must lie inside the source. The script writes `null` for
-an address without file bytes, and a function or edge that lacks one of the keys it writes is
+Ghidra continues to the next instruction at the site (`fallsThrough`). The flow reflects a user's
+flow override, and `fallsThrough` reflects a fall-through override as well: one that clears the
+fall-through or sends it to another address makes it false. It is accepted only when its `sha256`,
+the SHA-256 Ghidra records for the program it analysed, equals the source's. It can hold at most
+128 functions and 8192 edges, and every offset must lie inside the source. The script writes `null`
+for an address without file bytes, and a function or edge that lacks one of the keys it writes is
 rejected. An edge without `fallsThrough`, which older copies of the script leave out, is accepted.
-A `fallsThrough` other than true or false is rejected. Paste the export into the config as
-the value of `ghidraCallEdges`. The command then
-reports `ghidraCrossCheck`. For each caller that both the engine read and the export lists
-(`comparedCallers`), every edge is matched on site and target:
+A `fallsThrough` other than true or false is rejected. Paste the export into the config as the
+value of `ghidraCallEdges`. The command then reports `ghidraCrossCheck`. For each caller that both
+the engine read and the export lists (`comparedCallers`), every edge is matched on site and target:
 
 - `agreement`: both have the edge. An unresolved call matches an unresolved call at the same site.
   A Ghidra target address without a file offset, such as an import, matches no engine edge.
@@ -829,10 +829,9 @@ reports `ghidraCrossCheck`. For each caller that both the engine read and the ex
   an override that clears the fall-through of an `INT 21h` counts although the flow stays
   `COMPUTED_CALL`. For an export without that field it is false when the flow name contains
   `TERMINATOR`, which misses such an override. `ghidraFallsThroughBasis` names the source:
-  `fallsThrough` or `flowName`. The two analyses then disagree on
-  the function's extent: the row counts against `agreed`, and edges the engine reads after the
-  interrupt show as `engineOnly`. A Ghidra edge with a target address at an interrupt stays
-  `ghidraOnly`.
+  `fallsThrough` or `flowName`. The two analyses then disagree on the function's extent: the row
+  counts against `agreed`, and edges the engine reads after the interrupt show as `engineOnly`. A
+  Ghidra edge with a target address at an interrupt stays `ghidraOnly`.
 
 `notCompared` lists the engine callers missing from the export, exported callers the engine did not
 read, exported functions without a file offset, and the `omittedRoutes` ids of compared callers

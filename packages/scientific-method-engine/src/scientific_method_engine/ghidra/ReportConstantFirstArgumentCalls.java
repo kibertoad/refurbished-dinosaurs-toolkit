@@ -41,7 +41,7 @@ public class ReportConstantFirstArgumentCalls extends GhidraScript {
             Instruction call = currentProgram.getListing().getInstructionAt(reference.getFromAddress());
             if (call == null || !call.getFlowType().isCall()) continue;
             calls++;
-            Instruction firstPush = lookBack.firstArgumentPush(call, new StringBuilder());
+            Instruction firstPush = lookBack.firstArgumentPush(call);
             if (firstPush == null) unknown++;
             if (!isPushOf(firstPush, requested)) continue;
             if (matches >= MAX_CALLS) {

@@ -14,7 +14,8 @@ import ghidra.program.model.symbol.ReferenceIterator;
 
 /**
  * The x86 cdecl first-argument look-back that ReportConstantFirstArgumentCalls and
- * ReportFirstArgumentCallSummary share, so both apply one rule. It lives in a package directory
+ * ReportFirstArgumentCallSummary share, so both apply one rule. ReportCallSitesWithScalars uses its
+ * isFlowTarget to end the argument setup it prints. It lives in a package directory
  * beside the scripts, as Ghidra's own classrecovery helpers do, so Ghidra compiles it with them and
  * the Script Manager does not list it as a script.
  */
@@ -29,6 +30,11 @@ public final class FirstArgumentLookBack {
     public FirstArgumentLookBack(Program program) {
         this.program = program;
         this.stackPointer = program.getCompilerSpec().getStackPointer().getBaseRegister();
+    }
+
+    /** The nearest PUSH before the call, or null when none is known to supply the first argument. */
+    public Instruction firstArgumentPush(Instruction call) {
+        return firstArgumentPush(call, new StringBuilder());
     }
 
     /**
