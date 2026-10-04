@@ -6,7 +6,8 @@ permissions:
   contents: read
 jobs:
   # Decides which of the jobs below this pull request needs. tools/ci/changes.ts maps paths to
-  # areas; a manual run, or a change to this workflow or to that script, turns every area on.
+  # areas; a manual run, or a change to this workflow, to that script or to tools/lib/, turns every
+  # area on.
   changes:
     runs-on: ubuntu-latest
     timeout-minutes: 5

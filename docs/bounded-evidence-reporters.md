@@ -91,7 +91,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 
 | Command | Reports | Described in |
 |---|---|---|
-| `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; declared-table continuations run on their own `continuationBudget`; checks `relationalControls` | this section, [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
+| `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; declared-table continuations run on their own `continuationBudget`; checks `relationalControls`; `entryFrame` starts an entry inside its function's frame | this section, [narrower entries](#a-narrower-entry-inside-its-functions-frame), [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
 | `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; a stop inside a called function also continues the inventory at the return site of each call open at the stop, named in `dependsOn` | this section, [hardware boundaries](#hardware-boundaries) |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
@@ -127,7 +127,8 @@ pointer grouping. Adjacent pushes alone do not. Register widening, frame cleanup
 stack overwrites and unknown return addresses remain visible. A root query may
 set `returnBytes` to 4 for a far entry (default 2). The root return must use
 that width and leave SP where it was on entry; otherwise the path stops and the
-report is not complete within the model.
+report is not complete within the model. A query that starts inside a function body names
+the function in `entryFrame` ([below](#a-narrower-entry-inside-its-functions-frame)).
 
 `arguments` also maps each traced call's stack slots onto the widths its callee read. Each path
 gets `argumentFrames`, one per traced call (modeled calls have none). Offsets count from the
@@ -156,7 +157,8 @@ frame holds:
 - `calleeCleanupBytes` (`RET n`) and `callerCleanupBytes` (an immediate `ADD SP` right after the
   call). `mappedBytes` is the larger of these and the highest byte read, at most 256.
 - `settledOnThisPath` and `openReasons`. A frame is open when the callee did not return on the
-  path, a written slot was not read, reads overlap with different widths, a read covers part of a
+  path, a written slot was not read, reads overlap with different widths, reads of the same bytes
+  use different groupings (a far-pointer load and a plain dword), a read covers part of a
   slot or sees other bytes than the caller wrote, no cleanup amount bounds the frame, or the frame
   is wider than 256 bytes.
 
@@ -167,9 +169,20 @@ ordinary `paths`; `declaredContinuationPaths` get no frames and do not count tow
 `readWidthSets` lists each distinct set of reads, each read with its offset, width and grouping,
 and `agreed` holds only when one set remains and every frame settled. A far-pointer load and a
 plain dword read of the same four bytes are different sets. Paths that never reached the call are not represented, so a
-grouping settled on the traced paths says nothing about the others. A decompiler's parameter
-list is an inference and does not settle a grouping; use the `callees` Ghidra cross-check to
-confirm that both analyses reach the same callee, then read its widths here.
+grouping settled on the traced paths says nothing about the others.
+
+A callee that returns early on some paths without reading every argument leaves those frames
+open and the site not `agreed`, even when every read it made matches. `readWidths` lists each
+distinct read across the site's frames with the `paths` that made it, and `conflictingWidths`
+pairs distinct reads that share a byte: different intervals, or one interval read with two
+groupings. `widthsConsistent` holds when the traced paths made at least one read and there are no
+such pairs; a site whose callee read nothing is not consistent. It says only that the reads the
+traced paths made fit one grouping. It does not say a path that skipped a read would have read
+the same width, and it does not settle a frame or the site: a skipped slot stays in that frame's
+`openReasons`, and the paths that read each width are listed so a finding can name them.
+
+A decompiler's parameter list is an inference and does not settle a grouping; use the `callees`
+Ghidra cross-check to confirm that both analyses reach the same callee, then read its widths here.
 
 Return snapshots retain full and partial registers. Optional `returnContracts`
 contain `entry`, `register`, `failures` (numeric encodings) and `evidence`. Only
@@ -277,6 +290,41 @@ instructions. Concrete writes are compared against the observed pointer and
 extent; an unknown value leaves the comparison unresolved. Header extent units,
 usable capacity and pointer normalization need their own reading. Failure writes
 and saved versus returned pointers stay visible; no rollback is inferred.
+
+### A narrower entry inside its function's frame
+
+An entry inside a function body (after its prologue, at a loop body, at the code after a
+call) starts with SP and BP unknown, so the function's own return cannot balance against the
+entry SP and every path that reaches it stops. A trace-family query names the function's entry
+in `entryFrame: { "from": <site> }` to start inside that function's frame instead. `from` must be
+an established entry; `registers` may not also give SP or BP.
+
+The engine first traces from `from` with the query's own inputs (`registers`, `flags`,
+`callModels`, limits, `returnBytes`). Each of those paths stops at its first arrival at the
+query's `entry`, since the query itself traces everything after it. The report's `entryFrame`
+says what that trace found:
+
+| Field | Meaning |
+|---|---|
+| `from` | the function entry the trace started at |
+| `established` | every path from `from` was read until it arrived or returned, at least one arrived, each arrival was in a frame of that function (not inside a call to another function), and SP was at one offset from that frame's entry SP at every arrival |
+| `sp` | SP at the entry as a signed offset from the function's entry SP, which points at the return address |
+| `bp` | BP as such an offset when it was at the same one at every arrival; `null` leaves BP unknown |
+| `arrivals`, `pathsRead`, `stepsUsed` | what the trace from `from` read |
+| `reasons` | why the frame is not established: a path that stopped before reaching the entry, a limit gap, no arrival, an arrival inside another function, SP at different offsets or at no offset |
+| `meaning` | how to read `sp` and `bp` |
+
+An established frame starts the query with SP and BP at those offsets from an entry SP, and that
+entry SP is the root frame's: the function's return must use `returnBytes` and leave SP there,
+and `argument` offsets count from it. Memory and every other register stay unknown at the entry,
+as without `entryFrame`. A frame that states BP makes BP an offset from the entry SP, so an
+`origin` control that expects the entry register BP among a value's inputs is undecided, as for a
+register `registers` supplies. A frame that is not established leaves the query as it would run
+without the input, and relational controls left undecided by its stopped paths name the reasons.
+The frame is observed under the query's inputs; a `registers` value that steers the trace from
+`from` steers which arrivals it read. The trace from `from` reads ordinary paths only: it does not
+continue through declared table jumps, so a route to the entry through an indirect jump stops there
+and leaves the frame unestablished, even when the query declares that jump.
 
 ## Limits and assumptions
 
@@ -876,38 +924,50 @@ value of `ghidraCallEdges`. The command then reports `ghidraCrossCheck`. For eac
 the engine read and the export lists (`comparedCallers`), every edge is matched on site and target:
 
 - `agreement`: both have the edge. An unresolved call matches an unresolved call at the same site.
-  A Ghidra target address without a file offset, such as an import, matches no engine edge. The
-  engine reads on past every call and every conditional tail transfer, so such a row also carries
-  `ghidraFallsThrough` and `ghidraFallsThroughBasis`, read as for an `interrupt` row.
-  `ghidraFallsThrough` is false when Ghidra ends the function at the site: the callee is one Ghidra
-  treats as non-returning (`CALL_TERMINATOR`), or a user cleared the instruction's fall-through. The
-  two analyses then disagree on the function's extent, so the row counts against `agreed` and its
-  site is no agreement site. A tail transfer through `JMP` carries neither field.
+  A Ghidra target address without a file offset, such as an import, matches no engine edge.
 - `engineOnly`: only the engine has it.
 - `ghidraOnly`: only Ghidra has it. It carries `checked: false` and the id of any engine edge at the
   same site. The engine's graph, classifications and summaries never take it in.
 - `interrupt`: Ghidra's call with no target address at an `INT`, `INT1`, `INT3` or `INTO` that the
   engine decoded in the same caller's body. SLEIGH lifts each interrupt to a computed call, while
   the engine assumes the interrupt returns to the next instruction and records no edge. Its site is
-  never an agreement site. `ghidraFallsThrough` is false when Ghidra's flow ends the function there,
-  as it does at `INT1` and `INT3` (`COMPUTED_CALL_TERMINATOR`). It is the edge's `fallsThrough`, so
-  an override that clears the fall-through of an `INT 21h` counts although the flow stays
-  `COMPUTED_CALL`. For an export without that field it is false when the flow name contains
-  `TERMINATOR`, which misses such an override. `ghidraFallsThroughBasis` names the source:
-  `fallsThrough` or `flowName`. The two analyses then disagree on the function's extent: the row
-  counts against `agreed`, and edges the engine reads after the interrupt show as `engineOnly`. A
-  Ghidra edge with a target address at an interrupt stays `ghidraOnly`.
+  never an agreement site. When Ghidra's flow ends the function there, as it does at `INT1` and
+  `INT3` (`COMPUTED_CALL_TERMINATOR`), edges the engine reads after the interrupt show as
+  `engineOnly`. A Ghidra edge with a target address at an interrupt stays `ghidraOnly`.
+
+Every row whose site is an instruction the engine read in that caller's body, other than an
+`engineOnly` row, also compares where the two analyses end the function. It carries
+`ghidraFallsThrough`, whether Ghidra continues to the next instruction at the site, and
+`ghidraFallsThroughBasis`, what that was read from. With `fallsThrough` as the basis it is the
+edge's `fallsThrough`, so a user's override counts: a cleared fall-through on an `INT 21h` or a
+`CALL` although the flow stays `COMPUTED_CALL` or `UNCONDITIONAL_CALL`, or a fall-through given to
+a `JMP`. With `flowName`, for an export without that field, it is true for the flow types Ghidra
+gives a fall-through (`FALL_THROUGH`, `CONDITIONAL_JUMP`, `UNCONDITIONAL_CALL`, `CONDITIONAL_CALL`,
+`CONDITIONAL_TERMINATOR`, `COMPUTED_CALL`, `CONDITIONAL_COMPUTED_CALL`,
+`CONDITIONAL_COMPUTED_JUMP`, `CALL_OVERRIDE_UNCONDITIONAL` and `CALLOTHER_OVERRIDE_CALL`) and false
+for every other flow, which misses such an override. The engine reads on past every call, conditional
+jump and interrupt, and stops at a `JMP`, `LJMP`, return or `HLT`. A row whose site is a transfer
+outside the frame model, or an instruction the engine did not read, carries neither field. The two
+analyses disagree on the function's extent in two ways, and either way the row counts against
+`agreed` and its site is no agreement site:
+
+- Ghidra ends the function where the engine reads on (`ghidraFallsThrough` false at a call,
+  conditional jump or interrupt): the callee is one Ghidra treats as non-returning
+  (`CALL_TERMINATOR`), the interrupt is `INT1` or `INT3`, or a user cleared the fall-through.
+- Ghidra continues where the engine stops (`ghidraFallsThrough` true at a `JMP`, `LJMP`, return or
+  `HLT`): a user gave the instruction a fall-through.
 
 `notCompared` lists the engine callers missing from the export, exported callers the engine did not
 read, exported functions without a file offset, and the `omittedRoutes` ids of compared callers
 (`omittedEngineRoutes`), which the edge limit kept out of the graph. It also passes on the export's
 `missingEntries` (requested addresses with no function) and `unreadFunctions` (functions the limit
-cut off). `counts` holds the number of rows of each result, and `ghidraEndsFunction` the number of
-rows whose `ghidraFallsThrough` is false. `agreed` is true only when no row is
-`engineOnly` or `ghidraOnly`, `ghidraEndsFunction` is 0, and nothing is left uncompared.
+cut off). `counts` holds the number of rows of each result, `ghidraEndsFunction` the number of rows
+where Ghidra ends the function and the engine reads on, and `ghidraContinues` the number where
+Ghidra continues and the engine stops. `agreed` is true only when no row is `engineOnly` or
+`ghidraOnly`, `ghidraEndsFunction` and `ghidraContinues` are 0, and nothing is left uncompared.
 Agreement means both analyses read the edge, never that it executes. A `ghidraAgreementSites`
 control lists call sites that must agree, and fails the report otherwise. A site agrees only when
-every edge either side read there agrees. Requires
+every edge either side read there agrees and neither extent disagreement is reported there. Requires
 `ghidraCallEdges`. Keep exports and cross-check reports of a real program in its `GAME_DIR`.
 
 `operand-candidates` scans explicitly declared region starts for an encoded
@@ -1204,7 +1264,8 @@ Otherwise it is held.
   event order, and the reason, as a missed positive control does. Run the query without the control
   to read the full path.
 - An undecided control is reported with its `reasons`, and `relationalControls.allHeld` is false.
-  Treat anything but `held` as not established.
+  Treat anything but `held` as not established. When the query names an `entryFrame` that was not
+  established and a path stopped, the reasons also give why the frame was not established.
 - A control whose anchor no path reached fails as a missed control when every path was read.
 
 These cases are undecided, never violated: a byte a modeled call or a possibly aliasing write
@@ -1255,10 +1316,10 @@ instead.
 | Gap | Request | Controls |
 |---|---|---|
 | 32 | a guard precedes and controls the access it protects; a checked snapshot versus a later reload | `order` with `before` the guard's `branch`, `branch.taken` the protecting direction and `sameValue: { "before": "left", "at": "offset" }` (or `"at": "indirectValue"` on a `call` anchor). A reload after a modeled call is undecided; the occurrence lists the intervening calls and writes. Failure-flag writes and calls on the rejected direction are `reach` controls on that branch's paths |
-| 40 | assignment on each cleanup edge | `lastWriter` on the cleanup read with the assignment's write site. An edge where the assignment was skipped violates it; add `entryState` to accept the frame's prior contents and read each edge's `via` and `unwritten` cause. A slot dropped by an unread service is undecided |
+| 40 | assignment on each cleanup edge | `lastWriter` on the cleanup read with the assignment's write site. An edge where the assignment was skipped violates it; add `entryState` to accept the frame's prior contents and read each edge's `via` and `unwritten` cause. A slot dropped by an unread service is undecided. From an entry inside the function, name the function in `entryFrame` so its return balances; without it every path stops at that return and the control stays undecided |
 | 31 | aliased outputs; the register a loop predicate comes from | `lastWriter` on the read after both stores names the later store. `origin` on the loop branch's `left` with `inputs.include` the modeled service's register and `producers.exclude` the scratch read |
 | 33 | a propagated result traced to the leaf that produced it | `returnContracts` on the helper, then `origin` on the caller's test with `originatingReturns.entries` the helper and `producers.include` the base case's site. A value made in the caller violates it; each return it passed through is listed with its depth |
-| 30 | runtime mode carried through cleanup; which tables and indirect calls a branch reaches | the mode is a query assumption the engine already accepts: `registers` at entry, or a `callModels` case for the call that returns it. `reach` with `never` on the table loop or indirect call shows the branch bypasses it under that mode, and the assumption is listed in `queryAssumptions`. A stop before the site leaves it undecided, and so does a modeled call on the path, the one that supplies the mode included, because the anchor could lie in its callee. To decide it, start at an entry after that call with the mode in `registers` |
+| 30 | runtime mode carried through cleanup; which tables and indirect calls a branch reaches | the mode is a query assumption the engine already accepts: `registers` at entry, or a `callModels` case for the call that returns it. `reach` with `never` on the table loop or indirect call shows the branch bypasses it under that mode, and the assumption is listed in `queryAssumptions`. A stop before the site leaves it undecided, and so does a modeled call on the path, the one that supplies the mode included, because the anchor could lie in its callee. To decide it, start at an entry after that call with the mode in `registers` and the function in `entryFrame` |
 | 41 | terminator write versus returned length and capacity | `relation` with `modulo` 16: the terminator write's `offset` equals the buffer start plus the returned length. `containment` of the copy and terminator writes in `[start, start + capacity)`; a terminator at the capacity violates it |
 | 42 | requested bytes, allocator extent, clearing capacity | `allocation` places checkpoints at its `extent` and `pointer` sites; `containment` of the clearing writes with the pointer's registers as `segment` and `start` and `{ "mul": [extent, 16] }` as `length`, and `relation` between the request and the extent. A fill chunk inside the extent says nothing of total capacity |
 | 43 | caller ranges in arithmetic admission | `relation` over the admission arithmetic (`signed` where the gate is signed) with the callers' range in `assume` and its evidence. Without the range it is undecided; with a range it holds or is violated for that range only |
@@ -1268,8 +1329,9 @@ instead.
 A loop whose count is unknown forks at each test and stops at `visitLimit`, so a control over its
 writes stays undecided. State the count's producer as an existing input instead (the decision record
 on forking routes beyond budgets, proposed in PR 76): the count in `registers`, or a narrower entry
-at the loop body where the index is an entry register with an assumed range. A `containment` control
-then checks that every fill write stays inside `[base, base + n)`.
+at the loop body, with the function in `entryFrame`, where the index is an entry register with an
+assumed range. A `containment` control then checks that every fill write stays inside
+`[base, base + n)`.
 
 ```json
 {

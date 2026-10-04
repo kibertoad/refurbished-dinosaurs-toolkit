@@ -59,6 +59,7 @@ This repository publishes the shared tooling that clean-room game restorations c
 | Ghidra script | it compiles against Ghidra 12.1 (see below); headless runs on real programs stay local |
 | Release tooling | `tools/release/plan.test.ts` |
 | Which CI jobs a change runs (`tools/ci/changes.ts`) | `tools/ci/changes.test.ts` |
+| Which files a change touches and how paths match, for the two rows above (`tools/lib/changed-files.ts`) | `tools/lib/changed-files.test.ts` |
 
 A bug fix adds the test that fails without it.
 

@@ -50,7 +50,7 @@ read here. A gap still closes only when Dark Sun's own case passes against publi
 | 39 | Effective segment of frame-indexed accesses | Looks delivered: the reporter guide already says BP-derived offsets accessed through BX use DS. Verify and pin with tests | M3 |
 | 36 | Overlapping access widths across calls | Mostly delivered: accesses report byte producers and missing producers. The remainder is Dark Sun's case | M4 controls |
 | 32 | A guard precedes and controls an access; a checked snapshot versus a later reload | Generic relation: guard order on every path | M4 |
-| 40 | Assignment on each cleanup edge | Generic relation: the last writer on each path into a site | M4 |
+| 40 | Assignment on each cleanup edge | Generic relation: the last writer on each path into a site. From an entry inside the function, `entryFrame` (ADR 0012) lets the paths return through the function's frame, so the control can hold (issue 113) | M4 |
 | 31 | Aliased outputs; the register a loop predicate comes from | The last writer, plus predicate provenance | M4 |
 | 33 | A propagated result traced to the leaf that produced it | Generic relation: value origin across calls | M4 |
 | 30 | Runtime mode carried through cleanup | The mode is a query assumption the engine already accepts. Branch reach is an M4 control | M4 |
