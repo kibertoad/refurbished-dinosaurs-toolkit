@@ -944,6 +944,64 @@ test("the Ghidra cross-check counts an agreed call Ghidra ends the function at a
   assert.equal(older.agreed, false);
 });
 
+test("the Ghidra cross-check counts a jmp tail transfer Ghidra continues past against agreed", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // jmp 67; ret; at 67: ret. The engine stops at the jump into the entry at 67.
+  data.set([0xeb, 1, 0xc3, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const sha256 = createHash("sha256").update(data).digest("hex");
+  const check = (fallsThrough: boolean) => {
+    const cfg = {
+      ...config,
+      xxh3: sourceXxh3(data),
+      regions: [{ ...config.regions[0]!, entries: [64, 67] }],
+      ghidraCallEdges: {
+        format: "scientific-method-ghidra-call-edges",
+        version: 1,
+        sha256,
+        functionLimit: 8,
+        missingEntries: [],
+        unreadFunctions: [],
+        functions: [
+          {
+            entry: 64,
+            address: "1000:0040",
+            edges: [
+              {
+                site: 64,
+                siteAddress: "1000:40",
+                target: 67,
+                targetAddress: "1000:43",
+                flow: "UNCONDITIONAL_JUMP",
+                fallsThrough,
+              },
+            ],
+          },
+          { entry: 67, address: "1000:0043", edges: [] },
+        ],
+      },
+    };
+    writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+    return run(["callees", join(dir, "config.json")]).ghidraCrossCheck;
+  };
+
+  const stops = check(false);
+  assert.equal(stops.edges[0].result, "agreement");
+  assert.equal(stops.edges[0].ghidraFallsThrough, false);
+  assert.equal(stops.counts.ghidraContinues, 0);
+  assert.equal(stops.agreed, true);
+
+  // A user gave the jump a fall-through in Ghidra.
+  const continues = check(true);
+  assert.equal(continues.edges[0].result, "agreement");
+  assert.equal(continues.edges[0].ghidraFallsThrough, true);
+  assert.equal(continues.edges[0].ghidraFallsThroughBasis, "fallsThrough");
+  assert.equal(continues.counts.ghidraContinues, 1);
+  assert.equal(continues.counts.ghidraEndsFunction, 0);
+  assert.equal(continues.agreed, false);
+});
+
 test("operand candidates preserve prefixed widths and reject interior starts through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);
