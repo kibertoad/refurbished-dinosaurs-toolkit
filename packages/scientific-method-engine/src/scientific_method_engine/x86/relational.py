@@ -404,6 +404,12 @@ class _Path:
             return _scaled(self.form(operand["mul"][0], anchor, ranges, modular), operand["mul"][1])
         if "occurrences" in operand:
             o = operand["occurrences"]
+            # A modeled callee the path did not read may have run the counted site, so the count
+            # is only a lower bound past one.
+            modeled = self.modeled_before(anchor["order"])
+            if modeled:
+                raise _Unresolved(f"the count of {o['event']} events at {o['site']} passed modeled calls at "
+                                  f"{', '.join(map(str, modeled))}, whose callees may hold more of them")
             return self.count(o["site"], o["event"], anchor["order"]), {}
         value = self.value(operand, anchor)
         # A form congruent modulo the value's own width is congruent modulo any narrower modulus.

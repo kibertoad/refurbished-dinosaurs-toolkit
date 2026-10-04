@@ -1339,8 +1339,9 @@ different numbers (a reload after an unknown effect); a containment write throug
 shown equal to the interval's; an `origin` expectation hidden behind a modeled-call register,
 dropped memory or other unread input; an `origin` entry register missing from the inputs when
 `registers` supplies its value, or a `modeledCall` register missing when a `callModels` case
-supplies it, since either enters the path as a constant; an occurrence where an
-assumption cannot apply (see below).
+supplies it, since either enters the path as a constant; an `occurrences` operand at an anchor
+after a modeled call, since the callee may have run the counted site more times, so the count is
+only a lower bound there; an occurrence where an assumption cannot apply (see below).
 
 ### Arithmetic and assumptions
 
@@ -1384,7 +1385,7 @@ instead.
 | 41 | terminator write versus returned length and capacity | `relation` with `modulo` 16: the terminator write's `offset` equals the buffer start plus the returned length. `containment` of the copy and terminator writes in `[start, start + capacity)`; a terminator at the capacity violates it |
 | 42 | requested bytes, allocator extent, clearing capacity | `allocation` places checkpoints at its `extent` and `pointer` sites; `containment` of the clearing writes with the pointer's registers as `segment` and `start` and `{ "mul": [extent, 16] }` as `length`, and `relation` between the request and the extent. A fill chunk inside the extent says nothing of total capacity |
 | 43 | caller ranges in arithmetic admission | `relation` over the admission arithmetic (`signed` where the gate is signed) with the callers' range in `assume` and its evidence. Without the range it is undecided; with a range it holds or is violated for that range only |
-| 34 | output cardinality versus input counts | `relation` with `{ "occurrences": { "site": <append write>, "event": "write" } }` against the capacity. Loops with unknown counts stop at `visitLimit`, so the control stays undecided until the counts are inputs |
+| 34 | output cardinality versus input counts | `relation` with `{ "occurrences": { "site": <append write>, "event": "write" } }` against the capacity, anchored at the capacity gate or the return. Each path counts the appends it read, so the counts go in as concrete inputs, one query per case (see below). A modeled call before the anchor leaves the count undecided |
 | 36 | overlapping access widths across calls | `lastWriter` with `byteWriters` on the wider read: the byte store's site for the low byte, `entryState` or the other producer for the high byte |
 
 A loop whose count is unknown forks at each test and stops at `visitLimit`, so a control over its
@@ -1407,3 +1408,20 @@ assumed range. A `containment` control then checks that every fill write stays i
   }]
 }
 ```
+
+An output count works the same way. `occurrences` is the number of events the path read at that
+site, so it is a concrete number on each path and the relation compares it with the capacity at the
+anchor. What the engine cannot do is count over unknown inputs:
+
+- Input counts enter as concrete values. There is no entry memory input, so a count the code loads
+  from memory reaches a query as a register at a narrower entry after the load (with the function in
+  `entryFrame`) or as a `callModels` case register for the call that returns it. Each combination of
+  counts is its own query, and each conclusion holds for that combination only.
+- A product of two counts cannot be stated. `mul` takes an integer factor and relations are linear
+  over the unknowns, so a pairwise output count over two assumed ranges is never decided. Enumerate
+  the combinations instead.
+- The engine reports the appends each read path made. It does not report the most appends a branch
+  graph allows per iteration, and a path that stopped at `visitLimit` or `maxSteps` is undecided.
+- A path that skips a write reports no event for it and says nothing of rollback: the path's
+  earlier writes stay in its events, and what a modeled call wrote is unknown. `lastWriter` with
+  `entryState` on a later read shows which bytes kept their prior contents.

@@ -407,6 +407,29 @@ class RelationTests(unittest.TestCase):
         rule = self.appends(16)
         self.assertEqual(verdict(run(self.c, [rule], visitLimit=8), "capacity")["verdict"], "undecided")
 
+    def test_an_output_count_past_a_modeled_call_is_undecided(self):
+        # The caller runs the append helper twice; the second call may be modeled.
+        c = (Code().branch("e8", "append").label("service").branch("e8", "append").label("return").emit("c3")
+             .label("append").label("write").emit("88 07 43 c3"))
+
+        def capacity(n):
+            return control("capacity", "relation", at={"site": c.labels["return"], "event": "return"}, op="le",
+                           left={"occurrences": {"site": c.labels["write"], "event": "write"}}, right=n)
+        self.assertEqual(verdict(run(c, [capacity(2)], registers=FRAME), "capacity")["verdict"], "held")
+        with self.assertRaisesRegex(ValueError, "capacity violated"):
+            run(c, [capacity(1)], registers=FRAME)
+        # The modeled call hides the second append, so the path's count of one is only a lower bound.
+        model = [{"site": c.labels["service"], "evidence": "synthetic unread helper call", "cases": [{}]}]
+        result = verdict(run(c, [capacity(1)], registers=FRAME, callModels=model), "capacity")
+        self.assertEqual(result["verdict"], "undecided")
+        occurrence = result["paths"][0]["occurrences"][0]
+        self.assertIn("passed modeled calls", occurrence["reason"])
+        self.assertEqual(result["paths"][0]["modeledCalls"], [c.labels["service"]])
+        # An anchor before the modeled call counts every event up to it, so the count decides there.
+        first = control("first", "relation", at={"site": c.labels["write"], "event": "write"}, op="le",
+                        left={"occurrences": {"site": c.labels["write"], "event": "write"}}, right=1)
+        self.assertEqual(verdict(run(c, [first], registers=FRAME, callModels=model), "first")["verdict"], "held")
+
     def test_modulo_accepts_only_equality(self):
         rule = self.terminator("c6 00 00")
         with self.assertRaisesRegex(ValueError, "modulo"):
