@@ -84,8 +84,10 @@ Record it from a reference copy with `FileFingerprint.Xxh3Async(source.OpenVolum
 `AssetVerifier` checks the pins before the files, skips the hash when the identifier or size
 already differs, and reports a source with no volume, or a volume it cannot read, as `Unreadable`.
 It checks every file whatever the pins found. The pins enter `Fingerprint()`, so editions that
-differ only in their volume get different fingerprints. `Validate` rejects a pin on any other
-source kind.
+differ only in their volume get different fingerprints. Adding a pin to a manifest that has shipped
+changes its fingerprint, so a copy installed with the unpinned manifest has a `SourceFingerprint`
+that no longer matches and has to be imported again. `Validate` rejects a pin on any other source
+kind.
 
 The `.bin`, `.cue` and `.iso` files themselves cannot be pinned: the cue's text and the `.bin`'s
 audio sectors change between rips of one disc.

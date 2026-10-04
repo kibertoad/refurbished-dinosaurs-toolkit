@@ -435,7 +435,7 @@ internal sealed class ExtentReadStream : Stream
         if (buffer.Length - offset < count) throw new ArgumentException("Buffer range is invalid.");
         var bounded = (int)Math.Min(count, length - position);
         if (bounded <= 0) return 0;
-        var read = stream.Read(buffer, offset, bounded);
+        var read = Counted(stream.Read(buffer, offset, bounded));
         position += read;
         return read;
     }
@@ -444,7 +444,7 @@ internal sealed class ExtentReadStream : Stream
     {
         var bounded = (int)Math.Min(buffer.Length, length - position);
         if (bounded <= 0) return 0;
-        var read = stream.Read(buffer[..bounded]);
+        var read = Counted(stream.Read(buffer[..bounded]));
         position += read;
         return read;
     }
@@ -454,10 +454,15 @@ internal sealed class ExtentReadStream : Stream
     {
         var bounded = (int)Math.Min(buffer.Length, length - position);
         if (bounded <= 0) return 0;
-        var read = await stream.ReadAsync(buffer[..bounded], cancellationToken);
+        var read = Counted(await stream.ReadAsync(buffer[..bounded], cancellationToken));
         position += read;
         return read;
     }
+
+    // The image was checked to hold the extent when it was opened, so an image that ends inside the
+    // extent has changed since. Ending the stream early would hash a prefix as if it were the whole.
+    private static int Counted(int read) =>
+        read > 0 ? read : throw new EndOfStreamException("The image ended inside an ISO9660 extent.");
 
     public override long Seek(long offset, SeekOrigin origin)
     {

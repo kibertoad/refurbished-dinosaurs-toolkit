@@ -44,6 +44,8 @@ identity for a disc:
 
 A restoration can tell apart pressings with the same files, and identify a known image exactly,
 with values that hold for every correct rip of the disc in either image form. Pinning container
-bytes would need a disc form
-whose container is defined independently of the ripping program, and a case where the volume and
-audio fingerprints cannot tell two editions apart.
+bytes would need a disc form whose container is defined independently of the ripping program, and
+a case where the volume and audio fingerprints cannot tell two editions apart.
+
+Adding a pin to a manifest that has shipped changes its `Fingerprint()`, so an installed manifest
+whose `SourceFingerprint` was recorded from the unpinned manifest no longer names that edition.

@@ -20,7 +20,7 @@ public sealed class VolumePinTests
         try
         {
             var cooked = OriginalContentSourceTests.BuildIso(Payload);
-            // Padding past the declared volume belongs to the image, not the volume.
+            // OpenVolume stops at the declared volume's end and leaves this padding out.
             var padded = cooked.Concat(new byte[SectorSize]).ToArray();
             var iso = await WriteAsync(root, "game.iso", padded);
             await WriteAsync(root, "game.bin", CueBinSourceTests.ToRaw(cooked));
@@ -167,6 +167,27 @@ public sealed class VolumePinTests
         finally { Directory.Delete(root, true); }
     }
 
+    [Fact]
+    public async Task VerifierReportsAnIsoImageThatShrankAfterOpeningAsUnreadable()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var cooked = OriginalContentSourceTests.BuildIso(Payload);
+            var iso = await WriteAsync(root, "game.iso", cooked);
+            using var source = OriginalContentSource.OpenIso9660(iso);
+            await using (var file = new FileStream(iso, FileMode.Open, FileAccess.Write))
+                file.SetLength(cooked.Length - SectorSize);
+
+            var manifest = Edition("retail") with { VolumeXxh3 = FileFingerprint.Xxh3(cooked) };
+            // The file sits in the volume's last block, so it is cut short as well.
+            var issues = (await AssetVerifier.VerifyAsync(source, manifest, TestContext.Current.CancellationToken)).Issues;
+            Assert.Equal([AssetProblem.Unreadable, AssetProblem.Unreadable], issues.Select(issue => issue.Problem));
+            Assert.Equal([null, "EI/TEST.BIN"], issues.Select(issue => issue.Path));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     [Theory]
     [InlineData("""{"gameId":"g","sourceEdition":"e","files":[{"path":"A","size":1}],"volumeIdentifier":"DISC"}""")]
     [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"directory","files":[{"path":"A","size":1}],"volumeBlocks":23}""")]
@@ -196,6 +217,8 @@ public sealed class VolumePinTests
         Assert.NotEqual(unpinned.Fingerprint(), manifest.Fingerprint());
         Assert.NotEqual(manifest.Fingerprint(), (manifest with { VolumeIdentifier = "DISC2" }).Fingerprint());
         Assert.NotEqual(manifest.Fingerprint(), (manifest with { VolumeBlocks = 24 }).Fingerprint());
+        Assert.NotEqual(manifest.Fingerprint(),
+            (manifest with { VolumeXxh3 = FileFingerprint.Xxh3("other"u8.ToArray()) }).Fingerprint());
         // A manifest without pins keeps the fingerprint it had before pins existed.
         Assert.Equal(FileFingerprint.Xxh3(Encoding.UTF8.GetBytes("A\0" + "1\0")), unpinned.Fingerprint());
     }

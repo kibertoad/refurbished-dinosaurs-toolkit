@@ -7,8 +7,9 @@ namespace RefurbishedDinosaurs.LegacyFormats;
 public enum AssetProblem
 {
     /// <summary>
-    /// The source could not be opened as the manifest's source kind, or a file in it could not be
-    /// read to the end.
+    /// The source could not be opened as the manifest's source kind, a file in it could not be read
+    /// to the end, or the manifest pins an ISO 9660 volume that the source does not have or that could
+    /// not be read to the end.
     /// </summary>
     Unreadable,
     /// <summary>A required file does not exist.</summary>
