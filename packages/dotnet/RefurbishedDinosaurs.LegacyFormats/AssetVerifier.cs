@@ -351,21 +351,23 @@ public static class AssetVerifier
         List<AssetVerificationIssue> issues,
         CancellationToken cancellationToken)
     {
-        if (source.Cue is not { } sheet || source.OpenRawImage is not { } openImage)
-        {
-            foreach (var track in tracks)
-                issues.Add(new(null, AssetProblem.Unreadable,
-                    $"The {source.Kind} source holds no CD audio track {track.Track:D2}.") { AudioTrack = track.Track });
-            return;
-        }
-
-        Stream image;
-        try { image = openImage(); }
+        var sheet = source.Cue;
+        Stream? image = null;
+        // A source without a BIN image refuses OpenBin with NotSupportedException.
+        try { if (sheet is not null) image = source.OpenBin(); }
+        catch (NotSupportedException) { }
         catch (Exception exception) when (IsReadFailure(exception))
         {
             foreach (var track in tracks)
                 issues.Add(new(null, AssetProblem.Unreadable, $"The image could not be read: {exception.Message}")
                     { AudioTrack = track.Track });
+            return;
+        }
+        if (sheet is null || image is null)
+        {
+            foreach (var track in tracks)
+                issues.Add(new(null, AssetProblem.Unreadable,
+                    $"The {source.Kind} source holds no CD audio track {track.Track:D2}.") { AudioTrack = track.Track });
             return;
         }
 

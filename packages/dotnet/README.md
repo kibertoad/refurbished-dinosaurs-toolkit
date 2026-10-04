@@ -168,7 +168,7 @@ contexts outside per-frame loops.
 | Types | Reads |
 |---|---|
 | `AssetVerifier` | Check the player's original against an `AssetManifest` through any `OriginalContentSource`, and `IdentifyAsync` the supported edition it is, or that several editions match. |
-| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image or an InstallShield cabinet set behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin` and `OpenInstallShieldCabinet` take it explicitly. A cue/bin source gives the sheet as `Cue` and the full paths of the files `OpenCueBin` chose as `CuePath` and `BinPath`. |
+| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image or an InstallShield cabinet set behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin` and `OpenInstallShieldCabinet` take it explicitly. A cue/bin source gives the sheet as `Cue` and the full paths of the files `OpenCueBin` chose as `CuePath` and `BinPath`. It reads the `.cue` once and gives those bytes as `CueSheetBytes`: hash them to record the sheet that was parsed, since the file at `CuePath` may have been replaced after the source opened. An `.iso` or cue/bin source records the image's length and last-write time when it opens, and each read of the `.iso` or BIN through the source (`OpenRead`, `OpenVolume`, `OpenBin` and the audio checks) fails with an `IOException` when either has changed; a rewrite that keeps both is not detected. A stream opened from `BinPath` is not checked, so read the image with `OpenBin`. |
 | `InstallShieldCabinetSource`, `InstallShieldCabinetLimits` | The members of an InstallShield 5 or 6 cabinet set (`dataN.hdr` and `dataN.cab`), on disk or inside another source. See [InstallShield cabinets](#installshield-cabinets). |
 | `ContentSourceExtractor`, `ContentExtractionOptions` | Copy the files of any `OriginalContentSource`, or a selection of them, into a staging directory and get an `InstalledAsset` record for each. See [Extracting a source into a stage](#extracting-a-source-into-a-stage). |
 | `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
@@ -283,7 +283,9 @@ track, its length in samples (16-bit stereo pairs, 588 to a sector), a tolerance
 length and XXH3-128, and the XXH3-128 of the central samples, which leave out the tolerance at each
 end. Record one from a reference rip with `CddaTrackFingerprints.RecordAsync`, which refuses an
 anchor whose samples repeat within twice the tolerance (the range a rip shifted by up to the
-tolerance shows the verifier), and list it in a `cue-bin` manifest's `AudioTracks`.
+tolerance shows the verifier), and list it in a `cue-bin` manifest's `AudioTracks`. To record from
+an opened source, pass its `OpenBin()` stream and the track's `Cue.TrackExtent`, so the samples come
+from the BIN the source checked.
 
 `AssetVerifier` checks each track after the files. A track starts at its `INDEX 01` and ends at the
 next track's `INDEX 00`, that track's `INDEX 01` without one, or the end of the image. The checks
