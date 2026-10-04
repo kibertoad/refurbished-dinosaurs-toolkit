@@ -58,7 +58,8 @@ LegacyFormats parts of it:
   data.
 - `StartupFailure.Report` around the game's startup makes native-library and content errors
   visible to a player who has no terminal. Pass `showDialog: false` for a smoke test or other
-  unattended run, so a failed start exits instead of waiting on a dialog nobody can dismiss.
+  unattended run, so a failed start exits instead of waiting on a dialog nobody can dismiss. A
+  process without an interactive desktop, such as a Windows service, never shows the dialog.
 
 ## Asset references
 

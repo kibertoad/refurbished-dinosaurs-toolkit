@@ -57,6 +57,8 @@ public static class StartupFailure
         Exception exception,
         string? contentRoot)
     {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(exception);
         try
         {
             Directory.CreateDirectory(options.LogDirectory);
@@ -75,7 +77,7 @@ public static class StartupFailure
 
     /// <summary>
     /// Writes the log, prints the message and exception to standard error, and on Windows shows the
-    /// message in an error dialog.
+    /// message in an error dialog when the process can show one to the user.
     /// </summary>
     /// <param name="options">Text and locations to use.</param>
     /// <param name="exception">The failure.</param>
@@ -86,7 +88,8 @@ public static class StartupFailure
     /// <summary>
     /// Writes the log and prints the message and exception to standard error. When
     /// <paramref name="showDialog"/> is <see langword="true"/>, also shows the message in an error
-    /// dialog on Windows.
+    /// dialog on Windows, unless the process runs without an interactive desktop, such as a service,
+    /// where nobody could see or dismiss it.
     /// </summary>
     /// <param name="options">Text and locations to use.</param>
     /// <param name="exception">The failure.</param>
@@ -107,7 +110,7 @@ public static class StartupFailure
         var message = BuildMessage(options, exception, contentRoot, logPath);
         Console.Error.WriteLine(message);
         Console.Error.WriteLine(exception);
-        if (showDialog && OperatingSystem.IsWindows())
+        if (showDialog && OperatingSystem.IsWindows() && Environment.UserInteractive)
             _ = MessageBoxW(IntPtr.Zero, message, options.ApplicationTitle, 0x10);
     }
 
