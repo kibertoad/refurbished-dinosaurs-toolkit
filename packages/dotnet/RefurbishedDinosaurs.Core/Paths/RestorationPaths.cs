@@ -35,10 +35,12 @@ public static class RestorationPaths
         Validate(localApplicationData, nameof(localApplicationData));
 
         // Without trimming, "Game/" has "Game" as its parent, so the parent would never be searched.
+        // A root has no parent and is searched once.
         var parent = Path.GetDirectoryName(
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(applicationDirectory))) ?? applicationDirectory;
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(applicationDirectory)));
         foreach (var root in new[] { applicationDirectory, parent, currentDirectory })
         {
+            if (root is null) continue;
             var candidate = Path.Combine(root, options.ContentDirectory);
             if (Directory.Exists(candidate)) return candidate;
         }

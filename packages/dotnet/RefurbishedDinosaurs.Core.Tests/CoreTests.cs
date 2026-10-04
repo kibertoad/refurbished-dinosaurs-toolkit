@@ -92,8 +92,12 @@ public sealed class CoreTests
     }
 
     [Fact]
-    public void StagedPackRejectsFilesystemRoot() =>
-        Assert.Throws<ArgumentException>(() => StagedAssetPack.Create(Path.GetPathRoot(Path.GetTempPath())!));
+    public void StagedPackRejectsFilesystemRoot()
+    {
+        var error = Assert.Throws<ArgumentException>(
+            () => StagedAssetPack.Create(Path.GetPathRoot(Path.GetTempPath())!));
+        Assert.Equal("destination", error.ParamName);
+    }
 
     [Fact]
     public void PathsPreferContentBesideApplication()
@@ -142,6 +146,13 @@ public sealed class CoreTests
         var root = Path.Combine(Path.GetTempPath(), "assets");
         Assert.Throws<InvalidDataException>(() => SafePath.Below(root, "../assets-elsewhere/file.dat"));
         Assert.Throws<InvalidDataException>(() => SafePath.Below(root, " "));
+        Assert.Equal(Path.Combine(root, "nested", "file.dat"), SafePath.Below(root, "nested/file.dat"));
+    }
+
+    [Fact]
+    public void SafePathKeepsFilesystemRootAsRoot()
+    {
+        var root = Path.GetPathRoot(Path.GetTempPath())!;
         Assert.Equal(Path.Combine(root, "nested", "file.dat"), SafePath.Below(root, "nested/file.dat"));
     }
 

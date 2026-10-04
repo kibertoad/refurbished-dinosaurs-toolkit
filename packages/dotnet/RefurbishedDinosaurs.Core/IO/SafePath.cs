@@ -18,9 +18,10 @@ public static class SafePath
             throw new InvalidDataException("Path is blank.");
         if (Path.IsPathFullyQualified(relative))
             throw new InvalidDataException("Path must be relative.");
-        var fullRoot = Path.GetFullPath(root).TrimEnd(
-            Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var prefix = fullRoot + Path.DirectorySeparatorChar;
+        // TrimEndingDirectorySeparator leaves a root's separator, so "/" stays "/" rather than becoming
+        // "" and resolving relative to the current directory.
+        var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        var prefix = Path.EndsInDirectorySeparator(fullRoot) ? fullRoot : fullRoot + Path.DirectorySeparatorChar;
         var target = Path.GetFullPath(Path.Combine(fullRoot, relative));
         var comparison = OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase

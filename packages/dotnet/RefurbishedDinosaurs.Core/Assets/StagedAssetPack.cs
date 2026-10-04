@@ -20,7 +20,7 @@ public sealed class StagedAssetPack : IDisposable
     /// The directory the pack will replace on <see cref="Commit"/>. A trailing directory separator is
     /// ignored.
     /// </param>
-    /// <exception cref="ArgumentException">The destination is empty or a filesystem root.</exception>
+    /// <exception cref="ArgumentException">The destination is null, blank or a filesystem root.</exception>
     public static StagedAssetPack Create(string destination)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(destination);
