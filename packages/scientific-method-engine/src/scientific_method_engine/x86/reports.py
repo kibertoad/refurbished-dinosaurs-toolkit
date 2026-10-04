@@ -1495,7 +1495,7 @@ def _run_report(image, config, command):
     if config.get("relationalControls") is not None and command not in TRACE_COMMANDS:
         raise ValueError("relationalControls apply only to " + ", ".join(TRACE_COMMANDS))
     if "controlOccurrenceLimit" in config and command not in TRACE_COMMANDS:
-        raise ValueError("controlOccurrenceLimit applies only with relationalControls")
+        raise ValueError("controlOccurrenceLimit applies only to " + ", ".join(TRACE_COMMANDS))
     if command == "operand":
         return operand_provenance(image, config)
     if command == "target":

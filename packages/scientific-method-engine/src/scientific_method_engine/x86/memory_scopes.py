@@ -101,7 +101,7 @@ def scope_history(state, values, unread):
             {key: state.unwritten(key) for key in unread})
 
 
-def retain_scopes(state, values, unread, history=None):
+def retain_scopes(state, values, unread, history):
     """Put the captured bytes back after the model invalidated memory. Later writes still apply.
 
     All scoped keys are concrete linear bytes, so they share one alias group. ``history`` from
@@ -109,8 +109,7 @@ def retain_scopes(state, values, unread, history=None):
     """
     state.memory.update(values)
     state.unread_memory.update(unread)
-    if history is not None:
-        state.memory_writers.update(history[0])
-        state.lost_memory.update(history[1])
+    state.memory_writers.update(history[0])
+    state.lost_memory.update(history[1])
     if values or unread:
         state.memory_groups.setdefault((("linear",), ("absolute",)), set()).update(values, unread)

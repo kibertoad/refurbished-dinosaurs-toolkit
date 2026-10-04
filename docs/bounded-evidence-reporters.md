@@ -963,6 +963,7 @@ range. `origin` gives the value's `inputs` (entry registers, modeled-call regist
 `dropped` for memory a modeled call or possible alias dropped) and the declared `returns` it came
 through, with `originating` marking the return that produced it rather than passing it up from a
 deeper return. `originatingReturns` needs a `returnContracts` declaration for each entry it names.
+A `modeledCall` input without `register` matches any unknown that call produced, its flags included.
 
 ### Verdicts
 
@@ -985,7 +986,9 @@ a `reach` anchor not reached on a path that passed a modeled call; an `order` an
 `before` event behind a modeled call; a `sameValue` pair whose terms differ but are not known to be
 different numbers (a reload after an unknown effect); a containment write through a segment not
 shown equal to the interval's; an `origin` expectation hidden behind a modeled-call register,
-dropped memory or other unread input; an occurrence where an assumption cannot apply (see below).
+dropped memory or other unread input; an `origin` entry register missing from the inputs when
+`registers` supplies its value, which enters the path as a constant; an occurrence where an
+assumption cannot apply (see below).
 
 ### Arithmetic and assumptions
 

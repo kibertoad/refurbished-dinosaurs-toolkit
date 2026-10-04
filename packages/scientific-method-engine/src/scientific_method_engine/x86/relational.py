@@ -37,7 +37,7 @@ def _anchors(control, image, event_required=True, events=None):
     return result
 
 
-def _term(term, image, name, anchored=True):
+def _term(term, image, name):
     if not isinstance(term, dict):
         raise ValueError(f"Relational control {name} has an invalid value reference")
     if "entryRegister" in term:
@@ -50,7 +50,7 @@ def _term(term, image, name, anchored=True):
             _site(term["site"], image, "value site")
             if not isinstance(term.get("event"), str):
                 raise ValueError(f"Relational control {name} value references with a site need an event kind")
-        elif "event" in term or not anchored:
+        elif "event" in term:
             raise ValueError(f"Relational control {name} value references without a site read the anchor event")
     if not isinstance(term.get("signed", False), bool):
         raise ValueError(f"Relational control {name} signed must be a boolean")
@@ -192,8 +192,9 @@ def validate_controls(config, image):
                 for s in sites:
                     _site(s, image, "producer site")
             inputs = expect.get("inputs", {})
-            if not isinstance(inputs, dict) or set(inputs) - {"include"} or "inputs" in expect and not isinstance(inputs.get("include"), list):
-                raise ValueError(f"Relational control {name} inputs takes include")
+            if not isinstance(inputs, dict) or set(inputs) - {"include"} or "inputs" in expect and not (
+                    isinstance(inputs.get("include"), list) and 1 <= len(inputs["include"]) <= 64):
+                raise ValueError(f"Relational control {name} inputs takes include with 1..64 inputs")
             for spec in inputs.get("include", []):
                 if not isinstance(spec, dict) or not (set(spec) == {"entryRegister"} and spec["entryRegister"] in ALIASES
                                                       or set(spec) <= {"modeledCall", "register"} and "modeledCall" in spec
@@ -317,10 +318,12 @@ def _field(event, path):
 class _Path:
     """One reported path with the indexes the controls look events up by, built once."""
 
-    def __init__(self, path, entry_state):
+    def __init__(self, path, entry_state, supplied):
         self.path = path
         self.events = path["events"]
         self.entry_state = entry_state
+        # Full registers the query's `registers` gives a starting value to, in whole or in part.
+        self.supplied = supplied
         self.instructions = set(path["instructionPath"])
         # (site, kind) -> the orders of those events, ascending.
         self.by_site = {}
@@ -579,17 +582,21 @@ def _occurrence(control, path, anchor, image):
         if verdict != "held":
             misses.append(f"producer {site} " + ("is among the value's producers" if verdict == "violated" else "may be hidden by an unread input"))
     for spec in expect.get("inputs", {}).get("include", []):
+        hidden = False
         if "entryRegister" in spec:
             root = ALIASES[spec["entryRegister"]][0]
             present = any(i["kind"] == "entryRegister" and i["register"] == root for i in inputs)
+            # Bytes `registers` supplies enter the path as constants with no unknown input, so the
+            # register's absence from the inputs does not show the value is independent of it.
+            hidden = root in path.supplied
         else:
             root = ALIASES[spec.get("register", "ax")][0] if "register" in spec else None
             present = any(i["kind"] == "modeledCall" and i["site"] == spec["modeledCall"] and (root is None or i["register"] == root)
                           for i in inputs)
-        verdict = "held" if present else "undecided" if opaque else "violated"
+        verdict = "held" if present else "undecided" if opaque or hidden else "violated"
         verdicts.append(verdict)
         if verdict != "held":
-            misses.append(f"input {spec} not among the value's inputs")
+            misses.append(f"input {spec} not among the value's inputs" + ("; the query supplies its entry value" if hidden else ""))
     returns = []
     for o in value.get("resultOrigins", ()):
         e = events[o] if o < len(events) else None
@@ -617,10 +624,6 @@ def _occurrence(control, path, anchor, image):
     return _worst(verdicts), detail
 
 
-def _matches(anchors, event):
-    return any(event["site"] == a["site"] and event["kind"] == a["event"] for a in anchors)
-
-
 def evaluate_controls(report, config, image):
     """Evaluate each relational control over the report's ordinary paths.
 
@@ -632,7 +635,8 @@ def evaluate_controls(report, config, image):
     limit = integer(config.get("controlOccurrenceLimit", 4096), 1, 100000, "control occurrence limit")
     spent = 0
     entry_state = State(config["entry"], image, config)
-    paths = [_Path(p, entry_state) for p in report["paths"]]
+    supplied = {ALIASES[r][0] for r in config.get("registers", {})}
+    paths = [_Path(p, entry_state, supplied) for p in report["paths"]]
     unread = [{"reason": g["reason"], **({"site": g["site"]} if "site" in g else {})} for g in report["gaps"]]
     query = {"registers": config.get("registers", {}), "flags": config.get("flags", {}),
              "callModels": sorted(m["site"] for m in config.get("callModels", []))}
@@ -664,9 +668,8 @@ def evaluate_controls(report, config, image):
                 verdicts.append(verdict)
                 continue
             found = []
-            for event in path.events:
-                if not _matches(anchors, event):
-                    continue
+            for o in sorted({o for a in anchors for o in path.by_site.get((a["site"], a["event"]), ())}):
+                event = path.events[o]
                 if spent >= limit:
                     capped = True
                     break
@@ -688,7 +691,9 @@ def evaluate_controls(report, config, image):
             reasons.append("control occurrence limit reached; later occurrences were not evaluated")
         if any(r["verdict"] == "undecided" and not r["returned"] for r in rows):
             reasons.append("a path stopped before it was read to its end")
-        if any(r["verdict"] == "undecided" and r["returned"] for r in rows):
+        if any(r["verdict"] == "undecided" and r["returned"] and r.get("modeledCalls") for r in rows):
+            reasons.append("a returned path that did not reach the anchor passed a modeled call, whose callee may hold it")
+        if any(r["verdict"] == "undecided" and r["returned"] and "occurrences" in r for r in rows):
             reasons.append("an occurrence's relation is not decided by the reported values")
         verdict = _worst(verdicts + (["undecided"] if unread or capped or not paths else []))
         if verdict == "violated":

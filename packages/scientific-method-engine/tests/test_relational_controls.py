@@ -56,6 +56,7 @@ class ReachTests(unittest.TestCase):
             result = verdict(run(c, [control("inside", "reach", at={"site": c.labels["store"]}, expect=expect)], callModels=model), "inside")
             self.assertEqual(result["verdict"], "undecided", expect)
             self.assertEqual(result["paths"][0]["modeledCalls"], [c.labels["service"]])
+            self.assertIn("passed a modeled call", " ".join(result["reasons"]))
 
 
 class OrderTests(unittest.TestCase):
@@ -144,6 +145,16 @@ class LastWriterTests(unittest.TestCase):
         regs = {"ds": 0x2000, "ss": 0x3000, "bx": 0x40}
         self.assertEqual(verdict(run(c, [control("slot", "lastWriter", at={"site": c.labels["read"], "event": "read"},
                                                  writers=["entryState"])], registers=regs), "slot")["verdict"], "held")
+
+    def test_a_store_dropped_by_a_later_unknown_offset_write_leaves_the_writer_undecided(self):
+        # mov word [22h],5 then mov [si],ax: the second store may overwrite the first through DS.
+        c = Code().label("assign").emit("c7 06 22 00 05 00").label("store").emit("89 04").label("read").emit("a1 22 00 c3")
+        result = verdict(run(c, [control("slot", "lastWriter", at={"site": c.labels["read"], "event": "read"},
+                                         writers=[c.labels["assign"]])], registers=FRAME), "slot")
+        self.assertEqual(result["verdict"], "undecided")
+        occurrence = result["paths"][0]["occurrences"][0]
+        store = occurrence["order"] - 1
+        self.assertEqual(occurrence["bytes"][0]["unwritten"], {"cause": "dropped by a possibly aliasing write", "order": store})
 
     def test_a_preserved_scope_keeps_the_write_before_the_service(self):
         c = (Code().label("assign").emit("c7 06 22 00 05 00").label("service").branch("e8", "external")
@@ -388,6 +399,18 @@ class OriginTests(unittest.TestCase):
                        expect={"inputs": {"include": [{"entryRegister": "bx"}]}, "producers": {"exclude": [c.labels["test"]]}})
         self.assertEqual(verdict(run(c, [rule]), "entry")["verdict"], "held")
 
+    def test_an_entry_register_the_query_supplies_is_undecided(self):
+        # The supplied value enters the path as a constant, so no unknown input names its register.
+        c = Code().emit("89 d8").label("test").emit("85 c0").label("branch").branch("74", "out").label("out").emit("c3")
+        rule = control("entry", "origin", at={"site": c.labels["branch"], "event": "branch"}, value={"field": "left"},
+                       expect={"inputs": {"include": [{"entryRegister": "bx"}]}})
+        result = verdict(run(c, [rule], registers={"bx": 7}), "entry")
+        self.assertEqual(result["verdict"], "undecided")
+        self.assertIn("supplies its entry value", result["paths"][0]["occurrences"][0]["reason"])
+        # A register the query does not supply and the value does not use still violates.
+        with self.assertRaisesRegex(ValueError, "entry violated"):
+            run(c, [{**rule, "expect": {"inputs": {"include": [{"entryRegister": "cx"}]}}}], registers={"bx": 7})
+
     def test_originating_returns_need_a_return_contract(self):
         c = self.recursion()
         with self.assertRaisesRegex(ValueError, "needs a returnContracts declaration"):
@@ -437,6 +460,8 @@ class FrameworkTests(unittest.TestCase):
                  ([control("a", "lastWriter", at={"site": 0, "event": "write"}, writers=["entryState"])], "read events"),
                  ([control("a", "relation", at={"site": 0, "event": "return"}, op="eq", left=1, right={"add": []})], "add needs"),
                  ([control("a", "order", at={"site": 0, "event": "read"}, before={"site": 0, "event": "read"}, branch={"taken": True})], "branch event"),
+                 ([control("a", "origin", at={"site": 0, "event": "read"}, value={"field": "value"},
+                           expect={"inputs": {"include": []}})], "1..64 inputs"),
                  ([{**self.writer(c), "extra": 1}], "unknown fields")]
         for controls, message in cases:
             with self.assertRaisesRegex(ValueError, message):
@@ -446,6 +471,8 @@ class FrameworkTests(unittest.TestCase):
         c = self.code()
         with self.assertRaisesRegex(ValueError, "apply only to"):
             run(c, [self.writer(c)], "bounds", registers=FRAME)
+        with self.assertRaisesRegex(ValueError, "controlOccurrenceLimit applies only to trace"):
+            report(c, "bounds", registers=FRAME, controlOccurrenceLimit=4)
 
     def test_the_occurrence_limit_is_checked_without_controls(self):
         c = self.code()

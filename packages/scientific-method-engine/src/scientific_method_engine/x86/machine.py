@@ -71,9 +71,9 @@ class State:
         # byteProducers "unwritten" row of bytes with no value that an ordinary write explains (a
         # possibly aliasing write dropped them) or that a preservesMemory scope kept without a
         # value. memory_cleared is the order of the event that dropped every byte (a modeled call),
-        # or None. writes maps (alias group, domain) to the order of the last write with them since
+        # or None. writes maps each alias group to {domain: order of the last write with it} since
         # that event, so a read of a byte this path never stored can name a write that may have
-        # stored it.
+        # stored it without scanning the writes of its own group.
         self.memory_writers = {}
         self.lost_memory = {}
         self.memory_cleared = None
@@ -202,8 +202,8 @@ class State:
             return dict(self.lost_memory[key])
         # Writes to the key's own (segment, base) group store other offsets; any other write may alias.
         group, a = key[:2], self.domain(key)
-        aliasing = [order for (other, b), order in self.writes.items()
-                    if other != group and (a is None or b is None or not (a[1] <= b[0] or b[1] <= a[0]))]
+        aliasing = [order for other, domains in self.writes.items() if other != group
+                    for b, order in domains.items() if a is None or b is None or not (a[1] <= b[0] or b[1] <= a[0])]
         if aliasing:
             return {"cause": "possibly written by an aliasing write", "order": max(aliasing)}
         if self.memory_cleared is not None:
@@ -271,7 +271,7 @@ class State:
 
             # A concrete write covers every byte it stores, not only its first byte.
             written = (keys[0][2], keys[-1][2] + 1) if seg == ("linear",) else self.domain(keys[0])
-            self.writes[((seg, base), written)] = len(self.events)
+            self.writes.setdefault((seg, base), {})[written] = len(self.events)
             for group, members in list(self.memory_groups.items()):
                 if group == (seg, base):
                     continue
