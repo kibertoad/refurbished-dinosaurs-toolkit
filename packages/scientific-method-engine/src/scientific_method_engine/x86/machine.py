@@ -117,6 +117,17 @@ class State:
         # Keys grouped by (segment, base) so a write scans only groups that can alias it.
         self.memory_groups = {}
         self.memory_epoch = 0
+        # The order of the write event that stored each modeled byte. lost_memory holds the
+        # byteProducers "unwritten" row of bytes with no value that an ordinary write explains (a
+        # possibly aliasing write dropped them) or that a preservesMemory scope kept without a
+        # value. memory_cleared is the order of the event that dropped every byte (a modeled call),
+        # or None. writes maps each alias group to {domain: order of the last write with it} since
+        # that event, so a read of a byte this path never stored can name a write that may have
+        # stored it without scanning the writes of its own group.
+        self.memory_writers = {}
+        self.lost_memory = {}
+        self.memory_cleared = None
+        self.writes = {}
         # Bytes a preservesMemory scope kept without a value (ADR 0009): key -> the unknown term
         # name they had before the modeled call. They stay unread: no value, no producer.
         self.unread_memory = {}
@@ -214,6 +225,11 @@ class State:
         self.memory.clear()
         self.memory_groups.clear()
         self.unread_memory.clear()
+        self.memory_writers.clear()
+        self.lost_memory.clear()
+        self.writes.clear()
+        # The caller records the event that explains the loss right after clearing.
+        self.memory_cleared = len(self.events)
         self.memory_epoch += 1
 
     def unread_term(self, key):
@@ -223,6 +239,37 @@ class State:
     def byte(self, key):
         """The modeled value of one memory byte, or an unknown term produced by the current site."""
         return self.memory[key] if key in self.memory else unknown(self.unread_term(key), 8, self.at)
+
+    def unwritten(self, key):
+        """Why a byte has no modeled value: the cause and the order of the event behind it."""
+        # Writes to the key's own (segment, base) group store other offsets; any other write may alias.
+        # A later aliasing write is newer than the one that dropped the byte, so it is the one named.
+        lost = self.lost_memory.get(key)
+        group, a = key[:2], key_domain(key, self.bits, self.flat)
+        latest = None
+        for other, domains in self.writes.items():
+            if other == group:
+                continue
+            if a is None:
+                # Every write may alias a byte with no concrete domain; the group's newest decides.
+                order = max(domains.values())
+            else:
+                order = max((o for b, o in domains.items() if b is None or not (a[1] <= b[0] or b[1] <= a[0])), default=None)
+            if order is not None and (latest is None or order > latest):
+                latest = order
+        if latest is not None and (lost is None or lost["order"] is None or latest > lost["order"]):
+            return {"cause": "possibly written by an aliasing write", "order": latest}
+        if lost is not None:
+            return dict(lost)
+        if self.memory_cleared is not None:
+            return {"cause": "dropped by a modeled call", "order": self.memory_cleared}
+        return {"cause": "no write on this path", "order": None}
+
+    def byte_writer(self, index, key):
+        """The byteProducers row of one accessed byte: its producers and the write that stored it."""
+        if key in self.memory:
+            return {"index": index, "producers": producers(self.memory[key]), "writeOrder": self.memory_writers.get(key)}
+        return {"index": index, "producers": [], "writeOrder": None, "unwritten": self.unwritten(key)}
 
     def reg(self, name):
         root, low, bits = alias(name)
@@ -279,6 +326,7 @@ class State:
             self.memory_epoch += 1
 
             written = written_domain(seg, base, delta, width, self.bits, self.flat)
+            self.writes.setdefault((seg, base), {})[written] = len(self.events)
             for group, members in list(self.memory_groups.items()):
                 if group == (seg, base):
                     continue
@@ -287,6 +335,8 @@ class State:
                         uncertain.append(key)
                         self.write_log.append((key, self.memory.pop(key, None)))
                         self.unread_memory.pop(key, None)
+                        self.memory_writers.pop(key, None)
+                        self.lost_memory[key] = {"cause": "dropped by a possibly aliasing write", "order": len(self.events)}
                         members.discard(key)
                 if not members:
                     del self.memory_groups[group]
@@ -294,6 +344,8 @@ class State:
                 self.write_log.append((key, self.memory.get(key)))
                 self.memory[key] = extract(write, i * 8, 8)
                 self.unread_memory.pop(key, None)
+                self.memory_writers[key] = len(self.events)
+                self.lost_memory.pop(key, None)
             self.memory_groups.setdefault((seg, base), set()).update(keys)
             value = write
             missing = []
@@ -312,7 +364,7 @@ class State:
         event = self.event("write" if write is not None else "read", segment=segment.report(), offset=offset.report(),
                            width=width, effectiveSegmentRegister=addressing_register, segmentInterpretation="base" if self.flat else "selector-paragraph", interval={"segment": seg, "base": base, "start": delta, "end": delta + width},
                            value=value.report(), missingByteProducers=missing,
-                           byteProducers=[{"index": i, "producers": producers(self.memory[key]) if key in self.memory else []} for i, key in enumerate(keys)],
+                           byteProducers=[self.byte_writer(i, key) for i, key in enumerate(keys)],
                            guards=deepcopy(relevant), role=role,
                            uncertainAliasesInvalidated=len(uncertain))
         f = self.frames[-1]

@@ -7,6 +7,7 @@ from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 from .machine import State, StopPath, REGISTERS, ALIASES, segment_register, string_instruction
 from .values import unknown
 from .effect_order import effect_ordering
+from .relational import validate_controls, evaluate_controls
 from .argument_frames import argument_frames, stack_cleanup
 from .result_flow import return_flows
 from .image import Image, integer
@@ -1479,7 +1480,14 @@ def owner(image, config):
     return result
 
 
+TRACE_COMMANDS = ("trace", "arguments", "effects", "returns", "guards", "memory", "allocation")
+
+
 def _run_report(image, config, command):
+    if "relationalControls" in config and command not in TRACE_COMMANDS:
+        raise ValueError("relationalControls apply only to " + ", ".join(TRACE_COMMANDS))
+    if "controlOccurrenceLimit" in config and command not in TRACE_COMMANDS:
+        raise ValueError("controlOccurrenceLimit applies only to " + ", ".join(TRACE_COMMANDS))
     if command == "operand":
         return operand_provenance(image, config)
     if command == "target":
@@ -1500,8 +1508,9 @@ def _run_report(image, config, command):
         return uses(image, config)
     if command == "dispatch":
         return dispatch(image, config)
-    if command not in ("trace", "arguments", "effects", "returns", "guards", "memory", "allocation"):
+    if command not in TRACE_COMMANDS:
         raise ValueError("Unknown x86 report command")
+    validate_controls(config, image)
     if command == "allocation":
         checkpoints = set(config.get("checkpoints", []))
         for a in config.get("allocations", []):
@@ -1510,12 +1519,19 @@ def _run_report(image, config, command):
                     checkpoints.add(a[field]["site"])
         config = {**config, "checkpoints": sorted(checkpoints)}
     report = trace(image, config)
+    # Controls read the complete event stream, before any command narrows it.
+    controls = evaluate_controls(report, config, image)
     if command in ("arguments", "effects"):
         report = near_pointer_provenance(report, config)
     if command == "arguments":
         report = argument_frames(report, image)
     if command == "allocation":
-        return allocations(report, config)
+        result = allocations(report, config)
+        if controls is not None:
+            result["relationalControls"] = controls
+        return result
+    if controls is not None:
+        report["relationalControls"] = controls
     if command == "effects":
         report = effect_ordering(report)
     if command == "returns":
