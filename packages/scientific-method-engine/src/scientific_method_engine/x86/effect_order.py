@@ -63,7 +63,8 @@ def effect_ordering(report):
                 call = {"order": event["order"], "site": event["site"], "entry": event["entry"],
                         "depth": event["depth"], "target": event.get("target"),
                         "writesBeforeCount": len(writes), "status": "unresolved-or-stopped",
-                        "unknownEffects": True, "continuation": None, "_unknownStart": len(unknown_orders)}
+                        "unknownEffects": True, "continuation": None, "preservedMemoryScopes": [],
+                        "_unknownStart": len(unknown_orders)}
                 calls.append(call)
                 pending.setdefault((event["site"], event["depth"]), []).append(call)
             elif kind == "call-return":
@@ -71,11 +72,14 @@ def effect_ordering(report):
                 if stack:
                     call = stack.pop()
                     modeled = event.get("modeled", False)
+                    scopes = event.get("preservedMemoryScopes", []) if modeled else []
                     call.update(status="modeled-return" if modeled else "traced-return",
                                 unknownEffects=bool(modeled or event.get("unknownMemoryEffects") or len(unknown_orders) > call.pop("_unknownStart")),
-                                returnOrder=event["order"], writesAfterCount=len(writes),
-                                continuation="assumes balanced returning service; its memory/flag effects are unknown" if modeled
-                                else "local callee return reached within the instruction model")
+                                returnOrder=event["order"], writesAfterCount=len(writes), preservedMemoryScopes=scopes,
+                                continuation="local callee return reached within the instruction model" if not modeled
+                                else "assumes balanced returning service; memory outside its preservedMemoryScopes "
+                                     "hypotheses and its flag effects are unknown" if scopes
+                                else "assumes balanced returning service; its memory/flag effects are unknown")
                 if event.get("modeled") or event.get("unknownMemoryEffects"):
                     unknown_orders.append(event["order"])
         for call in calls:
@@ -87,6 +91,7 @@ def effect_ordering(report):
         destination = conditional_summaries if conditional else summaries
         destination.append({"path": index, "declaredJumpAssumptions": path.get("declaredJumpAssumptions", []), "returned": path["returned"], "stop": boundary,
                           "guards": path["guards"], "timeline": timeline,
+                          "conditionalModels": path.get("conditionalModels", []),
                           "writeOrders": [w["order"] for w in writes], "calls": calls,
                           "localRestorationWitnesses": witnesses,
                           # Port and interrupt effects stay out of writeOrders: RAM writes never stand for device state.
