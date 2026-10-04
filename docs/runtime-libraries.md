@@ -15,7 +15,7 @@ limits and exceptions of each type.
 | Package | Use it for | References |
 |---|---|---|
 | `RefurbishedDinosaurs.Core` | Identifying, importing, installing and checking content from the player's original; content and settings locations; startup diagnostics; input snapshots and action bindings; deterministic randomness; recoverable saves and settings; viewport and palette helpers. | nothing |
-| `RefurbishedDinosaurs.LegacyFormats` | Game-independent PCX, BMP RLE8, CUE/CDDA, raw Mode 1, ISO 9660, InstallShield 5 and 6 cabinet and PCM WAVE readers, a canonical PCM WAVE writer, a streaming WAVE reader, and `OriginalContentSource`. | Core |
+| `RefurbishedDinosaurs.LegacyFormats` | Game-independent PCX, BMP, CUE/CDDA, raw Mode 1, ISO 9660, InstallShield 5 and 6 cabinet and PCM WAVE readers, a canonical PCM WAVE writer, a streaming WAVE reader, and `OriginalContentSource`. | Core |
 | `RefurbishedDinosaurs.Media.Smacker`, `.Avi`, `.Fli` | Movie decoding. | nothing |
 | `RefurbishedDinosaurs.Media.Playback` | Frame cadence for any of the movie decoders. | nothing |
 | `RefurbishedDinosaurs.Media.Audio` | PCM sample conversion and the lifetimes of backend voices and cached audio resources. | nothing |
@@ -51,6 +51,10 @@ LegacyFormats parts of it:
   image file it chose from a directory, a `.cue` or a `.bin` input as `CuePath` and `BinPath` (the
   image is the file the sheet's `FILE` names, whatever its extension), so the importer hashes and
   reads the same files instead of repeating the selection.
+- An `.iso` or cue/bin source also gives its ISO 9660 volume: the identifier (`Label`), the size in
+  blocks (`VolumeBlocks`) and the bytes (`OpenVolume`). An `iso9660` or `cue-bin` manifest can pin
+  them with `VolumeIdentifier`, `VolumeBlocks` and `VolumeXxh3`, which tells apart two pressings
+  that carry the same files. The pins add checks; every file is still verified.
 - `OriginalContentSource.OpenInstallShieldCabinet` lists and reads the members of an InstallShield 5
   or 6 cabinet set, on disk or inside a disc source, through the same interface. It checks every
   member's path, extent and the set's limits when it opens, and each member's size (and MD5 for
@@ -69,6 +73,11 @@ LegacyFormats parts of it:
   several shifts and changed audio as separate problems.
 - The importer decodes into `StagedAssetPack.StagingDirectory`, verifies all of its output there,
   then calls `Commit`, which swaps the pack in and keeps the old one on failure.
+- `ContentOverlay` brings the staged content to a patched version before `Commit`. It replaces
+  or adds a file only when the target holds the hash the overlay records for it, verifies every
+  payload before replacing anything, and returns records for the installed manifest. The overlay's
+  files and hashes are the restoration's data. See
+  [content overlays](../packages/dotnet/README.md#content-overlays).
 - `InstalledContentWriter` suits incremental extractors: it replaces changed files atomically and
   skips byte-identical ones. `InstalledContentUninstaller` removes only the paths the installed
   manifest lists, so logs, mods, saves and other files survive.

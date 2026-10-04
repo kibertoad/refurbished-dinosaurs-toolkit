@@ -67,7 +67,7 @@ public static class FileFingerprint
         value is { Length: Xxh3Length } && value.All(static c => char.IsAsciiDigit(c) || c is >= 'a' and <= 'f');
 
     // The canonical form is the 128-bit value written big-endian, which is how UInt128 formats.
-    private static string Format(UInt128 hash) => hash.ToString("x32");
+    internal static string Format(UInt128 hash) => hash.ToString("x32");
 
     private static FileStream OpenSequential(string path, FileOptions options) =>
         new(path, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 0, options);

@@ -38,6 +38,7 @@ on an undocumented public member.
 | `Assets` | `ImportDiskPlanner` | Free space an import needs, counting files it will replace. |
 | `Assets` | `StagedAssetPack` | Build a content directory beside the live one and swap it in, restoring the old one on failure. |
 | `Assets` | `InstalledContentWriter` | Write or copy one installed file atomically, skipping identical files. |
+| `Assets` | `ContentOverlay`, `ContentOverlayManifest` | Apply a patch or fix delivered as files to a staged pack, replacing each file only when it holds the bytes the overlay expects. |
 | `Assets` | `InstalledAssetManifest`, `InstalledAssetVerifier` | Record what an import installed, and check it at startup, with a reason code per problem. |
 | `Assets` | `InstalledContentUninstaller` | Remove only the files a manifest lists. |
 | `Determinism` | `IRandomSource`, `MsvcRandom` | The legacy Microsoft C `rand()` sequence, with saveable state. |
@@ -67,6 +68,66 @@ content directories; concurrent filesystem replacement needs host controls.
 use the same rules. A null or blank reference from data, a blank manifest game or edition and a
 missing file list throw `InvalidDataException`, like every other rejected reference; a blank root
 or source path passed by the caller still throws `ArgumentException`.
+
+## Content overlays
+
+A content overlay adds or replaces files in a content directory, usually a
+`StagedAssetPack.StagingDirectory`, for example to bring an imported 1.0 edition to an official
+1.1 patch. It is a zip archive (`ContentOverlay.OpenZip`) or a directory (`OpenDirectory`) holding
+`overlay.json`, which `schemas/content-overlay.schema.json` describes, and each payload at
+`files/<path>`. Each record gives the target path, the payload's size, the XXH3-128 the target must
+have first (`baseXxh3`, null for an added file that must not exist) and the payload's XXH3-128.
+
+Opening rejects a manifest with a duplicate path (ignoring case), a path `PortableAssetPath.Relative`
+rejects, a path that is also a directory of another record, a missing, unlisted or linked payload,
+a payload of another size than its record, an `overlay.json` or `files` directory that is a link,
+and anything over `ContentOverlayLimits` (100,000 files, 1 GiB a file, 4 GiB in all and a 4 MiB
+manifest by default).
+
+`ApplyAsync` checks every target before it writes anything, finding each path component ignoring
+case. A target that already has the payload's size and hash counts as applied and is not written,
+so a rerun writes nothing. A target with neither hash, a replaced file that is missing, or an added
+file that exists throws `ContentOverlayException` with a `ContentOverlayProblem`, the path and the
+hash found. Then every payload is copied into a scratch directory under the root and hashed as it
+is copied; a payload whose size or hash differs from its record throws before any target is
+replaced, and the scratch directory is always removed. Only then are the copies moved over their
+targets. Those moves are not one transaction, so after any exception dispose the stage without
+committing it.
+
+`ContentOverlayResult.Outputs` lists each record's actual spelling, size, hash and
+`ContentOverlayAction`. `UpdateInstalledFiles` puts the outputs into the importer's
+`InstalledAsset` list: a matching record takes the new size and hash, keeps its media type, and gets
+an `AssetConversion` whose method is the overlay's `name`.
+
+An overlay cannot delete a file. The overlay's payloads, hashes and version names are the
+restoration's data.
+
+## Pinning a disc image's volume
+
+Two pressings of a disc can carry the same files in different ISO 9660 volumes. An `iso9660` or
+`cue-bin` manifest can pin the volume as well as the files, with any of three fields:
+
+| Field | Checked against | Problem when it differs |
+|---|---|---|
+| `VolumeIdentifier` | `OriginalContentSource.Label`, the primary volume descriptor's identifier without its trailing padding | `WrongVolumeIdentifier` |
+| `VolumeBlocks` | `OriginalContentSource.VolumeBlocks`, the declared volume space size in 2048-byte blocks | `WrongVolumeSize` |
+| `VolumeXxh3` | XXH3-128 of `OriginalContentSource.OpenVolume()`, the declared blocks from block 0 | `WrongVolumeHash` |
+
+`OpenVolume` reads the same bytes from an `.iso` image and from the data track of a cue/bin image
+of one disc, and leaves out padding after the declared volume, so one `VolumeXxh3` serves both.
+Record it from a reference copy with `FileFingerprint.Xxh3Async(source.OpenVolume())`.
+`AssetVerifier` checks the pins before the files, skips the hash when the identifier or size
+already differs, and reports a source with no volume, or a volume it cannot read, as `Unreadable`.
+It checks every file whatever the pins found. The pins enter `Fingerprint()`, so editions that
+differ only in their volume get different fingerprints. Adding a pin to a manifest that has shipped
+changes its fingerprint, so a copy installed with the unpinned manifest has a `SourceFingerprint`
+that no longer matches and has to be imported again. `Validate` rejects a pin on any other source
+kind.
+
+The `.bin`, `.cue` and `.iso` files themselves cannot be pinned: the cue's text and the `.bin`'s
+audio sectors change between rips of one disc.
+[ADR 0015](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/decisions/0015-iso-volume-pins.md)
+gives the reasons.
 
 ## Input snapshots and bindings
 
@@ -99,6 +160,27 @@ contexts outside per-frame loops.
 | `WavePcm16Writer` | Writes canonical 16-bit mono or stereo PCM WAVE files. |
 | `PcxDecoder`, `RawIndexedImageDecoder`, `IndexedImage` | 8-bit RLE PCX, and headerless indexed pixels, with RGBA conversion. |
 | `Rle8BitmapDecoder` | 8-bit BMP (BI_RLE8 or BI_RGB), rewritten as uncompressed BI_RGB. |
+| `BmpDecoder`, `BmpImage` | 8-bit BMP (BI_RGB or BI_RLE8) and 24-bit or 32-bit BI_RGB BMP, decoded to opaque RGBA rows top to bottom. See [BMP images](#bmp-images). |
+
+## BMP images
+
+`BmpDecoder.Decode(bytes)` reads a whole BMP file with a BITMAPINFOHEADER, or its V4 or V5 form, and
+returns a `BmpImage` of RGBA pixels, four bytes each, rows top to bottom with no padding.
+
+| Read | Rejected with `InvalidDataException` |
+|---|---|
+| 8-bit BI_RGB and BI_RLE8 through the file's palette of up to 256 colours. 24-bit and 32-bit BI_RGB, whose blue, green, red byte order becomes red, green, blue. Bottom-up rows, and top-down rows (negative height) for BI_RGB. | 1, 4 and 16-bit images, BI_RLE4, BI_BITFIELDS and every other compression. The 12-byte OS/2 header and other header sizes. A top-down BI_RLE8 image. |
+
+Every pixel is opaque: the fourth byte of a 32-bit BI_RGB pixel is unused by the format and is ignored.
+Pixels a BI_RLE8 stream skips take palette index 0. The file is checked before any pixel buffer is
+allocated: the `BM` signature, a declared file size equal to the length, a positive width, a nonzero
+height, one plane, a palette that ends before the pixel data, rows padded to 4 bytes that fit in the
+file, and at most `maximumPixels` pixels (16,777,216 by default). A pixel whose palette index is past
+the palette's last colour also throws. Pass `requireDeclaredFileSize: false` for files whose writer
+left the size field zero or wrong.
+
+`Rle8BitmapDecoder` keeps a different job: it rewrites an 8-bit BMP as an uncompressed 8-bit BMP for
+libraries that cannot read BI_RLE8.
 
 ## InstallShield cabinets
 
