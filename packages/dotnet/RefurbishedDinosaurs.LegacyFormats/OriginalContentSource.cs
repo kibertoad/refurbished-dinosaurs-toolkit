@@ -36,6 +36,8 @@ public abstract class OriginalContentSource : IDisposable
     public abstract string? Label { get; }
     /// <summary>The cue sheet of a <see cref="ContentSourceKinds.CueBin"/> source, otherwise <see langword="null"/>.</summary>
     public virtual CueBinSheet? Cue => null;
+    // Opens the raw 2352-byte-sector image of a cue/bin source, for its audio tracks.
+    internal virtual Func<Stream>? OpenRawImage => null;
     /// <summary>Every file, sorted by path ignoring case.</summary>
     public abstract IReadOnlyList<ContentSourceEntry> Files { get; }
     /// <summary>Looks up a file.</summary>
@@ -145,7 +147,7 @@ public abstract class OriginalContentSource : IDisposable
         return new Iso9660ContentSource(
             () => new RawMode1UserDataStream(
                 new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read), dataSectors),
-            ContentSourceKinds.CueBin, sheet);
+            ContentSourceKinds.CueBin, sheet, () => CddaTrackFingerprints.OpenImage(binPath));
     }
 }
 
@@ -213,11 +215,12 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     private readonly Dictionary<string, IsoEntry> files = new(StringComparer.OrdinalIgnoreCase);
 
     // openImage returns a new seekable stream of 2048-byte sectors each time.
-    public Iso9660ContentSource(Func<Stream> openImage, string kind, CueBinSheet? cue)
+    public Iso9660ContentSource(Func<Stream> openImage, string kind, CueBinSheet? cue, Func<Stream>? openRawImage = null)
     {
         this.openImage = openImage;
         Kind = kind;
         Cue = cue;
+        OpenRawImage = openRawImage;
         using var stream = openImage();
         var imageLength = stream.Length;
         if (imageLength < 18L * SectorSize)
@@ -242,6 +245,7 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     public override string Kind { get; }
     public override string? Label { get; }
     public override CueBinSheet? Cue { get; }
+    internal override Func<Stream>? OpenRawImage { get; }
     public override IReadOnlyList<ContentSourceEntry> Files { get; }
 
     public override bool TryGetFile(string relativePath, out ContentSourceEntry? entry)
