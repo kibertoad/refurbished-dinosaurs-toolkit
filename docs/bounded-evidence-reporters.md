@@ -77,7 +77,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | Command | Reports | Described in |
 |---|---|---|
 | `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry` | this section, [hardware boundaries](#hardware-boundaries) |
-| `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries) |
+| `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries) |
 | `uses` | accesses to one memory offset from every established entry | this section |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
@@ -116,7 +116,8 @@ report is not complete within the model.
 
 `arguments` also maps each traced call's stack slots onto the widths its callee read. Each path
 gets `argumentFrames`, one per traced call (modeled calls have none). Offsets count from the
-first byte above the return frame (`returnFrameBytes`, 2 or 4). A frame holds:
+first byte above the return frame (`returnFrameBytes`, 2 or 4, also on the traced `call` event). A
+frame holds:
 
 - `slots`: runs of argument bytes that one write last covered before the call, with the writer's
   site, order, depth, role (`push` or none), width and value. The report keeps each cited write
