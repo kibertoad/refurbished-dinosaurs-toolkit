@@ -64,15 +64,28 @@ export function changedAreas(files: string[]): Record<Area, boolean> {
   ) as Record<Area, boolean>;
 }
 
+/**
+ * Returns the paths that `head` changes since it forked from `base`, read in the repository at
+ * `cwd`. A moved file yields both its old and its new path, so moving a file out of an area still
+ * runs that area's jobs. `-z` keeps git from quoting paths with unusual characters, which would
+ * stop them matching a prefix.
+ */
+export function changedFiles(base: string, head: string, cwd?: string): string[] {
+  return execFileSync("git", ["diff", "--name-only", "--no-renames", "-z", `${base}...${head}`], {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: 256 * 1024 * 1024,
+  })
+    .split("\0")
+    .filter(Boolean);
+}
+
 function main(argv: string[]): void {
   let areas: Record<Area, boolean>;
   if (argv.length === 0) {
     areas = changedAreas(EVERYTHING);
   } else if (argv.length === 2) {
-    const files = execFileSync("git", ["diff", "--name-only", `${argv[0]}...${argv[1]}`], { encoding: "utf8" })
-      .split("\n")
-      .filter(Boolean);
-    areas = changedAreas(files);
+    areas = changedAreas(changedFiles(argv[0]!, argv[1]!));
   } else {
     throw new Error("usage: changes.ts [<base-sha> <head-sha>]");
   }

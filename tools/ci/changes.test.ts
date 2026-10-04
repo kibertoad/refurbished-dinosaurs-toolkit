@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AREAS, changedAreas } from "./changes.ts";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AREAS, changedAreas, changedFiles } from "./changes.ts";
 
 const on = (files: string[]) =>
   Object.entries(changedAreas(files))
@@ -57,4 +61,44 @@ test("a change to the workflow or to this script runs every area", () => {
   assert.deepEqual(on([".github/workflows/ci.yml"]), all);
   assert.deepEqual(on(["tools/ci/changes.ts"]), all);
   assert.deepEqual(on([".github/workflows/release-label.yml"]), []);
+});
+
+test("the engine tests run inside the TypeScript job, so every engine path also turns that job on", () => {
+  for (const path of AREAS.engine) {
+    const file = path.endsWith("/") ? `${path}x` : path;
+    assert.equal(changedAreas([file]).typescript, true, path);
+  }
+});
+
+test("a moved file counts under its old path too, and a path with unusual characters is read unquoted", (t) => {
+  const repo = mkdtempSync(join(tmpdir(), "changes-"));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  // Leaves the developer's git configuration out, so a signing or rename setting cannot change the result.
+  const config = join(tmpdir(), `changes-gitconfig-${process.pid}`);
+  writeFileSync(config, "");
+  t.after(() => rmSync(config, { force: true }));
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: config, GIT_CONFIG_NOSYSTEM: "1" };
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
+      cwd: repo,
+      env,
+      encoding: "utf8",
+    }).trim();
+  git("init", "-q");
+  mkdirSync(join(repo, "packages", "dotnet"), { recursive: true });
+  writeFileSync(join(repo, "packages", "dotnet", "Moved.cs"), "class Moved {}\n".repeat(20));
+  git("add", ".");
+  git("commit", "-q", "-m", "base");
+  const base = git("rev-parse", "HEAD");
+  mkdirSync(join(repo, "docs"));
+  git("mv", "packages/dotnet/Moved.cs", "docs/Moved.cs");
+  mkdirSync(join(repo, "schemas"));
+  writeFileSync(join(repo, "schemas", "café profile.json"), "{}\n");
+  git("add", ".");
+  git("commit", "-q", "-m", "head");
+  assert.deepEqual(changedFiles(base, "HEAD", repo).sort(), [
+    "docs/Moved.cs",
+    "packages/dotnet/Moved.cs",
+    "schemas/café profile.json",
+  ]);
 });
