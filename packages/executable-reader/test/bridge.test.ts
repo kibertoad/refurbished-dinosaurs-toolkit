@@ -176,6 +176,30 @@ test("PE32 incoming claims no call reached only past a port access", (t) => {
   );
 });
 
+test("PE32 uses classifies a store reached only past a port access apart from one past an unread call", (t) => {
+  const query = { offset: 0x402000, width: 4 };
+  const row = (code: number[]) => {
+    const { dir, config } = pe32Fixture(t, code);
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ ...config, query }));
+    const [found, ...rest] = run(["uses", join(dir, "config.json")]).conditionalAccesses;
+    assert.deepEqual(rest, []);
+    return [found.site, found.classification, found.dependsOn.map((d: Report) => d.site)];
+  };
+  const store = [0xa3, 0x00, 0x20, 0x40, 0x00, 0xc3];
+  // mov dx, 0x3c8; out dx, al; mov [0x402000], eax; ret
+  assert.deepEqual(row([0x66, 0xba, 0xc8, 0x03, 0xee, ...store]), [
+    0x205,
+    "operand past a PE32 port access; values and continuation unresolved",
+    [0x204],
+  ]);
+  // call eax; mov [0x402000], eax; ret
+  assert.deepEqual(row([0xff, 0xd0, ...store]), [
+    0x202,
+    "entry-CFG operand past a stop; values and callee effects unresolved",
+    [0x200],
+  ]);
+});
+
 function overlayFixture(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "bounded-overlay-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

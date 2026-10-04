@@ -195,6 +195,11 @@ def incoming(image, config):
             "scope": "All bytes of declared search regions; verified calls are reachable from accepted starts. Never proves universal absence."}
 
 
+# Classifications of a conditionalAccesses row in ``uses``.
+CFG_OPERAND = "entry-CFG operand past a stop; values and callee effects unresolved"
+PORT_OPERAND = "operand past a PE32 port access; values and continuation unresolved"
+
+
 def uses(image, config):
     query = config.get("query", {})
     offset = integer(query.get("offset"), 0, image.mask, "query offset")
@@ -283,6 +288,14 @@ def uses(image, config):
     after_stop, stop_gaps, _, _, _ = (walk(image, list(stops), instruction_limit, follow_flat_ports=True)
                                       if stops else ({}, [], None, None, None))
     gaps.extend(g for g in stop_gaps if g["reason"] == "instruction limit")
+    # In PE32 a site the stops reach only by continuing past a port access is outside the entry CFG,
+    # so its row says so even when it also depends on an unread call. The walk that ends at port
+    # accesses must finish within the limit for that claim; otherwise every row keeps the shared value.
+    port_only = set()
+    if image.flat and stops:
+        before_ports, port_gaps, _, _, _ = walk(image, list(stops), instruction_limit)
+        if not any(g["reason"] == "instruction limit" for g in port_gaps):
+            port_only = set(after_stop) - set(before_ports)
     # A call past a stop was never traced either, so code after it also depends on it returning.
     starts = [(root, root, reason) for root, reason in stops.items()]
     starts += [(at, at + ins.size, "call past a stop; assumed to return")
@@ -332,7 +345,7 @@ def uses(image, config):
                                     "effectiveSegmentRegister": segment_name,
                                     "address": "overlaps query" if overlaps and segment is None else "possible alias",
                                     "classification": ("unverified overlapping instruction path" if at in unverified else
-                                                       "entry-CFG operand past a stop; values and callee effects unresolved"),
+                                                       PORT_OPERAND if at in port_only else CFG_OPERAND),
                                     "dependsOn": depends.get(at, []),
                                     "reachability": "conditional on encoded branch outcomes and on execution continuing past every named stop"})
     # A control proves the search reaches a known use, which an operand found past a stop still shows.

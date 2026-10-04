@@ -89,7 +89,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 |---|---|---|
 | `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; declared-table continuations run on their own `continuationBudget`; checks `relationalControls` | this section, [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
-| `uses` | accesses to one memory offset from every established entry | this section |
+| `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path` | this section, [hardware boundaries](#hardware-boundaries) |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
 | `dispatch` | the target of each input through a switch's jump table | this section, [jump tables](#evidenced-indirect-jump-tables) |
@@ -511,7 +511,16 @@ nothing after it: a call reached only past a port access is a raw candidate in
 `incoming` and `target`, and an operand there is `unresolvedBoundary` in
 `operand-candidates`. The `uses` inventory past a stop still lists explicit
 memory operands after a PE32 port access in `conditionalAccesses`, and their
-`dependsOn` names each port access they are reached past.
+`dependsOn` names each port access they are reached past. A row the stops reach
+only by continuing past a port access, on every route, is classified
+`operand past a PE32 port access; values and continuation unresolved`. This holds
+when an unread call is also on the route: the unresolved values include that
+callee's effects, and `dependsOn` names the call. A row that some route from a
+stop reaches without crossing a port access keeps
+`entry-CFG operand past a stop; values and callee effects unresolved`. When the
+walk from the stops that ends at port accesses exhausts `instructionLimit`, it
+has not established which rows lie only past a port access, so every row keeps
+the shared value and the report carries an `instruction limit` gap.
 
 INT, INT1 and INT3 add a `hardware-boundary` event with `boundary: "interrupt"`
 and the `vector` p-code names, then stop the path, since the handler is not
