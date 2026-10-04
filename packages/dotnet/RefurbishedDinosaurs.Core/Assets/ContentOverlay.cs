@@ -1,7 +1,5 @@
-using System.Buffers;
 using System.IO.Compression;
 using System.IO.Enumeration;
-using System.IO.Hashing;
 using RefurbishedDinosaurs.Core.IO;
 
 namespace RefurbishedDinosaurs.Core.Assets;
@@ -19,8 +17,6 @@ public sealed class ContentOverlay : IDisposable
 
     /// <summary>The directory of the overlay that holds the payloads, at each record's path.</summary>
     public const string PayloadDirectory = "files";
-
-    private const int BufferSize = 1024 * 1024;
 
     private static readonly EnumerationOptions EntryOptions = new()
     {
@@ -255,34 +251,23 @@ public sealed class ContentOverlay : IDisposable
     private async Task CopyVerifiedAsync(ContentOverlayFile record, string relative, string copy,
         CancellationToken cancellationToken)
     {
-        var hash = new XxHash128();
-        long total = 0;
-        var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
-        try
+        FingerprintedCopy copied;
+        await using (var source = _payloads[record.Path]())
+        await using (var output = new FileStream(copy, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                         bufferSize: 0, FileOptions.Asynchronous))
         {
-            await using var source = _payloads[record.Path]();
-            await using var output = new FileStream(copy, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                bufferSize: 0, FileOptions.Asynchronous);
-            int read;
-            while ((read = await source.ReadAsync(buffer.AsMemory(0, BufferSize), cancellationToken)
-                       .ConfigureAwait(false)) > 0)
-            {
-                total += read;
-                if (total > record.Bytes) break;
-                hash.Append(buffer.AsSpan(0, read));
-                await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-            }
+            copied = await FileFingerprint.CopyXxh3Async(source, output, record.Bytes, cancellationToken)
+                .ConfigureAwait(false);
             await output.FlushAsync(cancellationToken).ConfigureAwait(false);
             output.Flush(flushToDisk: true);
         }
-        finally { ArrayPool<byte>.Shared.Return(buffer); }
 
-        if (total != record.Bytes)
+        if (copied.Exceeded || copied.Bytes != record.Bytes)
             throw new ContentOverlayException(ContentOverlayProblem.PayloadWrongSize, relative, null,
-                total > record.Bytes
+                copied.Exceeded
                     ? $"The payload for {relative} is larger than the {record.Bytes} bytes its record gives."
-                    : $"The payload for {relative} is {total} bytes; its record gives {record.Bytes}.");
-        var found = FileFingerprint.Format(hash.GetCurrentHashAsUInt128());
+                    : $"The payload for {relative} is {copied.Bytes} bytes; its record gives {record.Bytes}.");
+        var found = copied.Xxh3;
         if (found != record.Xxh3)
             throw new ContentOverlayException(ContentOverlayProblem.PayloadWrongHash, relative, found,
                 $"The payload for {relative} has xxh3 {found}; its record gives {record.Xxh3}.");
@@ -298,7 +283,7 @@ public sealed class ContentOverlay : IDisposable
     {
         private readonly Dictionary<string, ILookup<string, (string Name, string FullPath, FileAttributes Attributes, bool IsDirectory)>> _listings =
             new(StringComparer.Ordinal);
-        private readonly Dictionary<string, string> _created = new(StringComparer.OrdinalIgnoreCase);
+        private readonly PortablePathLayout _planned = new();
 
         /// <summary>
         /// Returns the actual spelling of the components of <paramref name="relative"/> that exist,
@@ -331,17 +316,8 @@ public sealed class ContentOverlay : IDisposable
             return (string.Join('/', spelled), true);
         }
 
-        private string Planned(string existing, string[] rest)
-        {
-            var path = existing;
-            for (var index = 0; index < rest.Length; index++)
-            {
-                path = path.Length == 0 ? rest[index] : $"{path}/{rest[index]}";
-                if (index == rest.Length - 1) break;
-                if (!_created.TryAdd(path, path)) path = _created[path];
-            }
-            return path;
-        }
+        private string Planned(string existing, string[] rest) =>
+            _planned.Add(existing.Length == 0 ? string.Join('/', rest) : $"{existing}/{string.Join('/', rest)}");
 
         private ILookup<string, (string Name, string FullPath, FileAttributes Attributes, bool IsDirectory)> Listing(string directory)
         {

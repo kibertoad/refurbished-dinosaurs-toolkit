@@ -20,9 +20,28 @@ public static class WavePcm16Writer
     /// <summary>Writes the 44-byte canonical header for <paramref name="dataLength"/> PCM bytes.</summary>
     internal static void WriteHeader(Stream destination, uint dataLength, int channels, int sampleRate)
     {
-        Span<byte> header = stackalloc byte[44];
+        Span<byte> header = stackalloc byte[HeaderSize];
+        FormatHeader(header, dataLength, channels, sampleRate);
+        destination.Write(header);
+    }
+
+    /// <summary>Bytes in the canonical header.</summary>
+    internal const int HeaderSize = 44;
+
+    /// <summary>
+    /// The most PCM bytes one file can hold: the 32-bit RIFF size counts the header bytes after it as
+    /// well as the audio.
+    /// </summary>
+    internal const uint MaximumDataLength = uint.MaxValue - RiffSizeHeaderBytes;
+
+    // The header bytes after the RIFF size field, which that field counts along with the audio.
+    private const uint RiffSizeHeaderBytes = HeaderSize - 8;
+
+    /// <summary>Fills <paramref name="header"/> with the canonical header for <paramref name="dataLength"/> PCM bytes.</summary>
+    internal static void FormatHeader(Span<byte> header, uint dataLength, int channels, int sampleRate)
+    {
         "RIFF"u8.CopyTo(header);
-        BinaryPrimitives.WriteUInt32LittleEndian(header[4..], checked(dataLength + 36));
+        BinaryPrimitives.WriteUInt32LittleEndian(header[4..], checked(dataLength + RiffSizeHeaderBytes));
         "WAVEfmt "u8.CopyTo(header[8..]);
         BinaryPrimitives.WriteUInt32LittleEndian(header[16..], 16);
         BinaryPrimitives.WriteUInt16LittleEndian(header[20..], 1);
@@ -33,6 +52,5 @@ public static class WavePcm16Writer
         BinaryPrimitives.WriteUInt16LittleEndian(header[34..], 16);
         "data"u8.CopyTo(header[36..]);
         BinaryPrimitives.WriteUInt32LittleEndian(header[40..], dataLength);
-        destination.Write(header);
     }
 }

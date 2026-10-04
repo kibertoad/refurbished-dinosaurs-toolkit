@@ -56,11 +56,20 @@ LegacyFormats parts of it:
   them with `VolumeIdentifier`, `VolumeBlocks` and `VolumeXxh3`, which tells apart two pressings
   that carry the same files. The pins add checks; every file is still verified.
 - `OriginalContentSource.OpenInstallShieldCabinet` lists and reads the members of an InstallShield 5
-  or 6 cabinet set, on disk or inside a disc source, through the same interface. It checks every
-  member's path, extent and the set's limits when it opens, and each member's size (and MD5 for
-  version 6) when it is read to the end. Decode into the staging directory and verify the output
-  there as for any other source; [InstallShield cabinets](../packages/dotnet/README.md#installshield-cabinets)
+  or 6 cabinet set, on disk or inside a disc source, through the same interface. It opens from a
+  `dataN.hdr`, or from a `dataN.cab` that holds the header, reading only that file's header region.
+  It checks every member's path, extent and the set's limits when it opens, and each member's size
+  (and MD5 for version 6) when it is read to the end. Entries it does not list are in `SkippedFiles`
+  with a reason: entries marked invalid or without data, version 6 links to them, entries at a
+  listed member's path that share its data, and version 6 copies of a listed member at the same path
+  with the same size and MD5. Decode into the staging directory and verify the output there as for
+  any other source; [InstallShield cabinets](../packages/dotnet/README.md#installshield-cabinets)
   lists the supported subset.
+- `ContentSourceExtractor.ExtractAsync` copies the files of any source, or a selection, into the
+  staging directory below a prefix, hashes each while it copies, and returns the `InstalledAsset`
+  records for the installed manifest. It checks file-count and byte limits and every path before it
+  writes, and removes what it wrote when it fails or is cancelled. See
+  [extracting a source into a stage](../packages/dotnet/README.md#extracting-a-source-into-a-stage).
 - `AssetManifest` describes a supported edition by paths, sizes and XXH3-128 hashes, the same
   `xxh3` values the spec's build entries give, and names the source kind to read it as.
   `AssetVerifier.IdentifyAsync` tries every edition against the player's copy and reports why the
@@ -245,6 +254,17 @@ Replace unsigned-eight-bit widening loops with `Media.Audio.Pcm16.FromUnsigned8`
 `Pcm16.Encode` and `LegacyFormats.WavePcm16Writer` instead of host-endian WAVE construction.
 `WavePcm16Stream` owns its input by default, supports aligned buffers and looped reads, and exposes
 format metadata for game-specific CDDA admission. Dispose voices before cached resources.
+
+### CddaWave sector ranges
+
+`CddaWave.Write` takes `long` sector values, so a track's `CueBinTrackExtent` passes in without a
+cast. Source that passes `int` values compiles unchanged; rebuild against the new release, since
+code compiled against the `int` signature fails to find the method. A range longer than
+`CddaWave.MaximumSectors` throws `ArgumentOutOfRangeException` before anything is written, where
+the old method threw `OverflowException` above about 913,000 sectors. A range that ends past the
+image now throws `EndOfStreamException` before the header is written instead of after it, and
+null streams throw `ArgumentNullException`. Remove local byte-count checks made before calling it,
+and use `WriteAsync` to cancel a copy mid-track.
 
 ### Overlay installed records
 

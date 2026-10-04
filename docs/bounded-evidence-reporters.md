@@ -987,15 +987,15 @@ fall-through override sends Ghidra to another address, and `null` otherwise, wit
 `notExported` for an edge from an older copy of the script. Such an export writes a redirected
 fall-through as `fallsThrough: false`, so the row reads as one Ghidra does not take: it agrees at a
 `JMP` and counts in `ghidraEndsFunction` at a call. Export again with the packaged script to see
-redirects. The engine's side is what its body reading recorded at the site: it stops at a `JMP`,
-`LJMP`, return or `HLT`, and reads on past every other instruction, including a call, a
-conditional jump, an interrupt and a port access. A row whose site is a transfer outside the frame
+redirects. The row carries the engine's side as `engineReadsOn`, what its body reading recorded at
+the site: `false` at a `JMP`, `LJMP`, return or `HLT`, where it stops, and `true` past every other
+instruction, including a call, a conditional jump, an interrupt and a port access. A row whose site is a transfer outside the frame
 model, or an instruction the engine did not read, carries none of these fields. The two analyses
 disagree on the function's extent in three ways, and each way the row counts against `agreed` and
 its site is no agreement site:
 
 - Ghidra ends the function where the engine reads on (`ghidraFallsThrough` false at a call,
-  conditional jump or interrupt): the callee is one Ghidra treats as non-returning
+  conditional jump, interrupt or port access): the callee is one Ghidra treats as non-returning
   (`CALL_TERMINATOR`), the interrupt is `INT1` or `INT3`, or a user cleared the fall-through.
 - Ghidra continues where the engine stops (`ghidraFallsThrough` true at a `JMP`, `LJMP`, return or
   `HLT`): a user gave the instruction a fall-through.

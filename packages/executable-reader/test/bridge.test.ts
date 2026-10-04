@@ -1106,6 +1106,8 @@ test("the Ghidra cross-check counts a fall-through Ghidra sends to another addre
   const stops = check({ fallsThroughTo: null, fallsThroughToAddress: null });
   assert.equal(stops.edges[0].ghidraFallsThroughTo, null);
   assert.equal(stops.edges[0].ghidraFallsThroughToBasis, "fallsThroughTo");
+  // The engine stops at the jump, and the row says so.
+  assert.equal(stops.edges[0].engineReadsOn, false);
   assert.equal(stops.counts.ghidraFallsThroughElsewhere, 0);
   assert.equal(stops.agreed, true);
 

@@ -292,7 +292,43 @@ A tool that parses the output sees these changes. Existing line prefixes are kep
 
 ## Engine upgrades
 
-Breaking engine releases that need a change in a restoration are listed here, newest first.
+Engine releases that need a change in a restoration are listed here, newest first.
+
+### The Ghidra cross-check rows carry the engine's side
+
+Each `callees` `ghidraCrossCheck` row that carries `ghidraFallsThrough` now also carries
+`engineReadsOn`: `true` where the engine's body reading continues to the next instruction at the
+site and `false` where it stops. A row at a transfer outside the frame model, or at an instruction
+the engine did not read, carries neither field. No result, count or `agreed` value changes. A test
+that compares such a row as a whole adds `engineReadsOn`.
+
+### The Ghidra cross-check reports a redirected fall-through
+
+Engine 7.3.0 shipped this change as a minor release, but a config can fail after you export again
+with the `ExportCallEdges.java` packaged in it. That script writes `fallsThroughTo` and
+`fallsThroughToAddress` on an edge whose fall-through a user's override sends to another address
+than the next instruction, and still writes `fallsThrough: false` there. `callees` with
+`ghidraCallEdges` reads the new fields into each compared row as `ghidraFallsThroughTo` and
+`ghidraFallsThroughToBasis`, and counts the rows with a `ghidraFallsThroughTo` in a new count,
+`counts.ghidraFallsThroughElsewhere`. `agreed` is true only when it is 0, and such a site is no
+agreement site.
+
+An export written by an older copy of the script has no `fallsThroughTo`. Its rows carry
+`ghidraFallsThroughToBasis: "notExported"` and keep their results. After you export again with the
+packaged script:
+
+- A row at a `JMP`, `LJMP`, return or `HLT` with a redirected fall-through used to agree, because
+  the engine stops there and the old export said Ghidra does too. It now counts in
+  `ghidraFallsThroughElsewhere`, `agreed` becomes false, and a `ghidraAgreementSites` control
+  naming the site fails the report.
+- A row at an instruction the engine reads past, such as a call, with a redirected fall-through
+  moves from `ghidraEndsFunction` to `ghidraFallsThroughElsewhere`.
+
+Check the rows with `ghidraFallsThroughTo` set. Where the redirect is a leftover, clear the
+fall-through override in Ghidra and export again. A site you keep the override at stays
+`agreed: false`; remove it from `ghidraAgreementSites` controls. A test that compares `counts` as a
+whole adds `ghidraFallsThroughElsewhere`. A test that compares a row carrying `ghidraFallsThrough` as a
+whole adds `ghidraFallsThroughTo` and `ghidraFallsThroughToBasis`, also for an older export.
 
 ### The Ghidra cross-check compares fall-through at jumps and Ghidra-only edges
 
