@@ -209,8 +209,10 @@ My Game/
 
 `rip-manifest.json` records:
 
-- `disc`: the layout, the volume identifier, each track's start, pregap and length, the SHA-256
-  of the data track's user data from INDEX 01, and the SHA-256 of each audio track's samples
+- `disc`: the layout, the volume identifier (each byte read as the Latin-1 character of the same
+  value without the trailing spaces and NULs, as the .NET `OriginalContentSource.Label` reads it,
+  or `null` when it is all padding), each track's start, pregap and length, the SHA-256 of the
+  data track's user data from INDEX 01, and the SHA-256 of each audio track's samples
   from INDEX 01 to the next track's INDEX 00. These hashes are the same whichever format holds the
   disc, so they are what restorations' fingerprints and the formats are compared by.
 - `profile.checks`: each expectation of the profile and what the disc showed.

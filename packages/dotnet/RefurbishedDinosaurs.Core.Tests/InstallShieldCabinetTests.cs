@@ -159,8 +159,9 @@ public sealed class InstallShieldCabinetTests
                 header, new InstallShieldCabinetLimits(MaximumFiles: 1))).Message);
             Assert.Contains("limit", Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(
                 header, new InstallShieldCabinetLimits(MaximumExpandedBytes: Noise.Length))).Message);
-            Assert.Contains("limit", Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(
-                header, new InstallShieldCabinetLimits(MaximumHeaderBytes: 64))).Message);
+            // A .hdr header is read whole, so its header region is the file.
+            Assert.Contains($"header is {new FileInfo(header).Length} bytes, more than the limit", Assert.Throws<InvalidDataException>(
+                () => OriginalContentSource.OpenInstallShieldCabinet(header, new InstallShieldCabinetLimits(MaximumHeaderBytes: 64))).Message);
             using var exact = OriginalContentSource.OpenInstallShieldCabinet(
                 header, new InstallShieldCabinetLimits(MaximumFiles: 2, MaximumExpandedBytes: Noise.Length + Text.Length));
             Assert.Equal(2, exact.Files.Count);
@@ -325,8 +326,8 @@ public sealed class InstallShieldCabinetTests
             ]));
             using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
             Assert.Equal(["Copy/linked.bin", "original.bin"], source.Files.Select(entry => entry.Path));
-            var skipped = Assert.Single(source.SkippedFiles);
-            Assert.Equal((2, "gone.bin"), (skipped.Index, skipped.Path));
+            Assert.Equal([(2, "gone.bin"), (3, "original.bin")], source.SkippedFiles.Select(file => (file.Index, file.Path)));
+            Assert.Equal("The file shares the data of file 0 at 'original.bin', which is listed.", source.SkippedFiles[1].Reason);
             await using var stream = source.OpenRead("copy/linked.bin");
             Assert.Equal(Noise, await ReadAll(stream));
         }
@@ -340,6 +341,173 @@ public sealed class InstallShieldCabinetTests
         {
             SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(6,
                 [new("Data", "same.bin", Noise), new("data", "SAME.BIN", Text)]));
+            Assert.Contains("two different files",
+                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"))).Message);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(5)]
+    [InlineData(6)]
+    public async Task OpensASetWhoseHeaderIsHeldInADataCabLargerThanTheHeaderLimit(int major)
+    {
+        var root = TemporaryDirectory();
+        try
+        {
+            CabinetFile[] files = [new("Bin", "noise.bin", Noise), new("", "readme.txt", Text, Compressed: false)];
+            var set = SyntheticInstallShieldCabinet.Build(major, files, headerInCabinet: true);
+            Assert.Equal(["data1.cab"], set.Keys);
+            var cabinet = set["data1.cab"];
+            var region = SyntheticInstallShieldCabinet.DescriptorOffset + BinaryPrimitives.ReadInt32LittleEndian(cabinet.AsSpan(16));
+            Assert.True(cabinet.Length > 10 * region);
+            SyntheticInstallShieldCabinet.WriteTo(root, set);
+            var path = Path.Combine(root, "data1.cab");
+
+            // The limit bounds the header region, which is all that is read of the file to open it.
+            var limits = new InstallShieldCabinetLimits(MaximumHeaderBytes: region);
+            using (var source = OriginalContentSource.OpenInstallShieldCabinet(path, limits))
+            {
+                Assert.Equal(["Bin/noise.bin", "readme.txt"], source.Files.Select(entry => entry.Path));
+                await using var stream = source.OpenRead("bin/noise.bin");
+                Assert.Equal(Noise, await ReadAll(stream));
+            }
+            using (var container = OriginalContentSource.OpenDirectory(root))
+            using (var nested = OriginalContentSource.OpenInstallShieldCabinet(container, "DATA1.CAB", limits))
+            await using (var stream = nested.OpenRead("readme.txt"))
+                Assert.Equal(Text, await ReadAll(stream));
+
+            Assert.Contains("header region", Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(
+                path, new InstallShieldCabinetLimits(MaximumHeaderBytes: region - 1))).Message);
+            // A descriptor size that stops short of the file table leaves the table outside the region
+            // read, though the file holds it; the message names the region's size.
+            var shortened = cabinet.ToArray();
+            BinaryPrimitives.WriteInt32LittleEndian(shortened.AsSpan(16), 0x30);
+            File.WriteAllBytes(path, shortened);
+            Assert.Contains($"past the end of the {SyntheticInstallShieldCabinet.DescriptorOffset + 0x30}-byte header region",
+                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(path)).Message);
+            File.WriteAllBytes(path, cabinet[..(region - 10)]);
+            Assert.Contains("truncated",
+                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(path)).Message);
+            File.WriteAllBytes(path, cabinet[..10]);
+            Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(path));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task SkipsALinkToAnEntryWithNoDataAndRefusesADamagedLink()
+    {
+        var root = TemporaryDirectory();
+        try
+        {
+            var set = SyntheticInstallShieldCabinet.Build(6,
+            [
+                new("", "original.bin", Noise),
+                new("", "gone.bin", Text, Invalid: true),
+                new("Copy", "to-gone.bin", [], LinkTo: 1),
+                new("", "empty-offset.bin", Text),
+                new("Copy", "to-empty-offset.bin", [], LinkTo: 3)
+            ]);
+            BinaryPrimitives.WriteUInt64LittleEndian(set["data1.hdr"].AsSpan(Version6Descriptor(set["data1.hdr"], 3) + 0x12), 0);
+            SyntheticInstallShieldCabinet.WriteTo(root, set);
+            using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
+            Assert.Equal(["original.bin"], source.Files.Select(entry => entry.Path));
+            Assert.Equal([1, 2, 3, 4], source.SkippedFiles.Select(file => file.Index));
+            Assert.Equal("Copy/to-gone.bin", source.SkippedFiles[1].Path);
+            Assert.Equal("The file links to file 1, which the cabinet marks invalid.", source.SkippedFiles[1].Reason);
+            Assert.Equal("Copy/to-empty-offset.bin", source.SkippedFiles[3].Path);
+            Assert.Equal("The file links to file 3, which has no data offset.", source.SkippedFiles[3].Reason);
+            await using var stream = source.OpenRead("original.bin");
+            Assert.Equal(Noise, await ReadAll(stream));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+
+        // A link outside the table or a link cycle means the header is damaged, and the open fails.
+        root = TemporaryDirectory();
+        try
+        {
+            var set = SyntheticInstallShieldCabinet.Build(6,
+                [new("", "a.bin", Noise), new("", "b.bin", [], LinkTo: 0), new("", "c.bin", [], LinkTo: 1)]);
+            var header = set["data1.hdr"];
+            var path = Path.Combine(root, "data1.hdr");
+
+            BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(Version6Descriptor(header, 1) + 0x4c), 7);
+            SyntheticInstallShieldCabinet.WriteTo(root, set);
+            Assert.Contains("file 7, which does not exist",
+                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(path)).Message);
+
+            BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(Version6Descriptor(header, 1) + 0x4c), 0);
+            BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(Version6Descriptor(header, 0) + 0x4c), 2);
+            header[Version6Descriptor(header, 0) + 0x54] = 1;
+            SyntheticInstallShieldCabinet.WriteTo(root, set);
+            Assert.Contains("link cycle",
+                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(path)).Message);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task ListsOneOfTwoIdenticalVersion6EntriesAtOnePath()
+    {
+        var root = TemporaryDirectory();
+        try
+        {
+            SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(6,
+                [new("Data", "same.bin", Noise), new("data", "SAME.BIN", Noise), new("Data", "other.bin", Text)]));
+            using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
+            Assert.Equal(["Data/other.bin", "Data/same.bin"], source.Files.Select(entry => entry.Path));
+            var skipped = Assert.Single(source.SkippedFiles);
+            Assert.Equal((1, "data/SAME.BIN"), (skipped.Index, skipped.Path));
+            Assert.Equal("The file duplicates file 0 at 'Data/same.bin': same expanded size and MD5.", skipped.Reason);
+            await using var stream = source.OpenRead("data/same.bin");
+            Assert.Equal(Noise, await ReadAll(stream));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+
+        // The duplicate's extent is not followed, so one whose data offset lies past its volume is skipped.
+        root = TemporaryDirectory();
+        try
+        {
+            var set = SyntheticInstallShieldCabinet.Build(6, [new("Data", "same.bin", Noise), new("Data", "same.bin", Noise)]);
+            BinaryPrimitives.WriteUInt64LittleEndian(set["data1.hdr"].AsSpan(Version6Descriptor(set["data1.hdr"], 1) + 0x12), 0x7fff_ffff);
+            SyntheticInstallShieldCabinet.WriteTo(root, set);
+            using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
+            Assert.Equal(["Data/same.bin"], source.Files.Select(entry => entry.Path));
+            Assert.Equal(1, Assert.Single(source.SkippedFiles).Index);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(5, 7)]
+    [InlineData(6, 8)]
+    public void RefusesDuplicateEntriesAtOnePathThatAreNotShownIdentical(int major, int secondSeed)
+    {
+        // Version 5 records no MD5, so identical bytes still fail; in version 6 the MD5s differ.
+        var root = TemporaryDirectory();
+        try
+        {
+            SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(major,
+                [new("Data", "same.bin", Noise), new("Data", "same.bin", Bytes(Noise.Length, secondSeed))]));
             Assert.Contains("two different files",
                 Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"))).Message);
         }
@@ -394,6 +562,15 @@ public sealed class InstallShieldCabinetTests
         {
             Directory.Delete(root, true);
         }
+    }
+
+    // The offset of a version 6 file descriptor in a header.
+    private static int Version6Descriptor(byte[] header, int index)
+    {
+        var table = SyntheticInstallShieldCabinet.DescriptorOffset +
+                    BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(SyntheticInstallShieldCabinet.DescriptorOffset + 0x0c));
+        return table + BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(SyntheticInstallShieldCabinet.DescriptorOffset + 0x2c)) +
+               index * 0x57;
     }
 
     // Points the only member's expanded size at another value.
