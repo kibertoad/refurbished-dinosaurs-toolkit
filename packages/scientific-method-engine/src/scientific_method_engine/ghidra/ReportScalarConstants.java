@@ -1,5 +1,5 @@
-// Reports bounded instruction references to explicitly supplied scalar values, as immediates or as
-// memory-operand displacements.
+// Reports bounded instruction references to explicitly supplied scalar values, as immediates or
+// inside memory operands (a displacement, or the scale of an index such as the 4 in [EBX + ECX*4]).
 // @category Restoration
 
 import ghidra.app.script.GhidraScript;
@@ -61,9 +61,9 @@ public class ReportScalarConstants extends GhidraScript {
         else println("Matched " + matches + " operands; the search covered every instruction.");
     }
 
-    // A displacement inside a memory operand, such as [ECX + 0x44], is a memory operand. Any other
-    // scalar is an immediate, including one Ghidra marks as an address because it points into the
-    // program (PUSH 0x41c000 to a string).
+    // A scalar inside a memory operand, such as the displacement in [ECX + 0x44] or the scale in
+    // [EBX + ECX*4], is a memory operand. Any other scalar is an immediate, including one Ghidra
+    // marks as an address because it points into the program (PUSH 0x41c000 to a string).
     private static String operandKind(int type) {
         return OperandType.isDynamic(type) || OperandType.isIndirect(type) ? "memory" : "immediate";
     }

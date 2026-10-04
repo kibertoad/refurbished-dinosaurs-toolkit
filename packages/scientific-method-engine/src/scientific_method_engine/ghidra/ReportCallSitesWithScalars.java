@@ -1,7 +1,7 @@
 // Reports bounded call sites whose preceding argument setup contains requested immediates.
 // The setup is the run of instructions that falls through to the call, up to 12 instructions. It
-// ends after an instruction a jump or call reaches, before one that does not fall through, and before
-// an earlier call. Only immediate operands match; a memory operand's displacement, such as the 8 in
+// ends after a function entry or an instruction a jump or call reaches, before one that does not
+// fall through, and before an earlier call. Only immediate operands match; a memory operand's displacement, such as the 8 in
 // PUSH [EBP+8], is no argument value.
 // @category Restoration
 
@@ -88,7 +88,9 @@ public class ReportCallSitesWithScalars extends GhidraScript {
         return setup;
     }
 
+    // A function entry counts too: a callback or table entry reaches it without a reference Ghidra recorded.
     private boolean isFlowTarget(Instruction instruction) {
+        if (currentProgram.getFunctionManager().getFunctionAt(instruction.getAddress()) != null) return true;
         ReferenceIterator references = currentProgram.getReferenceManager().getReferencesTo(instruction.getAddress());
         while (references.hasNext()) {
             if (references.next().getReferenceType().isFlow()) return true;

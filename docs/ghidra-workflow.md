@@ -35,9 +35,11 @@ or load. The exit code alone accepts an empty run. Treat a run as evidence only 
   about one input rejects only that input: `ReportFunctionSummary` prints an error for each
   requested address without a function or with a failed decompile, and still summarizes the
   others;
-- each script printed its own result lines. Report scripts end with a count, a summary or an
-  explicit "no match" line. Export scripts write their file only when the walk completes, so a
-  missing file means the export failed;
+- each script printed its own result lines. Most report scripts end with a count, a summary or an
+  explicit "no match" line; the ones that list rows without a closing line (`ReportCallArguments`,
+  `ReportInstructionWindow`, `ReportDataBytes`, `ReportSymbolReferences` with matches) show their
+  run through a header or the rows themselves. Export scripts write their file only when the walk
+  completes, so a missing file means the export failed;
 - every address you asked about has its own result. `ReportFunctionSummary` ends with the addresses
   that had no function or failed to decompile. A run that summarized some of the requested
   functions does not cover the others, such as a callback target Ghidra never made a function.
@@ -80,8 +82,8 @@ next to any "no callers", "no references" or "exactly N sites" claim:
 - The first-argument scripts take the nearest `PUSH` before the call. A value moved into a
   register after the last push (`PUSH ESI; MOV ESI,0x23; CALL`) is not the first stack argument;
   if the callee reads it, it is a register argument, and the scripts list the call as non-literal.
-  A store through the stack pointer between the push and the call (`MOV [ESP],EAX`) can replace the
-  pushed value, so the look-back stops there and the call is non-literal too.
+  A store through the stack pointer between the push and the call (`MOV [ESP],EAX`, or
+  `LEA EAX,[ESP]` then `MOV [EAX],ECX`) can replace the pushed value, so the call is non-literal too.
 - Ghidra spells a repeat-prefixed string instruction with a suffix: `MOVSD.REP`, `CMPSB.REPE`,
   `SCASB.REPNE`. A search for the bare mnemonic misses them.
 - `ReportSymbolReferences` matches each fragment as a case-insensitive substring of a symbol's
