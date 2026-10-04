@@ -56,6 +56,12 @@ The engine has 210 Python tests (`test_x86.py` 160, `test_pe.py` 33, `test_effec
    never executes original programs, and Unicorn does not ship in the package's runtime
    dependencies.
 
+   Exception: INT1 (`F1`, ICEBP) has no oracle case, because Unicorn rejects `F1` as an invalid
+   instruction. The engine reports the vector p-code's `swi` operation names for it, as for the
+   other interrupts. `Interrupts.test_int1_vector_without_an_oracle` in `tests/test_oracle.py`
+   asserts that vector (1), so a SLEIGH or pypcode change that names another fails, and it fails
+   too once Unicorn runs `F1`, at which point INT1 gets an ordinary oracle case.
+
 5. **Replacement is gated by a differential comparison.** During the transition both backends run
    behind one interface. A mnemonic group moves to pypcode only when, for every synthetic case that
    exercises it, the reports agree or every difference is classified and accepted (see

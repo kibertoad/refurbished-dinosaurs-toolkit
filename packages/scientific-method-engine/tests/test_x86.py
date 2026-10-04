@@ -1058,6 +1058,13 @@ class HardwareBoundaryTests(unittest.TestCase):
         r = run_report(data, configuration(data, query={"offset": 0x200, "width": 2}, controls=[4]), "uses")
         self.assertEqual([e["site"] for e in r["matches"]], [4])
 
+    def test_entry_walk_follows_a_port_access_in_the_real_mode_model(self):
+        # mov dx, 0x3c8; out dx, al; call t; ret; t: ret
+        data = bytes.fromhex("ba c8 03 ee e8 01 00 c3 c3")
+        r = run_report(data, configuration(data, target=8, controls=[4]), "incoming")
+        self.assertEqual([x["site"] for x in r["confirmed"]], [4])
+        self.assertEqual(r["gaps"], [])
+
     def test_two_reads_of_one_port_are_distinct_unknowns(self):
         r = report("e4 60 88 c3 e4 60 c3")
         first, second = self.boundaries(r, "port-input")

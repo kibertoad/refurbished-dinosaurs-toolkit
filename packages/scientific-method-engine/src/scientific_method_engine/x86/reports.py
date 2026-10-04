@@ -277,15 +277,21 @@ def uses(image, config):
     # reading one callee later shows exactly which accesses depended on it.
     reported = {(e["site"], e["kind"]) for e in matches + unresolved}
     instruction_limit = config.get("instructionLimit", 10000)
-    after_stop, stop_gaps, _, _, _ = walk(image, list(stops), instruction_limit) if stops else ({}, [], None, None, None)
+    # This inventory assumes execution continues past each stop, so it also follows PE32 port accesses
+    # and names each one below.
+    after_stop, stop_gaps, _, _, _ = (walk(image, list(stops), instruction_limit, follow_flat_ports=True)
+                                      if stops else ({}, [], None, None, None))
     gaps.extend(g for g in stop_gaps if g["reason"] == "instruction limit")
     # A call past a stop was never traced either, so code after it also depends on it returning.
     starts = [(root, root, reason) for root, reason in stops.items()]
     starts += [(at, at + ins.size, "call past a stop; assumed to return")
                for at, ins in after_stop.items() if ins.mnemonic in ("call", "lcall") and at not in stops]
+    if image.flat:
+        starts += [(at, at + ins.size, "port access past a stop; assumed to continue")
+                   for at, ins in after_stop.items() if base_mnemonic(ins) in PORTS and at not in stops]
     depends = {}
     for site, start, reason in sorted(starts):
-        reached, _, _, _, _ = walk(image, [start], instruction_limit)
+        reached, _, _, _, _ = walk(image, [start], instruction_limit, follow_flat_ports=True)
         for at in reached:
             depends.setdefault(at, []).append({"site": site, "reason": reason})
     conditional = []
@@ -343,7 +349,8 @@ def uses(image, config):
                 break
             scanned_bytes += 1
             ins = image.decode(at)
-            if ins and at not in seen and any(o.type == X86_OP_MEM and max(offset, o.mem.disp & image.mask) < min(offset + width, (o.mem.disp & image.mask) + max(o.size, 1))
+            # An instruction the walk past a stop decoded (one past a PE32 port access) is already inventoried above.
+            if ins and at not in seen and at not in after_stop and any(o.type == X86_OP_MEM and max(offset, o.mem.disp & image.mask) < min(offset + width, (o.mem.disp & image.mask) + max(o.size, 1))
                                               for o in ins.operands):
                 if len(raw) < result_limit:
                     raw.append({"site": at, "size": ins.size, "classification": "unverified operand candidate"})

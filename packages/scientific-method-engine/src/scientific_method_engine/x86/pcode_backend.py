@@ -21,7 +21,7 @@ object, so a value this module stores must live on the ``State`` to be copied wi
 """
 from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
 
-from .machine import ALIASES, StopPath
+from .machine import ALIASES, StopPath, FLAT_PORT_REASON
 from .pcode import LIFTER, Address, Run, FLAGS, SEGMENT_BASES, segment_base
 from .values import Value, const, unknown, op, extract, join, resize, sources
 
@@ -945,7 +945,7 @@ def port_access(state, ins, direction, port, value, size):
                 state.conditional.append(assumption)
         state.event("hardware-boundary", **fields, value=result.report(), interpretation=INPUT_MEANING)
     if state.flat:
-        raise StopPath("port access in the flat model depends on I/O privilege, which is not modeled")
+        raise StopPath(FLAT_PORT_REASON)
     return result
 
 

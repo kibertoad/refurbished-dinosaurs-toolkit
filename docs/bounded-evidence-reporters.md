@@ -186,9 +186,9 @@ explicit memory operands reached by the entry CFG are still inventoried, in
 `conditionalAccesses` rather than `matches`, with unknown values and segment state.
 Their default or overridden segment-register name is retained. Each one's
 `dependsOn` names the stops whose CFG reaches it (an unread call, an unsupported
-instruction, an exhausted budget) and every call it is reached past, since those
-calls were never traced either. Once a named callee has been read, those are the
-accesses to re-check. Reachability is conditional on encoded guards and on
+instruction, an exhausted budget) and every call, and in the PE32 model every
+port access, it is reached past, since those were never traced either. Once a
+named callee has been read, those are the accesses to re-check. Reachability is conditional on encoded guards and on
 execution continuing past every named stop; these observations do not prove callee
 preservation, effective-address values, or feasible native execution. A concrete
 segment query marks their `address` as a possible alias. They still satisfy a
@@ -497,8 +497,14 @@ or `write`: INS and OUTS also report the RAM access of each iteration as its own
 `write` or `read` with role `string-destination` or `string-source`, and the
 `memory` report keeps RAM accesses only. In the PE32 model the path stops after
 the event, because I/O privilege decides whether the access faults, and
-`portInputs` is rejected. The entry-path walk behind `uses`, `incoming` and the
-operand inventories also continues past a port access.
+`portInputs` is rejected. The entry-path walk behind `uses`, `incoming`, `target`
+and the operand inventories continues past a port access in the real-mode model.
+In the PE32 model it records a gap at the access with the same reason and claims
+nothing after it: a call reached only past a port access is a raw candidate in
+`incoming` and `target`, and an operand there is `unresolvedBoundary` in
+`operand-candidates`. The `uses` inventory past a stop still lists explicit
+memory operands after a PE32 port access in `conditionalAccesses`, and their
+`dependsOn` names each port access they are reached past.
 
 INT, INT1 and INT3 add a `hardware-boundary` event with `boundary: "interrupt"`
 and the `vector` p-code names, then stop the path, since the handler is not
