@@ -729,6 +729,32 @@ test("argument frames map pushed words onto the callee's read widths through the
   assert.equal(r.argumentFrameSites[0].agreed, true);
 });
 
+test("an argument slot names a possibly aliasing store that dropped nothing, as the callee's read does", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // sub sp,2; mov [bx],al; call 76; add sp,2; ret; at 76: push bp; mov bp,sp; mov ax,[bp+4]; pop bp; ret
+  const code = [0x83, 0xec, 2, 0x88, 7, 0xe8, 4, 0, 0x83, 0xc4, 2, 0xc3, 0x55, 0x89, 0xe5, 0x8b, 0x46, 4, 0x5d, 0xc3];
+  data.set(code, 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const cfg = { ...config, xxh3: sourceXxh3(data), regions: [{ ...config.regions[0]!, entries: [64, 76] }] };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  // DS, BX, SS and SP are unknown, so the store at 67 may alias the slot nothing wrote.
+  const frame = run(["arguments", join(dir, "config.json")]).paths[0].argumentFrames[0];
+  assert.deepEqual(
+    frame.slots.map((s: Report) => [s.offset, s.width, s.writerSite, s.reason]),
+    [[0, 2, null, "memory possibly overwritten through another address by the write at 67"]],
+  );
+  assert.equal(frame.settledOnThisPath, false);
+  const events = run(["trace", join(dir, "config.json")]).paths[0].events;
+  const store = events.find((e: Report) => e.kind === "write" && e.site === 67);
+  assert.equal(store.uncertainAliasesInvalidated + store.uncertainScopeBytesInvalidated, 0);
+  const read = events.find((e: Report) => e.kind === "read" && e.argument);
+  assert.deepEqual(
+    read.byteProducers.map((b: Report) => b.unwritten),
+    [0, 1].map(() => ({ cause: "possibly written by an aliasing write", order: store.order })),
+  );
+});
+
 test("the Ghidra cross-check reports an interrupt Ghidra lifts to a call as an interrupt row", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);
@@ -1321,11 +1347,11 @@ test("explicit memory scopes join nested frames through the real MZ prepared bri
   );
 });
 
-test("a possibly aliasing write counts dropped values apart from dropped unread scope bytes", (t) => {
+test("a possibly aliasing write counts and reports dropped values apart from dropped unread scope bytes", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(20, 28);
-  // mov word [1000h],1234h; call service; mov byte [bx],1; ret; service: ret
-  data.set([0xc7, 0x06, 0, 0x10, 0x34, 0x12, 0xe8, 4, 0, 0xc6, 0x07, 1, 0xc3, 0xc3], 64);
+  // mov word [1000h],1234h; call service; mov byte [bx],1; mov ax,[1000h]; mov ax,[1002h]; ret; service: ret
+  data.set([0xc7, 0x06, 0, 0x10, 0x34, 0x12, 0xe8, 10, 0, 0xc6, 0x07, 1, 0xa1, 0, 0x10, 0xa1, 2, 0x10, 0xc3, 0xc3], 64);
   writeFileSync(join(dir, "source.bin"), data);
   // DS:[BX] holds the stored word in two of its six bytes; the model has no value for the other four.
   const scope = { segment: "ds", base: "bx", bytes: 6, evidence: "synthetic service keeping DS:[BX]" };
@@ -1336,23 +1362,42 @@ test("a possibly aliasing write counts dropped values apart from dropped unread 
       JSON.stringify({
         ...config,
         xxh3: sourceXxh3(data),
-        regions: [{ ...config.regions[0]!, end: 78 }],
+        regions: [{ ...config.regions[0]!, end: 84 }],
         registers: { ds: 0x2000, ss: 0x3000, sp: 0xff00, bx: 0x1000 },
         callModels: [model],
       }),
     );
-    const r = run(["effects", join(dir, "config.json")]);
+    const r = run(["trace", join(dir, "config.json")]);
     assert.equal(r.completeWithinModel, true);
-    return r.paths[0].events.find((e: Report) => e.kind === "write" && e.site === 73);
+    const events = r.paths[0].events;
+    const read = (site: number) => events.find((e: Report) => e.kind === "read" && e.site === site);
+    return { write: events.find((e: Report) => e.kind === "write" && e.site === 73), read };
   };
   // The model leaves BX unknown, so the store may alias every scoped byte.
   const dropped = store(["ds", "ss"]);
-  assert.equal(dropped.uncertainAliasesInvalidated, 2);
-  assert.equal(dropped.uncertainScopeBytesInvalidated, 4);
+  assert.equal(dropped.write.uncertainAliasesInvalidated, 2);
+  assert.equal(dropped.write.uncertainScopeBytesInvalidated, 4);
+  // The stored word loses its value. The bytes kept without a value lose none, and the store may
+  // have written them.
+  const cause = { order: dropped.write.order };
+  assert.deepEqual(
+    dropped.read(76).byteProducers.map((b: Report) => b.unwritten),
+    [
+      { cause: "dropped by a possibly aliasing write", ...cause },
+      { cause: "dropped by a possibly aliasing write", ...cause },
+    ],
+  );
+  assert.deepEqual(
+    dropped.read(79).byteProducers.map((b: Report) => b.unwritten),
+    [
+      { cause: "possibly written by an aliasing write", ...cause },
+      { cause: "possibly written by an aliasing write", ...cause },
+    ],
+  );
   // With BX preserved the store names one scoped byte and drops nothing.
   const kept = store(["ds", "ss", "ebx"]);
-  assert.equal(kept.uncertainAliasesInvalidated, 0);
-  assert.equal(kept.uncertainScopeBytesInvalidated, 0);
+  assert.equal(kept.write.uncertainAliasesInvalidated, 0);
+  assert.equal(kept.write.uncertainScopeBytesInvalidated, 0);
 });
 
 test("relational controls pass through preparation and fail, hold or stay undecided in the engine", (t) => {
