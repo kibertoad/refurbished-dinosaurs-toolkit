@@ -1201,7 +1201,8 @@ def _ghidra_cross_check(image, export, nodes, outgoing, omitted):
     for caller in compared:
         ours = outgoing.get(caller, [])
         theirs = callers[caller]
-        instructions, flow = nodes[caller]["body"]["instructions"], nodes[caller]["body"]["flow"]
+        flow = nodes[caller]["body"]["flow"]
+        interrupts = {h["site"] for h in nodes[caller]["body"]["hardwareBoundaries"] if h["boundary"] == "interrupt"}
         # A call neither analysis resolved matches on its site with no target.
         matches = {_ghidra_key(g): g for g in theirs if g["site"] is not None}
         read = {(e["site"], e["target"]) for e in ours}
@@ -1215,8 +1216,7 @@ def _ghidra_cross_check(image, export, nodes, outgoing, omitted):
         for g in theirs:
             if g["site"] is not None and _ghidra_key(g) in read:
                 continue
-            ins = instructions.get(g["site"])
-            if ins is not None and base_mnemonic(ins) in INTERRUPTS and _ghidra_key(g)[1] is None:
+            if g["site"] in interrupts and _ghidra_key(g)[1] is None:
                 # SLEIGH lifts INT, INT1, INT3 and INTO to a computed call with no target, while the engine assumes the
                 # interrupt returns to the next instruction and records no edge. At INT1 and INT3 Ghidra's flow is a
                 # terminator that ends the function there.
@@ -1299,7 +1299,7 @@ def call_order(image, config):
         for at, ins in instructions.items():
             ending.setdefault(at + ins.size, []).append(at)
         for at, ins in instructions.items():
-            m, following = base_mnemonic(ins), at + ins.size
+            following = at + ins.size
             # body() recorded each instruction's jump or branch targets and whether it read on to the next instruction.
             step = b["flow"][at]
             targets = step["targets"] + ([following] if step["readsOn"] else [])
@@ -1307,6 +1307,7 @@ def call_order(image, config):
                 # A conditional branch: a named target and the fall-through.
                 target = step["targets"][0]
                 if target != following:
+                    m = base_mnemonic(ins)
                     producer = ending.get(at, []) if m not in COUNT_BRANCHES and at != entry else []
                     comparison = instructions[producer[0]] if len(producer) == 1 else None
                     context = ({"site": producer[0], "mnemonic": comparison.mnemonic,
