@@ -786,6 +786,61 @@ test("the Ghidra cross-check takes an exported fallsThrough over the flow name a
   assert.equal(check.agreed, false);
 });
 
+test("the Ghidra cross-check counts an agreed call Ghidra ends the function at against agreed", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // call 68; ret; at 68: ret. Both analyses have the call; the engine reads the ret after it.
+  data.set([0xe8, 1, 0, 0xc3, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const sha256 = createHash("sha256").update(data).digest("hex");
+  const exportWith = (call: Record<string, unknown>) => ({
+    format: "scientific-method-ghidra-call-edges",
+    version: 1,
+    sha256,
+    functionLimit: 8,
+    missingEntries: [],
+    unreadFunctions: [],
+    functions: [
+      {
+        entry: 64,
+        address: "1000:0040",
+        edges: [{ site: 64, siteAddress: "1000:40", target: 68, targetAddress: "1000:44", ...call }],
+      },
+      { entry: 68, address: "1000:0044", edges: [] },
+    ],
+  });
+  const check = (call: Record<string, unknown>) => {
+    const cfg = {
+      ...config,
+      xxh3: sourceXxh3(data),
+      regions: [{ ...config.regions[0]!, entries: [64, 68] }],
+      ghidraCallEdges: exportWith(call),
+    };
+    writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+    return run(["callees", join(dir, "config.json")]).ghidraCrossCheck;
+  };
+
+  const continues = check({ flow: "UNCONDITIONAL_CALL", fallsThrough: true });
+  assert.equal(continues.edges[0].result, "agreement");
+  assert.equal(continues.edges[0].ghidraFallsThrough, true);
+  assert.equal(continues.counts.ghidraEndsFunction, 0);
+  assert.equal(continues.agreed, true);
+
+  // A user cleared the call's fall-through in Ghidra.
+  const ends = check({ flow: "UNCONDITIONAL_CALL", fallsThrough: false });
+  assert.equal(ends.edges[0].result, "agreement");
+  assert.equal(ends.edges[0].ghidraFallsThrough, false);
+  assert.equal(ends.edges[0].ghidraFallsThroughBasis, "fallsThrough");
+  assert.equal(ends.counts.ghidraEndsFunction, 1);
+  assert.equal(ends.agreed, false);
+
+  // An export from an older copy of the script, without fallsThrough, is read by the flow name.
+  const older = check({ flow: "CALL_TERMINATOR" });
+  assert.equal(older.edges[0].ghidraFallsThrough, false);
+  assert.equal(older.edges[0].ghidraFallsThroughBasis, "flowName");
+  assert.equal(older.agreed, false);
+});
+
 test("operand candidates preserve prefixed widths and reject interior starts through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);

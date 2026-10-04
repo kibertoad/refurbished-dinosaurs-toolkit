@@ -294,6 +294,31 @@ A tool that parses the output sees these changes. Existing line prefixes are kep
 
 Breaking engine releases that need a change in a restoration are listed here, newest first.
 
+### The Ghidra cross-check compares fall-through at calls
+
+`callees` with `ghidraCallEdges` used to count a call both analyses have as an agreement whatever the
+export's `fallsThrough` said. A call where Ghidra ends the function, because it treats the callee as
+non-returning (`CALL_TERMINATOR`) or a user cleared the call's fall-through, now counts against
+`ghidraCrossCheck.agreed`, as an interrupt that ends the function already did:
+
+- Each call `agreement` row carries `ghidraFallsThrough` and `ghidraFallsThroughBasis`, read from the
+  export's `fallsThrough` or, for an export without it, from whether the flow name contains
+  `TERMINATOR`.
+- `counts.ghidraEndsFunction` counts the call and `interrupt` rows whose `ghidraFallsThrough` is
+  false. `agreed` is true only when it is 0.
+- A call site where Ghidra ends the function is no agreement site, so a `ghidraAgreementSites`
+  control naming it fails the report.
+
+A config whose cross-check agreed before can now report `agreed: false` or fail its
+`ghidraAgreementSites` control. Check the rows with `ghidraFallsThrough: false`. Where the callee
+returns, fix the function in Ghidra (clear its no-return flag or the fall-through override) and
+export again. Where it does not return, the engine's reading past the call is the disagreement, and
+the report stays `agreed: false`. Remove the site from `ghidraAgreementSites` controls. A test that
+compares `counts` as a whole adds `ghidraEndsFunction`. Exports written by copies of
+`ExportCallEdges.java` without `fallsThrough` still miss a cleared fall-through on an
+`UNCONDITIONAL_CALL`; export again with the packaged script (`ghidraFallsThroughBasis: "flowName"`
+marks such rows).
+
 ### Preserved memory scopes appear once per modeled call
 
 A modeled call's `preservedMemoryScopes` descriptions are now reported only on the path's
