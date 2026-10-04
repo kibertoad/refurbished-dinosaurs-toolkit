@@ -191,6 +191,66 @@ public sealed class CoreTests
     }
 
     [Fact]
+    public void ImageDecodersShareTheDefaultPixelLimit()
+    {
+        Assert.Equal(4096 * 4096, ImageLimits.DefaultMaximumPixels);
+        var palette = new byte[IndexedPalette.ByteSize];
+
+        // 4097x4096 is one column past the default; 4096x4096 is at it and fails later on its pixel count.
+        var rawOver = Assert.Throws<InvalidDataException>(() => RawIndexedImageDecoder.Decode([0], palette, 4097, 4096));
+        Assert.Contains("pixel limit", rawOver.Message);
+        var rawAt = Assert.Throws<InvalidDataException>(() => RawIndexedImageDecoder.Decode([0], palette, 4096, 4096));
+        Assert.DoesNotContain("pixel limit", rawAt.Message);
+
+        var pcxOver = Assert.Throws<InvalidDataException>(() => PcxDecoder.Decode(Pcx(4097, 4096, 4098, [])));
+        Assert.Contains("pixel limit", pcxOver.Message);
+        var pcxAt = Assert.Throws<InvalidDataException>(() => PcxDecoder.Decode(Pcx(4096, 4096, 4096, [])));
+        Assert.DoesNotContain("pixel limit", pcxAt.Message);
+        var pcxRaised = Assert.Throws<InvalidDataException>(
+            () => PcxDecoder.Decode(Pcx(4097, 4096, 4098, []), maximumPixels: int.MaxValue));
+        Assert.DoesNotContain("pixel limit", pcxRaised.Message);
+    }
+
+    [Fact]
+    public void IndexedImageDimensionsPastIntRangeHitThePixelLimit()
+    {
+        var palette = new byte[IndexedPalette.ByteSize];
+        var raw = Assert.Throws<InvalidDataException>(
+            () => RawIndexedImageDecoder.Decode([0], palette, 65536, 65536, maximumPixels: int.MaxValue));
+        Assert.Contains("pixel limit", raw.Message);
+        var pcx = Assert.Throws<InvalidDataException>(
+            () => PcxDecoder.Decode(Pcx(65535, 65536, 65535, []), maximumPixels: int.MaxValue));
+        Assert.Contains("pixel limit", pcx.Message);
+        Assert.Throws<ArgumentOutOfRangeException>(() => PcxDecoder.Decode([], maximumPixels: -1));
+    }
+
+    [Fact]
+    public void PcxDecodesRunsAcrossScanlinePaddingWithinThePixelLimit()
+    {
+        // 3x2 with 4-byte scanlines: a run of five 7s fills row 0 and its padding and starts row 1.
+        var image = PcxDecoder.Decode(Pcx(3, 2, 4, [0xC5, 7, 1, 2, 9]));
+        Assert.Equal([7, 7, 7, 7, 1, 2], image.Indices);
+
+        // One pixel per row with 65,535-byte scanlines stays within the limit and allocates no scanline buffer.
+        var padded = Pcx(1, 32768, 65535, []);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        Assert.Throws<InvalidDataException>(() => PcxDecoder.Decode(padded));
+        Assert.True(GC.GetAllocatedBytesForCurrentThread() - before < 1024 * 1024);
+    }
+
+    private static byte[] Pcx(int width, int height, int bytesPerLine, byte[] pixelStream)
+    {
+        var file = new byte[128 + pixelStream.Length + 1 + IndexedPalette.ByteSize];
+        file[0] = 0x0A; file[2] = 1; file[3] = 8; file[65] = 1;
+        BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(8), (ushort)(width - 1));
+        BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(10), (ushort)(height - 1));
+        BinaryPrimitives.WriteUInt16LittleEndian(file.AsSpan(66), (ushort)bytesPerLine);
+        pixelStream.CopyTo(file.AsSpan(128));
+        file[128 + pixelStream.Length] = 0x0C;
+        return file;
+    }
+
+    [Fact]
     public void SmackerIndexAndFrameSegmentsAreBounded()
     {
         var source = SyntheticSmacker();
