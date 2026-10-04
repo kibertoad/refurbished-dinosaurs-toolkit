@@ -23,7 +23,8 @@ Used in place from this repository:
 
 - `actions/`: composite GitHub Actions for repository verification, the
   documentation standard check, a pinned, signature-checked Inno Setup 7
-  compiler, and a pinned, hash-checked Kaitai Struct compiler. See [the actions reference](docs/actions.md).
+  compiler, a pinned, hash-checked Kaitai Struct compiler, and verified software OpenGL for
+  Windows smoke tests. See [the actions reference](docs/actions.md).
 - `tools/Verify-Repository.ps1`: configurable legal-boundary and repository-size
   enforcement used before builds and releases.
 - `schemas/`: JSON schemas for the asset and repository policy contracts.
