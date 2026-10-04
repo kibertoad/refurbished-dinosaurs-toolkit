@@ -82,6 +82,12 @@ Engine `effects` reports retain ordered effect-path summaries through the prepar
 bridge, including writes before returning-service failures and explicit unknown
 child effects. A local restoration witness never claims external transactionality.
 
+Call models in a config may carry `preservesMemory`, explicit byte scopes the query assumes a
+modeled service leaves unchanged. The reader passes them to the engine as part of the prepared
+config, which is why this reader speaks prepared protocol 3 and needs an engine that does too. The
+engine documents the fields, limits and reports in
+[the reporter guide](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#limits-and-assumptions).
+
 ## Licence
 
 MIT. `NOTICE.md` records the template code the MZ/FBOV loader is adapted from.

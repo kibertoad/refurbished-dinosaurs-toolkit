@@ -1592,13 +1592,13 @@ class ReporterTests(unittest.TestCase):
             (root/"fixture.bin").write_bytes(data)
             cfg = configuration(data, source=str(root/"fixture.bin"), xxh3=xxhash.xxh3_128_hexdigest(data))
             stdin = [*ENGINE, "trace", "-"]
-            for protocol, accepted in ((None, False), (1, False), (2, True)):
+            for protocol, accepted in ((None, False), (1, False), (2, False), (3, True)):
                 prepared = dict(cfg) if protocol is None else {**cfg, "preparedProtocol": protocol}
                 result = subprocess.run(stdin, input=json.dumps(prepared), capture_output=True, text=True, env=ENGINE_ENV)
                 self.assertEqual(result.returncode, 0 if accepted else 1, result.stderr)
                 if not accepted:
                     self.assertIn("protocol", result.stderr)
-            path = root/"config.json"; path.write_text(json.dumps({**cfg, "preparedProtocol": 2}))
+            path = root/"config.json"; path.write_text(json.dumps({**cfg, "preparedProtocol": 3}))
             result = subprocess.run([*ENGINE, "trace", str(path)], capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 1)
             self.assertIn("set by the reader", result.stderr)

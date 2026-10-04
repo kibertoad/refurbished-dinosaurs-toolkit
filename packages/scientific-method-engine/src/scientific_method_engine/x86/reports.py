@@ -591,7 +591,10 @@ def allocations(report, config):
                                 "orderedWrites": [e for e in path["events"][event["order"]+1:] if e["kind"] == "write"],
                                 "arithmetic": [e for e in path["events"] if e["kind"] == "arithmetic"],
                                 "guards": path["guards"], "pathStop": path["stop"],
-                                "allocatorEffects": "conditional model; memory unresolved" if returns and returns.get("modeled") else "see path writes and unresolved exits",
+                                "allocatorEffects": ("see path writes and unresolved exits" if not (returns and returns.get("modeled")) else
+                                                     "conditional model; memory unresolved outside its preservedMemoryScopes" if returns.get("preservedMemoryScopes") else
+                                                     "conditional model; memory unresolved"),
+                                "preservedMemoryScopes": returns.get("preservedMemoryScopes", []) if returns else [],
                                 "extentObservation": extent, "pointerObservation": pointer, "writeComparisons": comparisons,
                                 "observedExtentBytes": capacity,
                                 "capacity": "conditional on evidenced extent units and pointer identity" if extent else "unresolved: request units and bounded writes do not establish allocated extent",

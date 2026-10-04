@@ -238,6 +238,24 @@ so upgrade both together. Reports from these releases differ from earlier ones i
 `ghidraCallEdges` exports keep their `sha256`: `ExportCallEdges.java` records the SHA-256 Ghidra
 holds for the program, and the engine compares it with the source's.
 
+## Prepared-config protocol 3: scoped memory on call models
+
+The reader and the engine moved from prepared protocol 2 to 3 when call models gained
+`preservesMemory` ([ADR 0009](decisions/0009-scoped-memory-hypotheses-on-call-models.md)). A
+protocol 3 reader and a protocol 2 engine refuse each other, and so do the reverse pair, with an
+error naming both packages. Upgrade `@scientific-method/executable-reader` and
+`scientific-method-engine` to their protocol 3 majors in the same change. Nothing accepts the old
+number.
+
+Existing configs need no change. A model without `preservesMemory` invalidates memory as before, so
+a nested return through it still stops on an unknown return target. To join such a child to its
+parent, declare the saved frame explicitly, for example
+`{ "segment": "ss", "base": "sp", "bytes": 4, "evidence": "..." }` for a saved BP and near return
+address pushed before the call, with evidence for why the service keeps them. For MZ, the model must
+also list `ss` in `preserves`; the engine rejects a scope whose segment register the model replaces.
+Listing `ebp` or `esp` in `preserves` does not keep the frame bytes. A report that relies on a scope
+states it in `preservedMemoryScopes`; cite that hypothesis wherever the report is used as evidence.
+
 ## Engine upgrades
 
 Breaking engine releases that need a change in a restoration are listed here, newest first.

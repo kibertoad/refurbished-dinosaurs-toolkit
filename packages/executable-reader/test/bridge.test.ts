@@ -887,3 +887,61 @@ test("nested modeled services retain child writes but cannot preserve ancestor r
   assert.equal(pathCapped.effectOrdering.allPathsRead, false);
   assert.ok(pathCapped.gaps.some((g: Report) => g.site === 83 && g.reason === "path limit at modeled call"));
 });
+
+test("explicit memory scopes join nested frames through the real MZ prepared bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.set([0xc6, 0x06, 0x30, 0, 0, 0xc3], 69);
+  data.set([0x55, 0x89, 0xe5, 0xe8, 10, 0, 0xc6, 0x06, 0x30, 0, 3, 0x5d, 0xcb], 80);
+  data[96] = 0xc3;
+  writeFileSync(join(dir, "source.bin"), data);
+  const scope = { segment: "ss", base: "sp", bytes: 6, evidence: "synthetic saved BP and far return hypothesis" };
+  const model = {
+    site: 83,
+    returnBytes: 2,
+    preserves: ["ds", "ss"],
+    preservesMemory: [scope],
+    evidence: "synthetic balanced service; all other memory unknown",
+    cases: [{}],
+  };
+  const query = {
+    ...config,
+    xxh3: sourceXxh3(data),
+    regions: [{ ...config.regions[0]!, end: 97 }],
+    registers: { ds: 0x2000, ss: 0x3000, sp: 0xff00, ebp: 0x7777 },
+    callModels: [model],
+  };
+  const execute = (cfg: Record<string, unknown>) => {
+    writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+    return run(["effects", join(dir, "config.json")]);
+  };
+  const result = execute(query);
+  assert.equal(result.completeWithinModel, true);
+  assert.equal(result.paths[0].registers.bp.value, 0x7777);
+  assert.ok(result.paths[0].events.some((e: Report) => e.kind === "write" && e.site === 69));
+  const path = result.effectOrdering.paths[0];
+  assert.equal(path.effectCompleteWithinModel, false);
+  assert.ok(path.calls.every((c: Report) => c.unknownEffects));
+  const saved = path.calls.find((c: Report) => c.site === 83).preservedMemoryScopes;
+  assert.equal(saved[0].bytes, 6);
+  assert.equal(saved[0].cachedBytes, 6);
+  assert.equal(saved[0].uncachedBytes, 0);
+  assert.match(saved[0].meaning, /hypothesis/);
+  assert.equal(saved[0].segment.value, 0x3000);
+  assert.deepEqual(saved, path.conditionalModels[0].preservedMemoryScopes);
+  for (const preservation of [[{ ...scope, bytes: 5 }], [{ ...scope, segment: "ds" }], []]) {
+    const stopped = execute({ ...query, callModels: [{ ...model, preservesMemory: preservation }] });
+    assert.equal(stopped.completeWithinModel, false);
+    assert.ok(!stopped.paths.some((p: Report) => p.events.some((e: Report) => e.kind === "write" && e.site === 69)));
+  }
+  for (const limit of [{ maxSteps: 1 }, { maxPaths: 1 }]) {
+    const capped = execute({ ...query, ...limit });
+    assert.equal(capped.completeWithinModel, false);
+    assert.equal(capped.effectOrdering.allPathsRead, false);
+  }
+  // Unreachable models are still validated; a declaration is not accepted just
+  // because its call site was not visited by this particular query.
+  assert.throws(
+    () => execute({ ...query, callModels: [{ ...model, site: 96, preservesMemory: [{ ...scope, bytes: 4097 }] }] }),
+    /4096/,
+  );
+});
