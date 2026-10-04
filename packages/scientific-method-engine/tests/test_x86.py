@@ -1217,6 +1217,8 @@ class GhidraCrossCheckTests(unittest.TestCase):
                                 check = run_report(data, cfg | {"ghidraCallEdges": export}, "callees")["ghidraCrossCheck"]
                             [row] = [r for r in check["edges"] if r["site"] == site and r["result"] != "engineOnly"]
                             self.assertEqual(row.get("ghidraFallsThrough"), None if reads_on is None else falls_through)
+                            # The row carries the engine's side as body() recorded it, and none where body() decided nothing.
+                            self.assertEqual((row.get("engineReadsOn"), "engineReadsOn" in row), (reads_on, reads_on is not None))
                             # A redirect disagrees wherever the engine decided, and counts as neither of the other two.
                             redirected = reads_on is not None and elsewhere is not None
                             self.assertEqual((check["counts"]["ghidraEndsFunction"], check["counts"]["ghidraContinues"],
@@ -1225,6 +1227,18 @@ class GhidraCrossCheckTests(unittest.TestCase):
                                               int(reads_on is False and falls_through), int(redirected)))
         self.assertEqual(kinds, set(RETURNS.values()) | {"halt", "tail transfer", "unresolved jump"})
         self.assertEqual(decisions, {True, False, None})
+
+    def test_the_cross_check_interpretation_points_at_the_body_record(self):
+        # The interpretation names the record body() keeps and every extent count, without a copy of the stopping rule
+        # that would have to track body(). body() also queues the next instruction as the target of a jmp $+2 and records
+        # readsOn false there, so the text names the fall-through.
+        data = bytes.fromhex("90 c3")
+        export = ghidra_export(data, {0: [(0, None, "COMPUTED_CALL", True, None)]})
+        text = run_report(data, configuration(data) | {"ghidraCallEdges": export}, "callees")["ghidraCrossCheck"]["interpretation"]
+        self.assertIn("engineReadsOn, whether its body reading queued the next instruction as the fall-through at the site", text)
+        for count in ("ghidraEndsFunction", "ghidraContinues", "ghidraFallsThroughElsewhere"):
+            self.assertIn(count, text)
+        self.assertNotRegex(text, r"(?i)\b(l?jmp|hlt)\b|port access|conditional jump and interrupt")
 
     def test_a_ghidra_target_at_an_interrupt_or_a_targetless_call_elsewhere_stays_ghidra_only(self):
         # int 21h; int 10h; nop; call 8; ret. Ghidra resolves the first interrupt to a file offset and the second to an
