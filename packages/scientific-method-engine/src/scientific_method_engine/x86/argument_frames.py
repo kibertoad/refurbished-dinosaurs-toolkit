@@ -7,6 +7,8 @@ amount never join or split slots. Whatever a read did not settle on the path sta
 """
 from capstone.x86 import X86_OP_IMM, X86_OP_REG
 
+from .machine import may_alias, written_domain
+
 # The argument bytes one frame maps; a wider frame is mapped up to here and stays open.
 WINDOW_BYTES = 256
 
@@ -31,19 +33,40 @@ def _covered(event, segment, base, start, width, modulus):
     return [at for at in offsets if 0 <= at < width]
 
 
-def _writers(events, before, segment, base, start, width, modulus):
-    """The last write before index `before` that covered each frame byte, and why the others have none."""
-    writers, reason = {}, "no write on this path"
+def _writers(events, before, segment, base, start, width, modulus, image):
+    """The last write before index `before` that covered each frame byte, and why each byte without one has none.
+
+    A modeled call drops every byte outside its `preservesMemory` scopes. Scopes name linear bytes,
+    so they keep only frame bytes of a linear stack; the search goes on past the call for those.
+    A write through another segment or base drops every frame byte it may alias, by the same rule
+    the machine applies when it stores.
+    """
+    writers, invalidated = {}, {}
     for j in range(before - 1, -1, -1):
         event = events[j]
+        interval = event.get("interval")
+        if (event["kind"] == "write" and event.get("uncertainAliasesInvalidated") and interval
+                and (interval["segment"], interval["base"]) != (segment, base)):
+            written = written_domain(interval["segment"], interval["base"], interval["start"],
+                                     interval["end"] - interval["start"], image.bits, image.flat)
+            for at in range(width):
+                key = (segment, base, (start + at) % modulus if modulus else start + at)
+                if at not in writers and at not in invalidated and may_alias(key, written, image.bits, image.flat):
+                    invalidated[at] = f"memory possibly overwritten through another address by the write at {event['site']}"
         if event["kind"] == "call-return" and event.get("unknownMemoryEffects"):
-            reason = "memory invalidated by the modeled call at " + str(event["callSite"])
-            break
+            kept = set()
+            if segment == ("linear",):
+                kept = {at for scope in event.get("preservedMemoryScopes") or ()
+                        for at in range(scope["linearStart"], scope["linearEnd"])}
+            for at in range(width):
+                if at not in writers and at not in invalidated and start + at not in kept:
+                    invalidated[at] = "memory invalidated by the modeled call at " + str(event["callSite"])
         for at in _covered(event, segment, base, start, width, modulus):
-            writers.setdefault(at, event)
-        if len(writers) == width:
+            if at not in invalidated:
+                writers.setdefault(at, event)
+        if len(writers) + len(invalidated) == width:
             break
-    return writers, reason
+    return writers, {at: invalidated.get(at, "no write on this path") for at in range(width) if at not in writers}
 
 
 def _frame(image, events, index):
@@ -82,10 +105,10 @@ def _frame(image, events, index):
 
     # Slots: runs of argument bytes that one write event last covered.
     slots, by_byte = [], {}
-    writers, reason = _writers(events, index, segment, base, start, width, modulus)
+    writers, reasons = _writers(events, index, segment, base, start, width, modulus, image)
     for at in range(width):
         writer = writers.get(at)
-        key = writer["order"] if writer else "unknown"
+        key = writer["order"] if writer else reasons[at]
         if slots and slots[-1]["_key"] == key and slots[-1]["offset"] + slots[-1]["width"] == at:
             slots[-1]["width"] += 1
         else:
@@ -96,7 +119,7 @@ def _frame(image, events, index):
                             writerRole=writer.get("role"), writerWidth=writer["width"],
                             writerByteOffset=byte_offset % modulus if modulus else byte_offset, writerValue=writer["value"])
             else:
-                slot.update(writerSite=None, reason=reason)
+                slot.update(writerSite=None, reason=reasons[at])
             slots.append(slot)
         by_byte[at] = slots[-1]
     for slot in slots:
@@ -128,7 +151,7 @@ def _frame(image, events, index):
                           "grouping": read["argument"]["grouping"], "slotOffsets": [s["offset"] for s in covered],
                           "partialSlots": partial, "bytesNotFromSlotWriter": stale})
         if stale:
-            open_reasons.append(f"the read at {read['site']} does not see the caller's bytes {stale}")
+            open_reasons.append(f"bytes {stale} of the read at {read['site']} do not come from the slot's writer")
         if partial:
             open_reasons.append(f"the read at {read['site']} covers part of the slots at {partial}")
 
@@ -164,7 +187,8 @@ def argument_frames(report, image):
     """Add `argumentFrames` to each path and `argumentFrameSites` to the report.
 
     A path gets one map per traced call, from caller-written slots to callee reads. A site's
-    groupings agree only when every path that traced a call there settled on the same read widths.
+    groupings agree only when every path that traced a call there settled on the same read widths
+    and groupings.
     """
     sites = {}
     for path_index, path in enumerate(report["paths"]):
@@ -175,11 +199,12 @@ def argument_frames(report, image):
             sites.setdefault(frame["callSite"], []).append((path_index, frame))
     report["argumentFrameSites"] = []
     for site, rows in sorted(sites.items()):
-        widths = sorted({tuple(sorted({(g["offset"], g["width"]) for g in f["groupings"]})) for _, f in rows})
+        # A set holds each read's grouping too: a far-pointer load and a plain dword over the same bytes disagree.
+        widths = sorted({tuple(sorted({(g["offset"], g["width"], g["grouping"]) for g in f["groupings"]})) for _, f in rows})
         report["argumentFrameSites"].append({
             "callSite": site, "paths": sorted({i for i, _ in rows}), "frames": len(rows),
             "unsettledPaths": sorted({i for i, f in rows if not f["settledOnThisPath"]}),
-            "readWidthSets": [[{"offset": o, "width": w} for o, w in group] for group in widths],
+            "readWidthSets": [[{"offset": o, "width": w, "grouping": k} for o, w, k in group] for group in widths],
             "agreed": len(widths) == 1 and all(f["settledOnThisPath"] for _, f in rows),
             "interpretation": "read widths per traced path; paths that never reached this call are not represented"})
     return report

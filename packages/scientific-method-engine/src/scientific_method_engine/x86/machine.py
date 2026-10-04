@@ -224,23 +224,12 @@ class State:
             write = Value(write.bits, write.term, sources(write, site=self.at))
             self.memory_epoch += 1
 
-            def domain(k):
-                if k[0] == ("linear",):
-                    return k[2], k[2] + 1
-                if k[0][0] == "constant":
-                    start = k[0][1] * (1 if self.flat else 16)
-                    return start, start + (1 << self.bits)
-                return None
-            # A concrete write covers every byte it stores, not only its first byte.
-            written = (keys[0][2], keys[-1][2] + 1) if seg == ("linear",) else domain(keys[0])
+            written = written_domain(seg, base, delta, width, self.bits, self.flat)
             for group, members in list(self.memory_groups.items()):
                 if group == (seg, base):
                     continue
                 for key in list(members):
-                    # Different symbolic segments/bases may alias. Concrete linear locations do not.
-                    a, b = domain(key), written
-                    disjoint = a is not None and b is not None and (a[1] <= b[0] or b[1] <= a[0])
-                    if not disjoint:
+                    if may_alias(key, written, self.bits, self.flat):
                         uncertain.append(key)
                         self.memory.pop(key, None)
                         self.unread_memory.pop(key, None)
@@ -360,6 +349,31 @@ def compare_string(ins):
 
 def repeated(ins):
     return 0xF3 in ins.prefix or (0xF2 in ins.prefix and compare_string(ins))
+
+
+def key_domain(key, bits, flat):
+    """The linear bytes a memory key may name: one byte, a whole constant segment, or None when unknown."""
+    if key[0] == ("linear",):
+        return key[2], key[2] + 1
+    if key[0][0] == "constant":
+        start = key[0][1] * (1 if flat else 16)
+        return start, start + (1 << bits)
+    return None
+
+
+def written_domain(segment, base, start, width, bits, flat):
+    """The linear bytes a write of `width` bytes at a location may cover, or None when unknown."""
+    # A concrete write covers every byte it stores, not only its first byte.
+    return (start, start + width) if segment == ("linear",) else key_domain((segment, base, start), bits, flat)
+
+
+def may_alias(key, written, bits, flat):
+    """Whether a write over the `written` domain may store to `key` of another segment/base group.
+
+    Different symbolic segments or bases may alias. Concrete linear locations do not.
+    """
+    a = key_domain(key, bits, flat)
+    return a is None or written is None or not (a[1] <= written[0] or written[1] <= a[0])
 
 
 def string_width(ins, flat):

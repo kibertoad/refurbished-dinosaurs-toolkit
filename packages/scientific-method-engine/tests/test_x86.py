@@ -409,8 +409,9 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertEqual(outer["slots"][0]["derivedReads"], [])
         inner = next(f for f in frames if f["depth"] == 1)
         self.assertTrue(inner["settledOnThisPath"], inner["openReasons"])
-        self.assertEqual(r["argumentFrameSites"][0]["readWidthSets"], [[{"offset": 0, "width": 2}, {"offset": 2, "width": 4},
-                                                                         {"offset": 6, "width": 2}]])
+        self.assertEqual(r["argumentFrameSites"][0]["readWidthSets"], [[{"offset": 0, "width": 2, "grouping": "consumed width only"},
+                                                                         {"offset": 2, "width": 4, "grouping": "far-pointer"},
+                                                                         {"offset": 6, "width": 2, "grouping": "consumed width only"}]])
         self.assertTrue(all(site["agreed"] for site in r["argumentFrameSites"]))
 
     def test_the_report_keeps_the_writes_its_slots_cite(self):
@@ -493,6 +494,23 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertFalse(frame["settledOnThisPath"])
         self.assertFalse(r["argumentFrameSites"][0]["agreed"])
 
+    def test_a_word_a_modeled_call_preserved_keeps_its_writer(self):
+        # The model keeps the pushed word on a concrete stack, so the callee reads the push.
+        c = Code().emit("6a 01").branch("e8", "service").branch("e8", "callee").emit("83 c4 02 c3")
+        c.label("service").emit("c3").label("callee").emit("55 89 e5 8b 46 04 5d c3")
+        scope = {"segment": "ss", "base": "sp", "displacement": 0, "bytes": 2, "evidence": "synthetic pushed word"}
+        model = {"site": 2, "evidence": "synthetic service", "preserves": ["ss", "esp"], "cases": [{}], "preservesMemory": [scope]}
+        r, frames = self.frames(c, registers={"ss": 0x2000, "sp": 0x100}, callModels=[model])
+        frame = frames[0]
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"]) for s in frame["slots"]], [(0, 2, 0)])
+        self.assertTrue(frame["settledOnThisPath"], frame["openReasons"])
+        # A frame byte outside the scope still loses its writer.
+        scope["bytes"] = 1
+        frame = self.frames(c, registers={"ss": 0x2000, "sp": 0x100}, callModels=[model])[1][0]
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"], s.get("reason")) for s in frame["slots"]],
+                         [(0, 1, 0, None), (1, 1, None, "memory invalidated by the modeled call at 2")])
+        self.assertFalse(frame["settledOnThisPath"])
+
     def test_a_callee_that_stops_leaves_its_frame_open(self):
         c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("55 89 e5 8b 46 04 ff d3")
         r, frames = self.frames(c)
@@ -517,9 +535,39 @@ class ArgumentFrameTests(unittest.TestCase):
         r, frames = self.frames(c)
         self.assertEqual(len(frames), 2)
         site = r["argumentFrameSites"][0]
-        self.assertEqual(site["readWidthSets"], [[{"offset": 0, "width": 2}], [{"offset": 0, "width": 4}]])
+        self.assertEqual(site["readWidthSets"], [[{"offset": 0, "width": 2, "grouping": "consumed width only"}],
+                                                 [{"offset": 0, "width": 4, "grouping": "far-pointer"}]])
         self.assertFalse(site["agreed"])
         self.assertEqual(len(site["unsettledPaths"]), 1)
+
+    def test_paths_that_group_the_same_bytes_differently_keep_the_site_open(self):
+        # Both paths read four bytes at offset 0: one as a far pointer with LES, one as a 32-bit dword.
+        c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("83 c4 04 c3")
+        c.label("callee").emit("55 89 e5 85 f6").branch("74", "far").emit("66 8b 46 04").branch("eb", "done")
+        c.label("far").emit("c4 5e 04").label("done").emit("5d c3")
+        r, frames = self.frames(c)
+        self.assertEqual(len(frames), 2)
+        self.assertTrue(all(f["settledOnThisPath"] for f in frames), [f["openReasons"] for f in frames])
+        site = r["argumentFrameSites"][0]
+        self.assertEqual(site["readWidthSets"], [[{"offset": 0, "width": 4, "grouping": "consumed width only"}],
+                                                 [{"offset": 0, "width": 4, "grouping": "far-pointer"}]])
+        self.assertFalse(site["agreed"])
+
+    def test_a_write_through_another_address_drops_the_slot_writer(self):
+        # A DS write between the push and the call may alias the symbolic stack, so the pushed word
+        # has no known writer when the callee reads it.
+        c = Code().emit("6a 01 c7 06 00 01 05 00").branch("e8", "callee").emit("83 c4 02 c3")
+        c.label("callee").emit("55 89 e5 8b 46 04 5d c3")
+        r, frames = self.frames(c)
+        frame = frames[0]
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"], s.get("reason")) for s in frame["slots"]],
+                         [(0, 2, None, "memory possibly overwritten through another address by the write at 2")])
+        self.assertEqual(frame["groupings"][0]["bytesNotFromSlotWriter"], [0, 1])
+        self.assertFalse(frame["settledOnThisPath"])
+        # On a concrete stack the DS write lands elsewhere, so the push stays the slot's writer.
+        frame = self.frames(c, registers={"ss": 0x2000, "sp": 0x100, "ds": 0x3000})[1][0]
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"]) for s in frame["slots"]], [(0, 2, 0)])
+        self.assertTrue(frame["settledOnThisPath"], frame["openReasons"])
 
 
 class GhidraCrossCheckTests(unittest.TestCase):

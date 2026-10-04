@@ -131,12 +131,15 @@ site. Each traced call maps the stack slots the caller last wrote above the retu
 callee's argument reads, with forwarded copies as derived reads in deeper frames. Only reads group
 slots. Unread slots, overlapping read widths, partial or overwritten slots, an unreturned callee,
 an unbounded frame and the 256-byte window keep a frame open, and a call site agrees only when every
-traced path settled on the same read widths. Decompiler parameter lists are not an input.
+traced path settled on the same read widths and groupings. Decompiler parameter lists are not an
+input.
 
 Synthetic acceptance: a mask, far pointer and forwarded identifier settled across a setter; a far
 call; competing widths; an unread slot, an overwritten slot, a slot doubled in place and a frame
-without cleanup; a slot a modeled call invalidated; near and far frames across the stack offset
-wrap; the cited writes kept in the report; a callee
-that stops; the window limit; two paths with different widths; a PE32 frame under `RET n`; and the
-bridge case. Exit: the tests pass, the reporter guide documents the fields, and Dark Sun gap 35
+without cleanup; a slot a modeled call invalidated and one its memory scope kept; a slot a write
+through another address may have overwritten; near and far frames across the stack offset wrap;
+the cited writes kept in the report; a callee that stops; the window limit; two paths with
+different widths and two with the same width but different groupings; a PE32 frame under `RET n`;
+and the bridge case.
+Exit: the tests pass, the reporter guide documents the fields, and Dark Sun gap 35
 closes when its own case passes against the released engine.
