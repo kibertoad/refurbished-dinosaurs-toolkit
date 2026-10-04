@@ -254,6 +254,34 @@ class MemoryScopeTests(unittest.TestCase):
         state.access(state.segment("ss"), const(0x201, 16), 1, write=const(0x34, 8))
         self.assertEqual(state.unread_memory, {})
 
+    def test_aliasing_write_counts_dropped_values_apart_from_dropped_unread_scope_bytes(self):
+        # mov word [1000h],1234h; call service; mov byte [bx],1; ret. The scope DS:[BX] covers six
+        # bytes: two hold the stored word, four the model never had a value for.
+        c = Code().emit("c7 06 00 10 34 12").label("service").branch("e8", "external")
+        c.label("store").emit("c6 07 01 c3").label("external").emit("c3")
+        registers = {"ds": 0x2000, "ss": 0x3000, "sp": 0xff00, "bx": 0x1000}
+
+        def store(preserves):
+            model = {"site": c.labels["service"], "preserves": preserves, "cases": [{}],
+                     "evidence": "synthetic service keeping DS:[BX]",
+                     "preservesMemory": [scope(segment="ds", base="bx", bytes=6)]}
+            r = report(c, "effects", registers=registers, callModels=[model])
+            self.assertTrue(r["completeWithinModel"])
+            declared = r["paths"][0]["conditionalModels"][0]["preservedMemoryScopes"][0]
+            self.assertEqual((declared["cachedBytes"], declared["uncachedBytes"]), (2, 4))
+            return next(e for e in events(r, "write") if e["site"] == c.labels["store"])
+
+        # The model leaves BX unknown, so the store may alias every scoped byte and drops them all.
+        dropped = store(["ds", "ss"])
+        self.assertIsNone(dropped["offset"]["value"])
+        self.assertEqual(dropped["uncertainAliasesInvalidated"], 2)
+        self.assertEqual(dropped["uncertainScopeBytesInvalidated"], 4)
+        # Control: with BX preserved the store names one scoped byte and drops nothing.
+        kept = store(["ds", "ss", "ebx"])
+        self.assertEqual(kept["offset"]["value"], 0x1000)
+        self.assertEqual(kept["uncertainAliasesInvalidated"], 0)
+        self.assertEqual(kept["uncertainScopeBytesInvalidated"], 0)
+
     def test_exact_scope_and_byte_limits_execute_and_report_each_scope(self):
         c = Code().label("service").branch("e8", "external").emit("c3").label("external").emit("c3")
         for declarations in ([scope(base="bx", bytes=4096)],

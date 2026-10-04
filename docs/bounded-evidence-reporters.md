@@ -72,8 +72,12 @@ offset keeps its entry-SP expression and the segment is DS's own value. Only
 along the path that runs them; otherwise a DS store over a frame offset
 invalidates the frame bytes it may alias and never merges with them.
 Unknown segment/base aliases invalidate cached bytes; concrete disjoint address
-domains can retain them. All assumptions remain conditional, and matching numeric
-offsets alone never establish storage identity.
+domains can retain them. Every write event counts the bytes it dropped this way in two fields,
+both present on every write and 0 when it dropped none. `uncertainAliasesInvalidated` counts bytes
+that held a modeled value. `uncertainScopeBytesInvalidated` counts bytes a `preservesMemory` scope
+kept without a value: they lost no value, but the scope no longer holds them after the write.
+All assumptions remain conditional, and matching numeric offsets alone never establish storage
+identity.
 
 ## Commands
 
@@ -327,7 +331,9 @@ its pre-call unknown term and stays unread: a later read lists it in `missingByt
 reading instruction as its producer, and a later scope counts it in `uncachedBytes`. The model
 restores no register or return target as such. A traced `pop` or `ret` must still read the full
 value, so a scope that covers part of a return word stops at the return, and a later write or
-possible-alias write still replaces or invalidates a scoped byte. `preserves` alone never keeps a
+possible-alias write still replaces or invalidates a scoped byte. A possible-alias write counts a
+dropped scoped byte in `uncertainAliasesInvalidated` when it had a value and in
+`uncertainScopeBytesInvalidated` when it had none. `preserves` alone never keeps a
 saved stack byte.
 
 Each resolved scope is reported in `preservedMemoryScopes` on the path's `conditionalModels` entry

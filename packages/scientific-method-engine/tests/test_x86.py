@@ -511,6 +511,20 @@ class ArgumentFrameTests(unittest.TestCase):
                          [(0, 1, 0, None), (1, 1, None, "memory invalidated by the modeled call at 2")])
         self.assertFalse(frame["settledOnThisPath"])
 
+    def test_a_write_that_drops_only_unread_scope_bytes_still_explains_the_slot(self):
+        # sub sp,2 reserves a slot nothing writes; the model keeps it without a value, and the ES
+        # store after the call (ES unknown) may alias it, so it drops two unread scope bytes and no value.
+        c = Code().emit("83 ec 02").branch("e8", "service").emit("26 c6 07 01").branch("e8", "callee").emit("83 c4 02 c3")
+        c.label("service").emit("c3").label("callee").emit("55 89 e5 8b 46 04 5d c3")
+        scope = {"segment": "ss", "base": "sp", "bytes": 2, "evidence": "synthetic reserved slot"}
+        model = {"site": 3, "evidence": "synthetic service", "preserves": ["ss", "esp"], "cases": [{}], "preservesMemory": [scope]}
+        r, frames = self.frames(c, registers={"ss": 0x2000, "sp": 0x100}, callModels=[model])
+        traced = report(c, "trace", registers={"ss": 0x2000, "sp": 0x100}, callModels=[model])
+        store = next(e for e in events(traced, "write") if e["site"] == 6)
+        self.assertEqual((store["uncertainAliasesInvalidated"], store["uncertainScopeBytesInvalidated"]), (0, 2))
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"], s.get("reason")) for s in frames[0]["slots"]],
+                         [(0, 2, None, "memory possibly overwritten through another address by the write at 6")])
+
     def test_a_callee_that_stops_leaves_its_frame_open(self):
         c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("55 89 e5 8b 46 04 ff d3")
         r, frames = self.frames(c)
