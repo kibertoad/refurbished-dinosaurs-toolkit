@@ -183,6 +183,21 @@ public sealed class BmpDecoderTests
         Assert.Throws<ArgumentOutOfRangeException>(() => BmpDecoder.Decode(Bmp(1, 1, 24, new byte[4]), maximumPixels: -1));
     }
 
+    [Fact]
+    public void RejectsTruncatedFilesWithinTheLimitBeforeAllocatingTheImage()
+    {
+        // 4096x4096 is within the default limit; the RGBA buffer would be 64 MiB.
+        var truncated = Bmp(4096, 4096, 24, new byte[4]);
+        var unterminated = Bmp(4096, 4096, 8, [0, 0], compression: 1, palette: new byte[8]);
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        Assert.Throws<InvalidDataException>(() => BmpDecoder.Decode(truncated));
+        Assert.True(GC.GetAllocatedBytesForCurrentThread() - before < 1024 * 1024);
+        before = GC.GetAllocatedBytesForCurrentThread();
+        Assert.Throws<InvalidDataException>(() => BmpDecoder.Decode(unterminated));
+        // Only the one-byte-per-pixel index buffer of the RLE8 stream is allocated.
+        Assert.True(GC.GetAllocatedBytesForCurrentThread() - before < 4096L * 4096 * 2);
+    }
+
     private static (byte Red, byte Green, byte Blue) Colour(int x, int y) =>
         ((byte)(10 * x + 1), (byte)(50 + 10 * y), (byte)(200 - x - y));
 

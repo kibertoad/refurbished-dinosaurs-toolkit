@@ -95,10 +95,12 @@ public static class BmpDecoder
         var palette = source.Slice((int)paletteOffset, (int)paletteEntries * 4);
         var pixels = source[(int)pixelOffset..];
 
-        var rgba = new byte[pixelCount * 4];
+        byte[] rgba;
         if (compression == BiRle8)
         {
+            // The RGBA buffer is allocated only once the stream has decoded without error.
             var indices = Rle8BitmapDecoder.DecodeIndices(pixels, width, height);
+            rgba = new byte[pixelCount * 4];
             for (var row = 0; row < height; row++)
                 WriteIndexedRow(indices.AsSpan((height - 1 - row) * width, width), palette, rgba.AsSpan(row * width * 4, width * 4));
             return new BmpImage(width, height, rgba);
@@ -108,6 +110,7 @@ public static class BmpDecoder
         if (stride * height > pixels.Length)
             throw new InvalidDataException(
                 $"BMP pixel data is truncated: {stride * height} bytes needed, {pixels.Length} present.");
+        rgba = new byte[pixelCount * 4];
         for (var row = 0; row < height; row++)
         {
             var sourceRow = topDown ? row : height - 1 - row;
