@@ -172,6 +172,24 @@ class MemoryScopeTests(unittest.TestCase):
             self.assertIn(reason, r["paths"][0]["stop"])
             self.assertEqual(r["paths"][0]["conditionalModels"], [])
 
+    def test_a_scope_on_an_unknown_initial_register_is_kept_at_offsets_from_its_value(self):
+        # BX is the unknown entry register, not a stack value. Near the top of the segment its offsets
+        # wrap within the segment as an access through BX does; only a concrete interval stops.
+        for displacement in (2, -1):
+            with self.subTest(displacement=displacement):
+                c, model = nested()
+                # The stack scope keeps the saved BP and return address; the BX scope sits in DS, whose
+                # range is disjoint from the stack segment's.
+                model["preservesMemory"] = [scope(), scope(segment="ds", base="bx", displacement=displacement)]
+                r = report(c, "effects", registers=REGISTERS, callModels=[model])
+                self.assertTrue(r["completeWithinModel"])
+                self.assertIsNone(r["paths"][0]["stop"])
+                declared = r["paths"][0]["conditionalModels"][0]["preservedMemoryScopes"][1]
+                self.assertIsNone(declared["base"]["value"])
+                self.assertEqual((declared["offset"], declared["linearStart"], declared["linearEnd"]), (None, None, None))
+                self.assertEqual(declared["interval"]["end"] - declared["interval"]["start"], 4)
+                self.assertEqual((declared["cachedBytes"], declared["uncachedBytes"]), (0, 4))
+
     def test_invalid_unreachable_declarations_and_independent_limits_are_rejected(self):
         c, model = nested()
         invalid = [scope(bytes=0), scope(bytes=True), scope(bytes=4097), scope(displacement=True),
@@ -353,7 +371,7 @@ class MemoryScopeTests(unittest.TestCase):
 
 
 def framed(after=None):
-    """push bp; mov bp, sp; sub sp, 4; call ax; narrow: mov word [bp-2], 1; call ax; [after]; mov ax, [bp-2]; leave; ret."""
+    """push bp; mov bp, sp; sub sp, 4; call ax; narrow: mov word [bp-2], 1; call ax; [after]; mov ax, [bp-2]; mov sp, bp; pop bp; ret."""
     c = (Code().emit("55 8b ec 83 ec 04").label("first").emit("ff d0")
          .label("narrow").label("assign").emit("c7 46 fe 01 00").label("service").emit("ff d0"))
     if after:

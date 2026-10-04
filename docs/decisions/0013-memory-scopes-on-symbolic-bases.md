@@ -31,7 +31,8 @@ same base value finds it.
    offsets overlap, whichever base registers name them; on different base values or segments, when
    their linear ranges may overlap. A symbolic base may address any byte of its segment, so such a
    scope stops beside any scope on another base value whose segment range overlaps its segment.
-   A concrete interval that crosses the end of the address space stops the path as before.
+   A concrete interval that crosses the end of the address space stops the path as before. On a
+   symbolic base the offsets wrap within the segment, as an access through that base does.
 3. A kept byte rejoins the alias group of its own segment and base after the call. A later write
    that may alias it drops it and reports the drop, as for any byte.
 4. Each scope entry gains `interval`, in the form of a read event's `interval`. On a symbolic base,

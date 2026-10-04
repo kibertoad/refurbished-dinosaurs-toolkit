@@ -4,7 +4,7 @@ A scope is a query hypothesis that a modeled service leaves a named byte range a
 call. It is evidence-layer bookkeeping: it reads and writes no memory on the path, adds no read or
 write event and computes no instruction value or flag (ADR 0003).
 """
-from .machine import ALIASES, StopPath, written_domain
+from .machine import ALIASES, StopPath, domains_may_overlap, written_domain
 from .values import const, op
 
 
@@ -88,7 +88,7 @@ def capture_scopes(state, model):
             if group == (seg, group_base):
                 shared = not prior_keys.isdisjoint(keys)
             else:
-                shared = not (prior_domain[1] <= domain[0] or domain[1] <= prior_domain[0])
+                shared = domains_may_overlap(prior_domain, domain)
             if shared:
                 raise StopPath("preservesMemory intervals overlap or alias")
         resolved.append(((seg, group_base), set(keys), domain))
