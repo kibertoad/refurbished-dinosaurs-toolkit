@@ -60,9 +60,12 @@ traversal references on every host, along with components Windows reads differen
 or space, or a reserved device name such as `CON` or `nul.dat`). `WithoutDriveRoot` explicitly
 discards an ASCII Windows drive root when a game stores installation paths. `ResolveFile` matches
 every component ignoring ordinal case, rejects a missing root, ambiguous matches and links, and
-returns the actual relative spelling. It lists hidden and system entries and fails on an unreadable
-directory, so it never skips a name another host would match. The resolver is for trusted, stable
-content directories; concurrent filesystem replacement needs host controls.
+returns the actual relative spelling. A component with two matches is ambiguous even when one of
+them is spelled exactly. It lists hidden and system entries and fails on an unreadable directory, so
+it never skips a name another host would match. `ResolveDirectory` applies the same rules to a
+directory, for a game that names a directory and then opens files in it by name, and throws when the
+last component is a file. Both resolvers are for trusted, stable content directories; concurrent
+filesystem replacement needs host controls.
 
 `AssetManifest`, `AssetVerifier`, `OriginalContentSource` lookups and the cue sheet `FILE` check
 use the same rules. A null or blank reference from data, a blank manifest game or edition and a
@@ -84,11 +87,11 @@ a payload of another size than its record, an `overlay.json` or `files` director
 and anything over `ContentOverlayLimits` (100,000 files, 1 GiB a file, 4 GiB in all and a 4 MiB
 manifest by default).
 
-`ApplyAsync` checks every target before it writes anything, finding each path component ignoring
-case. A target that already has the payload's size and hash counts as applied and is not written,
-so a rerun writes nothing. A target with neither hash, a replaced file that is missing, or an added
-file that exists throws `ContentOverlayException` with a `ContentOverlayProblem`, the path and the
-hash found. Then every payload is copied into a scratch directory under the root and hashed as it
+`ApplyAsync` checks every target before it writes anything, finding each path component with the
+rules of `PortableAssetPath.ResolveFile`. A target that already has the payload's size and hash
+counts as applied and is not written, so a rerun writes nothing. A target with neither hash, a
+replaced file that is missing, or an added file that exists throws `ContentOverlayException` with a
+`ContentOverlayProblem`, the path and the hash found. Then every payload is copied into a scratch directory under the root and hashed as it
 is copied; a payload whose size or hash differs from its record throws before any target is
 replaced, and the scratch directory is always removed. Only then are the copies moved over their
 targets. Those moves are not one transaction, so after any exception dispose the stage without

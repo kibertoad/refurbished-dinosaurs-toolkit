@@ -108,7 +108,8 @@ Pass every file reference that comes from data, such as a manifest, a script or 
 through `PortableAssetPath.Relative`, which rejects the same names on every host. Call
 `WithoutDriveRoot` only when the original format stores an installation path with a drive root.
 `ResolveFile` then finds the file in the verified content directory, ignoring case and refusing an
-ambiguous match. The rules are in [portable asset references](../packages/dotnet/README.md#portable-asset-references).
+ambiguous match, and `ResolveDirectory` does the same for a directory. The rules are in
+[portable asset references](../packages/dotnet/README.md#portable-asset-references).
 
 ## Saves and settings
 

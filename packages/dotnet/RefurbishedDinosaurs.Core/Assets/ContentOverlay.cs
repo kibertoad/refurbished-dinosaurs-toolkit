@@ -18,15 +18,6 @@ public sealed class ContentOverlay : IDisposable
     /// <summary>The directory of the overlay that holds the payloads, at each record's path.</summary>
     public const string PayloadDirectory = "files";
 
-    private static readonly EnumerationOptions EntryOptions = new()
-    {
-        AttributesToSkip = 0,
-        IgnoreInaccessible = false,
-        MatchType = MatchType.Simple,
-        RecurseSubdirectories = false,
-        ReturnSpecialDirectories = false
-    };
-
     private readonly Dictionary<string, Func<Stream>> _payloads;
     private readonly IDisposable? _archive;
 
@@ -274,15 +265,14 @@ public sealed class ContentOverlay : IDisposable
     }
 
     /// <summary>
-    /// Finds targets under a content root one component at a time, ignoring case. Each directory is
-    /// listed once per apply, and a directory the overlay creates gets one spelling for every record
-    /// under it, so records that spell a new directory differently do not create two directories on a
-    /// case-sensitive file system.
+    /// Finds targets under a content root with the rules of <see cref="PortableAssetPath.ResolveFile"/>,
+    /// through one <see cref="AssetPathWalker"/> that lists each directory once per apply. A directory
+    /// the overlay creates gets one spelling for every record under it, so records that spell a new
+    /// directory differently do not create two directories on a case-sensitive file system.
     /// </summary>
     private sealed class TargetLocator(string root)
     {
-        private readonly Dictionary<string, ILookup<string, (string Name, string FullPath, FileAttributes Attributes, bool IsDirectory)>> _listings =
-            new(StringComparer.Ordinal);
+        private readonly AssetPathWalker _walker = new(root, cacheListings: true);
         private readonly PortablePathLayout _planned = new();
 
         /// <summary>
@@ -293,45 +283,24 @@ public sealed class ContentOverlay : IDisposable
         public (string Relative, bool Exists) Locate(string relative)
         {
             var parts = relative.Split('/');
-            var spelled = new List<string>(parts.Length);
-            var current = root;
-            for (var index = 0; index < parts.Length; index++)
+            IReadOnlyList<string> spelled;
+            bool isDirectory;
+            try
             {
-                var name = parts[index];
-                var matches = Listing(current)[name].Take(2).ToArray();
-                if (matches.Length == 0) return (Planned(string.Join('/', spelled), parts[index..]), false);
-                var spelledSoFar = string.Join('/', spelled.Append(name));
-                if (matches.Length > 1) throw new InvalidDataException($"Overlay target spelling is ambiguous: {spelledSoFar}");
-                var match = matches[0];
-                if ((match.Attributes & FileAttributes.ReparsePoint) != 0)
-                    throw new InvalidDataException($"Overlay target passes through a link: {spelledSoFar}");
-                var last = index == parts.Length - 1;
-                if (match.IsDirectory == last)
-                    throw new InvalidDataException(last
-                        ? $"Overlay target is a directory: {spelledSoFar}"
-                        : $"Overlay target passes through a file: {spelledSoFar}");
-                spelled.Add(match.Name);
-                current = match.FullPath;
+                (spelled, isDirectory) = _walker.Walk(parts);
             }
-            return (string.Join('/', spelled), true);
+            catch (InvalidDataException exception)
+            {
+                throw new InvalidDataException($"Overlay target {relative} is rejected: {exception.Message}", exception);
+            }
+            var existing = string.Join('/', spelled);
+            if (spelled.Count < parts.Length) return (Planned(existing, parts[spelled.Count..]), false);
+            if (isDirectory) throw new InvalidDataException($"Overlay target is a directory: {existing}");
+            return (existing, true);
         }
 
         private string Planned(string existing, string[] rest) =>
             _planned.Add(existing.Length == 0 ? string.Join('/', rest) : $"{existing}/{string.Join('/', rest)}");
-
-        private ILookup<string, (string Name, string FullPath, FileAttributes Attributes, bool IsDirectory)> Listing(string directory)
-        {
-            if (!_listings.TryGetValue(directory, out var listing))
-            {
-                listing = new FileSystemEnumerable<(string Name, string FullPath, FileAttributes Attributes, bool IsDirectory)>(
-                        directory,
-                        (ref FileSystemEntry entry) => (entry.FileName.ToString(), entry.ToFullPath(), entry.Attributes, entry.IsDirectory),
-                        EntryOptions)
-                    .ToLookup(entry => entry.Name, StringComparer.OrdinalIgnoreCase);
-                _listings.Add(directory, listing);
-            }
-            return listing;
-        }
     }
 
     private static Dictionary<string, ContentOverlayFile> Records(ContentOverlayManifest manifest) =>
