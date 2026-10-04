@@ -1,8 +1,7 @@
-using System.IO.Compression;
-using System.Text.Json;
 using RefurbishedDinosaurs.Core.Assets;
 using RefurbishedDinosaurs.LegacyFormats;
 using Xunit;
+using static RefurbishedDinosaurs.Core.Tests.OverlayFixtures;
 
 namespace RefurbishedDinosaurs.Core.Tests;
 
@@ -10,56 +9,11 @@ namespace RefurbishedDinosaurs.Core.Tests;
 // opened from a path.
 public sealed class StreamOpenedSourceTests : IDisposable
 {
-    private static readonly byte[] Base = "base bytes"u8.ToArray();
-    private static readonly byte[] Patched = "patched bytes, longer"u8.ToArray();
-    private static readonly byte[] Added = "added"u8.ToArray();
-
     private readonly string _work = Directory.CreateTempSubdirectory("stream-source-tests-").FullName;
 
     public void Dispose() => Directory.Delete(_work, recursive: true);
 
     private static CancellationToken Token => TestContext.Current.CancellationToken;
-
-    private static object Record(string path, byte[] payload, string? baseXxh3, long? bytes = null) => new
-    {
-        path,
-        bytes = bytes ?? payload.Length,
-        baseXxh3,
-        xxh3 = FileFingerprint.Xxh3(payload)
-    };
-
-    private static object Manifest(params object[] files) => new
-    {
-        formatVersion = 1,
-        name = "synthetic-overlay-1",
-        gameId = "synthetic-game",
-        fromVersion = "1.0",
-        toVersion = "1.1",
-        files
-    };
-
-    private static object StandardManifest() => Manifest(
-        Record("data/main.bin", Patched, FileFingerprint.Xxh3(Base)),
-        Record("extra/added.dat", Added, null));
-
-    private static readonly (string Path, byte[] Payload)[] StandardPayloads =
-        [("data/main.bin", Patched), ("extra/added.dat", Added)];
-
-    private static byte[] ZipBytes(object manifest, params (string Path, byte[] Payload)[] payloads)
-    {
-        using var buffer = new MemoryStream();
-        using (var archive = new ZipArchive(buffer, ZipArchiveMode.Create, leaveOpen: true))
-        {
-            using (var stream = archive.CreateEntry(ContentOverlay.ManifestFileName).Open())
-                JsonSerializer.Serialize(stream, manifest);
-            foreach (var (name, payload) in payloads)
-            {
-                using var stream = archive.CreateEntry($"{ContentOverlay.PayloadDirectory}/{name}").Open();
-                stream.Write(payload);
-            }
-        }
-        return buffer.ToArray();
-    }
 
     private string Content(string name)
     {
@@ -87,6 +41,9 @@ public sealed class StreamOpenedSourceTests : IDisposable
         }
 
         using var stream = new MemoryStream(bytes, writable: false);
+        // The archive starts at position 0 wherever the stream is positioned, such as at the end of a
+        // zip just written to it.
+        stream.Position = stream.Length;
         ContentOverlayResult fromStream;
         using (var overlay = ContentOverlay.OpenZip(stream))
         {
@@ -98,7 +55,7 @@ public sealed class StreamOpenedSourceTests : IDisposable
         Assert.Equal(fromPath.Outputs, fromStream.Outputs);
         Assert.Equal(2, fromStream.Written);
         Assert.Equal(Patched, File.ReadAllBytes(Path.Combine(fromStreamContent, "DATA", "MAIN.BIN")));
-        Assert.Equal(Added, File.ReadAllBytes(Path.Combine(fromStreamContent, "extra", "added.dat")));
+        Assert.Equal(Added, File.ReadAllBytes(Path.Combine(fromStreamContent, "extra", "new", "added.dat")));
         // The caller keeps the stream: disposing the overlay leaves it open.
         Assert.True(stream.CanRead);
         stream.Position = 0;
@@ -123,6 +80,11 @@ public sealed class StreamOpenedSourceTests : IDisposable
         Assert.Throws<InvalidDataException>(() => Open(ZipBytes(one, ("a.bin", Added), ("A.BIN", Added))));
         Assert.Throws<InvalidDataException>(() => Open(ZipBytes(Manifest(Record("a.bin", Added, null, bytes: 4)), ("a.bin", Added))));
         Assert.Throws<InvalidDataException>(() => Open("not a zip archive"u8.ToArray()));
+
+        // A rejected overlay leaves the caller's stream open too.
+        using var rejected = new MemoryStream(ZipBytes(two, twoPayloads), writable: false);
+        Assert.Throws<InvalidDataException>(() => ContentOverlay.OpenZip(rejected, new(MaximumFiles: 1)));
+        Assert.True(rejected.CanRead);
     }
 
     [Fact]
@@ -144,6 +106,8 @@ public sealed class StreamOpenedSourceTests : IDisposable
 
         using var fromPath = OriginalContentSource.OpenIso9660(path);
         using var stream = new MemoryStream(image, writable: false);
+        // Logical block 0 is at position 0 wherever the stream is positioned.
+        stream.Position = stream.Length;
         using (var fromStream = OriginalContentSource.OpenIso9660(stream))
         {
             Assert.Equal(ContentSourceKinds.Iso9660, fromStream.Kind);
@@ -168,6 +132,46 @@ public sealed class StreamOpenedSourceTests : IDisposable
         // The caller keeps the stream: disposing the source and its streams leaves it open.
         Assert.True(stream.CanRead);
         Assert.Equal(image.Length, stream.Length);
+    }
+
+    [Fact]
+    public async Task SourcesOverOneStreamCanBeReadAtTheSameTime()
+    {
+        var payload = Enumerable.Range(0, 2048).Select(value => (byte)(value * 7)).ToArray();
+        var image = OriginalContentSourceTests.BuildIso(payload);
+        using var stream = new MemoryStream(image, writable: false);
+        using var first = OriginalContentSource.OpenIso9660(stream);
+        using var second = OriginalContentSource.OpenIso9660(stream);
+
+        async Task ReadInSmallChunks(OriginalContentSource source, string path, byte[] expected)
+        {
+            for (var round = 0; round < 20; round++)
+            {
+                await using var read = path.Length == 0 ? source.OpenVolume() : source.OpenRead(path);
+                var actual = new byte[expected.Length];
+                var offset = 0;
+                while (offset < actual.Length)
+                    offset += await read.ReadAsync(actual.AsMemory(offset, Math.Min(7, actual.Length - offset)), Token);
+                Assert.Equal(expected, actual);
+            }
+        }
+
+        await Task.WhenAll(
+            Task.Run(() => ReadInSmallChunks(first, "EI/TEST.BIN", payload), Token),
+            Task.Run(() => ReadInSmallChunks(second, "EI/TEST.BIN", payload), Token),
+            Task.Run(() => ReadInSmallChunks(first, "", image), Token),
+            Task.Run(() => ReadInSmallChunks(second, "", image), Token));
+    }
+
+    [Fact]
+    public void AStreamOpenedFromAStreamSourceCannotBeReadOnceDisposed()
+    {
+        using var stream = new MemoryStream(OriginalContentSourceTests.BuildIso([1, 2, 3]), writable: false);
+        using var source = OriginalContentSource.OpenIso9660(stream);
+        var file = source.OpenRead("EI/TEST.BIN");
+        file.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => file.ReadByte());
+        Assert.True(stream.CanRead);
     }
 
     [Fact]

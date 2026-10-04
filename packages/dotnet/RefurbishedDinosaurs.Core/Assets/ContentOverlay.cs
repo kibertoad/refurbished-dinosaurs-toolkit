@@ -55,13 +55,7 @@ public sealed class ContentOverlay : IDisposable
     public static ContentOverlay OpenZip(string path, ContentOverlayLimits? limits = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        ZipArchive archive;
-        try { archive = ZipFile.OpenRead(path); }
-        catch (InvalidDataException exception)
-        {
-            throw new InvalidDataException($"Overlay is not a zip archive: {exception.Message}", exception);
-        }
-        return OpenZip(archive, limits ?? ContentOverlayLimits.Default);
+        return OpenZip(() => ZipFile.OpenRead(path), limits ?? ContentOverlayLimits.Default);
     }
 
     /// <summary>
@@ -85,18 +79,18 @@ public sealed class ContentOverlay : IDisposable
         // A ZipArchive copies a stream that cannot seek into memory whole, past every limit.
         if (!zip.CanRead || !zip.CanSeek)
             throw new ArgumentException("The overlay stream must be readable and seekable.", nameof(zip));
+        return OpenZip(() => new ZipArchive(zip, ZipArchiveMode.Read, leaveOpen: true), limits ?? ContentOverlayLimits.Default);
+    }
+
+    // Owns the archive open returns and disposes it when the checks fail.
+    private static ContentOverlay OpenZip(Func<ZipArchive> open, ContentOverlayLimits limits)
+    {
         ZipArchive archive;
-        try { archive = new ZipArchive(zip, ZipArchiveMode.Read, leaveOpen: true); }
+        try { archive = open(); }
         catch (InvalidDataException exception)
         {
             throw new InvalidDataException($"Overlay is not a zip archive: {exception.Message}", exception);
         }
-        return OpenZip(archive, limits ?? ContentOverlayLimits.Default);
-    }
-
-    // Takes ownership of archive and disposes it when the checks fail.
-    private static ContentOverlay OpenZip(ZipArchive archive, ContentOverlayLimits limits)
-    {
         try
         {
             var manifestEntry = archive.GetEntry(ManifestFileName)

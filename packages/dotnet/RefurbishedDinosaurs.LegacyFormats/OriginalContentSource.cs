@@ -158,7 +158,8 @@ public abstract class OriginalContentSource : IDisposable
     /// keeps ownership: the source never disposes <paramref name="image"/>, which must stay open and
     /// unchanged while the source or a stream opened from it is in use. Streams opened from the
     /// source each keep their own position and may be read at the same time; each read seeks
-    /// <paramref name="image"/> under a lock, so read <paramref name="image"/> only through the source.
+    /// <paramref name="image"/> under a lock that every source opened over <paramref name="image"/>
+    /// shares, so read <paramref name="image"/> only through these sources.
     /// </summary>
     /// <param name="image">A readable, seekable stream holding the image.</param>
     /// <exception cref="ArgumentNullException"><paramref name="image"/> is null.</exception>
@@ -169,7 +170,7 @@ public abstract class OriginalContentSource : IDisposable
         ArgumentNullException.ThrowIfNull(image);
         if (!image.CanRead || !image.CanSeek)
             throw new ArgumentException("The ISO image stream must be readable and seekable.", nameof(image));
-        var gate = new SemaphoreSlim(1, 1);
+        var gate = SharedStreamView.GateFor(image);
         return new Iso9660ContentSource(() => new SharedStreamView(image, gate), ContentSourceKinds.Iso9660, null);
     }
 
@@ -609,19 +610,27 @@ internal sealed class ExtentReadStream : Stream
 }
 
 // A view of a stream that other views share, with its own position. Each read seeks the shared
-// stream and reads it while holding the gate, so views can be read at the same time. Disposing a
+// stream and reads it while holding the gate, so views can be read at the same time. Every view of
+// one shared stream gets the same gate from GateFor, also across sources opened over it. Disposing a
 // view leaves the shared stream open, since its caller owns it.
 internal sealed class SharedStreamView(Stream shared, SemaphoreSlim gate) : Stream
 {
-    private long position;
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Stream, SemaphoreSlim> Gates = new();
 
-    public override bool CanRead => true;
-    public override bool CanSeek => true;
+    private long position;
+    private bool disposed;
+
+    // The gate for every view of shared, kept for as long as shared is alive.
+    public static SemaphoreSlim GateFor(Stream shared) => Gates.GetValue(shared, _ => new SemaphoreSlim(1, 1));
+
+    public override bool CanRead => !disposed;
+    public override bool CanSeek => !disposed;
     public override bool CanWrite => false;
     public override long Length
     {
         get
         {
+            ObjectDisposedException.ThrowIf(disposed, this);
             gate.Wait();
             try { return shared.Length; }
             finally { gate.Release(); }
@@ -632,15 +641,21 @@ internal sealed class SharedStreamView(Stream shared, SemaphoreSlim gate) : Stre
         get => position;
         set
         {
+            ObjectDisposedException.ThrowIf(disposed, this);
             ArgumentOutOfRangeException.ThrowIfNegative(value);
             position = value;
         }
     }
 
-    public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        ValidateBufferArguments(buffer, offset, count);
+        return Read(buffer.AsSpan(offset, count));
+    }
 
     public override int Read(Span<byte> buffer)
     {
+        ObjectDisposedException.ThrowIf(disposed, this);
         gate.Wait();
         try
         {
@@ -654,6 +669,7 @@ internal sealed class SharedStreamView(Stream shared, SemaphoreSlim gate) : Stre
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
+        ObjectDisposedException.ThrowIf(disposed, this);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -665,8 +681,11 @@ internal sealed class SharedStreamView(Stream shared, SemaphoreSlim gate) : Stre
         finally { gate.Release(); }
     }
 
-    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
-        ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        ValidateBufferArguments(buffer, offset, count);
+        return ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+    }
 
     public override long Seek(long offset, SeekOrigin origin) => Position = origin switch
     {
@@ -679,4 +698,10 @@ internal sealed class SharedStreamView(Stream shared, SemaphoreSlim gate) : Stre
     public override void Flush() { }
     public override void SetLength(long value) => throw new NotSupportedException();
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    protected override void Dispose(bool disposing)
+    {
+        disposed = true;
+        base.Dispose(disposing);
+    }
 }
