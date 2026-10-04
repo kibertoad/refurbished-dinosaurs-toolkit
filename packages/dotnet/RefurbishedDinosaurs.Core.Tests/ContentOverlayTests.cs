@@ -124,6 +124,22 @@ public sealed class ContentOverlayTests : IDisposable
     }
 
     [Fact]
+    public async Task RecordsThatSpellANewDirectoryDifferentlyShareOneDirectory()
+    {
+        var manifest = Manifest(Record("New/a.bin", Added, null), Record("new/b.bin", Patched, null));
+        var payloads = new[] { ("New/a.bin", Added), ("new/b.bin", Patched) };
+        using (var overlay = ContentOverlay.OpenDirectory(Folder(manifest, payloads)))
+        {
+            var result = await overlay.ApplyAsync(_content, Token);
+            Assert.Equal(["New/a.bin", "New/b.bin"], result.Outputs.Select(output => output.Path));
+        }
+        Assert.Equal(["DATA", "DATA/MAIN.BIN", "New", "New/a.bin", "New/b.bin", "keep.txt"], ContentEntries());
+
+        using var rerun = ContentOverlay.OpenDirectory(Folder(manifest, payloads));
+        Assert.Equal(0, (await rerun.ApplyAsync(_content, Token)).Written);
+    }
+
+    [Fact]
     public async Task AppliesAnOverlayLaidOutAsADirectory()
     {
         using var overlay = ContentOverlay.OpenDirectory(Folder(StandardManifest(), StandardPayloads));
@@ -221,7 +237,9 @@ public sealed class ContentOverlayTests : IDisposable
         // An upper-case fingerprint.
         """{"formatVersion":1,"name":"o","gameId":"g","fromVersion":"1","toVersion":"2","files":[{"path":"a.bin","bytes":1,"baseXxh3":null,"xxh3":"0000000000000000000000000000000A"}]}""",
         // An unknown field.
-        """{"formatVersion":1,"name":"o","gameId":"g","fromVersion":"1","toVersion":"2","files":[],"extra":true}""",
+        """{"formatVersion":1,"name":"o","gameId":"g","fromVersion":"1","toVersion":"2","files":[{"path":"a.bin","bytes":1,"baseXxh3":null,"xxh3":"00000000000000000000000000000001"}],"extra":true}""",
+        // An unknown field in a file record.
+        """{"formatVersion":1,"name":"o","gameId":"g","fromVersion":"1","toVersion":"2","files":[{"path":"a.bin","bytes":1,"baseXxh3":null,"xxh3":"00000000000000000000000000000001","extra":true}]}""",
         // Another format version.
         """{"formatVersion":2,"name":"o","gameId":"g","fromVersion":"1","toVersion":"2","files":[{"path":"a.bin","bytes":1,"baseXxh3":null,"xxh3":"00000000000000000000000000000001"}]}""",
         // No files.
@@ -261,6 +279,30 @@ public sealed class ContentOverlayTests : IDisposable
         Assert.Throws<InvalidDataException>(() => ContentOverlay.OpenZip(Zip(manifest, ("a.bin", Added), ("A.BIN", Added))));
         Assert.Throws<InvalidDataException>(() => ContentOverlay.OpenDirectory(Folder(manifest)));
         Assert.Throws<InvalidDataException>(() => ContentOverlay.OpenDirectory(Folder(manifest, ("a.bin", Added), ("b.bin", Added))));
+    }
+
+    [Fact]
+    public void ALinkedManifestOrPayloadDirectoryIsRejected()
+    {
+        // Creating links needs extra rights on Windows, so the cases run elsewhere.
+        if (OperatingSystem.IsWindows()) return;
+        var manifest = Manifest(Record("a.bin", Added, null));
+        var source = Folder(manifest, ("a.bin", Added));
+
+        var linkedPayloads = Folder(manifest);
+        Directory.CreateSymbolicLink(
+            Path.Combine(linkedPayloads, ContentOverlay.PayloadDirectory),
+            Path.Combine(source, ContentOverlay.PayloadDirectory));
+        Assert.Throws<InvalidDataException>(() => ContentOverlay.OpenDirectory(linkedPayloads));
+
+        var linkedManifest = Folder(manifest, ("a.bin", Added));
+        File.Delete(Path.Combine(linkedManifest, ContentOverlay.ManifestFileName));
+        File.CreateSymbolicLink(
+            Path.Combine(linkedManifest, ContentOverlay.ManifestFileName),
+            Path.Combine(source, ContentOverlay.ManifestFileName));
+        Assert.Throws<InvalidDataException>(() => ContentOverlay.OpenDirectory(linkedManifest));
+
+        ContentOverlay.OpenDirectory(source).Dispose();
     }
 
     [Fact]

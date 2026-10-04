@@ -79,7 +79,8 @@ have first (`baseXxh3`, null for an added file that must not exist) and the payl
 
 Opening rejects a manifest with a duplicate path (ignoring case), a path `PortableAssetPath.Relative`
 rejects, a path that is also a directory of another record, a missing, unlisted or linked payload,
-a payload of another size than its record, and anything over `ContentOverlayLimits` (100,000 files,
+a payload of another size than its record, an `overlay.json` or `files` directory that is a link,
+and anything over `ContentOverlayLimits` (100,000 files,
 1 GiB a file, 4 GiB in all and a 4 MiB manifest by default).
 
 `ApplyAsync` checks every target before it writes anything, finding each path component ignoring

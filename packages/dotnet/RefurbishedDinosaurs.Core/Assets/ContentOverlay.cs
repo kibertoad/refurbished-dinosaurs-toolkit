@@ -99,7 +99,7 @@ public sealed class ContentOverlay : IDisposable
     /// <summary>
     /// Opens an overlay laid out as a directory. Every file under <see cref="PayloadDirectory"/> must
     /// be the payload of exactly one record, matched ignoring case, with the record's size. Links are
-    /// rejected; other entries outside it are ignored.
+    /// rejected, including a linked manifest or payload directory; other entries outside it are ignored.
     /// </summary>
     /// <param name="path">The overlay directory.</param>
     /// <param name="limits">The bounds to check, or <see langword="null"/> for <see cref="ContentOverlayLimits.Default"/>.</param>
@@ -115,6 +115,8 @@ public sealed class ContentOverlay : IDisposable
         var root = Path.GetFullPath(path);
         var manifestPath = Path.Combine(root, ManifestFileName);
         if (!File.Exists(manifestPath)) throw new InvalidDataException($"Overlay has no {ManifestFileName}.");
+        if ((File.GetAttributes(manifestPath) & FileAttributes.ReparsePoint) != 0)
+            throw new InvalidDataException($"Overlay {ManifestFileName} is a link.");
         byte[] json;
         using (var stream = File.OpenRead(manifestPath)) json = ReadBounded(stream, limits.MaximumManifestBytes);
         var manifest = ContentOverlayManifest.Parse(json, limits);
@@ -124,6 +126,8 @@ public sealed class ContentOverlay : IDisposable
         var payloadRoot = Path.Combine(root, PayloadDirectory);
         if (Directory.Exists(payloadRoot))
         {
+            if ((File.GetAttributes(payloadRoot) & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException($"Overlay {PayloadDirectory} directory is a link.");
             var entries = new FileSystemEnumerable<(string Path, FileAttributes Attributes, bool IsDirectory, long Length)>(
                 payloadRoot,
                 (ref FileSystemEntry entry) => (entry.ToFullPath(), entry.Attributes, entry.IsDirectory, entry.Length),
@@ -182,10 +186,11 @@ public sealed class ContentOverlay : IDisposable
             throw new InvalidDataException("Content root is a symbolic link or reparse point.");
 
         var plan = new List<(ContentOverlayFile Record, string Target, ContentOverlayOutput Output)>();
+        var locator = new TargetLocator(fullRoot);
         foreach (var record in Manifest.Files.OrderBy(file => file.Path, StringComparer.Ordinal))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var (relative, exists) = Locate(fullRoot, PortableAssetPath.Relative(record.Path));
+            var (relative, exists) = locator.Locate(PortableAssetPath.Relative(record.Path));
             var target = SafePath.Below(fullRoot, relative);
             ContentOverlayAction action;
             if (exists)
@@ -213,6 +218,7 @@ public sealed class ContentOverlay : IDisposable
         {
             var scratch = Path.Combine(fullRoot, $".overlay-{Guid.NewGuid():N}");
             Directory.CreateDirectory(scratch);
+            var moved = false;
             try
             {
                 var copies = new string[pending.Length];
@@ -228,11 +234,16 @@ public sealed class ContentOverlay : IDisposable
                     Directory.CreateDirectory(Path.GetDirectoryName(pending[index].Target)!);
                     File.Move(copies[index], pending[index].Target, overwrite: true);
                 }
+                moved = true;
             }
             finally
             {
+                // A failure to remove the scratch directory must not hide the exception that ended
+                // the apply. After a successful apply it still throws, since the directory would
+                // otherwise stay in the content.
                 try { Directory.Delete(scratch, recursive: true); }
                 catch (DirectoryNotFoundException) { }
+                catch (Exception) when (!moved) { }
             }
         }
         return new(Manifest.Name, plan.Select(step => step.Output).ToArray());
@@ -278,41 +289,73 @@ public sealed class ContentOverlay : IDisposable
     }
 
     /// <summary>
-    /// Finds <paramref name="relative"/> under <paramref name="root"/> one component at a time,
-    /// ignoring case. Returns the actual spelling of the components that exist followed by the
-    /// record's spelling of the rest, and whether the whole path names an existing file.
+    /// Finds targets under a content root one component at a time, ignoring case. Each directory is
+    /// listed once per apply, and a directory the overlay creates gets one spelling for every record
+    /// under it, so records that spell a new directory differently do not create two directories on a
+    /// case-sensitive file system.
     /// </summary>
-    private static (string Relative, bool Exists) Locate(string root, string relative)
+    private sealed class TargetLocator(string root)
     {
-        var parts = relative.Split('/');
-        var spelled = new List<string>(parts.Length);
-        var current = root;
-        for (var index = 0; index < parts.Length; index++)
+        private readonly Dictionary<string, ILookup<string, (string Name, string FullPath, FileAttributes Attributes, bool IsDirectory)>> _listings =
+            new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> _created = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Returns the actual spelling of the components of <paramref name="relative"/> that exist,
+        /// followed by the spelling of the rest (the first record's spelling for a directory the
+        /// overlay creates), and whether the whole path names an existing file.
+        /// </summary>
+        public (string Relative, bool Exists) Locate(string relative)
         {
-            var name = parts[index];
-            var matches = new FileSystemEnumerable<(string Name, string FullPath, FileAttributes Attributes, bool IsDirectory)>(
-                current,
-                (ref FileSystemEntry entry) => (entry.FileName.ToString(), entry.ToFullPath(), entry.Attributes, entry.IsDirectory),
-                EntryOptions)
+            var parts = relative.Split('/');
+            var spelled = new List<string>(parts.Length);
+            var current = root;
+            for (var index = 0; index < parts.Length; index++)
             {
-                ShouldIncludePredicate = (ref FileSystemEntry entry) =>
-                    entry.FileName.Equals(name, StringComparison.OrdinalIgnoreCase)
-            }.Take(2).ToArray();
-            if (matches.Length == 0) return (string.Join('/', spelled.Concat(parts[index..])), false);
-            var spelledSoFar = string.Join('/', spelled.Append(name));
-            if (matches.Length > 1) throw new InvalidDataException($"Overlay target spelling is ambiguous: {spelledSoFar}");
-            var match = matches[0];
-            if ((match.Attributes & FileAttributes.ReparsePoint) != 0)
-                throw new InvalidDataException($"Overlay target passes through a link: {spelledSoFar}");
-            var last = index == parts.Length - 1;
-            if (match.IsDirectory == last)
-                throw new InvalidDataException(last
-                    ? $"Overlay target is a directory: {spelledSoFar}"
-                    : $"Overlay target passes through a file: {spelledSoFar}");
-            spelled.Add(match.Name);
-            current = match.FullPath;
+                var name = parts[index];
+                var matches = Listing(current)[name].Take(2).ToArray();
+                if (matches.Length == 0) return (Planned(string.Join('/', spelled), parts[index..]), false);
+                var spelledSoFar = string.Join('/', spelled.Append(name));
+                if (matches.Length > 1) throw new InvalidDataException($"Overlay target spelling is ambiguous: {spelledSoFar}");
+                var match = matches[0];
+                if ((match.Attributes & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException($"Overlay target passes through a link: {spelledSoFar}");
+                var last = index == parts.Length - 1;
+                if (match.IsDirectory == last)
+                    throw new InvalidDataException(last
+                        ? $"Overlay target is a directory: {spelledSoFar}"
+                        : $"Overlay target passes through a file: {spelledSoFar}");
+                spelled.Add(match.Name);
+                current = match.FullPath;
+            }
+            return (string.Join('/', spelled), true);
         }
-        return (string.Join('/', spelled), true);
+
+        private string Planned(string existing, string[] rest)
+        {
+            var path = existing;
+            for (var index = 0; index < rest.Length; index++)
+            {
+                path = path.Length == 0 ? rest[index] : $"{path}/{rest[index]}";
+                if (index == rest.Length - 1) break;
+                if (!_created.TryAdd(path, path)) path = _created[path];
+            }
+            return path;
+        }
+
+        private ILookup<string, (string Name, string FullPath, FileAttributes Attributes, bool IsDirectory)> Listing(string directory)
+        {
+            if (!_listings.TryGetValue(directory, out var listing))
+            {
+                listing = new FileSystemEnumerable<(string Name, string FullPath, FileAttributes Attributes, bool IsDirectory)>(
+                        directory,
+                        (ref FileSystemEntry entry) => (entry.FileName.ToString(), entry.ToFullPath(), entry.Attributes, entry.IsDirectory),
+                        EntryOptions)
+                    .ToLookup(entry => entry.Name, StringComparer.OrdinalIgnoreCase);
+                _listings.Add(directory, listing);
+            }
+            return listing;
+        }
     }
 
     private static Dictionary<string, ContentOverlayFile> Records(ContentOverlayManifest manifest) =>
@@ -383,7 +426,7 @@ public sealed record ContentOverlayResult(string Name, IReadOnlyList<ContentOver
     /// <see cref="InstalledAssetManifest"/>. A record whose path matches an output ignoring case is
     /// replaced, keeping its media type; outputs no record matches are appended as
     /// <c>application/octet-stream</c>. Each output's record takes the output's path, size and
-    /// fingerprint, the payload's path in the overlay as its source path, and an
+    /// fingerprint, the output's path as its source path, and an
     /// <see cref="AssetConversion"/> whose method is <see cref="Name"/>.
     /// </summary>
     /// <param name="files">The records the import wrote for the content before the overlay.</param>
