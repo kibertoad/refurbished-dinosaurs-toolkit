@@ -67,9 +67,9 @@ class State:
         self.assumptions = {}
         self.flags = None
         # Arithmetic flags as values from the last flag-writing instruction's p-code; None when no
-        # instruction computed them yet or the last one forgot them. This is the one stored value of
-        # each flag: code that needs CF reads it through carry_value, which reads this, and never
-        # derives it by running a branch condition.
+        # instruction computed them yet or the last one forgot them. Branch conditions run their p-code
+        # on these values, and carry_value reads a comparable flag producer's CF from here without
+        # running a branch condition.
         self.flag_values = None
         # CF when an instruction sets it without leaving a comparable flag producer; None defers to flags.
         self.carry = None
@@ -130,7 +130,7 @@ class State:
         if self.flags is not None:
             # The producer's p-code CF, read as JB's CBRANCH reads it: nonzero is set. Reading it here
             # skips running the JB p-code and building the branch report each time CF is read.
-            carry = self.flag_values.get("CF") if self.flag_values is not None else None
+            carry = (self.flag_values or {}).get("CF")
             if carry is not None and carry.number is not None:
                 return const(int(carry.number != 0), 1, self.flags[3])
             # Name the carry by its producer's operands, so every reading of one comparison shares an assumption.

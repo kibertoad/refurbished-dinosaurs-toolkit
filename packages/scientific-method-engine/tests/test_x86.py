@@ -1098,13 +1098,8 @@ class ReporterTests(unittest.TestCase):
         self.assertIn("Operand-size", report("b9 02 00 66 e2 fd c3")["paths"][0]["stop"])
 
     def test_carry_reads_the_producers_pcode_carry_without_a_branch_condition(self):
-        from scientific_method_engine.x86 import pcode_backend
-        original = pcode_backend.Pypcode.condition
-        predicates = []
-
-        def recorded(backend, state, mnemonic):
-            predicates.append(mnemonic)
-            return original(backend, state, mnemonic)
+        from unittest import mock
+        from scientific_method_engine.x86.pcode_backend import Pypcode
 
         cases = [
             ("b8 01 00 05 ff ff", 6),  # ADD AX, 0FFFFh carries.
@@ -1112,9 +1107,9 @@ class ReporterTests(unittest.TestCase):
             ("b8 01 00 bb 02 00 39 d8", 6),  # CMP AX, BX borrows.
             ("b8 02 00 bb 01 00 39 d8", 5),  # CMP AX, BX does not.
             ("b8 01 00 f7 d8", 6),  # NEG of nonzero sets CF.
+            ("b8 00 00 f7 d8", 5),  # NEG of zero clears it.
         ]
-        pcode_backend.Pypcode.condition = recorded
-        try:
+        with mock.patch.object(Pypcode, "condition", autospec=True, side_effect=Pypcode.condition) as condition:
             for producer, dx in cases:
                 with self.subTest(producer=producer):
                     # The producer, MOV DX, 5 (flags untouched), ADC DX, 0.
@@ -1124,12 +1119,10 @@ class ReporterTests(unittest.TestCase):
             # An unknown producer's carry stays named by the producer's operands.
             unresolved = events(report("39 d8 83 d2 00 c3"), "arithmetic")[-1]["carryIn"]
             self.assertIsNone(unresolved["value"])
-            self.assertEqual(predicates, [])
+            condition.assert_not_called()
             # A JB still runs its own condition once; its assumption key reads CF without another.
             self.assertEqual(len(report("39 d8 72 00 c3")["paths"]), 2)
-            self.assertEqual(predicates, ["jb"])
-        finally:
-            pcode_backend.Pypcode.condition = original
+            self.assertEqual([call.args[2] for call in condition.call_args_list], ["jb"])
 
     def test_incoming_coverage_counts_straddled_segments_scan_limits_and_contested_starts(self):
         data = bytes.fromhex("e8 01 00 c3 c3 e8 fc ff c3")
