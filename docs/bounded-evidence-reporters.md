@@ -491,7 +491,12 @@ or `write`: INS and OUTS also report the RAM access of each iteration as its own
 `memory` report keeps RAM accesses only. In the PE32 model the path stops after
 the event, because I/O privilege decides whether the access faults, and
 `portInputs` is rejected. The entry-path walk behind `uses`, `incoming` and the
-operand inventories also continues past a port access.
+operand inventories continues past a port access in the real-mode model. In the
+PE32 model it records a gap at the access with the same reason and claims
+nothing after it: a call reached only past a port access is a raw candidate in
+`incoming`, and an operand there is `unresolvedBoundary` in `operand-candidates`. The `uses` inventory past a stop still lists explicit memory operands
+after a PE32 port access in `conditionalAccesses`, and their `dependsOn` names
+each port access they are reached past.
 
 INT, INT1 and INT3 add a `hardware-boundary` event with `boundary: "interrupt"`
 and the `vector` p-code names, then stop the path, since the handler is not

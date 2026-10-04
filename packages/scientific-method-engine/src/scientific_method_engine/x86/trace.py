@@ -3,7 +3,8 @@ from copy import deepcopy
 from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
 from .image import integer
 from .machine import (State, StopPath, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
-                      string_count, string_effect, check_string_form, compare_string, repeated, string_width)
+                      string_count, string_effect, check_string_form, compare_string, repeated, string_width,
+                      FLAT_PORT_REASON)
 from .values import const, unknown, sources, op, Value
 from .result_flow import validate_contracts, result_contracts
 from .loops import LoopTracker
@@ -63,7 +64,13 @@ def counter_branch(state, ins):
     return answer, info, repr((m, count.term) if m == "loop" else (m, count.term, flags))
 
 
-def walk(image, entries, limit=10000):
+def walk(image, entries, limit=10000, follow_flat_ports=False):
+    """Decode the CFG reached from ``entries`` and check its instruction boundaries.
+
+    A port access in the flat model records a gap and ends that branch, as ``trace`` stops there.
+    ``follow_flat_ports`` continues past it instead, for callers that name each port access their
+    results depend on.
+    """
     integer(limit, 1, 100000, "instruction limit")
     pending, seen, gaps, edges = list(entries), {}, [], []
     # Decoded successors of each instruction, so a proof can be checked for independence below.
@@ -115,7 +122,11 @@ def walk(image, entries, limit=10000):
         if m in INTERRUPTS or m == "hlt":
             gaps.append({"site": at, "reason": "hardware or interrupt boundary"})
             continue
-        # A port access continues at the next instruction, as trace and body() follow it.
+        # In the flat model I/O privilege decides whether a port access faults, so the walk claims nothing after it.
+        # In the real-mode model it continues at the next instruction, as trace and body() follow it.
+        if m in PORTS and image.flat and not follow_flat_ports:
+            gaps.append({"site": at, "reason": FLAT_PORT_REASON})
+            continue
         if m in ("call", "lcall") and following not in following_sites:
             returns.add((at, following))
         pending.append(following)

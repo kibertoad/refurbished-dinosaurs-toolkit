@@ -100,6 +100,82 @@ test("CLI keeps capped and partial incoming searches explicit", (t) => {
   assert.equal(report.negativeUsable, false);
 });
 
+// A PE32 image with one .text section at raw 0x200 (VA 0x401000) holding `code`.
+function pe32Fixture(t: TestContext, code: number[]) {
+  const dir = mkdtempSync(join(tmpdir(), "bounded-pe32-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const data = Buffer.alloc(0x600),
+    w = (p: number, n: number) => data.writeUInt16LE(n, p),
+    d = (p: number, n: number) => data.writeUInt32LE(n, p);
+  data.write("MZ");
+  d(60, 0x80);
+  data.write("PE\0\0", 0x80, "latin1");
+  w(0x84, 0x14c);
+  w(0x86, 2);
+  w(0x94, 0xe0);
+  w(0x98, 0x10b);
+  d(0x98 + 28, 0x400000);
+  d(0x98 + 32, 0x1000);
+  d(0x98 + 36, 0x200);
+  d(0x98 + 56, 0x3000);
+  d(0x98 + 60, 0x200);
+  d(0x98 + 92, 16);
+  for (const [at, name, rva, raw, flags] of [
+    [0x178, ".text", 0x1000, 0x200, 0x60000020],
+    [0x1a0, ".data", 0x2000, 0x400, 0xc0000040],
+  ] as const) {
+    data.write(name, at, "latin1");
+    for (const [off, n] of [
+      [8, 0x200],
+      [12, rva],
+      [16, 0x200],
+      [20, raw],
+      [36, flags],
+    ] as const)
+      d(at + off, n);
+  }
+  data.set(code, 0x200);
+  writeFileSync(join(dir, "source.bin"), data);
+  const config = {
+    source: "source.bin",
+    sourceKind: "pe32",
+    xxh3: sourceXxh3(data),
+    entry: 0x200,
+    regions: [
+      // PE32 regions map through the section table, so they carry no segment or IP.
+      { name: "text", start: 0x200, end: 0x200 + code.length, entries: [0x200], evidence: "synthetic PE32 entry" },
+    ],
+  };
+  return { dir, config };
+}
+
+test("PE32 incoming claims no call reached only past a port access", (t) => {
+  // mov dx, 0x3c8; out dx, al (or nop); call t; ret; t: ret
+  const code = (port: number) => [0x66, 0xba, 0xc8, 0x03, port, 0xe8, 1, 0, 0, 0, 0xc3, 0xc3];
+  const blocked = pe32Fixture(t, code(0xee));
+  writeFileSync(join(blocked.dir, "config.json"), JSON.stringify({ ...blocked.config, target: 0x20b }));
+  const report = run(["incoming", join(blocked.dir, "config.json")]);
+  assert.deepEqual(report.confirmed, []);
+  assert.deepEqual(
+    report.candidates.map((c: Report) => [c.site, c.classification]),
+    [[0x205, "raw byte candidate"]],
+  );
+  assert.ok(
+    report.gaps.some(
+      (g: Report) =>
+        g.site === 0x204 && g.reason === "port access in the flat model depends on I/O privilege, which is not modeled",
+    ),
+  );
+  assert.equal(report.negativeUsable, false);
+  // With a NOP in place of the OUT, the same call is confirmed.
+  const open = pe32Fixture(t, code(0x90));
+  writeFileSync(join(open.dir, "config.json"), JSON.stringify({ ...open.config, target: 0x20b, controls: [0x205] }));
+  assert.deepEqual(
+    run(["incoming", join(open.dir, "config.json")]).confirmed.map((c: Report) => c.site),
+    [0x205],
+  );
+});
+
 function overlayFixture(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "bounded-overlay-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

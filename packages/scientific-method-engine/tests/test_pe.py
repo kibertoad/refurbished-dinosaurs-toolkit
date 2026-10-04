@@ -100,6 +100,36 @@ class PEReporterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'flat model'):
             report('ec c3', portInputs=[{'site': CODE_RAW, 'value': 1, 'evidence': 'synthetic'}])
 
+    def test_entry_walk_records_a_gap_at_a_port_access(self):
+        # mov dx, 0x3c8; out dx, al; mov [DATA_VA], eax; call t; ret; t: ret
+        c = Code().emit('66 ba c8 03 ee a3 00 20 40 00').branch('e8', 't').emit('c3').label('t').emit('c3')
+        out, store, call = CODE_RAW + 4, CODE_RAW + 5, CODE_RAW + 10
+        gap = {'site': out, 'reason': 'port access in the flat model depends on I/O privilege, which is not modeled'}
+        r = report(c, 'incoming', target=CODE_RAW + c.labels['t'])
+        self.assertEqual(r['confirmed'], [])
+        self.assertEqual([(x['site'], x['classification']) for x in r['candidates']], [(call, 'raw byte candidate')])
+        self.assertIn(gap, r['gaps'])
+        self.assertFalse(r['negativeUsable'])
+        with self.assertRaisesRegex(ValueError, 'control'):
+            report(c, 'incoming', target=CODE_RAW + c.labels['t'], controls=[call])
+        r = report(c, 'operand-candidates', query={'offset': DATA_VA})
+        self.assertEqual([(x['site'], x['classification']) for x in r['candidates']], [(store, 'unresolvedBoundary')])
+        self.assertIn(gap, r['gaps'])
+        # uses still inventories the store past the trace's stop, conditional on the port access continuing.
+        r = report(c, 'uses', query={'offset': DATA_VA, 'width': 4}, controls=[store])
+        self.assertEqual(r['matches'], [])
+        row, = r['conditionalAccesses']
+        self.assertEqual((row['site'], row['dependsOn']), (store, [{'site': out, 'reason': gap['reason']}]))
+        self.assertIn(gap, r['gaps'])
+        self.assertFalse(r['negativeUsable'])
+
+    def test_uses_names_each_port_access_past_a_stop(self):
+        # mov dx, 0x3c8; out dx, al; out dx, al; mov [DATA_VA], eax; ret
+        r = report('66 ba c8 03 ee ee a3 00 20 40 00 c3', 'uses', query={'offset': DATA_VA, 'width': 4})
+        row, = r['conditionalAccesses']
+        self.assertEqual([d['site'] for d in row['dependsOn']], [CODE_RAW + 4, CODE_RAW + 5])
+        self.assertEqual(row['dependsOn'][1]['reason'], 'port access past a stop; assumed to continue')
+
     def test_pop_addresses_its_destination_after_the_stack_pointer_moves(self):
         # push 1; push 2; push 3; pop dword [esp+4]; pop eax; pop ebx; ret
         regs = report('6a 01 6a 02 6a 03 8f 44 24 04 58 5b c3')['paths'][0]['registers']

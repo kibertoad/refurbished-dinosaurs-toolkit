@@ -18,6 +18,10 @@ class StopPath(Exception):
     pass
 
 
+# Why a port access ends what the flat model can follow: trace stops after its event, and walk records a gap.
+FLAT_PORT_REASON = "port access in the flat model depends on I/O privilege, which is not modeled"
+
+
 # The write-log key that marks a point where the model forgot all memory.
 MEMORY_CLEARED = ("memory-cleared",)
 
