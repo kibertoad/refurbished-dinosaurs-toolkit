@@ -37,6 +37,7 @@ on an undocumented public member.
 | `Assets` | `ImportDiskPlanner` | Free space an import needs, counting files it will replace. |
 | `Assets` | `StagedAssetPack` | Build a content directory beside the live one and swap it in, restoring the old one on failure. |
 | `Assets` | `InstalledContentWriter` | Write or copy one installed file atomically, skipping identical files. |
+| `Assets` | `ContentOverlay`, `ContentOverlayManifest` | Apply a patch or fix delivered as files to a staged pack, replacing each file only when it holds the bytes the overlay expects. |
 | `Assets` | `InstalledAssetManifest`, `InstalledAssetVerifier` | Record what an import installed, and check it at startup, with a reason code per problem. |
 | `Assets` | `InstalledContentUninstaller` | Remove only the files a manifest lists. |
 | `Determinism` | `IRandomSource`, `MsvcRandom` | The legacy Microsoft C `rand()` sequence, with saveable state. |
@@ -66,6 +67,38 @@ content directories; concurrent filesystem replacement needs host controls.
 use the same rules. A null or blank reference from data, a blank manifest game or edition and a
 missing file list throw `InvalidDataException`, like every other rejected reference; a blank root
 or source path passed by the caller still throws `ArgumentException`.
+
+## Content overlays
+
+A content overlay adds or replaces files in a content directory, usually a
+`StagedAssetPack.StagingDirectory`, for example to bring an imported 1.0 edition to an official
+1.1 patch. It is a zip archive (`ContentOverlay.OpenZip`) or a directory (`OpenDirectory`) holding
+`overlay.json`, which `schemas/content-overlay.schema.json` describes, and each payload at
+`files/<path>`. Each record gives the target path, the payload's size, the XXH3-128 the target must
+have first (`baseXxh3`, null for an added file that must not exist) and the payload's XXH3-128.
+
+Opening rejects a manifest with a duplicate path (ignoring case), a path `PortableAssetPath.Relative`
+rejects, a path that is also a directory of another record, a missing, unlisted or linked payload,
+a payload of another size than its record, and anything over `ContentOverlayLimits` (100,000 files,
+1 GiB a file, 4 GiB in all and a 4 MiB manifest by default).
+
+`ApplyAsync` checks every target before it writes anything, finding each path component ignoring
+case. A target that already has the payload's size and hash counts as applied and is not written,
+so a rerun writes nothing. A target with neither hash, a replaced file that is missing, or an added
+file that exists throws `ContentOverlayException` with a `ContentOverlayProblem`, the path and the
+hash found. Then every payload is copied into a scratch directory under the root and hashed as it
+is copied; a payload whose size or hash differs from its record throws before any target is
+replaced, and the scratch directory is always removed. Only then are the copies moved over their
+targets. Those moves are not one transaction, so after any exception dispose the stage without
+committing it.
+
+`ContentOverlayResult.Outputs` lists each record's actual spelling, size, hash and
+`ContentOverlayAction`. `UpdateInstalledFiles` puts the outputs into the importer's
+`InstalledAsset` list: a matching record takes the new size and hash, keeps its media type, and gets
+an `AssetConversion` whose method is the overlay's `name`.
+
+An overlay cannot delete a file. The overlay's payloads, hashes and version names are the
+restoration's data.
 
 ## Input snapshots and bindings
 
