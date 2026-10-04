@@ -10,10 +10,10 @@ What this module and ``pcode.Run`` use of a ``State``:
 - Methods: ``get``, ``put``, ``reg``, ``setreg``, ``segment``, ``access``, ``address``, ``event``,
   ``set_flags``, ``forget_flags``, ``carry_value``, ``save_flags`` and ``restore_flags``.
 - Read only: ``at``, ``bits``, ``flat``, ``sp``, ``flags``, ``flag_serial``, ``flag_epoch``,
-  ``unknown_flag_site``, ``segment_bases`` and ``value_transfers``.
+  ``unknown_flag_site``, ``segment_bases``, ``value_transfers``, ``events`` and ``port_inputs``.
 - Read and assigned: ``flag_values`` (the arithmetic flags p-code computed, or None), ``carry``,
   ``direction_flag`` and ``interrupt_flag``. ``conditional`` is appended to (the divide-error
-  assumption).
+  and port-input assumptions).
 
 Every member above belongs to one path, and ``trace`` copies a path with ``deepcopy`` when a branch
 splits it. The backend keeps no path state of its own: ``Pypcode.__deepcopy__`` returns the same
@@ -356,7 +356,8 @@ class Frame:
             WIDTHS[value.term] = value.bits
             LEAVES.add(value.term)
         present = (lambda value: self.present(value, self)) if self.present else None
-        self.run = Run(self.state, self.ops, self.memory, self.constant, present=present)
+        self.run = Run(self.state, self.ops, self.memory, self.constant, present=present,
+                       port=lambda *access: port_access(self.state, self.ins, *access))
         self.run.execute()
         for value in [*self.loaded.values(), *self.run.temps.values(), *self.run.registers.values()]:
             if isinstance(value, Value):  # Real-mode temporaries may hold a segmented Address.
@@ -470,7 +471,8 @@ class Pypcode:
     def string_iteration(self, state, ins, operation, width, source_segment):
         """Apply one iteration of an accepted string form; see ``machine.string_effect``.
 
-        ``source_segment`` names the source operand's segment register (MOVS, LODS and CMPS only).
+        ``source_segment`` names the source operand's segment register (MOVS, LODS, OUTS and CMPS
+        only).
         p-code steps SI and DI by the direction flag. For a repeated CMPS or SCAS, returns whether
         the repeat condition holds afterwards (1, 0 or unknown); otherwise None.
         """
@@ -506,7 +508,7 @@ class Pypcode:
 
         ops, tail = string_ops(state.flat, bytes(ins.bytes), state.at, operation)
         accumulator = state.reg({1: "al", 2: "ax", 4: "eax"}[width]) if operation == "scas" else None
-        run = Run(state, ops, memory)
+        run = Run(state, ops, memory, port=lambda *access: port_access(state, ins, *access))
         run.execute()
         if operation not in ("cmps", "scas"):
             return None
@@ -909,6 +911,62 @@ def flag_write(state, ins, image):
                 interpretation="local flag effect only; interrupts and timing are not simulated")
 
 
+OUTPUT_MEANING = ("the value leaves the instruction model at this port; device state, timing and "
+                  "rendered output are not modeled")
+INPUT_MEANING = ("the value a device returns is not modeled; a supplied value is a query assumption, "
+                 "never native device state")
+
+
+def port_access(state, ins, direction, port, value, size):
+    """Report one port input or output as a hardware-boundary event; return the value read.
+
+    The port number and the value written come from the p-code. A value read is unknown unless the
+    query's ``portInputs`` supplies one for this site, which the path then lists as an assumption.
+    The flat model stops after the event, because I/O privilege decides whether the access faults.
+    """
+    port = resize(port, 16)
+    fields = {"boundary": "port-" + direction, "mnemonic": ins.mnemonic.split()[-1], "port": port.report(),
+              "portKnown": port.number is not None, "width": size}
+    if direction == "output":
+        state.event("hardware-boundary", **fields, value=value.report(), interpretation=OUTPUT_MEANING)
+        result = None
+    else:
+        supplied = state.port_inputs.get(state.at)
+        if supplied is None:
+            result = unknown(f"port-input:{state.at}:{len(state.events)}", size * 8, state.at)
+            fields["valueSource"] = "unknown"
+        else:
+            result = const(supplied["value"], size * 8, state.at)
+            fields.update(valueSource="query assumption", evidence=supplied["evidence"])
+            assumption = {"site": state.at, "evidence": supplied["evidence"],
+                          "assumption": "port input value supplied by the query; device state unconfirmed"}
+            # Every read at the site uses the same supplied value, so the path lists it once.
+            if assumption not in state.conditional:
+                state.conditional.append(assumption)
+        state.event("hardware-boundary", **fields, value=result.report(), interpretation=INPUT_MEANING)
+    if state.flat:
+        raise StopPath("port access in the flat model depends on I/O privilege, which is not modeled")
+    return result
+
+
+def interrupt_vector(flat, ins, site):
+    """The vector p-code's ``swi`` operation names, and whether the interrupt is conditional (INTO)."""
+    ops, _ = LIFTER.ops(flat, bytes(ins.bytes), site)
+    call = next((o for o in ops if o.code == "CALLOTHER" and o.userop == "swi"), None)
+    vector = call.inputs[1][1] if call is not None and call.inputs[1][0] == "const" else None
+    return vector, any(o.code == "CBRANCH" for o in ops)
+
+
+def interrupt(state, ins, image):
+    vector, conditional = interrupt_vector(state.flat, ins, state.at)
+    if conditional:
+        # INTO interrupts only when OF is set; that branch is not modeled.
+        raise StopPath("Unsupported instruction semantics: " + ins.mnemonic)
+    state.event("hardware-boundary", boundary="interrupt", mnemonic=ins.mnemonic, vector=vector,
+                interpretation="the interrupt handler and its effects are not modeled")
+    raise StopPath("interrupt handler is not modeled; later effects are not read")
+
+
 HANDLERS = {}
 for names, handler in ((("mov", "movzx", "movsx", "xchg"), move), (("nop",), nop), (("lea",), lea),
                        (("lds", "les"), far_pointer), (("push",), push), (("pop",), pop), (("leave",), leave),
@@ -917,7 +975,8 @@ for names, handler in ((("mov", "movzx", "movsx", "xchg"), move), (("nop",), nop
                        (("neg",), negate), (("adc", "sbb"), carry_arithmetic), (("clc", "stc", "cmc"), carry_flag),
                        (("shl", "sal", "shr", "sar"), shift), (("rol", "ror", "rcl", "rcr"), rotate),
                        (("mul", "imul"), multiply), (("div", "idiv"), divide),
-                       (("cbw", "cwde", "cwd", "cdq"), conversion), (("cld", "std", "cli", "sti"), flag_write)):
+                       (("cbw", "cwde", "cwd", "cdq"), conversion), (("cld", "std", "cli", "sti"), flag_write),
+                       (("in", "out"), run_plain), (("int", "int1", "int3", "into"), interrupt)):
     for name in names:
         HANDLERS[name] = handler
 

@@ -54,6 +54,104 @@ test("a missing section is reported", (t) => {
   assert.match(output, /RULE-SCORE-001\.md: sections must be .*Edge cases/);
 });
 
+test("a problem that breaks a numbered rule names the rule", (t) => {
+  const root = broken(t, (r) =>
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "## Edge cases\n\nNone known.\n", "## Edge cases\n\n"),
+  );
+  const { status, output } = run(root, "--check");
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /RULE-SCORE-001\.md: section Edge cases is empty; write None known\. or None\. \[ENTRY-TYPES-2\]$/m,
+  );
+  assert.match(
+    output,
+    /names the rule of the documentation standard that the problem breaks.*https:\/\/dinorefurb\.com\/documentation-standard\/#status-14/,
+  );
+});
+
+test("a problem that no numbered rule covers has no label and no note about labels", (t) => {
+  const root = broken(t, (r) => writeFileSync(join(r, "spec", "index", "by-kind.md"), "stale\n"));
+  const { output } = run(root, "--check");
+  assert.match(output, /spec\/index\/by-kind\.md: is stale/);
+  assert.doesNotMatch(output, /\[[A-Z]+(-[A-Z]+)*-\d+\]/);
+  assert.doesNotMatch(output, /names the rule of the documentation standard/);
+});
+
+test("a missing field that every claim has names the rule, and a field of one kind names none", (t) => {
+  const root = broken(t, (r) => {
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "split_with: []\n", "");
+    replaceIn(
+      r,
+      "spec/sources/SRC-MANUAL.md",
+      "licence: All rights reserved by the publisher; only short quotations are used.\n",
+      "",
+    );
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /RULE-SCORE-001\.md: front matter lacks split_with \[ENTRY-TYPES-5\]$/m);
+  assert.match(output, /SRC-MANUAL\.md: front matter lacks licence$/m);
+});
+
+test("a claim link that is not a list names the rule that makes the field always present", (t) => {
+  const root = broken(t, (r) =>
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "conflicting: []\n", "conflicting: none\n"),
+  );
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /RULE-SCORE-001\.md: conflicting must be a list \[ENTRY-TYPES-5\]$/m);
+});
+
+test("each link a rule's related field lacks names ENTRY-TYPES-6", (t) => {
+  const root = broken(t, (r) => {
+    copyRule(r, "RULE-SCORE-002");
+    replaceIn(r, "parity/SCORE.md", "| `RULE-SCORE-001` |", `${row("RULE-SCORE-002")}\n| \`RULE-SCORE-001\` |`);
+    replaceIn(
+      r,
+      "spec/rules/RULE-SCORE-001.md",
+      "    return n + 1",
+      "    # may run: RULE-SCORE-002\n    let best = FMT-SCORE-001\n    return n + 1",
+    );
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /RULE-SCORE-001\.md: may be interrupted by RULE-SCORE-002; add it to related \[ENTRY-TYPES-6\]$/m,
+  );
+  assert.match(output, /RULE-SCORE-001\.md: uses FMT-SCORE-001; add it to related \[ENTRY-TYPES-6\]$/m);
+});
+
+test("a row status that is no status names STATUS-1, and a superseded row names no rule", (t) => {
+  const row = "| `0x00` | 2 | `UINT16LE` | `best` | The best score. | sourced | SRC-MANUAL |";
+  for (const [st, label] of [
+    ["bogus", " \\[STATUS-1\\]"],
+    ["superseded", ""],
+  ]) {
+    const root = broken(t, (r) =>
+      replaceIn(r, "spec/formats/FMT-SCORE-001.md", row, row.replace("| sourced |", `| ${st} |`)),
+    );
+    const { status, output } = run(root);
+    assert.equal(status, 1);
+    assert.match(
+      output,
+      new RegExp("FMT-SCORE-001\\.md: layout row `best`: status " + st + " is not allowed in a row" + label + "$", "m"),
+    );
+  }
+});
+
+test("a numbered ID used twice names IDENTIFIERS-3, and an alias used twice names IDENTIFIERS-4", (t) => {
+  const root = broken(t, (r) => {
+    cpSync(join(r, "spec/rules/RULE-SCORE-001.md"), join(r, "spec/rules/RULE-SCORE-002.md"));
+    cpSync(join(r, "spec/sources/SRC-MANUAL.md"), join(r, "spec/sources/SRC-MANUAL-2.md"));
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /: ID RULE-SCORE-001 is used twice \[IDENTIFIERS-3\]$/m);
+  assert.match(output, /: ID SRC-MANUAL is used twice \[IDENTIFIERS-4\]$/m);
+});
+
 test("a data path in the wrong case is reported", (t) => {
   const root = broken(t, (r) =>
     replaceIn(r, "spec/formats/FMT-SCORE-001.md", "`DATA/SCORES.BIN` holds", "`DATA/scores.bin` holds"),
@@ -644,7 +742,7 @@ test("a procedure another rule may interrupt is not established by a complete re
   assert.equal(status, 1);
   assert.match(
     output,
-    /another rule may interrupt this procedure \(# may run:\), so a complete reading cannot establish it/,
+    /another rule may interrupt this procedure \(# may run:\), so a complete reading cannot establish it; leave complete_reading empty \[STATUS-4\]$/m,
   );
 });
 
@@ -752,7 +850,7 @@ test("a live experiment's draw cannot name a superseded rule", (t) => {
   });
   const { status, output } = run(root);
   assert.equal(status, 1, output);
-  assert.match(output, /draw 0 names RULE-SCORE-002, which is superseded/);
+  assert.match(output, /draw 0 names RULE-SCORE-002, which is superseded \[STATUS-17\]$/m);
 });
 
 test("emulated calls alone do not establish a rule another rule may interrupt", (t) => {
@@ -765,7 +863,7 @@ test("emulated calls alone do not establish a rule another rule may interrupt", 
   });
   const { status, output } = run(root);
   assert.equal(status, 1);
-  assert.match(output, /so emulated calls alone cannot establish it/);
+  assert.match(output, /so emulated calls alone cannot establish it \[STATUS-15\]$/m);
 });
 
 test("tests against emulated calls alone do not validate a rule another rule may interrupt", (t) => {
@@ -788,7 +886,7 @@ test("tests against emulated calls alone do not validate a rule another rule may
   assert.equal(status, 1);
   assert.match(
     output,
-    /RULE-SCORE-001: another rule may interrupt it \(# may run:\), so tests against emulated calls alone cannot validate it/,
+    /RULE-SCORE-001: another rule may interrupt it \(# may run:\), so tests against emulated calls alone cannot validate it \[STATUS-15\]$/m,
   );
 });
 
@@ -1329,7 +1427,10 @@ test("a Code ranges row that cites a superseded finding is reported", (t) => {
   });
   const result = run(root);
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /Code ranges row GAME\.EXE 0x0100\.\.0x0200: cites FND-SCORE-001, which is superseded/);
+  assert.match(
+    result.output,
+    /Code ranges row GAME\.EXE 0x0100\.\.0x0200: cites FND-SCORE-001, which is superseded \[STATUS-17\]$/m,
+  );
 });
 
 test("a Code ranges row with the wrong number of cells is reported", (t) => {

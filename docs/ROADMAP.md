@@ -1,8 +1,8 @@
 # Roadmap
 
 As of 2026-10-02. This file orders the toolkit work that follows the ADR 0003 cutover. When a
-milestone starts it gets its own section in [the implementation plan](IMPLEMENTATION-PLAN.md),
-stating its tests and exit condition. Remove a milestone from this file once it lands.
+milestone that takes several PRs starts, it gets its own section in
+[the implementation plan](IMPLEMENTATION-PLAN.md), stating its tests and exit condition. Remove a milestone from this file once it lands.
 
 ## Where things stand
 

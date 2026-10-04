@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { prepare, run } from "../src/report.ts";
+import { prepare, run, sourceXxh3 } from "../src/report.ts";
 import type { Region, Report } from "../src/report.ts";
 // The engine runs from the monorepo checkout beside this package, installed or not.
 const engine = fileURLToPath(new URL("../../scientific-method-engine/src", import.meta.url));
@@ -28,7 +28,7 @@ function fixture(t: TestContext) {
   const config = {
     source: "source.bin",
     sourceKind: "mz",
-    sha256: createHash("sha256").update(data).digest("hex"),
+    xxh3: sourceXxh3(data),
     entry: 64,
     regions: [
       { name: "resident", start: 64, end: 84, ip: 0, segment: 4096, entries: [64], evidence: "synthetic mapped MZ" },
@@ -72,9 +72,20 @@ test("return flow bridge keeps full-width failures and declared roles", (t) => {
   assert.equal(r.returnFlowAnalysis.capped, false);
 });
 
+test("sourceXxh3 gives the canonical XXH3-128 that xxhsum -H2 prints", () => {
+  assert.equal(sourceXxh3(new Uint8Array()), "99aa06d3014798d86001c324468d497f");
+  assert.equal(sourceXxh3(Buffer.from("abc")), "06b05ab6733a618578af5f94892f3950");
+});
+
 test("source loader rejects mapping and identity conflicts", (t) => {
-  const { dir, config } = fixture(t);
-  assert.throws(() => prepare({ ...config, sha256: "0".repeat(64) }, dir), /baseline/);
+  const { dir, data, config } = fixture(t);
+  assert.throws(() => prepare({ ...config, xxh3: "0".repeat(32) }, dir), /baseline/);
+  // A SHA-256 or an upper-case hash is not the standard's form, so it is refused before any read.
+  for (const xxh3 of ["0".repeat(64), config.xxh3.toUpperCase(), undefined])
+    assert.throws(() => prepare({ ...config, xxh3 } as typeof config, dir), /32 lower-case hex digits/);
+  // A protocol 1 config is refused even beside a correct xxh3, so its sha256 never passes unchecked.
+  const sha256 = createHash("sha256").update(data).digest("hex");
+  assert.throws(() => prepare({ ...config, sha256 }, dir), /sha256 is no longer read/);
   assert.throws(() => prepare({ ...config, sourceKind: "pe" }, dir), /unsupported/);
   assert.throws(() => prepare({ ...config, regions: [{ ...config.regions[0]!, segment: 4097 }] }, dir), /mapping/);
   assert.throws(() => prepare({ ...config, targetSelector: { descriptor: 0, trampoline: 80 } }, dir), /trampoline/);
@@ -122,7 +133,7 @@ function overlayFixture(t: TestContext) {
   const config = {
     source: "source.bin",
     sourceKind: "mz",
-    sha256: createHash("sha256").update(data).digest("hex"),
+    xxh3: sourceXxh3(data),
     targetSelector: { descriptor: 1, trampoline: 288 },
     controls: [80, 532],
     regions: [
@@ -169,7 +180,7 @@ test("instruction operand CLI uses source relocation and rejects partial word qu
   writeFileSync(join(dir, "source.bin"), data);
   const cfg = {
     ...config,
-    sha256: createHash("sha256").update(data).digest("hex"),
+    xxh3: sourceXxh3(data),
     query: { site: 64, operandSite: 65, targetOffset: 16 },
   };
   const path = join(dir, "config.json");
@@ -223,7 +234,7 @@ test("target report assigns no target to an unrelocated far call and flags a raw
     path,
     JSON.stringify({
       ...config,
-      sha256: createHash("sha256").update(data).digest("hex"),
+      xxh3: sourceXxh3(data),
       query: { site: 80, analyzerAddress: { segment: 12, offset: 32, evidence: "synthetic analyzer listing" } },
     }),
   );
@@ -324,7 +335,7 @@ test("pointer inventory separates exact loaded pairs, aliases and out-of-domain 
   const config = {
     source: join(dir, "source.bin"),
     sourceKind: "mz",
-    sha256: createHash("sha256").update(data).digest("hex"),
+    xxh3: sourceXxh3(data),
     query: { segment: 4097, offset: 32 },
     controls: [82],
     limit: 100,
@@ -356,7 +367,7 @@ test("pointer inventory separates exact loaded pairs, aliases and out-of-domain 
   assert.equal(run(["pointers", path]).negativeUsable, true);
   w(6, 2);
   writeFileSync(config.source, data);
-  config.sha256 = createHash("sha256").update(data).digest("hex");
+  config.xxh3 = sourceXxh3(data);
   writeFileSync(path, JSON.stringify({ ...config, query: { segment: 4097, offset: 33 } }));
   const negative = run(["pointers", path]);
   assert.equal(negative.negativeUsable, true);
@@ -367,7 +378,7 @@ test("pointer inventory separates exact loaded pairs, aliases and out-of-domain 
   w(6, 3);
   w(114, 0xf000);
   writeFileSync(config.source, data);
-  config.sha256 = createHash("sha256").update(data).digest("hex");
+  config.xxh3 = sourceXxh3(data);
   writeFileSync(path, JSON.stringify(config));
   const overflow = run(["pointers", path]);
   assert.equal(overflow.counts.exactPair, 1);
@@ -422,7 +433,7 @@ test("pointer exclusions remain bounded and do not qualify overflow or partial o
   const config = { source, sourceKind: "mz", query: { segment: 4097, offset: 33 }, controls: [82], limit: 10 };
   const execute = (c: Record<string, unknown>) => {
     writeFileSync(source, data);
-    writeFileSync(path, JSON.stringify({ ...c, sha256: createHash("sha256").update(data).digest("hex") }));
+    writeFileSync(path, JSON.stringify({ ...c, xxh3: sourceXxh3(data) }));
     return run(["pointers", path]);
   };
   const r = execute(config);
@@ -496,7 +507,7 @@ test("callee graph through the source bridge keeps a reused node distinct from r
   writeFileSync(join(dir, "source.bin"), data);
   const cfg = {
     ...config,
-    sha256: createHash("sha256").update(data).digest("hex"),
+    xxh3: sourceXxh3(data),
     regions: [{ ...config.regions[0]!, entries: [64, 71] }],
     controls: { sharedSites: [67], writeSites: [71] },
   };
@@ -522,6 +533,8 @@ test("callee graph through the source bridge compares its edges with a Ghidra ex
   // call 71; call 71; ret; at 71: ret
   data.set([0xe8, 4, 0, 0xe8, 1, 0, 0xc3, 0xc3], 64);
   writeFileSync(join(dir, "source.bin"), data);
+  const xxh3 = sourceXxh3(data);
+  // ExportCallEdges records Ghidra's own SHA-256 of the program, not the prepared-config hash.
   const sha256 = createHash("sha256").update(data).digest("hex");
   const edge = (site: number, target: number | null, flow: string) => ({
     site,
@@ -532,7 +545,7 @@ test("callee graph through the source bridge compares its edges with a Ghidra ex
   });
   const cfg = {
     ...config,
-    sha256,
+    xxh3,
     regions: [{ ...config.regions[0]!, entries: [64, 71] }],
     controls: { ghidraAgreementSites: [64] },
     ghidraCallEdges: {
@@ -577,7 +590,7 @@ test("argument frames map pushed words onto the callee's read widths through the
   writeFileSync(join(dir, "source.bin"), data);
   const cfg = {
     ...config,
-    sha256: createHash("sha256").update(data).digest("hex"),
+    xxh3: sourceXxh3(data),
     regions: [{ ...config.regions[0]!, entries: [64, 75] }],
   };
   writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
@@ -599,6 +612,57 @@ test("argument frames map pushed words onto the callee's read widths through the
   assert.equal(r.argumentFrameSites[0].agreed, true);
 });
 
+test("the Ghidra cross-check reports an interrupt Ghidra lifts to a call as an interrupt row", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // int 21h; call 70; ret; at 70: ret
+  data.set([0xcd, 0x21, 0xe8, 1, 0, 0xc3, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  // ExportCallEdges records Ghidra's own SHA-256 of the program, not the prepared-config hash.
+  const sha256 = createHash("sha256").update(data).digest("hex");
+  const edge = (site: number, target: number | null, flow: string) => ({
+    site,
+    siteAddress: `1000:${site.toString(16)}`,
+    target,
+    targetAddress: target === null ? null : `1000:${target.toString(16)}`,
+    flow,
+  });
+  const cfg = {
+    ...config,
+    xxh3: sourceXxh3(data),
+    regions: [{ ...config.regions[0]!, entries: [64, 70] }],
+    controls: { ghidraAgreementSites: [66] },
+    ghidraCallEdges: {
+      format: "scientific-method-ghidra-call-edges",
+      version: 1,
+      sha256,
+      functionLimit: 8,
+      missingEntries: [],
+      unreadFunctions: [],
+      functions: [
+        {
+          entry: 64,
+          address: "1000:0040",
+          edges: [edge(64, null, "COMPUTED_CALL"), edge(66, 70, "UNCONDITIONAL_CALL")],
+        },
+        { entry: 70, address: "1000:0046", edges: [] },
+      ],
+    },
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  const check = run(["callees", join(dir, "config.json")]).ghidraCrossCheck;
+  assert.deepEqual(
+    check.edges.map((e: Report) => [e.site, e.result]),
+    [
+      [66, "agreement"],
+      [64, "interrupt"],
+    ],
+  );
+  assert.equal(check.counts.interrupt, 1);
+  assert.equal(check.edges[1].ghidraFallsThrough, true);
+  assert.equal(check.agreed, true);
+});
+
 test("operand candidates preserve prefixed widths and reject interior starts through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);
@@ -606,7 +670,7 @@ test("operand candidates preserve prefixed widths and reject interior starts thr
   writeFileSync(join(dir, "source.bin"), data);
   const cfg = {
     ...config,
-    sha256: createHash("sha256").update(data).digest("hex"),
+    xxh3: sourceXxh3(data),
     query: { offset: 0x2f6 },
     controls: [64],
   };
@@ -642,7 +706,7 @@ test("near-pointer arguments and DS dereferences retain caller SS provenance thr
   writeFileSync(join(dir, "source.bin"), data);
   const cfg = {
     ...config,
-    sha256: createHash("sha256").update(data).digest("hex"),
+    xxh3: sourceXxh3(data),
     regions: [{ ...config.regions[0], end: 97 }],
   };
   writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
@@ -667,7 +731,7 @@ test("call-order retains flat coverage and caller guard/cleanup qualifications t
   writeFileSync(join(dir, "source.bin"), data);
   const cfg = {
     ...config,
-    sha256: createHash("sha256").update(data).digest("hex"),
+    xxh3: sourceXxh3(data),
     target: 82,
     regions: [{ ...config.regions[0]!, entries: [64, 82] }],
     controls: [69, 75],
@@ -690,7 +754,7 @@ test("effects preserves pre-service writes and unknown returning-service effects
   writeFileSync(join(dir, "source.bin"), data);
   const query = {
     ...config,
-    sha256: createHash("sha256").update(data).digest("hex"),
+    xxh3: sourceXxh3(data),
     callModels: [
       { site: 70, returnBytes: 4, evidence: "synthetic returning service failure", cases: [{ registers: { ax: 1 } }] },
     ],
@@ -719,7 +783,7 @@ test("trace runs a repeated string comparison until its condition fails through 
   writeFileSync(join(dir, "source.bin"), data);
   const query = {
     ...config,
-    sha256: createHash("sha256").update(data).digest("hex"),
+    xxh3: sourceXxh3(data),
     registers: { ds: 0x2000, es: 0x2000 },
     flags: { direction: 0 },
   };
@@ -741,10 +805,11 @@ test("trace decides a decrement loop's exit from p-code flags through the source
   // mov cx, 3; dec cx; jnz back to dec; ret
   data.set([0xb9, 3, 0, 0x49, 0x75, 0xfd, 0xc3], 64);
   writeFileSync(join(dir, "source.bin"), data);
-  const query = { ...config, sha256: createHash("sha256").update(data).digest("hex") };
+  const query = { ...config, xxh3: sourceXxh3(data) };
   writeFileSync(join(dir, "config.json"), JSON.stringify(query));
   const result = run(["trace", join(dir, "config.json")]);
-  // The report names the decoder and the instruction semantics the engine ran.
+  // The report names the source the engine checked, the decoder and the instruction semantics it ran.
+  assert.deepEqual(result.sourceIdentity, { size: data.length, xxh3: query.xxh3 });
   assert.match(result.decoder, /^capstone \d+\.\d+\.\d+$/);
   assert.match(result.instructionSemantics, /^pypcode \d+\.\d+\.\d+ \(Ghidra SLEIGH x86\)$/);
   assert.equal(result.paths.length, 1);
@@ -762,6 +827,52 @@ test("trace decides a decrement loop's exit from p-code flags through the source
   assert.equal(path.registers.cx.value, 0);
 });
 
+test("effects reports port accesses as hardware boundaries apart from RAM writes through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // in al, 0x60; mov [0x200], al; mov dx, 0x3c8; out dx, al; ret
+  data.set([0xe4, 0x60, 0xa2, 0, 2, 0xba, 0xc8, 3, 0xee, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const query = {
+    ...config,
+    xxh3: sourceXxh3(data),
+    registers: { ds: 0x2000 },
+    portInputs: [{ site: 64, value: 7, evidence: "synthetic device reply" }],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const result = run(["effects", join(dir, "config.json")]);
+  const path = result.paths[0];
+  assert.equal(path.returned, true);
+  const boundaries = path.events.filter((e: Report) => e.kind === "hardware-boundary");
+  assert.deepEqual(
+    boundaries.map((e: Report) => [e.boundary, e.port.value, e.value.value]),
+    [
+      ["port-input", 0x60, 7],
+      ["port-output", 0x3c8, 7],
+    ],
+  );
+  assert.equal(boundaries[0].valueSource, "query assumption");
+  assert.equal(path.conditionalModels[0].site, 64);
+  const writes = path.events.filter((e: Report) => e.kind === "write");
+  assert.deepEqual(
+    writes.map((e: Report) => e.offset.value),
+    [0x200],
+  );
+  const summary = result.effectOrdering.paths[0];
+  assert.deepEqual(
+    summary.hardwareBoundaryOrders,
+    boundaries.map((e: Report) => e.order),
+  );
+  assert.equal(summary.effectCompleteWithinModel, false);
+  assert.deepEqual(
+    result.hardwareBoundaries.map((row: Report) => [row.site, row.placement]),
+    [
+      [64, "everyTracedPath"],
+      [72, "everyTracedPath"],
+    ],
+  );
+});
+
 test("effects retains stopped dispatch beside separate conditional table paths", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);
@@ -773,7 +884,7 @@ test("effects retains stopped dispatch beside separate conditional table paths",
   writeFileSync(join(dir, "source.bin"), data);
   const query = {
     ...config,
-    sha256: createHash("sha256").update(data).digest("hex"),
+    xxh3: sourceXxh3(data),
     regions: [{ ...config.regions[0]!, end: 104 }],
     indirectJumps: [
       {
@@ -806,7 +917,7 @@ test("nested modeled services retain child writes but cannot preserve ancestor r
   writeFileSync(join(dir, "source.bin"), data);
   const query = {
     ...config,
-    sha256: createHash("sha256").update(data).digest("hex"),
+    xxh3: sourceXxh3(data),
     regions: [{ ...config.regions[0]!, end: 97 }],
     registers: { ds: 0x2000, ss: 0x3000, sp: 0xff00 },
   };
@@ -852,4 +963,62 @@ test("nested modeled services retain child writes but cannot preserve ancestor r
   const pathCapped = run(["effects", join(dir, "config.json")]);
   assert.equal(pathCapped.effectOrdering.allPathsRead, false);
   assert.ok(pathCapped.gaps.some((g: Report) => g.site === 83 && g.reason === "path limit at modeled call"));
+});
+
+test("explicit memory scopes join nested frames through the real MZ prepared bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.set([0xc6, 0x06, 0x30, 0, 0, 0xc3], 69);
+  data.set([0x55, 0x89, 0xe5, 0xe8, 10, 0, 0xc6, 0x06, 0x30, 0, 3, 0x5d, 0xcb], 80);
+  data[96] = 0xc3;
+  writeFileSync(join(dir, "source.bin"), data);
+  const scope = { segment: "ss", base: "sp", bytes: 6, evidence: "synthetic saved BP and far return hypothesis" };
+  const model = {
+    site: 83,
+    returnBytes: 2,
+    preserves: ["ds", "ss"],
+    preservesMemory: [scope],
+    evidence: "synthetic balanced service; all other memory unknown",
+    cases: [{}],
+  };
+  const query = {
+    ...config,
+    xxh3: sourceXxh3(data),
+    regions: [{ ...config.regions[0]!, end: 97 }],
+    registers: { ds: 0x2000, ss: 0x3000, sp: 0xff00, ebp: 0x7777 },
+    callModels: [model],
+  };
+  const execute = (cfg: Record<string, unknown>) => {
+    writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+    return run(["effects", join(dir, "config.json")]);
+  };
+  const result = execute(query);
+  assert.equal(result.completeWithinModel, true);
+  assert.equal(result.paths[0].registers.bp.value, 0x7777);
+  assert.ok(result.paths[0].events.some((e: Report) => e.kind === "write" && e.site === 69));
+  const path = result.effectOrdering.paths[0];
+  assert.equal(path.effectCompleteWithinModel, false);
+  assert.ok(path.calls.every((c: Report) => c.unknownEffects));
+  const saved = path.calls.find((c: Report) => c.site === 83).preservedMemoryScopes;
+  assert.equal(saved[0].bytes, 6);
+  assert.equal(saved[0].cachedBytes, 6);
+  assert.equal(saved[0].uncachedBytes, 0);
+  assert.match(saved[0].meaning, /hypothesis/);
+  assert.equal(saved[0].segment.value, 0x3000);
+  assert.deepEqual(saved, path.conditionalModels[0].preservedMemoryScopes);
+  for (const preservation of [[{ ...scope, bytes: 5 }], [{ ...scope, segment: "ds" }], []]) {
+    const stopped = execute({ ...query, callModels: [{ ...model, preservesMemory: preservation }] });
+    assert.equal(stopped.completeWithinModel, false);
+    assert.ok(!stopped.paths.some((p: Report) => p.events.some((e: Report) => e.kind === "write" && e.site === 69)));
+  }
+  for (const limit of [{ maxSteps: 1 }, { maxPaths: 1 }]) {
+    const capped = execute({ ...query, ...limit });
+    assert.equal(capped.completeWithinModel, false);
+    assert.equal(capped.effectOrdering.allPathsRead, false);
+  }
+  // Unreachable models are still validated; a declaration is not accepted just
+  // because its call site was not visited by this particular query.
+  assert.throws(
+    () => execute({ ...query, callModels: [{ ...model, site: 96, preservesMemory: [{ ...scope, bytes: 4097 }] }] }),
+    /4096/,
+  );
 });

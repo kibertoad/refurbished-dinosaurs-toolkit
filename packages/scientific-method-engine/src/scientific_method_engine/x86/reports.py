@@ -4,14 +4,15 @@ from bisect import bisect_right
 from collections import deque
 from capstone import CS_AC_READ, CS_AC_WRITE
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
-from .machine import State, StopPath, REGISTERS, ALIASES, segment_register
+from .machine import State, StopPath, REGISTERS, ALIASES, segment_register, string_instruction
 from .values import unknown
 from .effect_order import effect_ordering
 from .argument_frames import argument_frames, stack_cleanup
 from .result_flow import return_flows
 from .image import Image, integer
 from .trace import (trace, walk, call_target, unsupported_transfer, uncovered, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
-                    RETURNS, INTERRUPTS, PORTS)
+                    RETURNS, INTERRUPTS, PORTS, PORT_INPUTS, port_width)
+from .pcode_backend import interrupt_vector
 
 
 def entries(image):
@@ -592,7 +593,10 @@ def allocations(report, config):
                                 "orderedWrites": [e for e in path["events"][event["order"]+1:] if e["kind"] == "write"],
                                 "arithmetic": [e for e in path["events"] if e["kind"] == "arithmetic"],
                                 "guards": path["guards"], "pathStop": path["stop"],
-                                "allocatorEffects": "conditional model; memory unresolved" if returns and returns.get("modeled") else "see path writes and unresolved exits",
+                                "allocatorEffects": ("see path writes and unresolved exits" if not (returns and returns.get("modeled")) else
+                                                     "conditional model; memory unresolved outside its preservedMemoryScopes" if returns.get("preservedMemoryScopes") else
+                                                     "conditional model; memory unresolved"),
+                                "preservedMemoryScopes": returns.get("preservedMemoryScopes", []) if returns else [],
                                 "extentObservation": extent, "pointerObservation": pointer, "writeComparisons": comparisons,
                                 "observedExtentBytes": capacity,
                                 "capacity": "conditional on evidenced extent units and pointer identity" if extent else "unresolved: request units and bounded writes do not establish allocated extent",
@@ -746,16 +750,32 @@ def call_target_report(image, config):
     return result
 
 
+def hardware_boundary(image, at, ins):
+    """The static description of one interrupt or port instruction, from its decoding and p-code."""
+    m = base_mnemonic(ins)
+    if m in INTERRUPTS:
+        vector, conditional = interrupt_vector(image.flat, ins, at)
+        return {"site": at, "boundary": "interrupt", "mnemonic": m, "vector": vector, "conditional": conditional}
+    port = next(o for o in ins.operands if o.type == X86_OP_IMM or (o.type == X86_OP_REG and ins.reg_name(o.reg) == "dx"))
+    return {"site": at, "boundary": "port-input" if m in PORT_INPUTS else "port-output", "mnemonic": m,
+            "port": {"source": "immediate", "value": port.imm} if port.type == X86_OP_IMM else {"source": "register", "register": "dx"},
+            "width": port_width(ins, image.flat), "stringForm": string_instruction(ins),
+            # F2 on INS/OUTS repeats on hardware too; trace stops that form as unsupported.
+            "repeated": 0xF2 in ins.prefix or 0xF3 in ins.prefix}
+
+
 def body(image, entry, limit=10000):
     """Every instruction one entry reaches without entering a callee, and every way out of it.
 
     Calls, interrupts and port accesses are followed to the next instruction, and each such
-    continuation is listed as an assumption. A direct jump or conditional branch to another
-    established entry or another region, and every far jump, is a tail transfer.
+    continuation is listed as an assumption. Interrupts and port accesses are also listed as
+    hardware boundaries. A direct jump or conditional branch to another established entry or
+    another region, and every far jump, is a tail transfer.
     """
     integer(limit, 1, 100000, "instruction limit")
     established = set(entries(image))
     pending, seen, exits, calls, gaps, assumed, shared = [entry], {}, [], [], [], [], set()
+    hardware = []
 
     def leaves(at, target):
         return (target in established and target != entry) or image.region(target) is not image.region(at)
@@ -784,6 +804,7 @@ def body(image, entry, limit=10000):
             exits.append({"site": at, "kind": "halt"})
             continue
         if m in INTERRUPTS or m in PORTS:
+            hardware.append(hardware_boundary(image, at, ins))
             assumed.append({"site": at, "assumption": ("the interrupt returns to the next instruction" if m in INTERRUPTS
                                                       else "the port access continues to the next instruction")})
             pending.append(following)
@@ -848,6 +869,7 @@ def body(image, entry, limit=10000):
             "span": {"start": runs[0][0], "end": runs[-1][1]} if runs else None, "coveredBytes": covered,
             "exits": sorted(exits, key=lambda e: e["site"]), "calls": sorted(calls, key=lambda c: c["site"]),
             "assumedContinuations": sorted(assumed, key=lambda a: a["site"]), "sharedEntries": sorted(shared),
+            "hardwareBoundaries": sorted(hardware, key=lambda h: h["site"]),
             "gaps": gaps, "complete": bool(exits) and not gaps}
 
 
@@ -1031,19 +1053,22 @@ def _ghidra_call_edges(image, export):
         return integer(value, 0, len(image.data) - 1, "Ghidra " + label + " file offset")
     callers, unmapped, total = {}, [], 0
     for function in functions:
-        if not isinstance(function, dict) or not isinstance(function.get("address"), str) or not isinstance(function.get("edges"), list):
+        # The script writes every key, with null for an address that has no file bytes. A missing key is a malformed export.
+        if (not isinstance(function, dict) or "entry" not in function or not isinstance(function.get("address"), str)
+                or not isinstance(function.get("edges"), list)):
             raise ValueError("Invalid ghidraCallEdges function")
         total += len(function["edges"])
         if total > 8192:
             raise ValueError("ghidraCallEdges holds more than 8192 edges")
         rows = []
         for edge in function["edges"]:
-            if (not isinstance(edge, dict) or not isinstance(edge.get("siteAddress"), str) or not isinstance(edge.get("flow"), str)
-                    or not (edge.get("targetAddress") is None or isinstance(edge["targetAddress"], str))):
+            if (not isinstance(edge, dict) or not {"site", "target", "targetAddress"} <= edge.keys()
+                    or not isinstance(edge.get("siteAddress"), str) or not isinstance(edge.get("flow"), str)
+                    or not (edge["targetAddress"] is None or isinstance(edge["targetAddress"], str))):
                 raise ValueError("Invalid ghidraCallEdges edge")
-            rows.append({"site": offset(edge.get("site"), "site"), "siteAddress": edge["siteAddress"],
-                         "target": offset(edge.get("target"), "target"), "targetAddress": edge["targetAddress"], "flow": edge["flow"]})
-        entry = offset(function.get("entry"), "entry")
+            rows.append({"site": offset(edge["site"], "site"), "siteAddress": edge["siteAddress"],
+                         "target": offset(edge["target"], "target"), "targetAddress": edge["targetAddress"], "flow": edge["flow"]})
+        entry = offset(function["entry"], "entry")
         if entry is None:
             unmapped.append(function["address"])
         elif entry in callers:
@@ -1073,6 +1098,7 @@ def _ghidra_cross_check(export, nodes, outgoing, omitted):
     for caller in compared:
         ours = outgoing.get(caller, [])
         theirs = callers[caller]
+        instructions = nodes[caller]["body"]["instructions"]
         # A call neither analysis resolved matches on its site with no target.
         flows = {_ghidra_key(g): g["flow"] for g in theirs if g["site"] is not None}
         read = {(e["site"], e["target"]) for e in ours}
@@ -1083,11 +1109,20 @@ def _ghidra_cross_check(export, nodes, outgoing, omitted):
         for g in theirs:
             if g["site"] is not None and _ghidra_key(g) in read:
                 continue
+            ins = instructions.get(g["site"])
+            if ins is not None and base_mnemonic(ins) in INTERRUPTS and _ghidra_key(g)[1] is None:
+                # SLEIGH lifts INT, INT1, INT3 and INTO to a computed call with no target, while the engine assumes the
+                # interrupt returns to the next instruction and records no edge. At INT1 and INT3 Ghidra's flow is a
+                # terminator that ends the function there.
+                rows.append({"caller": caller, "site": g["site"], "target": None, "siteAddress": g["siteAddress"],
+                             "targetAddress": None, "ghidraFlow": g["flow"], "result": "interrupt", "engineEdge": None,
+                             "ghidraFallsThrough": "TERMINATOR" not in g["flow"]})
+                continue
             # Ghidra's edge is evidence the engine did not check; it never becomes an engine edge.
             rows.append({"caller": caller, "site": g["site"], "target": g["target"], "siteAddress": g["siteAddress"],
                          "targetAddress": g["targetAddress"], "ghidraFlow": g["flow"], "result": "ghidraOnly", "checked": False,
                          "engineEdge": next((e["id"] for e in ours if g["site"] is not None and e["site"] == g["site"]), None)})
-    counts = {kind: sum(r["result"] == kind for r in rows) for kind in ("agreement", "engineOnly", "ghidraOnly")}
+    counts = {kind: sum(r["result"] == kind for r in rows) for kind in ("agreement", "engineOnly", "ghidraOnly", "interrupt")}
     not_compared = {"engineCallers": sorted(nodes.keys() - callers.keys()), "ghidraCallers": sorted(callers.keys() - nodes.keys()),
                     "unmappedGhidraFunctions": export["unmappedFunctions"], "missingGhidraEntries": export["missingEntries"],
                     "unreadGhidraFunctions": export["unreadFunctions"],
@@ -1095,12 +1130,15 @@ def _ghidra_cross_check(export, nodes, outgoing, omitted):
     # A site agrees only when every edge either analysis read there agrees.
     disputed = {r["site"] for r in rows if r["result"] != "agreement"}
     return {"comparedCallers": compared, "edges": rows, "counts": counts, "notCompared": not_compared,
-            "agreed": not counts["engineOnly"] and not counts["ghidraOnly"] and not any(not_compared.values()),
+            "agreed": (not counts["engineOnly"] and not counts["ghidraOnly"] and not any(not_compared.values())
+                       and all(r["ghidraFallsThrough"] for r in rows if r["result"] == "interrupt")),
             "agreementSites": {r["site"] for r in rows if r["result"] == "agreement"} - disputed,
             "interpretation": "Edges of each caller that both the engine and the Ghidra export read, matched by site and target "
                               "file offset; an unresolved call matches an unresolved call at its site, and a Ghidra target without a file offset "
-                              "matches no engine edge. A ghidraOnly edge is Ghidra's claim: the engine did not check it and never adds it to "
-                              "its graph. Agreement means both analyses read the edge, not that it executes."}
+                              "matches no engine edge. An interrupt row is Ghidra's targetless call at an instruction the engine read as an "
+                              "interrupt and assumed to return; it counts against agreed only when Ghidra's flow ends the function there. "
+                              "A ghidraOnly edge is Ghidra's claim: the engine did not check it and never adds it to its graph. Agreement "
+                              "means both analyses read the edge, not that it executes."}
 
 
 # These branches test CX/ECX (LOOPE/LOOPNE also ZF), so an adjacent CMP/TEST never describes their predicate.
@@ -1482,7 +1520,7 @@ def _run_report(image, config, command):
     if command == "returns":
         report = return_flows(report, config)
     if command != "trace":
-        kinds = {"arguments": ("address-formation", "read", "call", "call-return"), "effects": ("address-formation", "write", "call", "call-return", "return", "branch", "string-operation",
+        kinds = {"arguments": ("address-formation", "read", "call", "call-return"), "effects": ("address-formation", "write", "call", "call-return", "return", "branch", "string-operation", "hardware-boundary",
                              "flag-assumption", "flag-write", "flags-save", "flags-restore", "local-iret"),
                  "returns": ("return", "call-return", "compare", "branch", "write"),
                  "guards": ("compare", "branch", "read", "write", "call", "call-return"),

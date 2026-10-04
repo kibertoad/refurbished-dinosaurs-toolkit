@@ -7,10 +7,10 @@
     "reference/original/"
   ],
   "restrictedExtensions": [
-    ".666", ".bmp", ".csf", ".cue", ".dat", ".dib", ".exe", ".fnt",
-    ".gob", ".gif", ".ico", ".iso", ".jpeg", ".jpg", ".low", ".mid",
-    ".midi", ".mp3", ".ogg", ".pal", ".pcc", ".pcx", ".png", ".rat",
-    ".res", ".smk", ".wav"
+    ".666", ".avi", ".bmp", ".csf", ".cue", ".dat", ".dib", ".exe",
+    ".flc", ".fli", ".fnt", ".gob", ".gif", ".ico", ".iso", ".jpeg",
+    ".jpg", ".low", ".mid", ".midi", ".mp3", ".ogg", ".pal", ".pcc",
+    ".pcx", ".png", ".rat", ".res", ".smk", ".wav"
   ],
   "approvedRestrictedRoots": [
     "assets/clean-room/",

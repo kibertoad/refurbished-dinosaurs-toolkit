@@ -7,15 +7,20 @@
   "properties": {
     "gameId": { "type": "string", "minLength": 1 },
     "sourceEdition": { "type": "string", "minLength": 1 },
+    "sourceKind": { "enum": ["directory", "iso9660", "cue-bin"], "default": "directory" },
     "files": {
       "type": "array",
+      "$comment": "At least one file must be required, or the manifest would match any copy.",
+      "contains": {
+        "not": { "required": ["required"], "properties": { "required": { "const": false } } }
+      },
       "items": {
         "type": "object",
         "required": ["path", "size"],
         "properties": {
           "path": { "type": "string", "minLength": 1 },
           "size": { "type": "integer", "minimum": 0 },
-          "sha256": { "type": ["string", "null"], "pattern": "^[0-9a-fA-F]{64}$" },
+          "xxh3": { "type": ["string", "null"], "pattern": "^[0-9a-f]{32}$" },
           "required": { "type": "boolean", "default": true }
         },
         "additionalProperties": false
