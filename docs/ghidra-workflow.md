@@ -5,7 +5,7 @@ ignored project created by `analyzeHeadless`; scripts in `/ghidra` emit determin
 text reports that can be reviewed and summarized without committing the database or
 original executable.
 
-For each finding, record executable SHA-256, image base/address, symbol or function,
+For each finding, record the executable's XXH3-128 hash (its `xxh3`), image base/address, symbol or function,
 script and arguments, relevant output, interpretation, confidence, and unanswered
 questions. Decompiled pseudocode is evidence, not ground truth: corroborate it with
 callers, data references, instruction context, runtime observations, manuals, and file

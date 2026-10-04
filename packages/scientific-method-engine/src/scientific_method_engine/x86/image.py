@@ -1,6 +1,6 @@
 """Bounded explicit code mappings. No guessed linear disassembly domains."""
-import hashlib
 from pathlib import Path
+import xxhash
 from capstone import Cs, CS_ARCH_X86, CS_MODE_16, CS_MODE_32
 from .pe import prepare_pe
 import capstone
@@ -17,9 +17,10 @@ def integer(value, low, high, label):
 def read_source(config, base):
     """Read the source a report config names and check its hash.
 
-    ``config["source"]`` is a path relative to ``base``; the file must be at most 256 MiB and hash to
-    ``config["sha256"]``. Returns ``(data, identity)`` where ``identity`` is
-    ``{"size": ..., "sha256": ...}``. Raises ``ValueError`` otherwise.
+    ``config["source"]`` is a path relative to ``base``; the file must be at most 256 MiB and its
+    XXH3-128 hash, as 32 lower-case hex digits, must equal ``config["xxh3"]``. Returns
+    ``(data, identity)`` where ``identity`` is ``{"size": ..., "xxh3": ...}``. Raises ``ValueError``
+    otherwise.
     """
     path = config.get("source")
     if not isinstance(path, str) or not path:
@@ -28,10 +29,10 @@ def read_source(config, base):
     if not path.is_file() or path.stat().st_size > MAX_SOURCE:
         raise ValueError("source must be a regular file of at most 256 MiB")
     data = path.read_bytes()
-    digest = hashlib.sha256(data).hexdigest()
-    if digest != config.get("sha256"):
-        raise ValueError("Source SHA-256 differs from the supplied baseline")
-    return data, {"size": len(data), "sha256": digest}
+    digest = xxhash.xxh3_128_hexdigest(data)
+    if digest != config.get("xxh3"):
+        raise ValueError("Source xxh3 differs from the supplied baseline")
+    return data, {"size": len(data), "xxh3": digest}
 
 
 class Image:

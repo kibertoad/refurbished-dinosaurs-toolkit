@@ -1,7 +1,7 @@
 // Canonical MZ/FBOV provenance plus the bounded Python instruction engine (scientific-method-engine).
 import { readFileSync, statSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { createHash } from "node:crypto";
+import { xxh3 } from "@node-rs/xxhash";
 import { spawnSync } from "node:child_process";
 import { readMz, formatCounts, checkFormatControls, segmentOperands, selectedTarget } from "./legacy-image.ts";
 import type { TargetSelector } from "./legacy-image.ts";
@@ -22,13 +22,14 @@ export interface Region {
   [key: string]: unknown;
 }
 /**
- * The researcher's JSON query. `source` is resolved against the config file's directory and must hash
- * to `sha256`. Fields only the engine reads pass through unchanged; the bounded evidence reporter guide
- * lists them per command.
+ * The researcher's JSON query. `source` is resolved against the config file's directory and its
+ * XXH3-128 hash must equal `xxh3`, as the spec's build entry gives it. Fields only the engine reads
+ * pass through unchanged; the bounded evidence reporter guide lists them per command.
  */
 export interface ReportConfig {
   source: string;
-  sha256: string;
+  /** XXH3-128 of the source as 32 lower-case hex digits, as `xxhsum -H2` prints it. */
+  xxh3: string;
   sourceKind?: string;
   loadSegment?: number;
   formatControls?: unknown;
@@ -51,15 +52,21 @@ export interface PreparedConfig extends ReportConfig {
   overlayExports?: unknown;
 }
 
+/** XXH3-128 of `bytes` in canonical form: 32 lower-case hex digits, as `xxhsum -H2` prints it. */
+export function sourceXxh3(bytes: Uint8Array): string {
+  return xxh3.xxh128(bytes).toString(16).padStart(32, "0");
+}
+
 // The hash-guarded source read every command shares; no format table is interpreted here.
 function readVerifiedSource(config: ReportConfig, base: string) {
   if (!config || typeof config.source !== "string") throw new Error("Source path required");
   const source = resolve(base, config.source),
     stat = statSync(source);
   if (!stat.isFile() || stat.size > 256 * 1024 * 1024) throw new Error("Source exceeds 256 MiB");
+  if (typeof config.xxh3 !== "string" || !/^[0-9a-f]{32}$/.test(config.xxh3))
+    throw new Error("xxh3 must be the source's XXH3-128 hash as 32 lower-case hex digits");
   const bytes = readFileSync(source);
-  const sha256 = createHash("sha256").update(bytes).digest("hex");
-  if (sha256 !== config.sha256) throw new Error("Source SHA-256 differs from supplied baseline");
+  if (sourceXxh3(bytes) !== config.xxh3) throw new Error("Source xxh3 differs from supplied baseline");
   // Overlay exports and format-table counts are derived from MZ/FBOV source tables only; a supplied copy would read as loader output.
   if (config.overlayExports !== undefined) throw new Error("overlayExports is source-derived and cannot be supplied");
   if (config.formatTables !== undefined)
@@ -150,7 +157,7 @@ export function prepare(config: ReportConfig, base: string): PreparedConfig {
 
 const MAX_REPORT_MIB = 32;
 /** The prepared-config protocol this reader speaks. It must equal `scientific_method_engine.PREPARED_PROTOCOL`; the engine refuses any other number. */
-export const PREPARED_PROTOCOL = 1;
+export const PREPARED_PROTOCOL = 2;
 
 /**
  * Runs one report, as the `scientific-method` command does. `args` is `[command, configPath]`.

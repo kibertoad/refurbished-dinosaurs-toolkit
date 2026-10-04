@@ -33,7 +33,7 @@ a release.
 Reads legacy executables from the hash-checked original and runs instruction reports through the
 engine.
 
-- Verifies the source's SHA-256 against the query before reading anything else.
+- Verifies the source's XXH3-128 hash (`xxh3`) against the query before reading anything else.
 - Parses the MZ header and relocation table and the Borland FBOV overlay envelope: descriptors,
   fixups and trampolines. Rejects NE, LE, LX and PE behind an MZ stub.
 - Derives relocation membership, canonical trampoline targets, overlay exports and format-table

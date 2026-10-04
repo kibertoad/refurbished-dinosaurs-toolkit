@@ -207,6 +207,21 @@ These packages were later renamed to `RefurbishedDinosaurs.*`. Follow
 [the runtime package migration](runtime-libraries.md#from-the-scientificmethod-runtime-packages)
 after this one.
 
+## Prepared-config protocol 2
+
+Reader 1.0 and engine 1.0 speak prepared-config protocol 2, which names the source by its
+XXH3-128 hash, the hash the documentation standard uses for every file. Neither accepts protocol 1,
+so upgrade both together.
+
+| Before | After |
+|---|---|
+| config `sha256` | config `xxh3`: 32 lower-case hex digits, from the build entry in the spec or `xxhsum -H2` |
+| report `sourceIdentity.sha256` | report `sourceIdentity.xxh3` |
+| error `Source SHA-256 differs from supplied baseline` | error `Source xxh3 differs from supplied baseline` |
+
+`ghidraCallEdges` exports keep their `sha256`: `ExportCallEdges.java` records the SHA-256 Ghidra
+holds for the program, and the engine compares it with the source's.
+
 ## 6. Verify
 
 - No file under `tools/evidence/x86-reporter/`, `vendor/check-documentation.mjs`, `x86-lock.json`
