@@ -1,12 +1,12 @@
 # Bounded instruction reports
 
-The reports come from two published packages built in this repository's `packages/`:
+The reports use the published reader and engine:
 `@scientific-method/executable-reader` on npm reads and hash-checks the original and runs the
 reports, and `scientific-method-engine` on PyPI decodes the instructions. Run
 `python -m pip install scientific-method-engine` once in the Python environment used for
 research, and add the reader to the project (`pnpm add -D @scientific-method/executable-reader`).
-Python 3.12 or later and Node 22 or later are required; the engine pins Capstone 5.0.7 and
-pypcode 4.0.0.
+Python 3.12 or later and Node 22 or later are required. The engine pins its decoder dependencies
+in [pyproject.toml](../packages/scientific-method-engine/pyproject.toml).
 `EVIDENCE_PYTHON` selects another Python executable. The reader refuses an engine whose
 prepared-config protocol differs from its own, so upgrade the two together.
 See [moving from the vendored reporters](migrating-to-scientific-method.md).
@@ -27,11 +27,17 @@ targets from the source. The engine's own command line
 synthetic data or already checked mappings. Its relocation metadata is supplied
 input, not independently verified evidence. Use the reader for originals.
 
+`xxh3` is the source's XXH3-128 hash as 32 lower-case hex digits, the value its build entry in
+the spec gives (`xxhsum -H2` prints it). For a packed executable it is the hash of the form
+`source` names, so an unpacked source takes the entry's `unpacked.xxh3`. The reader and the engine
+both refuse a hash in another form, a source with another hash and a config that still names a
+`sha256`. The report's `sourceIdentity` repeats the `size` and `xxh3` they checked.
+
 ```json
 {
   "source": "../owned.exe",
   "sourceKind": "mz",
-  "sha256": "replace-with-the-source-sha256",
+  "xxh3": "replace-with-the-source-xxh3",
   "entry": 64,
   "regions": [{
     "name": "resident-helper",
@@ -260,7 +266,7 @@ Run `python -B -m unittest discover -s tests -p 'test*.py'` in
 `packages/scientific-method-engine` and `pnpm --filter @scientific-method/executable-reader test`. The fixtures are entirely synthetic. The paired segment test reads distinct
 values through the same BP-derived BX offset before and after `push ss; pop ds`;
 the incoming-call test places a caller at a higher address than the target's code.
-Restorations depend on released versions of the two packages; refine the reporters here and
+Restorations depend on released versions of the reader and engine; refine the reporters here and
 release them (see [releasing](releasing.md)). The website describes acceptance
 contracts, while these executable tests establish delivered reporter behavior.
 A reporter need not support every query. Each supported query must meet its
@@ -656,9 +662,10 @@ take their access direction from the mnemonic, since Capstone misreports some.
 `ghidraCallEdges` takes the JSON that the packaged `ExportCallEdges.java` writes. Run it with an
 output path, a function limit (1..128) and the entries to start from. Ghidra walks breadth first
 from those entries through its call targets and its jumps to other functions' entry points. The
-export records each function's edges as file offsets. It is accepted only when its `sha256` equals
-the source's. It can hold at most 128 functions and 8192 edges, and every offset must lie inside the
-source. Paste the export into the config as the value of `ghidraCallEdges`. The command then reports
+export records each function's edges as file offsets. It is accepted only when its `sha256`, the
+SHA-256 Ghidra records for the program it analysed, equals the source's. It can hold at most 128
+functions and 8192 edges, and every offset must lie inside the source. Paste the export into the
+config as the value of `ghidraCallEdges`. The command then reports
 `ghidraCrossCheck`. For each caller that both the engine read and the export lists
 (`comparedCallers`), every edge is matched on site and target:
 

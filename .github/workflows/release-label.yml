@@ -1,6 +1,6 @@
 name: Release label
 
-# A pull request that changes a label-versioned package (the PyPI engine or the NuGet libraries)
+# A pull request that changes a label-versioned package (the PyPI packages or the NuGet libraries)
 # must carry exactly one of release:major, release:minor, release:patch or release:skip. The
 # package paths are listed in tools/release/plan.ts. npm packages use changesets instead.
 on:

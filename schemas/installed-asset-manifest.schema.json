@@ -3,12 +3,12 @@
   "$id": "https://github.com/kibertoad/toad-discovery-center/schemas/installed-asset-manifest.schema.json",
   "title": "Installed original-content manifest",
   "type": "object",
-  "required": ["formatVersion", "product", "sourceEdition", "sourceFingerprintSha256", "extractedAtUtc", "files", "extractorVersion"],
+  "required": ["formatVersion", "product", "sourceEdition", "sourceFingerprint", "extractedAtUtc", "files", "extractorVersion"],
   "properties": {
     "formatVersion": { "type": "integer", "minimum": 1 },
     "product": { "type": "string", "minLength": 1 },
     "sourceEdition": { "type": "string", "minLength": 1 },
-    "sourceFingerprintSha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+    "sourceFingerprint": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
     "extractedAtUtc": { "type": "string", "format": "date-time" },
     "extractorVersion": { "type": "string", "minLength": 1 },
     "files": {
@@ -16,11 +16,11 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["path", "bytes", "sha256", "sourcePath", "mediaType"],
+        "required": ["path", "bytes", "xxh3", "sourcePath", "mediaType"],
         "properties": {
           "path": { "type": "string", "minLength": 1 },
           "bytes": { "type": "integer", "minimum": 0 },
-          "sha256": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+          "xxh3": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
           "sourcePath": { "type": "string", "minLength": 1 },
           "mediaType": { "type": "string", "minLength": 1 },
           "conversion": {
