@@ -41,17 +41,18 @@ def _writers(events, before, segment, base, start, width, modulus, image, models
     so they keep only frame bytes of a linear stack; the search goes on past the call for those.
     A write through another segment or base may have stored every frame byte it may alias, whether
     or not it dropped a cached byte. The rule is the one the machine's ``unwritten`` applies, so a
-    slot and the callee's read of it name the same write.
+    slot and a callee read of it that runs before any callee write through another segment or base
+    name the same write.
     """
     writers, invalidated = {}, {}
+    keys = [(segment, base, (start + at) % modulus if modulus else start + at) for at in range(width)]
     for j in range(before - 1, -1, -1):
         event = events[j]
         interval = event.get("interval")
         if event["kind"] == "write" and interval and (interval["segment"], interval["base"]) != (segment, base):
             written = written_domain(interval["segment"], interval["base"], interval["start"],
                                      interval["end"] - interval["start"], image.bits, image.flat)
-            for at in range(width):
-                key = (segment, base, (start + at) % modulus if modulus else start + at)
+            for at, key in enumerate(keys):
                 if at not in writers and at not in invalidated and may_alias(key, written, image.bits, image.flat):
                     invalidated[at] = f"memory possibly overwritten through another address by the write at {event['site']}"
         if event["kind"] == "call-return" and event.get("unknownMemoryEffects"):

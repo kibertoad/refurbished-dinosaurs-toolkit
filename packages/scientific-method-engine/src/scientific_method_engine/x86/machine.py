@@ -344,8 +344,8 @@ class State:
                             dropped_values += 1
                             cause = "dropped by a possibly aliasing write"
                         else:
-                            if key in self.unread_memory:
-                                dropped_unread += 1
+                            # Group members without a value are exactly the scope's unread bytes.
+                            dropped_unread += 1
                             cause = "possibly written by an aliasing write"
                         self.write_log.append((key, self.memory.pop(key, None)))
                         self.unread_memory.pop(key, None)

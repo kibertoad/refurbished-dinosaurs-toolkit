@@ -64,8 +64,9 @@ also gives `writeOrder`, the event order of the write that stored the byte. A by
 with no modeled value has `writeOrder: null` and `unwritten`, whose `cause` is
 `no write on this path`, `possibly written by an aliasing write`, `dropped by a
 possibly aliasing write` or `dropped by a modeled call`, with the `order` of that
-write or modeled return. `dropped by a possibly aliasing write` names a write that may alias a
-byte that held a modeled value, which the byte lost. `possibly written by an aliasing write` names
+write or modeled return. `dropped by a possibly aliasing write` names the write that dropped a
+byte's modeled value, while no newer write through another segment or base may alias the byte.
+`possibly written by an aliasing write` names
 the newest write through another segment or base that may alias a byte with no value to lose,
 including a byte a `preservesMemory` scope kept without one. A byte a `preservesMemory` scope kept keeps its writer, or
 its cause from before the modeled call. BP-derived offsets
@@ -139,7 +140,9 @@ frame holds:
   invalidated outside its `preservesMemory` scopes, or one a later write through another segment
   or base may have stored, has `writerSite: null` and a reason. A write counts for every frame byte
   it may alias, whether or not it dropped a cached byte, by the rule a read's `unwritten` uses, so
-  the slot and the callee's read of it name the same write.
+  a slot and a callee read of it that runs before any callee write through another segment or base
+  name the same write. The slot describes the frame when the call ran: a callee write that may
+  alias it before the read changes the read's `unwritten` and leaves the slot as it was.
   Each slot lists the callee reads that consumed it (`consumedBy`) and `derivedReads`: argument
   reads deeper in the callee whose bytes carry the slot writer's site among their producers, such
   as a setter reading a word the callee forwarded. They match by producer site only.
