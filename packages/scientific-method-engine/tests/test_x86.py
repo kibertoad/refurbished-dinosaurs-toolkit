@@ -1225,6 +1225,13 @@ class GhidraCrossCheckTests(unittest.TestCase):
                                               int(reads_on is False and falls_through), int(redirected)))
         self.assertEqual(kinds, set(RETURNS.values()) | {"halt", "tail transfer", "unresolved jump"})
         self.assertEqual(decisions, {True, False, None})
+        # The interpretation points at the record body() keeps and names every extent count, without a copy of the
+        # stopping rule that would have to track body().
+        text = check["interpretation"]
+        self.assertIn("whether its body reading queued the next instruction at the site", text)
+        for count in ("ghidraEndsFunction", "ghidraContinues", "ghidraFallsThroughElsewhere"):
+            self.assertIn(count, text)
+        self.assertNotRegex(text, r"(?i)stops at a jmp|reads on past every")
 
     def test_a_ghidra_target_at_an_interrupt_or_a_targetless_call_elsewhere_stays_ghidra_only(self):
         # int 21h; int 10h; nop; call 8; ret. Ghidra resolves the first interrupt to a file offset and the second to an
