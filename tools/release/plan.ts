@@ -21,6 +21,7 @@
 //     Writes the version into a pyproject.toml whose committed version is the 0.0.0 placeholder.
 import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { changedFiles, matchesPath } from "../lib/changed-files.ts";
 
 export interface ReleasedPackage {
   name: string;
@@ -58,8 +59,19 @@ export type Bump = (typeof BUMPS)[number];
 export const SKIP_LABEL = "release:skip";
 const RELEASE_LABELS = [...BUMPS.map((b) => `release:${b}`), SKIP_LABEL];
 
+/** Returns whether any of `files` falls under one of the package's paths. */
 export function touched(pkg: ReleasedPackage, files: string[]): boolean {
-  return files.some((f) => pkg.paths.some((p) => (p.endsWith("/") ? f.startsWith(p) : f === p)));
+  return files.some((f) => matchesPath(pkg.paths, f));
+}
+
+/**
+ * Returns the packages that `head` changes since it forked from `base`, read in the repository at
+ * `cwd`. A file moved out of a package counts as a change to it, and a path with non-ASCII
+ * characters is matched as written.
+ */
+export function gatedPackages(base: string, head: string, cwd?: string): ReleasedPackage[] {
+  const files = changedFiles(base, head, cwd);
+  return PACKAGES.filter((p) => touched(p, files));
 }
 
 // The single release label, or an error naming what is wrong with the set.
@@ -123,8 +135,6 @@ export function setPyprojectVersion(text: string, version: string): string {
 }
 
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" });
-const changedFiles = (base: string, head: string) =>
-  git("diff", "--name-only", `${base}...${head}`).split("\n").filter(Boolean);
 
 function output(values: Record<string, string>): void {
   const lines = Object.entries(values).map(([k, v]) => `${k}=${v}`);
@@ -133,8 +143,7 @@ function output(values: Record<string, string>): void {
 }
 
 function check(base: string, head: string): void {
-  const files = changedFiles(base, head);
-  const gated = PACKAGES.filter((p) => touched(p, files));
+  const gated = gatedPackages(base, head);
   if (!gated.length) {
     console.log("No label-versioned package changed; no release label needed.");
     return;
