@@ -95,13 +95,17 @@ class Run:
     ``registers`` holds the last value written to each register before ``setreg`` added its site,
     and ``flags`` the arithmetic flags the instruction wrote. ``present(value)`` may rewrite a
     value written to a register or memory into an equal term of the form reports use.
+    ``port(direction, port, value, size)`` handles SLEIGH's ``in`` (direction ``"input"``, value
+    None, returns the value read) and ``out`` (``"output"``) user operations; without it they
+    stop the path.
     """
 
-    def __init__(self, state, ops, memory, constant=None, flags=None, present=None):
+    def __init__(self, state, ops, memory, constant=None, flags=None, present=None, port=None):
         self.state = state
         self.ops = ops
         self.memory = memory
         self.constant = constant
+        self.port = port
         self.present = present or (lambda value: value)
         self.temps = {}
         self.registers = {}
@@ -124,6 +128,13 @@ class Run:
             if code == "CALLOTHER":
                 if o.userop in ("LOCK", "UNLOCK") and o.output is None:
                     continue  # Atomicity markers; a single path has no other bus master.
+                if o.userop in ("in", "out") and self.port is not None:
+                    if o.userop == "in":
+                        self.write(o.output, self.port("input", self.read(o.inputs[1]), None, o.output[2]))
+                    else:
+                        port, data = self.port_operands(o.inputs[1:])
+                        self.port("output", self.read(port), self.read(data), data[2])
+                    continue
                 if o.userop != "segment":
                     raise StopPath("Unsupported p-code user operation: " + str(o.userop))
                 name = self.register_name(o.inputs[1])
@@ -138,6 +149,17 @@ class Run:
             arguments = [self.read(v) for v in o.inputs]
             self.write(o.output, evaluate(code, arguments, o.output[2] * 8, self.state.at))
         return None
+
+    def port_operands(self, inputs):
+        """The port and data varnodes of an ``out`` operation.
+
+        SLEIGH writes OUT as ``out(port, value)`` and OUTS as ``out(value, DX)``. The port is the
+        operand that is a constant or DX; the data is never either.
+        """
+        ports = [v for v in inputs if v[0] == "const" or (v[0] == "register" and self.register_name(v) == "DX")]
+        if len(inputs) != 2 or len(ports) != 1:
+            raise StopPath("p-code port output has no single port operand")
+        return ports[0], inputs[1] if inputs[0] == ports[0] else inputs[0]
 
     def register_name(self, v):
         name = LIFTER.register(self.state.flat, v[1], v[2])

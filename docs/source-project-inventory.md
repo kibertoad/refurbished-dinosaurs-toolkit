@@ -10,7 +10,7 @@ the generalized result belongs.
 | Source ownership | Verified installed asset pack, repaired graphics, catalog generation | Verified mixed-mode disc/archive content, decoded media, repair/uninstall, read-only inspector | Core manifests/verifier/staging/idempotent writes/manifest-scoped uninstall plus template importer and inspector |
 | Runtime content | Adjacent assets with per-user fallback | Package/user-content/current-directory resolution | `RestorationPaths` |
 | Failure UX | Console, Windows dialog, local startup log, import guidance | Same pattern with separate state/content roots | `StartupFailure` |
-| Standard legacy formats | BMP RLE8 and Smacker assets | PCX/raw indexed images, palettes, Smacker, CUE/CDDA, raw Mode 1 and ISO-9660 | `ScientificMethod.LegacyFormats` with bounded readers and synthetic tests |
+| Standard legacy formats | BMP RLE8 and Smacker assets | PCX/raw indexed images, palettes, Smacker, CUE/CDDA, raw Mode 1 and ISO-9660 | `RefurbishedDinosaurs.LegacyFormats` with bounded readers and synthetic tests |
 | Engine/game formats | Chaos PX containers and header repair | Dynamix GOB/RES/CSF/HAT, executable fixups, scenes, conversations, action trees, sound banks | Kept downstream until another real consumer proves a stable shared contract |
 | Determinism | Commands, events, MSVC-style seeded resolution, replay, JSON state diff | Platform-independent campaign and battle rules, executable specs | RNG/state-diff primitives, playbook, parity/rules templates, and template Core boundary |
 | Save/settings | Atomic native saves and replay format | Per-user versioned settings and campaign save slots | Atomic file/settings helpers plus native-save/replay design template |
@@ -19,6 +19,10 @@ the generalized result belongs.
 | Packaging | Self-contained Windows/Linux/macOS packages; Inno import/retry flow | Same with source-management shortcuts | Packaging guide and Windows Inno Setup template |
 | CI/release | Matrix smoke tests, installer and assetless proof, pinned actions, zizmor, manual release | Same pattern with installed-layout checks | Shared actions and template workflows |
 | Static analysis | Reproducible headless Ghidra scripts and evidence notes | Ghidra log plus separate read-only inspection utilities | `/ghidra`, Ghidra workflow, rules/evidence ledger, and template Inspect project |
+
+The shared runtime libraries now use RefurbishedDinosaurs package IDs. Smacker lives in
+Media.Smacker; AVI/Cinepak/RLE8/ADPCM, AF11 FLI and sequential playback cadence are isolated
+in Media.Avi, Media.Fli and Media.Playback. See ADR 0005 for the expanded media boundary.
 
 Game-specific fingerprints, proprietary engine formats, balance tables, UI layouts,
 rules, executable addresses, and original-derived evidence remain in their game

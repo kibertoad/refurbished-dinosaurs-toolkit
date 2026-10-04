@@ -1,8 +1,8 @@
 name: Release NuGet packages
 
 # When a pull request that changed packages/dotnet or global.json merges with a release:major,
-# release:minor or release:patch label, publishes ScientificMethod.Core and
-# ScientificMethod.LegacyFormats at the next shared version to nuget.org through trusted publishing
+# release:minor or release:patch label, publishes the RefurbishedDinosaurs runtime packages
+# at the next shared version to nuget.org through trusted publishing
 # (OIDC) and creates the scientific-method-dotnet@<version> tag and GitHub release. The version comes from
 # the latest such tag plus the largest bump among the pull requests merged since that tag.
 on:
@@ -43,7 +43,7 @@ jobs:
         with:
           node-version: 24.x
       - id: plan
-        run: node tools/release/plan.ts release nuget "$AFTER"
+        run: node tools/release/plan.ts release scientific-method-dotnet "$AFTER"
         env:
           AFTER: ${{ github.sha }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -66,12 +66,12 @@ jobs:
           global-json-file: global.json
       - name: Build and test
         run: |
-          dotnet build packages/dotnet/ScientificMethod.slnx -c Release -p:Version="$VERSION" -v minimal
-          dotnet test --project packages/dotnet/ScientificMethod.Core.Tests/ScientificMethod.Core.Tests.csproj -c Release --no-build --no-progress
+          dotnet build packages/dotnet/RefurbishedDinosaurs.slnx -c Release -p:Version="$VERSION" -v minimal
+          dotnet test --project packages/dotnet/RefurbishedDinosaurs.Core.Tests/RefurbishedDinosaurs.Core.Tests.csproj -c Release --no-build --no-progress
         env:
           VERSION: ${{ needs.plan.outputs.version }}
       - name: Pack
-        run: dotnet pack packages/dotnet/ScientificMethod.slnx -c Release --no-build -p:Version="$VERSION" --output artifacts
+        run: dotnet pack packages/dotnet/RefurbishedDinosaurs.slnx -c Release --no-build -p:Version="$VERSION" --output artifacts
         env:
           VERSION: ${{ needs.plan.outputs.version }}
       - name: NuGet login

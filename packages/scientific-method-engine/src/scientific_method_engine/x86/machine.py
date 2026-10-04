@@ -18,6 +18,13 @@ class StopPath(Exception):
     pass
 
 
+class Shared(dict):
+    """Read-only query configuration that every copy of a path shares instead of copying."""
+
+    def __deepcopy__(self, memo):
+        return self
+
+
 def segment_register(ins, mem):
     """Name the segment register an explicit memory operand uses (override or stack/data default)."""
     if mem.segment:
@@ -60,6 +67,9 @@ class State:
         # Keys grouped by (segment, base) so a write scans only groups that can alias it.
         self.memory_groups = {}
         self.memory_epoch = 0
+        # Bytes a preservesMemory scope kept without a value (ADR 0009): key -> the unknown term
+        # name they had before the modeled call. They stay unread: no value, no producer.
+        self.unread_memory = {}
         self.events = []
         # Value transfers are recorded only for queries that trace declared return results.
         self.value_transfers = bool(config.get("returnContracts"))
@@ -67,7 +77,9 @@ class State:
         self.assumptions = {}
         self.flags = None
         # Arithmetic flags as values from the last flag-writing instruction's p-code; None when no
-        # instruction computed them yet or the last one forgot them.
+        # instruction computed them yet or the last one forgot them. Branch conditions run their p-code
+        # on these values, and carry_value reads a comparable flag producer's CF from here without
+        # running a branch condition.
         self.flag_values = None
         # CF when an instruction sets it without leaving a comparable flag producer; None defers to flags.
         self.carry = None
@@ -82,6 +94,8 @@ class State:
         self.visits = {}
         self.path = []
         self.conditional = []
+        # Values the query supplies for port reads, by site; trace validates them.
+        self.port_inputs = Shared({row["site"]: row for row in config.get("portInputs", [])})
         flags = config.get("flags", {})
         if not isinstance(flags, dict) or set(flags) - {"direction"}:
             raise ValueError("Only an explicit starting direction flag is supported")
@@ -126,10 +140,11 @@ class State:
     def carry_value(self):
         """CF as a one-bit value: from the last comparable flag producer, an explicit carry, or unknown."""
         if self.flags is not None:
-            if self.flag_values is not None and "CF" in self.flag_values:
-                answer, _ = self.semantics.condition(self, "jb")
-                if answer is not None:
-                    return const(int(answer), 1, self.flags[3])
+            # The producer's p-code CF, read as JB's CBRANCH reads it: nonzero is set. Reading it here
+            # skips running the JB p-code and building the branch report each time CF is read.
+            carry = (self.flag_values or {}).get("CF")
+            if carry is not None and carry.number is not None:
+                return const(int(carry.number != 0), 1, self.flags[3])
             # Name the carry by its producer's operands, so every reading of one comparison shares an assumption.
             a, b, operation, site = self.flags
             return unknown(f"carry:{site}:{(operation, a.term, b.term)!r}", 1, site)
@@ -145,7 +160,16 @@ class State:
     def clear_memory(self):
         self.memory.clear()
         self.memory_groups.clear()
+        self.unread_memory.clear()
         self.memory_epoch += 1
+
+    def unread_term(self, key):
+        """Name the unknown term of a byte with no modeled value: a kept scope term or the epoch's."""
+        return self.unread_memory.get(key, f"memory:{self.memory_epoch}:{key}")
+
+    def byte(self, key):
+        """The modeled value of one memory byte, or an unknown term produced by the current site."""
+        return self.memory[key] if key in self.memory else unknown(self.unread_term(key), 8, self.at)
 
     def reg(self, name):
         root, low, bits = alias(name)
@@ -191,7 +215,7 @@ class State:
     def peek(self, segment, offset, width):
         """Inspect modeled memory without reporting an access the program never performed."""
         _, _, _, keys = self.keys(segment, offset, width)
-        return join([self.memory.get(key, unknown(f"memory:{self.memory_epoch}:{key}", 8, self.at)) for key in keys])
+        return join([self.byte(key) for key in keys])
 
     def access(self, segment, offset, width, write=None, role=None, addressing_register=None):
         seg, base, delta, keys = self.keys(segment, offset, width)
@@ -218,18 +242,20 @@ class State:
                     disjoint = a is not None and b is not None and (a[1] <= b[0] or b[1] <= a[0])
                     if not disjoint:
                         uncertain.append(key)
-                        del self.memory[key]
+                        self.memory.pop(key, None)
+                        self.unread_memory.pop(key, None)
                         members.discard(key)
                 if not members:
                     del self.memory_groups[group]
             for i, key in enumerate(keys):
                 self.memory[key] = extract(write, i * 8, 8)
+                self.unread_memory.pop(key, None)
             self.memory_groups.setdefault((seg, base), set()).update(keys)
             value = write
             missing = []
         else:
             missing = [i for i, key in enumerate(keys) if key not in self.memory]
-            value = join([self.memory.get(key, unknown(f"memory:{self.memory_epoch}:{key}", 8, self.at)) for key in keys])
+            value = join([self.byte(key) for key in keys])
         relevant = []
         for g in self.guards:
             left = g.get("left", {}).get("expression")
@@ -317,8 +343,9 @@ for names, condition in ((("jne", "jnz"), "z"), (("jae", "jnb", "jnc"), "c"), ((
     for name in names:
         BRANCH_CONDITIONS[name] = (condition, True)
 
-# One-byte opcodes of the string forms; CMPS and SCAS repeat while a comparison holds.
-STRING_OPCODES = (0xA4, 0xA5, 0xAA, 0xAB, 0xAC, 0xAD)
+# One-byte opcodes of the string forms (MOVS, STOS, LODS, INS, OUTS); CMPS and SCAS repeat while a
+# comparison holds.
+STRING_OPCODES = (0xA4, 0xA5, 0xAA, 0xAB, 0xAC, 0xAD, 0x6C, 0x6D, 0x6E, 0x6F)
 COMPARE_STRING_OPCODES = (0xA6, 0xA7, 0xAE, 0xAF)
 
 
@@ -333,6 +360,16 @@ def compare_string(ins):
 
 def repeated(ins):
     return 0xF3 in ins.prefix or (0xF2 in ins.prefix and compare_string(ins))
+
+
+def string_width(ins, flat):
+    """The element width of a string form: a byte for even opcodes, else the operand size."""
+    return 1 if ins.opcode[0] % 2 == 0 else (4 if (0x66 in ins.prefix) != flat else 2)
+
+
+def string_operation(ins):
+    """The string operation's name without its width suffix: movs, stos, lods, cmps, scas, ins or outs."""
+    return ins.mnemonic.split()[-1][:-1]
 
 
 def string_count(state, ins):
@@ -353,8 +390,8 @@ def string_effect(state, ins, count, remaining, charge=None):
     the count runs out, within ``remaining`` iterations, and calls ``charge(1)`` for each one,
     because it cannot reserve its iterations before they run.
     """
-    width = 1 if ins.opcode[0] % 2 == 0 else (4 if (0x66 in ins.prefix) != state.flat else 2)
-    operation = ins.mnemonic.split()[-1][:4]
+    width = string_width(ins, state.flat)
+    operation = string_operation(ins)
     compare = compare_string(ins)
     state.event("string-operation", operation=operation, width=width, repetitions=count.report(),
                 direction=state.direction_flag.report(), repeat=repeated(ins),
@@ -367,9 +404,9 @@ def string_effect(state, ins, count, remaining, charge=None):
         return 0
     if state.direction_flag.number is None:
         raise StopPath("Direction flag unresolved; conditional string paths required")
-    # MOVS/LODS decode their source as the second memory operand and CMPS as the first, carrying
-    # any segment override.
-    source_name = (segment_register(ins, ins.operands[1].mem) if operation in ("movs", "lods") else
+    # MOVS/LODS/OUTS decode their source as the second operand and CMPS as the first, carrying any
+    # segment override.
+    source_name = (segment_register(ins, ins.operands[1].mem) if operation in ("movs", "lods", "outs") else
                    segment_register(ins, ins.operands[0].mem) if operation == "cmps" else None)
     counter = "ecx" if state.flat else "cx"
     if not compare or not repeated(ins):

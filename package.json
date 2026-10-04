@@ -10,9 +10,9 @@
     "build": "pnpm -r run build",
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm -r run test",
-    "lint": "oxlint --deny-warnings packages tools",
-    "format": "oxfmt \"packages/*/src/**/*.ts\" \"packages/*/test/*.ts\" \"packages/*/bin/*.ts\" \"tools/**/*.ts\"",
-    "format:check": "oxfmt --check \"packages/*/src/**/*.ts\" \"packages/*/test/*.ts\" \"packages/*/bin/*.ts\" \"tools/**/*.ts\"",
+    "lint": "oxlint --deny-warnings packages tools actions",
+    "format": "oxfmt \"packages/*/src/**/*.ts\" \"packages/*/test/*.ts\" \"packages/*/bin/*.ts\" \"tools/**/*.ts\" \"actions/**/*.ts\"",
+    "format:check": "oxfmt --check \"packages/*/src/**/*.ts\" \"packages/*/test/*.ts\" \"packages/*/bin/*.ts\" \"tools/**/*.ts\" \"actions/**/*.ts\"",
     "changeset": "changeset",
     "ci:publish": "changeset publish"
   },

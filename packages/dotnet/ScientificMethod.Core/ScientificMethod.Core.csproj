@@ -1,8 +1,0 @@
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <PackageId>ScientificMethod.Core</PackageId>
-    <Description>Reusable clean-room game restoration primitives.</Description>
-    <PackageTags>monogame;game-restoration;clean-room;asset-extraction</PackageTags>
-    <GenerateDocumentationFile>true</GenerateDocumentationFile>
-  </PropertyGroup>
-</Project>

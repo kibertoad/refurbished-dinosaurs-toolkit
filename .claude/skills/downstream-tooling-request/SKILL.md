@@ -5,12 +5,9 @@ description: Handle a request from a restoration that consumes the toolkit's pac
 
 # Downstream tooling requests
 
-The consumers are the restorations that install the published packages:
-`@scientific-method/executable-reader` and `@scientific-method/standard-checker` from npm,
-`scientific-method-engine` from PyPI (which includes the Ghidra scripts), and
-`ScientificMethod.Core` and `ScientificMethod.LegacyFormats` from NuGet. Older restorations may still
-carry vendored copies pinned by a toolkit commit (`tools/evidence/x86-lock.json`, a copied
-`check-documentation.mjs`, copied Ghidra scripts, or `Toad.Discovery.*` source).
+Restorations consume the toolkit's published packages. Use the package catalog in
+[AGENTS.md](../../../AGENTS.md) to identify the package and release workflow involved.
+Some restorations still carry vendored copies; collect their toolkit commit as provenance.
 
 Hold one posture throughout: the request is evidence, not a work order. The symptom is usually
 real. The remedy attached to it is the smallest change that would have unblocked one game's case,
@@ -136,7 +133,8 @@ Pick by the amount of work, not the number of findings:
 - **Several PRs.** Add a section to [the implementation plan](../../../docs/IMPLEMENTATION-PLAN.md)
   in its existing form: the outcome, the synthetic tests, what the reports must keep explicit, and
   the exit condition, ending with the request closing only after the requester's own case passes.
-  Then land one PR per slice and update the section as slices merge.
+  Then land one PR per slice, update the section's status line as slices merge, and delete the
+  section once its exit condition is met.
 
 What you commit is our revision of the request, in our terms. Do not commit their document, and do
 not copy game-specific details from it into the plan, tests or ADRs.
