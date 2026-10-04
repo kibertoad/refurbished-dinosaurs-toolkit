@@ -119,5 +119,5 @@ evidence for assuming the service leaves those bytes alone. Scopes resolve again
 registers. An unknown, wrapping or overlapping interval stops the path. Only the scoped bytes
 survive the model's memory invalidation, and each scope is reported with the model, the modeled
 return and the effect summary. Everything else the service may do stays unknown. This input needs
-prepared protocol 2, so upgrade the reader and the engine together. See the
+prepared protocol 3, so upgrade the reader and the engine together. See the
 [call model contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#limits-and-assumptions).

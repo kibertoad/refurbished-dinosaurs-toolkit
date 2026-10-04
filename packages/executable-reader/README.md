@@ -24,8 +24,9 @@ both, and the fix is to update the older one.
 scientific-method <command> <config.json>
 ```
 
-The config is JSON with at least `source` (a path relative to the config file), its `sha256`, and
-`sourceKind`: `mz` for DOS executables, `pe32` for 32-bit Windows executables (parsed by the engine),
+The config is JSON with at least `source` (a path relative to the config file), its `xxh3` (the
+XXH3-128 hash the spec's build entry gives, as 32 lower-case hex digits; a `sha256` is refused),
+and `sourceKind`: `mz` for DOS executables, `pe32` for 32-bit Windows executables (parsed by the engine),
 or `synthetic-raw` for test data. The report is printed as JSON. On failure the command prints
 `Evidence report: <reason>` to stderr and exits with 1.
 
@@ -60,6 +61,7 @@ import { pointerInventory } from "@scientific-method/executable-reader/pointer-i
 | `run(args)` | `.` | Runs one report, exactly as the command does, and returns it. `args` is `[command, configPath]`. |
 | `prepare(config, base)` | `.` | Verifies the source hash and builds the prepared config the engine receives. |
 | `PREPARED_PROTOCOL` | `.` | The prepared-config protocol number this reader speaks. |
+| `sourceXxh3(bytes)` | `.` | The XXH3-128 hash `xxh3` must equal, as 32 lower-case hex digits. |
 | `Region`, `ReportConfig`, `PreparedConfig`, `Report` | `.` | Types of the query, the prepared config and the report. |
 | `readMz(bytes, loadSegment?)` | `legacy-image` | Parses and bounds-checks an MZ executable and its FBOV envelope into an `MzImage`. |
 | `MzImage.address(segment, offset)` | `legacy-image` | File offset of a resident loaded address. |
@@ -82,7 +84,7 @@ child effects. A local restoration witness never claims external transactionalit
 
 Call models in a config may carry `preservesMemory`, explicit byte scopes the query assumes a
 modeled service leaves unchanged. The reader passes them to the engine as part of the prepared
-config, which is why this reader speaks prepared protocol 2 and needs an engine that does too. The
+config, which is why this reader speaks prepared protocol 3 and needs an engine that does too. The
 engine documents the fields, limits and reports in
 [the reporter guide](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#limits-and-assumptions).
 

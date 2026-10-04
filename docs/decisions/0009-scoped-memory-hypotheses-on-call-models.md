@@ -53,9 +53,9 @@ frame holds. A service may write its caller's frame and still return with the sa
    model, and its effect summary still reports `effectCompleteWithinModel: false` and
    `unknownEffects: true` on the modeled call. No mnemonic, value or flag rule changes, so ADR 0003
    holds.
-7. The new input changes the prepared config, so `PREPARED_PROTOCOL` moves from 1 to 2 in the reader
+7. The new input changes the prepared config, so `PREPARED_PROTOCOL` moves from 2 to 3 in the reader
    and the engine together. Both release as major versions. There is no fallback that accepts
-   protocol 1.
+   protocol 2.
 
 ## Rejected alternatives
 

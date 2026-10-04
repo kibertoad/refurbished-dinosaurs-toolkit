@@ -1,0 +1,131 @@
+// VALIDATION.md records the marked test files of the validated rows as they were when a maintainer ran
+// them against the original's files, which CI never holds. A file is hashed with CRLF read as LF,
+// so a Windows checkout and a Linux one give the same hash.
+
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type { Context } from "../context.ts";
+import { readText, tables } from "../markdown.ts";
+import type { Parity } from "./parity.ts";
+
+const VALIDATION_HEADER = ["Test file", "SHA-256"];
+const testHash = (p: string) =>
+  createHash("sha256")
+    .update(Buffer.from(readFileSync(p).toString("latin1").replaceAll("\r\n", "\n"), "latin1"))
+    .digest("hex");
+
+/**
+ * With --record-validation, writes VALIDATION.md (or prints why it cannot and exits with 2). Then
+ * checks VALIDATION.md against the marked test files of the validated rows.
+ */
+export function checkValidation(ctx: Context, { validatedTests }: Parity) {
+  const { problem } = ctx;
+  const { entries } = ctx.spec;
+  const { repoDir } = ctx.config;
+  const validationPath = join(repoDir, "VALIDATION.md");
+  if (ctx.config.recordValidation !== undefined) {
+    const builds = ctx.config.recordValidation;
+    if (!builds.length) {
+      console.error("--record-validation needs at least one build ID");
+      process.exit(2);
+    }
+    for (const b of builds)
+      if (entries.get(b)?.kind !== "BLD") {
+        console.error(`--record-validation: ${b} is not a build entry`);
+        process.exit(2);
+      }
+    let commit: string;
+    try {
+      commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf8" }).trim();
+    } catch {
+      console.error("--record-validation: git rev-parse HEAD failed");
+      process.exit(2);
+    }
+    const files = [...validatedTests.keys()].sort();
+    if (!files.length) {
+      console.error(
+        '--record-validation: no validated row lists a test file with a "needs: GAME_DIR" comment, so there is nothing to record',
+      );
+      process.exit(2);
+    }
+    writeFileSync(
+      validationPath,
+      [
+        "# Validation record",
+        "",
+        "The test files of the validated parity rows that read the original's files, as they were when every test in them passed against those files.",
+        "",
+        `- Commit: ${commit}`,
+        `- Date: ${new Date().toISOString().slice(0, 10)}`,
+        `- Builds: ${builds.join(", ")}`,
+        "",
+        `| ${VALIDATION_HEADER.join(" | ")} |`,
+        `|${"---|".repeat(VALIDATION_HEADER.length)}`,
+        ...files.map((f) => `| \`${f}\` | \`${testHash(join(repoDir, f))}\` |`),
+        "",
+      ].join("\n"),
+    );
+    console.log("wrote VALIDATION.md");
+  }
+  {
+    const recorded = new Map<string, string>(); // test file -> hash
+    if (existsSync(validationPath)) {
+      const text = readText(validationPath);
+      const item = (key: string, pattern: RegExp) => {
+        const m = text.match(new RegExp(`^- ${key}: (.*)$`, "m"));
+        if (!m || !pattern.test(m[1].trim())) {
+          problem(validationPath, `needs a "- ${key}:" item in the form the standard gives`);
+          return null;
+        }
+        return m[1].trim();
+      };
+      item("Commit", /^[0-9a-f]{40}$/);
+      item("Date", /^\d{4}-\d{2}-\d{2}$/);
+      const builds = item("Builds", /^\S.*$/);
+      if (builds !== null)
+        for (const b of builds.split(",").map((x) => x.trim()))
+          if (entries.get(b)?.kind !== "BLD") problem(validationPath, `Builds names ${b}, which is not a build entry`);
+      const ts = tables(text);
+      if (ts.length !== 1 || ts[0].header.join("|") !== VALIDATION_HEADER.join("|"))
+        problem(validationPath, `holds one table with the columns ${VALIDATION_HEADER.join(" | ")}`);
+      else {
+        let previous = "";
+        for (const row of ts[0].rows) {
+          const [path, hash] = row.map((c) => c.replaceAll("`", "").trim());
+          if (row.length !== VALIDATION_HEADER.length || !/^[0-9a-f]{64}$/.test(hash ?? "")) {
+            problem(validationPath, `the row ${row.join(" | ")} needs a test file and its SHA-256 in lowercase hex`);
+            continue;
+          }
+          if (recorded.has(path)) problem(validationPath, `${path} is listed twice`);
+          if (path < previous) problem(validationPath, `${path} is out of order; the files are sorted by path`);
+          previous = path;
+          recorded.set(path, hash);
+          if (!validatedTests.has(path))
+            problem(
+              validationPath,
+              `${path} is not a test file with a "needs: GAME_DIR" comment in a validated row's Tests; run the check with --record-validation again`,
+            );
+        }
+      }
+    }
+    for (const [tf, rows] of validatedTests) {
+      const p = join(repoDir, tf);
+      if (!existsSync(p)) continue;
+      const hash = recorded.get(tf);
+      for (const { specId, file } of rows) {
+        if (hash === undefined)
+          problem(
+            file,
+            `${specId}: ${tf} is not in VALIDATION.md, so the row cannot be validated until its tests pass against the original's files and are recorded`,
+          );
+        else if (hash !== testHash(p))
+          problem(
+            file,
+            `${specId}: ${tf} has changed since VALIDATION.md recorded it; run its tests against the original's files and record them again`,
+          );
+      }
+    }
+  }
+}
