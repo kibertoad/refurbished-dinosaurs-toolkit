@@ -167,9 +167,9 @@ export function checkRules(ctx: Context, { enumNames }: FormatNames) {
     for (const m of code.matchAll(/\bshow\s+(SCR-[A-Z0-9]+-\d+)/g))
       if (!related.includes(m[1])) problem(file, `shows ${m[1]}; add it to related`, "ENTRY-TYPES-6");
     for (const m of code.matchAll(/\b(FMT-[A-Z0-9]+-\d+)/g))
-      if (!related.includes(m[1])) problem(file, `uses ${m[1]}; add it to related`);
+      if (!related.includes(m[1])) problem(file, `uses ${m[1]}; add it to related`, "ENTRY-TYPES-6");
     for (const m of e.code!.matchAll(/# may run: (RULE-[A-Z0-9]+-\d+)/g))
-      if (!related.includes(m[1])) problem(file, `may be interrupted by ${m[1]}; add it to related`);
+      if (!related.includes(m[1])) problem(file, `may be interrupted by ${m[1]}; add it to related`, "ENTRY-TYPES-6");
     if (meta.status === "established" && mayBeInterrupted(e) && onlyEmulatedRuns(entries, e))
       problem(
         file,
@@ -225,7 +225,7 @@ export function checkRules(ctx: Context, { enumNames }: FormatNames) {
         continue;
       }
       for (const fmt of enumNames.get(name)!)
-        if (!related.includes(fmt)) problem(file, `uses ${name} from ${fmt}; add it to related`);
+        if (!related.includes(fmt)) problem(file, `uses ${name} from ${fmt}; add it to related`, "ENTRY-TYPES-6");
     }
     // Names read or assigned without let that are neither locals nor glossary terms
     for (const m of code.matchAll(/(?<![.\w])([a-z_][a-z0-9_]*)(?=\s*(?:\.|\[|=[^=]|$))/gm)) {

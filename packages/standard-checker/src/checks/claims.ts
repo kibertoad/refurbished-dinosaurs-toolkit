@@ -4,7 +4,7 @@
 import type { Context } from "../context.ts";
 import { checkResolves, checkStatusCitations, evidenceFacts } from "../evidence.ts";
 import { asList, kindOf } from "../ids.ts";
-import { CLAIM_LINKS, RELATED_KINDS } from "../standard.ts";
+import { CLAIM_LINKS, FIELD_RULES, RELATED_KINDS } from "../standard.ts";
 import type { Entry } from "../types.ts";
 
 /** Checks the links and status of a claim: a format, rule, bug or screen. */
@@ -13,7 +13,7 @@ export function checkClaim(ctx: Context, id: string, e: Entry) {
   const { entries } = ctx.spec;
   const { file, meta, kind } = e;
   const status = meta.status;
-  for (const f of CLAIM_LINKS) if (!Array.isArray(meta[f])) problem(file, `${f} must be a list`);
+  for (const f of CLAIM_LINKS) if (!Array.isArray(meta[f])) problem(file, `${f} must be a list`, FIELD_RULES[f]);
   const evidence = asList(meta.evidence);
   const conflicting = asList(meta.conflicting);
   const related = asList(meta.related);

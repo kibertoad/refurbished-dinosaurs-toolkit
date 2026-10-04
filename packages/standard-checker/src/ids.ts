@@ -9,6 +9,9 @@ export const idsIn = (text: unknown): string[] => [...new Set(String(text ?? "")
 export const kindOf = (id: string) => id.split("-")[0];
 /** The area of an ID, such as `COMBAT` (for a build or source, the start of its alias). */
 export const areaOf = (id: string) => id.split("-")[1];
+
+/** Builds and sources have an alias in place of an area and a number. */
+export const isAlias = (id: string) => ["BLD", "SRC"].includes(kindOf(id));
 // Orders IDs of one kind and area by number, so RULE-A-999 comes before RULE-A-1000. Anything else
 // compares by UTF-16 code unit, as Array.prototype.sort does, so the order does not depend on the
 // machine's locale.

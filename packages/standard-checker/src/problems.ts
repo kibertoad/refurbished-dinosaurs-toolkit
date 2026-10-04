@@ -52,7 +52,7 @@ export function createProblems(repoDir: string): Problems {
       console.error(`\n${unique.length} problem(s) in ${entryCount} spec entries.`);
       if (citedRule)
         console.error(
-          "A label in brackets, such as [STATUS-14], names the rule of the documentation standard that the problem breaks. The standard opens it with the heading ###### STATUS-14, anchored at #status-14.",
+          "A label in brackets, such as [STATUS-14], names the rule of the documentation standard that the problem breaks. The standard opens it with the heading ###### STATUS-14, anchored at https://dinorefurb.com/documentation-standard/#status-14 and at #status-14 in a vendored copy.",
         );
       process.exit(1);
     }

@@ -31,6 +31,10 @@
 //                       used. Run it only after every test in those files passed, with none
 //                       skipped, against the original's files
 //
+// Each problem is one line that starts with the path it concerns, or spec for the spec as a whole.
+// A problem that breaks a numbered rule of the standard ends with the rule's label, such as
+// [STATUS-4] for the rule whose heading is anchored at #status-4.
+//
 // The KSC environment variable names the Kaitai Struct compiler. Without it, the check looks for
 // kaitai-struct-compiler or ksc on PATH, and warns when it finds neither.
 //

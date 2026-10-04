@@ -3,7 +3,7 @@
 import { readdirSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { LoadContext } from "../context.ts";
-import { kindOf } from "../ids.ts";
+import { isAlias, kindOf } from "../ids.ts";
 import { readEntry } from "../markdown.ts";
 import { KINDS } from "../standard.ts";
 import type { Entry } from "../types.ts";
@@ -37,8 +37,7 @@ export function loadEntries({ config, problem }: LoadContext): Map<string, Entry
       }
       if (kindOf(id) !== kind) problem(file, `a ${kindOf(id)} entry does not belong in spec/${dir}/`);
       // IDENTIFIERS-3 makes a number unique within its kind and area. No numbered rule says so of an alias.
-      if (entries.has(id))
-        problem(file, `ID ${id} is used twice`, ["BLD", "SRC"].includes(kindOf(id)) ? undefined : "IDENTIFIERS-3");
+      if (entries.has(id)) problem(file, `ID ${id} is used twice`, isAlias(id) ? undefined : "IDENTIFIERS-3");
       entries.set(id, entry);
     }
   }

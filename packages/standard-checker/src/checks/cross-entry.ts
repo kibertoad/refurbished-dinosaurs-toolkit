@@ -156,7 +156,8 @@ export function checkAcrossEntries(ctx: Context, { enumNames }: FormatNames) {
       const group = other ? [x, ...asList(other.meta.split_with).filter((g) => !isSuperseded(entries, g))] : [];
       if (group.length < 2 || group.includes(id)) continue;
       for (const g of group)
-        if (!related.includes(g)) problem(e.file, `relates to ${x}, which is split with ${g}; add ${g} to related`);
+        if (!related.includes(g))
+          problem(e.file, `relates to ${x}, which is split with ${g}; add ${g} to related`, "ENTRY-TYPES-6");
       for (const b of asList(e.meta.builds))
         if (!group.some((g) => asList(entries.get(g)?.meta.builds).includes(b)))
           problem(e.file, `lists ${b}, which no entry of the split ${group.join(", ")} lists`, "ENTRY-TYPES-8");

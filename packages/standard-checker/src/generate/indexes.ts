@@ -4,7 +4,7 @@ import { dirname, join, relative } from "node:path";
 import type { Context } from "../context.ts";
 import { evidenceFacts } from "../evidence.ts";
 import { toSlash } from "../files.ts";
-import { areaOf, asList, compareIds, idsIn, kindOf } from "../ids.ts";
+import { areaOf, asList, compareIds, idsIn, isAlias, kindOf } from "../ids.ts";
 import { CLAIM_STATUSES, EVIDENCE_STATUSES, KINDS } from "../standard.ts";
 import type { Render } from "../types.ts";
 import { GENERATED, layout } from "./layout.ts";
@@ -172,7 +172,7 @@ export function generateIndexes(ctx: Context): Map<string, string> {
   }
 
   const generated = new Map<string, string>(); // absolute path -> text
-  const areaIds = sortedIds.filter((x) => !["BLD", "SRC"].includes(kindOf(x)));
+  const areaIds = sortedIds.filter((x) => !isAlias(x));
   const indexes: Record<string, [Render, string[]]> = {
     "by-kind": [renderByKind, sortedIds],
     "by-area": [renderByArea, areaIds],

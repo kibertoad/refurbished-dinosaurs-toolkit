@@ -55,7 +55,7 @@ export function checkEntries(ctx: Context): FormatNames {
     const { file, meta, kind } = e;
     checkIdForm(ctx, file, id);
     for (const f of FIELDS[kind].required) if (!(f in meta)) problem(file, `front matter lacks ${f}`, FIELD_RULES[f]);
-    if (!Array.isArray(meta.superseded_by)) problem(file, "superseded_by must be a list", "ENTRY-TYPES-4");
+    if (!Array.isArray(meta.superseded_by)) problem(file, "superseded_by must be a list", FIELD_RULES.superseded_by);
     const expectedSections = SECTIONS[kind];
     const got = e.sections.map((s) => s.title);
     if (got.join("|") !== expectedSections.join("|"))

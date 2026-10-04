@@ -6,7 +6,7 @@ import { join, resolve, sep } from "node:path";
 import type { Context } from "../context.ts";
 import { isSuperseded } from "../evidence.ts";
 import { walk } from "../files.ts";
-import { idsIn, kindOf } from "../ids.ts";
+import { idsIn, isAlias } from "../ids.ts";
 import { DEV_RE } from "../standard.ts";
 import type { Deviation } from "./deviations.ts";
 
@@ -25,7 +25,7 @@ export function checkReferences(ctx: Context, deviations: Map<string, Deviation>
     });
   for (const { file: f, text } of scan) {
     for (const x of idsIn(text)) {
-      if (["BLD", "SRC"].includes(kindOf(x)) && !entries.has(x)) continue; // aliases can collide with ordinary words
+      if (isAlias(x) && !entries.has(x)) continue; // aliases can collide with ordinary words
       if (!entries.has(x)) problem(f, `cites ${x}, which does not exist in the spec`);
       else if (isSuperseded(entries, x) && !isDeviationFile(f))
         problem(f, `cites ${x}, which is superseded; cite what replaced it`);

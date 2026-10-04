@@ -3,12 +3,12 @@
 // then by a block of 100 numbers, or by the first character of a build's or source's alias.
 
 import type { Context } from "../context.ts";
-import { areaOf, kindOf } from "../ids.ts";
+import { areaOf, isAlias, kindOf } from "../ids.ts";
 import { lineCount } from "../markdown.ts";
 import { KINDS, LINE_LIMIT } from "../standard.ts";
 import type { Render } from "../types.ts";
 
-const groupOf = (id: string) => (["BLD", "SRC"].includes(kindOf(id)) ? "BLD-SRC" : areaOf(id));
+const groupOf = (id: string) => (isAlias(id) ? "BLD-SRC" : areaOf(id));
 /** The block of an ID in a split file: its hundred, such as 100, or the first character of an alias. */
 export const blockOf = (id: string) => {
   const kind = kindOf(id);
