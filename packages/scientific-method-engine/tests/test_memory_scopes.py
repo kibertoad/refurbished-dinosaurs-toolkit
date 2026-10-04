@@ -160,10 +160,10 @@ class MemoryScopeTests(unittest.TestCase):
             self.assertIn("overlap or alias", r["paths"][0]["stop"])
             self.assertFalse(any(e["site"] == c.labels["childWrite"] for e in events(r, "write")))
 
-    def test_unknown_and_wrapping_addresses_stop_without_preservation(self):
+    def test_unknown_segments_and_wrapping_addresses_stop_without_preservation(self):
+        # An unknown base resolves to its own symbolic group (SymbolicBaseScopeTests); an unknown segment stops.
         for registers, declared, reason in (({**REGISTERS, "bx": 0xffff}, scope(base="bx"), "boundary"),
-                                            (REGISTERS, scope(base="bx"), "unresolved"),
-                                            ({"sp": 0xff00}, scope(), "unresolved"),
+                                            ({"sp": 0xff00}, scope(), "address unresolved"),
                                             ({**REGISTERS, "bx": 0}, scope(base="bx", displacement=-1), "boundary")):
             c, model = nested()
             model["preservesMemory"] = [declared]
@@ -350,6 +350,134 @@ class MemoryScopeTests(unittest.TestCase):
         declared = r["paths"][0]["conditionalModels"][0]["preservedMemoryScopes"][0]
         self.assertEqual(declared["base"]["value"], REGISTERS["sp"] - 6)
         self.assertEqual(r["paths"][0]["registers"]["bp"]["value"], REGISTERS["ebp"])
+
+
+def framed(after=None):
+    """push bp; mov bp, sp; sub sp, 4; call ax; narrow: mov word [bp-2], 1; call ax; [after]; mov ax, [bp-2]; leave; ret."""
+    c = (Code().emit("55 8b ec 83 ec 04").label("first").emit("ff d0")
+         .label("narrow").label("assign").emit("c7 46 fe 01 00").label("service").emit("ff d0"))
+    if after:
+        c.label("after").emit(after)
+    return c.label("read").emit("8b 46 fe 8b e5 5d c3")
+
+
+# Locals and the saved BP: BP-4 up to the return address, six bytes below the function's entry SP.
+FRAME = {"segment": "ss", "base": "bp", "displacement": -4, "bytes": 6, "evidence": "synthetic locals and saved BP"}
+
+
+def frame_models(c, service=(FRAME,), first=(FRAME,)):
+    return [{"site": c.labels[name], "returnBytes": 2, "preserves": ["ss", "ds", "ebp"], "cases": [{}],
+             "evidence": "synthetic balanced returning service", "preservesMemory": list(scopes)}
+            for name, scopes in (("first", first), ("service", service))]
+
+
+def slot_control(c, writers=("assign",)):
+    return [{"name": "slot", "kind": "lastWriter", "at": {"site": c.labels["read"], "event": "read"},
+             "writers": [c.labels[w] if w in c.labels else w for w in writers]}]
+
+
+class SymbolicBaseScopeTests(unittest.TestCase):
+    """Scopes over SP or BP at an offset from an unknown entry SP, as an entryFrame query starts (ADR 0013)."""
+
+    def framed_run(self, c, registers=None, **extra):
+        from test_entry_frame import run
+        extra.setdefault("callModels", frame_models(c))
+        extra.setdefault("relationalControls", slot_control(c))
+        return run(c, registers=registers or {"ss": 0x3000, "ds": 0x2000}, entryFrame={"from": 0}, **extra)
+
+    def verdict(self, r):
+        return r["relationalControls"]["controls"][0]
+
+    def test_a_scope_on_the_observed_frame_keeps_the_slot_and_the_control_holds(self):
+        c = framed()
+        r = self.framed_run(c)
+        frame = r["entryFrame"]
+        self.assertEqual((frame["established"], frame["sp"], frame["bp"], frame["reasons"]), (True, -6, -2, []))
+        self.assertTrue(r["completeWithinModel"])
+        self.assertEqual(self.verdict(r)["verdict"], "held")
+        declared = r["paths"][0]["conditionalModels"][0]["preservedMemoryScopes"][0]
+        self.assertIsNone(declared["base"]["value"])
+        self.assertEqual((declared["offset"], declared["linearStart"], declared["linearEnd"]), (None, None, None))
+        # The interval sits in the entry SP's group, six bytes below it; only the stored word has a value.
+        self.assertEqual(declared["interval"]["start"], 0x10000 - 6)
+        self.assertEqual(declared["interval"]["end"], 0x10000)
+        self.assertEqual((declared["cachedBytes"], declared["uncachedBytes"]), (2, 4))
+
+    def test_without_the_scope_the_slot_is_dropped_and_the_control_is_undecided(self):
+        c = framed()
+        r = self.framed_run(c, callModels=frame_models(c, service=()))
+        self.assertTrue(r["entryFrame"]["established"])
+        self.assertEqual(self.verdict(r)["verdict"], "undecided")
+
+    def test_a_writer_the_control_does_not_allow_violates_it(self):
+        c = framed()
+        with self.assertRaisesRegex(ValueError, "slot violated on path"):
+            self.framed_run(c, relationalControls=slot_control(c, ("entryState",)))
+
+    def test_a_scope_that_keeps_part_of_the_slot_leaves_the_control_undecided(self):
+        c = framed()
+        partial = {**FRAME, "bytes": 3}
+        r = self.framed_run(c, callModels=frame_models(c, service=(partial,)))
+        self.assertEqual(self.verdict(r)["verdict"], "undecided")
+        read = next(e for e in r["paths"][0]["events"] if e["kind"] == "read" and e["site"] == c.labels["read"])
+        self.assertEqual(read["missingByteProducers"], [1])
+
+    def test_later_writes_drop_the_kept_bytes_they_may_alias_and_keep_the_rest(self):
+        # mov byte [bp-6], 0 stores another offset of the same frame group; mov byte es:[di], 0 may store anywhere.
+        for after, expected in (("c6 46 fa 00", "held"), ("26 c6 05 00", "undecided")):
+            with self.subTest(after=after):
+                c = framed(after)
+                self.assertEqual(self.verdict(self.framed_run(c))["verdict"], expected)
+
+    def test_scopes_that_may_share_a_byte_stop_the_path(self):
+        # SP is BP-4 at the call, so a scope on SP overlaps the frame scope through another register.
+        stack = {"segment": "ss", "base": "sp", "bytes": 2, "evidence": "synthetic overlap through SP"}
+        # A concrete DS:SI inside the stack segment may be one of the frame's bytes.
+        data = {"segment": "ds", "base": "si", "bytes": 2, "evidence": "synthetic data scope"}
+        for second, registers in ((stack, None), (data, {"ss": 0x3000, "ds": 0x3000, "si": 0x10})):
+            with self.subTest(second=second["base"]):
+                c = framed()
+                r = self.framed_run(c, registers, callModels=frame_models(c, service=(FRAME, second)))
+                self.assertTrue(r["entryFrame"]["established"])
+                self.assertIn("overlap or alias", r["paths"][0]["stop"])
+                self.assertEqual(r["paths"][0]["conditionalModels"], [])
+                self.assertEqual(self.verdict(r)["verdict"], "undecided")
+        # Control: DS:SI in another segment range shares no byte with the stack segment.
+        c = framed()
+        r = self.framed_run(c, {"ss": 0x3000, "ds": 0x2000, "si": 0x10}, callModels=frame_models(c, service=(FRAME, data)))
+        self.assertEqual(self.verdict(r)["verdict"], "held")
+        self.assertEqual(r["paths"][0]["conditionalModels"][0]["preservedMemoryScopes"][1]["linearStart"], 0x20010)
+
+    def test_an_unknown_segment_stops_the_frame_trace_and_leaves_the_frame_unestablished(self):
+        c = framed()
+        r = self.framed_run(c, {"ds": 0x2000})
+        frame = r["entryFrame"]
+        self.assertFalse(frame["established"])
+        self.assertIn("preservesMemory address unresolved: the segment must be concrete", " ".join(frame["reasons"]))
+        self.assertEqual(self.verdict(r)["verdict"], "undecided")
+
+    def test_an_unread_route_to_the_entry_leaves_the_frame_unestablished(self):
+        c = framed()
+        for limit in ({"maxSteps": 2}, {"maxPaths": 1, "callModels": [
+                {**m, "cases": [{}, {}]} for m in frame_models(c)]}):
+            with self.subTest(limit=list(limit)):
+                r = self.framed_run(c, **limit)
+                self.assertFalse(r["entryFrame"]["established"])
+                self.assertEqual(self.verdict(r)["verdict"], "undecided")
+
+    def test_retained_bytes_rejoin_their_own_group(self):
+        data = bytes.fromhex("c3")
+        config = configuration(data, registers={"ss": 0x3000})
+        state = State(0, Image(data, config), config)
+        state.access(state.segment("ss"), state.reg("sp"), 2, write=const(0x1234, 16))
+        values, unread, declared = capture_scopes(state, {"preservesMemory": [scope(bytes=2)]})
+        group = next(iter(values))[:2]
+        self.assertNotEqual(group[0], ("linear",))
+        history = scope_history(state, values, unread)
+        state.clear_memory()
+        retain_scopes(state, values, unread, history)
+        self.assertEqual(state.memory_groups, {group: set(values)})
+        self.assertEqual(state.peek(state.segment("ss"), state.reg("sp"), 2).number, 0x1234)
 
 
 if __name__ == "__main__":

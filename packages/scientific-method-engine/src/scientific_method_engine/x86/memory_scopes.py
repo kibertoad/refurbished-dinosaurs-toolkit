@@ -4,8 +4,8 @@ A scope is a query hypothesis that a modeled service leaves a named byte range a
 call. It is evidence-layer bookkeeping: it reads and writes no memory on the path, adds no read or
 write event and computes no instruction value or flag (ADR 0003).
 """
-from .machine import ALIASES, StopPath
-from .values import const
+from .machine import ALIASES, StopPath, written_domain
+from .values import const, op
 
 
 SEGMENTS = ("cs", "ds", "es", "ss", "fs", "gs")
@@ -60,25 +60,39 @@ def capture_scopes(state, model):
     """Resolve each scope against the pre-call state and snapshot its bytes.
 
     Returns ``(values, unread, descriptions)``: the cached bytes, the unknown term names of bytes
-    the model had no value for, and one report entry per scope. Raises ``StopPath`` when a segment
-    or base is not concrete, an interval leaves the address space, or two intervals share a linear
-    byte (segment aliases included). An uncached byte stays uncached after the call.
+    the model had no value for, and one report entry per scope. The segment must be concrete. The
+    base may be concrete, or a symbolic value such as SP or BP at an offset from an unknown entry SP
+    (ADR 0013): the scope's bytes are then keyed by that value, as reads and writes through it are.
+    Raises ``StopPath`` when the segment is not concrete, a concrete interval leaves the address
+    space, two scopes on one base value share a byte, or two scopes on different base values may
+    share a linear byte (segment aliases included). A symbolic base may address any byte of its
+    segment, so it may alias every scope whose segment range overlaps that segment. An uncached
+    byte stays uncached after the call.
     """
-    values, unread, descriptions, intervals = {}, {}, [], []
+    values, unread, descriptions, resolved = {}, {}, [], []
     for scope in model.get("preservesMemory", []):
         segment, base = state.segment(scope["segment"]), state.reg(scope["base"])
-        if segment.number is None or base.number is None:
-            raise StopPath("preservesMemory address unresolved: segment and base must be concrete before the call")
+        if segment.number is None:
+            raise StopPath("preservesMemory address unresolved: the segment must be concrete before the call")
         displacement = scope.get("displacement", 0)
-        offset = base.number + displacement
         size = scope["bytes"]
-        if offset < 0 or offset + size > 1 << state.bits:
-            raise StopPath("preservesMemory interval crosses the address boundary")
-        _, _, _, keys = state.keys(segment, const(offset, state.bits), size)
-        start, end = keys[0][2], keys[-1][2] + 1
-        if any(start < prior_end and prior_start < end for prior_start, prior_end in intervals):
-            raise StopPath("preservesMemory intervals overlap or alias")
-        intervals.append((start, end))
+        if base.number is not None:
+            if not 0 <= base.number + displacement <= (1 << state.bits) - size:
+                raise StopPath("preservesMemory interval crosses the address boundary")
+            offset = const(base.number + displacement, state.bits)
+        else:
+            offset = op("add", base, const(displacement, state.bits))
+        seg, group_base, start, keys = state.keys(segment, offset, size)
+        domain = written_domain(seg, group_base, start, size, state.bits, state.flat)
+        for group, prior_keys, prior_domain in resolved:
+            if group == (seg, group_base):
+                shared = not prior_keys.isdisjoint(keys)
+            else:
+                shared = not (prior_domain[1] <= domain[0] or domain[1] <= prior_domain[0])
+            if shared:
+                raise StopPath("preservesMemory intervals overlap or alias")
+        resolved.append(((seg, group_base), set(keys), domain))
+        linear = seg == ("linear",)
         cached = 0
         for key in keys:
             if key in state.memory:
@@ -89,7 +103,9 @@ def capture_scopes(state, model):
         descriptions.append({
             "segmentRegister": scope["segment"], "segment": segment.report(),
             "baseRegister": scope["base"], "base": base.report(), "displacement": displacement,
-            "offset": offset, "linearStart": start, "linearEnd": end, "bytes": size,
+            "offset": offset.number,
+            "interval": {"segment": seg, "base": group_base, "start": start, "end": start + size},
+            "linearStart": start if linear else None, "linearEnd": start + size if linear else None, "bytes": size,
             "cachedBytes": cached, "uncachedBytes": size - cached, "evidence": scope["evidence"],
             "meaning": "explicit pre-call memory-preservation hypothesis; memory outside every scope is unknown"})
     return values, unread, descriptions
@@ -104,15 +120,16 @@ def scope_history(state, values, unread):
 def retain_scopes(state, values, unread, history):
     """Put the captured bytes back after the model invalidated memory. Later writes still apply.
 
-    All scoped keys are concrete linear bytes, so they share one alias group. ``history`` from
-    ``scope_history`` keeps each byte's reported writer, or its reason for having no value.
+    Each byte rejoins the alias group of its own segment and base, so a later write that may alias
+    it drops it as it drops any other byte. ``history`` from ``scope_history`` keeps each byte's
+    reported writer, or its reason for having no value.
     """
     state.memory.update(values)
     state.unread_memory.update(unread)
     state.memory_writers.update(history[0])
     state.lost_memory.update(history[1])
-    if values or unread:
-        state.memory_groups.setdefault((("linear",), ("absolute",)), set()).update(values, unread)
+    for key in [*values, *unread]:
+        state.memory_groups.setdefault(key[:2], set()).add(key)
 
 
 def model_scopes(models, event):

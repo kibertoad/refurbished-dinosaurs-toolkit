@@ -1598,6 +1598,56 @@ test("entryFrame passes through preparation and lets a narrower entry return thr
   );
 });
 
+test("a memory scope over an observed entry frame keeps a slot across a modeled call through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(200, 28);
+  // push bp; mov bp,sp; sub sp,4; call ax; narrower entry: mov word [bp-2],1; call ax;
+  // read: mov ax,[bp-2]; mov sp,bp; pop bp; ret
+  data.set(
+    [
+      0x55, 0x8b, 0xec, 0x83, 0xec, 0x04, 0xff, 0xd0, 0xc7, 0x46, 0xfe, 1, 0, 0xff, 0xd0, 0x8b, 0x46, 0xfe, 0x8b, 0xe5,
+      0x5d, 0xc3,
+    ],
+    64,
+  );
+  writeFileSync(join(dir, "source.bin"), data);
+  const frame = { segment: "ss", base: "bp", displacement: -4, bytes: 6, evidence: "synthetic locals and saved BP" };
+  const models = (service: unknown[]) =>
+    [70, 77].map((site) => ({
+      site,
+      returnBytes: 2,
+      preserves: ["ss", "ds", "ebp"],
+      preservesMemory: site === 77 ? service : [frame],
+      evidence: "synthetic balanced returning service",
+      cases: [{}],
+    }));
+  const query = (writers: unknown[], service: unknown[]) => {
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({
+        ...config,
+        xxh3: sourceXxh3(data),
+        entry: 72,
+        regions: [{ ...config.regions[0], end: 86, entries: [64, 72] }],
+        registers: { ds: 0x2000, ss: 0x3000 },
+        entryFrame: { from: 64 },
+        callModels: models(service),
+        relationalControls: [{ name: "saved slot", kind: "lastWriter", at: { site: 79, event: "read" }, writers }],
+      }),
+    );
+    return join(dir, "config.json");
+  };
+  const held = run(["memory", query([72], [frame])]);
+  assert.equal(held.entryFrame.established, true);
+  assert.equal(held.relationalControls.allHeld, true);
+  const scope = held.paths[0].conditionalModels[0].preservedMemoryScopes[0];
+  assert.equal(scope.linearStart, null);
+  assert.deepEqual([scope.interval.start, scope.interval.end, scope.cachedBytes], [0x10000 - 6, 0x10000, 2]);
+  const dropped = run(["memory", query([72], [])]);
+  assert.equal(dropped.relationalControls.controls[0].verdict, "undecided");
+  assert.throws(() => run(["memory", query(["entryState"], [frame])]), /saved slot violated/);
+});
+
 test("a report at the scope, case and path limits stays within the reader's output cap", (t) => {
   const { dir, data, config } = fixture(t);
   // Two modeled calls in a row, then ret; both calls go to a ret the models never reach.

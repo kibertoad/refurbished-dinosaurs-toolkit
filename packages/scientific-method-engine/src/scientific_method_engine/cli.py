@@ -26,6 +26,7 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "(paths, totalSteps, maxSteps, visitLimit, stringIterations); ordinary computed transfers remain stopped.\n"
          "Port accesses and interrupts are hardware-boundary events; portInputs supplies port reads as assumptions.\n"
          "callModels[].preservesMemory keeps explicit, bounded pre-call byte scopes across a modeled call; other memory stays unknown.\n"
+         "A scope needs a concrete segment; its base may be symbolic, such as BP in an entryFrame query.\n"
          "Each traced path's loops record lists restart edges and what changed between iterations (loopIterationLimit).\n"
          "       scientific-method-engine ghidra-scripts")
 
