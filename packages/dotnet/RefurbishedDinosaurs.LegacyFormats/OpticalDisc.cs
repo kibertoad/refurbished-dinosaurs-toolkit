@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -64,7 +65,7 @@ public static class CddaWave
     /// 36 header bytes after it as well as the audio, so the audio is at most <c>uint.MaxValue - 36</c>
     /// bytes, about 6.8 hours.
     /// </summary>
-    public const long MaximumSectors = (uint.MaxValue - 36L) / BytesPerSector;
+    public const long MaximumSectors = WavePcm16Writer.MaximumDataLength / BytesPerSector;
 
     private const int BufferSize = 128 * 1024;
 
@@ -95,14 +96,18 @@ public static class CddaWave
         var dataLength = CheckRange(source, output, startSector, sectorCount);
         WavePcm16Writer.WriteHeader(output, (uint)dataLength, 2, 44100);
         source.Position = startSector * BytesPerSector;
-        var buffer = new byte[BufferSize];
-        for (var remaining = dataLength; remaining > 0;)
+        var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+        try
         {
-            var read = source.Read(buffer, 0, (int)Math.Min(buffer.Length, remaining));
-            if (read == 0) throw new EndOfStreamException("The image ended inside the CDDA range.");
-            output.Write(buffer, 0, read);
-            remaining -= read;
+            for (var remaining = dataLength; remaining > 0;)
+            {
+                var chunk = buffer.AsSpan(0, (int)Math.Min(BufferSize, remaining));
+                source.ReadExactly(chunk);
+                output.Write(chunk);
+                remaining -= chunk.Length;
+            }
         }
+        finally { ArrayPool<byte>.Shared.Return(buffer); }
         output.Flush();
     }
 
@@ -137,19 +142,22 @@ public static class CddaWave
     {
         var dataLength = CheckRange(source, output, startSector, sectorCount);
         cancellationToken.ThrowIfCancellationRequested();
-        var buffer = new byte[BufferSize];
-        WavePcm16Writer.FormatHeader(buffer, (uint)dataLength, 2, 44100);
-        await output.WriteAsync(buffer.AsMemory(0, WavePcm16Writer.HeaderSize), cancellationToken).ConfigureAwait(false);
-        source.Position = startSector * BytesPerSector;
-        for (var remaining = dataLength; remaining > 0;)
+        var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var chunk = buffer.AsMemory(0, (int)Math.Min(buffer.Length, remaining));
-            var read = await source.ReadAsync(chunk, cancellationToken).ConfigureAwait(false);
-            if (read == 0) throw new EndOfStreamException("The image ended inside the CDDA range.");
-            await output.WriteAsync(chunk[..read], cancellationToken).ConfigureAwait(false);
-            remaining -= read;
+            WavePcm16Writer.FormatHeader(buffer, (uint)dataLength, 2, 44100);
+            await output.WriteAsync(buffer.AsMemory(0, WavePcm16Writer.HeaderSize), cancellationToken).ConfigureAwait(false);
+            source.Position = startSector * BytesPerSector;
+            for (var remaining = dataLength; remaining > 0;)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var chunk = buffer.AsMemory(0, (int)Math.Min(BufferSize, remaining));
+                await source.ReadExactlyAsync(chunk, cancellationToken).ConfigureAwait(false);
+                await output.WriteAsync(chunk, cancellationToken).ConfigureAwait(false);
+                remaining -= chunk.Length;
+            }
         }
+        finally { ArrayPool<byte>.Shared.Return(buffer); }
         await output.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 

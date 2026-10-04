@@ -52,11 +52,32 @@ public sealed class CddaWaveTests
         using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         const int sectors = 200;
         using var source = new CancelOnReadStream(Patterned(sectors * Sector), cancellation, cancelOnRead: 2);
-        using var output = new MemoryStream();
+        using var output = new TokenIgnoringStream();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => CddaWave.WriteAsync(source, output, 0, sectors, cancellation.Token));
-        Assert.InRange(output.Length, 45, 44 + (long)sectors * Sector - 1);
+        // Neither stream observes the token, so the copy stops at the check before the third read.
+        Assert.Equal(44 + 2 * 128 * 1024, output.Length);
+    }
+
+    [Fact]
+    public async Task NullOrIncapableStreamsAreRejectedBeforeAnythingIsWritten()
+    {
+        using var source = new MemoryStream(new byte[Sector]);
+        using var output = new MemoryStream();
+        using var readOnly = new MemoryStream(new byte[Sector], writable: false);
+        using var unreadable = new HeaderOnlyStream();
+        var token = TestContext.Current.CancellationToken;
+
+        Assert.Throws<ArgumentNullException>(() => CddaWave.Write(null!, output, 0, 1));
+        Assert.Throws<ArgumentNullException>(() => CddaWave.Write(source, null!, 0, 1));
+        await Assert.ThrowsAsync<ArgumentNullException>(() => CddaWave.WriteAsync(null!, output, 0, 1, token));
+        await Assert.ThrowsAsync<ArgumentNullException>(() => CddaWave.WriteAsync(source, null!, 0, 1, token));
+        Assert.Throws<ArgumentException>(() => CddaWave.Write(unreadable, output, 0, 1));
+        Assert.Throws<ArgumentException>(() => CddaWave.Write(source, readOnly, 0, 1));
+        await Assert.ThrowsAsync<ArgumentException>(() => CddaWave.WriteAsync(unreadable, output, 0, 1, token));
+        await Assert.ThrowsAsync<ArgumentException>(() => CddaWave.WriteAsync(source, readOnly, 0, 1, token));
+        Assert.Equal(0, output.Length);
     }
 
     [Fact]
@@ -107,6 +128,7 @@ public sealed class CddaWaveTests
     }
 
     // Cancels the token when the given read starts, so the copy is cancelled with audio left to copy.
+    // The read itself ignores the token, as a stream without cancellable reads would.
     private sealed class CancelOnReadStream(byte[] bytes, CancellationTokenSource cancellation, int cancelOnRead)
         : MemoryStream(bytes)
     {
@@ -115,8 +137,15 @@ public sealed class CddaWaveTests
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
             if (++reads == cancelOnRead) cancellation.Cancel();
-            return base.ReadAsync(buffer, cancellationToken);
+            return base.ReadAsync(buffer, CancellationToken.None);
         }
+    }
+
+    // Writes whatever it is given, whatever the token says.
+    private sealed class TokenIgnoringStream : MemoryStream
+    {
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) =>
+            base.WriteAsync(buffer, CancellationToken.None);
     }
 
     // A readable, seekable stream of zeros, long enough to stand for an image larger than a WAVE file.
