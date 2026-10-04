@@ -1,6 +1,3 @@
-using System.Buffers;
-using System.Globalization;
-using System.IO.Hashing;
 using RefurbishedDinosaurs.Core.Assets;
 using RefurbishedDinosaurs.Core.IO;
 
@@ -31,8 +28,6 @@ public sealed record ContentExtractionOptions(
 /// <summary>Copies the files of an <see cref="OriginalContentSource"/> into a content directory.</summary>
 public static class ContentSourceExtractor
 {
-    private const int BufferSize = 1024 * 1024;
-
     /// <summary>
     /// Copies the selected files of <paramref name="source"/> below
     /// <see cref="ContentExtractionOptions.Prefix"/> in <paramref name="root"/>, usually a
@@ -69,14 +64,15 @@ public static class ContentSourceExtractor
     /// <exception cref="ArgumentOutOfRangeException">A limit is negative.</exception>
     /// <exception cref="DirectoryNotFoundException"><paramref name="root"/> does not exist.</exception>
     /// <exception cref="IOException">
-    /// The prefix names a file or a directory that is not empty, or spells an existing entry with
-    /// different case. Other I/O failures while copying also surface as <see cref="IOException"/>.
+    /// The prefix names a file or a directory that is not empty, spells an existing entry with
+    /// different case or matches two entries ignoring case, or no prefix is given and the root is not
+    /// empty. Other I/O failures while copying also surface as <see cref="IOException"/>.
     /// </exception>
     /// <exception cref="InvalidDataException">
     /// The prefix or a source path is not accepted by <see cref="PortableAssetPath.Relative"/>, the root
-    /// or a directory on the way to the prefix is a link, the selection exceeds a limit, a file's path
-    /// is also a directory of another file ignoring case, or a file yields more or fewer bytes than the
-    /// source lists.
+    /// or a directory on the way to the prefix is a link, the source lists a negative size, the
+    /// selection exceeds a limit, a file's path is also a directory of another file ignoring case, or
+    /// a file yields more or fewer bytes than the source lists.
     /// </exception>
     /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
     public static async Task<IReadOnlyList<InstalledAsset>> ExtractAsync(
@@ -138,11 +134,17 @@ public static class ContentSourceExtractor
         {
             // A part spelled differently from an existing entry would reuse that entry on Windows and
             // create a second one beside it on a case-sensitive file system, so it is refused on both.
+            // Two entries that match ignoring case are refused whichever one the part spells, since
+            // the tree under them would be ambiguous on a case-insensitive file system.
             var existing = Directory.EnumerateFileSystemEntries(current)
                 .Select(Path.GetFileName)
-                .FirstOrDefault(name => string.Equals(name, part, StringComparison.OrdinalIgnoreCase));
-            if (existing is not null && existing != part)
-                throw new IOException($"Extraction prefix spells {existing} as {part}: {prefix}");
+                .Where(name => string.Equals(name, part, StringComparison.OrdinalIgnoreCase))
+                .Take(2)
+                .ToArray();
+            if (existing.Length > 1)
+                throw new IOException($"Extraction prefix part {part} matches both {existing[0]} and {existing[1]}: {prefix}");
+            if (existing.Length == 1 && existing[0] != part)
+                throw new IOException($"Extraction prefix spells {existing[0]} as {part}: {prefix}");
             current = Path.Combine(current, part);
             if (File.Exists(current)) throw new IOException($"Extraction prefix names a file: {prefix}");
             if (!Directory.Exists(current)) return (destination, current);
@@ -164,9 +166,12 @@ public static class ContentSourceExtractor
             selected.Add(entry);
             if (selected.Count > options.MaximumFiles)
                 throw new InvalidDataException($"The selection holds more than {options.MaximumFiles} files.");
-            total = checked(total + entry.Size);
-            if (total > options.MaximumTotalBytes)
+            // A negative size would lower the total and let the files after it pass the byte limit.
+            if (entry.Size < 0)
+                throw new InvalidDataException($"Source lists a negative size for {entry.Path}.");
+            if (entry.Size > options.MaximumTotalBytes - total)
                 throw new InvalidDataException($"The selection holds more than {options.MaximumTotalBytes} bytes.");
+            total += entry.Size;
         }
         return selected;
     }
@@ -177,26 +182,11 @@ public static class ContentSourceExtractor
     private static List<(ContentSourceEntry Entry, string Target, string RecordPath)> Plan(
         List<ContentSourceEntry> selected, string destination, string prefix)
     {
-        var directories = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var layout = new PortablePathLayout();
         var plan = new List<(ContentSourceEntry, string, string)>(selected.Count);
         foreach (var entry in selected)
         {
-            var parts = PortableAssetPath.Relative(entry.Path).Split('/');
-            var spelled = string.Empty;
-            for (var index = 0; index < parts.Length - 1; index++)
-            {
-                var next = spelled.Length == 0 ? parts[index] : $"{spelled}/{parts[index]}";
-                if (files.Contains(next))
-                    throw new InvalidDataException($"Source path is also a directory of another file: {next}");
-                if (!directories.TryGetValue(next, out var existing)) directories.Add(next, existing = next);
-                spelled = existing;
-            }
-            var relative = spelled.Length == 0 ? parts[^1] : $"{spelled}/{parts[^1]}";
-            if (directories.ContainsKey(relative))
-                throw new InvalidDataException($"Source path is also a directory of another file: {relative}");
-            if (!files.Add(relative))
-                throw new InvalidDataException($"Source lists a path twice, ignoring case: {relative}");
+            var relative = layout.Add(entry.Path);
             var recordPath = prefix.Length == 0 ? relative : $"{prefix}/{relative}";
             plan.Add((entry, SafePath.Below(destination, relative), recordPath));
         }
@@ -207,32 +197,21 @@ public static class ContentSourceExtractor
         OriginalContentSource source, ContentSourceEntry entry, string target, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-        var hash = new XxHash128();
-        long total = 0;
-        var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
-        try
+        FingerprintedCopy copied;
+        await using (var input = source.OpenRead(entry.Path))
+        await using (var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                         bufferSize: 0, FileOptions.Asynchronous))
         {
-            await using var input = source.OpenRead(entry.Path);
-            await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                bufferSize: 0, FileOptions.Asynchronous);
-            int read;
-            while ((read = await input.ReadAsync(buffer.AsMemory(0, BufferSize), cancellationToken)
-                       .ConfigureAwait(false)) > 0)
-            {
-                total += read;
-                if (total > entry.Size)
-                    throw new InvalidDataException(
-                        $"{entry.Path} yields more than the {entry.Size} bytes the source lists.");
-                hash.Append(buffer.AsSpan(0, read));
-                await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
-            }
+            copied = await FileFingerprint.CopyXxh3Async(input, output, entry.Size, cancellationToken)
+                .ConfigureAwait(false);
             await output.FlushAsync(cancellationToken).ConfigureAwait(false);
             output.Flush(flushToDisk: true);
         }
-        finally { ArrayPool<byte>.Shared.Return(buffer); }
-        if (total != entry.Size)
-            throw new InvalidDataException($"{entry.Path} yields {total} bytes; the source lists {entry.Size}.");
-        return hash.GetCurrentHashAsUInt128().ToString("x32", CultureInfo.InvariantCulture);
+        if (copied.Exceeded)
+            throw new InvalidDataException($"{entry.Path} yields more than the {entry.Size} bytes the source lists.");
+        if (copied.Bytes != entry.Size)
+            throw new InvalidDataException($"{entry.Path} yields {copied.Bytes} bytes; the source lists {entry.Size}.");
+        return copied.Xxh3;
     }
 
     // The destination was absent or empty when the call started, so everything in it, and in the first

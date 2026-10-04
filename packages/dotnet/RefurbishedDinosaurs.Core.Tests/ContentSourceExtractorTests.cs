@@ -154,6 +154,22 @@ public sealed class ContentSourceExtractorTests : IDisposable
     }
 
     [Fact]
+    public async Task ANegativeListedSizeIsRejectedBeforeWritingAnything()
+    {
+        var opened = new List<string>();
+        // Without the check, -5000 would bring the total under the limit and let every file through.
+        using var source = new ListedSource(DiscFiles(), sizes: new() { ["DATA/MAP.BIN"] = -5000 }, onOpen: opened.Add);
+        var root = Directory.CreateDirectory(Path.Combine(_work, "root")).FullName;
+
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(() => ContentSourceExtractor.ExtractAsync(source, root,
+            new ContentExtractionOptions(MaximumTotalBytes: 5000), Token));
+
+        Assert.Contains("negative size", exception.Message);
+        Assert.Empty(opened);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(root));
+    }
+
+    [Fact]
     public async Task ASelectionAtTheLimitsIsCopied()
     {
         using var source = new ListedSource(DiscFiles());
@@ -252,6 +268,26 @@ public sealed class ContentSourceExtractorTests : IDisposable
         Assert.Equal(["cd"],
             Directory.EnumerateFileSystemEntries(Path.Combine(root, "stage")).Select(Path.GetFileName));
         Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(root, "stage", "cd")));
+    }
+
+    [Fact]
+    public async Task APrefixThatMatchesTwoDirectoriesIgnoringCaseIsRejected()
+    {
+        // Two spellings of one name can only exist side by side on a case-sensitive file system.
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()) return;
+        using var source = new ListedSource(DiscFiles());
+        var root = Directory.CreateDirectory(Path.Combine(_work, "root")).FullName;
+        Directory.CreateDirectory(Path.Combine(root, "cd"));
+        Directory.CreateDirectory(Path.Combine(root, "CD"));
+
+        foreach (var prefix in new[] { "cd", "CD" })
+        {
+            var exception = await Assert.ThrowsAsync<IOException>(() => ContentSourceExtractor.ExtractAsync(source, root,
+                new ContentExtractionOptions(Prefix: prefix), Token));
+            Assert.Contains("matches both", exception.Message);
+        }
+        Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(root, "cd")));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(root, "CD")));
     }
 
     [Fact]

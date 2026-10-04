@@ -102,16 +102,13 @@ public sealed record ContentOverlayManifest(
         if (Files.Count > limits.MaximumFiles)
             throw new InvalidDataException($"Overlay manifest lists more than {limits.MaximumFiles} files.");
 
-        var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var layout = new PortablePathLayout();
         long total = 0;
         foreach (var file in Files)
         {
             if (file is null) throw new InvalidDataException("Overlay manifest contains a null file record.");
             var path = PortableAssetPath.Relative(file.Path);
-            if (!paths.Add(path)) throw new InvalidDataException($"Overlay path appears twice: {path}");
-            for (var slash = path.IndexOf('/'); slash >= 0; slash = path.IndexOf('/', slash + 1))
-                directories.Add(path[..slash]);
+            layout.Add(path);
             if (file.Bytes < 0 || file.Bytes > limits.MaximumFileBytes)
                 throw new InvalidDataException($"Overlay file size is outside 0..{limits.MaximumFileBytes}: {path}");
             total += file.Bytes;
@@ -124,9 +121,6 @@ public sealed record ContentOverlayManifest(
             if (string.Equals(file.BaseXxh3, file.Xxh3, StringComparison.Ordinal))
                 throw new InvalidDataException($"Overlay file would leave its target unchanged: {path}");
         }
-        var both = paths.FirstOrDefault(directories.Contains);
-        if (both is not null)
-            throw new InvalidDataException($"Overlay path is both a file and a directory of another file: {both}");
     }
 }
 

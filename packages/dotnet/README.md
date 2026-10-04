@@ -34,7 +34,7 @@ on an undocumented public member.
 | Namespace | Types | Use |
 |---|---|---|
 | `Assets` | `AssetManifest`, `AssetFileSpec`, `CddaTrackFingerprint` | One supported edition: its files' paths, sizes and XXH3-128 hashes, for a cue/bin source the fingerprints of its CD audio tracks, how the copy is read, and the edition's `Fingerprint()`. |
-| `Assets` | `FileFingerprint` | XXH3-128 of bytes, a file or a stream, in the documentation standard's form. |
+| `Assets` | `FileFingerprint` | XXH3-128 of bytes, a file or a stream, in the documentation standard's form, and a bounded copy that hashes what it copies (`CopyXxh3Async`). |
 | `Assets` | `ImportDiskPlanner` | Free space an import needs, counting files it will replace. |
 | `Assets` | `StagedAssetPack` | Build a content directory beside the live one and swap it in, restoring the old one on failure. |
 | `Assets` | `InstalledContentWriter` | Write or copy one installed file atomically, skipping identical files. |
@@ -44,7 +44,7 @@ on an undocumented public member.
 | `Determinism` | `IRandomSource`, `MsvcRandom` | The legacy Microsoft C `rand()` sequence, with saveable state. |
 | `Diagnostics` | `StartupFailure` | Log a failed start and show the player what to do, without the Windows dialog for an unattended run. |
 | `Discovery` | `KnownDirectorySourceLocator`, `CompositeSourceLocator` | Offer likely install directories of the original. |
-| `IO` | `AtomicFile`, `SafePath`, `PortableAssetPath` | Atomic writes, paths from untrusted names that cannot leave their root, and legacy asset references resolved the same way on every host. |
+| `IO` | `AtomicFile`, `SafePath`, `PortableAssetPath`, `PortablePathLayout` | Atomic writes, paths from untrusted names that cannot leave their root, legacy asset references resolved the same way on every host, and a set of relative paths given one spelling per directory ignoring case, with paths that clash ignoring case refused. |
 | `Imaging` | `IndexedPalette`, `IndexedPaletteDecoder` | 256-colour palettes, including 6-bit VGA values. |
 | `Imaging` | `IndexedPngWriter` | Write 8-bit indexed pixels as a palette PNG. |
 | `Input` | `InputState<TButton>`, `InputBindings<TAction,TButton>` | Held, pressed and released queries over copied button snapshots; immutable OR bindings with rebinding and context overlays. |
@@ -232,7 +232,8 @@ Before it writes anything, the call checks the selection against `MaximumFiles` 
 `MaximumTotalBytes` (100,000 files and 8 GiB by default), every source path with
 `PortableAssetPath.Relative`, and that the prefix directory is absent or empty with no link on the
 way to it. A prefix part that names an existing entry with different case is rejected, since
-Windows would reuse that entry and a case-sensitive file system would create a second one beside it.
+Windows would reuse that entry and a case-sensitive file system would create a second one beside it,
+and so is a part that matches two entries ignoring case. A negative listed size is rejected.
 Without a prefix the root itself must be empty. A file whose path is also another file's
 directory, ignoring case, is rejected. A directory spelled two ways ignoring case is written once,
 with the spelling of the first file under it, so a case-sensitive file system gets the same tree as
