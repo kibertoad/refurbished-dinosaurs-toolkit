@@ -92,7 +92,7 @@ Run what CI runs before pushing:
 ```sh
 pnpm install --frozen-lockfile
 pnpm lint && pnpm format:check && pnpm typecheck && pnpm exec tsc -p tools/tsconfig.json
-pnpm test && node --test "tools/**/*.test.ts" && node --test "actions/**/*.test.ts" && pnpm build
+pnpm test && node tools/ci/run-tests.ts && pnpm build
 python -m pip install -e "packages/scientific-method-engine[test]"
 cd packages/scientific-method-engine && python -B -m unittest discover -s tests -p "test*.py"
 python -m pip install -e packages/disc-archiver
