@@ -326,8 +326,8 @@ public sealed class InstallShieldCabinetTests
             ]));
             using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
             Assert.Equal(["Copy/linked.bin", "original.bin"], source.Files.Select(entry => entry.Path));
-            var skipped = Assert.Single(source.SkippedFiles);
-            Assert.Equal((2, "gone.bin"), (skipped.Index, skipped.Path));
+            Assert.Equal([(2, "gone.bin"), (3, "original.bin")], source.SkippedFiles.Select(file => (file.Index, file.Path)));
+            Assert.Equal("The file shares the data of file 0 at 'original.bin', which is listed.", source.SkippedFiles[1].Reason);
             await using var stream = source.OpenRead("copy/linked.bin");
             Assert.Equal(Noise, await ReadAll(stream));
         }
@@ -382,6 +382,13 @@ public sealed class InstallShieldCabinetTests
 
             Assert.Contains("header region", Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(
                 path, new InstallShieldCabinetLimits(MaximumHeaderBytes: region - 1))).Message);
+            // A descriptor size that stops short of the file table leaves the table outside the region
+            // read, though the file holds it; the message names the region's size.
+            var shortened = cabinet.ToArray();
+            BinaryPrimitives.WriteInt32LittleEndian(shortened.AsSpan(16), 0x30);
+            File.WriteAllBytes(path, shortened);
+            Assert.Contains($"past the end of the {SyntheticInstallShieldCabinet.DescriptorOffset + 0x30}-byte header region",
+                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(path)).Message);
             File.WriteAllBytes(path, cabinet[..(region - 10)]);
             Assert.Contains("truncated",
                 Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(path)).Message);
@@ -467,6 +474,22 @@ public sealed class InstallShieldCabinetTests
             Assert.Equal("The file duplicates file 0 at 'Data/same.bin': same expanded size and MD5.", skipped.Reason);
             await using var stream = source.OpenRead("data/same.bin");
             Assert.Equal(Noise, await ReadAll(stream));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+
+        // The duplicate's extent is not followed, so one whose data offset lies past its volume is skipped.
+        root = TemporaryDirectory();
+        try
+        {
+            var set = SyntheticInstallShieldCabinet.Build(6, [new("Data", "same.bin", Noise), new("Data", "same.bin", Noise)]);
+            BinaryPrimitives.WriteUInt64LittleEndian(set["data1.hdr"].AsSpan(Version6Descriptor(set["data1.hdr"], 1) + 0x12), 0x7fff_ffff);
+            SyntheticInstallShieldCabinet.WriteTo(root, set);
+            using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
+            Assert.Equal(["Data/same.bin"], source.Files.Select(entry => entry.Path));
+            Assert.Equal(1, Assert.Single(source.SkippedFiles).Index);
         }
         finally
         {

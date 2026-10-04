@@ -14,7 +14,9 @@ namespace RefurbishedDinosaurs.LegacyFormats;
 /// <param name="MaximumHeaderBytes">
 /// The largest header region that is read into memory. For a <c>.hdr</c> header the region is the
 /// whole file. For a <c>.cab</c> that holds the header, it runs from the file's start to the end of
-/// the cabinet descriptor the common header places, and the rest of the file is read as volume 1.
+/// the cabinet descriptor the common header places. Header data past that end is reported as
+/// truncated. The volumes are found by name, so a <c>data1.cab</c> that holds the header is also
+/// read as volume 1.
 /// </param>
 public sealed record InstallShieldCabinetLimits(
     int MaximumFiles = 100_000,
@@ -53,8 +55,8 @@ public sealed record InstallShieldSkippedFile(int Index, string? Path, string Re
 /// decoded only when read.
 /// </para>
 /// <para>
-/// Two entries at one path, ignoring case, are listed once when they share data through a link. In
-/// a version 6 set, two entries stored apart at one path with the same expanded size and the same
+/// Two entries at one path, ignoring case, that share data through a link are listed once: the
+/// first in table order is listed, and the other goes to <see cref="SkippedFiles"/>. In a version 6 set, two entries stored apart at one path with the same expanded size and the same
 /// MD5 are taken as one file: the first in table order is listed, and the other goes to
 /// <see cref="SkippedFiles"/> without its stored bytes being read. Any other pair of entries at one
 /// path fails the open, and so does every such pair in a version 5 set, which records no MD5.
@@ -174,17 +176,20 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
 
             if (data.ExpandedSize < 0 || data.CompressedSize < 0)
                 throw new InvalidDataException($"InstallShield file {index} declares a size beyond 2^63 bytes.");
-            var segments = Segments(dataIndex, data, descriptors.Length);
-            var member = new Member(
-                new ContentSourceEntry(path!, data.ExpandedSize), index, dataIndex, (data.Flags & CompressedFlag) != 0,
-                (data.Flags & ObfuscatedFlag) != 0, MajorVersion >= 6 ? data.Md5 : null, segments);
+            var md5 = MajorVersion >= 6 ? data.Md5 : null;
             if (members.TryGetValue(path!, out var existing))
             {
-                if (existing.DataIndex == dataIndex) continue;
+                if (existing.DataIndex == dataIndex)
+                {
+                    skipped.Add(new(index, path,
+                        $"The file shares the data of file {existing.Index} at '{existing.Entry.Path}', which is listed."));
+                    continue;
+                }
                 // Version 6 records each file's MD5, so two copies stored apart can be told to be the
-                // same file. The copy listed is the one checked when read; the other is not read.
-                if (existing.Md5 is not null && member.Md5 is not null && existing.Entry.Size == member.Entry.Size &&
-                    existing.Md5.AsSpan().SequenceEqual(member.Md5))
+                // same file. The copy listed is the one checked when read; the other is not read, and
+                // neither are its volumes, so a duplicate in a missing or damaged volume is still skipped.
+                if (existing.Md5 is not null && md5 is not null && existing.Entry.Size == data.ExpandedSize &&
+                    existing.Md5.AsSpan().SequenceEqual(md5))
                 {
                     skipped.Add(new(index, path,
                         $"The file duplicates file {existing.Index} at '{existing.Entry.Path}': same expanded size and MD5."));
@@ -193,7 +198,9 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 throw new InvalidDataException(
                     $"InstallShield cabinet holds two different files at '{path}' (file {existing.DataIndex} and file {dataIndex}).");
             }
-            members.Add(path!, member);
+            members.Add(path!, new Member(
+                new ContentSourceEntry(path!, data.ExpandedSize), index, dataIndex, (data.Flags & CompressedFlag) != 0,
+                (data.Flags & ObfuscatedFlag) != 0, md5, Segments(dataIndex, data, descriptors.Length)));
             // Compared this way round, the total cannot overflow even when the limit is near long.MaxValue.
             if (data.ExpandedSize > limits.MaximumExpandedBytes - expandedTotal)
                 throw new InvalidDataException(
@@ -217,9 +224,9 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     /// <summary>
     /// File-table entries that are not listed, in table order: entries the cabinet marks invalid,
     /// entries with no name or no data offset, version 6 entries whose link ends at an entry the
-    /// cabinet marks invalid or that has no data offset, and version 6 entries stored apart from a
-    /// listed member at the same path with the same expanded size and MD5. Each reason names the
-    /// entry it refers to.
+    /// cabinet marks invalid or that has no data offset, entries that share a listed member's data
+    /// at the same path, and version 6 entries stored apart from a listed member at the same path
+    /// with the same expanded size and MD5. Each reason names the entry it refers to.
     /// </summary>
     public IReadOnlyList<InstallShieldSkippedFile> SkippedFiles { get; }
 
@@ -405,7 +412,8 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         public void Require(long offset, long length, string what)
         {
             if (offset < 0 || length < 0 || offset > data.Length - length)
-                throw new InvalidDataException($"InstallShield header is truncated: its {what} lies past the end.");
+                throw new InvalidDataException(
+                    $"InstallShield header is truncated: its {what} lies past the end of the {data.Length}-byte header region.");
         }
 
         public byte Byte(long offset)

@@ -183,10 +183,10 @@ public abstract class OriginalContentSource : IDisposable
     /// <summary>
     /// Opens an InstallShield 5 or 6 cabinet set from a file. <paramref name="path"/> is the
     /// <c>dataN.hdr</c> header, or a <c>dataN.cab</c> that holds the header. Of a <c>.cab</c>, only the
-    /// bytes up to the end of the cabinet descriptor are read as the header, and the same file is read
-    /// as volume 1. The volumes are the files
+    /// bytes up to the end of the cabinet descriptor are read as the header. The volumes are the files
     /// in the same directory named like the header up to its first dot or digit, then the volume
-    /// number and <c>.cab</c>, matched ignoring case: <c>data1.cab</c>, <c>data2.cab</c> and so on.
+    /// number and <c>.cab</c>, matched ignoring case: <c>data1.cab</c>, <c>data2.cab</c> and so on. A
+    /// <c>data1.cab</c> that holds the header is therefore also read as volume 1.
     /// The set is checked when opened, as <see cref="InstallShieldCabinetSource"/> describes.
     /// </summary>
     /// <param name="path">The header file.</param>
