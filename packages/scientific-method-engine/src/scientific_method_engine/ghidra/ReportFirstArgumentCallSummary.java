@@ -98,7 +98,7 @@ public class ReportFirstArgumentCallSummary extends GhidraScript {
             passedOver.add(cursor);
             later = cursor;
         }
-        reason.append("no PUSH within ").append(MAX_PASSED_OVER).append(" instructions");
+        reason.append("no PUSH among the ").append(MAX_PASSED_OVER + 1).append(" instructions before the call");
         return null;
     }
 
@@ -134,8 +134,11 @@ public class ReportFirstArgumentCallSummary extends GhidraScript {
                 }
                 Varnode output = op.getOutput();
                 if (output == null) continue;
+                // A LOAD's address may come from the stack pointer, but the value it reads does not.
                 boolean derived = false;
-                for (Varnode input : op.getInputs()) derived |= isFromStack(input, fromStack, stackPointer);
+                if (op.getOpcode() != PcodeOp.LOAD) {
+                    for (Varnode input : op.getInputs()) derived |= isFromStack(input, fromStack, stackPointer);
+                }
                 if (derived) fromStack.add(output);
                 else fromStack.remove(output);
             }
@@ -152,12 +155,11 @@ public class ReportFirstArgumentCallSummary extends GhidraScript {
     }
 
     // Only an immediate operand is a literal; PUSH [EBP+8] carries the scalar 8 as a displacement.
-    // Ghidra also marks an immediate that points into the program as an address (PUSH 0x41c000),
-    // so only a dynamic or indirect operand counts as memory.
+    // Ghidra types an immediate operand SCALAR, adding ADDRESS when it points into the program
+    // (PUSH 0x41c000). A memory operand is never SCALAR: an absolute one such as PUSH [0x41c000] is
+    // ADDRESS with its address as the scalar object.
     private static Long pushedLiteral(Instruction instruction) {
-        if (instruction == null) return null;
-        int type = instruction.getOperandType(0);
-        if (OperandType.isDynamic(type) || OperandType.isIndirect(type)) return null;
+        if (instruction == null || !OperandType.isScalar(instruction.getOperandType(0))) return null;
         for (Object object : instruction.getOpObjects(0)) {
             if (object instanceof Scalar scalar) return scalar.getUnsignedValue();
         }

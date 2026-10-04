@@ -130,7 +130,7 @@ keep one kind. `ReportCallsToRange` labels calls and jumps and can keep one kind
 says its scan did not finish. The first-argument scripts take the nearest `PUSH` before the call,
 passing over instructions that fall through, are no flow target and write neither the stack pointer
 nor memory addressed through it, and never read a memory operand's displacement as a literal. `ReportFunctionSummary` prints body
-ranges and calls without a continuation in the body, and ends with the addresses it could not
+ranges and calls without a fall-through, and ends with the addresses it could not
 summarize. `ReportDecompileWindow` cuts a count above its cap and names the next window.
 `ExportFunctionFingerprints` replaces its output only when the export completes. Methodology that
 no script can enforce (checking a headless run, sweep coverage, positive controls for byte scans,

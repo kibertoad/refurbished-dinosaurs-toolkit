@@ -263,12 +263,14 @@ differently. Rerun a saved census before comparing it with a new one; the counts
 these reasons:
 
 - `ReportCallSitesWithScalars` matches only immediates. A value that appears only as a
-  memory-operand displacement, such as the 8 in `PUSH [EBP+8]`, no longer makes a call match. The
+  memory-operand displacement or address, such as the 8 in `PUSH [EBP+8]` or the 0x41c000 in
+  `MOV ECX,[0x41c000]`, no longer makes a call match. The
   argument setup it reads ends at a function entry, a jump or call target, or an instruction that
   does not fall through to the next.
 - `ReportConstantFirstArgumentCalls` and `ReportFirstArgumentCallSummary` take the nearest `PUSH`
   past register setup (`PUSH 5; MOV ECX,ESI; CALL` now reads 5), read `PUSH [EBP+8]` as
-  non-literal, count a pointer immediate such as `PUSH 0x41c000` as a literal, and give up at a
+  non-literal, count a pointer immediate such as `PUSH 0x41c000` as a literal while reading the
+  absolute memory operand of `PUSH [0x41c000]` as non-literal, and give up at a
   store through the stack pointer, a function entry or a jump or call target.
 
 A tool that parses the output sees these changes. Existing line prefixes are kept.
@@ -276,11 +278,12 @@ A tool that parses the output sees these changes. Existing line prefixes are kep
 - `ReportCallsToRange` takes an optional third argument (`all`, `calls` or `jumps`), adds the mode
   to its header, ends each line with `[call]` or `[jump]`, and ends with the counts or a cap line.
 - `ReportScalarConstants` takes an optional first argument (`immediate` or `memory`) and appends
-  `:: <kind> operand <n> of <instruction>` to each match.
+  `:: <kind> operand <n> of <instruction>` to each match. The address of an absolute memory
+  operand, such as 0x41c000 in `MOV EAX,[0x41c000]`, is a `memory` match.
 - `ReportScalarConstants`, `ReportCallsToRange`, `ReportConstantFirstArgumentCalls` and
   `ReportCallSitesWithScalars` end with a coverage line, or with a cap line that says the scan did
   not finish.
-- `ReportFunctionSummary` adds each function's body ranges and calls without a continuation, and
+- `ReportFunctionSummary` adds each function's body ranges and calls without a fall-through, and
   ends with the addresses it could not summarize.
 - `ReportDecompileWindow` cuts a line count above 160 to 160 instead of refusing it, and names the
   next window's first line.

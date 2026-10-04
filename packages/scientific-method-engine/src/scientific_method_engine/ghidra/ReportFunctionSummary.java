@@ -82,7 +82,8 @@ public class ReportFunctionSummary extends GhidraScript {
             + String.join(", ", failed) + "]");
     }
 
-    // The body Ghidra assigned, and each call without a fall-through whose next address is outside that body.
+    // The body Ghidra assigned, and each call without a fall-through. The next address can be in the body
+    // when another path reaches it, yet the decompiler still drops the path that continues after the call.
     private void reportBody(Function function) throws CancelledException {
         List<String> ranges = new ArrayList<>();
         for (AddressRange range : function.getBody()) ranges.add(range.getMinAddress() + ".." + range.getMaxAddress());
@@ -97,18 +98,21 @@ public class ReportFunctionSummary extends GhidraScript {
             if (!instruction.getFlowType().isCall()
                 || !instruction.getPrototype().getFlowType(instruction.getInstructionContext()).isCall()) continue;
             Address next = instruction.getMaxAddress().next();
-            if (next == null || function.getBody().contains(next) || instruction.getFallThrough() != null) continue;
+            if (next == null || instruction.getFallThrough() != null) continue;
             if (cut++ == MAX_CUT_CALLS) {
-                println("  ... more calls without a continuation; listing capped at " + MAX_CUT_CALLS);
+                println("  ... more calls without a fall-through; listing capped at " + MAX_CUT_CALLS);
                 break;
             }
             Instruction following = currentProgram.getListing().getInstructionAt(next);
-            println("  call without a continuation in the body: " + instruction.getAddress() + " " + instruction
-                + "; the bytes at " + next + " are "
-                + (following == null ? "not disassembled" : "an instruction outside the body"));
+            String nextState;
+            if (following == null) nextState = "not disassembled";
+            else if (function.getBody().contains(next)) nextState = "an instruction in the body, reached another way";
+            else nextState = "an instruction outside the body";
+            println("  call without a fall-through: " + instruction.getAddress() + " " + instruction
+                + "; the bytes at " + next + " are " + nextState);
         }
         if (cut > 0) {
-            println("  The body may end early at these calls. Check the callees' no-return flags "
+            println("  The body or a path through it may end early at these calls. Check the callees' no-return flags "
                 + "(ClearNoReturnFunctions, RepairReturningCallers) before reading the decompilation as complete.");
         }
     }

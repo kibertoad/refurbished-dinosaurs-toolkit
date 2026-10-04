@@ -44,7 +44,7 @@ public class ReportScalarConstants extends GhidraScript {
                     if (kind != null && !kind.equals(operandKind)) break;
                     if (matches == MAX_MATCHES) {
                         println("Output capped at " + MAX_MATCHES + " matches; the search did not finish. "
-                            + "Narrow it with an operand kind or fewer values.");
+                            + (kind == null ? "Narrow it with an operand kind or fewer values." : "Narrow it with fewer values."));
                         return;
                     }
                     Function function = currentProgram.getFunctionManager()
@@ -58,14 +58,15 @@ public class ReportScalarConstants extends GhidraScript {
             }
         }
         if (matches == 0) println("No requested scalar constants matched.");
-        else println("Matched " + matches + " operands; the search covered every instruction.");
+        else println("Matched " + matches + " operands; the search covered every disassembled instruction.");
     }
 
-    // A scalar inside a memory operand, such as the displacement in [ECX + 0x44] or the scale in
-    // [EBX + ECX*4], is a memory operand. Any other scalar is an immediate, including one Ghidra
-    // marks as an address because it points into the program (PUSH 0x41c000 to a string).
+    // Ghidra types an immediate operand SCALAR, adding ADDRESS when it points into the program
+    // (PUSH 0x41c000 to a string). A memory operand is never SCALAR: a displacement such as the one in
+    // [ECX + 0x44] or the scale in [EBX + ECX*4] makes it DYNAMIC, and an absolute one such as
+    // [0x41c000] is ADDRESS with its address as the scalar object.
     private static String operandKind(int type) {
-        return OperandType.isDynamic(type) || OperandType.isIndirect(type) ? "memory" : "immediate";
+        return OperandType.isScalar(type) ? "immediate" : "memory";
     }
 
     // Arguments are decoded as signed longs while operands are reported unsigned, so a request

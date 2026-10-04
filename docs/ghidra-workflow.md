@@ -39,7 +39,9 @@ or load. The exit code alone accepts an empty run. Treat a run as evidence only 
   explicit "no match" line; the ones that list rows without a closing line (`ReportCallArguments`,
   `ReportInstructionWindow`, `ReportDataBytes`, `ReportSymbolReferences` with matches) show their
   run through a header or the rows themselves. Export scripts write their file only when the walk
-  completes, so a missing file means the export failed;
+  completes, so a missing file means the export failed. `ExportFunctionFingerprints` replaces an
+  existing file and leaves it in place when it fails, so write it to a new path or check the log for
+  its `Wrote` line;
 - every address you asked about has its own result. `ReportFunctionSummary` ends with the addresses
   that had no function or failed to decompile. A run that summarized some of the requested
   functions does not cover the others, such as a callback target Ghidra never made a function.
@@ -62,7 +64,8 @@ header gives the function's total line count, and the last line names the next w
 
 A function body can end early. When Ghidra wrongly marks a callee no-return, the caller's body
 stops at the call and the decompilation looks complete. `ReportFunctionSummary` prints the body
-ranges and every call without a continuation in the body. Before reading a decompilation as a
+ranges and every call without a fall-through, saying whether the next address is outside the body,
+inside it through another path, or not disassembled. Before reading a decompilation as a
 function's whole behaviour, clear wrong no-return flags (`ClearNoReturnFunctions`,
 `RepairReturningCallers`) and compare the body with an instruction listing or the engine's
 `callees` cross-check. A result marker shows that the script ran, never that the recovered control

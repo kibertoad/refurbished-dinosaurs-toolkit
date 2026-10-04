@@ -70,12 +70,14 @@ public class ReportCallsToRange extends GhidraScript {
 
         if (capped) {
             println("Output capped at " + MAX_MATCHES + " sites (" + calls + " calls, " + jumps
-                + " jumps); the scan did not finish. Narrow the range or pass calls or jumps.");
+                + " jumps); the scan did not finish. Narrow the range"
+                + (mode.equals("all") ? " or pass calls or jumps." : "."));
         } else if (calls + jumps == 0) {
             println("No resolved " + (mode.equals("all") ? "call/jump" : mode.substring(0, mode.length() - 1))
                 + " targets in range.");
         } else {
-            println("Matched " + calls + " calls and " + jumps + " jumps; the scan covered every instruction.");
+            println("Matched " + calls + " calls and " + jumps + " jumps; the scan covered the resolved targets of "
+                + "every disassembled instruction.");
         }
     }
 }

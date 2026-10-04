@@ -43,7 +43,7 @@ Reading code and data:
 | `ReportInstructionContext` | one or more instruction addresses | a bounded instruction window around each |
 | `ReportInstructionWindow` | address, instruction count | instructions from the address onward |
 | `ReportDataBytes` | address, byte count (1..256) | the bytes at the address |
-| `ReportFunctionSummary` | one or more addresses | focused decompiler output of each containing function, its body ranges and each call without a continuation in the body (a sign of a wrong no-return flag), then the addresses with no function or a failed decompile |
+| `ReportFunctionSummary` | one or more addresses | focused decompiler output of each containing function, its body ranges and each call without a fall-through (a sign of a wrong no-return flag), then the addresses with no function or a failed decompile |
 | `ReportDecompileWindow` | address, first line (1-based), line count (a count above 160 is cut to 160) | a window of one function's decompilation, its total line count and where the next window starts |
 | `ReportDecompileMatches` | address, one or more literal text patterns | decompilation lines around each match |
 | `ReportMemoryBlocks` | nothing, `page <start> <count>`, or `name <exact-name>` | memory block indexes, names, ranges and sizes, never bytes |
@@ -57,10 +57,10 @@ Finding references and calls:
 | `ReportReferences` | one or more addresses | references to each, with the referring instruction and function |
 | `ReportStringReferences` | one or more literal string fragments | strings containing a fragment and their references |
 | `ReportSymbolReferences` | one or more symbol-name fragments, matched as case-insensitive substrings of the full name | matching symbols, default labels included, and their references. Default labels end in their address, so an address fragment such as `0089d4a4` finds the `PTR_<name>_0089d4a4` import slot there |
-| `ReportScalarConstants` | optional operand kind (`immediate` or `memory`), one or more scalar values | instructions using any of them, unsigned or signed, as an immediate or inside a memory operand (a displacement such as `[ECX + 0x44]`, or an index scale), with the kind on each line |
+| `ReportScalarConstants` | optional operand kind (`immediate` or `memory`), one or more scalar values | instructions using any of them, unsigned or signed, as an immediate or inside a memory operand (a displacement such as `[ECX + 0x44]`, an absolute address such as `[0x41c000]`, or an index scale), with the kind on each line |
 | `ReportFunctionScalarConstants` | function address, one or more scalar values | instructions inside one function using any of them, compared unsigned |
 | `ReportCallArguments` | callee address | the three nearest pushed arguments at every call Ghidra references to the callee |
-| `ReportCallSitesWithScalars` | callee address, one or more scalar values | calls whose argument setup contains a requested value as an immediate, never as a memory-operand displacement. The setup is up to 12 instructions that fall through to the call, ending after a function entry or a jump or call target, and before an earlier call. Then the counts or the cap |
+| `ReportCallSitesWithScalars` | callee address, one or more scalar values | calls whose argument setup contains a requested value as an immediate, never as a memory-operand displacement or address. The setup is up to 12 instructions that fall through to the call, ending after a function entry or a jump or call target, and before an earlier call. Then the counts or the cap |
 | `ReportConstantFirstArgumentCalls` | callee address, constant | cdecl calls whose first argument is the constant: the nearest `PUSH` before the call, past instructions that fall through, are no function entry or jump or call target, and write neither the stack pointer nor memory addressed through it. Only calls Ghidra references to the callee are read |
 | `ReportFirstArgumentCallSummary` | callee address | the literal first argument of every call, read as in `ReportConstantFirstArgumentCalls`, and each call without one with the reason |
 | `ReportCallsToRange` | start address, end address (inclusive), optional kind (`all`, `calls` or `jumps`; default `all`) | calls and jumps whose target lies in the range, each labelled `[call]` or `[jump]`, then the counts or the cap |

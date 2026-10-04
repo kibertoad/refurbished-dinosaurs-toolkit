@@ -67,7 +67,7 @@ public class ReportConstantFirstArgumentCalls extends GhidraScript {
 
         println("Matched calls: " + matches);
         if (capped) println("Output capped at " + MAX_CALLS + " calls; the scan did not finish.");
-        else println("Direct calls read: " + calls + ", of which " + unknown + " have no PUSH known to supply the "
+        else println("Calls read: " + calls + ", of which " + unknown + " have no PUSH known to supply the "
             + "first argument (see ReportFirstArgumentCallSummary).");
     }
 
@@ -121,8 +121,11 @@ public class ReportConstantFirstArgumentCalls extends GhidraScript {
                 }
                 Varnode output = op.getOutput();
                 if (output == null) continue;
+                // A LOAD's address may come from the stack pointer, but the value it reads does not.
                 boolean derived = false;
-                for (Varnode input : op.getInputs()) derived |= isFromStack(input, fromStack, stackPointer);
+                if (op.getOpcode() != PcodeOp.LOAD) {
+                    for (Varnode input : op.getInputs()) derived |= isFromStack(input, fromStack, stackPointer);
+                }
                 if (derived) fromStack.add(output);
                 else fromStack.remove(output);
             }
@@ -139,12 +142,11 @@ public class ReportConstantFirstArgumentCalls extends GhidraScript {
     }
 
     // Only an immediate operand is a literal; PUSH [EBP+8] carries the scalar 8 as a displacement.
-    // Ghidra also marks an immediate that points into the program as an address (PUSH 0x41c000),
-    // so only a dynamic or indirect operand counts as memory.
+    // Ghidra types an immediate operand SCALAR, adding ADDRESS when it points into the program
+    // (PUSH 0x41c000). A memory operand is never SCALAR: an absolute one such as PUSH [0x41c000] is
+    // ADDRESS with its address as the scalar object.
     private static boolean isPushOf(Instruction instruction, long requested) {
-        if (instruction == null) return false;
-        int type = instruction.getOperandType(0);
-        if (OperandType.isDynamic(type) || OperandType.isIndirect(type)) return false;
+        if (instruction == null || !OperandType.isScalar(instruction.getOperandType(0))) return false;
         for (Object object : instruction.getOpObjects(0)) {
             if (object instanceof Scalar scalar
                 && scalar.getUnsignedValue() == requested) return true;

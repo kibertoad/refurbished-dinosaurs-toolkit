@@ -98,12 +98,12 @@ public class ReportCallSitesWithScalars extends GhidraScript {
         return false;
     }
 
-    // Ghidra also marks an immediate that points into the program as an address (PUSH 0x41c000), so
-    // only a dynamic or indirect operand counts as memory.
+    // Ghidra types an immediate operand SCALAR, adding ADDRESS when it points into the program
+    // (PUSH 0x41c000). A memory operand is never SCALAR: a displacement makes it DYNAMIC, and an
+    // absolute one such as PUSH [0x41c000] is ADDRESS with its address as the scalar object.
     private static boolean containsRequestedImmediate(Instruction instruction, Set<Long> requested) {
         for (int operand = 0; operand < instruction.getNumOperands(); operand++) {
-            int type = instruction.getOperandType(operand);
-            if (OperandType.isDynamic(type) || OperandType.isIndirect(type)) continue;
+            if (!OperandType.isScalar(instruction.getOperandType(operand))) continue;
             for (Object object : instruction.getOpObjects(operand)) {
                 if (object instanceof Scalar scalar && matchesRequested(scalar, requested)) {
                     return true;
