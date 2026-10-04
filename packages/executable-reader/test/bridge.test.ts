@@ -1687,7 +1687,7 @@ test("relational controls pass through preparation and fail, hold or stay undeci
   assert.equal(stopped.relationalControls.allHeld, false);
 });
 
-test("an output count past a modeled call stays undecided through the source bridge", (t) => {
+test("an output count past a modeled call is a lower bound through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(20, 28);
   // call append; call append; ret; append: mov [bx],al; inc bx; ret
@@ -1720,6 +1720,12 @@ test("an output count past a modeled call stays undecided through the source bri
   const hidden = run(["trace", query({ relationalControls: [capacity(1)], callModels: [model] })]).relationalControls;
   assert.equal(hidden.controls[0].verdict, "undecided");
   assert.match(hidden.controls[0].paths[0].occurrences[0].reason, /passed modeled calls at 67/);
+  assert.deepEqual(hidden.controls[0].paths[0].occurrences[0].leftMinusRight, { min: 0, max: null });
+  // The one append read before the modeled call already exceeds a capacity of zero.
+  assert.throws(
+    () => run(["trace", query({ relationalControls: [capacity(0)], callModels: [model] })]),
+    /capacity violated/,
+  );
 });
 
 test("entryFrame passes through preparation and lets a narrower entry return through its function's frame", (t) => {

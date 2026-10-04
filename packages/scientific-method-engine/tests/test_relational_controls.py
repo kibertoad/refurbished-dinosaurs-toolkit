@@ -113,6 +113,25 @@ class OrderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "went the other way"):
             run(self.c, [rule], registers=FRAME)
 
+    def test_an_anchor_on_a_modeled_calls_return_follows_its_callee(self):
+        # At the modeled call's own return the callee has run, so it may have produced the before event.
+        self.c = (Code().branch("e8", "helper").label("service").branch("e8", "helper").label("use").emit("8a 07 c3")
+                  .label("helper").emit("85 db").label("test").branch("74", "zero").emit("c3").label("zero").emit("c3"))
+        model = [{"site": self.c.labels["service"], "evidence": "synthetic unread helper call", "cases": [{}]}]
+        direction = control("direction", "order", before={"site": self.c.labels["test"], "event": "branch"},
+                            branch={"taken": False}, at={"site": self.c.labels["service"], "event": "call-return"})
+        result = verdict(run(self.c, [direction], registers=FRAME, callModels=model), "direction")
+        self.assertEqual(result["verdict"], "undecided")
+        taken = next(o for p in result["paths"] for o in p["occurrences"] if o["taken"])
+        self.assertEqual(taken["modeledCalls"], [self.c.labels["service"]])
+        # With the first call modeled, no read event precedes that call's return.
+        first = [{**model[0], "site": 0}]
+        before = control("first", "order", before={"site": self.c.labels["test"], "event": "branch"},
+                         at={"site": 0, "event": "call-return"})
+        result = verdict(run(self.c, [before], registers=FRAME, callModels=first), "first")
+        self.assertEqual(result["verdict"], "undecided")
+        self.assertEqual(result["paths"][0]["occurrences"][0]["modeledCalls"], [0])
+
 
 class LastWriterTests(unittest.TestCase):
     def cleanup(self):
@@ -407,7 +426,7 @@ class RelationTests(unittest.TestCase):
         rule = self.appends(16)
         self.assertEqual(verdict(run(self.c, [rule], visitLimit=8), "capacity")["verdict"], "undecided")
 
-    def test_an_output_count_past_a_modeled_call_is_undecided(self):
+    def test_an_output_count_past_a_modeled_call_is_a_lower_bound(self):
         # The caller runs the append helper twice; the second call may be modeled.
         c = (Code().branch("e8", "append").label("service").branch("e8", "append").label("return").emit("c3")
              .label("append").label("write").emit("88 07 43 c3"))
@@ -423,12 +442,35 @@ class RelationTests(unittest.TestCase):
         result = verdict(run(c, [capacity(1)], registers=FRAME, callModels=model), "capacity")
         self.assertEqual(result["verdict"], "undecided")
         occurrence = result["paths"][0]["occurrences"][0]
-        self.assertIn("passed modeled calls", occurrence["reason"])
+        self.assertIn(f"passed modeled calls at {c.labels['service']}", occurrence["reason"])
+        self.assertEqual(occurrence["modeledCalls"], [c.labels["service"]])
+        self.assertEqual(occurrence["leftMinusRight"], {"min": 0, "max": None})
         self.assertEqual(result["paths"][0]["modeledCalls"], [c.labels["service"]])
+        # The read count already exceeds a capacity of zero, and already meets a minimum of one.
+        with self.assertRaisesRegex(ValueError, "capacity violated"):
+            run(c, [capacity(0)], registers=FRAME, callModels=model)
+        least = control("least", "relation", at={"site": c.labels["return"], "event": "return"}, op="ge",
+                        left={"occurrences": {"site": c.labels["write"], "event": "write"}}, right=1)
+        self.assertEqual(verdict(run(c, [least], registers=FRAME, callModels=model), "least")["verdict"], "held")
+        # A congruence needs the exact count.
+        parity = control("parity", "relation", at={"site": c.labels["return"], "event": "return"}, op="eq", modulo=1,
+                         left={"occurrences": {"site": c.labels["write"], "event": "write"}}, right=1)
+        result = verdict(run(c, [parity], registers=FRAME, callModels=model), "parity")
+        self.assertEqual(result["verdict"], "undecided")
+        self.assertIn("lower bound", result["paths"][0]["occurrences"][0]["reason"])
+        # The same count on both sides cancels: the hidden events are the same events.
+        same = control("same", "relation", at={"site": c.labels["return"], "event": "return"}, op="eq",
+                       left={"occurrences": {"site": c.labels["write"], "event": "write"}},
+                       right={"occurrences": {"site": c.labels["write"], "event": "write"}})
+        self.assertEqual(verdict(run(c, [same], registers=FRAME, callModels=model), "same")["verdict"], "held")
         # An anchor before the modeled call counts every event up to it, so the count decides there.
         first = control("first", "relation", at={"site": c.labels["write"], "event": "write"}, op="le",
                         left={"occurrences": {"site": c.labels["write"], "event": "write"}}, right=1)
         self.assertEqual(verdict(run(c, [first], registers=FRAME, callModels=model), "first")["verdict"], "held")
+        # At the modeled call's own return the callee has already run, so its writes may precede the anchor.
+        returned = control("returned", "relation", at={"site": c.labels["service"], "event": "call-return"}, op="le",
+                           left={"occurrences": {"site": c.labels["write"], "event": "write"}}, right=1)
+        self.assertEqual(verdict(run(c, [returned], registers=FRAME, callModels=model), "returned")["verdict"], "undecided")
 
     def test_modulo_accepts_only_equality(self):
         rule = self.terminator("c6 00 00")
