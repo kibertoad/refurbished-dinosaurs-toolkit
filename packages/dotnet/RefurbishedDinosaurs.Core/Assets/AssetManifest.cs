@@ -43,10 +43,9 @@ public sealed record AssetManifest(
     /// or <see langword="null"/> to leave it unchecked. Only an <c>iso9660</c> or <c>cue-bin</c>
     /// manifest may give it. The label reads each descriptor byte as the Latin-1 character of the
     /// same value, so a byte above 0x7F is written as that character: byte 0xC9 is <c>É</c>
-    /// (U+00C9). The identifier holds 1 to 32 printable Latin-1 characters (U+0020 to U+007E and
-    /// U+00A0 to U+00FF) and does not end in a space. A descriptor whose identifier holds a control
-    /// byte (0x00 to 0x1F, 0x7F, or 0x80 to 0x9F) before its trailing padding cannot be pinned by
-    /// identifier; pin it with <see cref="VolumeXxh3"/>.
+    /// (U+00C9), and a control byte such as 0x85 as its control character (in JSON, <c>"\u0085"</c>).
+    /// The identifier holds 1 to 32 characters from U+0000 to U+00FF and does not end in a space or
+    /// NUL, so every label a descriptor can give can be pinned.
     /// </summary>
     public string? VolumeIdentifier { get; init; }
 
@@ -121,23 +120,19 @@ public sealed record AssetManifest(
         if (!VolumeSourceKinds.Contains(SourceKind))
             throw new InvalidDataException(
                 $"Asset manifest pins an ISO 9660 volume for source kind '{SourceKind}'; only 'iso9660' and 'cue-bin' hold one.");
-        // The descriptor holds 32 bytes, and the reader drops trailing padding, so an identifier
-        // ending in a space could never match. The reader maps each byte to the Latin-1 character of
-        // the same value. Control characters are refused: the fingerprint separates its fields with
-        // NUL and newline, and a pin could not show them.
+        // The descriptor holds 32 bytes, the reader maps each byte to the Latin-1 character of the
+        // same value and drops trailing spaces and NULs, so these are exactly the labels it can give.
         if (VolumeIdentifier is { } identifier &&
-            (identifier.Length is 0 or > 32 || identifier[^1] == ' ' || !identifier.All(IsPrintableLatin1)))
+            (identifier.Length is 0 or > 32 || identifier[^1] is ' ' or '\0' || identifier.Any(c => c > '\u00FF')))
             throw new InvalidDataException(
-                "Asset manifest volume identifier must be 1 to 32 printable Latin-1 characters " +
-                "(U+0020 to U+007E, U+00A0 to U+00FF) and not end in a space.");
+                "Asset manifest volume identifier must be 1 to 32 Latin-1 characters (U+0000 to U+00FF) " +
+                "and not end in a space or NUL.");
         if (VolumeBlocks < MinimumVolumeBlocks)
             throw new InvalidDataException(
                 $"Asset manifest volume size must be at least {MinimumVolumeBlocks} logical blocks.");
         if (VolumeXxh3 is not null && !FileFingerprint.IsXxh3(VolumeXxh3))
             throw new InvalidDataException("Asset manifest has an invalid volume xxh3 value.");
     }
-
-    private static bool IsPrintableLatin1(char c) => c is >= ' ' and <= '~' or >= '\u00A0' and <= '\u00FF';
 
     private static InvalidDataException TooLarge() =>
         new($"Asset manifest is larger than {MaximumBytes} bytes.");
@@ -147,9 +142,9 @@ public sealed record AssetManifest(
     /// path passes <see cref="PortableAssetPath.Relative"/> and appears once (ignoring case), no size is
     /// negative, and every hash is an XXH3-128 fingerprint (<see cref="FileFingerprint.IsXxh3"/>).
     /// A volume pin (<see cref="VolumeIdentifier"/>, <see cref="VolumeBlocks"/>, <see cref="VolumeXxh3"/>)
-    /// needs the <c>iso9660</c> or <c>cue-bin</c> source kind, an identifier of 1 to 32 printable Latin-1
-    /// characters (U+0020 to U+007E, U+00A0 to U+00FF) that does not end in a space, at least 18
-    /// blocks, and an XXH3-128 fingerprint.
+    /// needs the <c>iso9660</c> or <c>cue-bin</c> source kind, an identifier of 1 to 32 Latin-1
+    /// characters (U+0000 to U+00FF) that does not end in a space or NUL, at least 18 blocks, and an
+    /// XXH3-128 fingerprint.
     /// <see cref="AudioTracks"/>, when given, needs the <c>cue-bin</c> source kind, and each track must
     /// pass <see cref="CddaTrackFingerprint.Validate"/> and appear once.
     /// </summary>
@@ -225,13 +220,16 @@ public sealed record AssetManifest(
             .Select(file => (Path: PortableAssetPath.Relative(file.Path), file.Size, file.Xxh3))
             .OrderBy(file => file.Path, StringComparer.OrdinalIgnoreCase)
             .Select(file => $"{file.Path}\0{file.Size}\0{file.Xxh3}");
-        // A path cannot contain ':', so these lines cannot collide with a file's.
+        // A path cannot contain ':', so these lines cannot collide with a file's. The size and hash
+        // hold no NUL, so the identifier is everything before the line's last two NULs, and an audio
+        // line holds two 32-digit hashes, more than an identifier's 32 characters, so a NUL or
+        // newline in the identifier cannot make two manifests' text alike.
         if (PinsVolume)
-            lines = lines.Append($"volume:{VolumeIdentifier} {VolumeBlocks} {VolumeXxh3}");
+            lines = lines.Append($"volume:{VolumeIdentifier}\0{VolumeBlocks}\0{VolumeXxh3}");
         if (AudioTracks is not null)
             lines = lines.Concat(AudioTracks.OrderBy(track => track.Track).Select(track =>
-                $"audio:{track.Track} {track.Samples} {track.ToleranceSamples} {track.AnchorOffset} " +
-                $"{track.AnchorSamples} {track.AnchorXxh3} {track.CentralXxh3}"));
+                $"audio:{track.Track}\0{track.Samples}\0{track.ToleranceSamples}\0{track.AnchorOffset}\0" +
+                $"{track.AnchorSamples}\0{track.AnchorXxh3}\0{track.CentralXxh3}"));
         return FileFingerprint.Xxh3(Encoding.UTF8.GetBytes(string.Join('\n', lines)));
     }
 }

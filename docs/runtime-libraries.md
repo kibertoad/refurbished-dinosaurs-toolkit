@@ -254,14 +254,18 @@ identifier as ASCII before, which turned every byte above 0x7F into `?`. Byte 0x
 spaces and NULs are still removed, and an identifier with only ASCII bytes reads as before.
 
 `AssetManifest.Validate` and `schemas/asset-manifest.schema.json` now accept a `VolumeIdentifier`
-of 1 to 32 printable Latin-1 characters (U+0020 to U+007E and U+00A0 to U+00FF) that does not end
-in a space. Control characters, including C1 (U+0080 to U+009F), and characters above U+00FF are
-rejected, so a descriptor whose identifier holds a control byte before its padding is pinned with
-`VolumeXxh3`.
+of 1 to 32 characters from U+0000 to U+00FF that does not end in a space or NUL. That is every
+label a descriptor can give, control bytes included: a Shift-JIS lead byte 0x85 is `"\u0085"`.
+Characters above U+00FF are rejected.
+
+The `WrongVolumeIdentifier` detail now writes both identifiers as JSON strings (`"DISC\u0085"`,
+with `"` and `\` escaped and each control character as a `\u` escape) where it used single quotes.
+Code that parses the detail reads the JSON string instead.
 
 This affects code that compares `Label`, and manifests whose `VolumeIdentifier` writes `?` for a
 byte above 0x7F. Such a pin no longer matches the disc and fails with `WrongVolumeIdentifier`.
 Replace each `?` that stands for a high byte with that byte's Latin-1 character (in JSON, `"\u00C9"`
-or the character itself), reading the value from `Label` of a reference copy. Changing the pin
-changes the manifest's `Fingerprint()`, so copies installed with the old manifest are imported
-again. Code that compares `Label` with a string holding `?` for those bytes changes the same way.
+or the character itself, and `"\u0085"` for a control byte), reading the value from `Label` of a
+reference copy or from the `WrongVolumeIdentifier` detail. Changing the pin changes the manifest's
+`Fingerprint()`, so copies installed with the old manifest are imported again. Code that compares
+`Label` with a string holding `?` for those bytes changes the same way.

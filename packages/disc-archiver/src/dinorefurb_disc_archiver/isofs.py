@@ -86,7 +86,13 @@ class UserDataStream(io.RawIOBase):
 
 
 def volume_identifier(track: Track) -> str | None:
-    """The primary volume descriptor's volume identifier, or None when the track has none."""
+    """The primary volume descriptor's volume identifier, or None when the track has none.
+
+    Each of the 32 bytes reads as the Latin-1 character of the same value, control bytes included,
+    and the trailing spaces and NULs are dropped. This is how the .NET
+    ``OriginalContentSource.Label`` reads it, so identifiers that differ in any byte before the
+    padding give different strings, and a value copied from one matches the other.
+    """
     if track.length <= PVD_SECTOR:
         return None
     with UserDataStream(track) as stream:
@@ -94,7 +100,7 @@ def volume_identifier(track: Track) -> str | None:
         descriptor = stream.read(COOKED_SECTOR)
     if descriptor[:6] != b"\x01CD001":
         return None
-    return descriptor[40:72].decode("ascii", errors="replace").rstrip(" \x00")
+    return descriptor[40:72].decode("latin-1").rstrip(" \x00") or None
 
 
 @dataclass(frozen=True)
