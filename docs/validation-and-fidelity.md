@@ -110,7 +110,8 @@ person writing the finding:
   caller's state and the failure's reachability are established.
 - A modeled call's register cases are the query's assumption about a service. They are not the
   service's actual result sequence, and a wrapper's return does not show that its interrupt or
-  cleanup dependencies return.
+  cleanup dependencies return. A model at an interrupt site is the same kind of assumption: the
+  path past it shows what the code does if the handler returns with those registers.
 - An error value passed up through a recursive call does not show a local error origin, and an
   encoded error edge alone does not show a reachable failure. Keep finite-traversal and valid-state
   assumptions as stated assumptions.

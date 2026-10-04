@@ -10,6 +10,7 @@ from .values import const, unknown, sources, op, Value
 from .result_flow import validate_contracts, result_contracts
 from .loops import LoopTracker
 from .memory_scopes import validate_scopes, capture_scopes, retain_scopes, scope_history
+from .pcode_backend import interrupt_vector
 
 def call_target(image, site, ins):
     if ins.mnemonic in ("lcall", "ljmp"):
@@ -25,6 +26,16 @@ RETURNS = {"ret": "near return", "retf": "far return", "iret": "interrupt return
 INTERRUPTS = ("int", "int1", "int3", "into")
 PORTS = ("in", "out", "insb", "insw", "insd", "outsb", "outsw", "outsd")
 PORT_INPUTS = ("in", "insb", "insw", "insd")
+
+
+def modeled_interrupt(image, site):
+    """Whether a call model at ``site`` describes an interrupt: an ``INT n`` in the real-mode model.
+
+    INT1, INT3, INTO and every interrupt in the PE32 flat model keep stopping the path, with or
+    without a model at their site (ADR 0017).
+    """
+    ins = image.decode(site)
+    return ins is not None and ins.mnemonic == "int" and not image.flat
 
 
 def base_mnemonic(ins):
@@ -453,6 +464,8 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
             raise ValueError("A model requires 1..16 return cases")
         if "returnBytes" in model and (type(model["returnBytes"]) is not int or model["returnBytes"] not in (2, 4)):
             raise ValueError("Modeled returnBytes must be 2 or 4")
+        if "returnBytes" in model and modeled_interrupt(image, model["site"]):
+            raise ValueError("An interrupt model takes no returnBytes: the interrupt returns past its own FLAGS, CS and IP")
         if any(r not in REGISTERS for r in model.get("preserves", [])):
             raise ValueError("Model preserves must name full registers")
         validate_scopes(model, image.bits, image.flat)
@@ -514,6 +527,46 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
         if call_stacks and len(s.frames) > 1:
             gap["callStack"] = open_calls(s)
         global_gaps.append(gap)
+
+    def capture_model_scopes(s, model):
+        # Scopes resolve against the state before the modeled instruction runs.
+        values, unread, scopes = capture_scopes(s, model)
+        return values, unread, scopes, scope_history(s, values, unread)
+
+    def model_returns(s, model, captured, following, assumption, limit_reason, target, **marks):
+        # One child per case, each a conditional return under the query's model. ``marks`` extend
+        # the conditionalModels entry and the modeled call-return event (an interrupt's vector).
+        nonlocal created
+        at = s.at
+        kept_values, kept_unread, preserved_scopes, kept_history = captured
+        for case in model["cases"]:
+            if created >= max_paths:
+                path_limit(at, s, limit_reason)
+                break
+            child = deepcopy(s)
+            created += 1
+            for r in REGISTERS:
+                if r not in model.get("preserves", []) and r not in ("esp", "cs"):
+                    child.setreg(r, unknown(f"modeled-call:{at}:{r}", ALIASES[r][2]), at)
+            child.clear_memory()
+            retain_scopes(child, kept_values, kept_unread, kept_history)
+            child.forget_flags()
+            child.direction_flag = unknown(f"modeled-call:{at}:DF:{child.flag_serial}", 1, at)
+            child.interrupt_flag = unknown(f"modeled-call:{at}:IF:{child.flag_serial}", 1, at)
+            for r, n in case.get("registers", {}).items():
+                child.setreg(r, const(n, ALIASES[r][2], at), at)
+            child.conditional.append({"site": at, "evidence": model["evidence"], **marks,
+                                      "assumption": assumption + "; memory effects unresolved"
+                                                    + (" outside explicit scopes" if preserved_scopes else ""),
+                                      "preservedMemoryScopes": preserved_scopes})
+            # The scopes are reported once, on the path's conditionalModels entry; the event cites its index.
+            child.event("call-return", callSite=at, callerEntry=s.frames[-1]["entry"],
+                        # A modeled call's result contracts are its target's; an interrupt calls no entry.
+                        resultContracts=[] if marks.get("boundary") == "interrupt" else result_contracts(child, contracts, target),
+                        registers=snapshot(child), modeled=True, **marks,
+                        unknownMemoryEffects=True, conditionalModel=len(child.conditional) - 1)
+            child.at = following
+            pending.append(child)
 
     def finish(s, reason=None, returned=False):
         if continuing and reason and reason.startswith(STRING_BUDGET_STOP):
@@ -712,6 +765,18 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                     string_step(state, ins, count)
                     state.at = following
                     continue
+                interrupt_model = next((x for x in models if x["site"] == at), None) if m == "int" and not image.flat else None
+                if interrupt_model:
+                    # The handler is not executed. The boundary event is kept, and each case returns to the
+                    # next instruction under the query's model, with SP and CS as before the interrupt (ADR 0017).
+                    vector, _ = interrupt_vector(image.flat, ins, at)
+                    state.event("hardware-boundary", boundary="interrupt", mnemonic=m, vector=vector, modeled=True,
+                                interpretation="the interrupt handler is not executed; a callModels case supplies its return")
+                    captured = capture_model_scopes(state, interrupt_model)
+                    model_returns(state, interrupt_model, captured, following,
+                                  "interrupt returns to the next instruction with balanced stack and CS unchanged",
+                                  "path limit at modeled interrupt", None, boundary="interrupt", vector=vector)
+                    break
                 if m in ("call", "lcall"):
                     target, provenance = call_target(image, at, ins)
                     indirect_value = None
@@ -745,38 +810,13 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                             raise StopPath("push-CS/near-call model requires an explicit four-byte return contract")
                         # Scopes resolve against the pre-call state: before the modeled frame consumes an
                         # already-pushed CS word and before a case replaces registers.
-                        kept_values, kept_unread, preserved_scopes = capture_scopes(state, model)
-                        kept_history = scope_history(state, kept_values, kept_unread)
+                        captured = capture_model_scopes(state, model)
                         if push_cs:
                             actual_cs = state.pop(2)
                             if actual_cs.term != state.reg("cs").term:
                                 raise StopPath("modeled far return segment changed")
-                        for case in model["cases"]:
-                            if created >= max_paths:
-                                path_limit(at, state, "path limit at modeled call")
-                                break
-                            child = deepcopy(state)
-                            created += 1
-                            for r in REGISTERS:
-                                if r not in model.get("preserves", []) and r not in ("esp", "cs"):
-                                    child.setreg(r, unknown(f"modeled-call:{at}:{r}", ALIASES[r][2]), at)
-                            child.clear_memory()
-                            retain_scopes(child, kept_values, kept_unread, kept_history)
-                            child.forget_flags()
-                            child.direction_flag = unknown(f"modeled-call:{at}:DF:{child.flag_serial}", 1, at)
-                            child.interrupt_flag = unknown(f"modeled-call:{at}:IF:{child.flag_serial}", 1, at)
-                            for r, n in case.get("registers", {}).items():
-                                child.setreg(r, const(n, ALIASES[r][2], at), at)
-                            child.conditional.append({"site": at, "evidence": model["evidence"],
-                                                      "assumption": "call returns with balanced stack; memory effects unresolved"
-                                                                    + (" outside explicit scopes" if preserved_scopes else ""),
-                                                      "preservedMemoryScopes": preserved_scopes})
-                            # The scopes are reported once, on the path's conditionalModels entry; the event cites its index.
-                            child.event("call-return", callSite=at, callerEntry=state.frames[-1]["entry"],
-                                        resultContracts=result_contracts(child, contracts, target), registers=snapshot(child), modeled=True,
-                                        unknownMemoryEffects=True, conditionalModel=len(child.conditional) - 1)
-                            child.at = following
-                            pending.append(child)
+                        model_returns(state, model, captured, following, "call returns with balanced stack",
+                                      "path limit at modeled call", target)
                         break
                     if target is None:
                         raise StopPath("unresolved call: " + provenance.get("reason", "outside mapped code"))
