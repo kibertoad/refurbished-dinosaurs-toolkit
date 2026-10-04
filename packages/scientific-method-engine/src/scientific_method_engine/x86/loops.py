@@ -8,7 +8,7 @@ one path. They never establish that a loop terminates, stays bounded or that an 
 progress its author intended.
 """
 from collections import namedtuple
-from .machine import REGISTERS
+from .machine import MEMORY_CLEARED, REGISTERS
 from .result_flow import predicate_domain
 from .values import Value, extract
 
@@ -259,8 +259,11 @@ class LoopTracker:
             loop = frame["heads"].get(at)
             if loop is not None and loop["history"] is not None:
                 # A fall-through arrival at a known head, such as an inner loop's entry on the next
-                # outer iteration, is an earlier state later iterations may repeat.
+                # outer iteration, is an earlier state later iterations may repeat. It also starts a
+                # new entry into the loop, so the next iteration's gates are not compared with those
+                # of the last iteration before the loop was left.
                 loop["history"].append(token)
+                loop["gates"] = None
         frame["tokens"][at] = token
 
     def _restart(self, state, frame, previous, head, start, token):
@@ -295,7 +298,8 @@ class LoopTracker:
             "fromOrder": start.event, "toOrder": token.event,
             "registers": compare_registers(state.flat, registers_at(before, state), now),
             "flags": "unchanged" if start.flags == token.flags else "differ",
-            "memory": _intervals(memory_changes(before, state)), "gates": gates,
+            "memory": _intervals(memory_changes(before, state)), "memoryForgotten": MEMORY_CLEARED in before,
+            "gates": gates,
             "gateOperandsRepeated": repeated, "stateRepeatsArrival": repeated_arrival(state, loop["history"], token)})
         loop["history"].append(token)
 

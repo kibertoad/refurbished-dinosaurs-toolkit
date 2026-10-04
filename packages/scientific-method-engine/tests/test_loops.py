@@ -94,6 +94,19 @@ class LoopProgressTests(unittest.TestCase):
         # The model holds no byte for [bx] at either arrival; its contents may differ, so no repeated state is claimed.
         self.assertIsNone(iterations[1]["stateRepeatsArrival"])
 
+    def test_a_call_model_that_forgets_memory_is_reported_on_the_iteration(self):
+        # mov cx, 3; head: call f (modeled); loop head; ret; f: ret
+        c = Code().emit("b9 03 00").label("head").label("call").branch("e8", "f").branch("e2", "head").emit("c3")
+        c.label("f").emit("c3")
+        registers = ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "cs", "ds", "es", "ss", "fs", "gs"]
+        model = {"site": c.labels["call"], "evidence": "synthetic service", "preserves": registers, "cases": [{}]}
+        iterations = report(c, callModels=[model])["paths"][0]["loops"]["iterations"]
+        # The model held no byte, so nothing is listed, yet the callee may have written any byte.
+        self.assertEqual([(i["memory"], i["memoryForgotten"]) for i in iterations], [([], True), ([], True)])
+        self.assertIsNone(iterations[1]["stateRepeatsArrival"])
+        plain = report(self.counted())["paths"][0]["loops"]["iterations"]
+        self.assertEqual({i["memoryForgotten"] for i in plain}, {False})
+
     def test_restart_after_a_collision_is_a_second_restart_edge_to_the_same_head(self):
         # mov si, 0; head: cmp di, 0; jne collide; inc si; cmp si, 3; jb head; ret; collide: xor di, di; jmp head
         c = Code().emit("be 00 00").label("head").emit("83 ff 00").branch("75", "collide").emit("46 83 fe 03")
@@ -157,6 +170,10 @@ class LoopProgressTests(unittest.TestCase):
         self.assertEqual([(i["fromArrival"], i["toArrival"]) for i in inner], [(1, 2), (3, 4)])
         # The outer gate ran between the inner head's second and third arrivals, outside both inner iterations.
         self.assertEqual([[g["predicate"] for g in i["gates"]] for i in inner], [["loop"], ["loop"]])
+        # The second outer iteration enters the inner loop again with CX reset, so its first inner
+        # iteration is not compared with the last one before the inner loop was left.
+        self.assertEqual([i["gateOperandsRepeated"] for i in inner], [None, None])
+        self.assertNotIn("operandsSincePreviousIteration", inner[1]["gates"][0])
         outer = [i for i in loops["iterations"] if i["head"] == c.labels["outer"]]
         self.assertEqual([g["predicate"] for g in outer[0]["gates"]], ["loop", "loop", "jne"])
 

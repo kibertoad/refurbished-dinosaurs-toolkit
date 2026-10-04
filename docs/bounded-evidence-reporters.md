@@ -921,10 +921,11 @@ claims a finding makes from these facts and from evidence outside the path
 A restart edge is a transfer that lands on an instruction the same call activation already ran
 on this path. Its target is the loop head. `restartEdges` lists each edge once per activation
 with `entry`, `depth`, `activation`, `site`, `target`, the transfer's `kind` (`jmp`, `jb`,
-`loop` and so on), `traversals` and the event order of its first traversal. A loop restarted from
-two places, such as an index reset after a collision beside the ordinary increment, has two
-edges to one head. A function called twice is two activations, so its first instruction is not a
-restart. A fall-through, a call and a return never form a restart edge.
+`loop` and so on), `traversals` and `firstOrder`, the event order at which its first traversal
+reached the head (the `toOrder` of that iteration). A loop restarted from two places, such as an
+index reset after a collision beside the ordinary increment, has two edges to one head. A
+function called twice is two activations, so its first instruction is not a restart. A
+fall-through, a call and a return never form a restart edge.
 
 Each traversal of a restart edge compares the state at this arrival at the head with the state
 at the previous arrival at that head, by whatever route the path reached it, and appends one
@@ -946,13 +947,17 @@ the head, by any route) and the event orders `fromOrder` and `toOrder` the itera
   `interval` field, every byte the iteration wrote or invalidated: `unchanged`, `changed` and
   `differentExpression` compare the stored bytes; `writtenOverUnmodeled` had no modeled value at
   the earlier arrival; `invalidated` has none now, because a possibly aliasing write or a call
-  model dropped it. A byte not listed was not written during the iteration.
+  model dropped it. `memoryForgotten` is true when a call model forgot all modeled memory during
+  the iteration; bytes the model never held may then have changed without a row here. When it is
+  false, a byte not listed was not written during the iteration.
 - `gates` lists the branches the iteration evaluated in the loop's own frame, in order, with
   `predicate`, `predicateDomain` (`signed`, `unsigned`, `counter` for LOOP and JCXZ, or
   `flags/equality`), `operation`, `taken`, the compared `operands` (`left`, `right`, `count` or
-  `carry`) and the decision's `decidedBy` or `reason`. From the second record on, each gate
-  carries `operandsSincePreviousIteration`, comparing its operands with the gate at the same
-  position of the previous iteration.
+  `carry`) and the decision's `decidedBy` or `reason`. From the second record after the path
+  entered the loop, each gate carries `operandsSincePreviousIteration`, comparing its operands
+  with the gate at the same position of the previous iteration. A fall-through arrival at the head,
+  such as an inner loop entered again on the next outer iteration, starts a new entry, so its
+  first iteration has nothing to compare with.
 - `gateOperandsRepeated` is true when the iteration evaluated the same gates, with the same
   outcomes and identical operand expressions, as the previous iteration: nothing a gate in the
   loop's frame reads changed. It is false when a gate's known operands or the gate sequence
@@ -960,11 +965,13 @@ the head, by any route) and the event orders `fromOrder` and `toOrder` the itera
   iteration has nothing to compare with, an operand is unresolved or only differs in expression,
   or neither iteration has a gate in the loop's frame.
 - `stateRepeatsArrival` names the earliest earlier arrival at the head, by any route, whose
-  registers, flags and modeled memory are identical to this one, or is null. Only bytes written
-  in between are compared, since a byte nothing wrote holds what it held. A byte the model held no
-  value for at either arrival never matches, because its contents may differ, and a call model
-  that forgets memory in between rules out every earlier arrival. A wrapped index that returns to an
-  earlier candidate shows here even when no two consecutive iterations repeat.
+  registers, flags and modeled memory are identical to this one, or is null. The candidates are
+  the arrival just before the head's first restart in this activation and every arrival after
+  it; arrivals before that one are not kept. Only bytes written in between are compared, since a
+  byte nothing wrote holds what it held. A byte the model held no value for at either arrival
+  never matches, because its contents may differ, and a call model that forgets memory in
+  between rules out every earlier arrival. A wrapped index that returns to an earlier candidate
+  shows here even when no two consecutive iterations repeat.
 
 Unread memory is named by the write generation it was read in, so a loop that writes anything
 reads unwritten bytes as different expressions. The comparison then reports

@@ -18,11 +18,15 @@ class StopPath(Exception):
     pass
 
 
+# The write-log key that marks a point where the model forgot all memory.
+MEMORY_CLEARED = ("memory-cleared",)
+
+
 class WriteLog:
     """Append-only list of (key, previous value) pairs, one per register or memory byte a write changes.
 
     A memory key is (segment, base, offset); a register key is ("register", root). A previous memory
-    value is None when the model held no value for the byte. ``(("memory-cleared",), None)`` marks a
+    value is None when the model held no value for the byte. ``(MEMORY_CLEARED, None)`` marks a
     point where the model forgot all memory. Copies made at a fork share the entries
     recorded before the fork, which are immutable, so forking a path never copies its log.
     """
@@ -206,7 +210,7 @@ class State:
     def clear_memory(self):
         # Bytes the model never held may change too, so the log marks the clear itself.
         self.write_log.extend(self.memory.items())
-        self.write_log.append((("memory-cleared",), None))
+        self.write_log.append((MEMORY_CLEARED, None))
         self.memory.clear()
         self.memory_groups.clear()
         self.unread_memory.clear()

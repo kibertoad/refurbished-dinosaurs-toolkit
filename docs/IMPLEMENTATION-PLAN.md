@@ -142,9 +142,10 @@ are the rules on counting slots, eviction calls and local repeated states.
 Synthetic acceptance: a counted LOOP (known changes, a counter gate, no repeat), a scan whose
 iteration changes nothing and that still stops at `visitLimit`, a wrapped index that returns to an
 earlier state with no consecutive repeat, a no-op rewrite of a free slot, a possibly aliasing write
-reported as invalidation and never matched as a repeat, a restart after a collision as a second
-edge to the same head, a signed gate, two activations of one callee, a call inside a loop body,
-nested loops, flags recomputed to the same values, a 16-bit write in the segmented model, an
-iteration that loses its gates, the iteration limit reached and rejected limits. The reader bridge runs the no-change scan through the prepared config.
+reported as invalidation and never matched as a repeat, a call model that forgets memory inside the
+body, a restart after a collision as a second edge to the same head, a signed gate, two activations
+of one callee, a call inside a loop body, nested loops, flags recomputed to the same values, a
+16-bit write in the segmented model, an iteration that loses its gates, the iteration limit reached
+and rejected limits. The reader bridge runs the no-change scan through the prepared config.
 Exit: the gates pass and the reporter guide documents the record. Gap 29 closes only after Dark
 Sun's own cases are read with the published engine.
