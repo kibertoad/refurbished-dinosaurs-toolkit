@@ -306,8 +306,9 @@ tail transfers and interrupts, where the engine reads on. Now:
   there. `agreed` is true only when it is 0, and such a site is no agreement site.
 - `counts.ghidraEndsFunction` also counts a `ghidraOnly` row where Ghidra ends the function and the
   engine reads on, such as a call Ghidra resolves to a different, non-returning callee.
-- For an export without `fallsThrough`, a flow that names an unconditional jump (`JUMP` in a name
-  that does not start with `CONDITIONAL`) reads as `ghidraFallsThrough: false`.
+- For an export without `fallsThrough`, `ghidraFallsThrough` is true exactly for the flow types
+  Ghidra gives a fall-through. An unconditional jump's flow now reads as false, and
+  `CONDITIONAL_TERMINATOR` reads as true.
 
 A config whose cross-check agreed before can now report `agreed: false` or fail its
 `ghidraAgreementSites` control, when a user gave a tail jump a fall-through in Ghidra. Check the

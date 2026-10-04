@@ -874,9 +874,11 @@ Every row whose site is an instruction the engine read in that caller's body, ot
 `ghidraFallsThroughBasis`, what that was read from. With `fallsThrough` as the basis it is the
 edge's `fallsThrough`, so a user's override counts: a cleared fall-through on an `INT 21h` or a
 `CALL` although the flow stays `COMPUTED_CALL` or `UNCONDITIONAL_CALL`, or a fall-through given to
-a `JMP`. With `flowName`, for an export without that field, it is false when the flow name contains
-`TERMINATOR` or names an unconditional jump (`JUMP` in a name that does not start with
-`CONDITIONAL`), which misses such an override. The engine reads on past every call, conditional
+a `JMP`. With `flowName`, for an export without that field, it is true for the flow types Ghidra
+gives a fall-through (`FALL_THROUGH`, `CONDITIONAL_JUMP`, `UNCONDITIONAL_CALL`, `CONDITIONAL_CALL`,
+`CONDITIONAL_TERMINATOR`, `COMPUTED_CALL`, `CONDITIONAL_COMPUTED_CALL`,
+`CONDITIONAL_COMPUTED_JUMP`, `CALL_OVERRIDE_UNCONDITIONAL` and `CALLOTHER_OVERRIDE_CALL`) and false
+for every other flow, which misses such an override. The engine reads on past every call, conditional
 jump and interrupt, and stops at a `JMP`, `LJMP`, return or `HLT`. A row whose site is a transfer
 outside the frame model, or an instruction the engine did not read, carries neither field. The two
 analyses disagree on the function's extent in two ways, and either way the row counts against
@@ -885,8 +887,8 @@ analyses disagree on the function's extent in two ways, and either way the row c
 - Ghidra ends the function where the engine reads on (`ghidraFallsThrough` false at a call,
   conditional jump or interrupt): the callee is one Ghidra treats as non-returning
   (`CALL_TERMINATOR`), the interrupt is `INT1` or `INT3`, or a user cleared the fall-through.
-- Ghidra continues where the engine stops (`ghidraFallsThrough` true at a `JMP` or `LJMP`): a user
-  gave the jump a fall-through.
+- Ghidra continues where the engine stops (`ghidraFallsThrough` true at a `JMP`, `LJMP`, return or
+  `HLT`): a user gave the instruction a fall-through.
 
 `notCompared` lists the engine callers missing from the export, exported callers the engine did not
 read, exported functions without a file offset, and the `omittedRoutes` ids of compared callers

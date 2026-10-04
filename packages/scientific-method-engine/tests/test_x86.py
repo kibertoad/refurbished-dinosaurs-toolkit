@@ -808,6 +808,20 @@ class GhidraCrossCheckTests(unittest.TestCase):
         self.assertEqual(check["counts"]["ghidraContinues"], 0)
         self.assertTrue(check["agreed"])
 
+    def test_a_conditional_flow_name_falls_through_as_ghidra_defines_it(self):
+        # je 3; ret; ret. The engine reads on past the conditional jump. Ghidra's CONDITIONAL_TERMINATOR has a
+        # fall-through, while its CONDITIONAL_CALL_TERMINATOR does not, although both names contain TERMINATOR.
+        data = bytes.fromhex("74 01 c3 c3")
+        for flow, falls_through in (("CONDITIONAL_TERMINATOR", True), ("CONDITIONAL_CALL_TERMINATOR", False)):
+            with self.subTest(flow=flow):
+                cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: [(0, 3, flow)], 3: []}))
+                cfg["regions"][0]["entries"] = [0, 3]
+                check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
+                [row] = check["edges"]
+                self.assertEqual((row["ghidraFallsThrough"], row["ghidraFallsThroughBasis"]), (falls_through, "flowName"))
+                self.assertEqual(check["counts"]["ghidraEndsFunction"], 0 if falls_through else 1)
+                self.assertEqual(check["agreed"], falls_through)
+
     def test_a_ghidra_only_call_carries_where_ghidra_ends_the_function(self):
         # call 4; ret; ret; ret. The engine resolves the call to 4 and reads on to the ret after it. Ghidra resolves it
         # to 5, and ends the function there when it treats that callee as non-returning.
@@ -831,6 +845,19 @@ class GhidraCrossCheckTests(unittest.TestCase):
         # reading there to compare Ghidra's fall-through with.
         data = bytes.fromhex("c3 c3")
         cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: [(1, None, "COMPUTED_CALL_TERMINATOR", False)]}))
+        check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
+        [row] = check["edges"]
+        self.assertEqual(row["result"], "ghidraOnly")
+        self.assertNotIn("ghidraFallsThrough", row)
+        self.assertEqual((check["counts"]["ghidraEndsFunction"], check["counts"]["ghidraContinues"]), (0, 0))
+        self.assertFalse(check["agreed"])
+
+    def test_a_ghidra_only_edge_at_a_transfer_outside_the_frame_model_has_no_falls_through(self):
+        # o32 call 7; ret; ret. The engine stops at the operand-size call with a gap and decides nothing about
+        # fall-through there, so Ghidra's terminator is not compared.
+        data = bytes.fromhex("66 e8 01 00 00 00 c3 c3")
+        cfg = configuration(data, ghidraCallEdges=ghidra_export(data, {0: [(0, 7, "CALL_TERMINATOR", False)], 7: []}))
+        cfg["regions"][0]["entries"] = [0, 7]
         check = run_report(data, cfg, "callees")["ghidraCrossCheck"]
         [row] = check["edges"]
         self.assertEqual(row["result"], "ghidraOnly")

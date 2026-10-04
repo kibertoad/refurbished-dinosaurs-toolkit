@@ -1121,16 +1121,23 @@ def _ghidra_key(g):
     return g["site"], g["target"]
 
 
+# The flow types Ghidra's RefType builds with a fall-through (FlowType.hasFallthrough). Every other flow type ends the
+# function at its instruction, CONDITIONAL_CALL_TERMINATOR included.
+GHIDRA_FALL_THROUGH_FLOWS = frozenset((
+    "FALL_THROUGH", "CONDITIONAL_JUMP", "UNCONDITIONAL_CALL", "CONDITIONAL_CALL", "CONDITIONAL_TERMINATOR",
+    "COMPUTED_CALL", "CONDITIONAL_COMPUTED_CALL", "CONDITIONAL_COMPUTED_JUMP", "CALL_OVERRIDE_UNCONDITIONAL",
+    "CALLOTHER_OVERRIDE_CALL"))
+
+
 def _ghidra_falls_through(g):
     """Whether Ghidra continues to the next instruction at an exported edge's site, and what that was read from.
 
     The export's fallsThrough also reflects a user's fall-through override. Copies of the script that leave it out
-    are read by the flow type's name, which misses such an override: a terminator or an unconditional jump ends the
-    function, and every other flow continues.
+    are read by the flow type's name, which misses such an override: a flow type Ghidra gives a fall-through
+    (GHIDRA_FALL_THROUGH_FLOWS) continues, and every other one ends the function.
     """
     exported = g["fallsThrough"] is not None
-    flow = g["flow"]
-    named = "TERMINATOR" not in flow and (flow.startswith("CONDITIONAL") or "JUMP" not in flow)
+    named = g["flow"] in GHIDRA_FALL_THROUGH_FLOWS
     return {"ghidraFallsThrough": g["fallsThrough"] if exported else named,
             "ghidraFallsThroughBasis": "fallsThrough" if exported else "flowName"}
 
@@ -1145,7 +1152,7 @@ def _engine_reads_on(image, ins):
     if ins is None or unsupported_transfer(image, ins):
         return None
     m = base_mnemonic(ins)
-    return not (m in RETURNS or m == "hlt" or m in ("jmp", "ljmp"))
+    return not (m in RETURNS or m in ("hlt", "jmp", "ljmp"))
 
 
 def _ghidra_cross_check(image, export, nodes, outgoing, omitted):
