@@ -16,7 +16,13 @@ public enum AssetProblem
     /// <summary>The file's size differs from the manifest.</summary>
     WrongSize,
     /// <summary>The file's XXH3-128 fingerprint differs from the manifest.</summary>
-    WrongHash
+    WrongHash,
+    /// <summary>The ISO 9660 volume identifier differs from the manifest's <see cref="AssetManifest.VolumeIdentifier"/>.</summary>
+    WrongVolumeIdentifier,
+    /// <summary>The ISO 9660 volume space size differs from the manifest's <see cref="AssetManifest.VolumeBlocks"/>.</summary>
+    WrongVolumeSize,
+    /// <summary>The XXH3-128 fingerprint of the ISO 9660 volume differs from the manifest's <see cref="AssetManifest.VolumeXxh3"/>.</summary>
+    WrongVolumeHash
 }
 
 /// <summary>One problem verification found.</summary>
@@ -70,6 +76,17 @@ public static class AssetVerifier
     /// <param name="manifest">The manifest, validated before any file is read.</param>
     /// <param name="cancellationToken">Cancels between files and during hashing.</param>
     /// <exception cref="InvalidDataException">The manifest is invalid.</exception>
+    /// <remarks>
+    /// When the manifest pins the ISO 9660 volume, the volume is checked before any file: the
+    /// identifier against <see cref="OriginalContentSource.Label"/>, the size against
+    /// <see cref="OriginalContentSource.VolumeBlocks"/>, then the fingerprint of
+    /// <see cref="OriginalContentSource.OpenVolume"/>. Each failure has its own problem and a
+    /// <see langword="null"/> path. The fingerprint is skipped when the identifier or size already
+    /// differs, since both are part of the volume's bytes. A source with no ISO 9660 volume, or a
+    /// volume that cannot be read to the end, is reported as <see cref="AssetProblem.Unreadable"/>.
+    /// The files are checked whatever the volume pins found, so a match on the volume never stands in
+    /// for a file.
+    /// </remarks>
     public static async Task<AssetVerificationResult> VerifyAsync(
         OriginalContentSource source,
         AssetManifest manifest,
@@ -178,6 +195,56 @@ public static class AssetVerifier
         }
     }
 
+    // The key hashes stores the volume's fingerprint under. A normalized path cannot contain ':'.
+    private const string VolumeHashKey = ":volume";
+
+    private static async Task CheckVolumeAsync(
+        OriginalContentSource source,
+        AssetManifest manifest,
+        Dictionary<string, string> hashes,
+        List<AssetVerificationIssue> issues,
+        CancellationToken cancellationToken)
+    {
+        if (manifest.VolumeIdentifier is null && manifest.VolumeBlocks is null && manifest.VolumeXxh3 is null) return;
+        if (source.VolumeBlocks is not { } blocks)
+        {
+            issues.Add(new(null, AssetProblem.Unreadable, $"The {source.Kind} source has no ISO 9660 volume to check."));
+            return;
+        }
+
+        var decided = false;
+        if (manifest.VolumeIdentifier is { } identifier && !identifier.Equals(source.Label, StringComparison.Ordinal))
+        {
+            var found = source.Label is null ? "none" : $"'{source.Label}'";
+            issues.Add(new(null, AssetProblem.WrongVolumeIdentifier,
+                $"Expected volume identifier '{identifier}'; found {found}."));
+            decided = true;
+        }
+        if (manifest.VolumeBlocks is { } expected && expected != blocks)
+        {
+            issues.Add(new(null, AssetProblem.WrongVolumeSize, $"Expected {expected} logical blocks; found {blocks}."));
+            decided = true;
+        }
+        if (manifest.VolumeXxh3 is not { } expectedHash || decided) return;
+
+        if (!hashes.TryGetValue(VolumeHashKey, out var actual))
+        {
+            try
+            {
+                await using var stream = source.OpenVolume();
+                actual = await FileFingerprint.Xxh3Async(stream, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception exception) when (IsReadFailure(exception) || exception is NotSupportedException)
+            {
+                issues.Add(new(null, AssetProblem.Unreadable, $"The volume could not be read: {exception.Message}"));
+                return;
+            }
+            hashes[VolumeHashKey] = actual;
+        }
+        if (!actual.Equals(expectedHash, StringComparison.Ordinal))
+            issues.Add(new(null, AssetProblem.WrongVolumeHash, $"Expected volume xxh3 {expectedHash}; found {actual}."));
+    }
+
     // hashes holds the fingerprint of each file already read from this source, by normalized path.
     private static async Task<List<AssetVerificationIssue>> CheckAsync(
         OriginalContentSource source,
@@ -186,6 +253,7 @@ public static class AssetVerifier
         CancellationToken cancellationToken)
     {
         var issues = new List<AssetVerificationIssue>();
+        await CheckVolumeAsync(source, manifest, hashes, issues, cancellationToken).ConfigureAwait(false);
         foreach (var spec in manifest.Files)
         {
             cancellationToken.ThrowIfCancellationRequested();

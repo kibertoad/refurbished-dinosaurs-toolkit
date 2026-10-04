@@ -230,7 +230,7 @@ public sealed class CueBinSourceTests
     }
 
     // Wraps each 2048-byte sector in the MODE1/2352 sync pattern, address and mode header.
-    private static byte[] ToRaw(byte[] cooked)
+    internal static byte[] ToRaw(byte[] cooked)
     {
         var sectors = cooked.Length / CookedSector;
         var raw = new byte[sectors * RawSector];

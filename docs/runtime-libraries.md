@@ -48,6 +48,10 @@ LegacyFormats parts of it:
 - `OriginalContentSource` reads the player's original from an installed directory, an `.iso`
   image or a cue/bin raw image through one file listing. It checks a cue sheet strictly and fails
   on a line it cannot read rather than skipping it.
+- An `.iso` or cue/bin source also gives its ISO 9660 volume: the identifier (`Label`), the size in
+  blocks (`VolumeBlocks`) and the bytes (`OpenVolume`). An `iso9660` or `cue-bin` manifest can pin
+  them with `VolumeIdentifier`, `VolumeBlocks` and `VolumeXxh3`, which tells apart two pressings
+  that carry the same files. The pins add checks; every file is still verified.
 - `AssetManifest` describes a supported edition by paths, sizes and XXH3-128 hashes, the same
   `xxh3` values the spec's build entries give, and names the source kind to read it as.
   `AssetVerifier.IdentifyAsync` tries every edition against the player's copy and reports why the
