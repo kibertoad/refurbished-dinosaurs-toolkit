@@ -47,9 +47,10 @@ LegacyFormats parts of it:
 
 - `OriginalContentSource` reads the player's original from an installed directory, an `.iso`
   image or a cue/bin raw image through one file listing. It checks a cue sheet strictly and fails
-  on a line it cannot read rather than skipping it. A cue/bin source names the `.cue` and `.bin`
-  files it chose from a directory, a `.cue` or a `.bin` input as `CuePath` and `BinPath`, so the
-  importer hashes and reads the same files instead of repeating the selection.
+  on a line it cannot read rather than skipping it. A cue/bin source names the cue sheet and the raw
+  image file it chose from a directory, a `.cue` or a `.bin` input as `CuePath` and `BinPath` (the
+  image is the file the sheet's `FILE` names, whatever its extension), so the importer hashes and
+  reads the same files instead of repeating the selection.
 - `OriginalContentSource.OpenInstallShieldCabinet` lists and reads the members of an InstallShield 5
   or 6 cabinet set, on disk or inside a disc source, through the same interface. It checks every
   member's path, extent and the set's limits when it opens, and each member's size (and MD5 for

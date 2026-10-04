@@ -49,7 +49,11 @@ public abstract class OriginalContentSource : IDisposable
     /// <summary>
     /// The full path of the <c>.bin</c> image a <see cref="ContentSourceKinds.CueBin"/> source reads,
     /// as <see cref="OpenCueBin"/> chose it, otherwise <see langword="null"/>. Its audio tracks are
-    /// read from this file.
+    /// read from this file. To record a track's fingerprint from the same file, open it and pass it with
+    /// the track's <see cref="CueBinSheet.TrackExtent"/> to
+    /// <see cref="CddaTrackFingerprints.RecordAsync(Stream, CueBinTrackExtent, int, long, int, CancellationToken)"/>:
+    /// the overload that takes a path resolves the files again, and given <see cref="CuePath"/> for a
+    /// source opened from a <c>.bin</c> it can choose another BIN.
     /// </summary>
     public virtual string? BinPath => null;
     // Opens the raw 2352-byte-sector image of a cue/bin source, for its audio tracks.
@@ -157,7 +161,7 @@ public abstract class OriginalContentSource : IDisposable
         return new Iso9660ContentSource(
             () => new RawMode1UserDataStream(
                 new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read), dataSectors),
-            ContentSourceKinds.CueBin, sheet, () => CddaTrackFingerprints.OpenImage(binPath), cuePath, binPath);
+            ContentSourceKinds.CueBin, sheet, cuePath, binPath);
     }
 
     /// <summary>
@@ -273,16 +277,17 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     private readonly long volumeLength;
     private readonly Dictionary<string, IsoEntry> files = new(StringComparer.OrdinalIgnoreCase);
 
-    // openImage returns a new seekable stream of 2048-byte sectors each time.
-    public Iso9660ContentSource(Func<Stream> openImage, string kind, CueBinSheet? cue, Func<Stream>? openRawImage = null,
+    // openImage returns a new seekable stream of 2048-byte sectors each time. A cue/bin source passes
+    // the files it chose; its audio tracks are read from binPath.
+    public Iso9660ContentSource(Func<Stream> openImage, string kind, CueBinSheet? cue,
         string? cuePath = null, string? binPath = null)
     {
         this.openImage = openImage;
         Kind = kind;
         Cue = cue;
-        OpenRawImage = openRawImage;
         CuePath = cuePath;
         BinPath = binPath;
+        OpenRawImage = binPath is null ? null : () => CddaTrackFingerprints.OpenImage(binPath);
         using var stream = openImage();
         var imageLength = stream.Length;
         if (imageLength < 18L * SectorSize)
