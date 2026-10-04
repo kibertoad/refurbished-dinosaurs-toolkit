@@ -636,6 +636,29 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertEqual([w["notFromCallerOnPaths"] for w in site["readWidths"]], [[], []])
         self.assertFalse(site["widthsConsistent"])
 
+    def test_a_read_past_the_callers_bytes_still_conflicts_on_the_bytes_it_saw(self):
+        # One pushed word, read as a dword on one path and as a word on the other. The dword's upper
+        # bytes have no writer, but its lower bytes are the caller's word, so the widths disagree.
+        c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3")
+        c.label("callee").emit("55 89 e5 85 f6").branch("74", "wide").emit("8b 46 04").branch("eb", "done")
+        c.label("wide").emit("66 8b 46 04").label("done").emit("5d c3")
+        r, _ = self.frames(c)
+        wide = next(i for i, path in enumerate(r["paths"]) if path["argumentFrames"][0]["groupings"][0]["width"] == 4)
+        self.assertEqual(r["paths"][wide]["argumentFrames"][0]["groupings"][0]["bytesNotFromSlotWriter"], [2, 3])
+        site = r["argumentFrameSites"][0]
+        self.assertEqual([(w["width"], w["fromCallerOnPaths"], w["notFromCallerOnPaths"]) for w in site["readWidths"]],
+                         [(2, [1 - wide], []), (4, [], [wide])])
+        self.assertEqual(len(site["conflictingWidths"]), 1)
+        self.assertFalse(site["widthsConsistent"])
+        # A dword over a stored first word and the caller's second word conflicts with a word read of the second.
+        c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("83 c4 04 c3")
+        c.label("callee").emit("55 89 e5 85 f6").branch("74", "reuse").emit("8b 46 04 8b 5e 06").branch("eb", "done")
+        c.label("reuse").emit("c7 46 04 00 00 66 8b 46 04").label("done").emit("5d c3")
+        site = self.frames(c)[0]["argumentFrameSites"][0]
+        self.assertEqual([(w["offset"], w["width"]) for w in site["readWidths"]], [(0, 2), (0, 4), (2, 2)])
+        self.assertEqual(len(site["conflictingWidths"]), 2)
+        self.assertFalse(site["widthsConsistent"])
+
     def test_a_site_read_only_after_the_callee_stored_its_slot_is_not_consistent(self):
         # The callee stores over its argument and then reads it: the read is listed, but none saw the caller's word.
         c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("55 89 e5 c7 46 04 09 00 8b 46 04 5d c3")

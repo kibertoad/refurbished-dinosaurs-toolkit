@@ -180,13 +180,16 @@ read the same interval both ways is in both lists. A read the callee made after 
 argument slot is on `notFromCallerOnPaths`, so a finding can name the paths that reused the slot as
 a local. `conflictingWidths` pairs distinct reads that share a byte: different intervals, or one
 interval read with two groupings. It lists every pair, whatever the reads' bytes came from.
-`widthsConsistent` holds when at least one read saw only the caller's bytes on some path and no
-listed pair joins two such reads. A pair with a read that never saw the caller's bytes does not
-make the site inconsistent, and such a read does not make it consistent either: a site whose
-callee read nothing, or read only bytes it stored itself, is not consistent. It says only that the
-reads the traced paths made of the caller's bytes fit one grouping. It does not say a path that skipped a read would have read
-the same width, and it does not settle a frame or the site: a skipped slot stays in that frame's
-`openReasons`, and the paths that read each width are listed so a finding can name them.
+`widthsConsistent` holds when some read saw at least one byte from the slot writers and no listed
+pair has a byte that both of its reads saw from the slot writers on some path. A byte in
+`bytesNotFromSlotWriter` neither makes the site inconsistent nor makes it consistent: a site whose
+callee read nothing, or read only bytes it stored itself, is not consistent. A read that runs past
+the caller's bytes, such as a dword read of a pushed word, still saw the word, so a word read of
+the same bytes on another path makes the site inconsistent. It says only that the reads the traced
+paths made of the caller's bytes fit one grouping. It does not say a path that skipped a read
+would have read the same width, and it does not settle a frame or the site: a skipped slot stays
+in that frame's `openReasons`, and the paths that read each width are listed so a finding can
+name them.
 
 A decompiler's parameter list is an inference and does not settle a grouping; use the `callees`
 Ghidra cross-check to confirm that both analyses reach the same callee, then read its widths here.
