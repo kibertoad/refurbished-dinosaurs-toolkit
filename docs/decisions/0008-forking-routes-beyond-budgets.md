@@ -52,8 +52,9 @@ and never sets `completeWithinModel`.
 The researcher reads the producer of the value each fork tests, and states it as an input the
 engine already takes: a register or flag at entry, a modeled call's return case, or a narrower
 entry (the loop body, or the code after the loop) where that producer is an input. Where the
-claim is a relation across the narrower queries, the relational controls planned in the roadmap
-(M4) check it on every bounded path and fail when a path breaks it or stays undecided.
+claim is a relation across the narrower queries, relational controls
+([ADR 0007](0007-relational-controls.md)) check it on every bounded path and fail when a path
+breaks it or stays undecided.
 
 - Nothing new enters the engine, and every assumption is a fact about state with its own
   evidence.
