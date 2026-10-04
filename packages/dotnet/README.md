@@ -154,7 +154,7 @@ contexts outside per-frame loops.
 | `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
 | `CddaTrackFingerprints`, `CddaTrackVerification` | Record and check the fingerprint of a CD audio track in a cue/bin image, accepting a rip shifted by a drive read offset up to the fingerprint's tolerance. See [CD audio across read offsets](#cd-audio-across-read-offsets). |
 | `CueSheet`, `RawMode1Image`, `Iso9660` | Cue/bin raw disc images and the ISO 9660 file system on their data track. |
-| `CddaWave` | A CD audio track of a raw image, written out as WAVE. |
+| `CddaWave` | A CD audio track of a raw image, written out as WAVE, synchronously or with `WriteAsync`. See [Writing a CD audio track as WAVE](#writing-a-cd-audio-track-as-wave). |
 | `WavePcm16Reader` | 16-bit mono or stereo PCM WAVE files. |
 | `WavePcm16Stream` | 16-bit mono or stereo PCM WAVE files, indexed and read in frame-aligned buffers without loading the track. |
 | `WavePcm16Writer` | Writes canonical 16-bit mono or stereo PCM WAVE files. |
@@ -241,6 +241,19 @@ track's extent into the rest of the image. When a check needs samples past the e
 track is reported as `Unreadable`, with the check that was not made. A source that is not a cue/bin
 image reports each track as `Unreadable`. The tolerance is at most 5880 samples and the anchor at
 most 44100 samples, since the anchor is hashed once per shift.
+
+## Writing a CD audio track as WAVE
+
+`CddaWave.Write(source, output, startSector, sectorCount)` and `WriteAsync`, which also takes a
+`CancellationToken`, copy raw sectors of an image into a 16-bit stereo 44.1 kHz WAVE file. For a
+track of a cue/bin image, pass the `StartSector` and `Sectors` of `CueBinSheet.TrackExtent`.
+`WriteAsync` checks the token before each read of up to 128 KiB, so a cancelled copy stops within a
+read and leaves a partial file for the caller to delete.
+
+A WAVE file holds at most `CddaWave.MaximumSectors` sectors (1,826,091, about 6.8 hours), since the
+32-bit RIFF size counts the audio and 36 header bytes. A longer range, a negative value, or a range
+that ends past the image's length throws before anything is written: `ArgumentOutOfRangeException`
+for the first two, `EndOfStreamException` for the last.
 
 ## Media packages
 
