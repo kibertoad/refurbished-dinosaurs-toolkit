@@ -92,7 +92,7 @@ Run what CI runs before pushing:
 ```sh
 pnpm install --frozen-lockfile
 pnpm lint && pnpm format:check && pnpm typecheck && pnpm exec tsc -p tools/tsconfig.json
-pnpm test && node --test "tools/**/*.test.ts" && pnpm build
+pnpm test && node --test "tools/**/*.test.ts" && node --test "actions/**/*.test.ts" && pnpm build
 python -m pip install -e "packages/scientific-method-engine[test]"
 cd packages/scientific-method-engine && python -B -m unittest discover -s tests -p "test*.py"
 python -m pip install -e packages/disc-archiver
@@ -105,10 +105,10 @@ pwsh tools/Verify-Repository.ps1
 
 CI runs a job only when the change touches a path the job tests, as `AREAS` and `AREA_SUFFIXES`
 in `tools/ci/changes.ts` list them, and runs the repository policy check on every change. Any
-`.ts` file under `tools/` runs the TypeScript job, which runs every test at any depth under
-`tools/`, so a new TypeScript tool needs no entry. A new package, a non-TypeScript file that a
-tool's tests read, or a test that starts reading a file outside its package adds the path to
-`AREAS`.
+`.ts` file under `tools/` runs the TypeScript job, which runs every `*.test.ts` file at any depth
+under `tools/` and `actions/`, so a new TypeScript tool needs no entry. A new package, a
+non-TypeScript file that a tool's tests read, or a test that starts reading a file outside its
+package adds the path to `AREAS`.
 
 Ghidra scripts have no CI job. Compile them against a Ghidra 12.1 install whenever one changes
 (use `:` in place of `;` outside Windows). The second glob takes in the helper classes the scripts
