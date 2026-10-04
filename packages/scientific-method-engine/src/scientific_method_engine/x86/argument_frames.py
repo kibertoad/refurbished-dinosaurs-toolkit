@@ -8,6 +8,7 @@ amount never join or split slots. Whatever a read did not settle on the path sta
 from capstone.x86 import X86_OP_IMM, X86_OP_REG
 
 from .machine import may_alias, written_domain
+from .memory_scopes import model_scopes
 
 # The argument bytes one frame maps; a wider frame is mapped up to here and stays open.
 WINDOW_BYTES = 256
@@ -33,7 +34,7 @@ def _covered(event, segment, base, start, width, modulus):
     return [at for at in offsets if 0 <= at < width]
 
 
-def _writers(events, before, segment, base, start, width, modulus, image):
+def _writers(events, before, segment, base, start, width, modulus, image, models):
     """The last write before index `before` that covered each frame byte, and why each byte without one has none.
 
     A modeled call drops every byte outside its `preservesMemory` scopes. Scopes name linear bytes,
@@ -56,7 +57,7 @@ def _writers(events, before, segment, base, start, width, modulus, image):
         if event["kind"] == "call-return" and event.get("unknownMemoryEffects"):
             kept = set()
             if segment == ("linear",):
-                kept = {at for scope in event.get("preservedMemoryScopes") or ()
+                kept = {at for scope in model_scopes(models, event)
                         for at in range(scope["linearStart"], scope["linearEnd"])}
             for at in range(width):
                 if at not in writers and at not in invalidated and start + at not in kept:
@@ -69,7 +70,7 @@ def _writers(events, before, segment, base, start, width, modulus, image):
     return writers, {at: invalidated.get(at, "no write on this path") for at in range(width) if at not in writers}
 
 
-def _frame(image, events, index):
+def _frame(image, events, index, models):
     call = events[index]
     depth = call["depth"]
     pushes = [e for e in events[index + 1:index + 3] if e["kind"] == "write" and e.get("role") == "push" and e["site"] == call["site"]]
@@ -105,7 +106,7 @@ def _frame(image, events, index):
 
     # Slots: runs of argument bytes that one write event last covered.
     slots, by_byte = [], {}
-    writers, reasons = _writers(events, index, segment, base, start, width, modulus, image)
+    writers, reasons = _writers(events, index, segment, base, start, width, modulus, image, models)
     for at in range(width):
         writer = writers.get(at)
         key = writer["order"] if writer else reasons[at]
@@ -193,7 +194,7 @@ def argument_frames(report, image):
     sites = {}
     for path_index, path in enumerate(report["paths"]):
         events = path["events"]
-        frames = [_frame(image, events, i) for i, e in enumerate(events) if e["kind"] == "call" and "returnFrameBytes" in e]
+        frames = [_frame(image, events, i, path["conditionalModels"]) for i, e in enumerate(events) if e["kind"] == "call" and "returnFrameBytes" in e]
         path["argumentFrames"] = [f for f in frames if f is not None]
         for frame in path["argumentFrames"]:
             sites.setdefault(frame["callSite"], []).append((path_index, frame))

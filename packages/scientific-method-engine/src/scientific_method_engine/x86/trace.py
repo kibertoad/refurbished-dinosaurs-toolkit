@@ -647,9 +647,10 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True):
                                                       "assumption": "call returns with balanced stack; memory effects unresolved"
                                                                     + (" outside explicit scopes" if preserved_scopes else ""),
                                                       "preservedMemoryScopes": preserved_scopes})
+                            # The scopes are reported once, on the path's conditionalModels entry; the event cites its index.
                             child.event("call-return", callSite=at, callerEntry=state.frames[-1]["entry"],
                                         resultContracts=result_contracts(child, contracts, target), registers=snapshot(child), modeled=True,
-                                        unknownMemoryEffects=True, preservedMemoryScopes=preserved_scopes)
+                                        unknownMemoryEffects=True, conditionalModel=len(child.conditional) - 1)
                             child.at = following
                             pending.append(child)
                         break

@@ -1,6 +1,8 @@
 """Ordered, path-local effect evidence; no transactional or native-execution claims."""
 from bisect import bisect_right
 
+from .memory_scopes import model_scopes, without_scopes
+
 
 KINDS = {"read", "write", "call", "call-return", "return", "branch", "compare", "flag-assumption",
          "arithmetic", "value-transfer", "conversion", "flag-write", "flags-save", "flags-restore", "local-iret", "string-operation", "declared-jump-continuation",
@@ -63,7 +65,7 @@ def effect_ordering(report):
                 call = {"order": event["order"], "site": event["site"], "entry": event["entry"],
                         "depth": event["depth"], "target": event.get("target"),
                         "writesBeforeCount": len(writes), "status": "unresolved-or-stopped",
-                        "unknownEffects": True, "continuation": None, "preservedMemoryScopes": [],
+                        "unknownEffects": True, "continuation": None, "conditionalModel": None,
                         "_unknownStart": len(unknown_orders)}
                 calls.append(call)
                 pending.setdefault((event["site"], event["depth"]), []).append(call)
@@ -72,10 +74,10 @@ def effect_ordering(report):
                 if stack:
                     call = stack.pop()
                     modeled = event.get("modeled", False)
-                    scopes = event.get("preservedMemoryScopes", []) if modeled else []
+                    scopes = model_scopes(path.get("conditionalModels", []), event) if modeled else []
                     call.update(status="modeled-return" if modeled else "traced-return",
                                 unknownEffects=bool(modeled or event.get("unknownMemoryEffects") or len(unknown_orders) > call.pop("_unknownStart")),
-                                returnOrder=event["order"], writesAfterCount=len(writes), preservedMemoryScopes=scopes,
+                                returnOrder=event["order"], writesAfterCount=len(writes), conditionalModel=event.get("conditionalModel") if modeled else None,
                                 continuation="local callee return reached within the instruction model" if not modeled
                                 else "assumes balanced returning service; memory outside its preservedMemoryScopes "
                                      "hypotheses and its flag effects are unknown" if scopes
@@ -91,7 +93,8 @@ def effect_ordering(report):
         destination = conditional_summaries if conditional else summaries
         destination.append({"path": index, "declaredJumpAssumptions": path.get("declaredJumpAssumptions", []), "returned": path["returned"], "stop": boundary,
                           "guards": path["guards"], "timeline": timeline,
-                          "conditionalModels": path.get("conditionalModels", []),
+                          # Same entries and order as the path's conditionalModels; the scopes stay there.
+                          "conditionalModels": without_scopes(path.get("conditionalModels", [])),
                           "writeOrders": [w["order"] for w in writes], "calls": calls,
                           "localRestorationWitnesses": witnesses,
                           # Port and interrupt effects stay out of writeOrders: RAM writes never stand for device state.

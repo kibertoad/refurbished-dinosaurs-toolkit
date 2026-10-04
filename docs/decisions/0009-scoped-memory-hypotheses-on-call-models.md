@@ -42,9 +42,10 @@ frame holds. A service may write its caller's frame and still return with the sa
    saved register or a return address as a special case. The traced `pop` and `ret` must still read
    a complete value, so a scope that covers part of a return word still stops at the return, and a
    later write or possible-alias write still replaces or invalidates a scoped byte.
-5. Each resolved scope is reported where the model is: on the path's `conditionalModels` entry, on
-   the modeled `call-return` event, on the effect summary's call and `conditionalModels`, and on
-   the `allocation` entry of a modeled allocator. The
+5. Each resolved scope is reported once per modeled call, on the path's `conditionalModels` entry.
+   The modeled `call-return` event, the effect summary's call and the `allocation` entry of a
+   modeled allocator cite that entry by its index (`conditionalModel`), so a report at the scope,
+   case and path limits stays within the reader's output cap (issue #103). The
    entry carries the register values and producers, offset, linear interval, byte count, evidence,
    and `cachedBytes`/`uncachedBytes`. An uncached byte is labelled uncached. It is never evidence
    that the original program did or did not write it.

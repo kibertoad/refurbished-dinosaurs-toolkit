@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { prepare, run, sourceXxh3 } from "../src/report.ts";
+import { MAX_REPORT_MIB, prepare, run, sourceXxh3 } from "../src/report.ts";
 import type { Region, Report } from "../src/report.ts";
 // The engine runs from the monorepo checkout beside this package, installed or not.
 const engine = fileURLToPath(new URL("../../scientific-method-engine/src", import.meta.url));
@@ -1073,13 +1073,17 @@ test("explicit memory scopes join nested frames through the real MZ prepared bri
   const path = result.effectOrdering.paths[0];
   assert.equal(path.effectCompleteWithinModel, false);
   assert.ok(path.calls.every((c: Report) => c.unknownEffects));
-  const saved = path.calls.find((c: Report) => c.site === 83).preservedMemoryScopes;
+  const service = path.calls.find((c: Report) => c.site === 83);
+  assert.equal(service.preservedMemoryScopes, undefined);
+  const cited = result.paths[path.path].conditionalModels[service.conditionalModel];
+  assert.equal(cited.site, 83);
+  const saved = cited.preservedMemoryScopes;
   assert.equal(saved[0].bytes, 6);
   assert.equal(saved[0].cachedBytes, 6);
   assert.equal(saved[0].uncachedBytes, 0);
   assert.match(saved[0].meaning, /hypothesis/);
   assert.equal(saved[0].segment.value, 0x3000);
-  assert.deepEqual(saved, path.conditionalModels[0].preservedMemoryScopes);
+  assert.equal(path.conditionalModels[service.conditionalModel].preservedMemoryScopes, undefined);
   for (const preservation of [[{ ...scope, bytes: 5 }], [{ ...scope, segment: "ds" }], []]) {
     const stopped = execute({ ...query, callModels: [{ ...model, preservesMemory: preservation }] });
     assert.equal(stopped.completeWithinModel, false);
@@ -1130,4 +1134,52 @@ test("relational controls pass through preparation and fail, hold or stay undeci
   const stopped = run(["memory", query({ relationalControls: [writer([68, "entryState"])], maxSteps: 2 })]);
   assert.equal(stopped.relationalControls.controls[0].verdict, "undecided");
   assert.equal(stopped.relationalControls.allHeld, false);
+});
+
+test("a report at the scope, case and path limits stays within the reader's output cap", (t) => {
+  const { dir, data, config } = fixture(t);
+  // Two modeled calls in a row, then ret; both calls go to a ret the models never reach.
+  data.writeUInt16LE(400, 28);
+  data.set([0xe8, 4, 0, 0xe8, 1, 0, 0xc3, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  // Each model holds the per-model maximum: 32 scopes, 4,096 bytes in total, and 16 cases.
+  const scopes = Array.from({ length: 32 }, (_, i) => ({
+    segment: "ds",
+    base: "bx",
+    displacement: i * 128,
+    bytes: 128,
+    evidence: "synthetic size probe",
+  }));
+  const callModels = [64, 67].map((site) => ({
+    site,
+    preserves: ["ds", "ss", "ebx"],
+    preservesMemory: scopes,
+    evidence: "synthetic balanced service; all other memory unknown",
+    cases: Array.from({ length: 16 }, (_, ax) => ({ registers: { ax } })),
+  }));
+  const query = {
+    ...config,
+    xxh3: sourceXxh3(data),
+    regions: [{ ...config.regions[0]!, end: 72 }],
+    registers: { ds: 0x2000, ss: 0x3000, sp: 0xff00, bx: 0x1000 },
+    maxPaths: 256,
+    totalSteps: 100000,
+    callModels,
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  // run() refuses engine output over MAX_REPORT_MIB, so returning at all shows the report fit.
+  const report = run(["effects", join(dir, "config.json")]);
+  assert.ok(report.gaps.some((g: Report) => g.site === 67 && g.reason === "path limit at modeled call"));
+  assert.equal(report.paths.length, 239);
+  const compact = Buffer.byteLength(JSON.stringify(report));
+  assert.ok(compact < MAX_REPORT_MIB * 1024 * 1024, `${compact} bytes`);
+  // The full scope descriptions appear once per modeled call on a path, on its conditionalModels entry.
+  const described = report.paths.reduce((n: number, p: Report) => n + p.conditionalModels.length, 0);
+  assert.equal(JSON.stringify(report).split('"preservedMemoryScopes"').length - 1, described);
+  const last = report.paths.at(-1);
+  const returned = last.events.filter((e: Report) => e.kind === "call-return");
+  assert.deepEqual(
+    returned.map((e: Report) => last.conditionalModels[e.conditionalModel].site),
+    returned.map((e: Report) => e.callSite),
+  );
 });

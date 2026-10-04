@@ -2096,6 +2096,21 @@ class ReporterTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("set by the reader", result.stderr)
 
+    def test_cli_prints_compact_json_to_the_reader_and_indented_json_from_a_config_file(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder); data = bytes.fromhex("b8 01 00 c3")
+            (root/"fixture.bin").write_bytes(data)
+            cfg = configuration(data, source=str(root/"fixture.bin"), xxh3=xxhash.xxh3_128_hexdigest(data))
+            piped = subprocess.run([*ENGINE, "trace", "-"], input=json.dumps({**cfg, "preparedProtocol": 3}),
+                                   capture_output=True, text=True, env=ENGINE_ENV)
+            self.assertEqual(piped.returncode, 0, piped.stderr)
+            compact = json.loads(piped.stdout)
+            self.assertEqual(piped.stdout.rstrip(), json.dumps(compact, separators=(",", ":")))
+            path = root/"config.json"; path.write_text(json.dumps(cfg))
+            direct = subprocess.run([*ENGINE, "trace", str(path)], capture_output=True, text=True, env=ENGINE_ENV)
+            self.assertEqual(direct.returncode, 0, direct.stderr)
+            self.assertEqual(direct.stdout.rstrip(), json.dumps(compact, indent=2))
+
 
 
     def test_string_direction_paths_and_explicit_hypothesis(self):

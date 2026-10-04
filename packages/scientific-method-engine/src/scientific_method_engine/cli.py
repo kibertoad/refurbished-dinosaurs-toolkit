@@ -73,9 +73,11 @@ def main(argv):
         raise ValueError("preparedProtocol is set by the reader and cannot be supplied")
     data, identity = read_source(config, base)
     result = run_report(data, config, command)
-    print(json.dumps({"schema": "bounded-x86-v1", "decoder": DECODER,
-                      "instructionSemantics": INSTRUCTION_SEMANTICS, "sourceIdentity": identity,
-                      "status": "Conditional static report; never promotes an evidence entry", **result}, indent=2))
+    report = {"schema": "bounded-x86-v1", "decoder": DECODER, "instructionSemantics": INSTRUCTION_SEMANTICS,
+              "sourceIdentity": identity, "status": "Conditional static report; never promotes an evidence entry", **result}
+    # The reader parses the prepared path's output and prints it indented itself, so the pipe carries
+    # compact JSON and stays within the reader's output cap. A config file run prints for people.
+    print(json.dumps(report, separators=(",", ":")) if config_path == "-" else json.dumps(report, indent=2))
 
 
 def run():

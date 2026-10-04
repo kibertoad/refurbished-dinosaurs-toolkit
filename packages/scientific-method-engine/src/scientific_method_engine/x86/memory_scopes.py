@@ -113,3 +113,18 @@ def retain_scopes(state, values, unread, history):
     state.lost_memory.update(history[1])
     if values or unread:
         state.memory_groups.setdefault((("linear",), ("absolute",)), set()).update(values, unread)
+
+
+def model_scopes(models, event):
+    """The ``preservedMemoryScopes`` of the conditional model that a modeled ``call-return`` event cites.
+
+    ``models`` is the path's ``conditionalModels`` list. The event's ``conditionalModel`` is an
+    index into that list; an event without one (a traced return, or any other kind) yields ``[]``.
+    """
+    index = event.get("conditionalModel")
+    return [] if index is None else models[index].get("preservedMemoryScopes", [])
+
+
+def without_scopes(models):
+    """Copies of a path's ``conditionalModels`` entries without ``preservedMemoryScopes``, in the same order."""
+    return [{k: v for k, v in m.items() if k != "preservedMemoryScopes"} if isinstance(m, dict) else m for m in models]
