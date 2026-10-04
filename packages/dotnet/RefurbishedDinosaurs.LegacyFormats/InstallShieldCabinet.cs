@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Text;
 using RefurbishedDinosaurs.Core.IO;
 
@@ -75,9 +76,9 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     private readonly Dictionary<string, Member> members = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, VolumeHeader> volumes = [];
 
+    // limits has been validated by the caller.
     internal InstallShieldCabinetSource(byte[] header, Func<int, Stream> openVolume, InstallShieldCabinetLimits limits)
     {
-        limits.Validate();
         this.openVolume = openVolume;
         var reader = new HeaderReader(header);
         var signature = reader.UInt32(0);
@@ -163,10 +164,11 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                     $"InstallShield cabinet holds two different files at '{path}' (file {existing.DataIndex} and file {dataIndex}).");
             }
             members.Add(path!, member);
-            expandedTotal += data.ExpandedSize;
-            if (expandedTotal > limits.MaximumExpandedBytes)
+            // Compared this way round, the total cannot overflow even when the limit is near long.MaxValue.
+            if (data.ExpandedSize > limits.MaximumExpandedBytes - expandedTotal)
                 throw new InvalidDataException(
                     $"InstallShield cabinet expands to more than the limit of {limits.MaximumExpandedBytes} bytes.");
+            expandedTotal += data.ExpandedSize;
         }
 
         SkippedFiles = skipped;
@@ -429,17 +431,23 @@ internal static class InstallShieldCabinetOpener
         var directory = Path.GetDirectoryName(fullPath)!;
         var prefix = VolumePrefix(Path.GetFileName(fullPath));
         var header = ReadHeader(new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read), limits);
+        // Each volume's file is looked up once, not on every member read.
+        var found = new ConcurrentDictionary<int, string>();
         return new InstallShieldCabinetSource(header, volume =>
         {
-            var name = $"{prefix}{volume}.cab";
-            var matches = Directory.EnumerateFiles(directory)
-                .Where(file => Path.GetFileName(file).Equals(name, StringComparison.OrdinalIgnoreCase)).ToArray();
-            return matches.Length switch
+            if (!found.TryGetValue(volume, out var file))
             {
-                1 => new FileStream(matches[0], FileMode.Open, FileAccess.Read, FileShare.Read),
-                0 => throw new FileNotFoundException($"InstallShield volume {volume} was not found.", Path.Combine(directory, name)),
-                _ => throw new InvalidDataException($"Several files match InstallShield volume name '{name}'.")
-            };
+                var name = $"{prefix}{volume}.cab";
+                var matches = Directory.EnumerateFiles(directory)
+                    .Where(candidate => Path.GetFileName(candidate).Equals(name, StringComparison.OrdinalIgnoreCase)).ToArray();
+                file = matches.Length switch
+                {
+                    1 => found.GetOrAdd(volume, matches[0]),
+                    0 => throw new FileNotFoundException($"InstallShield volume {volume} was not found.", Path.Combine(directory, name)),
+                    _ => throw new InvalidDataException($"Several files match InstallShield volume name '{name}'.")
+                };
+            }
+            return new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
         }, limits);
     }
 

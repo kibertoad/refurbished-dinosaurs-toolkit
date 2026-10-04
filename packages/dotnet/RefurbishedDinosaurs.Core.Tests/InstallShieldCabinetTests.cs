@@ -169,6 +169,26 @@ public sealed class InstallShieldCabinetTests
         {
             Directory.Delete(root, true);
         }
+
+        // Two declared sizes whose sum does not fit in a long still exceed the largest limit.
+        root = TemporaryDirectory();
+        try
+        {
+            var set = SyntheticInstallShieldCabinet.Build(6, [new("", "a.bin", Noise), new("", "b.bin", Noise)]);
+            var bytes = set["data1.hdr"];
+            var table = SyntheticInstallShieldCabinet.DescriptorOffset +
+                        BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(SyntheticInstallShieldCabinet.DescriptorOffset + 0x0c));
+            var descriptors = table + BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(SyntheticInstallShieldCabinet.DescriptorOffset + 0x2c));
+            foreach (var index in new[] { 0, 1 })
+                BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(descriptors + index * 0x57 + 2), (ulong)(long.MaxValue / 2 + 1));
+            SyntheticInstallShieldCabinet.WriteTo(root, set);
+            Assert.Contains("limit", Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(
+                Path.Combine(root, "data1.hdr"), new InstallShieldCabinetLimits(MaximumExpandedBytes: long.MaxValue))).Message);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
     }
 
     [Theory]
@@ -249,7 +269,13 @@ public sealed class InstallShieldCabinetTests
             SyntheticInstallShieldCabinet.WriteTo(root, set);
             using (var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr")))
             await using (var stream = source.OpenRead("packed.bin"))
+            {
                 Assert.Contains("past its declared size", (await Assert.ThrowsAsync<InvalidDataException>(() => ReadAll(stream))).Message);
+                // A retry gets the same failure, not the bytes of the chunk that overran.
+                Assert.Contains("past its declared size", Assert.Throws<InvalidDataException>(() => stream.Read(new byte[16])).Message);
+                stream.Position = 0;
+                Assert.Contains("past its declared size", (await Assert.ThrowsAsync<InvalidDataException>(() => ReadAll(stream))).Message);
+            }
         }
         finally
         {
@@ -327,13 +353,18 @@ public sealed class InstallShieldCabinetTests
     [InlineData(0x01003000u)]
     [InlineData(0x02000000u | 700)]
     [InlineData(0x09000000u)]
-    public void RefusesVersionsOtherThanFiveAndSix(uint versionWord)
+    public async Task RefusesVersionsOtherThanFiveAndSix(uint versionWord)
     {
         var root = TemporaryDirectory();
         try
         {
             SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(6, [new("", "a.bin", Text)], versionWord: versionWord));
             Assert.Throws<NotSupportedException>(() => OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr")));
+            var manifest = new AssetManifest("game", "retail", [new("a.bin", Text.Length, FileFingerprint.Xxh3(Text))],
+                ContentSourceKinds.InstallShieldCabinet);
+            var issue = Assert.Single((await AssetVerifier.VerifyAsync(
+                Path.Combine(root, "data1.hdr"), manifest, TestContext.Current.CancellationToken)).Issues);
+            Assert.Equal(AssetProblem.Unreadable, issue.Problem);
 
             File.WriteAllBytes(Path.Combine(root, "data1.hdr"), "MSCF\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"u8.ToArray());
             Assert.Contains("Microsoft cabinet",
