@@ -12,7 +12,7 @@ from .argument_frames import argument_frames, stack_cleanup
 from .memory_scopes import model_scopes
 from .result_flow import return_flows
 from .image import Image, integer
-from .trace import (trace, walk, call_target, unsupported_transfer, uncovered, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
+from .trace import (trace, walk, cfg_step, call_target, unsupported_transfer, uncovered, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
                     RETURNS, INTERRUPTS, PORTS, PORT_INPUTS, port_width, budget_input)
 from .pcode_backend import interrupt_vector
 
@@ -233,24 +233,12 @@ def _function_exit(image, start, limit, follow_flat_ports, cache):
         if ins is None:
             continue
         seen[at] = ins
-        m = base_mnemonic(ins)
-        if unsupported_transfer(image, ins):
-            continue
-        following = successors[at] = []
-        if at in image.indirect_jumps:
-            following.extend(row["target"] for row in image.indirect_jumps[at]["rows"])
-        elif m in RETURNS:
-            if not (image.flat and m in ("iret", "iretd")):
-                exits.append(at)
-        else:
-            if m == "ljmp" or m.startswith(("j", "loop")):
-                target, _ = call_target(image, at, ins)
-                if target is not None:
-                    following.append(target)
-            if not (m in ("jmp", "ljmp") or m in INTERRUPTS or m == "hlt"
-                    or (m in PORTS and image.flat and not follow_flat_ports)):
-                following.append(at + ins.size)
-        pending.extend(following)
+        # The same successor rule as walk(), except that a call continues only at its return site.
+        step = cfg_step(image, at, ins, follow_flat_ports, step_over_calls=True)
+        successors[at] = step.successors
+        if step.returns and not (image.flat and base_mnemonic(ins) in ("iret", "iretd")):
+            exits.append(at)
+        pending.extend(step.successors)
     # Only the sites a return is reachable from lie on the way to it; a branch that never returns is left out.
     callers = {}
     for at, following in successors.items():
