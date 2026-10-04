@@ -522,7 +522,8 @@ class OriginTests(unittest.TestCase):
         model = {"site": c.labels["recurse"], "evidence": "synthetic recursive return", "preserves": ["ss"],
                  "preservesMemory": [{"segment": "ss", "base": "sp", "bytes": 2, "evidence": "synthetic return address"}],
                  "cases": [case]}
-        return run(c, controls, registers={"ss": 0x3000, "sp": 0xff00}, checkpoints=[c.labels["after"]],
+        checkpoints = [c.labels["after"]] if "after" in c.labels else []
+        return run(c, controls, registers={"ss": 0x3000, "sp": 0xff00}, checkpoints=checkpoints,
                    returnContracts=self.contracts(c), callModels=[model])
 
     def test_a_reencoded_recursive_result_keeps_the_tested_value_the_branch_and_the_local_producer_apart(self):
@@ -543,12 +544,15 @@ class OriginTests(unittest.TestCase):
         for name in ("guarded", "output"):
             self.assertEqual(verdict(open_result, name)["verdict"], "undecided", name)
         # The fresh encoding does not carry the recursive value.
-        with self.assertRaisesRegex(ValueError, "copied violated"):
+        with self.assertRaisesRegex(ValueError, rf"copied violated .* at site {c.labels['after']} .*not among the value's inputs"):
             self.reencoding_query(c, [copied], {})
         # With the encoding supplied, the re-encoding follows the match and its own write produced the output.
-        supplied = self.reencoding_query(c, [tested, guarded, output, copied], {"registers": {"ax": 0xffff}})
-        self.assertEqual(verdict(supplied, "guarded")["verdict"], "held")
-        self.assertEqual(verdict(supplied, "output")["verdict"], "held")
+        # sameValue holds as well, since the tested value and the fresh constant are the same number.
+        same = control("same", "order", at=after, before={"site": c.labels["tested"], "event": "compare"},
+                       sameValue={"before": "left", "at": "registers.ax"})
+        supplied = self.reencoding_query(c, [tested, guarded, output, copied, same], {"registers": {"ax": 0xffff}})
+        for name in ("guarded", "output", "same"):
+            self.assertEqual(verdict(supplied, name)["verdict"], "held", name)
         for name in ("tested", "copied"):
             self.assertEqual(verdict(supplied, name)["verdict"], "undecided", name)
         # The caller's test reaches the helper's own return as the originating one; the modeled
@@ -559,6 +563,19 @@ class OriginTests(unittest.TestCase):
         self.assertEqual(result["verdict"], "held")
         returns = result["paths"][0]["occurrences"][0]["returns"]
         self.assertEqual([(r["site"], r["originating"], r["modeled"]) for r in returns], [(c.labels["out"], True, False)])
+
+    def test_originating_returns_hold_when_a_modeled_recursive_return_supplies_the_value(self):
+        # The helper copies its modeled recursive call's AX up unchanged. The modeled return belongs
+        # to the helper too, so only the returns' modeled field tells it from the helper's own return.
+        c = Code().branch("e8", "helper").label("test").emit("83 f8 ff c3")
+        c.label("helper").label("recurse").branch("e8", "helper").label("out").emit("c3")
+        caller = control("caller", "origin", at={"site": c.labels["test"], "event": "compare"}, value={"field": "left"},
+                         expect={"originatingReturns": {"entries": [c.labels["helper"]]}})
+        result = verdict(self.reencoding_query(c, [caller], {"registers": {"ax": 0xffff}}), "caller")
+        self.assertEqual(result["verdict"], "held")
+        returns = result["paths"][0]["occurrences"][0]["returns"]
+        self.assertEqual([(r["site"], r["originating"], r["modeled"]) for r in returns],
+                         [(c.labels["recurse"], True, True), (c.labels["out"], False, False)])
 
     def test_originating_returns_need_a_return_contract(self):
         c = self.recursion()

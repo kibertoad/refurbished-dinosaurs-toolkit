@@ -1298,7 +1298,8 @@ zero for CS, DS, ES and SS, unknown for FS and GS. Each path row also lists the 
 `origin` gives the value's `inputs` (entry registers, modeled-call registers, memory, with
 `dropped` for memory a modeled call or possible alias dropped) and the declared `returns` it came
 through, with `originating` marking the return that produced it rather than passing it up from a
-deeper return. `originatingReturns` needs a `returnContracts` declaration for each entry it names.
+deeper return and `modeled` marking a modeled call's return. `originatingReturns` needs a
+`returnContracts` declaration for each entry it names.
 A `modeledCall` input without `register` matches any unknown that call produced, its flags included.
 
 ### Verdicts
@@ -1420,12 +1421,15 @@ control is undecided, because the supplied value enters the path as a constant t
 input. The modeled call needs a `preservesMemory` scope on the helper's return address and `ss` in
 `preserves`, or the helper's own return stops.
 
-Two controls make wrong-origin checks. In the first query, an `origin` at the checkpoint with
-`inputs.include` the recursive call's register is violated: the output does not carry the recursive
-value. On the caller's test, `originatingReturns` with the helper holds on the match path and lists
-no modeled return among the returns the value came through. Do not use `sameValue` for this shape.
-It compares numbers, so with the encoding supplied the tested value and the fresh constant are the
-same number and it holds, which says nothing about where the output came from.
+Two checks rule out a wrong origin. With the register unknown, an `origin` at the checkpoint with
+`inputs.include` the recursive call's register is violated, so it goes in a query of its own: the
+output does not carry the recursive value. On the caller's test, with the encoding supplied, the
+Gap 33 control with `producers.include` the re-encoding site holds. Its `originatingReturns` with
+the helper holds too, but that verdict alone does not separate the helper's own return from the
+modeled recursive return, since both belong to the helper. Read the occurrence's `returns`: the
+originating return is the helper's own, and no entry has `modeled` set. Do not use `sameValue` for
+this shape. It compares numbers, so with the encoding supplied the tested value and the fresh
+constant are the same number and it holds, which says nothing about where the output came from.
 
 Held controls here describe the helper under the model: what it tested, when it re-encodes and
 which instruction wrote its output. The recursive result is still the call model's hypothesis,
