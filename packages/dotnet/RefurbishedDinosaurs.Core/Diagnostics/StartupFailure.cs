@@ -37,8 +37,9 @@ public static class StartupFailure
             .AppendLine($"{options.ApplicationTitle} could not start.")
             .AppendLine()
             .AppendLine(exception.Message);
-        if (!string.IsNullOrWhiteSpace(contentRoot))
-            builder.AppendLine().AppendLine($"{options.ContentLabel}: {Path.GetFullPath(contentRoot)}");
+        var resolvedContentRoot = ResolveContentRoot(contentRoot);
+        if (resolvedContentRoot is not null)
+            builder.AppendLine().AppendLine($"{options.ContentLabel}: {resolvedContentRoot}");
         builder.AppendLine().AppendLine(options.RecoveryInstruction);
         if (!string.IsNullOrWhiteSpace(logPath))
             builder.AppendLine().AppendLine($"Technical details: {logPath}");
@@ -65,7 +66,7 @@ public static class StartupFailure
             var path = Path.Combine(options.LogDirectory, "startup-error.log");
             File.WriteAllText(path,
                 $"{DateTimeOffset.UtcNow:O}{Environment.NewLine}" +
-                $"{options.ContentLabel}: {contentRoot ?? "(not resolved)"}{Environment.NewLine}" +
+                $"{options.ContentLabel}: {ResolveContentRoot(contentRoot) ?? "(not resolved)"}{Environment.NewLine}" +
                 exception);
             return path;
         }
@@ -98,6 +99,10 @@ public static class StartupFailure
     /// <see langword="false"/> for an unattended run, such as a smoke test or CI, where a modal dialog
     /// nobody can dismiss would turn a failed start into a hang.
     /// </param>
+    /// <remarks>
+    /// A Windows edition without the dialog API, such as Nano Server, gets no dialog; the log and
+    /// standard error still carry the report.
+    /// </remarks>
     public static void Report(
         StartupFailureOptions options,
         Exception exception,
@@ -111,7 +116,35 @@ public static class StartupFailure
         Console.Error.WriteLine(message);
         Console.Error.WriteLine(exception);
         if (showDialog && OperatingSystem.IsWindows() && Environment.UserInteractive)
-            _ = MessageBoxW(IntPtr.Zero, message, options.ApplicationTitle, 0x10);
+            TryShowDialog(message, options.ApplicationTitle);
+    }
+
+    // Report runs in the caller's handler for the startup failure, so a missing dialog API must not
+    // replace that failure with its own exception. The report is already on standard error.
+    private static void TryShowDialog(string message, string caption)
+    {
+        try
+        {
+            _ = MessageBoxW(IntPtr.Zero, message, caption, 0x10);
+        }
+        catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException)
+        {
+        }
+    }
+
+    // The message and the log name the same directory. A path GetFullPath rejects is shown as given,
+    // because failing here would hide the startup failure being reported.
+    private static string? ResolveContentRoot(string? contentRoot)
+    {
+        if (string.IsNullOrWhiteSpace(contentRoot)) return null;
+        try
+        {
+            return Path.GetFullPath(contentRoot);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or IOException)
+        {
+            return contentRoot;
+        }
     }
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
