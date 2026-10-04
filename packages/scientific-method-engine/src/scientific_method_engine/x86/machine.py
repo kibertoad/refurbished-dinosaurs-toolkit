@@ -60,6 +60,9 @@ class State:
         # Keys grouped by (segment, base) so a write scans only groups that can alias it.
         self.memory_groups = {}
         self.memory_epoch = 0
+        # Bytes a preservesMemory scope kept without a value (ADR 0009): key -> the unknown term
+        # name they had before the modeled call. They stay unread: no value, no producer.
+        self.unread_memory = {}
         self.events = []
         # Value transfers are recorded only for queries that trace declared return results.
         self.value_transfers = bool(config.get("returnContracts"))
@@ -148,7 +151,16 @@ class State:
     def clear_memory(self):
         self.memory.clear()
         self.memory_groups.clear()
+        self.unread_memory.clear()
         self.memory_epoch += 1
+
+    def unread_term(self, key):
+        """Name the unknown term of a byte with no modeled value: a kept scope term or the epoch's."""
+        return self.unread_memory.get(key, f"memory:{self.memory_epoch}:{key}")
+
+    def byte(self, key):
+        """The modeled value of one memory byte, or an unknown term produced by the current site."""
+        return self.memory[key] if key in self.memory else unknown(self.unread_term(key), 8, self.at)
 
     def reg(self, name):
         root, low, bits = alias(name)
@@ -194,7 +206,7 @@ class State:
     def peek(self, segment, offset, width):
         """Inspect modeled memory without reporting an access the program never performed."""
         _, _, _, keys = self.keys(segment, offset, width)
-        return join([self.memory.get(key, unknown(f"memory:{self.memory_epoch}:{key}", 8, self.at)) for key in keys])
+        return join([self.byte(key) for key in keys])
 
     def access(self, segment, offset, width, write=None, role=None, addressing_register=None):
         seg, base, delta, keys = self.keys(segment, offset, width)
@@ -221,18 +233,20 @@ class State:
                     disjoint = a is not None and b is not None and (a[1] <= b[0] or b[1] <= a[0])
                     if not disjoint:
                         uncertain.append(key)
-                        del self.memory[key]
+                        self.memory.pop(key, None)
+                        self.unread_memory.pop(key, None)
                         members.discard(key)
                 if not members:
                     del self.memory_groups[group]
             for i, key in enumerate(keys):
                 self.memory[key] = extract(write, i * 8, 8)
+                self.unread_memory.pop(key, None)
             self.memory_groups.setdefault((seg, base), set()).update(keys)
             value = write
             missing = []
         else:
             missing = [i for i, key in enumerate(keys) if key not in self.memory]
-            value = join([self.memory.get(key, unknown(f"memory:{self.memory_epoch}:{key}", 8, self.at)) for key in keys])
+            value = join([self.byte(key) for key in keys])
         relevant = []
         for g in self.guards:
             left = g.get("left", {}).get("expression")
