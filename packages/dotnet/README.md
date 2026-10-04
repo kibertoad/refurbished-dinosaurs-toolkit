@@ -97,7 +97,13 @@ committing it.
 `ContentOverlayResult.Outputs` lists each record's actual spelling, size, hash and
 `ContentOverlayAction`. `UpdateInstalledFiles` puts the outputs into the importer's
 `InstalledAsset` list: a matching record takes the new size and hash, keeps its media type, and gets
-an `AssetConversion` whose method is the overlay's `name`.
+an `AssetConversion` whose method is the overlay's `name`. Each record's path goes through
+`PortableAssetPath.Relative` before it is matched, and the record is returned under that path, so
+`data\main.bin` matches the output `DATA/MAIN.BIN` and an unmatched `docs\readme.txt` comes back as
+`docs/readme.txt`. A record the installed-content verifier would reject throws
+`InvalidDataException`: a null record, a path `Relative` rejects (such as `./data/main.bin` or
+`../x`), or two records that name the same path ignoring case and separators, with both spellings
+in the message.
 
 An overlay cannot delete a file. The overlay's payloads, hashes and version names are the
 restoration's data.
