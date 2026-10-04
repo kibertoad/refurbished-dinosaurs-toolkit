@@ -291,7 +291,9 @@ as without `entryFrame`. A frame that states BP makes BP an offset from the entr
 register `registers` supplies. A frame that is not established leaves the query as it would run
 without the input, and relational controls left undecided by its stopped paths name the reasons.
 The frame is observed under the query's inputs; a `registers` value that steers the trace from
-`from` steers which arrivals it read.
+`from` steers which arrivals it read. The trace from `from` reads ordinary paths only: it does not
+continue through declared table jumps, so a route to the entry through an indirect jump stops there
+and leaves the frame unestablished, even when the query declares that jump.
 
 ## Limits and assumptions
 
