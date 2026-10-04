@@ -1,8 +1,10 @@
 """Restart edges and what changed between consecutive traced iterations of a loop on one path.
 
-A restart edge is a transfer that returns to an instruction the same call activation already ran.
-Its target is the loop head. Each arrival at a head is compared with the previous arrival at that
-head: registers, flags, the bytes of modeled memory written in between, and the operands of every
+A restart edge is a transfer to its own site's address or below that returns to an instruction the
+same call activation already ran. Its target is the loop head. Edges are read off the path with no
+control-flow graph; the address order keeps a forward branch to a join an earlier iteration ran,
+such as an if/else join in the body, from heading a loop. Each arrival at a head is compared with
+the previous arrival at that head: registers, flags, the bytes of modeled memory written in between, and the operands of every
 branch the iteration evaluated in the loop's frame. These are facts about the traced iterations of
 one path. They never establish that a loop terminates, stays bounded or that an iteration made the
 progress its author intended.
@@ -167,7 +169,8 @@ def _gate(event):
     gate = {"site": event["site"], "order": event["order"], "predicate": event["predicate"],
             "predicateDomain": predicate_domain(event["predicate"]), "taken": event["taken"],
             "operands": {k: _value(event[k]["expression"]) for k in GATE_OPERANDS if isinstance(event.get(k), dict)}}
-    for k in ("operation", "flagProducer", "decidedBy", "reason"):
+    # LOOPE and LOOPNE also test ZF; their flag test's record is kept beside the counter.
+    for k in ("operation", "flagProducer", "decidedBy", "reason", "zeroFlag"):
         if k in event:
             gate[k] = event[k]
     return gate
@@ -253,13 +256,17 @@ class LoopTracker:
         last = frame["tokens"].get(at)
         token = Arrival(1 if last is None else last.arrival + 1, len(state.events), len(state.write_log),
                         flag_state(state))
-        if last is not None and previous is not None and previous[2] == activation and at != previous[1]:
+        # Only a transfer to the site's own address or below closes a loop. Every cycle on a path has
+        # one, since fall-throughs run forward, and a forward branch to a join an earlier iteration
+        # ran stays an ordinary arrival.
+        if (last is not None and previous is not None and previous[2] == activation and at != previous[1]
+                and at <= previous[0]):
             self._restart(state, frame, previous, at, last, token)
         else:
             loop = frame["heads"].get(at)
             if loop is not None and loop["history"] is not None:
-                # A fall-through arrival at a known head, such as an inner loop's entry on the next
-                # outer iteration, is an earlier state later iterations may repeat. It also starts a
+                # An arrival at a known head that is not a restart, such as an inner loop's entry on
+                # the next outer iteration, is an earlier state later iterations may repeat. It starts a
                 # new entry into the loop, so the next iteration's gates are not compared with those
                 # of the last iteration before the loop was left.
                 loop["history"].append(token)

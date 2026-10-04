@@ -279,13 +279,14 @@ def snapshot(state):
     return {name: state.reg(name).report() for name in ALIASES}
 
 
-def trace(image, config, continue_declared_jumps=True):
+def trace(image, config, continue_declared_jumps=True, track_loops=True):
     """Trace bounded paths, preserving declared-table continuations as separate conditional evidence.
 
     Ordinary paths run first. A path stopped at a declared indirect jump is then
     continued once per surviving table target, so the continuations never take
     budget from an ordinary path. Callers that read only ordinary paths pass
-    continue_declared_jumps=False.
+    continue_declared_jumps=False. Callers that never report the paths pass
+    track_loops=False, and their paths carry no ``loops`` record.
     """
     entry = integer(config.get("entry"), 0, len(image.data) - 1, "entry")
     if not any(entry in r["entries"] for r in image.regions):
@@ -323,7 +324,8 @@ def trace(image, config, continue_declared_jumps=True):
                     raise ValueError("Invalid model register")
     root = State(entry, image, config)
     # Each path carries its own loop record; forks copy it with the rest of the state.
-    root.loops = LoopTracker(integer(config.get("loopIterationLimit", 64), 1, 1024, "loopIterationLimit"))
+    root.loops = (LoopTracker(integer(config.get("loopIterationLimit", 64), 1, 1024, "loopIterationLimit"))
+                  if track_loops else None)
     pending, outputs, global_gaps = [root], [], []
     conditional_outputs = []
     # States stopped at a declared jump site, continued after the ordinary paths.
@@ -357,7 +359,9 @@ def trace(image, config, continue_declared_jumps=True):
     def finish(s, reason=None, returned=False):
         path = {"returned": returned, "stop": reason, "stopSite": None if returned else s.at, "steps": s.steps,
                 "instructionPath": s.path, "guards": s.guards, "events": s.events,
-                "registers": snapshot(s), "conditionalModels": s.conditional, "loops": s.loops.report()}
+                "registers": snapshot(s), "conditionalModels": s.conditional}
+        if s.loops is not None:
+            path["loops"] = s.loops.report()
         assumptions = getattr(s, "declared_jump_assumptions", [])
         if assumptions:
             path["declaredJumpAssumptions"] = assumptions
@@ -458,7 +462,8 @@ def trace(image, config, continue_declared_jumps=True):
                     raise StopPath("undecoded or unmapped instruction")
                 state.steps += 1
                 state.path.append(at)
-                state.loops.arrive(state, at, ins)
+                if state.loops is not None:
+                    state.loops.arrive(state, at, ins)
                 state.visits[at] = state.visits.get(at, 0) + 1
                 if state.visits[at] > visit_limit:
                     raise StopPath(f"instruction repeated more than {visit_limit} times; raise visitLimit or read the loop's bound")

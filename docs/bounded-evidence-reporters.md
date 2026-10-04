@@ -912,20 +912,25 @@ integration. Request closure still needs the requester's complete source cases.
 
 ## Loop restart edges and iteration changes
 
-Every path of `trace`, `arguments`, `effects`, `returns`, `memory` and `guards` carries a
-`loops` record. It reports what the path's traced iterations did. It never says that a loop
+Every path of `trace`, `arguments`, `effects`, `returns`, `memory`, `guards` and `allocation`
+carries a `loops` record. It reports what the path's traced iterations did. It never says that a loop
 terminates, is bounded, or that a retry, eviction or search succeeded. Those are research
 claims a finding makes from these facts and from evidence outside the path
-([ADR 0008](decisions/0008-loop-progress-facts-on-paths.md), [validation and fidelity](validation-and-fidelity.md#loops-retries-and-termination-claims)).
+([ADR 0010](decisions/0010-loop-progress-facts-on-paths.md), [validation and fidelity](validation-and-fidelity.md#loops-retries-and-termination-claims)).
 
-A restart edge is a transfer that lands on an instruction the same call activation already ran
-on this path. Its target is the loop head. `restartEdges` lists each edge once per activation
+A restart edge is a transfer to its own site's address or below that lands on an instruction the
+same call activation already ran on this path. Its target is the loop head. `restartEdges` lists each edge once per activation
 with `entry`, `depth`, `activation`, `site`, `target`, the transfer's `kind` (`jmp`, `jb`,
 `loop` and so on), `traversals` and `firstOrder`, the event order at which its first traversal
 reached the head (the `toOrder` of that iteration). A loop restarted from two places, such as an
 index reset after a collision beside the ordinary increment, has two edges to one head. A
 function called twice is two activations, so its first instruction is not a restart. A
-fall-through, a call and a return never form a restart edge.
+fall-through, a call and a return never form a restart edge. The engine reads restart edges off
+the path and builds no control-flow graph. Every cycle on a path contains a transfer to a lower
+or equal address, because fall-throughs run forward, so every repeated loop has a restart edge.
+A forward branch that lands on an instruction an earlier iteration ran, such as the join after an
+if/else in a loop body, is an ordinary arrival. A rotated loop entered by a forward jump to its
+test is headed at the target of its backward branch, the start of its body.
 
 Each traversal of a restart edge compares the state at this arrival at the head with the state
 at the previous arrival at that head, by whatever route the path reached it, and appends one
@@ -942,7 +947,9 @@ the head, by any route) and the event orders `fromOrder` and `toOrder` the itera
 - `flags` is `unchanged` when the arithmetic flags, CF and the direction and interrupt flags are
   identical, and `differ` otherwise. The arithmetic flags of a comparison are its operation and
   operands; after an instruction such as INC, DEC or a shift they are the values its p-code
-  computed. Flags the model forgot are distinct unknowns and always differ.
+  computed. Flags the model forgot are unknowns named by the point where they were forgotten:
+  two arrivals with no flag write between them hold the same unknown flags and are `unchanged`,
+  and flags forgotten again in between differ.
 - `memory` lists, as byte intervals with the `segment`, `base` and offsets of the event
   `interval` field, every byte the iteration wrote or invalidated: `unchanged`, `changed` and
   `differentExpression` compare the stored bytes; `writtenOverUnmodeled` had no modeled value at
@@ -953,11 +960,12 @@ the head, by any route) and the event orders `fromOrder` and `toOrder` the itera
 - `gates` lists the branches the iteration evaluated in the loop's own frame, in order, with
   `predicate`, `predicateDomain` (`signed`, `unsigned`, `counter` for LOOP and JCXZ, or
   `flags/equality`), `operation`, `taken`, the compared `operands` (`left`, `right`, `count` or
-  `carry`) and the decision's `decidedBy` or `reason`. From the second record after the path
+  `carry`), the decision's `decidedBy` or `reason`, and for LOOPE and LOOPNE the `zeroFlag`
+  record of the flag test. From the second record after the path
   entered the loop, each gate carries `operandsSincePreviousIteration`, comparing its operands
-  with the gate at the same position of the previous iteration. A fall-through arrival at the head,
-  such as an inner loop entered again on the next outer iteration, starts a new entry, so its
-  first iteration has nothing to compare with.
+  with the gate at the same position of the previous iteration. An arrival at the head that is
+  not a restart, such as a fall-through or forward jump into an inner loop on the next outer
+  iteration, starts a new entry, so its first iteration has nothing to compare with.
 - `gateOperandsRepeated` is true when the iteration evaluated the same gates, with the same
   outcomes and identical operand expressions, as the previous iteration: nothing a gate in the
   loop's frame reads changed. It is false when a gate's known operands or the gate sequence

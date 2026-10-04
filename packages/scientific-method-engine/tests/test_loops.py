@@ -127,6 +127,37 @@ class LoopProgressTests(unittest.TestCase):
         gates = [g for i in report(c)["paths"][0]["loops"]["iterations"] for g in i["gates"]]
         self.assertEqual({(g["predicate"], g["predicateDomain"]) for g in gates}, {("jl", "signed")})
 
+    def test_a_loope_gate_keeps_its_zero_flag_test(self):
+        # mov cx, 3; cmp si, 0; head: loope head; ret
+        c = Code().emit("b9 03 00 83 fe 00").label("head").branch("e1", "head").emit("c3")
+        gates = [g for p in report(c)["paths"] for i in p["loops"]["iterations"] for g in i["gates"]]
+        self.assertTrue(gates)
+        for gate in gates:
+            self.assertEqual((gate["predicate"], gate["predicateDomain"]), ("loope", "counter"))
+            self.assertEqual(gate["zeroFlag"]["predicate"], "je")
+            self.assertEqual(gate["zeroFlag"]["left"]["expression"], ("extract", ("unknown", "initial:esi"), 0, 16, 32))
+
+    def test_a_forward_branch_to_a_join_an_earlier_iteration_ran_is_not_a_restart_edge(self):
+        # mov cx, 3; head: test cx, 1; je skip; inc ax; skip: loop head; ret
+        c = Code().emit("b9 03 00").label("head").emit("f7 c1 01 00").label("je").branch("74", "skip").emit("40")
+        c.label("skip").branch("e2", "head").emit("c3")
+        paths = report(c)["paths"]
+        self.assertTrue(paths)
+        for path in paths:
+            loops = path["loops"]
+            self.assertEqual({(e["site"], e["target"], e["kind"]) for e in loops["restartEdges"]},
+                             {(c.labels["skip"], c.labels["head"], "loop")})
+            self.assertEqual({i["head"] for i in loops["iterations"]}, {c.labels["head"]})
+
+    def test_a_rotated_loop_entered_by_a_forward_jump_to_its_test_is_headed_at_its_body(self):
+        # mov cx, 3; jmp test; body: inc ax; test: dec cx; jnz body; ret
+        c = Code().emit("b9 03 00").branch("eb", "test").label("body").emit("40").label("test").emit("49")
+        c.label("jnz").branch("75", "body").emit("c3")
+        loops = next(p for p in report(c)["paths"] if p["returned"])["loops"]
+        self.assertEqual([(e["site"], e["target"], e["kind"], e["traversals"]) for e in loops["restartEdges"]],
+                         [(c.labels["jnz"], c.labels["body"], "jne", 1)])
+        self.assertEqual([i["head"] for i in loops["iterations"]], [c.labels["body"]])
+
     def test_calling_one_function_twice_is_not_a_restart_and_each_activation_keeps_its_loop(self):
         # call f; call f; ret; f: mov cx, 2; L: loop L; ret
         c = Code().branch("e8", "f").branch("e8", "f").emit("c3").label("f").emit("b9 02 00").label("L").branch("e2", "L").emit("c3")

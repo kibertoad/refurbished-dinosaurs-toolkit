@@ -1,4 +1,4 @@
-# ADR 0008: loop progress facts on traced paths
+# ADR 0010: loop progress facts on traced paths
 
 Status: accepted
 
@@ -22,8 +22,12 @@ A report that said a loop terminates, or that it cannot, would claim more than t
    There is no separate loop command. The facts belong to one path: its restart edges, the order
    of its events and its state at each arrival. A separate command would re-run the same traversal
    and need its own way to name paths.
-2. A restart edge is observed on the path: a transfer that lands on an instruction the same call
-   activation already ran. The engine does not build a static loop forest for this. A loop the
+2. A restart edge is observed on the path: a transfer to its own site's address or below that
+   lands on an instruction the same call activation already ran. The engine does not build a
+   static loop forest for this. Without one, a path cannot tell a back edge from a forward branch
+   to a join an earlier iteration ran, so the address order decides: every cycle on a path holds a
+   transfer to a lower or equal address, since fall-throughs run forward, and the join after an
+   if/else in a loop body is not reported as a loop head. A loop the
    path never repeats has no restart edge, and the record claims nothing about it.
 3. Iterations are compared by expression identity. Registers, flags, written bytes and gate
    operands are `unchanged` when their expressions are identical, `changed` when both are known

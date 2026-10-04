@@ -130,7 +130,7 @@ invalidation before a bounded search or a successful eviction is claimed, to kee
 signedness at each gate, and to keep local repeated-state examples apart from native
 reachability.
 
-Tooling outcome: every traced path carries a `loops` record ([ADR 0008](decisions/0008-loop-progress-facts-on-paths.md)). It lists each restart
+Tooling outcome: every traced path carries a `loops` record ([ADR 0010](decisions/0010-loop-progress-facts-on-paths.md)). It lists each restart
 edge per call activation, and for each traversal compares the arrival at the loop head with the
 previous one: registers, flags, bytes written or invalidated, the gates of the loop's frame with
 their signedness domain and operands, whether those gates repeat the previous iteration, and the
