@@ -73,13 +73,21 @@ export const AREA_SUFFIXES: Partial<Record<Area, SuffixRule[]>> = {
 };
 
 /**
- * The `node --test` globs, relative to the repository root, for the tests of the tools and the
- * composite actions that the TypeScript job runs. They must match every `*.test.ts` file at any
- * depth under tools/ and actions/, the trees that AREA_SUFFIXES and AREAS.typescript turn the job
- * on for. tools/ci/run-tests.ts runs them, in CI and locally. The packages' tests run through
- * their own `test` scripts.
+ * The directories whose `*.test.ts` files, at any depth, the TypeScript job runs through
+ * tools/ci/run-tests.ts: the prefixes in AREA_SUFFIXES.typescript and the directories in
+ * AREAS.typescript outside packages/. The packages' tests run through their own `test` scripts.
+ * A directory added to either list is run without a further edit.
  */
-export const TYPESCRIPT_TEST_GLOBS = ["tools/**/*.test.ts", "actions/**/*.test.ts"];
+export const TYPESCRIPT_TEST_ROOTS: readonly string[] = [
+  ...(AREA_SUFFIXES.typescript ?? []).map((rule) => rule.prefix),
+  ...AREAS.typescript.filter((path) => path.endsWith("/") && !path.startsWith("packages/")),
+];
+
+/**
+ * The `node --test` globs, relative to the repository root, that tools/ci/run-tests.ts runs in
+ * CI and locally: every `*.test.ts` file at any depth under TYPESCRIPT_TEST_ROOTS.
+ */
+export const TYPESCRIPT_TEST_GLOBS: readonly string[] = TYPESCRIPT_TEST_ROOTS.map((root) => `${root}**/*.test.ts`);
 
 const matchesSuffix = (rules: SuffixRule[], file: string) =>
   rules.some((r) => matchesPath([r.prefix], file) && file.endsWith(r.suffix));

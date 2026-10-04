@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Runs the tests of the tools and the composite actions: every file that TYPESCRIPT_TEST_GLOBS in
 // changes.ts matches, in one `node --test` run from the repository root. The TypeScript job and
-// the local gates call this script, so the globs live only next to the area rules they must match.
+// the local gates call this script. The globs are built from the area rules that turn the job on.
 //
 //   node tools/ci/run-tests.ts
 //     Exits with the test run's status.
@@ -15,4 +15,5 @@ const result = spawnSync(process.execPath, ["--test", ...TYPESCRIPT_TEST_GLOBS],
   stdio: "inherit",
 });
 if (result.error) throw result.error;
+if (result.signal) console.error(`node --test stopped on ${result.signal}`);
 process.exit(result.status ?? 1);

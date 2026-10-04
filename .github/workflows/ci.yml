@@ -74,8 +74,8 @@ jobs:
       - run: pnpm run typecheck
       - run: pnpm exec tsc -p tools/tsconfig.json
       - run: pnpm run test
-      # The tools' and composite actions' tests. The globs are in tools/ci/changes.ts, next to the
-      # area rules they must match.
+      # The tools' and composite actions' tests. tools/ci/changes.ts builds the globs from the area
+      # rules that turn this job on.
       - name: Tool and composite action tests
         run: node tools/ci/run-tests.ts
       # Builds the npm packages and packs them as they would be published.
