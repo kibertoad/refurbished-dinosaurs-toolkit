@@ -118,7 +118,7 @@ public abstract class OriginalContentSource : IDisposable
     /// (see <see cref="OpenCueBin"/>) when it is a <c>.cue</c> file, as an InstallShield cabinet set
     /// (see <see cref="OpenInstallShieldCabinet(string, InstallShieldCabinetLimits?)"/>) with the
     /// default limits when it is a <c>.hdr</c> file, and as an ISO 9660 image (see
-    /// <see cref="OpenIso9660"/>) when it is any other file.
+    /// <see cref="OpenIso9660(string)"/>) when it is any other file.
     /// </summary>
     /// <exception cref="NotSupportedException">The cabinet set's InstallShield version is not 5 or 6.</exception>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
@@ -183,6 +183,29 @@ public abstract class OriginalContentSource : IDisposable
     }
 
     /// <summary>
+    /// Opens an ISO 9660 image with 2048-byte sectors from a stream, such as an image built in memory,
+    /// as a <see cref="ContentSourceKinds.Iso9660"/> source. Logical block 0 is at position 0 of the
+    /// stream, and the image is checked as <see cref="OpenIso9660(string)"/> describes. The caller
+    /// keeps ownership: the source never disposes <paramref name="image"/>, which must stay open and
+    /// unchanged while the source or a stream opened from it is in use. Streams opened from the
+    /// source each keep their own position and may be read at the same time; each read seeks
+    /// <paramref name="image"/> under a lock that every source opened over <paramref name="image"/>
+    /// shares, so read <paramref name="image"/> only through these sources.
+    /// </summary>
+    /// <param name="image">A readable, seekable stream holding the image.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="image"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="image"/> cannot be read or cannot seek.</exception>
+    /// <exception cref="InvalidDataException">The image is not a valid ISO 9660 volume.</exception>
+    public static OriginalContentSource OpenIso9660(Stream image)
+    {
+        ArgumentNullException.ThrowIfNull(image);
+        if (!image.CanRead || !image.CanSeek)
+            throw new ArgumentException("The ISO image stream must be readable and seekable.", nameof(image));
+        var gate = SharedStreamView.GateFor(image);
+        return new Iso9660ContentSource(() => new SharedStreamView(image, gate), ContentSourceKinds.Iso9660, null);
+    }
+
+    /// <summary>
     /// Opens the ISO 9660 volume on the data track of a cue/bin raw disc image. <paramref name="path"/>
     /// is the <c>.cue</c> file, the <c>.bin</c> file, or the directory holding them; the other file is
     /// the one the sheet's <c>FILE</c> names, else the one with the same name, else the only one there.
@@ -196,7 +219,7 @@ public abstract class OriginalContentSource : IDisposable
     /// last-write time is not detected.
     /// The sheet is checked as <see cref="CueBinSheet.Parse"/> and <see cref="CueBinSheet.ValidateBin"/>
     /// describe, the data track ends where the second track's pregap or audio begins, every raw sector
-    /// read is checked to be MODE1, and the volume is checked as <see cref="OpenIso9660"/> describes.
+    /// read is checked to be MODE1, and the volume is checked as <see cref="OpenIso9660(string)"/> describes.
     /// </summary>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="IOException">The BIN changed while the source was being opened.</exception>
@@ -678,5 +701,102 @@ internal sealed class ExtentReadStream : Stream
     {
         await stream.DisposeAsync();
         GC.SuppressFinalize(this);
+    }
+}
+
+// A view of a stream that other views share, with its own position. Each read seeks the shared
+// stream and reads it while holding the gate, so views can be read at the same time. Every view of
+// one shared stream gets the same gate from GateFor, also across sources opened over it. Disposing a
+// view leaves the shared stream open, since its caller owns it.
+internal sealed class SharedStreamView(Stream shared, SemaphoreSlim gate) : Stream
+{
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Stream, SemaphoreSlim> Gates = new();
+
+    private long position;
+    private bool disposed;
+
+    // The gate for every view of shared, kept for as long as shared is alive.
+    public static SemaphoreSlim GateFor(Stream shared) => Gates.GetValue(shared, _ => new SemaphoreSlim(1, 1));
+
+    public override bool CanRead => !disposed;
+    public override bool CanSeek => !disposed;
+    public override bool CanWrite => false;
+    public override long Length
+    {
+        get
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            gate.Wait();
+            try { return shared.Length; }
+            finally { gate.Release(); }
+        }
+    }
+    public override long Position
+    {
+        get => position;
+        set
+        {
+            ObjectDisposedException.ThrowIf(disposed, this);
+            ArgumentOutOfRangeException.ThrowIfNegative(value);
+            position = value;
+        }
+    }
+
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        ValidateBufferArguments(buffer, offset, count);
+        return Read(buffer.AsSpan(offset, count));
+    }
+
+    public override int Read(Span<byte> buffer)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        gate.Wait();
+        try
+        {
+            shared.Position = position;
+            var read = shared.Read(buffer);
+            position += read;
+            return read;
+        }
+        finally { gate.Release(); }
+    }
+
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            shared.Position = position;
+            var read = await shared.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            position += read;
+            return read;
+        }
+        finally { gate.Release(); }
+    }
+
+    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        ValidateBufferArguments(buffer, offset, count);
+        return ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+    }
+
+    public override long Seek(long offset, SeekOrigin origin) => Position = origin switch
+    {
+        SeekOrigin.Begin => offset,
+        SeekOrigin.Current => checked(position + offset),
+        SeekOrigin.End => checked(Length + offset),
+        _ => throw new ArgumentOutOfRangeException(nameof(origin))
+    };
+
+    public override void Flush() { }
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+    protected override void Dispose(bool disposing)
+    {
+        disposed = true;
+        base.Dispose(disposing);
     }
 }
