@@ -323,7 +323,7 @@ def validate_continuation_budget(config):
             for key, value in budget.items()}
 
 
-def trace(image, config, continue_declared_jumps=True, track_loops=True):
+def trace(image, config, continue_declared_jumps=True, track_loops=True, argument_window=0):
     """Trace bounded paths, preserving declared-table continuations as separate conditional evidence.
 
     Ordinary paths run first. A path stopped at a declared indirect jump is then
@@ -333,6 +333,9 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True):
     Callers that read only ordinary paths pass continue_declared_jumps=False.
     Callers that never report the paths pass track_loops=False, and their paths
     carry no ``loops`` record.
+    A positive ``argument_window`` gives each traced call event an ``argumentSlots`` entry: the
+    first ``argument_window`` bytes above its return frame as ``State.argument_slots`` saw them
+    when the call ran. ``argument_frames`` reads and removes it.
     """
     entry = integer(config.get("entry"), 0, len(image.data) - 1, "entry")
     if not any(entry in r["entries"] for r in image.regions):
@@ -370,6 +373,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True):
                     raise ValueError("Invalid model register")
     explicit_continuation_budget = validate_continuation_budget(config)
     root = State(entry, image, config)
+    root.argument_window = argument_window
     # Each path carries its own loop record; forks copy it with the rest of the state.
     root.loops = (LoopTracker(integer(config.get("loopIterationLimit", 64), 1, 1024, "loopIterationLimit"))
                   if track_loops else None)
@@ -687,6 +691,8 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True):
                             flags_frame = False
                     # A traced call records its return-frame width; argumentFrames maps the slots above it.
                     call_event["returnFrameBytes"] = 4 if m == "lcall" or push_cs else image.bits // 8
+                    if state.argument_window:
+                        call_event["argumentSlots"] = state.argument_slots(call_event["returnFrameBytes"], state.argument_window)
                     state.frames.append({"entry": target, "sp": state.reg(state.sp), "returnBytes": call_event["returnFrameBytes"],
                                          "frameSource": "push-CS/near-call; matching far return required" if push_cs else m,
                                          "continuation": following, "returnIP": return_ip, "callSite": at,

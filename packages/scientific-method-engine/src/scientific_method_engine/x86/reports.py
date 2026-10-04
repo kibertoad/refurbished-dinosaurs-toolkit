@@ -8,7 +8,7 @@ from .machine import State, StopPath, REGISTERS, ALIASES, segment_register, stri
 from .values import unknown
 from .effect_order import effect_ordering
 from .relational import validate_controls, evaluate_controls
-from .argument_frames import argument_frames, stack_cleanup
+from .argument_frames import WINDOW_BYTES, argument_frames, stack_cleanup
 from .memory_scopes import model_scopes
 from .result_flow import return_flows
 from .image import Image, integer
@@ -1568,7 +1568,7 @@ def _run_report(image, config, command):
                 if a.get(field):
                     checkpoints.add(a[field]["site"])
         config = {**config, "checkpoints": sorted(checkpoints)}
-    report = trace(image, config)
+    report = trace(image, config, argument_window=WINDOW_BYTES if command == "arguments" else 0)
     # Controls read the complete event stream, before any command narrows it.
     controls = evaluate_controls(report, config, image)
     if command in ("arguments", "effects"):

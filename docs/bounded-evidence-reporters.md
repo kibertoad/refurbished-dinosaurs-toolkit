@@ -138,11 +138,17 @@ frame holds:
   site, order, depth, role (`push` or none), width and value. The report keeps each cited write
   event among the path's events. A byte no write on the path covered, one a modeled call
   invalidated outside its `preservesMemory` scopes, or one a later write through another segment
-  or base may have stored, has `writerSite: null` and a reason. A write counts for every frame byte
-  it may alias, whether or not it dropped a cached byte, by the rule a read's `unwritten` uses, so
-  a slot and a callee read of it that runs before any callee write through another segment or base
-  name the same write. The slot describes the frame when the call ran: a callee write that may
-  alias it before the read changes the read's `unwritten` and leaves the slot as it was.
+  or base may have stored, has `writerSite: null` and a reason. When the call pushes its return
+  frame, the engine records the first 256 bytes above it as a read would see them at that moment:
+  each byte's `writeOrder`, or its `unwritten` cause and order. Slots are built from that record,
+  so a write through another segment or base counts for every frame byte it may alias, whether or
+  not it dropped a cached byte, and a slot and a callee read of it that runs before any callee
+  write through another segment or base name the same write. The reason names the `unwritten`
+  event's site: `memory possibly overwritten through another address by the write at` for both
+  aliasing causes, `memory invalidated by the modeled call at` for `dropped by a modeled call`, and
+  `no write on this path` as it stands. The slot describes the frame when the call ran: a callee
+  write that may alias it before the read changes the read's `unwritten` and leaves the slot as it
+  was.
   Each slot lists the callee reads that consumed it (`consumedBy`) and `derivedReads`: argument
   reads deeper in the callee whose bytes carry the slot writer's site among their producers, such
   as a setter reading a word the callee forwarded. They match by producer site only.
