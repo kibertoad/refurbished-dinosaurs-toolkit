@@ -43,7 +43,7 @@ read here. A gap still closes only when Dark Sun's own case passes against publi
 |---|---|---|---|
 | 5 | Portable manifest paths in coverage files | Template work | none here |
 | 9 | Window image versus copied control data in the UI catalog | Dark Sun's extractor; a game format under ADR 0001 | none here |
-| 27 | Ordered effects at early exits, conditional fill, MENU linked child | MENU waits on Dark Sun rerunning its case with `continuationBudget` (engine 4.0.0). The fill gets no new input under ADR 0008 and stays open until Dark Sun states the producers of the forking values through the existing inputs; no milestone here waits on it. Scoped memory is delivered: `preservesMemory` shipped in reader and engine 2.0.0, and Dark Sun's nested caller-bracket case passes against them (issue 73) | M2 |
+| 27 | Ordered effects at early exits, conditional fill, MENU linked child | MENU is delivered: Dark Sun's linked-child case passes against engine 4.0.0 with `continuationBudget` and its ordinary paths unchanged (issue 112). The fill gets no new input under ADR 0008 and needs producer evidence from Dark Sun. Scoped memory is delivered: `preservesMemory` shipped in reader and engine 2.0.0, and Dark Sun's nested caller-bracket case passes against them (issue 73) | none here |
 | 37 | Port I/O as a hardware boundary | Generic engine fact. The parts about rendered pixels and mocked-port fixtures are writing rules | M3 |
 | 39 | Effective segment of frame-indexed accesses | Looks delivered: the reporter guide already says BP-derived offsets accessed through BX use DS. Verify and pin with tests | M3 |
 | 36 | Overlapping access widths across calls | Mostly delivered: accesses report byte producers and missing producers. The remainder is Dark Sun's case | M4 controls |
@@ -66,19 +66,6 @@ read here. A gap still closes only when Dark Sun's own case passes against publi
 Settle issue 70 (`carry_value` re-runs the JB condition), and triage issues 7 and 25 to 27, closing
 the ones whose behaviour has been delivered. Dark Sun then adopts the latest engine on its own
 schedule.
-
-### M2. Continuation budgets (gap 27, rest; waiting on Dark Sun)
-
-The toolkit side is done. Engine 4.0.0 gives declared-table continuations their own
-`continuationBudget` ([ADR 0011](decisions/0011-separate-continuation-budget.md), issue 112), so
-ordinary paths no longer starve them and are the same whatever that budget is. The conditional fill
-forks once per loop element on unknown memory, which no budget can follow, and
-[ADR 0008](decisions/0008-forking-routes-beyond-budgets.md) builds no path-hypothesis input for it:
-Dark Sun states the producers of the forking values through the existing inputs.
-
-Exit: Dark Sun's MENU linked-child case passes against engine 4.0.0 or later with a continuation
-budget and its ordinary paths unchanged. If its ordinary paths never reach the table jump, the case
-falls under ADR 0008 as well. The fill part of gap 27 does not hold this milestone open.
 
 ### M3. Port I/O and effective segments (gaps 37, 39; in progress)
 
