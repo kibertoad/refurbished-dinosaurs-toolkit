@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -60,26 +61,122 @@ public static class CddaWave
     public const int BytesPerSector = 2352;
 
     /// <summary>
-    /// Writes a 16-bit stereo 44.1 kHz PCM WAVE file holding <paramref name="sectorCount"/> raw sectors of
-    /// <paramref name="source"/>, starting at <paramref name="startSector"/>.
+    /// The most sectors one WAVE file can hold. The RIFF chunk size is a 32-bit field that counts the
+    /// 36 header bytes after it as well as the audio, so the audio is at most <c>uint.MaxValue - 36</c>
+    /// bytes, about 6.8 hours.
     /// </summary>
-    /// <exception cref="ArgumentException">A stream has the wrong capabilities or the range is negative.</exception>
-    /// <exception cref="EndOfStreamException">The image ends before the range does.</exception>
-    public static void Write(Stream source, Stream output, int startSector, int sectorCount)
+    public const long MaximumSectors = WavePcm16Writer.MaximumDataLength / BytesPerSector;
+
+    private const int BufferSize = 128 * 1024;
+
+    /// <summary>
+    /// Writes a 16-bit stereo 44.1 kHz PCM WAVE file holding <paramref name="sectorCount"/> raw sectors of
+    /// <paramref name="source"/>, starting at <paramref name="startSector"/>. For a track of a cue/bin
+    /// image, pass the <see cref="CueBinTrackExtent.StartSector"/> and <see cref="CueBinTrackExtent.Sectors"/>
+    /// of its <see cref="CueBinSheet.TrackExtent"/>.
+    /// </summary>
+    /// <param name="source">The raw image, readable and seekable. It is not disposed.</param>
+    /// <param name="output">Receives the WAVE file at its current position and is flushed. It is not disposed.</param>
+    /// <param name="startSector">The first raw sector to write.</param>
+    /// <param name="sectorCount">Sectors to write, at most <see cref="MaximumSectors"/>.</param>
+    /// <exception cref="ArgumentNullException">A stream is null.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="source"/> cannot read or seek, or <paramref name="output"/> cannot write.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// A sector value is negative, or <paramref name="sectorCount"/> exceeds <see cref="MaximumSectors"/>.
+    /// Nothing is written.
+    /// </exception>
+    /// <exception cref="EndOfStreamException">
+    /// The range ends past the image. Nothing is written when the image's length shows it at the start;
+    /// an image that shrinks while it is read leaves a partial file.
+    /// </exception>
+    public static void Write(Stream source, Stream output, long startSector, long sectorCount)
     {
-        if (!source.CanSeek || !source.CanRead || !output.CanWrite || startSector < 0 || sectorCount < 0)
-            throw new ArgumentException("Invalid CDDA streams or sector range.");
-        var dataLength = checked(sectorCount * BytesPerSector);
+        var dataLength = CheckRange(source, output, startSector, sectorCount);
         WavePcm16Writer.WriteHeader(output, (uint)dataLength, 2, 44100);
-        source.Position = (long)startSector * BytesPerSector;
-        var remaining = dataLength; var buffer = new byte[128 * 1024];
-        while (remaining > 0)
+        source.Position = startSector * BytesPerSector;
+        var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+        try
         {
-            var read = source.Read(buffer, 0, Math.Min(buffer.Length, remaining));
-            if (read == 0) throw new EndOfStreamException();
-            output.Write(buffer, 0, read); remaining -= read;
+            for (var remaining = dataLength; remaining > 0;)
+            {
+                var chunk = buffer.AsSpan(0, (int)Math.Min(BufferSize, remaining));
+                source.ReadExactly(chunk);
+                output.Write(chunk);
+                remaining -= chunk.Length;
+            }
         }
+        finally { ArrayPool<byte>.Shared.Return(buffer); }
         output.Flush();
+    }
+
+    /// <summary>
+    /// Writes the WAVE file <see cref="Write"/> writes, reading and writing asynchronously and checking
+    /// <paramref name="cancellationToken"/> before each read.
+    /// </summary>
+    /// <param name="source">The raw image, readable and seekable. It is not disposed.</param>
+    /// <param name="output">Receives the WAVE file at its current position and is flushed. It is not disposed.</param>
+    /// <param name="startSector">The first raw sector to write.</param>
+    /// <param name="sectorCount">Sectors to write, at most <see cref="MaximumSectors"/>.</param>
+    /// <param name="cancellationToken">Cancels the copy. A copy cancelled after it started leaves a partial file.</param>
+    /// <exception cref="ArgumentNullException">A stream is null.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="source"/> cannot read or seek, or <paramref name="output"/> cannot write.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// A sector value is negative, or <paramref name="sectorCount"/> exceeds <see cref="MaximumSectors"/>.
+    /// Nothing is written.
+    /// </exception>
+    /// <exception cref="EndOfStreamException">
+    /// The range ends past the image. Nothing is written when the image's length shows it at the start;
+    /// an image that shrinks while it is read leaves a partial file.
+    /// </exception>
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
+    public static async Task WriteAsync(
+        Stream source,
+        Stream output,
+        long startSector,
+        long sectorCount,
+        CancellationToken cancellationToken = default)
+    {
+        var dataLength = CheckRange(source, output, startSector, sectorCount);
+        cancellationToken.ThrowIfCancellationRequested();
+        var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
+        try
+        {
+            WavePcm16Writer.FormatHeader(buffer, (uint)dataLength, 2, 44100);
+            await output.WriteAsync(buffer.AsMemory(0, WavePcm16Writer.HeaderSize), cancellationToken).ConfigureAwait(false);
+            source.Position = startSector * BytesPerSector;
+            for (var remaining = dataLength; remaining > 0;)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var chunk = buffer.AsMemory(0, (int)Math.Min(BufferSize, remaining));
+                await source.ReadExactlyAsync(chunk, cancellationToken).ConfigureAwait(false);
+                await output.WriteAsync(chunk, cancellationToken).ConfigureAwait(false);
+                remaining -= chunk.Length;
+            }
+        }
+        finally { ArrayPool<byte>.Shared.Return(buffer); }
+        await output.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    // Every check that can fail before a byte is written. Returns the audio's length in bytes.
+    private static long CheckRange(Stream source, Stream output, long startSector, long sectorCount)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(output);
+        if (!source.CanRead || !source.CanSeek)
+            throw new ArgumentException("The image stream must be readable and seekable.", nameof(source));
+        if (!output.CanWrite) throw new ArgumentException("The output stream must be writable.", nameof(output));
+        ArgumentOutOfRangeException.ThrowIfNegative(startSector);
+        ArgumentOutOfRangeException.ThrowIfNegative(sectorCount);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(sectorCount, MaximumSectors);
+        var imageSectors = source.Length / BytesPerSector;
+        if (startSector > imageSectors || sectorCount > imageSectors - startSector)
+            throw new EndOfStreamException(
+                $"{sectorCount} sectors from sector {startSector} end past the image's {imageSectors} sectors.");
+        return sectorCount * BytesPerSector;
     }
 }
 

@@ -292,7 +292,81 @@ A tool that parses the output sees these changes. Existing line prefixes are kep
 
 ## Engine upgrades
 
-Breaking engine releases that need a change in a restoration are listed here, newest first.
+Engine releases that need a change in a restoration are listed here, newest first.
+
+### The Ghidra cross-check rows carry the engine's side
+
+Each `callees` `ghidraCrossCheck` row that carries `ghidraFallsThrough` now also carries
+`engineReadsOn`: `true` where the engine's body reading continues to the next instruction at the
+site and `false` where it stops. A row at a transfer outside the frame model, or at an instruction
+the engine did not read, carries neither field. No result, count or `agreed` value changes. A test
+that compares such a row as a whole adds `engineReadsOn`.
+
+### The Ghidra cross-check reports a redirected fall-through
+
+Engine 7.3.0 shipped this change as a minor release, but a config can fail after you export again
+with the `ExportCallEdges.java` packaged in it. That script writes `fallsThroughTo` and
+`fallsThroughToAddress` on an edge whose fall-through a user's override sends to another address
+than the next instruction, and still writes `fallsThrough: false` there. `callees` with
+`ghidraCallEdges` reads the new fields into each compared row as `ghidraFallsThroughTo` and
+`ghidraFallsThroughToBasis`, and counts the rows with a `ghidraFallsThroughTo` in a new count,
+`counts.ghidraFallsThroughElsewhere`. `agreed` is true only when it is 0, and such a site is no
+agreement site.
+
+An export written by an older copy of the script has no `fallsThroughTo`. Its rows carry
+`ghidraFallsThroughToBasis: "notExported"` and keep their results. After you export again with the
+packaged script:
+
+- A row at a `JMP`, `LJMP`, return or `HLT` with a redirected fall-through used to agree, because
+  the engine stops there and the old export said Ghidra does too. It now counts in
+  `ghidraFallsThroughElsewhere`, `agreed` becomes false, and a `ghidraAgreementSites` control
+  naming the site fails the report.
+- A row at an instruction the engine reads past, such as a call, with a redirected fall-through
+  moves from `ghidraEndsFunction` to `ghidraFallsThroughElsewhere`.
+
+Check the rows with `ghidraFallsThroughTo` set. Where the redirect is a leftover, clear the
+fall-through override in Ghidra and export again. A site you keep the override at stays
+`agreed: false`; remove it from `ghidraAgreementSites` controls. A test that compares `counts` as a
+whole adds `ghidraFallsThroughElsewhere`. A test that compares a row carrying `ghidraFallsThrough` as a
+whole adds `ghidraFallsThroughTo` and `ghidraFallsThroughToBasis`, also for an older export.
+
+### `widthsConsistent` in `argumentFrameSites`
+
+`arguments` added `argumentFrameSites[].widthsConsistent` in engine 6.2.0, meaning "the traced
+paths made at least one read and `conflictingWidths` is empty". Two releases changed what it means.
+
+#### Undecided sites
+
+`widthsConsistent` can now be `null`. A pair of reads that would conflict only if bytes the trace
+cannot attribute were the caller's (a slot a modeled call invalidated, a slot a write through
+another segment or base may have stored, a callee write through another address before the read,
+or a read byte past the 256-byte window) is listed in the new `undecidedWidths`, and leaves the
+site `null` unless another pair conflicts on the caller's bytes. A site whose only reads saw such
+bytes is `null` too. Such sites used to report
+`true`, or `false` when no read saw a byte from the slot writers. Each `groupings` row also adds
+`bytesOfUnknownOrigin`, the indices within `bytesNotFromSlotWriter` that may still be the caller's.
+
+- Code that tests `widthsConsistent` for truth, or compares it with `false`, handles `null`
+  separately. Read `undecidedWidths` and each read's `bytesOfUnknownOrigin` to see which pairs and
+  bytes left the site open; a read whose `offset` plus `width` passes the frame's `mappedBytes`
+  ran past the window. A concrete `ss`, `sp` and `ds` in the query, or a `preservesMemory` scope
+  on the modeled call, can let the trace attribute the bytes.
+- A finding that cited `widthsConsistent: true` for a site that is now `null` was resting on bytes
+  the trace did not attribute. Restate it as undecided or settle the bytes first.
+
+#### Engine 7.2.0: only the caller's bytes decide `widthsConsistent`
+
+Engine 7.2.0 changed the meaning under a minor version. Since then `widthsConsistent` is `true` when
+some read saw a byte from the slot writers and no listed pair has a byte both of its reads saw from
+the slot writers. It can be `true` while `conflictingWidths` lists a pair (a callee that reused its
+argument slot as a local), and it is `false` for a site whose only reads follow a callee store to
+the slot. `readWidths` entries added `fromCallerOnPaths` and `notFromCallerOnPaths` in the same
+release.
+
+- Code that read `widthsConsistent: true` as "no conflicting pairs" reads `conflictingWidths`
+  directly and checks that it is empty.
+- Code that read `widthsConsistent: false` as "some pair conflicts" checks `conflictingWidths` too:
+  a site with no pairs can be `false` because no read saw the caller's bytes.
 
 ### The Ghidra cross-check compares fall-through at jumps and Ghidra-only edges
 

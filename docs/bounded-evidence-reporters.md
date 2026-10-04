@@ -158,7 +158,13 @@ frame holds:
   `bytesNotFromSlotWriter` names read bytes (indices within the read, as in `derivedReads`) that do
   not come from the slot's writer: bytes with no known writer, bytes the callee stored to before
   the read (even a value computed from the argument), and bytes whose producers do not include the
-  writer.
+  writer. `bytesOfUnknownOrigin` names those of them that may still hold the caller's value: a slot
+  byte a modeled call invalidated or a write through another segment or base may have stored, and a
+  byte whose producers lack the slot's writer although the callee made no store to it through the
+  frame's segment and base before the read (a callee write through another address or a modeled call
+  inside the callee). A byte the callee stored to first, and a slot byte no write on the path stored
+  (`no write on this path`, such as the upper half of a dword read over a pushed word), are not of
+  unknown origin: the caller did not write them.
 - `competingWidths`: pairs of read intervals that overlap without being equal.
 - `calleeCleanupBytes` (`RET n`) and `callerCleanupBytes` (an immediate `ADD SP` right after the
   call). `mappedBytes` is the larger of these and the highest byte read, at most 256.
@@ -186,13 +192,19 @@ read the same interval both ways is in both lists. A read the callee made after 
 argument slot is on `notFromCallerOnPaths`, so a finding can name the paths that reused the slot as
 a local. `conflictingWidths` pairs distinct reads that share a byte: different intervals, or one
 interval read with two groupings. It lists every pair, whatever the reads' bytes came from.
-`widthsConsistent` holds when some read saw at least one byte from the slot writers and no listed
-pair has a byte that both of its reads saw from the slot writers on some path. A byte in
-`bytesNotFromSlotWriter` neither makes the site inconsistent nor makes it consistent: a site whose
-callee read nothing, or read only bytes it stored itself, is not consistent. A read that runs past
-the caller's bytes, such as a dword read of a pushed word, still saw the word, so a word read of
-the same bytes on another path makes the site inconsistent. It says only that the reads the traced
-paths made of the caller's bytes fit one grouping. It does not say a path that skipped a read
+`widthsConsistent` is `true`, `false` or `null`. It is `false` when a listed pair has a byte that
+both of its reads saw from the slot writers on some path. A read that runs past the caller's bytes,
+such as a dword read of a pushed word, still saw the word, so a word read of the same bytes on
+another path makes the site inconsistent. A pair whose reads share no such byte but would if bytes
+of unknown origin were the caller's is listed in `undecidedWidths`, and when no pair makes the
+site `false`, any such pair makes it `null`: the trace did not show whose bytes those reads saw.
+Bytes of unknown origin are those in `bytesOfUnknownOrigin` and read bytes past the 256-byte
+window, which no frame maps. Otherwise the site is `true` when some read saw at least one byte
+from the slot writers, `null` when no read did but some read saw a byte of unknown origin, and
+`false` when every read
+byte is one the callee stored itself or no write on the path stored, which includes a callee that
+read nothing. Those two kinds of byte never make a pair conflict or undecided. `true` says only
+that the reads the traced paths made of the caller's bytes fit one grouping. It does not say a path that skipped a read
 would have read the same width, and it does not settle a frame or the site: a skipped slot stays
 in that frame's `openReasons`, and the paths that read each width are listed so a finding can
 name them.
@@ -987,15 +999,15 @@ fall-through override sends Ghidra to another address, and `null` otherwise, wit
 `notExported` for an edge from an older copy of the script. Such an export writes a redirected
 fall-through as `fallsThrough: false`, so the row reads as one Ghidra does not take: it agrees at a
 `JMP` and counts in `ghidraEndsFunction` at a call. Export again with the packaged script to see
-redirects. The engine's side is what its body reading recorded at the site: it stops at a `JMP`,
-`LJMP`, return or `HLT`, and reads on past every other instruction, including a call, a
-conditional jump, an interrupt and a port access. A row whose site is a transfer outside the frame
+redirects. The row carries the engine's side as `engineReadsOn`, what its body reading recorded at
+the site: `false` at a `JMP`, `LJMP`, return or `HLT`, where it stops, and `true` past every other
+instruction, including a call, a conditional jump, an interrupt and a port access. A row whose site is a transfer outside the frame
 model, or an instruction the engine did not read, carries none of these fields. The two analyses
 disagree on the function's extent in three ways, and each way the row counts against `agreed` and
 its site is no agreement site:
 
 - Ghidra ends the function where the engine reads on (`ghidraFallsThrough` false at a call,
-  conditional jump or interrupt): the callee is one Ghidra treats as non-returning
+  conditional jump, interrupt or port access): the callee is one Ghidra treats as non-returning
   (`CALL_TERMINATOR`), the interrupt is `INT1` or `INT3`, or a user cleared the fall-through.
 - Ghidra continues where the engine stops (`ghidraFallsThrough` true at a `JMP`, `LJMP`, return or
   `HLT`): a user gave the instruction a fall-through.

@@ -91,4 +91,29 @@ public sealed class PortableAssetPathTests
         }
         finally { Directory.Delete(root, true); }
     }
+
+    [Fact]
+    public void ALayoutSpellsEachDirectoryLikeTheFirstPathUnderIt()
+    {
+        var layout = new PortablePathLayout();
+        Assert.Equal("Data/A.DAT", layout.Add("Data\\A.DAT"));
+        Assert.Equal("Data/Sub/b.dat", layout.Add("DATA/Sub/b.dat"));
+        Assert.Equal("Data/Sub/c.dat", layout.Add("data/SUB/c.dat"));
+        Assert.Equal("top.dat", layout.Add("top.dat"));
+        Assert.Equal(4, layout.Count);
+    }
+
+    [Theory]
+    [InlineData("data/a.dat", "DATA/A.DAT", "twice")]
+    [InlineData("data/a.dat", "DATA/A.DAT/b.dat", "both a file and a directory")]
+    [InlineData("data/a.dat/b.dat", "DATA/A.DAT", "both a file and a directory")]
+    [InlineData("data/a.dat", "../a.dat", "relative path components")]
+    public void ALayoutRejectsAPathThatClashesIgnoringCase(string first, string second, string message)
+    {
+        var layout = new PortablePathLayout();
+        layout.Add(first);
+        var exception = Assert.Throws<InvalidDataException>(() => layout.Add(second));
+        Assert.Contains(message, exception.Message);
+        Assert.Equal(1, layout.Count);
+    }
 }
