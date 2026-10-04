@@ -21,8 +21,9 @@ export interface TestRepo {
 
 /**
  * Creates an empty git repository in a temporary directory that is removed when the test `t`
- * ends. Git runs without the developer's global and system configuration, so a signing or rename
- * setting cannot change a result.
+ * ends. The helpers' git runs without the developer's global and system configuration, so a
+ * signing or rename setting cannot change how the repository is built, and without inherited GIT_*
+ * variables, so a test run from a git hook cannot write to the developer's repository or index.
  */
 export function testRepo(t: TestContext): TestRepo {
   const home = mkdtempSync(join(tmpdir(), "test-repo-"));
@@ -31,7 +32,11 @@ export function testRepo(t: TestContext): TestRepo {
   const config = join(home, "gitconfig");
   mkdirSync(root);
   writeFileSync(config, "");
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: config, GIT_CONFIG_NOSYSTEM: "1" };
+  const env: NodeJS.ProcessEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("GIT_")),
+  );
+  env.GIT_CONFIG_GLOBAL = config;
+  env.GIT_CONFIG_NOSYSTEM = "1";
   const git = (...args: string[]) =>
     execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], {
       cwd: root,

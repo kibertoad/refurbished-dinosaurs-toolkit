@@ -26,7 +26,8 @@ import { changedFiles, matchesPath } from "../lib/changed-files.ts";
 export interface ReleasedPackage {
   name: string;
   ecosystem: "pypi" | "nuget";
-  // Path prefixes, relative to the repository root, whose change makes the package eligible.
+  // Path prefixes (ending in "/") or exact paths, relative to the repository root, whose change
+  // makes the package eligible.
   paths: string[];
   // Release tags are `${tagPrefix}${version}`.
   tagPrefix: string;
