@@ -14,6 +14,7 @@ import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.InstructionIterator;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.ReferenceIterator;
+import ghidra.util.exception.CancelledException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -82,16 +83,19 @@ public class ReportFunctionSummary extends GhidraScript {
     }
 
     // The body Ghidra assigned, and each call without a fall-through whose next address is outside that body.
-    private void reportBody(Function function) {
+    private void reportBody(Function function) throws CancelledException {
         List<String> ranges = new ArrayList<>();
         for (AddressRange range : function.getBody()) ranges.add(range.getMinAddress() + ".." + range.getMaxAddress());
         println("Body: " + String.join(", ", ranges));
         int cut = 0;
         InstructionIterator instructions = currentProgram.getListing().getInstructions(function.getBody(), true);
-        while (instructions.hasNext() && !monitor.isCancelled()) {
+        while (instructions.hasNext()) {
+            monitor.checkCancelled();
             Instruction instruction = instructions.next();
-            // Ghidra gives a call to a no-return function no fall-through.
-            if (!instruction.getFlowType().isCall()) continue;
+            // Ghidra gives a call to a no-return function no fall-through. A tail jump that analysis
+            // turned into a call has none either, so the instruction's own flow must be a call.
+            if (!instruction.getFlowType().isCall()
+                || !instruction.getPrototype().getFlowType(instruction.getInstructionContext()).isCall()) continue;
             Address next = instruction.getMaxAddress().next();
             if (next == null || function.getBody().contains(next) || instruction.getFallThrough() != null) continue;
             if (cut++ == MAX_CUT_CALLS) {

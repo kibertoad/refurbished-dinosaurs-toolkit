@@ -1,15 +1,22 @@
-// Reports bounded call sites whose preceding argument setup contains requested scalars.
+// Reports bounded call sites whose preceding argument setup contains requested immediates.
+// The setup is the run of instructions that falls through to the call, up to 12 instructions. It
+// ends after an instruction a jump or call reaches, before one that does not fall through, and before
+// an earlier call. Only immediate operands match; a memory operand's displacement, such as the 8 in
+// PUSH [EBP+8], is no argument value.
 // @category Restoration
 
 import ghidra.app.script.GhidraScript;
 import ghidra.program.model.address.Address;
+import ghidra.program.model.lang.OperandType;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.scalar.Scalar;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.ReferenceIterator;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 public class ReportCallSitesWithScalars extends GhidraScript {
@@ -31,52 +38,70 @@ public class ReportCallSitesWithScalars extends GhidraScript {
         }
 
         int matches = 0;
+        int calls = 0;
         ReferenceIterator references = currentProgram.getReferenceManager().getReferencesTo(callee);
-        while (references.hasNext() && matches < MAX_MATCHES && !monitor.isCancelled()) {
+        while (references.hasNext()) {
+            monitor.checkCancelled();
             Reference reference = references.next();
             Instruction call = currentProgram.getListing()
                 .getInstructionAt(reference.getFromAddress());
             if (call == null || !call.getFlowType().isCall()) continue;
+            calls++;
 
-            Function function = currentProgram.getFunctionManager()
-                .getFunctionContaining(call.getAddress());
-            Instruction cursor = call;
+            List<Instruction> setup = argumentSetup(call);
             boolean matched = false;
-            for (int count = 0; count < PRECEDING_INSTRUCTIONS; count++) {
-                cursor = cursor.getPrevious();
-                if (cursor == null || (function != null
-                    && !function.getBody().contains(cursor.getAddress()))) break;
-                if (cursor.getFlowType().isCall()) break;
-                if (containsRequestedScalar(cursor, requested)) matched = true;
-            }
+            for (Instruction instruction : setup) matched |= containsRequestedImmediate(instruction, requested);
             if (!matched) continue;
+            if (matches == MAX_MATCHES) {
+                println("Output capped at " + MAX_MATCHES + " calls; the scan did not finish.");
+                return;
+            }
 
             matches++;
+            Function function = currentProgram.getFunctionManager()
+                .getFunctionContaining(call.getAddress());
             println("===== call " + call.getAddress()
                 + (function == null ? "" : " in " + function.getEntryPoint()
                     + " " + function.getName()) + " =====");
-            cursor = call;
-            Instruction[] before = new Instruction[PRECEDING_INSTRUCTIONS];
-            int populated = 0;
-            for (; populated < PRECEDING_INSTRUCTIONS; populated++) {
-                cursor = cursor.getPrevious();
-                if (cursor == null || (function != null
-                    && !function.getBody().contains(cursor.getAddress()))) break;
-                if (cursor.getFlowType().isCall()) break;
-                before[populated] = cursor;
-            }
-            for (int index = populated - 1; index >= 0; index--) {
-                println("  " + before[index].getAddress() + "  " + before[index]);
+            for (int index = setup.size() - 1; index >= 0; index--) {
+                println("  " + setup.get(index).getAddress() + "  " + setup.get(index));
             }
             println("> " + call.getAddress() + "  " + call);
         }
 
-        if (matches == 0) println("No matching call sites found.");
-        else if (matches == MAX_MATCHES) println("Output capped at " + MAX_MATCHES + " calls.");
+        if (matches == 0) println("No matching call sites among " + calls + " calls.");
+        else println("Matched " + matches + " of " + calls + " calls; the scan covered every call Ghidra "
+            + "references to the callee.");
     }
 
-    private static boolean containsRequestedScalar(Instruction instruction, Set<Long> requested) {
+    // The instructions before the call, nearest first, that run on every path reaching the call.
+    private List<Instruction> argumentSetup(Instruction call) {
+        List<Instruction> setup = new ArrayList<>();
+        Instruction later = call;
+        while (setup.size() < PRECEDING_INSTRUCTIONS && !isFlowTarget(later)) {
+            Instruction cursor = later.getPrevious();
+            if (cursor == null || !later.getAddress().equals(cursor.getFallThrough())
+                || cursor.getFlowType().isCall()) break;
+            setup.add(cursor);
+            later = cursor;
+        }
+        return setup;
+    }
+
+    private boolean isFlowTarget(Instruction instruction) {
+        ReferenceIterator references = currentProgram.getReferenceManager().getReferencesTo(instruction.getAddress());
+        while (references.hasNext()) {
+            if (references.next().getReferenceType().isFlow()) return true;
+        }
+        return false;
+    }
+
+    // Ghidra also marks an immediate that points into the program as an address (PUSH 0x41c000), so
+    // only a dynamic or indirect operand counts as memory.
+    private static boolean containsRequestedImmediate(Instruction instruction, Set<Long> requested) {
         for (int operand = 0; operand < instruction.getNumOperands(); operand++) {
+            int type = instruction.getOperandType(operand);
+            if (OperandType.isDynamic(type) || OperandType.isIndirect(type)) continue;
             for (Object object : instruction.getOpObjects(operand)) {
                 if (object instanceof Scalar scalar && matchesRequested(scalar, requested)) {
                     return true;

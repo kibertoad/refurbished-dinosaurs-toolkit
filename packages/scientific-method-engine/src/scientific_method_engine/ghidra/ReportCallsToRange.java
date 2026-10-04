@@ -36,7 +36,8 @@ public class ReportCallsToRange extends GhidraScript {
         int calls = 0;
         int jumps = 0;
         boolean capped = false;
-        while (instructions.hasNext() && !monitor.isCancelled()) {
+        while (instructions.hasNext()) {
+            monitor.checkCancelled();
             Instruction instruction = instructions.next();
             FlowType flow = instruction.getFlowType();
             boolean call = flow.isCall();

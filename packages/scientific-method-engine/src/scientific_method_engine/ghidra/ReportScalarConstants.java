@@ -32,25 +32,28 @@ public class ReportScalarConstants extends GhidraScript {
         for (int index = first; index < arguments.length; index++) requested.add(Long.decode(arguments[index]));
         int matches = 0;
         InstructionIterator instructions = currentProgram.getListing().getInstructions(true);
-        while (instructions.hasNext() && !monitor.isCancelled()) {
+        while (instructions.hasNext()) {
+            monitor.checkCancelled();
             Instruction instruction = instructions.next();
             for (int operand = 0; operand < instruction.getNumOperands(); operand++) {
-                String operandKind = isMemory(instruction.getOperandType(operand)) ? "memory" : "immediate";
-                if (kind != null && !kind.equals(operandKind)) continue;
+                String operandKind = null;
                 for (Object object : instruction.getOpObjects(operand)) {
                     if (!(object instanceof Scalar scalar)
                         || !matchesRequested(scalar, requested)) continue;
+                    if (operandKind == null) operandKind = operandKind(instruction.getOperandType(operand));
+                    if (kind != null && !kind.equals(operandKind)) break;
+                    if (matches == MAX_MATCHES) {
+                        println("Output capped at " + MAX_MATCHES + " matches; the search did not finish. "
+                            + "Narrow it with an operand kind or fewer values.");
+                        return;
+                    }
                     Function function = currentProgram.getFunctionManager()
                         .getFunctionContaining(instruction.getAddress());
                     println(scalar.getUnsignedValue() + " at " + instruction.getAddress()
                         + (function == null ? "" : " in " + function.getEntryPoint()
                             + " " + function.getName())
                         + " :: " + operandKind + " operand " + operand + " of " + instruction);
-                    if (++matches >= MAX_MATCHES) {
-                        println("Output capped at " + MAX_MATCHES + " matches; the search did not finish. "
-                            + "Narrow it with an operand kind or fewer values.");
-                        return;
-                    }
+                    matches++;
                 }
             }
         }
@@ -58,10 +61,11 @@ public class ReportScalarConstants extends GhidraScript {
         else println("Matched " + matches + " operands; the search covered every instruction.");
     }
 
-    // A displacement inside a memory operand, such as [ECX + 0x44], is a memory operand; an operand
-    // that is only a scalar is an immediate.
-    private static boolean isMemory(int type) {
-        return OperandType.isDynamic(type) || OperandType.isIndirect(type) || OperandType.isAddress(type);
+    // A displacement inside a memory operand, such as [ECX + 0x44], is a memory operand. Any other
+    // scalar is an immediate, including one Ghidra marks as an address because it points into the
+    // program (PUSH 0x41c000 to a string).
+    private static String operandKind(int type) {
+        return OperandType.isDynamic(type) || OperandType.isIndirect(type) ? "memory" : "immediate";
     }
 
     // Arguments are decoded as signed longs while operands are reported unsigned, so a request

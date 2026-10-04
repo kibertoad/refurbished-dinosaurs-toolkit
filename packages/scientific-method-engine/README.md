@@ -29,7 +29,9 @@ ghidra-scripts` prints their directory, for Ghidra's `-scriptPath`:
 ```
 
 Addresses are Ghidra addresses (`0x00401000`, or `1028:d820` for segmented programs). Report scripts
-print to the analyzer log and cap their output; a capped report says that its scan did not finish.
+print to the analyzer log and cap their output. `ReportScalarConstants`, `ReportCallsToRange`,
+`ReportConstantFirstArgumentCalls` and `ReportCallSitesWithScalars` say when a cap stopped their scan;
+for the other report scripts, a result count equal to the cap means the same.
 `analyzeHeadless` can exit with code 0 after a script failed to load, so check the log for the
 script's own result lines ([the Ghidra workflow](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/ghidra-workflow.md)
 says what a run must show). The scripts compile against Ghidra 12.1.
@@ -58,8 +60,8 @@ Finding references and calls:
 | `ReportScalarConstants` | optional operand kind (`immediate` or `memory`), one or more scalar values | instructions using any of them, unsigned or signed, as an immediate or a memory-operand displacement such as `[ECX + 0x44]`, with the kind on each line |
 | `ReportFunctionScalarConstants` | function address, one or more scalar values | instructions inside one function using any of them, compared unsigned |
 | `ReportCallArguments` | callee address | the three nearest pushed arguments at every call Ghidra references to the callee |
-| `ReportCallSitesWithScalars` | callee address, one or more scalar values | calls whose argument setup contains a requested value |
-| `ReportConstantFirstArgumentCalls` | callee address, constant | cdecl calls whose first argument is the constant: the nearest `PUSH` before the call, past instructions that fall through, leave the stack pointer alone and are no jump target. Only calls Ghidra references to the callee are read |
+| `ReportCallSitesWithScalars` | callee address, one or more scalar values | calls whose argument setup contains a requested value as an immediate, never as a memory-operand displacement. The setup is up to 12 instructions that fall through to the call, ending after a jump or call target and before an earlier call. Then the counts or the cap |
+| `ReportConstantFirstArgumentCalls` | callee address, constant | cdecl calls whose first argument is the constant: the nearest `PUSH` before the call, past instructions that fall through, are no jump target and write neither the stack pointer nor memory addressed through it. Only calls Ghidra references to the callee are read |
 | `ReportFirstArgumentCallSummary` | callee address | the literal first argument of every call, read as in `ReportConstantFirstArgumentCalls`, and each call without one with the reason |
 | `ReportCallsToRange` | start address, end address (inclusive), optional kind (`all`, `calls` or `jumps`; default `all`) | calls and jumps whose target lies in the range, each labelled `[call]` or `[jump]`, then the counts or the cap |
 | `ReportCallPaths` | start function, target function, maximum depth | direct-call paths between the two |

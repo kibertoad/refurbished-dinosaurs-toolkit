@@ -1,6 +1,7 @@
 // Reports direct x86 cdecl calls whose first argument is one requested constant.
 // The first argument is the nearest PUSH before the call. Instructions between them are passed over
-// only when they fall through, leave the stack pointer alone and are not a flow target, as in
+// only when they fall through, are not a flow target and write neither the stack pointer nor
+// memory addressed through it (MOV [ESP],EAX), as in
 // "PUSH 5; MOV ECX,ESI; CALL".
 // @category Restoration
 
@@ -10,9 +11,14 @@ import ghidra.program.model.lang.OperandType;
 import ghidra.program.model.lang.Register;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
+import ghidra.program.model.pcode.PcodeOp;
+import ghidra.program.model.pcode.Varnode;
 import ghidra.program.model.scalar.Scalar;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.ReferenceIterator;
+
+import java.util.HashSet;
+import java.util.Set;
 
 public class ReportConstantFirstArgumentCalls extends GhidraScript {
     private static final int MAX_CALLS = 300;
@@ -33,7 +39,8 @@ public class ReportConstantFirstArgumentCalls extends GhidraScript {
         int calls = 0;
         int unknown = 0;
         boolean capped = false;
-        while (references.hasNext() && !monitor.isCancelled()) {
+        while (references.hasNext()) {
+            monitor.checkCancelled();
             Reference reference = references.next();
             Instruction call = currentProgram.getListing().getInstructionAt(reference.getFromAddress());
             if (call == null || !call.getFlowType().isCall()) continue;
@@ -70,7 +77,8 @@ public class ReportConstantFirstArgumentCalls extends GhidraScript {
             Instruction cursor = later.getPrevious();
             if (cursor == null || !later.getAddress().equals(cursor.getFallThrough())) return null;
             if ("PUSH".equals(cursor.getMnemonicString())) return cursor;
-            if (cursor.getFlowType().isCall() || writes(cursor, stackPointer)) return null;
+            if (cursor.getFlowType().isCall() || writes(cursor, stackPointer)
+                || storesThroughStack(cursor, stackPointer)) return null;
             later = cursor;
         }
         return null;
@@ -91,11 +99,40 @@ public class ReportConstantFirstArgumentCalls extends GhidraScript {
         return false;
     }
 
+    // True when the instruction stores to an address computed from the stack pointer, such as
+    // MOV [ESP],EAX, which can overwrite the pushed argument. Ghidra lists no result object for a
+    // memory destination, so the instruction's p-code is read instead.
+    private boolean storesThroughStack(Instruction instruction, Register stackPointer) {
+        Set<Varnode> fromStack = new HashSet<>();
+        for (PcodeOp op : instruction.getPcode()) {
+            if (op.getOpcode() == PcodeOp.STORE) {
+                if (isFromStack(op.getInput(1), fromStack, stackPointer)) return true;
+                continue;
+            }
+            Varnode output = op.getOutput();
+            if (output == null) continue;
+            boolean derived = false;
+            for (Varnode input : op.getInputs()) derived |= isFromStack(input, fromStack, stackPointer);
+            if (derived) fromStack.add(output);
+            else fromStack.remove(output);
+        }
+        return false;
+    }
+
+    private boolean isFromStack(Varnode varnode, Set<Varnode> fromStack, Register stackPointer) {
+        if (fromStack.contains(varnode)) return true;
+        if (!varnode.isRegister()) return false;
+        Register register = currentProgram.getRegister(varnode.getAddress(), varnode.getSize());
+        return register != null && register.getBaseRegister().equals(stackPointer);
+    }
+
     // Only an immediate operand is a literal; PUSH [EBP+8] carries the scalar 8 as a displacement.
+    // Ghidra also marks an immediate that points into the program as an address (PUSH 0x41c000),
+    // so only a dynamic or indirect operand counts as memory.
     private static boolean isPushOf(Instruction instruction, long requested) {
         if (instruction == null) return false;
         int type = instruction.getOperandType(0);
-        if (OperandType.isDynamic(type) || OperandType.isIndirect(type) || OperandType.isAddress(type)) return false;
+        if (OperandType.isDynamic(type) || OperandType.isIndirect(type)) return false;
         for (Object object : instruction.getOpObjects(0)) {
             if (object instanceof Scalar scalar
                 && scalar.getUnsignedValue() == requested) return true;

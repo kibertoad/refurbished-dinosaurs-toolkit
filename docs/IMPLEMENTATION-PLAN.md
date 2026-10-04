@@ -128,8 +128,8 @@ Tooling outcome: the packaged Ghidra scripts say what their scans covered and wh
 `ReportScalarConstants` labels each match as an immediate or a memory-operand displacement and can
 keep one kind. `ReportCallsToRange` labels calls and jumps and can keep one kind. A capped report
 says its scan did not finish. The first-argument scripts take the nearest `PUSH` before the call,
-passing over instructions that fall through, leave the stack pointer alone and are no flow target,
-and never read a memory operand's displacement as a literal. `ReportFunctionSummary` prints body
+passing over instructions that fall through, are no flow target and write neither the stack pointer
+nor memory addressed through it, and never read a memory operand's displacement as a literal. `ReportFunctionSummary` prints body
 ranges and calls without a continuation in the body, and ends with the addresses it could not
 summarize. `ReportDecompileWindow` cuts a count above its cap and names the next window.
 `ExportFunctionFingerprints` replaces its output only when the export completes. Methodology that

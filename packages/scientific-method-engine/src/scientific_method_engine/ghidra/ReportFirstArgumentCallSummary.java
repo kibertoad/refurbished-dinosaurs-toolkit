@@ -1,10 +1,13 @@
 // Summarizes immediate x86 cdecl first arguments at every direct call to one function.
 // The first argument is the nearest PUSH before the call. Instructions between them are passed over
-// only when they fall through, leave the stack pointer alone and are not a flow target, as in
+// only when they fall through, are not a flow target and write neither the stack pointer nor
+// memory addressed through it (MOV [ESP],EAX), as in
 // "PUSH 5; MOV ECX,ESI; CALL". Calls without such a literal PUSH are listed with the reason.
 // @category Restoration
 
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 import ghidra.app.script.GhidraScript;
@@ -13,6 +16,8 @@ import ghidra.program.model.lang.OperandType;
 import ghidra.program.model.lang.Register;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
+import ghidra.program.model.pcode.PcodeOp;
+import ghidra.program.model.pcode.Varnode;
 import ghidra.program.model.scalar.Scalar;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.ReferenceIterator;
@@ -33,7 +38,8 @@ public class ReportFirstArgumentCallSummary extends GhidraScript {
         Map<Long, Integer> literals = new TreeMap<>();
         int calls = 0;
         int nonLiteral = 0;
-        while (references.hasNext() && !monitor.isCancelled()) {
+        while (references.hasNext()) {
+            monitor.checkCancelled();
             Reference reference = references.next();
             Instruction call = currentProgram.getListing().getInstructionAt(reference.getFromAddress());
             if (call == null || !call.getFlowType().isCall()) continue;
@@ -80,6 +86,10 @@ public class ReportFirstArgumentCallSummary extends GhidraScript {
                 reason.append(cursor.getAddress()).append(" ").append(cursor).append(" changes the stack");
                 return null;
             }
+            if (storesThroughStack(cursor, stackPointer)) {
+                reason.append(cursor.getAddress()).append(" ").append(cursor).append(" writes stack memory");
+                return null;
+            }
             later = cursor;
         }
         reason.append("no PUSH within ").append(MAX_PASSED_OVER).append(" instructions");
@@ -101,11 +111,40 @@ public class ReportFirstArgumentCallSummary extends GhidraScript {
         return false;
     }
 
+    // True when the instruction stores to an address computed from the stack pointer, such as
+    // MOV [ESP],EAX, which can overwrite the pushed argument. Ghidra lists no result object for a
+    // memory destination, so the instruction's p-code is read instead.
+    private boolean storesThroughStack(Instruction instruction, Register stackPointer) {
+        Set<Varnode> fromStack = new HashSet<>();
+        for (PcodeOp op : instruction.getPcode()) {
+            if (op.getOpcode() == PcodeOp.STORE) {
+                if (isFromStack(op.getInput(1), fromStack, stackPointer)) return true;
+                continue;
+            }
+            Varnode output = op.getOutput();
+            if (output == null) continue;
+            boolean derived = false;
+            for (Varnode input : op.getInputs()) derived |= isFromStack(input, fromStack, stackPointer);
+            if (derived) fromStack.add(output);
+            else fromStack.remove(output);
+        }
+        return false;
+    }
+
+    private boolean isFromStack(Varnode varnode, Set<Varnode> fromStack, Register stackPointer) {
+        if (fromStack.contains(varnode)) return true;
+        if (!varnode.isRegister()) return false;
+        Register register = currentProgram.getRegister(varnode.getAddress(), varnode.getSize());
+        return register != null && register.getBaseRegister().equals(stackPointer);
+    }
+
     // Only an immediate operand is a literal; PUSH [EBP+8] carries the scalar 8 as a displacement.
+    // Ghidra also marks an immediate that points into the program as an address (PUSH 0x41c000),
+    // so only a dynamic or indirect operand counts as memory.
     private static Long pushedLiteral(Instruction instruction) {
         if (instruction == null) return null;
         int type = instruction.getOperandType(0);
-        if (OperandType.isDynamic(type) || OperandType.isIndirect(type) || OperandType.isAddress(type)) return null;
+        if (OperandType.isDynamic(type) || OperandType.isIndirect(type)) return null;
         for (Object object : instruction.getOpObjects(0)) {
             if (object instanceof Scalar scalar) return scalar.getUnsignedValue();
         }

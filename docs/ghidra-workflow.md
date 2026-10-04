@@ -31,7 +31,10 @@ Typical headless invocation:
 `analyzeHeadless` can exit with code 0 and report a saved project after a script failed to compile
 or load. The exit code alone accepts an empty run. Treat a run as evidence only when:
 
-- the log has no `REPORT SCRIPT ERROR` and no `ERROR` line from the script;
+- the log has no `REPORT SCRIPT ERROR` and no exception from the script. A script's own error line
+  about one input rejects only that input: `ReportFunctionSummary` prints an error for each
+  requested address without a function or with a failed decompile, and still summarizes the
+  others;
 - each script printed its own result lines. Report scripts end with a count, a summary or an
   explicit "no match" line. Export scripts write their file only when the walk completes, so a
   missing file means the export failed;
@@ -44,10 +47,13 @@ cannot write them fails script loading in exactly this silent way.
 
 ## Reading capped and partial reports
 
-Report scripts cap their output. A capped report says so and says the scan did not finish; it
-never supports a count or an absence. Narrow the query and run it again: an operand kind for
-`ReportScalarConstants`, `calls` or `jumps` for `ReportCallsToRange`, a smaller range. A capped
-census of 300 hits can hide the operand kind you were looking for.
+Report scripts cap their output. `ReportScalarConstants`, `ReportCallsToRange`,
+`ReportConstantFirstArgumentCalls` and `ReportCallSitesWithScalars` say when a cap stopped their
+scan. The other report scripts may only print the capped number of results, so treat a result count
+equal to the cap as a scan that did not finish. A capped report never supports a count or an
+absence. Narrow the query and run it again: an operand kind for `ReportScalarConstants`, `calls` or
+`jumps` for `ReportCallsToRange`, a smaller range. A capped census of 300 hits can hide the operand
+kind you were looking for.
 
 `ReportDecompileWindow` prints at most 160 lines per run and cuts a larger count to that cap. Its
 header gives the function's total line count, and the last line names the next window's start.
@@ -74,6 +80,8 @@ next to any "no callers", "no references" or "exactly N sites" claim:
 - The first-argument scripts take the nearest `PUSH` before the call. A value moved into a
   register after the last push (`PUSH ESI; MOV ESI,0x23; CALL`) is not the first stack argument;
   if the callee reads it, it is a register argument, and the scripts list the call as non-literal.
+  A store through the stack pointer between the push and the call (`MOV [ESP],EAX`) can replace the
+  pushed value, so the look-back stops there and the call is non-literal too.
 - Ghidra spells a repeat-prefixed string instruction with a suffix: `MOVSD.REP`, `CMPSB.REPE`,
   `SCASB.REPNE`. A search for the bare mnemonic misses them.
 - `ReportSymbolReferences` matches each fragment as a case-insensitive substring of a symbol's
