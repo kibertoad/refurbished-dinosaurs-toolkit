@@ -1,5 +1,6 @@
 """Synthetic machine code only. No original binaries or analysis artifacts."""
 import hashlib
+import itertools
 import json
 import os
 from pathlib import Path
@@ -725,6 +726,84 @@ class ArgumentFrameTests(unittest.TestCase):
         frame = self.frames(c, registers={"ss": 0x2000, "sp": 0x100, "ds": 0x3000})[1][0]
         self.assertEqual([(s["offset"], s["width"], s["writerSite"]) for s in frame["slots"]], [(0, 2, 0)])
         self.assertTrue(frame["settledOnThisPath"], frame["openReasons"])
+
+    def test_every_slot_agrees_with_the_callee_read_of_the_same_byte(self):
+        # Each caller fills a frame through pushes, a reserved word, stores through DS or ES and a
+        # modeled service, on a symbolic or concrete stack. The callee reads every pushed word, on
+        # one variant after an ES store of its own. A read that runs before any callee write
+        # through another segment or base sees each byte as the slot does: the same write order,
+        # or an unwritten cause naming the event the slot's reason names.
+        callers = [("6a 01 6a 02", 2), ("6a 01 c7 06 00 01 05 00 6a 02", 2), ("83 ec 02 88 07", 1),
+                   ("6a 01 26 c6 07 01", 1), ("6a 01 SERVICE 6a 02", 2), ("83 ec 02 SERVICE 26 c6 07 01", 1),
+                   ("6a 01 89 e3 c7 07 09 00", 1), ("6a 01 SERVICE", 1)]
+        registers = [{}, {"ss": 0x2000, "sp": 0x100}, {"ss": 0x2000, "sp": 0x100, "ds": 0x2000},
+                     {"ss": 0x2000, "sp": 0x100, "ds": 0x3000}]
+        scopes = [None, {"segment": "ss", "base": "sp", "displacement": 0, "bytes": 1, "evidence": "synthetic kept byte"}]
+        compared, causes = 0, set()
+        for (caller, words), regs, scope, callee_store in itertools.product(callers, registers, scopes, (False, True)):
+            c, sites = Code(), []
+            for n, part in enumerate(caller.split("SERVICE")):
+                if n:
+                    sites.append(len(c.data))
+                    c.branch("e8", "service")
+                c.emit(part)
+            c.branch("e8", "callee").emit("83 c4 %02x c3" % (2 * words)).label("service").emit("c3")
+            c.label("callee").emit("55 89 e5" + (" 26 c6 07 01" if callee_store else "")
+                                   + "".join(" 8b 46 %02x" % (4 + 2 * n) for n in range(words)) + " 5d c3")
+            models = [{"site": site, "evidence": "synthetic service", "preserves": ["ss", "esp", "ds", "es", "ebx"], "cases": [{}],
+                       **({"preservesMemory": [scope]} if scope else {})} for site in sites]
+            extra = {"registers": regs, "callModels": models}
+            traced, mapped = report(c, "trace", **extra), report(c, "arguments", **extra)
+            self.assertEqual(len(traced["paths"]), len(mapped["paths"]))
+            for path, mapped_path in zip(traced["paths"], mapped["paths"]):
+                every = path["events"]
+                for frame in mapped_path["argumentFrames"]:
+                    push = every[frame["callOrder"] + 1]["interval"]
+                    group = (push["segment"], push["base"])
+                    for grouping in frame["groupings"]:
+                        between = every[frame["callOrder"] + 1:grouping["readOrder"]]
+                        if any(e["kind"] == "write" and (e["interval"]["segment"], e["interval"]["base"]) != group for e in between):
+                            continue
+                        read = every[grouping["readOrder"]]
+                        for i, row in enumerate(read["byteProducers"]):
+                            at = grouping["offset"] + i
+                            slot = next(s for s in frame["slots"] if s["offset"] <= at < s["offset"] + s["width"])
+                            if slot["writerSite"] is not None:
+                                self.assertEqual(row["writeOrder"], slot["writerOrder"], (c.data.hex(), regs, scope))
+                                causes.add("written")
+                            else:
+                                cause, order = row["unwritten"]["cause"], row["unwritten"]["order"]
+                                expected = ("no write on this path" if cause == "no write on this path" else
+                                            "memory invalidated by the modeled call at " + str(every[order]["callSite"])
+                                            if cause == "dropped by a modeled call" else
+                                            f"memory possibly overwritten through another address by the write at {every[order]['site']}")
+                                self.assertEqual(slot["reason"], expected, (c.data.hex(), regs, scope))
+                                causes.add(cause)
+                            compared += 1
+        self.assertGreater(compared, 100)
+        self.assertEqual(causes, {"written", "no write on this path", "dropped by a modeled call",
+                                  "possibly written by an aliasing write", "dropped by a possibly aliasing write"})
+
+    def test_the_slot_record_stays_out_of_every_reported_event(self):
+        # The ordinary path stops at a declared table jump; its continuation calls the callee.
+        c = Code().emit("ff e3").label("target").emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3")
+        c.label("callee").emit("55 89 e5 8b 46 04 5d c3").label("table")
+        data = c.bytes() + c.labels["target"].to_bytes(2, "little")
+        cfg = configuration(data, indirectJumps=[{"site": 0, "evidence": "synthetic table consumer", "exhaustive": True,
+                                                  "table": {"start": c.labels["table"], "count": 1, "stride": 2,
+                                                            "evidence": "synthetic table words"}}])
+        cfg["regions"][0]["end"] = c.labels["table"]
+        for command in ("arguments", "trace"):
+            r = run_report(data, cfg, command)
+            self.assertEqual(len(r["declaredContinuationPaths"]), 1)
+            calls = [e for group in ("paths", "declaredContinuationPaths") for path in r[group] for e in path["events"] if e["kind"] == "call"]
+            self.assertTrue(calls)
+            self.assertFalse([e for e in calls if "argumentSlots" in e])
+        # A call on an ordinary path keeps no record either.
+        c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("55 89 e5 8b 46 04 5d c3")
+        r, frames = self.frames(c)
+        self.assertEqual(len(frames), 1)
+        self.assertFalse([e for e in events(r, "call") if "argumentSlots" in e])
 
 
 class GhidraCrossCheckTests(unittest.TestCase):

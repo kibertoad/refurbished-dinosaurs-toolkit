@@ -136,6 +136,8 @@ class State:
         # name they had before the modeled call. They stay unread: no value, no producer.
         self.unread_memory = {}
         self.events = []
+        # Bytes above each traced call's return frame that the call event records (argument_slots); 0 records none.
+        self.argument_window = 0
         # Value transfers are recorded only for queries that trace declared return results.
         self.value_transfers = bool(config.get("returnContracts"))
         self.guards = []
@@ -267,23 +269,30 @@ class State:
         """The modeled value of one memory byte, or an unknown term produced by the current site."""
         return self.memory[key] if key in self.memory else unknown(self.unread_term(key), 8, self.at)
 
-    def unwritten(self, key):
-        """Why a byte has no modeled value: the cause and the order of the event behind it."""
+    def latest_aliasing_write(self, group, domain):
+        """The order of the newest write outside `group` that may have stored a byte of `domain`, or None."""
         # Writes to the key's own (segment, base) group store other offsets; any other write may alias.
-        # A later aliasing write is newer than the one that dropped the byte, so it is the one named.
-        lost = self.lost_memory.get(key)
-        group, a = key[:2], key_domain(key, self.bits, self.flat)
         latest = None
         for other, domains in self.writes.items():
             if other == group:
                 continue
-            if a is None:
+            if domain is None:
                 # Every write may alias a byte with no concrete domain; the group's newest decides.
                 order = max(domains.values())
             else:
-                order = max((o for b, o in domains.items() if b is None or not (a[1] <= b[0] or b[1] <= a[0])), default=None)
+                order = max((o for b, o in domains.items() if b is None or not (domain[1] <= b[0] or b[1] <= domain[0])), default=None)
             if order is not None and (latest is None or order > latest):
                 latest = order
+        return latest
+
+    def unwritten(self, key):
+        """Why a byte has no modeled value: the cause and the order of the event behind it."""
+        return self._unwritten(key, self.latest_aliasing_write(key[:2], key_domain(key, self.bits, self.flat)))
+
+    def _unwritten(self, key, latest):
+        # `latest` is latest_aliasing_write for the key's group and domain. A later aliasing write is
+        # newer than the one that dropped the byte, so it is the one named.
+        lost = self.lost_memory.get(key)
         if latest is not None and (lost is None or lost["order"] is None or latest > lost["order"]):
             return {"cause": "possibly written by an aliasing write", "order": latest}
         if lost is not None:
@@ -297,6 +306,34 @@ class State:
         if key in self.memory:
             return {"index": index, "producers": producers(self.memory[key]), "writeOrder": self.memory_writers.get(key)}
         return {"index": index, "producers": [], "writeOrder": None, "unwritten": self.unwritten(key)}
+
+    def argument_slots(self, return_bytes, window):
+        """The stack bytes above a call's return frame as a read of them would see them now.
+
+        Called right after a traced call pushed its return frame. Covers `window` bytes from the first
+        byte above the return frame and returns ``{"segment", "base", "start", "runs"}``: `start` is
+        that byte's offset in the stack's (segment, base) group, and each run is
+        ``(offset, width, writeOrder, unwritten)`` for adjacent bytes that ``byte_writer`` would give
+        the same write order, or the same ``unwritten`` cause and order.
+        """
+        segment, base, delta = self.location(self.segment("ss"), self.reg(self.sp))
+        linear = segment == ("linear",)
+        start = delta + return_bytes if linear else (delta + return_bytes) % (1 << self.bits)
+        runs, aliasing = [], {}
+        for at in range(window):
+            key = (segment, base, start + at if linear else (start + at) % (1 << self.bits))
+            if key in self.memory:
+                seen = (self.memory_writers.get(key), None)
+            else:
+                domain = key_domain(key, self.bits, self.flat)
+                if domain not in aliasing:
+                    aliasing[domain] = self.latest_aliasing_write(key[:2], domain)
+                seen = (None, self._unwritten(key, aliasing[domain]))
+            if runs and runs[-1][2:] == seen:
+                runs[-1] = (runs[-1][0], runs[-1][1] + 1, *seen)
+            else:
+                runs.append((at, 1, *seen))
+        return {"segment": segment, "base": base, "start": start, "runs": runs}
 
     def reg(self, name):
         root, low, bits = alias(name)

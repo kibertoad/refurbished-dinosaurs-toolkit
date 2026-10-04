@@ -7,9 +7,6 @@ amount never join or split slots. Whatever a read did not settle on the path sta
 """
 from capstone.x86 import X86_OP_IMM, X86_OP_REG
 
-from .machine import may_alias, written_domain
-from .memory_scopes import model_scopes
-
 # The argument bytes one frame maps; a wider frame is mapped up to here and stays open.
 WINDOW_BYTES = 256
 
@@ -39,60 +36,43 @@ def _covered(event, segment, base, start, width, modulus):
     return [at for at in offsets if 0 <= at < width]
 
 
-def _writers(events, before, segment, base, start, width, modulus, image, models):
-    """The last write before index `before` that covered each frame byte, and why each byte without one has none.
+def _slot_states(events, recorded, width):
+    """The write that last stored each frame byte when the call ran, and why each byte without one has none.
 
-    A modeled call drops every byte outside its `preservesMemory` scopes. Scopes name linear bytes,
-    so they keep only frame bytes of a linear stack; the search goes on past the call for those.
-    A write through another segment or base may have stored every frame byte it may alias, whether
-    or not it dropped a cached byte. The rule is the one the machine's ``unwritten`` applies, so a
-    slot and a callee read of it that runs before any callee write through another segment or base
-    name the same write.
+    `recorded` is the call event's ``argumentSlots``, from ``State.argument_slots``: the machine's own
+    record of each byte, so a slot and a callee read of it that runs before any callee write through
+    another segment or base name the same write.
     """
-    writers, invalidated = {}, {}
-    keys = [(segment, base, (start + at) % modulus if modulus else start + at) for at in range(width)]
-    for j in range(before - 1, -1, -1):
-        event = events[j]
-        interval = event.get("interval")
-        if event["kind"] == "write" and interval and (interval["segment"], interval["base"]) != (segment, base):
-            written = written_domain(interval["segment"], interval["base"], interval["start"],
-                                     interval["end"] - interval["start"], image.bits, image.flat)
-            for at, key in enumerate(keys):
-                if at not in writers and at not in invalidated and may_alias(key, written, image.bits, image.flat):
-                    invalidated[at] = f"memory possibly overwritten through another address by the write at {event['site']}"
-        if event["kind"] == "call-return" and event.get("unknownMemoryEffects"):
-            kept = set()
-            if segment == ("linear",):
-                kept = {at for scope in model_scopes(models, event)
-                        for at in range(scope["linearStart"], scope["linearEnd"])}
-            for at in range(width):
-                if at not in writers and at not in invalidated and start + at not in kept:
-                    invalidated[at] = "memory invalidated by the modeled call at " + str(event["callSite"])
-        for at in _covered(event, segment, base, start, width, modulus):
-            if at not in invalidated:
-                writers.setdefault(at, event)
-        if len(writers) + len(invalidated) == width:
+    writers, reasons = {}, {}
+    for offset, run, order, unwritten in recorded["runs"]:
+        if offset >= width:
             break
-    return writers, {at: invalidated.get(at, "no write on this path") for at in range(width) if at not in writers}
+        target, value = (writers, events[order]) if unwritten is None else (reasons, _reason(events, unwritten))
+        for at in range(offset, min(offset + run, width)):
+            target[at] = value
+    return writers, reasons
 
 
-def _frame(image, events, index, models):
+def _reason(events, unwritten):
+    """A slot's reason for a byte's ``unwritten`` cause, naming the event's site."""
+    cause, order = unwritten["cause"], unwritten["order"]
+    if cause in ("possibly written by an aliasing write", "dropped by a possibly aliasing write"):
+        return f"memory possibly overwritten through another address by the write at {events[order]['site']}"
+    if cause == "dropped by a modeled call":
+        return "memory invalidated by the modeled call at " + str(events[order]["callSite"])
+    return cause
+
+
+def _frame(image, events, index):
     call = events[index]
     depth = call["depth"]
-    pushes = [e for e in events[index + 1:index + 3] if e["kind"] == "write" and e.get("role") == "push" and e["site"] == call["site"]]
+    recorded = call.pop("argumentSlots")
     end = next((j for j in range(index + 1, len(events))
                 if events[j]["kind"] == "call-return" and events[j].get("callSite") == call["site"] and events[j]["depth"] == depth), None)
     inside = events[index + 1:end if end is not None else len(events)]
     open_reasons = []
-    if not pushes:
-        return None
-    # The return-address push comes last and sits at the callee's entry SP; the frame's return bytes lie above it.
-    entry = pushes[-1]["interval"]
-    segment, base = entry["segment"], entry["base"]
+    segment, base, start = recorded["segment"], recorded["base"], recorded["start"]
     modulus = None if segment == ("linear",) else 1 << image.bits
-    start = entry["start"] + call["returnFrameBytes"]
-    if modulus:
-        start %= modulus
     reads = [e for e in inside if e["kind"] == "read" and e.get("argument") and e["depth"] == depth + 1]
     returned = next((e for e in inside if e["kind"] == "return" and e["depth"] == depth + 1 and e.get("callSite") == call["site"]), None)
     callee_cleanup = returned["cleanupBytes"] if returned else None
@@ -112,7 +92,7 @@ def _frame(image, events, index, models):
 
     # Slots: runs of argument bytes that one write event last covered.
     slots, by_byte = [], {}
-    writers, reasons = _writers(events, index, segment, base, start, width, modulus, image, models)
+    writers, reasons = _slot_states(events, recorded, width)
     for at in range(width):
         writer = writers.get(at)
         key = writer["order"] if writer else reasons[at]
@@ -207,15 +187,20 @@ def argument_frames(report, image):
     byte from the caller; a path that skipped a read leaves the site consistent but not agreed.
     A read that saw bytes the callee stored itself, or bytes with no known caller writer, stays
     listed and marked with the paths it was made on that way, and its conflicts stay listed, but
-    those bytes do not decide whether the widths are consistent.
+    those bytes do not decide whether the widths are consistent. The report must come from
+    ``trace`` with ``argument_window=WINDOW_BYTES``: each traced call's slots come from its
+    ``argumentSlots`` record, which this removes from every path, declared continuations included.
     """
     sites = {}
     for path_index, path in enumerate(report["paths"]):
         events = path["events"]
-        frames = [_frame(image, events, i, path["conditionalModels"]) for i, e in enumerate(events) if e["kind"] == "call" and "returnFrameBytes" in e]
-        path["argumentFrames"] = [f for f in frames if f is not None]
+        path["argumentFrames"] = [_frame(image, events, i) for i, e in enumerate(events) if e["kind"] == "call" and "returnFrameBytes" in e]
         for frame in path["argumentFrames"]:
             sites.setdefault(frame["callSite"], []).append((path_index, frame))
+    # Continuations get no frames; their calls' slot records are dropped unread.
+    for path in report.get("declaredContinuationPaths", ()):
+        for event in path["events"]:
+            event.pop("argumentSlots", None)
     report["argumentFrameSites"] = []
     for site, rows in sorted(sites.items()):
         # A set holds each read's grouping too: a far-pointer load and a plain dword over the same bytes disagree.
