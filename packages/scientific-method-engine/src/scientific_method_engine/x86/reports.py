@@ -12,7 +12,7 @@ from .argument_frames import WINDOW_BYTES, argument_frames, stack_cleanup
 from .memory_scopes import model_scopes
 from .result_flow import return_flows
 from .image import Image, integer
-from .trace import (trace, walk, call_target, unsupported_transfer, uncovered, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
+from .trace import (trace, walk, cfg_step, call_target, unsupported_transfer, uncovered, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
                     RETURNS, INTERRUPTS, PORTS, PORT_INPUTS, port_width, budget_input)
 from .pcode_backend import interrupt_vector
 
@@ -233,24 +233,12 @@ def _function_exit(image, start, limit, follow_flat_ports, cache):
         if ins is None:
             continue
         seen[at] = ins
-        m = base_mnemonic(ins)
-        if unsupported_transfer(image, ins):
-            continue
-        following = successors[at] = []
-        if at in image.indirect_jumps:
-            following.extend(row["target"] for row in image.indirect_jumps[at]["rows"])
-        elif m in RETURNS:
-            if not (image.flat and m in ("iret", "iretd")):
-                exits.append(at)
-        else:
-            if m == "ljmp" or m.startswith(("j", "loop")):
-                target, _ = call_target(image, at, ins)
-                if target is not None:
-                    following.append(target)
-            if not (m in ("jmp", "ljmp") or m in INTERRUPTS or m == "hlt"
-                    or (m in PORTS and image.flat and not follow_flat_ports)):
-                following.append(at + ins.size)
-        pending.extend(following)
+        # The same successor rule as walk(), except that a call continues only at its return site.
+        step = cfg_step(image, at, ins, follow_flat_ports, step_over_calls=True)
+        successors[at] = step.successors
+        if step.returns and not (image.flat and base_mnemonic(ins) in ("iret", "iretd")):
+            exits.append(at)
+        pending.extend(step.successors)
     # Only the sites a return is reachable from lie on the way to it; a branch that never returns is left out.
     callers = {}
     for at, following in successors.items():
@@ -925,11 +913,17 @@ def body(image, entry, limit=10000):
     continuation is listed as an assumption. Interrupts and port accesses are also listed as
     hardware boundaries. A direct jump or conditional branch to another established entry or
     another region, and every far jump, is a tail transfer.
+
+    flow records, for each instruction read, what the reading did after it. readsOn is whether it queued the
+    following instruction as the fall-through, or None at a transfer outside the frame model, where it stopped
+    with a gap and decided nothing. targets lists the jump or branch targets the instruction names (None for
+    one it could not resolve), including targets that leave the body. Reports that need where the body goes
+    from an instruction read flow instead of restating these rules.
     """
     integer(limit, 1, 100000, "instruction limit")
     established = set(entries(image))
     pending, seen, exits, calls, gaps, assumed, shared = [entry], {}, [], [], [], [], set()
-    hardware = []
+    hardware, flow = [], {}
 
     def leaves(at, target):
         return (target in established and target != entry) or image.region(target) is not image.region(at)
@@ -948,7 +942,9 @@ def body(image, entry, limit=10000):
         if at != entry and at in established:
             shared.add(at)
         m, following = base_mnemonic(ins), at + ins.size
+        step = flow[at] = {"readsOn": False, "targets": []}
         if unsupported_transfer(image, ins):
+            step["readsOn"] = None
             gaps.append({"site": at, "reason": "unsupported control-transfer frame encoding"})
             continue
         if m in RETURNS:
@@ -961,12 +957,13 @@ def body(image, entry, limit=10000):
             hardware.append(hardware_boundary(image, at, ins))
             assumed.append({"site": at, "assumption": ("the interrupt returns to the next instruction" if m in INTERRUPTS
                                                       else "the port access continues to the next instruction")})
+            step["readsOn"] = True
             pending.append(following)
             continue
         if m in ("jmp", "ljmp"):
             declaration = image.indirect_jumps.get(at)
             if declaration is not None:
-                targets = sorted(set(row["target"] for row in declaration["rows"]))
+                targets = step["targets"] = sorted(set(row["target"] for row in declaration["rows"]))
                 # The full declaration is reported once, in indirectJumpDeclarations.
                 assumed.append({"site": at, "assumption": "indirect jump consumes the declared source table",
                                 "targets": targets, "exhaustive": declaration["exhaustive"]})
@@ -982,6 +979,7 @@ def body(image, entry, limit=10000):
                     gaps.append({"site": at, "reason": "indirect jump table is not declared exhaustive"})
                 continue
             target, provenance = call_target(image, at, ins)
+            step["targets"] = [target]
             if target is None:
                 exits.append({"site": at, "kind": "unresolved jump", "reason": provenance.get("reason")})
                 gaps.append({"site": at, "reason": "jump target unresolved; the body may continue elsewhere"})
@@ -995,16 +993,19 @@ def body(image, entry, limit=10000):
             calls.append({"site": at, "target": target, "encoding": m,
                           **({} if target is not None else {"reason": provenance.get("reason")})})
             assumed.append({"site": at, "assumption": "the callee returns to the next instruction"})
+            step["readsOn"] = True
             pending.append(following)
             continue
         if m.startswith("j") or m.startswith("loop"):
             target, provenance = call_target(image, at, ins)
+            step["targets"] = [target]
             if target is None:
                 gaps.append({"site": at, "reason": provenance.get("reason", "branch target outside declared regions")})
             elif leaves(at, target):
                 exits.append({"site": at, "kind": "tail transfer", "target": target, "conditional": True})
             else:
                 pending.append(target)
+        step["readsOn"] = True
         pending.append(following)
     intervals = sorted((at, at + ins.size) for at, ins in seen.items())
     runs, overlaps = [], []
@@ -1023,7 +1024,7 @@ def body(image, entry, limit=10000):
             "span": {"start": runs[0][0], "end": runs[-1][1]} if runs else None, "coveredBytes": covered,
             "exits": sorted(exits, key=lambda e: e["site"]), "calls": sorted(calls, key=lambda c: c["site"]),
             "assumedContinuations": sorted(assumed, key=lambda a: a["site"]), "sharedEntries": sorted(shared),
-            "hardwareBoundaries": sorted(hardware, key=lambda h: h["site"]),
+            "hardwareBoundaries": sorted(hardware, key=lambda h: h["site"]), "flow": flow,
             "gaps": gaps, "complete": bool(exits) and not gaps}
 
 
@@ -1222,9 +1223,19 @@ def _ghidra_call_edges(image, export):
                     or not isinstance(edge.get("fallsThrough", False), bool)):
                 raise ValueError("Invalid ghidraCallEdges edge")
             # Copies of the script before fallsThrough was added leave it out; the cross-check then reads the flow name.
-            rows.append({"site": offset(edge["site"], "site"), "siteAddress": edge["siteAddress"],
-                         "target": offset(edge["target"], "target"), "targetAddress": edge["targetAddress"], "flow": edge["flow"],
-                         "fallsThrough": edge.get("fallsThrough")})
+            row = {"site": offset(edge["site"], "site"), "siteAddress": edge["siteAddress"],
+                   "target": offset(edge["target"], "target"), "targetAddress": edge["targetAddress"], "flow": edge["flow"],
+                   "fallsThrough": edge.get("fallsThrough")}
+            # Copies of the script before fallsThroughTo was added leave out both keys; the script writes both with
+            # fallsThrough, null unless a fall-through override sends Ghidra to another address, where fallsThrough is false.
+            redirect = {"fallsThroughTo", "fallsThroughToAddress"} & edge.keys()
+            if redirect:
+                to, address = edge.get("fallsThroughTo"), edge.get("fallsThroughToAddress")
+                if (len(redirect) != 2 or "fallsThrough" not in edge or not (address is None or isinstance(address, str))
+                        or (address is None and to is not None) or (address is not None and edge.get("fallsThrough") is not False)):
+                    raise ValueError("Invalid ghidraCallEdges edge")
+                row["fallsThroughTo"] = None if address is None else {"target": offset(to, "fall-through"), "targetAddress": address}
+            rows.append(row)
         entry = offset(function["entry"], "entry")
         if entry is None:
             unmapped.append(function["address"])
@@ -1261,24 +1272,18 @@ def _ghidra_falls_through(g):
     The export's fallsThrough also reflects a user's fall-through override. Copies of the script that leave it out
     are read by the flow type's name, which misses such an override: a flow type Ghidra gives a fall-through
     (GHIDRA_FALL_THROUGH_FLOWS) continues, and every other one ends the function.
+
+    Where a fall-through override sends Ghidra to another address, the export's fallsThroughTo names it and
+    fallsThrough is false. Copies of the script that leave out fallsThroughTo give null with basis notExported, and
+    such a redirect reads as a fall-through Ghidra does not take.
     """
     exported = g["fallsThrough"] is not None
     named = g["flow"] in GHIDRA_FALL_THROUGH_FLOWS
+    redirect = "fallsThroughTo" in g
     return {"ghidraFallsThrough": g["fallsThrough"] if exported else named,
-            "ghidraFallsThroughBasis": "fallsThrough" if exported else "flowName"}
-
-
-def _engine_reads_on(image, ins):
-    """Whether the engine's body reading continues to the instruction after ins.
-
-    It stops at a jmp, ljmp, return or hlt, and reads on past every other instruction, including a call, a conditional
-    jump and an interrupt. At a transfer outside the frame model it stops with a gap, so the result is None: the engine
-    decided nothing there. It is None too when the engine did not read ins.
-    """
-    if ins is None or unsupported_transfer(image, ins):
-        return None
-    m = base_mnemonic(ins)
-    return not (m in RETURNS or m in ("hlt", "jmp", "ljmp"))
+            "ghidraFallsThroughBasis": "fallsThrough" if exported else "flowName",
+            "ghidraFallsThroughTo": g["fallsThroughTo"] if redirect else None,
+            "ghidraFallsThroughToBasis": "fallsThroughTo" if redirect else "notExported"}
 
 
 def _ghidra_cross_check(image, export, nodes, outgoing, omitted):
@@ -1286,16 +1291,22 @@ def _ghidra_cross_check(image, export, nodes, outgoing, omitted):
     callers = export["callers"]
     compared = sorted(nodes.keys() & callers.keys())
     rows = []
-    # Rows where Ghidra ends the function at an instruction the engine reads past, and rows where Ghidra continues past
-    # an instruction the engine stops at. Either way the two analyses disagree on the function's extent.
-    ends, continues = [], []
+    # Rows where Ghidra ends the function at an instruction the engine reads past, rows where Ghidra continues past
+    # an instruction the engine stops at, and rows where Ghidra continues at another address than the next instruction.
+    # Each way the two analyses disagree on the function's extent.
+    ends, continues, elsewhere = [], [], []
 
-    def compare_extent(row, g, ins):
-        reads_on = _engine_reads_on(image, ins)
+    def compare_extent(row, g, flow):
+        # body() recorded whether it read on past the site: None where it stopped with a gap, and no record where it
+        # did not read the site. Either way the engine decided nothing to compare.
+        reads_on = flow.get(g["site"], {}).get("readsOn")
         if reads_on is None:
             return row
         row |= _ghidra_falls_through(g)
-        if reads_on and row["ghidraFallsThrough"] is False:
+        if row["ghidraFallsThroughTo"] is not None:
+            # Ghidra neither ends the function here nor reads on to the next instruction, whatever the engine does.
+            elsewhere.append(row)
+        elif reads_on and row["ghidraFallsThrough"] is False:
             ends.append(row)
         elif not reads_on and row["ghidraFallsThrough"] is True:
             continues.append(row)
@@ -1304,7 +1315,8 @@ def _ghidra_cross_check(image, export, nodes, outgoing, omitted):
     for caller in compared:
         ours = outgoing.get(caller, [])
         theirs = callers[caller]
-        instructions = nodes[caller]["body"]["instructions"]
+        flow = nodes[caller]["body"]["flow"]
+        interrupts = {h["site"] for h in nodes[caller]["body"]["hardwareBoundaries"] if h["boundary"] == "interrupt"}
         # A call neither analysis resolved matches on its site with no target.
         matches = {_ghidra_key(g): g for g in theirs if g["site"] is not None}
         read = {(e["site"], e["target"]) for e in ours}
@@ -1314,49 +1326,53 @@ def _ghidra_cross_check(image, export, nodes, outgoing, omitted):
                    "result": "engineOnly" if g is None else "agreement", "ghidraFlow": g["flow"] if g else None}
             # Ghidra ends the function at a call to a callee it treats as non-returning (CALL_TERMINATOR) or at an
             # instruction whose fall-through a user cleared, and continues past a jmp a user gave a fall-through.
-            rows.append(row if g is None else compare_extent(row, g, instructions[e["site"]]))
+            rows.append(row if g is None else compare_extent(row, g, flow))
         for g in theirs:
             if g["site"] is not None and _ghidra_key(g) in read:
                 continue
-            ins = instructions.get(g["site"])
-            if ins is not None and base_mnemonic(ins) in INTERRUPTS and _ghidra_key(g)[1] is None:
+            if g["site"] in interrupts and _ghidra_key(g)[1] is None:
                 # SLEIGH lifts INT, INT1, INT3 and INTO to a computed call with no target, while the engine assumes the
                 # interrupt returns to the next instruction and records no edge. At INT1 and INT3 Ghidra's flow is a
                 # terminator that ends the function there.
                 rows.append(compare_extent({"caller": caller, "site": g["site"], "target": None, "siteAddress": g["siteAddress"],
                                             "targetAddress": None, "ghidraFlow": g["flow"], "result": "interrupt",
-                                            "engineEdge": None}, g, ins))
+                                            "engineEdge": None}, g, flow))
                 continue
             # Ghidra's edge is evidence the engine did not check; it never becomes an engine edge. Its fall-through is
             # still compared where the engine read the instruction at its site.
             engine_edge = next((e["id"] for e in ours if g["site"] is not None and e["site"] == g["site"]), None)
             rows.append(compare_extent({"caller": caller, "site": g["site"], "target": g["target"], "siteAddress": g["siteAddress"],
                                         "targetAddress": g["targetAddress"], "ghidraFlow": g["flow"], "result": "ghidraOnly",
-                                        "checked": False, "engineEdge": engine_edge}, g, ins))
+                                        "checked": False, "engineEdge": engine_edge}, g, flow))
     counts = {kind: sum(r["result"] == kind for r in rows) for kind in ("agreement", "engineOnly", "ghidraOnly", "interrupt")}
     counts["ghidraEndsFunction"] = len(ends)
     counts["ghidraContinues"] = len(continues)
+    counts["ghidraFallsThroughElsewhere"] = len(elsewhere)
     not_compared = {"engineCallers": sorted(nodes.keys() - callers.keys()), "ghidraCallers": sorted(callers.keys() - nodes.keys()),
                     "unmappedGhidraFunctions": export["unmappedFunctions"], "missingGhidraEntries": export["missingEntries"],
                     "unreadGhidraFunctions": export["unreadFunctions"],
                     "omittedEngineRoutes": [o["id"] for o in omitted if o["entry"] in callers]}
-    # A site agrees only when every edge either analysis read there agrees and Ghidra continues past it exactly when the
-    # engine does.
-    disputed = {r["site"] for r in rows if r["result"] != "agreement"} | {r["site"] for r in ends + continues}
+    # A site agrees only when every edge either analysis read there agrees and Ghidra continues past it to the next
+    # instruction exactly when the engine does.
+    disputed = {r["site"] for r in rows if r["result"] != "agreement"} | {r["site"] for r in ends + continues + elsewhere}
     return {"comparedCallers": compared, "edges": rows, "counts": counts, "notCompared": not_compared,
             "agreed": (not counts["engineOnly"] and not counts["ghidraOnly"] and not any(not_compared.values())
-                       and not counts["ghidraEndsFunction"] and not counts["ghidraContinues"]),
+                       and not counts["ghidraEndsFunction"] and not counts["ghidraContinues"]
+                       and not counts["ghidraFallsThroughElsewhere"]),
             "agreementSites": {r["site"] for r in rows if r["result"] == "agreement"} - disputed,
             "interpretation": "Edges of each caller that both the engine and the Ghidra export read, matched by site and target "
                               "file offset; an unresolved call matches an unresolved call at its site, and a Ghidra target without a file offset "
                               "matches no engine edge. An interrupt row is Ghidra's targetless call at an instruction the engine read as an "
                               "interrupt and assumed to return. A row at an instruction the engine read carries whether Ghidra continues "
                               "to the next instruction there (ghidraFallsThrough), read from the export's fallsThrough or, in an export "
-                              "without it, from the flow name (ghidraFallsThroughBasis). The engine reads on past every call, conditional jump "
+                              "without it, from the flow name (ghidraFallsThroughBasis), and where a fall-through override sends Ghidra to "
+                              "another address (ghidraFallsThroughTo), read from the export's fallsThroughTo, or null with "
+                              "ghidraFallsThroughToBasis notExported for an export without it. The engine reads on past every call, conditional jump "
                               "and interrupt and stops at a jmp, ljmp, return or hlt. A row where Ghidra ends the function at an instruction "
-                              "the engine reads past (ghidraEndsFunction) or continues past one the engine stops at (ghidraContinues) "
-                              "counts against agreed. A ghidraOnly edge is Ghidra's claim: the engine did not check it and never adds it "
-                              "to its graph. Agreement means both analyses read the edge, not that it executes."}
+                              "the engine reads past (ghidraEndsFunction), continues past one the engine stops at (ghidraContinues) "
+                              "or continues at another address (ghidraFallsThroughElsewhere) counts against agreed. A ghidraOnly edge "
+                              "is Ghidra's claim: the engine did not check it and never adds it to its graph. Agreement means both "
+                              "analyses read the edge, not that it executes."}
 
 
 # These branches test CX/ECX (LOOPE/LOOPNE also ZF), so an adjacent CMP/TEST never describes their predicate.
@@ -1397,17 +1413,15 @@ def call_order(image, config):
         for at, ins in instructions.items():
             ending.setdefault(at + ins.size, []).append(at)
         for at, ins in instructions.items():
-            m, following = base_mnemonic(ins), at + ins.size
-            targets = []
-            if m in RETURNS or m == "hlt" or unsupported_transfer(image, ins):
-                pass
-            elif m in ("jmp", "ljmp"):
-                d = image.indirect_jumps.get(at)
-                targets = [r["target"] for r in d["rows"]] if d else [call_target(image, at, ins)[0]]
-            elif m.startswith("j") or m.startswith("loop"):
-                target = call_target(image, at, ins)[0]
-                targets = [target, following]
+            following = at + ins.size
+            # body() recorded each instruction's jump or branch targets and whether it read on to the next instruction.
+            step = b["flow"][at]
+            targets = step["targets"] + ([following] if step["readsOn"] else [])
+            if step["readsOn"] and step["targets"]:
+                # A conditional branch: a named target and the fall-through.
+                target = step["targets"][0]
                 if target != following:
+                    m = base_mnemonic(ins)
                     producer = ending.get(at, []) if m not in COUNT_BRANCHES and at != entry else []
                     comparison = instructions[producer[0]] if len(producer) == 1 else None
                     context = ({"site": producer[0], "mnemonic": comparison.mnemonic,
@@ -1417,8 +1431,6 @@ def call_order(image, config):
                         if to is not None:
                             branches.append({"site": at, "to": to, "taken": taken, "predicate": m,
                                              "comparison": context, "interpretation": "necessary caller CFG edge, not a runtime value or preserved guard"})
-            else:
-                targets = [following]
             successors[at] = sorted(set(t for t in targets if t in instructions))
             # Returns, halts, unsupported frames and transfers out of the body leave the caller CFG.
             if not targets or any(t not in instructions for t in targets):
@@ -1544,7 +1556,7 @@ def call_order(image, config):
 
 
 def _body_report(b):
-    return {k: v for k, v in b.items() if k != "instructions"} | {"instructionCount": len(b["instructions"])}
+    return {k: v for k, v in b.items() if k not in ("instructions", "flow")} | {"instructionCount": len(b["instructions"])}
 
 
 def _analyzer_function(config):

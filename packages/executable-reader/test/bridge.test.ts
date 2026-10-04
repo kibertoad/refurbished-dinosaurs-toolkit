@@ -789,6 +789,40 @@ test("a callee that skips a read leaves the site consistent but not agreed throu
   );
 });
 
+test("a callee reusing its argument slot does not decide the site's consistency through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // push 1; push 2; call 75; add sp,4; ret; at 75: push bp; mov bp,sp; test si,si; jz 87; mov ax,[bp+4];
+  // jmp 96; at 87: mov word [bp+4],0; mov eax,[bp+4]; at 96: pop bp; ret
+  data.set(
+    [
+      0x6a, 1, 0x6a, 2, 0xe8, 4, 0, 0x83, 0xc4, 4, 0xc3, 0x55, 0x89, 0xe5, 0x85, 0xf6, 0x74, 5, 0x8b, 0x46, 4, 0xeb, 9,
+      0xc7, 0x46, 4, 0, 0, 0x66, 0x8b, 0x46, 4, 0x5d, 0xc3,
+    ],
+    64,
+  );
+  writeFileSync(join(dir, "source.bin"), data);
+  const cfg = {
+    ...config,
+    xxh3: sourceXxh3(data),
+    regions: [{ ...config.regions[0]!, end: 98, entries: [64, 75] }],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+  const r = run(["arguments", join(dir, "config.json")]);
+  const site = r.argumentFrameSites[0];
+  assert.equal(site.callSite, 68);
+  assert.equal(site.conflictingWidths.length, 1);
+  assert.deepEqual(
+    site.readWidths.map((w: Report) => [w.offset, w.width, w.fromCallerOnPaths.length, w.notFromCallerOnPaths.length]),
+    [
+      [0, 2, 1, 0],
+      [0, 4, 0, 1],
+    ],
+  );
+  assert.equal(site.widthsConsistent, true);
+  assert.equal(site.agreed, false);
+});
+
 test("an argument slot names a possibly aliasing store that dropped nothing, as the callee's read does", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);
@@ -1024,6 +1058,72 @@ test("the Ghidra cross-check counts a jmp tail transfer Ghidra continues past ag
   assert.equal(continues.counts.ghidraContinues, 1);
   assert.equal(continues.counts.ghidraEndsFunction, 0);
   assert.equal(continues.agreed, false);
+});
+
+test("the Ghidra cross-check counts a fall-through Ghidra sends to another address against agreed", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // jmp 68; ret; ret; at 68: ret. The engine stops at the jump into the entry at 68.
+  data.set([0xeb, 2, 0xc3, 0xc3, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const sha256 = createHash("sha256").update(data).digest("hex");
+  const check = (jump: Record<string, unknown>) => {
+    const cfg = {
+      ...config,
+      xxh3: sourceXxh3(data),
+      regions: [{ ...config.regions[0]!, entries: [64, 68] }],
+      ghidraCallEdges: {
+        format: "scientific-method-ghidra-call-edges",
+        version: 1,
+        sha256,
+        functionLimit: 8,
+        missingEntries: [],
+        unreadFunctions: [],
+        functions: [
+          {
+            entry: 64,
+            address: "1000:0040",
+            edges: [
+              {
+                site: 64,
+                siteAddress: "1000:40",
+                target: 68,
+                targetAddress: "1000:44",
+                flow: "UNCONDITIONAL_JUMP",
+                fallsThrough: false,
+                ...jump,
+              },
+            ],
+          },
+          { entry: 68, address: "1000:0044", edges: [] },
+        ],
+      },
+    };
+    writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+    return run(["callees", join(dir, "config.json")]).ghidraCrossCheck;
+  };
+
+  const stops = check({ fallsThroughTo: null, fallsThroughToAddress: null });
+  assert.equal(stops.edges[0].ghidraFallsThroughTo, null);
+  assert.equal(stops.edges[0].ghidraFallsThroughToBasis, "fallsThroughTo");
+  assert.equal(stops.counts.ghidraFallsThroughElsewhere, 0);
+  assert.equal(stops.agreed, true);
+
+  // A user's fall-through override sends Ghidra from the jump to 67.
+  const redirected = check({ fallsThroughTo: 67, fallsThroughToAddress: "1000:43" });
+  assert.equal(redirected.edges[0].result, "agreement");
+  assert.equal(redirected.edges[0].ghidraFallsThrough, false);
+  assert.deepEqual(redirected.edges[0].ghidraFallsThroughTo, { target: 67, targetAddress: "1000:43" });
+  assert.equal(redirected.edges[0].ghidraFallsThroughToBasis, "fallsThroughTo");
+  assert.equal(redirected.counts.ghidraFallsThroughElsewhere, 1);
+  assert.equal(redirected.counts.ghidraContinues, 0);
+  assert.equal(redirected.agreed, false);
+
+  // An export from an older copy of the script carries no redirect, and the row says so.
+  const older = check({});
+  assert.equal(older.edges[0].ghidraFallsThroughTo, null);
+  assert.equal(older.edges[0].ghidraFallsThroughToBasis, "notExported");
+  assert.equal(older.agreed, true);
 });
 
 test("operand candidates preserve prefixed widths and reject interior starts through the source bridge", (t) => {
@@ -1596,6 +1696,56 @@ test("entryFrame passes through preparation and lets a narrower entry return thr
     () => run(["memory", query({ relationalControls: [writer([75])], entryFrame: { from: 64 } })]),
     /cleanup slot violated/,
   );
+});
+
+test("a memory scope over an observed entry frame keeps a slot across a modeled call through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(200, 28);
+  // push bp; mov bp,sp; sub sp,4; call ax; narrower entry: mov word [bp-2],1; call ax;
+  // read: mov ax,[bp-2]; mov sp,bp; pop bp; ret
+  data.set(
+    [
+      0x55, 0x8b, 0xec, 0x83, 0xec, 0x04, 0xff, 0xd0, 0xc7, 0x46, 0xfe, 1, 0, 0xff, 0xd0, 0x8b, 0x46, 0xfe, 0x8b, 0xe5,
+      0x5d, 0xc3,
+    ],
+    64,
+  );
+  writeFileSync(join(dir, "source.bin"), data);
+  const frame = { segment: "ss", base: "bp", displacement: -4, bytes: 6, evidence: "synthetic locals and saved BP" };
+  const models = (service: unknown[]) =>
+    [70, 77].map((site) => ({
+      site,
+      returnBytes: 2,
+      preserves: ["ss", "ds", "ebp"],
+      preservesMemory: site === 77 ? service : [frame],
+      evidence: "synthetic balanced returning service",
+      cases: [{}],
+    }));
+  const query = (writers: unknown[], service: unknown[]) => {
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({
+        ...config,
+        xxh3: sourceXxh3(data),
+        entry: 72,
+        regions: [{ ...config.regions[0], end: 86, entries: [64, 72] }],
+        registers: { ds: 0x2000, ss: 0x3000 },
+        entryFrame: { from: 64 },
+        callModels: models(service),
+        relationalControls: [{ name: "saved slot", kind: "lastWriter", at: { site: 79, event: "read" }, writers }],
+      }),
+    );
+    return join(dir, "config.json");
+  };
+  const held = run(["memory", query([72], [frame])]);
+  assert.equal(held.entryFrame.established, true);
+  assert.equal(held.relationalControls.allHeld, true);
+  const scope = held.paths[0].conditionalModels[0].preservedMemoryScopes[0];
+  assert.equal(scope.linearStart, null);
+  assert.deepEqual([scope.interval.start, scope.interval.end, scope.cachedBytes], [0x10000 - 6, 0x10000, 2]);
+  const dropped = run(["memory", query([72], [])]);
+  assert.equal(dropped.relationalControls.controls[0].verdict, "undecided");
+  assert.throws(() => run(["memory", query(["entryState"], [frame])]), /saved slot violated/);
 });
 
 test("a report at the scope, case and path limits stays within the reader's output cap", (t) => {

@@ -553,8 +553,12 @@ def may_alias(key, written, bits, flat):
 
     Different symbolic segments or bases may alias. Concrete linear locations do not.
     """
-    a = key_domain(key, bits, flat)
-    return a is None or written is None or not (a[1] <= written[0] or written[1] <= a[0])
+    return domains_may_overlap(key_domain(key, bits, flat), written)
+
+
+def domains_may_overlap(a, b):
+    """Whether two linear byte domains may share a byte; an unknown (None) domain may share any."""
+    return a is None or b is None or not (a[1] <= b[0] or b[1] <= a[0])
 
 
 def string_width(ins, flat):

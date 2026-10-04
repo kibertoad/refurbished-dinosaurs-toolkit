@@ -1,6 +1,6 @@
 # ADR 0009: scoped memory hypotheses on call models
 
-Status: accepted
+Status: accepted. Decision 3's concrete base and the rejected symbolic scopes are revised by [ADR 0013](0013-memory-scopes-on-symbolic-bases.md).
 
 ## Context
 

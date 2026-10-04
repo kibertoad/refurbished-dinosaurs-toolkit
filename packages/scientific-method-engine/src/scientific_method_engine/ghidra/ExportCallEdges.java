@@ -106,17 +106,22 @@ public class ExportCallEdges extends GhidraScript {
 
     // The flow is Ghidra's flow type after any flow override. fallsThrough is true when Ghidra continues to
     // the next instruction at the site. getFallThrough() reflects a fall-through override, which can clear it
-    // or send it to another address; hasFallthrough() stays true for the second, so it is not used.
+    // or send it to another address; hasFallthrough() stays true for the second, so it is not used. When the
+    // override sends it to another address, fallsThroughTo and fallsThroughToAddress name that address and
+    // fallsThrough is false; otherwise both are null.
     private String edge(Instruction instruction, Address target, FlowType flow) {
         Address fallThrough = instruction.getFallThrough();
-        boolean fallsThrough = fallThrough != null
-            && fallThrough.equals(instruction.getAddress().addWrap(instruction.getDefaultFallThroughOffset()));
+        Address next = instruction.getAddress().addWrap(instruction.getDefaultFallThroughOffset());
+        boolean fallsThrough = fallThrough != null && fallThrough.equals(next);
+        Address elsewhere = fallThrough == null || fallsThrough ? null : fallThrough;
         return "{\"site\": " + offset(instruction.getAddress())
             + ", \"siteAddress\": " + quote(instruction.getAddress().toString())
             + ", \"target\": " + (target == null ? "null" : offset(target))
             + ", \"targetAddress\": " + (target == null ? "null" : quote(target.toString()))
             + ", \"flow\": " + quote(flow.toString())
-            + ", \"fallsThrough\": " + fallsThrough + "}";
+            + ", \"fallsThrough\": " + fallsThrough
+            + ", \"fallsThroughTo\": " + (elsewhere == null ? "null" : offset(elsewhere))
+            + ", \"fallsThroughToAddress\": " + (elsewhere == null ? "null" : quote(elsewhere.toString())) + "}";
     }
 
     // The file offset the engine uses for an address, or null when the address has no file bytes.

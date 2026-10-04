@@ -60,6 +60,10 @@ LegacyFormats parts of it:
   others did not match. It names an edition only when exactly one matches, and sets `IsAmbiguous`
   when the manifests cannot tell two apart. A file it cannot read is reported as `Unreadable`.
   `AssetManifest.Fingerprint()` names the edition in the installed manifest.
+- A `cue-bin` manifest can also list `AudioTracks`, each a `CddaTrackFingerprint` recorded with
+  `CddaTrackFingerprints.RecordAsync`. `AssetVerifier` accepts a track shifted by a drive read
+  offset up to the fingerprint's tolerance, and reports a shift past it, an anchor that matches at
+  several shifts and changed audio as separate problems.
 - The importer decodes into `StagedAssetPack.StagingDirectory`, verifies all of its output there,
   then calls `Commit`, which swaps the pack in and keeps the old one on failure.
 - `InstalledContentWriter` suits incremental extractors: it replaces changed files atomically and

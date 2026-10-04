@@ -1,5 +1,6 @@
 """Bounded control flow and interprocedural path reports."""
 from copy import deepcopy
+from typing import NamedTuple
 from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
 from .image import integer
 from .machine import (State, StopPath, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
@@ -64,6 +65,75 @@ def counter_branch(state, ins):
     return answer, info, repr((m, count.term) if m == "loop" else (m, count.term, flags))
 
 
+class Step(NamedTuple):
+    """What one decoded instruction contributes to a CFG walk, as ``cfg_step`` returns it.
+
+    ``successors`` are the sites the branch continues at, in the order a walk pushes them; the
+    branch ends at the instruction when there are none. ``returns`` is true for a return
+    instruction. ``return_site`` is the site a call continues at once its callee returns, or None
+    for anything else and, when the call's target is followed, for a call whose target is that same
+    site. ``gaps`` and ``edges`` are the gap and transfer-edge rows ``walk`` reports for the
+    instruction. ``supplied`` is true when the successors are the rows of a declared indirect jump
+    table, which never prove an instruction boundary.
+    """
+    successors: list
+    returns: bool
+    return_site: int | None
+    gaps: list
+    edges: list
+    supplied: bool = False
+
+
+def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False):
+    """The successors of ``ins`` decoded at ``at``, under the rule ``walk`` and the ``uses`` caller continuation share.
+
+    An unsupported transfer encoding, a return, an unconditional jump without a resolved target, an
+    interrupt, ``hlt`` and, unless ``follow_flat_ports``, a PE32 port access end the branch. A
+    conditional jump or loop continues at its resolved target and at the next instruction. A declared
+    indirect jump continues at its table rows only. A call continues at its resolved target and at
+    its return site; with ``step_over_calls`` it continues at its return site only and its target
+    is neither resolved nor reported.
+    """
+    m, following = base_mnemonic(ins), at + ins.size
+    if unsupported_transfer(image, ins):
+        return Step([], False, None, [{"site": at, "reason": "unsupported control-transfer frame encoding"}], [])
+    declaration = image.indirect_jumps.get(at)
+    if declaration is not None:
+        targets = [row["target"] for row in declaration["rows"]]
+        edges = [{"site": at, "target": target, "kind": "jmp",
+                  "provenance": {"encoding": "declared indirect jump table", **declaration}} for target in targets]
+        gaps = []
+        if not declaration["exhaustive"]:
+            gaps.append({"site": at, "reason": "indirect jump table is not declared exhaustive"})
+            edges.append({"site": at, "target": None, "kind": "jmp",
+                          "provenance": {"reason": "indirect jump table is not declared exhaustive"}})
+        return Step(targets, False, None, gaps, edges, supplied=True)
+    if m in RETURNS:
+        return Step([], True, None, [], [])
+    successors, gaps, edges = [], [], []
+    calls = m in ("call", "lcall")
+    if (calls and not step_over_calls) or m == "ljmp" or m.startswith(("j", "loop")):
+        target, provenance = call_target(image, at, ins)
+        edges.append({"site": at, "target": target, "kind": m, "provenance": provenance})
+        if target is None:
+            gaps.append({"site": at, "reason": provenance.get("reason", "target outside declared regions")})
+        else:
+            successors.append(target)
+        if m in ("jmp", "ljmp"):
+            return Step(successors, False, None, gaps, edges)
+    if m in INTERRUPTS or m == "hlt":
+        gaps.append({"site": at, "reason": "hardware or interrupt boundary"})
+        return Step(successors, False, None, gaps, edges)
+    # In the flat model I/O privilege decides whether a port access faults, so the walk claims nothing after it.
+    # In the real-mode model it continues at the next instruction, as trace and body() follow it.
+    if m in PORTS and image.flat and not follow_flat_ports:
+        gaps.append({"site": at, "reason": FLAT_PORT_REASON})
+        return Step(successors, False, None, gaps, edges)
+    return_site = following if calls and following not in successors else None
+    successors.append(following)
+    return Step(successors, False, return_site, gaps, edges)
+
+
 def walk(image, entries, limit=10000, follow_flat_ports=False):
     """Decode the CFG reached from ``entries`` and check its instruction boundaries.
 
@@ -88,49 +158,15 @@ def walk(image, entries, limit=10000, follow_flat_ports=False):
             gaps.append({"site": at, "reason": "undecoded or unmapped edge"})
             continue
         seen[at] = ins
-        successors[at] = following_sites = []
-        m, following = base_mnemonic(ins), at + ins.size
-        if unsupported_transfer(image, ins):
-            gaps.append({"site": at, "reason": "unsupported control-transfer frame encoding"})
-            continue
-        declaration = image.indirect_jumps.get(at)
-        if declaration is not None:
-            for row in declaration["rows"]:
-                target = row["target"]
-                edges.append({"site": at, "target": target, "kind": "jmp",
-                              "provenance": {"encoding": "declared indirect jump table", **declaration}})
-                pending.append(target)
-                following_sites.append(target)
-                supplied_edges.add((at, target))
-            if not declaration["exhaustive"]:
-                gaps.append({"site": at, "reason": "indirect jump table is not declared exhaustive"})
-                edges.append({"site": at, "target": None, "kind": "jmp",
-                              "provenance": {"reason": "indirect jump table is not declared exhaustive"}})
-            continue
-        if m in RETURNS:
-            continue
-        if m in ("call", "lcall", "jmp", "ljmp") or m.startswith("j") or m.startswith("loop"):
-            target, provenance = call_target(image, at, ins)
-            edges.append({"site": at, "target": target, "kind": m, "provenance": provenance})
-            if target is None:
-                gaps.append({"site": at, "reason": provenance.get("reason", "target outside declared regions")})
-            else:
-                pending.append(target)
-                following_sites.append(target)
-            if m in ("jmp", "ljmp"):
-                continue
-        if m in INTERRUPTS or m == "hlt":
-            gaps.append({"site": at, "reason": "hardware or interrupt boundary"})
-            continue
-        # In the flat model I/O privilege decides whether a port access faults, so the walk claims nothing after it.
-        # In the real-mode model it continues at the next instruction, as trace and body() follow it.
-        if m in PORTS and image.flat and not follow_flat_ports:
-            gaps.append({"site": at, "reason": FLAT_PORT_REASON})
-            continue
-        if m in ("call", "lcall") and following not in following_sites:
-            returns.add((at, following))
-        pending.append(following)
-        following_sites.append(following)
+        step = cfg_step(image, at, ins, follow_flat_ports)
+        successors[at] = step.successors
+        gaps.extend(step.gaps)
+        edges.extend(step.edges)
+        pending.extend(step.successors)
+        if step.supplied:
+            supplied_edges.update((at, target) for target in step.successors)
+        if step.return_site is not None:
+            returns.add((at, step.return_site))
     # An entry into another instruction is not a verified boundary. Retain both
     # interpretations as gaps rather than choosing whichever was visited first.
     active, conflicts, pairs = [], set(), []

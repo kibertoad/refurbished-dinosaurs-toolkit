@@ -76,7 +76,7 @@ Exporting for comparison (each writes one file and refuses to overwrite where no
 |---|---|---|
 | `ExportBoundedFlow` | entry, instruction limit (1..10000), output path under `analysis/original/` | instruction metadata of one bounded flow as JSON |
 | `ExportFunctionInventory` | output TSV path (must not exist) | every function's start and body size |
-| `ExportCallEdges` | output JSON path (must not exist), function limit (1..128), one or more function entries | the call and tail-jump edges of the functions Ghidra reaches breadth-first from the entries, with file offsets, Ghidra's flow type (after any flow override) and `fallsThrough` (whether Ghidra continues to the next instruction at the site, after any fall-through override), as the `ghidraCallEdges` input of `callees` |
+| `ExportCallEdges` | output JSON path (must not exist), function limit (1..128), one or more function entries | the call and tail-jump edges of the functions Ghidra reaches breadth-first from the entries, with file offsets, Ghidra's flow type (after any flow override), `fallsThrough` (whether Ghidra continues to the next instruction at the site, after any fall-through override) and `fallsThroughTo`/`fallsThroughToAddress` (where a fall-through override sends Ghidra instead, or null), as the `ghidraCallEdges` input of `callees` |
 | `ExportFunctionFingerprints` | output TSV path (replaced only when the export completes) | per-function and per-instruction fingerprints with addresses normalized, for matching functions across versions |
 
 Repairing the analysis (these change the Ghidra program, so run them before reports and keep the
@@ -132,10 +132,12 @@ partial evidence, never complete dispatch or native-reachability claims. See the
 A call model may declare `preservesMemory`: up to 32 scopes (4,096 bytes in total), each naming a
 segment register, an address-width base register, an optional displacement, a byte count and the
 evidence for assuming the service leaves those bytes alone. Scopes resolve against the pre-call
-registers. An unknown, wrapping or overlapping interval stops the path. Only the scoped bytes
-survive the model's memory invalidation, and each scope is reported with the model, the modeled
-return and the effect summary. Everything else the service may do stays unknown. This input needs
-prepared protocol 3, so upgrade the reader and the engine together. See the
+registers. The base may be symbolic, such as BP in an `entryFrame` query, and then keeps the bytes
+at those offsets from its value. An unknown segment, a concrete interval that crosses the end of
+the address space, or two scopes that may share a byte stop the path. Only the scoped bytes survive
+the model's memory invalidation, and each scope is reported with the model, the modeled return and
+the effect summary. Everything else the service may do stays unknown. This input needs prepared
+protocol 3, so upgrade the reader and the engine together. See the
 [call model contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#limits-and-assumptions).
 
 The trace-family commands (`trace`, `arguments`, `effects`, `returns`, `guards`, `memory`,
