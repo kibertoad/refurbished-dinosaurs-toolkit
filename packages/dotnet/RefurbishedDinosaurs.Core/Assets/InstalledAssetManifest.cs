@@ -1,5 +1,6 @@
 using System.Text.Json;
 using RefurbishedDinosaurs.Core.IO;
+using RefurbishedDinosaurs.Core.Persistence;
 
 namespace RefurbishedDinosaurs.Core.Assets;
 
@@ -24,7 +25,7 @@ public sealed record InstalledAssetManifest(
     string ExtractorVersion)
 {
     /// <summary>The largest manifest <see cref="Read"/> accepts by default.</summary>
-    public const long DefaultMaximumBytes = 4 * 1024 * 1024;
+    public const int DefaultMaximumBytes = 4 * 1024 * 1024;
 
     // camelCase, as schemas/installed-asset-manifest.schema.json names the fields.
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
@@ -38,16 +39,14 @@ public sealed record InstalledAssetManifest(
     /// <summary>Reads a manifest written by <see cref="Write"/>. Property names match ignoring case.</summary>
     /// <param name="path">The manifest file.</param>
     /// <param name="maximumBytes">The largest file to read.</param>
-    /// <exception cref="InvalidDataException">The file is larger than <paramref name="maximumBytes"/>, holds JSON <c>null</c>, or is not a manifest.</exception>
-    public static InstalledAssetManifest Read(string path, long maximumBytes = DefaultMaximumBytes)
+    /// <exception cref="InvalidDataException">The file is or grows larger than <paramref name="maximumBytes"/>, holds JSON <c>null</c>, or is not a manifest.</exception>
+    public static InstalledAssetManifest Read(string path, int maximumBytes = DefaultMaximumBytes)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        var length = new FileInfo(path).Length;
-        if (length > maximumBytes)
-            throw new InvalidDataException($"Installed-content manifest is {length} bytes; the limit is {maximumBytes}.");
+        var json = RecoverableFile.ReadBounded(path, maximumBytes);
         try
         {
-            return JsonSerializer.Deserialize<InstalledAssetManifest>(File.ReadAllBytes(path), JsonOptions)
+            return JsonSerializer.Deserialize<InstalledAssetManifest>(json, JsonOptions)
                 ?? throw new InvalidDataException("Installed-content manifest is empty.");
         }
         catch (JsonException exception)
@@ -132,6 +131,8 @@ public enum InstalledAssetProblem
     WrongSize,
     /// <summary>A listed file has the wrong fingerprint.</summary>
     WrongHash,
+    /// <summary>A listed file exists but could not be read.</summary>
+    Unreadable,
     /// <summary>A file the manifest does not list is present (<see cref="InstalledAssetExpectations.RejectUnlistedFiles"/>).</summary>
     Unlisted,
     /// <summary>The content root could not be listed.</summary>
@@ -197,7 +198,8 @@ public static class InstalledAssetVerifier
     /// record, present, the recorded size, and the recorded fingerprint when
     /// <see cref="InstalledAssetExpectations.VerifyHashes"/> is set. With
     /// <see cref="InstalledAssetExpectations.RejectUnlistedFiles"/>, it also reports every other file
-    /// under <paramref name="root"/>. A manifest with no files is a problem.
+    /// under <paramref name="root"/>. A manifest with no files is a problem, and a listed file that
+    /// cannot be read is reported as <see cref="InstalledAssetProblem.Unreadable"/> rather than thrown.
     /// </summary>
     /// <param name="root">The content root the manifest's paths are relative to.</param>
     /// <param name="manifest">The manifest to check against.</param>
@@ -270,28 +272,40 @@ public static class InstalledAssetVerifier
                 issues.Add(new(InstalledAssetProblem.Missing, relative, $"Missing: {relative}"));
                 continue;
             }
-            var length = new FileInfo(target).Length;
-            if (length != asset.Bytes)
+            try
             {
-                issues.Add(new(InstalledAssetProblem.WrongSize, relative,
-                    $"Expected {asset.Bytes} bytes; found {length}: {relative}"));
-                continue;
-            }
-            if (expected.VerifyHashes)
-            {
-                var hash = await FileFingerprint.Xxh3Async(target, cancellationToken).ConfigureAwait(false);
-                if (!hash.Equals(asset.Xxh3, StringComparison.Ordinal))
+                var issue = await CheckFileAsync(target, relative, asset, expected.VerifyHashes, cancellationToken)
+                    .ConfigureAwait(false);
+                if (issue is not null)
                 {
-                    issues.Add(new(InstalledAssetProblem.WrongHash, relative,
-                        $"Expected xxh3 {asset.Xxh3}; found {hash}: {relative}"));
+                    issues.Add(issue);
                     continue;
                 }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                issues.Add(new(InstalledAssetProblem.Unreadable, relative,
+                    $"Could not be read: {relative}: {exception.Message}"));
+                continue;
             }
             verified++;
         }
 
         if (expected.RejectUnlistedFiles) ReportUnlisted(fullRoot, expected.ManifestFileName, listed, issues);
         return new(issues, verified);
+    }
+
+    private static async Task<InstalledAssetIssue?> CheckFileAsync(
+        string target, string relative, InstalledAsset asset, bool verifyHash, CancellationToken cancellationToken)
+    {
+        var length = new FileInfo(target).Length;
+        if (length != asset.Bytes)
+            return new(InstalledAssetProblem.WrongSize, relative, $"Expected {asset.Bytes} bytes; found {length}: {relative}");
+        if (!verifyHash) return null;
+        var hash = await FileFingerprint.Xxh3Async(target, cancellationToken).ConfigureAwait(false);
+        return hash.Equals(asset.Xxh3, StringComparison.Ordinal)
+            ? null
+            : new(InstalledAssetProblem.WrongHash, relative, $"Expected xxh3 {asset.Xxh3}; found {hash}: {relative}");
     }
 
     private static void ReportUnlisted(

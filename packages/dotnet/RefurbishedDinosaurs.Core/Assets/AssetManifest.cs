@@ -22,7 +22,7 @@ public sealed record AssetManifest(
     string SourceKind = "directory")
 {
     /// <summary>The largest manifest <see cref="Load"/> reads.</summary>
-    public const long MaximumBytes = 4 * 1024 * 1024;
+    public const int MaximumBytes = 4 * 1024 * 1024;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -36,26 +36,54 @@ public sealed record AssetManifest(
     /// and validates it.
     /// </summary>
     /// <exception cref="InvalidDataException">
-    /// A seekable stream holds more than <see cref="MaximumBytes"/>, the JSON is empty, or
-    /// <see cref="Validate"/> rejects it.
+    /// The stream holds more than <see cref="MaximumBytes"/> from its position, the JSON is malformed
+    /// or empty, or <see cref="Validate"/> rejects it.
     /// </exception>
     public static AssetManifest Load(Stream json)
     {
         ArgumentNullException.ThrowIfNull(json);
-        if (json.CanSeek && json.Length - json.Position > MaximumBytes)
-            throw new InvalidDataException($"Asset manifest is larger than {MaximumBytes} bytes.");
-        var manifest = JsonSerializer.Deserialize<AssetManifest>(json, JsonOptions)
-            ?? throw new InvalidDataException("Asset manifest is empty.");
+        AssetManifest manifest;
+        try
+        {
+            manifest = JsonSerializer.Deserialize<AssetManifest>(ReadBounded(json), JsonOptions)
+                ?? throw new InvalidDataException("Asset manifest is empty.");
+        }
+        catch (JsonException exception)
+        {
+            throw new InvalidDataException($"Asset manifest is not valid JSON: {exception.Message}", exception);
+        }
         manifest.Validate();
         return manifest;
     }
 
+    // Reads at most MaximumBytes, so a non-seekable stream is bounded as well as a seekable one.
+    private static byte[] ReadBounded(Stream json)
+    {
+        if (json.CanSeek && json.Length - json.Position > MaximumBytes) throw TooLarge();
+        using var copy = new MemoryStream();
+        var chunk = new byte[81920];
+        int read;
+        while ((read = json.Read(chunk)) > 0)
+        {
+            if (copy.Length + read > MaximumBytes) throw TooLarge();
+            copy.Write(chunk, 0, read);
+        }
+        return copy.ToArray();
+    }
+
+    private static InvalidDataException TooLarge() =>
+        new($"Asset manifest is larger than {MaximumBytes} bytes.");
+
     /// <summary>
-    /// Throws unless the game, edition and source kind are named, every path passes
-    /// <see cref="PortableAssetPath.Relative"/> and appears once (ignoring case), no size is negative,
-    /// and every hash is an XXH3-128 fingerprint (<see cref="FileFingerprint.IsXxh3"/>).
+    /// Throws unless the game, edition and source kind are named, at least one file is required, every
+    /// path passes <see cref="PortableAssetPath.Relative"/> and appears once (ignoring case), no size is
+    /// negative, and every hash is an XXH3-128 fingerprint (<see cref="FileFingerprint.IsXxh3"/>).
     /// </summary>
-    /// <exception cref="InvalidDataException">The game, edition or source kind is blank, the file list is missing, or a file record is invalid.</exception>
+    /// <remarks>
+    /// A manifest with no required file would match any copy, including an empty directory, so it
+    /// cannot describe an edition.
+    /// </remarks>
+    /// <exception cref="InvalidDataException">The game, edition or source kind is blank, the file list is missing or names no required file, or a file record is invalid.</exception>
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(GameId)) throw new InvalidDataException("Asset manifest has no game id.");
@@ -77,6 +105,8 @@ public sealed record AssetManifest(
             if (file.Xxh3 is not null && !FileFingerprint.IsXxh3(file.Xxh3))
                 throw new InvalidDataException($"Asset '{normalized}' has an invalid xxh3 value.");
         }
+        if (!Files.Any(file => file.Required))
+            throw new InvalidDataException("Asset manifest names no required file.");
     }
 
     /// <summary>

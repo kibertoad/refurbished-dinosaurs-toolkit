@@ -6,7 +6,10 @@ namespace RefurbishedDinosaurs.LegacyFormats;
 /// <summary>Why the original failed verification against an <see cref="AssetManifest"/>.</summary>
 public enum AssetProblem
 {
-    /// <summary>The source could not be opened as the manifest's source kind.</summary>
+    /// <summary>
+    /// The source could not be opened as the manifest's source kind, or a file in it could not be
+    /// read to the end.
+    /// </summary>
     Unreadable,
     /// <summary>A required file does not exist.</summary>
     Missing,
@@ -36,12 +39,22 @@ public sealed record AssetVerificationResult(IReadOnlyList<AssetVerificationIssu
 public sealed record EditionMismatch(AssetManifest Edition, IReadOnlyList<AssetVerificationIssue> Issues);
 
 /// <summary>The outcome of <see cref="AssetVerifier.IdentifyAsync"/>.</summary>
-/// <param name="Edition">The first edition that matched, or <see langword="null"/>.</param>
-/// <param name="Mismatches">Every edition tried before it, or every edition when none matched.</param>
-public sealed record EditionIdentification(AssetManifest? Edition, IReadOnlyList<EditionMismatch> Mismatches)
+/// <param name="Matches">Every edition the copy matched, in the order given.</param>
+/// <param name="Mismatches">Every other edition, in the order given, with what did not match.</param>
+public sealed record EditionIdentification(
+    IReadOnlyList<AssetManifest> Matches,
+    IReadOnlyList<EditionMismatch> Mismatches)
 {
-    /// <summary>Whether an edition matched.</summary>
-    public bool IsSupported => Edition is not null;
+    /// <summary>The edition the copy is, when exactly one matched; otherwise <see langword="null"/>.</summary>
+    public AssetManifest? Edition => Matches.Count == 1 ? Matches[0] : null;
+
+    /// <summary>Whether exactly one edition matched.</summary>
+    public bool IsSupported => Matches.Count == 1;
+
+    /// <summary>
+    /// Whether more than one edition matched, so the manifests do not tell the copy's edition apart.
+    /// </summary>
+    public bool IsAmbiguous => Matches.Count > 1;
 }
 
 /// <summary>Checks a user's original against the <see cref="AssetManifest"/> of a supported edition.</summary>
@@ -50,7 +63,8 @@ public static class AssetVerifier
     /// <summary>
     /// Checks each manifest file in <paramref name="source"/>: present when required, the exact size,
     /// and the XXH3-128 fingerprint when the manifest gives one. Hashing is skipped for a file of the
-    /// wrong size.
+    /// wrong size. A file that cannot be read to the end is reported as
+    /// <see cref="AssetProblem.Unreadable"/>.
     /// </summary>
     /// <param name="source">The opened original.</param>
     /// <param name="manifest">The manifest, validated before any file is read.</param>
@@ -64,7 +78,113 @@ public static class AssetVerifier
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(manifest);
         manifest.Validate();
+        return new(await CheckAsync(source, manifest, new(StringComparer.OrdinalIgnoreCase), cancellationToken)
+            .ConfigureAwait(false));
+    }
 
+    /// <summary>
+    /// Opens <paramref name="path"/> as the manifest's <see cref="AssetManifest.SourceKind"/> and checks
+    /// it as <see cref="VerifyAsync(OriginalContentSource, AssetManifest, CancellationToken)"/> does. A
+    /// source that cannot be opened is reported as <see cref="AssetProblem.Unreadable"/>.
+    /// </summary>
+    /// <param name="path">The directory, <c>.iso</c> image or <c>.cue</c> sheet holding the original.</param>
+    /// <param name="manifest">The manifest, validated before the source is opened.</param>
+    /// <param name="cancellationToken">Cancels between files and during hashing.</param>
+    /// <exception cref="InvalidDataException">The manifest is invalid or names an unsupported source kind.</exception>
+    public static async Task<AssetVerificationResult> VerifyAsync(
+        string path,
+        AssetManifest manifest,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(manifest);
+        ValidateForOpening(manifest);
+        var opened = Open(path, manifest.SourceKind);
+        if (opened.Source is null) return new([opened.Failure!]);
+        using (opened.Source)
+            return new(await CheckAsync(opened.Source, manifest, opened.Hashes, cancellationToken)
+                .ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// Verifies <paramref name="path"/> against every edition, in the order given, and returns the
+    /// editions it matched and why each other edition did not. Every manifest is validated before the
+    /// source is opened. The source is opened once per source kind, and a file two editions both
+    /// hash is read once.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="EditionIdentification.Edition"/> is set only when exactly one edition matched. When
+    /// several match, for example because one edition's files are a subset of another's, the
+    /// manifests cannot tell them apart and <see cref="EditionIdentification.IsAmbiguous"/> is set.
+    /// </remarks>
+    /// <param name="path">The directory, <c>.iso</c> image or <c>.cue</c> sheet holding the original.</param>
+    /// <param name="editions">The supported editions' manifests.</param>
+    /// <param name="cancellationToken">Cancels between files and during hashing.</param>
+    /// <exception cref="ArgumentException"><paramref name="editions"/> contains <see langword="null"/>.</exception>
+    /// <exception cref="InvalidDataException">An edition's manifest is invalid or names an unsupported source kind.</exception>
+    public static async Task<EditionIdentification> IdentifyAsync(
+        string path,
+        IEnumerable<AssetManifest> editions,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        ArgumentNullException.ThrowIfNull(editions);
+        var candidates = editions.ToArray();
+        foreach (var edition in candidates)
+        {
+            if (edition is null) throw new ArgumentException("Editions contain a null manifest.", nameof(editions));
+            ValidateForOpening(edition);
+        }
+
+        var sources = new Dictionary<string, OpenedSource>(StringComparer.Ordinal);
+        var matches = new List<AssetManifest>();
+        var mismatches = new List<EditionMismatch>();
+        try
+        {
+            foreach (var edition in candidates)
+            {
+                if (!sources.TryGetValue(edition.SourceKind, out var opened))
+                    sources.Add(edition.SourceKind, opened = Open(path, edition.SourceKind));
+                IReadOnlyList<AssetVerificationIssue> issues = opened.Source is null
+                    ? [opened.Failure!]
+                    : await CheckAsync(opened.Source, edition, opened.Hashes, cancellationToken).ConfigureAwait(false);
+                if (issues.Count == 0) matches.Add(edition);
+                else mismatches.Add(new(edition, issues));
+            }
+        }
+        finally
+        {
+            foreach (var opened in sources.Values) opened.Source?.Dispose();
+        }
+        return new(matches, mismatches);
+    }
+
+    private static void ValidateForOpening(AssetManifest manifest)
+    {
+        manifest.Validate();
+        if (!ContentSourceKinds.IsSupported(manifest.SourceKind))
+            throw new InvalidDataException($"Asset manifest names an unsupported source kind '{manifest.SourceKind}'.");
+    }
+
+    private static OpenedSource Open(string path, string kind)
+    {
+        try
+        {
+            return new(OriginalContentSource.Open(path, kind), null);
+        }
+        catch (Exception exception) when (IsReadFailure(exception) || exception is ArgumentException)
+        {
+            return new(null, new(null, AssetProblem.Unreadable, exception.Message));
+        }
+    }
+
+    // hashes holds the fingerprint of each file already read from this source, by normalized path.
+    private static async Task<List<AssetVerificationIssue>> CheckAsync(
+        OriginalContentSource source,
+        AssetManifest manifest,
+        Dictionary<string, string> hashes,
+        CancellationToken cancellationToken)
+    {
         var issues = new List<AssetVerificationIssue>();
         foreach (var spec in manifest.Files)
         {
@@ -85,74 +205,31 @@ public static class AssetVerifier
             }
 
             if (spec.Xxh3 is null) continue;
-            string actual;
-            await using (var stream = source.OpenRead(relative))
-                actual = await FileFingerprint.Xxh3Async(stream, cancellationToken).ConfigureAwait(false);
+            if (!hashes.TryGetValue(relative, out var actual))
+            {
+                try
+                {
+                    await using var stream = source.OpenRead(relative);
+                    actual = await FileFingerprint.Xxh3Async(stream, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (IsReadFailure(exception))
+                {
+                    issues.Add(new(relative, AssetProblem.Unreadable, $"The file could not be read: {exception.Message}"));
+                    continue;
+                }
+                hashes[relative] = actual;
+            }
             if (!actual.Equals(spec.Xxh3, StringComparison.Ordinal))
                 issues.Add(new(relative, AssetProblem.WrongHash, $"Expected xxh3 {spec.Xxh3}; found {actual}."));
         }
-
-        return new(issues);
+        return issues;
     }
 
-    /// <summary>
-    /// Opens <paramref name="path"/> as the manifest's <see cref="AssetManifest.SourceKind"/> and checks
-    /// it as <see cref="VerifyAsync(OriginalContentSource, AssetManifest, CancellationToken)"/> does. A
-    /// source that cannot be opened is reported as <see cref="AssetProblem.Unreadable"/>.
-    /// </summary>
-    /// <param name="path">The directory, <c>.iso</c> image or <c>.cue</c> sheet holding the original.</param>
-    /// <param name="manifest">The manifest, validated before the source is opened.</param>
-    /// <param name="cancellationToken">Cancels between files and during hashing.</param>
-    /// <exception cref="InvalidDataException">The manifest is invalid or names an unsupported source kind.</exception>
-    public static async Task<AssetVerificationResult> VerifyAsync(
-        string path,
-        AssetManifest manifest,
-        CancellationToken cancellationToken = default)
+    private static bool IsReadFailure(Exception exception) =>
+        exception is IOException or UnauthorizedAccessException or InvalidDataException;
+
+    private sealed record OpenedSource(OriginalContentSource? Source, AssetVerificationIssue? Failure)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        ArgumentNullException.ThrowIfNull(manifest);
-        manifest.Validate();
-        if (!ContentSourceKinds.IsSupported(manifest.SourceKind))
-            throw new InvalidDataException($"Asset manifest names an unsupported source kind '{manifest.SourceKind}'.");
-
-        OriginalContentSource source;
-        try
-        {
-            source = OriginalContentSource.Open(path, manifest.SourceKind);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
-                                         or InvalidDataException or ArgumentException)
-        {
-            return new([new(null, AssetProblem.Unreadable, exception.Message)]);
-        }
-
-        using (source)
-            return await VerifyAsync(source, manifest, cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
-    /// Verifies <paramref name="path"/> against each edition in turn, ordered by
-    /// <see cref="AssetManifest.SourceEdition"/>, and returns the first that matches with the reasons
-    /// each earlier edition did not.
-    /// </summary>
-    /// <param name="path">The directory, <c>.iso</c> image or <c>.cue</c> sheet holding the original.</param>
-    /// <param name="editions">The supported editions' manifests.</param>
-    /// <param name="cancellationToken">Cancels between files and during hashing.</param>
-    /// <exception cref="InvalidDataException">An edition's manifest is invalid.</exception>
-    public static async Task<EditionIdentification> IdentifyAsync(
-        string path,
-        IEnumerable<AssetManifest> editions,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        ArgumentNullException.ThrowIfNull(editions);
-        var mismatches = new List<EditionMismatch>();
-        foreach (var edition in editions.OrderBy(edition => edition.SourceEdition, StringComparer.Ordinal))
-        {
-            var result = await VerifyAsync(path, edition, cancellationToken).ConfigureAwait(false);
-            if (result.IsValid) return new(edition, mismatches);
-            mismatches.Add(new(edition, result.Issues));
-        }
-        return new(null, mismatches);
+        public Dictionary<string, string> Hashes { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 }

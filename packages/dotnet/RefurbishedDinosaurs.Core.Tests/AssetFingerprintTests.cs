@@ -64,7 +64,19 @@ public sealed class AssetFingerprintTests
     {
         var stream = new MemoryStream(new byte[AssetManifest.MaximumBytes + 1]);
         Assert.Throws<InvalidDataException>(() => AssetManifest.Load(stream));
+        Assert.Throws<InvalidDataException>(() => AssetManifest.Load(
+            new ForwardOnlyStream(new MemoryStream(new byte[AssetManifest.MaximumBytes + 1]))));
     }
+
+    [Fact]
+    public void ManifestReportsMalformedJsonAsInvalidData() =>
+        Assert.Throws<InvalidDataException>(() => AssetManifest.Load(new MemoryStream("{ \"gameId\": "u8.ToArray())));
+
+    [Theory]
+    [InlineData("""{ "gameId": "game", "sourceEdition": "retail", "files": [] }""")]
+    [InlineData("""{ "gameId": "game", "sourceEdition": "retail", "files": [ { "path": "A", "size": 1, "required": false } ] }""")]
+    public void ManifestRejectsAnEditionWithNoRequiredFile(string json) =>
+        Assert.Throws<InvalidDataException>(() => AssetManifest.Load(new MemoryStream(Encoding.UTF8.GetBytes(json))));
 
     [Fact]
     public void EditionFingerprintIgnoresOrderSeparatorAndSourceKind()
@@ -155,6 +167,79 @@ public sealed class AssetFingerprintTests
             var none = await AssetVerifier.IdentifyAsync(root, [budget], TestContext.Current.CancellationToken);
             Assert.False(none.IsSupported);
             Assert.Single(none.Mismatches);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task IdentifyReportsEditionsItCannotTellApart()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            await File.WriteAllTextAsync(Path.Combine(root, "GAME.DAT"), "abc", TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(Path.Combine(root, "EXTRA.DAT"), "a", TestContext.Current.CancellationToken);
+            const string hash = "06b05ab6733a618578af5f94892f3950";
+            var original = new AssetManifest("game", "base", [new("GAME.DAT", 3, hash)]);
+            var patched = new AssetManifest("game", "patched", [new("GAME.DAT", 3, hash), new("EXTRA.DAT", 1)]);
+
+            var found = await AssetVerifier.IdentifyAsync(root, [patched, original], TestContext.Current.CancellationToken);
+            Assert.True(found.IsAmbiguous);
+            Assert.False(found.IsSupported);
+            Assert.Null(found.Edition);
+            Assert.Equal([patched, original], found.Matches);
+            Assert.Empty(found.Mismatches);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task IdentifyValidatesEveryEditionBeforeReading()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var valid = new AssetManifest("game", "retail", [new("GAME.DAT", 3)]);
+            await Assert.ThrowsAsync<InvalidDataException>(() => AssetVerifier.IdentifyAsync(root,
+                [valid, valid with { SourceKind = "zip" }], TestContext.Current.CancellationToken));
+            await Assert.ThrowsAsync<ArgumentException>(() => AssetVerifier.IdentifyAsync(root,
+                [valid, null!], TestContext.Current.CancellationToken));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task VerifierReportsAFileThatCannotBeRead()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var path = Path.Combine(root, "GAME.DAT");
+            await File.WriteAllTextAsync(path, "abc", TestContext.Current.CancellationToken);
+            using var source = OriginalContentSource.OpenDirectory(root);
+            File.Delete(path);
+            var manifest = new AssetManifest("game", "retail", [new("GAME.DAT", 3, "06b05ab6733a618578af5f94892f3950")]);
+
+            var issue = Assert.Single((await AssetVerifier.VerifyAsync(source, manifest,
+                TestContext.Current.CancellationToken)).Issues);
+            Assert.Equal((AssetProblem.Unreadable, "GAME.DAT"), (issue.Problem, issue.Path));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task InstalledVerifierReportsAFileItCannotRead()
+    {
+        var root = CreateInstalledContent();
+        try
+        {
+            InstalledAssetVerification verification;
+            using (new FileStream(Path.Combine(root, "Decoded", "asset.bin"), FileMode.Open, FileAccess.Read, FileShare.None))
+                verification = await InstalledAssetVerifier.VerifyDirectoryAsync(root,
+                    Expectations(rejectUnlisted: false), TestContext.Current.CancellationToken);
+            var issue = Assert.Single(verification.Issues);
+            Assert.Equal((InstalledAssetProblem.Unreadable, "Decoded/asset.bin"), (issue.Problem, issue.Path));
+            Assert.Equal(0, verification.VerifiedFiles);
         }
         finally { Directory.Delete(root, true); }
     }
@@ -277,6 +362,20 @@ public sealed class AssetFingerprintTests
             [new("Decoded/asset.bin", written.Bytes, written.Xxh3, "GAME.DAT")], "1.0.0")
             .Write(Path.Combine(root, "manifest.json"));
         return root;
+    }
+
+    private sealed class ForwardOnlyStream(Stream inner) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => inner.Read(buffer, offset, count);
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override void Flush() { }
     }
 
     private static string CreateTemporaryDirectory()

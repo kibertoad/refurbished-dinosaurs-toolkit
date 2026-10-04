@@ -50,8 +50,10 @@ LegacyFormats parts of it:
   on a line it cannot read rather than skipping it.
 - `AssetManifest` describes a supported edition by paths, sizes and XXH3-128 hashes, the same
   `xxh3` values the spec's build entries give, and names the source kind to read it as.
-  `AssetVerifier.IdentifyAsync` tries each edition against the player's copy and reports why the
-  others did not match. `AssetManifest.Fingerprint()` names the edition in the installed manifest.
+  `AssetVerifier.IdentifyAsync` tries every edition against the player's copy and reports why the
+  others did not match. It names an edition only when exactly one matches, and sets `IsAmbiguous`
+  when the manifests cannot tell two apart. A file it cannot read is reported as `Unreadable`.
+  `AssetManifest.Fingerprint()` names the edition in the installed manifest.
 - The importer decodes into `StagedAssetPack.StagingDirectory`, verifies all of its output there,
   then calls `Commit`, which swaps the pack in and keeps the old one on failure.
 - `InstalledContentWriter` suits incremental extractors: it replaces changed files atomically and
@@ -183,14 +185,16 @@ file it names, written as 32 lower-case hex digits. SHA-256 is gone from them, w
 
 `AssetVerifier` and its result types moved to RefurbishedDinosaurs.LegacyFormats, because they now
 read the original through `OriginalContentSource`; a manifest's `SourceKind` (default `directory`)
-picks how. `AssetProblem` gains `Unreadable`. `IsXxh3` accepts lower case only, as the standard
-writes hashes.
+picks how. `AssetProblem` gains `Unreadable`, for a source that cannot be opened or a file in it
+that cannot be read. `AssetManifest.Validate` rejects a manifest with no required file, since it
+would match any copy. `IsXxh3` accepts lower case only, as the standard writes hashes.
 
 Rehash every edition manifest and installed manifest: copy each file's `xxh3` from the spec's
 build entry, or compute it with `xxhsum -H2`. Installed manifests written before this release no
 longer verify, so give the importer's manifest a new `FormatVersion` and have the game ask the
 player to import again. `InstalledAssetVerifier` now also checks the product name, rejects a
-record with no source path, and rejects paths `PortableAssetPath.Relative` rejects.
+record with no source path, rejects paths `PortableAssetPath.Relative` rejects, and reports a
+listed file it cannot read as `InstalledAssetProblem.Unreadable` instead of throwing.
 `InstalledAssetManifest.Write` now writes camelCase field names, as
 `schemas/installed-asset-manifest.schema.json` gives them; `Read` matches names ignoring case.
 Both schemas use `xxh3`, and the asset manifest schema adds `sourceKind`.
