@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 using RefurbishedDinosaurs.Core.IO;
 
@@ -89,12 +90,27 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     /// <summary>Reads and parses a <c>.cue</c> file.</summary>
     /// <exception cref="FileNotFoundException">The file does not exist.</exception>
     /// <exception cref="InvalidDataException">The file is too large or is not a supported cue sheet.</exception>
-    public static CueBinSheet Load(string path)
+    public static CueBinSheet Load(string path) => Read(path).Sheet;
+
+    // Reads the file once and parses those bytes, so a caller holding the bytes holds what was parsed.
+    // The text is decoded as File.ReadAllText decodes it: UTF-8 unless a byte order mark says otherwise.
+    internal static (byte[] Bytes, CueBinSheet Sheet) Read(string path)
     {
-        var info = new FileInfo(path);
-        if (!info.Exists) throw new FileNotFoundException("Cue sheet not found.", path);
-        if (info.Length > MaximumCueLength) throw new InvalidDataException("Cue sheet is too large.");
-        return Parse(File.ReadAllText(path));
+        if (!File.Exists(path)) throw new FileNotFoundException("Cue sheet not found.", path);
+        byte[] bytes;
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            // Read one byte past the limit so a file that grew after a length check is still caught.
+            var buffer = new byte[MaximumCueLength + 1];
+            var length = 0;
+            for (int read; length < buffer.Length && (read = stream.Read(buffer, length, buffer.Length - length)) > 0;)
+                length += read;
+            if (length > MaximumCueLength) throw new InvalidDataException("Cue sheet is too large.");
+            bytes = buffer[..length];
+        }
+        using var reader = new StreamReader(new MemoryStream(bytes, writable: false), Encoding.UTF8,
+            detectEncodingFromByteOrderMarks: true);
+        return (bytes, Parse(reader.ReadToEnd()));
     }
 
     /// <summary>
@@ -227,9 +243,10 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     /// <summary>
     /// Finds the sheet and image a path names: a <c>.cue</c> file, a <c>.bin</c> file, or a directory
     /// holding them. The other file is the one the sheet's <c>FILE</c> names, else the one with the
-    /// same name, else the only one in the directory.
+    /// same name, else the only one in the directory. <c>CueBytes</c> are the bytes of the sheet that
+    /// were parsed.
     /// </summary>
-    internal static (string CuePath, string BinPath, CueBinSheet Sheet) Resolve(string input)
+    internal static (string CuePath, string BinPath, CueBinSheet Sheet, byte[] CueBytes) Resolve(string input)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(input);
         var fullInput = Path.GetFullPath(input);
@@ -251,7 +268,7 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
 
         var cues = Enumerate(directory, ".cue");
         cuePath ??= MatchStem(binPath, cues) ?? Single(cues, "cue sheet");
-        var sheet = Load(cuePath);
+        var (cueBytes, sheet) = Read(cuePath);
         var referenced = ResolveReference(directory, sheet.ReferencedFile);
         // A sheet found for a given BIN must not describe another BIN that is present.
         if (binPath is not null && referenced is not null && !string.Equals(referenced, binPath,
@@ -263,7 +280,7 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
             var bins = Enumerate(directory, ".bin");
             binPath = referenced ?? MatchStem(cuePath, bins) ?? Single(bins, "BIN image");
         }
-        return (cuePath, binPath, sheet);
+        return (cuePath, binPath, sheet, cueBytes);
     }
 
     private static string[] Enumerate(string directory, string extension) =>

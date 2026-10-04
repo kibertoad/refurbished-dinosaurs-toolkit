@@ -1,3 +1,4 @@
+using RefurbishedDinosaurs.Core.Assets;
 using RefurbishedDinosaurs.LegacyFormats;
 using Xunit;
 
@@ -265,7 +266,101 @@ public sealed class CueBinSourceTests
             foreach (var source in new[] { directory, iso, cabinet })
             {
                 Assert.Null(source.CuePath);
+                Assert.Null(source.CueSheetBytes);
                 Assert.Null(source.BinPath);
+                Assert.Throws<NotSupportedException>(source.OpenBin);
+            }
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task CueBinSourceKeepsTheSheetItParsed()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            await WriteAsync(root, ToRaw(OriginalContentSourceTests.BuildIso([1])), SingleTrackCue);
+            var cue = Path.Combine(root, "game.cue");
+            var parsed = await File.ReadAllBytesAsync(cue, TestContext.Current.CancellationToken);
+            using var source = OriginalContentSource.OpenCueBin(cue);
+
+            // The sheet on disk is replaced after the source opened; the bytes it parsed stay with it.
+            var replacement = "REM replaced\n" + SingleTrackCue;
+            await File.WriteAllTextAsync(cue, replacement, TestContext.Current.CancellationToken);
+            var bytes = Assert.NotNull(source.CueSheetBytes);
+            Assert.Equal(parsed, bytes.ToArray());
+            Assert.Equal(FileFingerprint.Xxh3(parsed), FileFingerprint.Xxh3(bytes.Span));
+            Assert.NotEqual(FileFingerprint.Xxh3(cue), FileFingerprint.Xxh3(bytes.Span));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task CueBinSourceReadsAnUnchangedBinAgain()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var payload = new byte[] { 3, 1, 4 };
+            var image = ToRaw(OriginalContentSourceTests.BuildIso(payload));
+            await WriteAsync(root, image, SingleTrackCue);
+            using var source = OriginalContentSource.OpenCueBin(root);
+            for (var attempt = 0; attempt < 2; attempt++)
+            {
+                await using (var stream = source.OpenRead("EI/TEST.BIN"))
+                {
+                    var actual = new byte[payload.Length];
+                    await stream.ReadExactlyAsync(actual, TestContext.Current.CancellationToken);
+                    Assert.Equal(payload, actual);
+                }
+                await using (var volume = source.OpenVolume())
+                    Assert.Equal(source.VolumeBlocks * 2048, volume.Length);
+                await using (var bin = source.OpenBin())
+                {
+                    var actual = new byte[image.Length];
+                    await bin.ReadExactlyAsync(actual, TestContext.Current.CancellationToken);
+                    Assert.Equal(image, actual);
+                    Assert.Equal(0, await bin.ReadAsync(new byte[1], TestContext.Current.CancellationToken));
+                }
+            }
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData("truncated")]
+    [InlineData("grown")]
+    [InlineData("rewritten")]
+    public async Task CueBinSourceRefusesABinThatChangedAfterItOpened(string change)
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var image = ToRaw(OriginalContentSourceTests.BuildIso([2, 7]));
+            await WriteAsync(root, image, SingleTrackCue);
+            var binPath = Path.Combine(root, "game.bin");
+            var written = File.GetLastWriteTimeUtc(binPath);
+            using var source = OriginalContentSource.OpenCueBin(root);
+
+            var replacement = image.ToArray();
+            if (change == "truncated") Array.Resize(ref replacement, image.Length - RawSector);
+            else if (change == "grown") Array.Resize(ref replacement, image.Length + RawSector);
+            else replacement[^1] ^= 0xFF;
+            await File.WriteAllBytesAsync(binPath, replacement, TestContext.Current.CancellationToken);
+            // A rewrite of the same length is told apart by its last-write time. Set it apart
+            // explicitly so the test does not rely on the file system's timestamp resolution.
+            if (change == "rewritten") File.SetLastWriteTimeUtc(binPath, written.AddMinutes(1));
+
+            foreach (var read in new Func<Stream>[]
+            {
+                () => source.OpenRead("EI/TEST.BIN"),
+                source.OpenVolume,
+                source.OpenBin,
+            })
+            {
+                var failure = Assert.Throws<IOException>(read);
+                Assert.Contains("changed after the cue/bin source was opened", failure.Message, StringComparison.Ordinal);
             }
         }
         finally { Directory.Delete(root, true); }

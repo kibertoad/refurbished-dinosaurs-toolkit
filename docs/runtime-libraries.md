@@ -50,7 +50,12 @@ LegacyFormats parts of it:
   on a line it cannot read rather than skipping it. A cue/bin source names the cue sheet and the raw
   image file it chose from a directory, a `.cue` or a `.bin` input as `CuePath` and `BinPath` (the
   image is the file the sheet's `FILE` names, whatever its extension), so the importer hashes and
-  reads the same files instead of repeating the selection.
+  reads the same files instead of repeating the selection. The source reads the `.cue` once, when it
+  opens, and gives those bytes as `CueSheetBytes`: hash them, since the file at `CuePath` may have
+  been replaced after the sheet was parsed. It records the BIN's length and last-write time when it
+  opens, and every read of the BIN through the source, including `OpenBin`, fails with an
+  `IOException` when either has changed. A stream the importer opens from `BinPath` itself is not
+  checked.
 - An `.iso` or cue/bin source also gives its ISO 9660 volume: the identifier (`Label`), the size in
   blocks (`VolumeBlocks`) and the bytes (`OpenVolume`). An `iso9660` or `cue-bin` manifest can pin
   them with `VolumeIdentifier`, `VolumeBlocks` and `VolumeXxh3`, which tells apart two pressings
