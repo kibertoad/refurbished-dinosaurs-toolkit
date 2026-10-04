@@ -48,6 +48,27 @@ test("documentation and files outside every area run no area", () => {
   assert.deepEqual(on([]), []);
 });
 
+test("a TypeScript file anywhere under tools/ runs the TypeScript job, so a new tool needs no entry in AREAS", () => {
+  assert.deepEqual(on(["tools/newdir/x.ts"]), ["typescript"]);
+  assert.deepEqual(on(["tools/newdir/x.test.ts"]), ["typescript"]);
+  assert.deepEqual(on(["tools/release/plan.ts"]), ["typescript"]);
+  assert.deepEqual(on(["tools/x.ts"]), ["typescript"]);
+});
+
+test("other files under tools/ and TypeScript outside it run no area", () => {
+  assert.deepEqual(
+    on([
+      "tools/Verify-Repository.ps1",
+      "tools/repository-policy.json",
+      "tools/media/smacker_audio_oracle.py",
+      "tools/newdir/README.md",
+      "tools/newdir/x.ts.md",
+      "docs/x.ts",
+    ]),
+    [],
+  );
+});
+
 test("an exact path matches only itself, and a prefix only what is under it", () => {
   assert.deepEqual(on(["packages/dotnet-extra/x.cs", "tools/global.json", "packages/disc-archiver.md"]), []);
 });
