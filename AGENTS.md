@@ -105,7 +105,8 @@ pwsh tools/Verify-Repository.ps1
 
 CI runs a job only when the change touches a path the job tests, as `AREAS` and `AREA_SUFFIXES`
 in `tools/ci/changes.ts` list them, and runs the repository policy check on every change. Any
-`.ts` file under `tools/` runs the TypeScript job, so a new TypeScript tool needs no entry. A new
+`.ts` file under `tools/` runs the TypeScript job, so a new TypeScript tool in its own directory
+needs no entry. The job runs only the tests one directory down (`tools/<dir>/*.test.ts`). A new
 package, a non-TypeScript file that a tool's tests read, or a test that starts reading a file
 outside its package adds the path to `AREAS`.
 

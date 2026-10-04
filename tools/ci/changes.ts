@@ -13,9 +13,11 @@
 import { appendFileSync } from "node:fs";
 import { changedFiles, matchesPath } from "../lib/changed-files.ts";
 
-// Path prefixes (ending in "/") or exact paths, relative to the repository root, that each area's
-// jobs test. AREA_SUFFIXES adds files by extension. A file that neither list matches runs only the
-// repository policy check.
+/**
+ * Path prefixes (ending in "/") or exact paths, relative to the repository root, that each area's
+ * jobs test. AREA_SUFFIXES adds files by extension. A file that neither list matches runs only the
+ * repository policy check.
+ */
 export const AREAS = {
   // The TypeScript packages, the tools' TypeScript settings and the composite actions. The tools'
   // own .ts files are in AREA_SUFFIXES. The reader's bridge tests run the engine, so an engine
@@ -61,7 +63,8 @@ export interface SuffixRule {
 
 /**
  * Files under a directory with a given suffix that also turn an area on. The TypeScript job lints,
- * typechecks and tests every .ts file under tools/, so a new tool runs it without an entry in
+ * format-checks and typechecks every .ts file under tools/, and runs the tests one directory below
+ * it (`tools/<dir>/*.test.ts`), so a new tool in its own directory runs it without an entry in
  * AREAS. Other files under tools/ (the repository policy script and its settings, the Python
  * oracles) run no area.
  */
@@ -70,8 +73,9 @@ export const AREA_SUFFIXES: Partial<Record<Area, SuffixRule[]>> = {
 };
 
 const matchesSuffix = (rules: SuffixRule[], file: string) =>
-  rules.some((r) => file.startsWith(r.prefix) && file.endsWith(r.suffix));
+  rules.some((r) => matchesPath([r.prefix], file) && file.endsWith(r.suffix));
 
+/** Paths whose change turns every area on: the CI workflow, this script and the module it reads. */
 export const EVERYTHING = [".github/workflows/ci.yml", "tools/ci/", "tools/lib/"];
 
 /** Returns, for each area, whether any of `files` falls under its paths or its suffix rules. */
