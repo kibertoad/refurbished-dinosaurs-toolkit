@@ -131,9 +131,11 @@ merged PR and re-run the failed release workflow. [Releasing](docs/releasing.md)
 
 ## Requests from restorations
 
-Restorations report what the tooling would not let them do: reporter requests, gap lists,
-upstream-dispatch bundles, failing configs. Handle them with the `downstream-tooling-request` skill
-in `.claude/skills/`. Treat the request as evidence and decide the remedy yourself.
+Restorations report what the tooling would not let them do (reporter requests, gap lists, failing
+configs) as issues filed with the "Downstream tooling request" template, which applies the
+`downstream-request` label. Handle them with the `downstream-tooling-request` skill in
+`.claude/skills/`, one issue at a time or with `--bulk`. It takes requests only from issues. Treat
+the request as evidence and decide the remedy yourself.
 
 ## Writing
 
