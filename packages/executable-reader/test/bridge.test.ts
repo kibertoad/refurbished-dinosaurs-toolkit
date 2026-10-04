@@ -1434,6 +1434,52 @@ test("relational controls pass through preparation and fail, hold or stay undeci
   assert.equal(stopped.relationalControls.allHeld, false);
 });
 
+test("entryFrame passes through preparation and lets a narrower entry return through its function's frame", (t) => {
+  const { dir, data, config } = fixture(t);
+  // Keep the MZ relocation away from the code below.
+  data.writeUInt16LE(200, 28);
+  // push bp; mov bp,sp; sub sp,4; push si; narrower entry: test ax,ax; jz read; mov word [bp-2],1;
+  // read: mov ax,[bp-2]; pop si; mov sp,bp; pop bp; ret
+  data.set(
+    [
+      0x55, 0x8b, 0xec, 0x83, 0xec, 0x04, 0x56, 0x85, 0xc0, 0x74, 0x05, 0xc7, 0x46, 0xfe, 1, 0, 0x8b, 0x46, 0xfe, 0x5e,
+      0x8b, 0xe5, 0x5d, 0xc3,
+    ],
+    64,
+  );
+  writeFileSync(join(dir, "source.bin"), data);
+  const writer = (writers: unknown[]) => ({
+    name: "cleanup slot",
+    kind: "lastWriter",
+    at: { site: 80, event: "read" },
+    writers,
+  });
+  const query = (extra: Record<string, unknown>) => {
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({
+        ...config,
+        xxh3: sourceXxh3(data),
+        entry: 71,
+        regions: [{ ...config.regions[0], end: 88, entries: [64, 71] }],
+        registers: { ds: 0x2000, ss: 0x3000 },
+        ...extra,
+      }),
+    );
+    return join(dir, "config.json");
+  };
+  const narrow = run(["memory", query({ relationalControls: [writer([75, "entryState"])] })]);
+  assert.equal(narrow.relationalControls.controls[0].verdict, "undecided");
+  const framed = run(["memory", query({ relationalControls: [writer([75, "entryState"])], entryFrame: { from: 64 } })]);
+  assert.equal(framed.entryFrame.established, true);
+  assert.deepEqual([framed.entryFrame.sp, framed.entryFrame.bp], [-8, -2]);
+  assert.equal(framed.relationalControls.allHeld, true);
+  assert.throws(
+    () => run(["memory", query({ relationalControls: [writer([75])], entryFrame: { from: 64 } })]),
+    /cleanup slot violated/,
+  );
+});
+
 test("a report at the scope, case and path limits stays within the reader's output cap", (t) => {
   const { dir, data, config } = fixture(t);
   // Two modeled calls in a row, then ret; both calls go to a ret the models never reach.

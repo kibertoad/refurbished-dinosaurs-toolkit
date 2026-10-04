@@ -145,3 +145,11 @@ control fails the report. A control left undecided by a stop, a limit or an unre
 reported as `undecided` and never counts as held. Access reports also give each byte's
 `writeOrder`, or why it has no modeled value. See the
 [controls contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#relational-controls).
+
+A trace-family query whose entry lies inside a function body names the function's entry in
+`entryFrame: { "from": <site> }`. The engine traces from there to the query's entry and, when SP
+sits at one offset from the function's entry SP at every arrival, starts the query in that frame,
+so the function's return balances and its paths can be read to the end. The report's `entryFrame`
+gives the offsets, or the reasons the frame is not established, in which case the query runs as
+it would without the input. See the
+[narrower entry contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#a-narrower-entry-inside-its-functions-frame).

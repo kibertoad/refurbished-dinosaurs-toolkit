@@ -91,7 +91,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 
 | Command | Reports | Described in |
 |---|---|---|
-| `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; declared-table continuations run on their own `continuationBudget`; checks `relationalControls` | this section, [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
+| `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; declared-table continuations run on their own `continuationBudget`; checks `relationalControls`; `entryFrame` starts an entry inside its function's frame | this section, [narrower entries](#a-narrower-entry-inside-its-functions-frame), [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
 | `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path` | this section, [hardware boundaries](#hardware-boundaries) |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
@@ -127,7 +127,8 @@ pointer grouping. Adjacent pushes alone do not. Register widening, frame cleanup
 stack overwrites and unknown return addresses remain visible. A root query may
 set `returnBytes` to 4 for a far entry (default 2). The root return must use
 that width and leave SP where it was on entry; otherwise the path stops and the
-report is not complete within the model.
+report is not complete within the model. A query that starts inside a function body names
+the function in `entryFrame` ([below](#a-narrower-entry-inside-its-functions-frame)).
 
 `arguments` also maps each traced call's stack slots onto the widths its callee read. Each path
 gets `argumentFrames`, one per traced call (modeled calls have none). Offsets count from the
@@ -258,6 +259,35 @@ instructions. Concrete writes are compared against the observed pointer and
 extent; an unknown value leaves the comparison unresolved. Header extent units,
 usable capacity and pointer normalization need their own reading. Failure writes
 and saved versus returned pointers stay visible; no rollback is inferred.
+
+### A narrower entry inside its function's frame
+
+An entry inside a function body (after its prologue, at a loop body, at the code after a
+call) starts with SP and BP unknown, so the function's own return cannot balance against the
+entry SP and every path that reaches it stops. A trace-family query names the function's entry
+in `entryFrame: { "from": <site> }` to start inside that function's frame instead. `from` must be
+an established entry; `registers` may not also give SP or BP.
+
+The engine first traces from `from` with the query's own inputs (`registers`, `flags`,
+`callModels`, limits, `returnBytes`). Each of those paths stops at its first arrival at the
+query's `entry`, since the query itself traces everything after it. The report's `entryFrame`
+says what that trace found:
+
+| Field | Meaning |
+|---|---|
+| `established` | every path from `from` was read until it arrived or returned, at least one arrived, each arrival was in a frame of that function (not inside a call to another function), and SP was at one offset from that frame's entry SP at every arrival |
+| `sp` | SP at the entry as a signed offset from the function's entry SP, which points at the return address |
+| `bp` | BP as such an offset when it was at the same one at every arrival; `null` leaves BP unknown |
+| `arrivals`, `pathsRead`, `stepsUsed` | what the trace from `from` read |
+| `reasons` | why the frame is not established: a path that stopped before reaching the entry, a limit gap, no arrival, an arrival inside another function, SP at different offsets or at no offset |
+
+An established frame starts the query with SP and BP at those offsets from an entry SP, and that
+entry SP is the root frame's: the function's return must use `returnBytes` and leave SP there,
+and `argument` offsets count from it. Memory and every other register stay unknown at the entry,
+as without `entryFrame`. A frame that is not established leaves the query as it would run
+without the input, and relational controls left undecided by its stopped paths name the reasons.
+The frame is observed under the query's inputs; a `registers` value that steers the trace from
+`from` steers which arrivals it read.
 
 ## Limits and assumptions
 
@@ -1185,7 +1215,8 @@ Otherwise it is held.
   event order, and the reason, as a missed positive control does. Run the query without the control
   to read the full path.
 - An undecided control is reported with its `reasons`, and `relationalControls.allHeld` is false.
-  Treat anything but `held` as not established.
+  Treat anything but `held` as not established. When the query names an `entryFrame` that was not
+  established and a path stopped, the reasons also give why the frame was not established.
 - A control whose anchor no path reached fails as a missed control when every path was read.
 
 These cases are undecided, never violated: a byte a modeled call or a possibly aliasing write
@@ -1236,10 +1267,10 @@ instead.
 | Gap | Request | Controls |
 |---|---|---|
 | 32 | a guard precedes and controls the access it protects; a checked snapshot versus a later reload | `order` with `before` the guard's `branch`, `branch.taken` the protecting direction and `sameValue: { "before": "left", "at": "offset" }` (or `"at": "indirectValue"` on a `call` anchor). A reload after a modeled call is undecided; the occurrence lists the intervening calls and writes. Failure-flag writes and calls on the rejected direction are `reach` controls on that branch's paths |
-| 40 | assignment on each cleanup edge | `lastWriter` on the cleanup read with the assignment's write site. An edge where the assignment was skipped violates it; add `entryState` to accept the frame's prior contents and read each edge's `via` and `unwritten` cause. A slot dropped by an unread service is undecided |
+| 40 | assignment on each cleanup edge | `lastWriter` on the cleanup read with the assignment's write site. An edge where the assignment was skipped violates it; add `entryState` to accept the frame's prior contents and read each edge's `via` and `unwritten` cause. A slot dropped by an unread service is undecided. From an entry inside the function, name the function in `entryFrame` so its return balances; without it every path stops at that return and the control stays undecided |
 | 31 | aliased outputs; the register a loop predicate comes from | `lastWriter` on the read after both stores names the later store. `origin` on the loop branch's `left` with `inputs.include` the modeled service's register and `producers.exclude` the scratch read |
 | 33 | a propagated result traced to the leaf that produced it | `returnContracts` on the helper, then `origin` on the caller's test with `originatingReturns.entries` the helper and `producers.include` the base case's site. A value made in the caller violates it; each return it passed through is listed with its depth |
-| 30 | runtime mode carried through cleanup; which tables and indirect calls a branch reaches | the mode is a query assumption the engine already accepts: `registers` at entry, or a `callModels` case for the call that returns it. `reach` with `never` on the table loop or indirect call shows the branch bypasses it under that mode, and the assumption is listed in `queryAssumptions`. A stop before the site leaves it undecided, and so does a modeled call on the path, the one that supplies the mode included, because the anchor could lie in its callee. To decide it, start at an entry after that call with the mode in `registers` |
+| 30 | runtime mode carried through cleanup; which tables and indirect calls a branch reaches | the mode is a query assumption the engine already accepts: `registers` at entry, or a `callModels` case for the call that returns it. `reach` with `never` on the table loop or indirect call shows the branch bypasses it under that mode, and the assumption is listed in `queryAssumptions`. A stop before the site leaves it undecided, and so does a modeled call on the path, the one that supplies the mode included, because the anchor could lie in its callee. To decide it, start at an entry after that call with the mode in `registers` and the function in `entryFrame` |
 | 41 | terminator write versus returned length and capacity | `relation` with `modulo` 16: the terminator write's `offset` equals the buffer start plus the returned length. `containment` of the copy and terminator writes in `[start, start + capacity)`; a terminator at the capacity violates it |
 | 42 | requested bytes, allocator extent, clearing capacity | `allocation` places checkpoints at its `extent` and `pointer` sites; `containment` of the clearing writes with the pointer's registers as `segment` and `start` and `{ "mul": [extent, 16] }` as `length`, and `relation` between the request and the extent. A fill chunk inside the extent says nothing of total capacity |
 | 43 | caller ranges in arithmetic admission | `relation` over the admission arithmetic (`signed` where the gate is signed) with the callers' range in `assume` and its evidence. Without the range it is undecided; with a range it holds or is violated for that range only |
@@ -1249,8 +1280,9 @@ instead.
 A loop whose count is unknown forks at each test and stops at `visitLimit`, so a control over its
 writes stays undecided. State the count's producer as an existing input instead (the decision record
 on forking routes beyond budgets, proposed in PR 76): the count in `registers`, or a narrower entry
-at the loop body where the index is an entry register with an assumed range. A `containment` control
-then checks that every fill write stays inside `[base, base + n)`.
+at the loop body, with the function in `entryFrame`, where the index is an entry register with an
+assumed range. A `containment` control then checks that every fill write stays inside
+`[base, base + n)`.
 
 ```json
 {
