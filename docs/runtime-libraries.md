@@ -47,7 +47,10 @@ LegacyFormats parts of it:
 
 - `OriginalContentSource` reads the player's original from an installed directory, an `.iso`
   image or a cue/bin raw image through one file listing. It checks a cue sheet strictly and fails
-  on a line it cannot read rather than skipping it.
+  on a line it cannot read rather than skipping it. A cue/bin source names the cue sheet and the raw
+  image file it chose from a directory, a `.cue` or a `.bin` input as `CuePath` and `BinPath` (the
+  image is the file the sheet's `FILE` names, whatever its extension), so the importer hashes and
+  reads the same files instead of repeating the selection.
 - An `.iso` or cue/bin source also gives its ISO 9660 volume: the identifier (`Label`), the size in
   blocks (`VolumeBlocks`) and the bytes (`OpenVolume`). An `iso9660` or `cue-bin` manifest can pin
   them with `VolumeIdentifier`, `VolumeBlocks` and `VolumeXxh3`, which tells apart two pressings

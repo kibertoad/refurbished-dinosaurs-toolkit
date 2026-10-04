@@ -289,7 +289,14 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
         if (!path.StartsWith(root, OperatingSystem.IsWindows()
                 ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
             throw new InvalidDataException("Cue FILE escapes the source directory.");
-        return File.Exists(path) ? path : null;
+        if (!File.Exists(path)) return null;
+        // On a case-insensitive file system the sheet may spell the name in another case. Report the
+        // name as the directory lists it, so the chosen path names the file on disk.
+        var name = Path.GetFileName(path);
+        var listed = Directory.EnumerateFiles(Path.GetDirectoryName(path)!, "*", SearchOption.TopDirectoryOnly)
+            .Where(entry => Path.GetFileName(entry).Equals(name, StringComparison.OrdinalIgnoreCase)).ToArray();
+        return listed.FirstOrDefault(entry => Path.GetFileName(entry).Equals(name, StringComparison.Ordinal))
+            ?? (listed.Length == 1 ? listed[0] : path);
     }
 }
 

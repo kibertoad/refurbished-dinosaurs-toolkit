@@ -41,6 +41,21 @@ public abstract class OriginalContentSource : IDisposable
     public abstract string? Label { get; }
     /// <summary>The cue sheet of a <see cref="ContentSourceKinds.CueBin"/> source, otherwise <see langword="null"/>.</summary>
     public virtual CueBinSheet? Cue => null;
+    /// <summary>
+    /// The full path of the <c>.cue</c> file a <see cref="ContentSourceKinds.CueBin"/> source was
+    /// opened from, as <see cref="OpenCueBin"/> chose it, otherwise <see langword="null"/>.
+    /// </summary>
+    public virtual string? CuePath => null;
+    /// <summary>
+    /// The full path of the <c>.bin</c> image a <see cref="ContentSourceKinds.CueBin"/> source reads,
+    /// as <see cref="OpenCueBin"/> chose it, otherwise <see langword="null"/>. Its audio tracks are
+    /// read from this file. To record a track's fingerprint from the same file, open it and pass it with
+    /// the track's <see cref="CueBinSheet.TrackExtent"/> to
+    /// <see cref="CddaTrackFingerprints.RecordAsync(Stream, CueBinTrackExtent, int, long, int, CancellationToken)"/>:
+    /// the overload that takes a path resolves the files again, and given <see cref="CuePath"/> for a
+    /// source opened from a <c>.bin</c> it can choose another BIN.
+    /// </summary>
+    public virtual string? BinPath => null;
     // Opens the raw 2352-byte-sector image of a cue/bin source, for its audio tracks.
     internal virtual Func<Stream>? OpenRawImage => null;
     /// <summary>Every file, sorted by path ignoring case.</summary>
@@ -141,6 +156,7 @@ public abstract class OriginalContentSource : IDisposable
     /// is the <c>.cue</c> file, the <c>.bin</c> file, or the directory holding them; the other file is
     /// the one the sheet's <c>FILE</c> names, else the one with the same name, else the only one there.
     /// A sheet found for a given <c>.bin</c> must not name a different BIN that is present.
+    /// The returned source gives the chosen files as <see cref="CuePath"/> and <see cref="BinPath"/>.
     /// The sheet is checked as <see cref="CueBinSheet.Parse"/> and <see cref="CueBinSheet.ValidateBin"/>
     /// describe, the data track ends where the second track's pregap or audio begins, every raw sector
     /// read is checked to be MODE1, and the volume is checked as <see cref="OpenIso9660"/> describes.
@@ -152,7 +168,7 @@ public abstract class OriginalContentSource : IDisposable
     /// </exception>
     public static OriginalContentSource OpenCueBin(string path)
     {
-        var (_, binPath, sheet) = CueBinSheet.Resolve(path);
+        var (cuePath, binPath, sheet) = CueBinSheet.Resolve(path);
         sheet.ValidateBin(binPath);
         var sectors = new FileInfo(binPath).Length / CueBinSheet.RawSectorSize;
         long dataSectors = sheet.DataTrackSectors ?? sectors;
@@ -161,7 +177,7 @@ public abstract class OriginalContentSource : IDisposable
         return new Iso9660ContentSource(
             () => new RawMode1UserDataStream(
                 new FileStream(binPath, FileMode.Open, FileAccess.Read, FileShare.Read), dataSectors),
-            ContentSourceKinds.CueBin, sheet, () => CddaTrackFingerprints.OpenImage(binPath));
+            ContentSourceKinds.CueBin, sheet, cuePath, binPath);
     }
 
     /// <summary>
@@ -277,13 +293,17 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     private readonly long volumeLength;
     private readonly Dictionary<string, IsoEntry> files = new(StringComparer.OrdinalIgnoreCase);
 
-    // openImage returns a new seekable stream of 2048-byte sectors each time.
-    public Iso9660ContentSource(Func<Stream> openImage, string kind, CueBinSheet? cue, Func<Stream>? openRawImage = null)
+    // openImage returns a new seekable stream of 2048-byte sectors each time. A cue/bin source passes
+    // the files it chose; its audio tracks are read from binPath.
+    public Iso9660ContentSource(Func<Stream> openImage, string kind, CueBinSheet? cue,
+        string? cuePath = null, string? binPath = null)
     {
         this.openImage = openImage;
         Kind = kind;
         Cue = cue;
-        OpenRawImage = openRawImage;
+        CuePath = cuePath;
+        BinPath = binPath;
+        OpenRawImage = binPath is null ? null : () => CddaTrackFingerprints.OpenImage(binPath);
         using var stream = openImage();
         var imageLength = stream.Length;
         if (imageLength < 18L * SectorSize)
@@ -308,6 +328,8 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     public override string Kind { get; }
     public override string? Label { get; }
     public override CueBinSheet? Cue { get; }
+    public override string? CuePath { get; }
+    public override string? BinPath { get; }
     internal override Func<Stream>? OpenRawImage { get; }
     public override IReadOnlyList<ContentSourceEntry> Files { get; }
 

@@ -31,6 +31,8 @@ public sealed class CueBinSourceTests
                 Assert.Equal(ContentSourceKinds.CueBin, source.Kind);
                 Assert.Equal("SYNTHETIC_EI", source.Label);
                 Assert.Equal("game.bin", source.Cue?.ReferencedFile);
+                Assert.Equal(Path.GetFullPath(cue), source.CuePath);
+                Assert.Equal(Path.GetFullPath(Path.Combine(root, "game.bin")), source.BinPath);
                 Assert.Equal(new ContentSourceEntry("EI/TEST.BIN", payload.Length), Assert.Single(source.Files));
                 await using var stream = source.OpenRead("ei/test.bin");
                 var actual = new byte[payload.Length];
@@ -191,6 +193,80 @@ public sealed class CueBinSourceTests
             Assert.Contains("disc2.bin", failure.Message, StringComparison.Ordinal);
             using var source = OriginalContentSource.OpenCueBin(Path.Combine(root, "disc2.bin"));
             Assert.Equal("disc2.bin", source.Cue?.ReferencedFile);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task CueBinSourceReportsTheFilesItChose()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            // The sheet names a BIN with another stem, and a decoy BIN shares the sheet's stem: the
+            // source reads the named one and reports it, for a directory, a .cue or the named .bin input.
+            var payload = new byte[] { 4, 5, 6 };
+            await File.WriteAllBytesAsync(Path.Combine(root, "track.bin"),
+                ToRaw(OriginalContentSourceTests.BuildIso(payload)), TestContext.Current.CancellationToken);
+            await File.WriteAllBytesAsync(Path.Combine(root, "disc.bin"),
+                ToRaw(OriginalContentSourceTests.BuildIso([9, 9, 9])), TestContext.Current.CancellationToken);
+            await File.WriteAllTextAsync(Path.Combine(root, "disc.cue"),
+                SingleTrackCue.Replace("game.bin", "track.bin", StringComparison.Ordinal), TestContext.Current.CancellationToken);
+            var cue = Path.GetFullPath(Path.Combine(root, "disc.cue"));
+            var bin = Path.GetFullPath(Path.Combine(root, "track.bin"));
+
+            foreach (var input in new[] { root, cue, bin })
+            {
+                using var source = OriginalContentSource.OpenCueBin(input);
+                Assert.Equal(cue, source.CuePath);
+                Assert.Equal(bin, source.BinPath);
+                await using var stream = source.OpenRead("EI/TEST.BIN");
+                var actual = new byte[payload.Length];
+                await stream.ReadExactlyAsync(actual, TestContext.Current.CancellationToken);
+                Assert.Equal(payload, actual);
+            }
+
+            // Given the decoy, the sheet found by its stem names another BIN that is present.
+            Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenCueBin(Path.Combine(root, "disc.bin")));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task CueBinSourceReportsTheBinNameAsTheDirectoryListsIt()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            // The sheet spells the BIN in upper case. Where the file system ignores case the sheet's
+            // FILE finds it, and elsewhere the shared stem does; either way the path names the file.
+            await WriteAsync(root, ToRaw(OriginalContentSourceTests.BuildIso([1])),
+                SingleTrackCue.Replace("game.bin", "GAME.BIN", StringComparison.Ordinal));
+            using var source = OriginalContentSource.OpenCueBin(Path.Combine(root, "game.cue"));
+            Assert.Equal(Path.GetFullPath(Path.Combine(root, "game.bin")), source.BinPath);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void OnlyCueBinSourcesReportCueAndBinPaths()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            File.WriteAllBytes(Path.Combine(root, "game.iso"), OriginalContentSourceTests.BuildIso([1]));
+            var setup = Path.Combine(root, "setup");
+            Directory.CreateDirectory(setup);
+            SyntheticInstallShieldCabinet.WriteTo(setup,
+                SyntheticInstallShieldCabinet.Build(6, [new CabinetFile("", "a.dat", [1, 2, 3])]));
+            using var directory = OriginalContentSource.OpenDirectory(root);
+            using var iso = OriginalContentSource.OpenIso9660(Path.Combine(root, "game.iso"));
+            using var cabinet = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(setup, "data1.hdr"));
+            foreach (var source in new[] { directory, iso, cabinet })
+            {
+                Assert.Null(source.CuePath);
+                Assert.Null(source.BinPath);
+            }
         }
         finally { Directory.Delete(root, true); }
     }
