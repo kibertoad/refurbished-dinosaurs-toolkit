@@ -294,6 +294,30 @@ A tool that parses the output sees these changes. Existing line prefixes are kep
 
 Breaking engine releases that need a change in a restoration are listed here, newest first.
 
+### The Ghidra cross-check compares fall-through at jumps and Ghidra-only edges
+
+`callees` with `ghidraCallEdges` compared Ghidra's fall-through only at agreed calls, conditional
+tail transfers and interrupts, where the engine reads on. Now:
+
+- An `agreement` row at a `JMP` or `LJMP` tail transfer, and a `ghidraOnly` row whose site is an
+  instruction the engine read, also carry `ghidraFallsThrough` and `ghidraFallsThroughBasis`.
+- A new count, `counts.ghidraContinues`, counts the rows at a `JMP`, `LJMP`, return or `HLT` where
+  Ghidra continues to the next instruction (`ghidraFallsThrough: true`). The engine stops reading
+  there. `agreed` is true only when it is 0, and such a site is no agreement site.
+- `counts.ghidraEndsFunction` also counts a `ghidraOnly` row where Ghidra ends the function and the
+  engine reads on, such as a call Ghidra resolves to a different, non-returning callee.
+- For an export without `fallsThrough`, a flow that names an unconditional jump (`JUMP` in a name
+  that does not start with `CONDITIONAL`) reads as `ghidraFallsThrough: false`.
+
+A config whose cross-check agreed before can now report `agreed: false` or fail its
+`ghidraAgreementSites` control, when a user gave a tail jump a fall-through in Ghidra. Check the
+rows counted in `ghidraContinues`. The processor never continues past a `JMP`, so clear the override
+in Ghidra and export again. If the code after the jump belongs in the function, declare it as an
+entry the engine reads instead. A site you keep the override at stays `agreed: false`; remove it
+from `ghidraAgreementSites` controls. A test that compares `counts`
+as a whole adds `ghidraContinues`, and a test that expects no `ghidraFallsThrough` on a `JMP` row or
+a `ghidraOnly` row expects it now.
+
 ### The Ghidra cross-check compares fall-through at calls
 
 `callees` with `ghidraCallEdges` used to count a call both analyses have as an agreement whatever the

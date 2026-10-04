@@ -857,38 +857,48 @@ value of `ghidraCallEdges`. The command then reports `ghidraCrossCheck`. For eac
 the engine read and the export lists (`comparedCallers`), every edge is matched on site and target:
 
 - `agreement`: both have the edge. An unresolved call matches an unresolved call at the same site.
-  A Ghidra target address without a file offset, such as an import, matches no engine edge. The
-  engine reads on past every call and every conditional tail transfer, so such a row also carries
-  `ghidraFallsThrough` and `ghidraFallsThroughBasis`, read as for an `interrupt` row.
-  `ghidraFallsThrough` is false when Ghidra ends the function at the site: the callee is one Ghidra
-  treats as non-returning (`CALL_TERMINATOR`), or a user cleared the instruction's fall-through. The
-  two analyses then disagree on the function's extent, so the row counts against `agreed` and its
-  site is no agreement site. A tail transfer through `JMP` carries neither field.
+  A Ghidra target address without a file offset, such as an import, matches no engine edge.
 - `engineOnly`: only the engine has it.
 - `ghidraOnly`: only Ghidra has it. It carries `checked: false` and the id of any engine edge at the
   same site. The engine's graph, classifications and summaries never take it in.
 - `interrupt`: Ghidra's call with no target address at an `INT`, `INT1`, `INT3` or `INTO` that the
   engine decoded in the same caller's body. SLEIGH lifts each interrupt to a computed call, while
   the engine assumes the interrupt returns to the next instruction and records no edge. Its site is
-  never an agreement site. `ghidraFallsThrough` is false when Ghidra's flow ends the function there,
-  as it does at `INT1` and `INT3` (`COMPUTED_CALL_TERMINATOR`). It is the edge's `fallsThrough`, so
-  an override that clears the fall-through of an `INT 21h` counts although the flow stays
-  `COMPUTED_CALL`. For an export without that field it is false when the flow name contains
-  `TERMINATOR`, which misses such an override. `ghidraFallsThroughBasis` names the source:
-  `fallsThrough` or `flowName`. The two analyses then disagree on the function's extent: the row
-  counts against `agreed`, and edges the engine reads after the interrupt show as `engineOnly`. A
-  Ghidra edge with a target address at an interrupt stays `ghidraOnly`.
+  never an agreement site. When Ghidra's flow ends the function there, as it does at `INT1` and
+  `INT3` (`COMPUTED_CALL_TERMINATOR`), edges the engine reads after the interrupt show as
+  `engineOnly`. A Ghidra edge with a target address at an interrupt stays `ghidraOnly`.
+
+Every row whose site is an instruction the engine read in that caller's body, other than an
+`engineOnly` row, also compares where the two analyses end the function. It carries
+`ghidraFallsThrough`, whether Ghidra continues to the next instruction at the site, and
+`ghidraFallsThroughBasis`, what that was read from. With `fallsThrough` as the basis it is the
+edge's `fallsThrough`, so a user's override counts: a cleared fall-through on an `INT 21h` or a
+`CALL` although the flow stays `COMPUTED_CALL` or `UNCONDITIONAL_CALL`, or a fall-through given to
+a `JMP`. With `flowName`, for an export without that field, it is false when the flow name contains
+`TERMINATOR` or names an unconditional jump (`JUMP` in a name that does not start with
+`CONDITIONAL`), which misses such an override. The engine reads on past every call, conditional
+jump and interrupt, and stops at a `JMP`, `LJMP`, return or `HLT`. A row whose site is a transfer
+outside the frame model, or an instruction the engine did not read, carries neither field. The two
+analyses disagree on the function's extent in two ways, and either way the row counts against
+`agreed` and its site is no agreement site:
+
+- Ghidra ends the function where the engine reads on (`ghidraFallsThrough` false at a call,
+  conditional jump or interrupt): the callee is one Ghidra treats as non-returning
+  (`CALL_TERMINATOR`), the interrupt is `INT1` or `INT3`, or a user cleared the fall-through.
+- Ghidra continues where the engine stops (`ghidraFallsThrough` true at a `JMP` or `LJMP`): a user
+  gave the jump a fall-through.
 
 `notCompared` lists the engine callers missing from the export, exported callers the engine did not
 read, exported functions without a file offset, and the `omittedRoutes` ids of compared callers
 (`omittedEngineRoutes`), which the edge limit kept out of the graph. It also passes on the export's
 `missingEntries` (requested addresses with no function) and `unreadFunctions` (functions the limit
-cut off). `counts` holds the number of rows of each result, and `ghidraEndsFunction` the number of
-rows whose `ghidraFallsThrough` is false. `agreed` is true only when no row is
-`engineOnly` or `ghidraOnly`, `ghidraEndsFunction` is 0, and nothing is left uncompared.
+cut off). `counts` holds the number of rows of each result, `ghidraEndsFunction` the number of rows
+where Ghidra ends the function and the engine reads on, and `ghidraContinues` the number where
+Ghidra continues and the engine stops. `agreed` is true only when no row is `engineOnly` or
+`ghidraOnly`, `ghidraEndsFunction` and `ghidraContinues` are 0, and nothing is left uncompared.
 Agreement means both analyses read the edge, never that it executes. A `ghidraAgreementSites`
 control lists call sites that must agree, and fails the report otherwise. A site agrees only when
-every edge either side read there agrees. Requires
+every edge either side read there agrees and neither extent disagreement is reported there. Requires
 `ghidraCallEdges`. Keep exports and cross-check reports of a real program in its `GAME_DIR`.
 
 `operand-candidates` scans explicitly declared region starts for an encoded
