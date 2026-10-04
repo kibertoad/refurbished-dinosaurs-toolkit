@@ -80,13 +80,34 @@ public static class StartupFailure
     /// <param name="options">Text and locations to use.</param>
     /// <param name="exception">The failure.</param>
     /// <param name="contentRoot">The content directory the game tried, or <see langword="null"/>.</param>
-    public static void Report(StartupFailureOptions options, Exception exception, string? contentRoot)
+    public static void Report(StartupFailureOptions options, Exception exception, string? contentRoot) =>
+        Report(options, exception, contentRoot, showDialog: true);
+
+    /// <summary>
+    /// Writes the log and prints the message and exception to standard error. When
+    /// <paramref name="showDialog"/> is <see langword="true"/>, also shows the message in an error
+    /// dialog on Windows.
+    /// </summary>
+    /// <param name="options">Text and locations to use.</param>
+    /// <param name="exception">The failure.</param>
+    /// <param name="contentRoot">The content directory the game tried, or <see langword="null"/>.</param>
+    /// <param name="showDialog">
+    /// <see langword="false"/> for an unattended run, such as a smoke test or CI, where a modal dialog
+    /// nobody can dismiss would turn a failed start into a hang.
+    /// </param>
+    public static void Report(
+        StartupFailureOptions options,
+        Exception exception,
+        string? contentRoot,
+        bool showDialog)
     {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(exception);
         var logPath = TryWriteLog(options, exception, contentRoot);
         var message = BuildMessage(options, exception, contentRoot, logPath);
         Console.Error.WriteLine(message);
         Console.Error.WriteLine(exception);
-        if (OperatingSystem.IsWindows())
+        if (showDialog && OperatingSystem.IsWindows())
             _ = MessageBoxW(IntPtr.Zero, message, options.ApplicationTitle, 0x10);
     }
 

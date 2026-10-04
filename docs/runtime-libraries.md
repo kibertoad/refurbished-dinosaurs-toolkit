@@ -57,7 +57,8 @@ LegacyFormats parts of it:
 - `RestorationPaths` finds content next to the game before falling back to per-user application
   data.
 - `StartupFailure.Report` around the game's startup makes native-library and content errors
-  visible to a player who has no terminal.
+  visible to a player who has no terminal. Pass `showDialog: false` for a smoke test or other
+  unattended run, so a failed start exits instead of waiting on a dialog nobody can dismiss.
 
 ## Asset references
 
