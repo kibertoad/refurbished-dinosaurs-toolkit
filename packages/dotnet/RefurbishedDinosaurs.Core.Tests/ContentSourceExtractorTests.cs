@@ -237,6 +237,24 @@ public sealed class ContentSourceExtractorTests : IDisposable
     }
 
     [Fact]
+    public async Task APrefixThatSpellsAnExistingDirectoryWithDifferentCaseIsRejected()
+    {
+        using var source = new ListedSource(DiscFiles());
+        var root = Directory.CreateDirectory(Path.Combine(_work, "root")).FullName;
+        Directory.CreateDirectory(Path.Combine(root, "stage", "cd"));
+
+        await Assert.ThrowsAsync<IOException>(() => ContentSourceExtractor.ExtractAsync(source, root,
+            new ContentExtractionOptions(Prefix: "Stage/cd"), Token));
+        await Assert.ThrowsAsync<IOException>(() => ContentSourceExtractor.ExtractAsync(source, root,
+            new ContentExtractionOptions(Prefix: "stage/CD"), Token));
+
+        Assert.Equal(["stage"], Directory.EnumerateFileSystemEntries(root).Select(Path.GetFileName));
+        Assert.Equal(["cd"],
+            Directory.EnumerateFileSystemEntries(Path.Combine(root, "stage")).Select(Path.GetFileName));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(root, "stage", "cd")));
+    }
+
+    [Fact]
     public async Task AnUnsafeSourcePathIsRejectedBeforeWriting()
     {
         using var source = new ListedSource(new() { ["ok.bin"] = [1], ["bad./x.bin"] = [2] });

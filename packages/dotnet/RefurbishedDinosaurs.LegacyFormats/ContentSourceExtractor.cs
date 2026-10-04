@@ -40,8 +40,9 @@ public static class ContentSourceExtractor
     /// each, in the order of <see cref="OriginalContentSource.Files"/>.
     /// <para>
     /// Before writing anything it checks the selection against the limits in
-    /// <paramref name="options"/>, and checks that the prefix directory is absent or empty and that
-    /// neither it nor a directory on the way to it is a link. Every path keeps its source spelling,
+    /// <paramref name="options"/>, and checks that the prefix directory is absent or empty, that each
+    /// part of the prefix that already exists is spelled as it is on disk, and that neither the prefix
+    /// directory nor a directory on the way to it is a link. Every path keeps its source spelling,
     /// except that a directory spelled two ways ignoring case is written once, with the spelling of the
     /// first file under it.
     /// </para>
@@ -68,8 +69,8 @@ public static class ContentSourceExtractor
     /// <exception cref="ArgumentOutOfRangeException">A limit is negative.</exception>
     /// <exception cref="DirectoryNotFoundException"><paramref name="root"/> does not exist.</exception>
     /// <exception cref="IOException">
-    /// The prefix names a file, or a directory that is not empty. Other I/O failures while copying also
-    /// surface as <see cref="IOException"/>.
+    /// The prefix names a file or a directory that is not empty, or spells an existing entry with
+    /// different case. Other I/O failures while copying also surface as <see cref="IOException"/>.
     /// </exception>
     /// <exception cref="InvalidDataException">
     /// The prefix or a source path is not accepted by <see cref="PortableAssetPath.Relative"/>, the root
@@ -135,6 +136,13 @@ public static class ContentSourceExtractor
         var current = fullRoot;
         foreach (var part in prefix.Split('/'))
         {
+            // A part spelled differently from an existing entry would reuse that entry on Windows and
+            // create a second one beside it on a case-sensitive file system, so it is refused on both.
+            var existing = Directory.EnumerateFileSystemEntries(current)
+                .Select(Path.GetFileName)
+                .FirstOrDefault(name => string.Equals(name, part, StringComparison.OrdinalIgnoreCase));
+            if (existing is not null && existing != part)
+                throw new IOException($"Extraction prefix spells {existing} as {part}: {prefix}");
             current = Path.Combine(current, part);
             if (File.Exists(current)) throw new IOException($"Extraction prefix names a file: {prefix}");
             if (!Directory.Exists(current)) return (destination, current);

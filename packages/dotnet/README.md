@@ -231,7 +231,9 @@ overlay follows.
 Before it writes anything, the call checks the selection against `MaximumFiles` and
 `MaximumTotalBytes` (100,000 files and 8 GiB by default), every source path with
 `PortableAssetPath.Relative`, and that the prefix directory is absent or empty with no link on the
-way to it. Without a prefix the root itself must be empty. A file whose path is also another file's
+way to it. A prefix part that names an existing entry with different case is rejected, since
+Windows would reuse that entry and a case-sensitive file system would create a second one beside it.
+Without a prefix the root itself must be empty. A file whose path is also another file's
 directory, ignoring case, is rejected. A directory spelled two ways ignoring case is written once,
 with the spelling of the first file under it, so a case-sensitive file system gets the same tree as
 Windows. Each file must yield exactly the size the source lists; more or fewer bytes throw
