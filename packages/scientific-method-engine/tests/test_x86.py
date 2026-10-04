@@ -8,6 +8,8 @@ import sys
 import tempfile
 import unittest
 
+import xxhash
+
 SRC = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC))
 # The engine CLI runs from this checkout's source whether or not the package is installed.
@@ -1525,20 +1527,33 @@ class ReporterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); data = bytes.fromhex("b8 01 00 c3")
             (root/"fixture.bin").write_bytes(data)
-            cfg = configuration(data, source="fixture.bin", sha256=hashlib.sha256(data).hexdigest())
+            cfg = configuration(data, source="fixture.bin", xxh3=xxhash.xxh3_128_hexdigest(data))
             path = root/"config.json"; path.write_text(json.dumps(cfg))
             args = [*ENGINE, "trace", str(path)]
             result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 0, result.stderr)
             header = json.loads(result.stdout)
-            self.assertEqual(header["sourceIdentity"]["size"], 4)
+            self.assertEqual(header["sourceIdentity"], {"size": 4, "xxh3": cfg["xxh3"]})
             self.assertEqual((header["decoder"], header["instructionSemantics"]),
                              ("capstone " + capstone.__version__, f"pypcode {pypcode.__version__} (Ghidra SLEIGH x86)"))
-            cfg["sha256"] = "0" * 64; path.write_text(json.dumps(cfg))
+            cfg["xxh3"] = "0" * 32; path.write_text(json.dumps(cfg))
             result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 1)
             self.assertIn("baseline", result.stderr)
-            cfg["sha256"] = hashlib.sha256(data).hexdigest(); cfg["overlayExports"] = []
+            # A SHA-256, an upper-case or a missing hash is not the standard's form.
+            for value in ("0" * 64, xxhash.xxh3_128_hexdigest(data).upper(), None):
+                with self.subTest(xxh3=value):
+                    path.write_text(json.dumps({**cfg, "xxh3": value}))
+                    result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("32 lower-case hex digits", result.stderr)
+            # A protocol 1 hash is refused beside a correct xxh3, so it is never taken as checked.
+            path.write_text(json.dumps({**cfg, "xxh3": xxhash.xxh3_128_hexdigest(data),
+                                        "sha256": hashlib.sha256(data).hexdigest()}))
+            result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("sha256 is no longer read", result.stderr)
+            cfg["xxh3"] = xxhash.xxh3_128_hexdigest(data); cfg["overlayExports"] = []
             path.write_text(json.dumps(cfg))
             result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 1)
@@ -1548,15 +1563,15 @@ class ReporterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); data = bytes.fromhex("b8 01 00 c3")
             (root/"fixture.bin").write_bytes(data)
-            cfg = configuration(data, source=str(root/"fixture.bin"), sha256=hashlib.sha256(data).hexdigest())
+            cfg = configuration(data, source=str(root/"fixture.bin"), xxh3=xxhash.xxh3_128_hexdigest(data))
             stdin = [*ENGINE, "trace", "-"]
-            for protocol, accepted in ((None, False), (0, False), (1, True)):
+            for protocol, accepted in ((None, False), (1, False), (2, True)):
                 prepared = dict(cfg) if protocol is None else {**cfg, "preparedProtocol": protocol}
                 result = subprocess.run(stdin, input=json.dumps(prepared), capture_output=True, text=True, env=ENGINE_ENV)
                 self.assertEqual(result.returncode, 0 if accepted else 1, result.stderr)
                 if not accepted:
                     self.assertIn("protocol", result.stderr)
-            path = root/"config.json"; path.write_text(json.dumps({**cfg, "preparedProtocol": 1}))
+            path = root/"config.json"; path.write_text(json.dumps({**cfg, "preparedProtocol": 2}))
             result = subprocess.run([*ENGINE, "trace", str(path)], capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 1)
             self.assertIn("set by the reader", result.stderr)
