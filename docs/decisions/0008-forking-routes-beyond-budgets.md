@@ -84,5 +84,5 @@ top level beside the paths. Revisit C if several restorations hit loops that for
 
 Dark Sun gap 27's conditional fill gets no new engine input. It stays open until Dark Sun reads
 the producers of the forking values and states them through the existing inputs, or records the
-claim as unsettled. The menu linked-child case is retried with the separate continuation budget
-from ADR 0011.
+claim as unsettled. The menu linked-child case did not need this ADR: it passes with the separate
+continuation budget from ADR 0011, and its ordinary paths reach the table jump.
