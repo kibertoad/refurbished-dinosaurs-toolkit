@@ -21,16 +21,13 @@ public static class BmpDecoder
     private const int BiRgb = 0;
     private const int BiRle8 = 1;
 
-    /// <summary>The largest image <see cref="Decode"/> accepts unless told otherwise, in pixels.</summary>
-    public const int DefaultMaximumPixels = 16_777_216;
-
     /// <summary>
     /// Decodes a whole BMP file. Bottom-up and top-down BI_RGB rows are both read and returned top to
     /// bottom. Every pixel is opaque: the fourth byte of a 32-bit BI_RGB pixel is unused by the format
     /// and is ignored. Pixels a BI_RLE8 stream skips take palette index 0.
     /// </summary>
     /// <param name="source">The file.</param>
-    /// <param name="maximumPixels">The largest image accepted. It is checked before any pixel buffer is allocated.</param>
+    /// <param name="maximumPixels">The largest image accepted, in pixels. It is checked before any pixel buffer is allocated. Defaults to <see cref="ImageLimits.DefaultMaximumPixels"/>.</param>
     /// <param name="requireDeclaredFileSize">
     /// When true, the size in the file header must equal the length of <paramref name="source"/>. Pass
     /// false for files whose writer left that field zero or wrong; the pixel data must still fit.
@@ -41,7 +38,7 @@ public static class BmpDecoder
     /// compression, or a top-down BI_RLE8 image), or exceeds the pixel limit.
     /// </exception>
     public static BmpImage Decode(
-        ReadOnlySpan<byte> source, int maximumPixels = DefaultMaximumPixels, bool requireDeclaredFileSize = true)
+        ReadOnlySpan<byte> source, int maximumPixels = ImageLimits.DefaultMaximumPixels, bool requireDeclaredFileSize = true)
     {
         if (maximumPixels < 0) throw new ArgumentOutOfRangeException(nameof(maximumPixels));
         if (source.Length < FileHeaderSize + 4 || source[0] != (byte)'B' || source[1] != (byte)'M')

@@ -364,16 +364,16 @@ public static class AssetVerifier
         List<AssetVerificationIssue> issues,
         CancellationToken cancellationToken)
     {
-        if (source.Cue is not { } sheet || source.OpenRawImage is not { } openImage)
+        if (source.Cue is not { } sheet)
         {
             foreach (var track in tracks)
-                issues.Add(new(null, AssetProblem.Unreadable,
-                    $"The {source.Kind} source holds no CD audio track {track.Track:D2}.") { AudioTrack = track.Track });
+                issues.Add(NoAudioTrack(source, track));
             return;
         }
 
-        // Opened for the first track this source has not verified yet. An image that fails to open
-        // is tried once per source.
+        // Opened through OpenBin for the first track this source has not verified yet. An image that
+        // fails to open is tried once per source. A source without a BIN image refuses OpenBin with
+        // NotSupportedException.
         Stream? image = null;
         try
         {
@@ -388,15 +388,18 @@ public static class AssetVerifier
                 }
                 if (!reads.Tracks.TryGetValue(track, out var issue))
                 {
-                    if (image is null && reads.ImageFailure is null)
+                    if (image is null && reads.ImageFailure is null && !reads.NoImage)
                     {
-                        try { image = openImage(); }
+                        try { image = source.OpenBin(); }
+                        catch (NotSupportedException) { reads.NoImage = true; }
                         catch (Exception exception) when (IsReadFailure(exception)) { reads.ImageFailure = exception.Message; }
                     }
-                    issue = image is null
-                        ? new(null, AssetProblem.Unreadable, $"The image could not be read: {reads.ImageFailure}")
-                            { AudioTrack = track.Track }
-                        : await VerifyTrackAsync(image, sheet, track, cancellationToken).ConfigureAwait(false);
+                    issue = image is not null
+                        ? await VerifyTrackAsync(image, sheet, track, cancellationToken).ConfigureAwait(false)
+                        : reads.NoImage
+                            ? NoAudioTrack(source, track)
+                            : new(null, AssetProblem.Unreadable, $"The image could not be read: {reads.ImageFailure}")
+                                { AudioTrack = track.Track };
                     reads.Tracks[track] = issue;
                 }
                 if (issue is not null) issues.Add(issue);
@@ -407,6 +410,10 @@ public static class AssetVerifier
             if (image is not null) await image.DisposeAsync().ConfigureAwait(false);
         }
     }
+
+    private static AssetVerificationIssue NoAudioTrack(OriginalContentSource source, CddaTrackFingerprint track) =>
+        new(null, AssetProblem.Unreadable, $"The {source.Kind} source holds no CD audio track {track.Track:D2}.")
+            { AudioTrack = track.Track };
 
     // The problem with one track, or null when it matched.
     private static async Task<AssetVerificationIssue?> VerifyTrackAsync(
@@ -450,8 +457,11 @@ public static class AssetVerifier
         // By normalized path.
         public Dictionary<string, HashRead> Files { get; } = new(StringComparer.OrdinalIgnoreCase);
 
-        // Why the raw image could not be opened, once an attempt failed.
+        // Why the BIN image could not be opened, once an attempt failed.
         public string? ImageFailure { get; set; }
+
+        // Whether OpenBin refused because the source has no BIN image.
+        public bool NoImage { get; set; }
 
         // Each verified track's problem, or null for a match, by fingerprint. The fingerprint names
         // the track, and the source's sheet and image fix that track's extent, so for one source the

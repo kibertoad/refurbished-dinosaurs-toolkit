@@ -230,14 +230,12 @@ public sealed class IdentifyReadsTests
 
         public override Stream OpenVolume() => Count(inner.OpenVolume(), VolumeReads, VolumeFailsAt);
 
-        internal override Func<Stream>? OpenRawImage => inner.OpenRawImage is { } open
-            ? () =>
-            {
-                if (!ImageFailsToOpen) return Count(open(), ImageReads, ImageFailsAt);
-                ImageReads.Opens++;
-                throw new IOException(FailureMessage);
-            }
-            : null;
+        public override Stream OpenBin()
+        {
+            if (!ImageFailsToOpen) return Count(inner.OpenBin(), ImageReads, ImageFailsAt);
+            ImageReads.Opens++;
+            throw new IOException(FailureMessage);
+        }
 
         public override void Dispose() => inner.Dispose();
 
