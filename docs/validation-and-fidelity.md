@@ -27,6 +27,29 @@ native output unconfirmed. Treat two segment registers as equal only when a repo
 instructions or the stated starting assumption that make them equal, and keep slot, segment,
 count and alias assumptions listed apart from what the algorithm itself computes.
 
+## Bounded reporter limits
+
+A report from the bounded evidence reporters that stops at a path, step, visit or output limit
+has not read every route. Treat the limit as a sign that the query is too broad before raising it:
+
+- Find what forks. A path-limit gap names the site. A branch on a value the engine cannot know
+  (unknown memory, a service result) doubles the routes each time a loop passes it, and no limit
+  follows a loop like that to its end.
+- Read the producer of the forking value and state it as an evidenced input the reporter takes:
+  a starting register or flag, a call model's return case, or a narrower entry where the producer
+  is an input. Record the producer evidence beside the finding.
+- Declared table jumps are continued on their own `continuationBudget`. When the continuations
+  stop at a limit, raise that budget, which leaves the ordinary paths as they were. When the
+  ordinary route to the jump was itself dropped or stopped, no continuation budget helps:
+  narrow the query so that route is read.
+- Do not join separate narrower queries into one claim in prose. State the relation the claim
+  needs and check it with a query control, which fails when a path breaks it or stays undecided.
+- A claim that needs every route of a function whose routes cannot be read stays open. Record the
+  limit and the measured report size, and say what evidence would settle it.
+
+[ADR 0008](decisions/0008-forking-routes-beyond-budgets.md) weighs an input that picks branch
+outcomes against this practice and is open for a maintainer's decision.
+
 ## Loops, retries and termination claims
 
 A bounded reporter can show the restart edges a path took and what changed between the traced

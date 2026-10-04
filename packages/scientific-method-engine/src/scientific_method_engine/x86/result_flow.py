@@ -88,6 +88,8 @@ def return_flows(report, config):
     consumer_limit = integer(config.get("returnConsumerLimit", 256), 1, 10000, "return consumer limit")
     analysis_limit = integer(config.get("returnFlowAnalysisLimit", 1000000), 1, 10000000, "return flow analysis limit")
     steps, capped = 0, False
+    # Gaps raised while declared-table continuations ran say nothing about an ordinary path.
+    ordinary_gaps = [g for g in report["gaps"] if g.get("route") != "declaredContinuation"]
     for path in report["paths"]:
         events = path["events"]
         event_values = {}
@@ -138,7 +140,7 @@ def return_flows(report, config):
         path["returnFlows"] = {"results": flows, "resultsOmitted": omitted, "resultLimit": limit,
                                "consumerLimit": consumer_limit,
                                "complete": not omitted and all(not f["consumersOmitted"] and f["consumerScanComplete"] for f in flows)
-                                           and path["returned"] and not report["gaps"],
+                                           and path["returned"] and not ordinary_gaps,
                                "interpretation": "conditional static dependency paths; encodings are declared evidence, not live occurrence; a branch never establishes initialization, accepted contents or extent"}
     report["returnFlowAnalysis"] = {"limit": analysis_limit, "steps": steps, "capped": capped}
     return report
