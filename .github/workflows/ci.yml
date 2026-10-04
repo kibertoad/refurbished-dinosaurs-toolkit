@@ -5,15 +5,53 @@ on:
 permissions:
   contents: read
 jobs:
+  # Decides which of the jobs below this pull request needs. tools/ci/changes.ts maps paths to
+  # areas; a manual run, or a change to this workflow or to that script, turns every area on.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      typescript: ${{ steps.areas.outputs.typescript }}
+      engine: ${{ steps.areas.outputs.engine }}
+      disc-archiver: ${{ steps.areas.outputs.discArchiver }}
+      dotnet: ${{ steps.areas.outputs.dotnet }}
+      documentation-action: ${{ steps.areas.outputs.documentationAction }}
+      software-opengl: ${{ steps.areas.outputs.softwareOpenGl }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.x
+      # A manual run has no pull request, so both variables are empty and the script gets no
+      # arguments, which turns every area on.
+      - id: areas
+        run: node tools/ci/changes.ts $BASE_SHA $HEAD_SHA
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+  # The repository policy covers every file, so it runs on every pull request.
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - shell: pwsh
         run: ./tools/Verify-Repository.ps1
+  typescript:
+    name: TypeScript and engine
+    needs: changes
+    if: needs.changes.outputs.typescript == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # Before the engine tests: one of them runs the reader's command line, which needs its packages.
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -21,29 +59,54 @@ jobs:
           node-version: 24.x
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The reader's bridge tests run the engine, so it is installed whenever this job runs.
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
       - run: python -m pip install './packages/scientific-method-engine[test]'
       - name: Engine tests
+        if: needs.changes.outputs.engine == 'true'
         working-directory: packages/scientific-method-engine
         run: python -B -m unittest discover -s tests -p 'test*.py'
-      - run: python -m pip install './packages/disc-archiver'
-      # The window's tests that need a display run under Xvfb; the rest run without one.
-      - name: Disc archiver tests
-        working-directory: packages/disc-archiver
-        run: xvfb-run -a python -B -m unittest discover -s tests -p 'test*.py'
       - run: pnpm run lint
       - run: pnpm run format:check
       - run: pnpm run typecheck
       - run: pnpm exec tsc -p tools/tsconfig.json
       - run: pnpm run test
-      - run: node --test "tools/release/*.test.ts"
+      - run: node --test "tools/*/*.test.ts"
       - name: Composite action tests
         run: node --test "actions/*/*.test.ts"
       # Builds the npm packages and packs them as they would be published.
       - run: pnpm run build
       - run: pnpm -r exec pnpm pack --pack-destination "$RUNNER_TEMP/npm"
+  disc-archiver:
+    name: disc-archiver tests
+    needs: changes
+    if: needs.changes.outputs.disc-archiver == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install './packages/disc-archiver'
+      # The window's tests that need a display run under Xvfb; the rest run without one.
+      - name: Disc archiver tests
+        working-directory: packages/disc-archiver
+        run: xvfb-run -a python -B -m unittest discover -s tests -p 'test*.py'
+  dotnet:
+    name: .NET
+    needs: changes
+    if: needs.changes.outputs.dotnet == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
@@ -55,6 +118,8 @@ jobs:
   # with the pinned redumper, and starts both executables. The zips are kept for a week for trying.
   disc-archiver-bundle:
     name: disc-archiver bundle (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.disc-archiver == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -86,6 +151,8 @@ jobs:
   # Kaitai Struct compiler install and the .ksy compilation run on both runner platforms.
   documentation-action:
     name: check-documentation (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.documentation-action == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -102,6 +169,8 @@ jobs:
 
   software-opengl-action:
     name: Software OpenGL action
+    needs: changes
+    if: needs.changes.outputs.software-opengl == 'true'
     runs-on: windows-latest
     timeout-minutes: 10
     steps:

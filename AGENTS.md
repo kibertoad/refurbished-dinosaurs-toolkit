@@ -58,6 +58,7 @@ This repository publishes the shared tooling that clean-room game restorations c
 | Disc archiver backend, format, profile field or command | `packages/disc-archiver/tests/`, against synthetic discs from `tests/synthetic.py` and stand-in programs, with a refused or unavailable case |
 | Ghidra script | it compiles against Ghidra 12.1 (see below); headless runs on real programs stay local |
 | Release tooling | `tools/release/plan.test.ts` |
+| Which CI jobs a change runs (`tools/ci/changes.ts`) | `tools/ci/changes.test.ts` |
 
 A bug fix adds the test that fails without it.
 
@@ -90,7 +91,7 @@ Run what CI runs before pushing:
 ```sh
 pnpm install --frozen-lockfile
 pnpm lint && pnpm format:check && pnpm typecheck && pnpm exec tsc -p tools/tsconfig.json
-pnpm test && node --test "tools/release/*.test.ts" && pnpm build
+pnpm test && node --test "tools/*/*.test.ts" && pnpm build
 python -m pip install -e "packages/scientific-method-engine[test]"
 cd packages/scientific-method-engine && python -B -m unittest discover -s tests -p "test*.py"
 python -m pip install -e packages/disc-archiver
@@ -100,6 +101,10 @@ dotnet build packages/dotnet/RefurbishedDinosaurs.slnx
 dotnet test --project packages/dotnet/RefurbishedDinosaurs.Core.Tests/RefurbishedDinosaurs.Core.Tests.csproj
 pwsh tools/Verify-Repository.ps1
 ```
+
+CI runs a job only when the change touches a path the job tests, as `AREAS` in
+`tools/ci/changes.ts` lists them, and runs the repository policy check on every change. A new
+package, or a test that starts reading a file outside its package, adds the path there.
 
 Ghidra scripts have no CI job. Compile them against a Ghidra 12.1 install whenever one changes
 (use `:` in place of `;` outside Windows). The second glob takes in the helper classes the scripts
