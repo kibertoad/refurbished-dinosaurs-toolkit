@@ -6,7 +6,7 @@ from .machine import (State, StopPath, REGISTERS, ALIASES, BRANCH_CONDITIONS, st
                       string_count, string_effect, check_string_form, compare_string, repeated, string_width)
 from .values import const, unknown, sources, op, Value
 from .result_flow import validate_contracts, result_contracts
-from .memory_scopes import validate_scopes, capture_scopes, retain_scopes
+from .memory_scopes import validate_scopes, capture_scopes, retain_scopes, scope_history
 
 def call_target(image, site, ins):
     if ins.mnemonic in ("lcall", "ljmp"):
@@ -596,6 +596,7 @@ def trace(image, config, continue_declared_jumps=True):
                         # Scopes resolve against the pre-call state: before the modeled frame consumes an
                         # already-pushed CS word and before a case replaces registers.
                         kept_values, kept_unread, preserved_scopes = capture_scopes(state, model)
+                        kept_history = scope_history(state, kept_values, kept_unread)
                         if push_cs:
                             actual_cs = state.pop(2)
                             if actual_cs.term != state.reg("cs").term:
@@ -610,7 +611,7 @@ def trace(image, config, continue_declared_jumps=True):
                                 if r not in model.get("preserves", []) and r not in ("esp", "cs"):
                                     child.setreg(r, unknown(f"modeled-call:{at}:{r}", ALIASES[r][2]), at)
                             child.clear_memory()
-                            retain_scopes(child, kept_values, kept_unread)
+                            retain_scopes(child, kept_values, kept_unread, kept_history)
                             child.forget_flags()
                             child.direction_flag = unknown(f"modeled-call:{at}:DF:{child.flag_serial}", 1, at)
                             child.interrupt_flag = unknown(f"modeled-call:{at}:IF:{child.flag_serial}", 1, at)

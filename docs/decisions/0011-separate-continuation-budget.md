@@ -1,4 +1,4 @@
-# ADR 0007: declared-table continuations spend a separate budget
+# ADR 0011: declared-table continuations spend a separate budget
 
 Status: accepted
 

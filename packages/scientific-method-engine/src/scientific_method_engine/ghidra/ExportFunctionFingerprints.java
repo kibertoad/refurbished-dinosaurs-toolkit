@@ -2,9 +2,10 @@
 // @category Restoration
 
 import java.io.BufferedWriter;
-import java.io.File;
-import java.io.FileWriter;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,16 +27,25 @@ public class ExportFunctionFingerprints extends GhidraScript {
             throw new IllegalArgumentException("Expected output TSV path.");
         }
 
-        File output = new File(args[0]);
-        File parent = output.getParentFile();
-        if (parent != null) {
-            parent.mkdirs();
+        Path output = Path.of(args[0]).toAbsolutePath().normalize();
+        Files.createDirectories(output.getParent());
+        // The rows go to a temporary file that replaces the output only once every function and
+        // instruction is written, so a failed or cancelled run leaves no partial TSV behind.
+        Path temporary = Files.createTempFile(output.getParent(), "fingerprints-", ".partial");
+        try {
+            write(temporary);
+            Files.move(temporary, output, StandardCopyOption.REPLACE_EXISTING);
         }
+        finally { Files.deleteIfExists(temporary); }
+        println("Wrote " + output);
+    }
 
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter(output, StandardCharsets.UTF_8))) {
+    private void write(Path temporary) throws Exception {
+        try (BufferedWriter writer = Files.newBufferedWriter(temporary, StandardCharsets.UTF_8)) {
             writer.write("kind\tfunction\taddress\tend\tsize\tinstructionCount\tfingerprint\tsignature\n");
             FunctionIterator functions = currentProgram.getFunctionManager().getFunctions(true);
-            while (functions.hasNext() && !monitor.isCancelled()) {
+            while (functions.hasNext()) {
+                monitor.checkCancelled();
                 Function function = functions.next();
                 List<Instruction> instructions = new ArrayList<>();
                 InstructionIterator iterator = currentProgram.getListing()
@@ -66,7 +76,8 @@ public class ExportFunctionFingerprints extends GhidraScript {
             }
 
             InstructionIterator allInstructions = currentProgram.getListing().getInstructions(true);
-            while (allInstructions.hasNext() && !monitor.isCancelled()) {
+            while (allInstructions.hasNext()) {
+                monitor.checkCancelled();
                 Instruction instruction = allInstructions.next();
                 Function function = currentProgram.getFunctionManager()
                     .getFunctionContaining(instruction.getAddress());
@@ -79,7 +90,6 @@ public class ExportFunctionFingerprints extends GhidraScript {
                 writer.newLine();
             }
         }
-        println("Wrote " + output.getAbsolutePath());
     }
 
     // A scalar that names an address in the program is relocatable between versions, so it is
