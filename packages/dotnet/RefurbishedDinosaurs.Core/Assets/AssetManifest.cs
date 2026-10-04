@@ -21,6 +21,12 @@ public sealed record AssetManifest(
     IReadOnlyList<AssetFileSpec> Files,
     string SourceKind = "directory")
 {
+    /// <summary>
+    /// CD audio tracks of the image to identify across drive read offsets, or <see langword="null"/>
+    /// for none. Only a <c>cue-bin</c> manifest may list any, since only that source holds CD audio.
+    /// </summary>
+    public IReadOnlyList<CddaTrackFingerprint>? AudioTracks { get; init; }
+
     /// <summary>The largest manifest <see cref="Load"/> reads.</summary>
     public const int MaximumBytes = 4 * 1024 * 1024;
 
@@ -78,12 +84,14 @@ public sealed record AssetManifest(
     /// Throws unless the game, edition and source kind are named, at least one file is required, every
     /// path passes <see cref="PortableAssetPath.Relative"/> and appears once (ignoring case), no size is
     /// negative, and every hash is an XXH3-128 fingerprint (<see cref="FileFingerprint.IsXxh3"/>).
+    /// <see cref="AudioTracks"/>, when given, needs the <c>cue-bin</c> source kind, and each track must
+    /// pass <see cref="CddaTrackFingerprint.Validate"/> and appear once.
     /// </summary>
     /// <remarks>
     /// A manifest with no required file would match any copy, including an empty directory, so it
     /// cannot describe an edition.
     /// </remarks>
-    /// <exception cref="InvalidDataException">The game, edition or source kind is blank, the file list is missing or names no required file, or a file record is invalid.</exception>
+    /// <exception cref="InvalidDataException">The game, edition or source kind is blank, the file list is missing or names no required file, or a file or audio track record is invalid.</exception>
     public void Validate()
     {
         if (string.IsNullOrWhiteSpace(GameId)) throw new InvalidDataException("Asset manifest has no game id.");
@@ -107,27 +115,52 @@ public sealed record AssetManifest(
         }
         if (!Files.Any(file => file.Required))
             throw new InvalidDataException("Asset manifest names no required file.");
+
+        if (AudioTracks is not { Count: > 0 }) return;
+        if (SourceKind != CueBinSourceKind)
+            throw new InvalidDataException(
+                $"Asset manifest gives audio tracks for source kind '{SourceKind}'; only '{CueBinSourceKind}' holds CD audio.");
+        var tracks = new HashSet<int>();
+        foreach (var track in AudioTracks)
+        {
+            if (track is null) throw new InvalidDataException("Asset manifest contains a null audio track.");
+            track.Validate();
+            if (!tracks.Add(track.Track))
+                throw new InvalidDataException($"Duplicate audio track {track.Track:D2}.");
+        }
     }
+
+    // ContentSourceKinds.CueBin in RefurbishedDinosaurs.LegacyFormats, which this package does not reference.
+    private const string CueBinSourceKind = "cue-bin";
 
     /// <summary>
     /// The edition's fingerprint: XXH3-128 of every file's normalized path, size and hash, ordered by
-    /// path. It names the edition an import read, for the installed manifest's
-    /// <see cref="InstalledAssetManifest.SourceFingerprint"/>.
+    /// path, followed by every audio track's values. It names the edition an import read, for the
+    /// installed manifest's <see cref="InstalledAssetManifest.SourceFingerprint"/>.
     /// </summary>
     /// <remarks>
-    /// It leaves out <see cref="SourceKind"/>, so the same edition read from a disc image and from a
-    /// directory it was copied into has one fingerprint, and <see cref="AssetFileSpec.Required"/>.
+    /// It leaves out <see cref="SourceKind"/> and <see cref="AssetFileSpec.Required"/>, so a disc image
+    /// manifest and a directory manifest that list the same files and no audio tracks share one
+    /// fingerprint. Each of the <see cref="AudioTracks"/> adds all of its values, ordered by track
+    /// number, including how it was recorded (tolerance and anchor), so a <c>cue-bin</c> manifest with
+    /// audio tracks has a fingerprint no directory manifest shares, and re-recording a track with other
+    /// parameters changes it.
     /// </remarks>
     /// <exception cref="InvalidDataException"><see cref="Validate"/> rejects the manifest.</exception>
     public string Fingerprint()
     {
         Validate();
         // Sorting the normalized path makes the result independent of the separator a manifest uses.
-        var canonical = string.Join('\n', Files
+        var lines = Files
             .Select(file => (Path: PortableAssetPath.Relative(file.Path), file.Size, file.Xxh3))
             .OrderBy(file => file.Path, StringComparer.OrdinalIgnoreCase)
-            .Select(file => $"{file.Path}\0{file.Size}\0{file.Xxh3}"));
-        return FileFingerprint.Xxh3(Encoding.UTF8.GetBytes(canonical));
+            .Select(file => $"{file.Path}\0{file.Size}\0{file.Xxh3}");
+        // A path cannot contain ':', so these lines cannot collide with a file's.
+        if (AudioTracks is not null)
+            lines = lines.Concat(AudioTracks.OrderBy(track => track.Track).Select(track =>
+                $"audio:{track.Track}\0{track.Samples}\0{track.ToleranceSamples}\0{track.AnchorOffset}\0" +
+                $"{track.AnchorSamples}\0{track.AnchorXxh3}\0{track.CentralXxh3}"));
+        return FileFingerprint.Xxh3(Encoding.UTF8.GetBytes(string.Join('\n', lines)));
     }
 }
 
