@@ -14,6 +14,8 @@ import ghidra.program.model.scalar.Scalar;
 import ghidra.program.model.symbol.Reference;
 import ghidra.program.model.symbol.ReferenceIterator;
 
+import scientificmethod.FirstArgumentLookBack;
+
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -78,7 +80,7 @@ public class ReportCallSitesWithScalars extends GhidraScript {
     private List<Instruction> argumentSetup(Instruction call) {
         List<Instruction> setup = new ArrayList<>();
         Instruction later = call;
-        while (setup.size() < PRECEDING_INSTRUCTIONS && !isFlowTarget(later)) {
+        while (setup.size() < PRECEDING_INSTRUCTIONS && !FirstArgumentLookBack.isFlowTarget(currentProgram, later)) {
             Instruction cursor = later.getPrevious();
             if (cursor == null || !later.getAddress().equals(cursor.getFallThrough())
                 || cursor.getFlowType().isCall()) break;
@@ -86,16 +88,6 @@ public class ReportCallSitesWithScalars extends GhidraScript {
             later = cursor;
         }
         return setup;
-    }
-
-    // A function entry counts too: a callback or table entry reaches it without a reference Ghidra recorded.
-    private boolean isFlowTarget(Instruction instruction) {
-        if (currentProgram.getFunctionManager().getFunctionAt(instruction.getAddress()) != null) return true;
-        ReferenceIterator references = currentProgram.getReferenceManager().getReferencesTo(instruction.getAddress());
-        while (references.hasNext()) {
-            if (references.next().getReferenceType().isFlow()) return true;
-        }
-        return false;
     }
 
     // Ghidra types an immediate operand SCALAR, adding ADDRESS when it points into the program

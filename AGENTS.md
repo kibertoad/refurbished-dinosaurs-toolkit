@@ -102,12 +102,14 @@ pwsh tools/Verify-Repository.ps1
 ```
 
 Ghidra scripts have no CI job. Compile them against a Ghidra 12.1 install whenever one changes
-(use `:` in place of `;` outside Windows):
+(use `:` in place of `;` outside Windows). The second glob takes in the helper classes the scripts
+share, which sit in package directories beside them so that Ghidra does not list them as scripts:
 
 ```sh
 javac -proc:none -nowarn -d "$(mktemp -d)" \
   -cp "$(find "$GHIDRA_HOME/Ghidra" -path '*/lib/*.jar' | paste -sd ';')" \
-  packages/scientific-method-engine/src/scientific_method_engine/ghidra/*.java
+  packages/scientific-method-engine/src/scientific_method_engine/ghidra/*.java \
+  packages/scientific-method-engine/src/scientific_method_engine/ghidra/*/*.java
 ```
 
 ## Releases
