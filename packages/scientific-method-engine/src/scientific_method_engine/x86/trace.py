@@ -71,21 +71,25 @@ class Step(NamedTuple):
     ``successors`` are the sites the branch continues at, in the order a walk pushes them; the
     branch ends at the instruction when there are none. ``returns`` is true for a return
     instruction. ``return_site`` is the site a call continues at once its callee returns, or None
-    for anything else and for a call whose target is that same site. ``gaps`` and ``edges`` are the
-    gap and transfer-edge rows ``walk`` reports for the instruction.
+    for anything else and, when the call's target is followed, for a call whose target is that same
+    site. ``gaps`` and ``edges`` are the gap and transfer-edge rows ``walk`` reports for the
+    instruction. ``supplied`` is true when the successors are the rows of a declared indirect jump
+    table, which never prove an instruction boundary.
     """
     successors: list
     returns: bool
     return_site: int | None
     gaps: list
     edges: list
+    supplied: bool = False
 
 
 def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False):
-    """The successors of the instruction ``ins`` decoded at ``at``, under the rules every CFG walk shares.
+    """The successors of ``ins`` decoded at ``at``, under the rule ``walk`` and the ``uses`` caller continuation share.
 
-    An unsupported transfer encoding, a return, a jump without a resolved target, an interrupt,
-    ``hlt`` and, unless ``follow_flat_ports``, a PE32 port access end the branch. A declared
+    An unsupported transfer encoding, a return, an unconditional jump without a resolved target, an
+    interrupt, ``hlt`` and, unless ``follow_flat_ports``, a PE32 port access end the branch. A
+    conditional jump or loop continues at its resolved target and at the next instruction. A declared
     indirect jump continues at its table rows only. A call continues at its resolved target and at
     its return site; with ``step_over_calls`` it continues at its return site only and its target
     is neither resolved nor reported.
@@ -103,7 +107,7 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False):
             gaps.append({"site": at, "reason": "indirect jump table is not declared exhaustive"})
             edges.append({"site": at, "target": None, "kind": "jmp",
                           "provenance": {"reason": "indirect jump table is not declared exhaustive"}})
-        return Step(targets, False, None, gaps, edges)
+        return Step(targets, False, None, gaps, edges, supplied=True)
     if m in RETURNS:
         return Step([], True, None, [], [])
     successors, gaps, edges = [], [], []
@@ -159,7 +163,7 @@ def walk(image, entries, limit=10000, follow_flat_ports=False):
         gaps.extend(step.gaps)
         edges.extend(step.edges)
         pending.extend(step.successors)
-        if at in image.indirect_jumps:
+        if step.supplied:
             supplied_edges.update((at, target) for target in step.successors)
         if step.return_site is not None:
             returns.add((at, step.return_site))

@@ -15,6 +15,9 @@ def table(code, targets, exhaustive):
                                                "stride": 2, "evidence": "synthetic words"}}]}
 
 
+# The segment word of a far transfer at offset 0 resolves through a declared fixup.
+FAR_FIXUP = {"relocations": [{"site": 3, "segment": 0x1000, "evidence": "synthetic fixup"}]}
+
 # Each case starts with the instruction under test at offset 0; every other reachable site is a
 # RET, so a site lies on a route to a return exactly when the instruction at 0 continues to it.
 # (name, code, extra config, continuations without and with follow_flat_ports, call targets
@@ -31,6 +34,9 @@ REAL_MODE = [
     ("computed jump", "ff e0 c3", {}, set(), set(), (), False),
     ("computed call", "ff d0 c3", {}, {2}, {2}, (), False),
     ("direct call", "e8 01 00 c3 c3", {}, {3}, {3}, {4}, False),
+    ("call to its return site", "e8 00 00 c3", {}, {3}, {3}, (), False),
+    ("far call", "9a 06 00 00 10 c3 c3", FAR_FIXUP, {5}, {5}, {6}, False),
+    ("far jump", "ea 06 00 00 10 c3 c3", FAR_FIXUP, {6}, {6}, (), False),
     ("interrupt", "cd 21 c3", {}, set(), set(), (), False),
     ("breakpoint", "cc c3", {}, set(), set(), (), False),
     ("overflow interrupt", "ce c3", {}, set(), set(), (), False),
