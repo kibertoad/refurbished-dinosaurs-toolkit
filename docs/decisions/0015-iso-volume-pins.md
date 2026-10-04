@@ -39,6 +39,14 @@ identity for a disc:
 4. The pins enter `AssetManifest.Fingerprint()` when present, so two editions that differ only in
    their volume have different fingerprints. A manifest without pins keeps its fingerprint.
 5. The manifest has no records for the `.bin`, `.cue` or `.iso` files themselves.
+6. The identifier is read byte for byte: each of the descriptor's 32 bytes is the Latin-1
+   character of the same value, control bytes included, and only the trailing spaces and NULs are
+   dropped. `VolumeIdentifier` accepts every label that reading can give (1 to 32 characters from
+   U+0000 to U+00FF, not ending in a space or NUL), so no disc is left to `VolumeXxh3` alone because
+   of the characters in its identifier, and Shift-JIS identifiers can be pinned. A NUL or newline
+   in the identifier leaves `Fingerprint()` unambiguous: the size and hash after it hold no NUL,
+   and an audio line is longer than any identifier. The disc archiver reads the identifier the
+   same way, so a disc profile and a manifest copied from one disc name it with the same string.
 
 ## Consequences
 

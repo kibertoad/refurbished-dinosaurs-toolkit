@@ -119,6 +119,16 @@ Two pressings of a disc can carry the same files in different ISO 9660 volumes. 
 | `VolumeBlocks` | `OriginalContentSource.VolumeBlocks`, the declared volume space size in 2048-byte blocks | `WrongVolumeSize` |
 | `VolumeXxh3` | XXH3-128 of `OriginalContentSource.OpenVolume()`, the declared blocks from block 0 | `WrongVolumeHash` |
 
+`Label` reads each byte of the descriptor's 32-byte identifier as the Latin-1 (ISO-8859-1) character
+of the same value and drops the trailing spaces and NULs, so byte 0xC9 is `É` (U+00C9) and
+identifiers that differ in a byte before their trailing padding give different labels.
+`VolumeIdentifier` writes those characters and is compared with `Label` ordinally. A control byte
+reads as its control character, so a Shift-JIS lead byte 0x85 is written `"\u0085"` in JSON.
+`Validate` accepts 1 to 32 characters from U+0000 to U+00FF that do not end in a space or NUL,
+which is every label a descriptor can give. The `WrongVolumeIdentifier` detail writes both
+identifiers as JSON strings with control characters escaped, so the found value can be copied into
+the manifest.
+
 `OpenVolume` reads the same bytes from an `.iso` image and from the data track of a cue/bin image
 of one disc, and leaves out padding after the declared volume, so one `VolumeXxh3` serves both.
 Record it from a reference copy with `FileFingerprint.Xxh3Async(source.OpenVolume())`.

@@ -60,13 +60,68 @@ public sealed class VolumePinTests
             var issue = Assert.Single(Assert.Single(found.Mismatches).Issues);
             Assert.Equal(AssetProblem.WrongVolumeIdentifier, issue.Problem);
             Assert.Null(issue.Path);
-            Assert.Contains("'PRESSING_A'", issue.Detail);
+            Assert.Contains("\"PRESSING_A\"", issue.Detail);
             Assert.Same(b, (await AssetVerifier.IdentifyAsync(second, [a, b], TestContext.Current.CancellationToken)).Edition);
 
             // Without the pin the files alone cannot tell the pressings apart.
             var unpinned = await AssetVerifier.IdentifyAsync(first, [Edition("a"), Edition("b")],
                 TestContext.Current.CancellationToken);
             Assert.True(unpinned.IsAmbiguous);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task IdentifyTellsApartImagesWhoseIdentifiersDifferOnlyInAByteAbove0x7F()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            // Bytes 0xC9 and 0xCA in the last position. An ASCII reading turns both into '?'.
+            var first = await WriteAsync(root, "first.iso", WithIdentifier(OriginalContentSourceTests.BuildIso(Payload), "PRESSING_\u00C9"));
+            var second = await WriteAsync(root, "second.iso", WithIdentifier(OriginalContentSourceTests.BuildIso(Payload), "PRESSING_\u00CA"));
+            using (var source = OriginalContentSource.OpenIso9660(first))
+                Assert.Equal("PRESSING_\u00C9", source.Label);
+            var a = Edition("a") with { VolumeIdentifier = "PRESSING_\u00C9" };
+            var b = Edition("b") with { VolumeIdentifier = "PRESSING_\u00CA" };
+
+            var found = await AssetVerifier.IdentifyAsync(first, [b, a], TestContext.Current.CancellationToken);
+            Assert.Same(a, found.Edition);
+            var issue = Assert.Single(Assert.Single(found.Mismatches).Issues);
+            Assert.Equal(AssetProblem.WrongVolumeIdentifier, issue.Problem);
+            Assert.Equal("Expected volume identifier \"PRESSING_\u00CA\"; found \"PRESSING_\u00C9\".", issue.Detail);
+            Assert.Same(b, (await AssetVerifier.IdentifyAsync(second, [a, b], TestContext.Current.CancellationToken)).Edition);
+
+            // A pin written with '?' for the high byte matches neither pressing.
+            var questionMark = Edition("question-mark") with { VolumeIdentifier = "PRESSING_?" };
+            foreach (var image in new[] { first, second })
+                Assert.Equal([AssetProblem.WrongVolumeIdentifier],
+                    (await AssetVerifier.VerifyAsync(image, questionMark, TestContext.Current.CancellationToken))
+                        .Issues.Select(entry => entry.Problem));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task APinMatchesAnIdentifierWithControlBytesAndTheReportEscapesThem()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            // A Shift-JIS lead byte (0x85), a NUL and a newline before the padding.
+            const string label = "DISC\u0085\0\nB";
+            var iso = await WriteAsync(root, "game.iso", WithIdentifier(OriginalContentSourceTests.BuildIso(Payload), label));
+            var pinned = AssetManifest.Load(new MemoryStream(Encoding.UTF8.GetBytes("""
+                {"gameId":"game","sourceEdition":"e","sourceKind":"iso9660",
+                 "files":[{"path":"EI/TEST.BIN","size":3}],"volumeIdentifier":"DISC\u0085\u0000\nB"}
+                """)));
+            Assert.Equal(label, pinned.VolumeIdentifier);
+            Assert.True((await AssetVerifier.VerifyAsync(iso, pinned, TestContext.Current.CancellationToken)).IsValid);
+
+            var other = Edition("other") with { VolumeIdentifier = "DISC\\\"" };
+            var issue = Assert.Single((await AssetVerifier.VerifyAsync(iso, other, TestContext.Current.CancellationToken)).Issues);
+            Assert.Equal(AssetProblem.WrongVolumeIdentifier, issue.Problem);
+            Assert.Equal("Expected volume identifier \"DISC\\\\\\\"\"; found \"DISC\\u0085\\u0000\\u000AB\".", issue.Detail);
         }
         finally { Directory.Delete(root, true); }
     }
@@ -195,11 +250,50 @@ public sealed class VolumePinTests
     [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":""}""")]
     [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"DISC "}""")]
     [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456"}""")]
-    [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"DIÉSC"}""")]
+    [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"DISC\u0000"}""")]
+    [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"DĀSC"}""")]
+    [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeIdentifier":"D€SC"}""")]
     [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],"volumeBlocks":17}""")]
     [InlineData("""{"gameId":"g","sourceEdition":"e","sourceKind":"cue-bin","files":[{"path":"A","size":1}],"volumeXxh3":"ABC"}""")]
     public void ManifestRejectsVolumePinsOutsideADiscImageAndInvalidValues(string json) =>
         Assert.Throws<InvalidDataException>(() => AssetManifest.Load(new MemoryStream(Encoding.UTF8.GetBytes(json))));
+
+    // Every label a descriptor can give: Latin-1 characters, control characters included, that do
+    // not end in the padding the reader drops.
+    [Theory]
+    [InlineData("DISC")]
+    [InlineData(" ~")]
+    [InlineData("DI\u00C9SC")]
+    [InlineData("\u00A0")]
+    [InlineData("DISC\u00A0")]
+    [InlineData("\u00FF")]
+    [InlineData("ABCDEFGHIJKLMNOPQRSTUVWXYZ\u00C0\u00C9\u00D6\u00E9\u00F6\u00FF")]
+    [InlineData("\u0001")]
+    [InlineData("D\u0000SC")]
+    [InlineData("D\u001FSC")]
+    [InlineData("DISC\n")]
+    [InlineData("D\u007FSC")]
+    [InlineData("D\u0080SC")]
+    [InlineData("\u0083\u0085\u009F")]
+    public void ManifestAcceptsEveryLabelADescriptorCanGive(string identifier)
+    {
+        // The default encoder writes each non-ASCII character as a \u escape; the relaxed one writes
+        // it as UTF-8, the way a hand-edited manifest holds it.
+        System.Text.Json.JsonSerializerOptions[] writers =
+        [
+            new(),
+            new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping },
+        ];
+        foreach (var writer in writers)
+        {
+            var json = $$"""
+                {"gameId":"g","sourceEdition":"e","sourceKind":"iso9660","files":[{"path":"A","size":1}],
+                 "volumeIdentifier":{{System.Text.Json.JsonSerializer.Serialize(identifier, writer)}}}
+                """;
+            var manifest = AssetManifest.Load(new MemoryStream(Encoding.UTF8.GetBytes(json)));
+            Assert.Equal(identifier, manifest.VolumeIdentifier);
+        }
+    }
 
     [Fact]
     public void ManifestReadsVolumePinsAndTheyEnterTheFingerprint()
@@ -216,11 +310,20 @@ public sealed class VolumePinTests
         var unpinned = new AssetManifest("g", "e", [new("A", 1)]);
         Assert.NotEqual(unpinned.Fingerprint(), manifest.Fingerprint());
         Assert.NotEqual(manifest.Fingerprint(), (manifest with { VolumeIdentifier = "DISC2" }).Fingerprint());
+        Assert.NotEqual((manifest with { VolumeIdentifier = "DISC\u00C9" }).Fingerprint(),
+            (manifest with { VolumeIdentifier = "DISC\u00CA" }).Fingerprint());
         Assert.NotEqual(manifest.Fingerprint(), (manifest with { VolumeBlocks = 24 }).Fingerprint());
         Assert.NotEqual(manifest.Fingerprint(),
             (manifest with { VolumeXxh3 = FileFingerprint.Xxh3("other"u8.ToArray()) }).Fingerprint());
         // A manifest without pins keeps the fingerprint it had before pins existed.
         Assert.Equal(FileFingerprint.Xxh3(Encoding.UTF8.GetBytes("A\0" + "1\0")), unpinned.Fingerprint());
+        // A NUL in the identifier cannot stand in for a separator: "D", NUL, "23" with no size is not
+        // "D" with size 23.
+        Assert.Equal(FileFingerprint.Xxh3(Encoding.UTF8.GetBytes(
+                "A\0" + "1\0" + "\nvolume:DISC\0" + "23\0" + "99aa06d3014798d86001c324468d497f")),
+            manifest.Fingerprint());
+        var withNul = manifest with { VolumeIdentifier = "D\0" + "23", VolumeBlocks = null };
+        Assert.NotEqual(withNul.Fingerprint(), (manifest with { VolumeIdentifier = "D", VolumeBlocks = 23 }).Fingerprint());
     }
 
     private static AssetManifest Edition(string name, string kind = ContentSourceKinds.Iso9660) =>
@@ -230,7 +333,7 @@ public sealed class VolumePinTests
     {
         var field = image.AsSpan(DescriptorOffset + 40, 32);
         field.Fill((byte)' ');
-        Encoding.ASCII.GetBytes(identifier).CopyTo(field);
+        Encoding.Latin1.GetBytes(identifier).CopyTo(field);
         return image;
     }
 
