@@ -198,14 +198,25 @@ class State:
 
     def unwritten(self, key):
         """Why a byte has no modeled value: the cause and the order of the event behind it."""
-        if key in self.lost_memory:
-            return dict(self.lost_memory[key])
         # Writes to the key's own (segment, base) group store other offsets; any other write may alias.
+        # A later aliasing write is newer than the one that dropped the byte, so it is the one named.
+        lost = self.lost_memory.get(key)
         group, a = key[:2], self.domain(key)
-        aliasing = [order for other, domains in self.writes.items() if other != group
-                    for b, order in domains.items() if a is None or b is None or not (a[1] <= b[0] or b[1] <= a[0])]
-        if aliasing:
-            return {"cause": "possibly written by an aliasing write", "order": max(aliasing)}
+        latest = None
+        for other, domains in self.writes.items():
+            if other == group:
+                continue
+            if a is None:
+                # Every write may alias a byte with no concrete domain; the group's newest decides.
+                order = max(domains.values())
+            else:
+                order = max((o for b, o in domains.items() if b is None or not (a[1] <= b[0] or b[1] <= a[0])), default=None)
+            if order is not None and (latest is None or order > latest):
+                latest = order
+        if latest is not None and (lost is None or lost["order"] is None or latest > lost["order"]):
+            return {"cause": "possibly written by an aliasing write", "order": latest}
+        if lost is not None:
+            return dict(lost)
         if self.memory_cleared is not None:
             return {"cause": "dropped by a modeled call", "order": self.memory_cleared}
         return {"cause": "no write on this path", "order": None}

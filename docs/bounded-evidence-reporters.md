@@ -924,7 +924,7 @@ controls name no game concept: a terminator is a write site, a capacity is a len
 is a register value at entry.
 
 Each control has a unique `name`, a `kind`, its anchors in `at` (one object or a list of 1..64),
-optional `evidence` and optional `assume`. An anchor is `{ "site": <file offset>, "event": <kind> }`,
+optional `evidence` and, on `containment` and `relation` controls, optional `assume`. An anchor is `{ "site": <file offset>, "event": <kind> }`,
 where the event kind is one the path reports at that instruction: `read`, `write`, `compare`,
 `branch`, `call`, `call-return`, `return`, `checkpoint` and so on. Add a site to `checkpoints` to
 get a `checkpoint` event with every register at that instruction.
@@ -959,7 +959,10 @@ Each occurrence row carries the facts behind its verdict. `order` gives the bran
 entry, depth) or its `unwritten` cause, and `via`, the last branch before the read in the read's own
 frame (branches inside callees that returned before the read are skipped), which names the incoming
 edge. `containment` gives the write's start relative to the interval and the length's
-range. `origin` gives the value's `inputs` (entry registers, modeled-call registers, memory, with
+range. In a PE32 image an access reports its segment base (`segmentInterpretation: base`), so an interval
+`segment` that names an entry segment register (`{ "entryRegister": "ds" }`) means that register's base:
+zero for CS, DS, ES and SS, unknown for FS and GS. Each path row also lists the `modeledCalls` it passed.
+`origin` gives the value's `inputs` (entry registers, modeled-call registers, memory, with
 `dropped` for memory a modeled call or possible alias dropped) and the declared `returns` it came
 through, with `originating` marking the return that produced it rather than passing it up from a
 deeper return. `originatingReturns` needs a `returnContracts` declaration for each entry it names.
@@ -982,12 +985,15 @@ Otherwise it is held.
 
 These cases are undecided, never violated: a byte a modeled call or a possibly aliasing write
 dropped before the read, or that a write through an unknown address may have stored (`lastWriter`);
-a `reach` anchor not reached on a path that passed a modeled call; an `order` anchor with no earlier
-`before` event behind a modeled call; a `sameValue` pair whose terms differ but are not known to be
+a path that passed a modeled call and reached no anchor of the control, for every kind, since the
+anchor may lie in the callee; an `order` anchor with no earlier
+`before` event behind a modeled call, or whose last read `before` branch went the other way and has a
+modeled call after it, since the callee may run the branch again; a `sameValue` pair whose terms differ but are not known to be
 different numbers (a reload after an unknown effect); a containment write through a segment not
 shown equal to the interval's; an `origin` expectation hidden behind a modeled-call register,
 dropped memory or other unread input; an `origin` entry register missing from the inputs when
-`registers` supplies its value, which enters the path as a constant; an occurrence where an
+`registers` supplies its value, or a `modeledCall` register missing when a `callModels` case
+supplies it, since either enters the path as a constant; an occurrence where an
 assumption cannot apply (see below).
 
 ### Arithmetic and assumptions
@@ -999,7 +1005,7 @@ otherwise the whole value is one unknown of its width. A relation holds when eve
 unknowns allow satisfies it, is violated when none does, and is undecided otherwise. The branches a
 path took are not solved, so a relation that fails for part of a range is undecided.
 
-`assume` lists at most 16 ranges, each `{ "value": reference, "min", "max", "evidence" }`, with an
+`assume`, accepted on `containment` and `relation` controls, lists at most 16 ranges, each `{ "value": reference, "min", "max", "evidence" }`, with an
 unsigned range inside the value's width. The value should be one unknown, such as an entry register
 or a loaded word. Each occurrence resolves it again: a known value inside the range needs no
 assumption, while a known value outside it, a value computed from unknowns or a reference the path

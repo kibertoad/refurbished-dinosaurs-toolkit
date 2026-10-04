@@ -32,8 +32,8 @@ must be able to express "this fill writes inside `[base, base + n)`" for an assu
 
 1. **One input, six kinds.** The trace-family commands (`trace`, `arguments`, `effects`,
    `returns`, `guards`, `memory`, `allocation`) take `relationalControls`, a list of at most 64
-   controls. Each has a unique `name`, a `kind`, its anchors in `at`, optional `evidence` and
-   optional `assume`. The kinds are:
+   controls. Each has a unique `name`, a `kind`, its anchors in `at`, optional `evidence` and, for
+   the arithmetic kinds `containment` and `relation`, optional `assume`. The kinds are:
    - `reach`: an anchor site is reached on no path (`never`) or on every path (`always`).
    - `order`: an earlier event at `before` precedes every anchor occurrence. With `branch`, the
      most recent execution of that branch went the stated way. With `sameValue`, the value the
@@ -77,13 +77,18 @@ must be able to express "this fill writes inside `[base, base + n)`" for an assu
    - a byte dropped by a modeled call or a possibly aliasing write has no known writer, so
      `lastWriter` is undecided for it, and so is a byte a write through an unknown address may
      have stored, while a byte no write on the path can have touched is the entry state;
-   - a `reach` anchor not reached on a path that passed a modeled call is undecided, since the
-     anchor may lie in the callee;
-   - an `order` anchor with no earlier `before` event is undecided when a modeled call precedes it;
+   - a path that passed a modeled call and reached no anchor of the control is undecided for every
+     kind, since the anchor may lie in the callee;
+   - an `order` anchor with no earlier `before` event is undecided when a modeled call precedes it,
+     and so is a `branch` whose last read execution went the other way with a modeled call after it;
    - `sameValue` holds only for equal terms and is violated only for values known to differ;
-   - a containment write through a segment not shown equal to the interval's is undecided;
+   - a containment write through a segment not shown equal to the interval's is undecided. In a
+     PE32 image an entry segment register in the interval names the segment's base, which is what
+     the access reports, so `{ "entryRegister": "ds" }` compares as zero and FS or GS as unknown;
    - `origin` treats modeled-call registers, dropped memory and unclassified unknowns as opaque:
      a producer it requires but cannot find, or one it excludes and cannot rule out, is undecided.
+     A required input register that `registers` or a `callModels` case gives a constant is also
+     undecided when it is missing, since the constant carries no unknown input.
 
    To support this, the engine reports a new fact: each `byteProducers` row of an access carries
    `writeOrder`, the event order of the write that stored the byte, and for a byte with no

@@ -1,6 +1,7 @@
 """Relational controls over synthetic paths (ADR 0007). No original bytes or claims."""
 import unittest
 from test_x86 import Code, report
+from test_pe import CODE_RAW as PE_CODE_RAW, report as pe_report
 
 FRAME = {"ds": 0x2000, "ss": 0x3000, "sp": 0xff00}
 
@@ -95,6 +96,23 @@ class OrderTests(unittest.TestCase):
         self.assertIn("not shown equal", occurrence["reason"])
         self.assertEqual(result["queryAssumptions"]["callModels"], [self.c.labels["service"]])
 
+    def test_a_wrong_direction_before_an_unread_call_is_undecided(self):
+        # The helper's test runs once traced, then again inside a modeled call before the access.
+        self.c = (Code().branch("e8", "helper").label("service").branch("e8", "helper").label("use").emit("8a 07 c3")
+                  .label("helper").emit("85 db").label("test").branch("74", "zero").emit("c3").label("zero").emit("c3"))
+        rule = control("guard", "order", before={"site": self.c.labels["test"], "event": "branch"}, branch={"taken": False},
+                       at={"site": self.c.labels["use"], "event": "read"})
+        r = run(self.c, [rule], registers=FRAME,
+                callModels=[{"site": self.c.labels["service"], "evidence": "synthetic unread helper call", "cases": [{}]}])
+        result = verdict(r, "guard")
+        self.assertEqual(result["verdict"], "undecided")
+        taken = next(o for p in result["paths"] for o in p["occurrences"] if o["taken"])
+        self.assertEqual(taken["verdict"], "undecided")
+        self.assertEqual(taken["modeledCalls"], [self.c.labels["service"]])
+        # Without the modeled call the traced test is the most recent one, and its direction decides.
+        with self.assertRaisesRegex(ValueError, "went the other way"):
+            run(self.c, [rule], registers=FRAME)
+
 
 class LastWriterTests(unittest.TestCase):
     def cleanup(self):
@@ -104,9 +122,35 @@ class LastWriterTests(unittest.TestCase):
 
     def test_an_incoming_edge_without_the_assignment_violates_the_writer(self):
         c = self.cleanup()
-        with self.assertRaisesRegex(ValueError, "slot violated"):
+        with self.assertRaisesRegex(ValueError, "slot violated.*byte 0 was not written on this path and entryState is not listed"):
             run(c, [control("slot", "lastWriter", at={"site": c.labels["read"], "event": "read"}, writers=[c.labels["assign"]])],
                 registers=FRAME)
+
+    def test_a_dropped_byte_names_the_newest_write_that_may_have_stored_it(self):
+        # [0x22] is stored, dropped by a write through ES:DI, then possibly stored again through ES:SI.
+        c = (Code().label("store").emit("c6 06 22 00 01").label("drop").emit("26 c6 05 00").label("again").emit("26 c6 04 00")
+             .label("read").emit("a0 22 00 c3"))
+        r = run(c, [control("slot", "lastWriter", at={"site": c.labels["read"], "event": "read"}, writers=[c.labels["store"]])],
+                registers=FRAME)
+        events = r["paths"][0]["events"]
+        again = next(e["order"] for e in events if e["kind"] == "write" and e["site"] == c.labels["again"])
+        read = next(e for e in events if e["kind"] == "read" and e["site"] == c.labels["read"])
+        self.assertEqual(read["byteProducers"][0]["unwritten"], {"cause": "possibly written by an aliasing write", "order": again})
+        self.assertEqual(verdict(r, "slot")["verdict"], "undecided")
+
+    def test_a_path_without_the_anchor_past_a_modeled_call_is_undecided(self):
+        # One edge reads the helper's slot traced; the other runs the helper only through a modeled call.
+        c = (Code().emit("85 c0").branch("74", "other").branch("e8", "helper").emit("c3").label("other").label("service")
+             .branch("e8", "helper").emit("c3").label("helper").label("read").emit("a1 22 00 c3"))
+        rule = control("slot", "lastWriter", at={"site": c.labels["read"], "event": "read"}, writers=["entryState"])
+        model = [{"site": c.labels["service"], "evidence": "synthetic unread helper call", "cases": [{}]}]
+        result = verdict(run(c, [rule], registers=FRAME, callModels=model), "slot")
+        self.assertEqual(result["verdict"], "undecided")
+        empty = next(p for p in result["paths"] if not p["occurrences"])
+        self.assertEqual((empty["verdict"], empty["modeledCalls"]), ("undecided", [c.labels["service"]]))
+        self.assertIn("passed a modeled call", " ".join(result["reasons"]))
+        # Traced on both edges, every occurrence is read and the control holds.
+        self.assertEqual(verdict(run(c, [rule], registers=FRAME), "slot")["verdict"], "held")
 
     def test_each_incoming_edge_reports_its_writer_or_entry_state(self):
         c = self.cleanup()
@@ -222,6 +266,17 @@ class ContainmentTests(unittest.TestCase):
         result = verdict(run(self.c, [assumed]), "buffer")
         self.assertEqual(result["verdict"], "held")
         self.assertEqual(result["assumptions"][0]["max"], 4)
+
+    def test_a_pe32_entry_segment_register_names_the_segment_base(self):
+        # mov byte [edi+5],0 in a PE32 image: the write reports the DS base, which the interval's DS names.
+        rule = lambda length: control("buffer", "containment", at={"site": PE_CODE_RAW, "event": "write"},
+                                      interval={"segment": {"entryRegister": "ds"}, "start": {"entryRegister": "edi"}, "length": length})
+        result = verdict(pe_report("c6 47 05 00 c3", relationalControls=[rule(6)]), "buffer")
+        self.assertEqual(result["verdict"], "held")
+        with self.assertRaisesRegex(ValueError, "buffer violated"):
+            pe_report("c6 47 05 00 c3", relationalControls=[rule(5)])
+        # FS keeps an unknown base, so a write through it is not shown inside a DS interval.
+        self.assertEqual(verdict(pe_report("64 c6 47 05 00 c3", relationalControls=[rule(6)]), "buffer")["verdict"], "undecided")
 
     def test_a_write_through_another_segment_is_undecided(self):
         self.c = Code().label("write").emit("26 c6 07 00 c3")
@@ -411,6 +466,19 @@ class OriginTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "entry violated"):
             run(c, [{**rule, "expect": {"inputs": {"include": [{"entryRegister": "cx"}]}}}], registers={"bx": 7})
 
+    def test_a_modeled_call_register_a_case_supplies_is_undecided(self):
+        # The case's BX enters the path as a constant, so no unknown input names the call.
+        c = (Code().label("service").branch("e8", "external").emit("89 d8").label("test").emit("85 c0").label("branch")
+             .branch("74", "out").label("out").emit("c3").label("external").emit("c3"))
+        rule = control("service", "origin", at={"site": c.labels["branch"], "event": "branch"}, value={"field": "left"},
+                       expect={"inputs": {"include": [{"modeledCall": c.labels["service"], "register": "bx"}]}})
+        model = {"site": c.labels["service"], "evidence": "synthetic service result", "cases": [{"registers": {"bx": 7}}]}
+        result = verdict(run(c, [rule], callModels=[model]), "service")
+        self.assertEqual(result["verdict"], "undecided")
+        self.assertIn("callModels case supplies", result["paths"][0]["occurrences"][0]["reason"])
+        # Without the case value the call's BX is an unknown input of the value.
+        self.assertEqual(verdict(run(c, [rule], callModels=[{**model, "cases": [{}]}]), "service")["verdict"], "held")
+
     def test_originating_returns_need_a_return_contract(self):
         c = self.recursion()
         with self.assertRaisesRegex(ValueError, "needs a returnContracts declaration"):
@@ -462,7 +530,9 @@ class FrameworkTests(unittest.TestCase):
                  ([control("a", "order", at={"site": 0, "event": "read"}, before={"site": 0, "event": "read"}, branch={"taken": True})], "branch event"),
                  ([control("a", "origin", at={"site": 0, "event": "read"}, value={"field": "value"},
                            expect={"inputs": {"include": []}})], "1..64 inputs"),
-                 ([{**self.writer(c), "extra": 1}], "unknown fields")]
+                 ([{**self.writer(c), "extra": 1}], "unknown fields"),
+                 ([{**self.writer(c), "assume": [{"value": {"entryRegister": "cx"}, "min": 0, "max": 4, "evidence": "synthetic"}]}],
+                  "unknown fields: assume")]
         for controls, message in cases:
             with self.assertRaisesRegex(ValueError, message):
                 run(c, controls, registers=FRAME)
@@ -471,6 +541,11 @@ class FrameworkTests(unittest.TestCase):
         c = self.code()
         with self.assertRaisesRegex(ValueError, "apply only to"):
             run(c, [self.writer(c)], "bounds", registers=FRAME)
+        # null is rejected here as trace rejects it, so one config is not valid for one command only.
+        with self.assertRaisesRegex(ValueError, "apply only to"):
+            run(c, None, "bounds", registers=FRAME)
+        with self.assertRaisesRegex(ValueError, "must be a list"):
+            run(c, None, registers=FRAME)
         with self.assertRaisesRegex(ValueError, "controlOccurrenceLimit applies only to trace"):
             report(c, "bounds", registers=FRAME, controlOccurrenceLimit=4)
 
