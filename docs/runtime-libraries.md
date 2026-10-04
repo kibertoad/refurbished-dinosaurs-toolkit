@@ -289,3 +289,10 @@ and report it as an import failure.
 `BmpDecoder.DefaultMaximumPixels` is removed. Use `ImageLimits.DefaultMaximumPixels` in
 RefurbishedDinosaurs.LegacyFormats, which holds the same value (16,777,216) and is the default
 `maximumPixels` of `BmpDecoder`, `PcxDecoder` and `RawIndexedImageDecoder`.
+
+`PcxDecoder` and `RawIndexedImageDecoder` now throw `InvalidDataException` for dimensions whose
+product passes `int` range, where they threw `OverflowException`. `PcxDecoder` checks a negative
+`maximumPixels` before reading the file, so it throws `ArgumentOutOfRangeException` for a short or
+malformed file too. It also stops allocating a padded scanline buffer, so memory stays within the
+pixel limit however wide the declared scanlines are. Drop any `OverflowException` handling around
+these calls.
