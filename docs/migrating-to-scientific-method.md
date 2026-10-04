@@ -296,22 +296,24 @@ Breaking engine releases that need a change in a restoration are listed here, ne
 
 ### `widthsConsistent` in `argumentFrameSites`
 
-`arguments` added `argumentFrameSites[].widthsConsistent` in engine 6.3.0, meaning "the traced
+`arguments` added `argumentFrameSites[].widthsConsistent` in engine 6.2.0, meaning "the traced
 paths made at least one read and `conflictingWidths` is empty". Two releases changed what it means.
 
 #### Undecided sites
 
 `widthsConsistent` can now be `null`. A pair of reads that would conflict only if bytes the trace
 cannot attribute were the caller's (a slot a modeled call invalidated, a slot a write through
-another segment or base may have stored, or a callee write through another address before the read)
-is listed in the new `undecidedWidths`, and leaves the site `null` unless another pair conflicts on
-the caller's bytes. A site whose only reads saw such bytes is `null` too. Such sites used to report
+another segment or base may have stored, a callee write through another address before the read,
+or a read byte past the 256-byte window) is listed in the new `undecidedWidths`, and leaves the
+site `null` unless another pair conflicts on the caller's bytes. A site whose only reads saw such
+bytes is `null` too. Such sites used to report
 `true`, or `false` when no read saw a byte from the slot writers. Each `groupings` row also adds
 `bytesOfUnknownOrigin`, the indices within `bytesNotFromSlotWriter` that may still be the caller's.
 
 - Code that tests `widthsConsistent` for truth, or compares it with `false`, handles `null`
   separately. Read `undecidedWidths` and each read's `bytesOfUnknownOrigin` to see which pairs and
-  bytes left the site open. A concrete `ss`, `sp` and `ds` in the query, or a `preservesMemory` scope
+  bytes left the site open; a read whose `offset` plus `width` passes the frame's `mappedBytes`
+  ran past the window. A concrete `ss`, `sp` and `ds` in the query, or a `preservesMemory` scope
   on the modeled call, can let the trace attribute the bytes.
 - A finding that cited `widthsConsistent: true` for a site that is now `null` was resting on bytes
   the trace did not attribute. Restate it as undecided or settle the bytes first.

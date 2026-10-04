@@ -586,6 +586,17 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertEqual(frame["slots"][-1]["writerSite"], None)
         self.assertEqual(frame["slots"][-1]["offset"] + frame["slots"][-1]["width"], 256)
 
+    def test_a_read_past_the_window_leaves_the_site_undecided(self):
+        # The callee reads only a word 260 bytes up, past the mapped window: whose bytes it saw is open.
+        c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("55 89 e5 8b 86 08 01 5d c3")
+        r, frames = self.frames(c)
+        self.assertEqual(frames[0]["mappedBytes"], 256)
+        self.assertEqual(frames[0]["groupings"][0]["offset"], 260)
+        self.assertIsNone(r["argumentFrameSites"][0]["widthsConsistent"])
+        # Control: the same word read inside the window saw only bytes no write stored.
+        c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("55 89 e5 8b 86 fe 00 5d c3")
+        self.assertIs(self.frames(c)[0]["argumentFrameSites"][0]["widthsConsistent"], False)
+
     def test_paths_that_read_different_widths_keep_the_site_open(self):
         # One path reads a word, the other a far pointer, from the same two pushed words.
         c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("83 c4 04 c3")
@@ -733,6 +744,24 @@ class ArgumentFrameTests(unittest.TestCase):
         site = r["argumentFrameSites"][0]
         self.assertEqual(len(site["undecidedWidths"]), 1)
         self.assertIsNone(site["widthsConsistent"])
+
+    def test_a_modeled_call_in_the_callee_leaves_its_slot_undecided(self):
+        # The callee calls a modeled service before reading its argument. The push wrote the slot, but
+        # the model forgot memory, so the read may or may not still see the caller's word.
+        def build():
+            c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3")
+            c.label("callee").emit("55 89 e5").branch("e8", "service").emit("8b 46 04 5d c3").label("service").emit("c3")
+            return c
+        model = [{"site": 12, "evidence": "synthetic service", "preserves": ["ss", "esp", "ebp"], "cases": [{}]}]
+        r, frames = self.frames(build(), callModels=model)
+        self.assertEqual(frames[0]["slots"][0]["writerSite"], 0)
+        self.assertEqual((frames[0]["groupings"][0]["bytesNotFromSlotWriter"], frames[0]["groupings"][0]["bytesOfUnknownOrigin"]),
+                         ([0, 1], [0, 1]))
+        self.assertIsNone(r["argumentFrameSites"][0]["widthsConsistent"])
+        # Control: traced instead of modeled, the service leaves the caller's word in place.
+        r, frames = self.frames(build())
+        self.assertEqual(frames[0]["groupings"][0]["bytesOfUnknownOrigin"], [])
+        self.assertIs(r["argumentFrameSites"][0]["widthsConsistent"], True)
 
     def test_a_site_read_only_after_the_callee_stored_its_slot_is_not_consistent(self):
         # The callee stores over its argument and then reads it: the read is listed, but none saw the caller's word.

@@ -7,10 +7,10 @@ amount never join or split slots. Whatever a read did not settle on the path sta
 """
 from capstone.x86 import X86_OP_IMM, X86_OP_REG
 
+from .machine import NO_WRITE
+
 # The argument bytes one frame maps; a wider frame is mapped up to here and stays open.
 WINDOW_BYTES = 256
-# The ``unwritten`` cause of a byte that no write on the path stored, so nothing the caller did put it there.
-NO_WRITE = "no write on this path"
 
 
 def stack_cleanup(ins):
@@ -205,9 +205,11 @@ def argument_frames(report, image):
     but not agreed. Bytes the callee stored itself and bytes no write on the path stored are not
     the caller's and do not decide consistency. A byte of unknown origin (invalidated by a modeled
     call, possibly stored through another address, or missing the slot writer among its producers
-    without a callee store) may be the caller's: a pair of reads that would conflict on such a byte
-    is listed in ``undecidedWidths`` and leaves the site's ``widthsConsistent`` ``None`` unless
-    another pair conflicts on the caller's bytes. The report must come from
+    without a callee store) may be the caller's, and so may a read byte past the mapped window: a
+    pair of reads that would conflict on such a byte is listed in ``undecidedWidths`` and leaves the
+    site's ``widthsConsistent`` ``None`` unless another pair conflicts on the caller's bytes. A site
+    with no such pair whose reads saw no byte the caller wrote is ``None`` when some read saw a byte
+    of unknown origin and ``False`` otherwise. The report must come from
     ``trace`` with ``argument_window=WINDOW_BYTES``: each traced call's slots come from its
     ``argumentSlots`` record, which this removes from every path, declared continuations included.
     """
@@ -235,7 +237,9 @@ def argument_frames(report, image):
                 (not_from_caller if g["bytesNotFromSlotWriter"] else from_caller).setdefault(key, set()).add(i)
                 mapped = range(min(g["width"], f["mappedBytes"] - g["offset"]))
                 caller_bytes.setdefault(key, set()).update(g["offset"] + at for at in mapped if at not in g["bytesNotFromSlotWriter"])
-                unknown_bytes.setdefault(key, set()).update(g["offset"] + at for at in g["bytesOfUnknownOrigin"])
+                # A read byte past the window was never mapped, so it may be the caller's too.
+                unmapped = range(max(0, f["mappedBytes"] - g["offset"]), g["width"])
+                unknown_bytes.setdefault(key, set()).update(g["offset"] + at for at in [*g["bytesOfUnknownOrigin"], *unmapped])
         reads = sorted(read_on)
         # Distinct reads that share a byte conflict: different intervals, or one interval grouped two ways.
         pairs = [(a, b) for n, a in enumerate(reads) for b in reads[n + 1:] if _overlap(a, b)]

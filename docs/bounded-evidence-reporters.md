@@ -196,10 +196,12 @@ interval read with two groupings. It lists every pair, whatever the reads' bytes
 both of its reads saw from the slot writers on some path. A read that runs past the caller's bytes,
 such as a dword read of a pushed word, still saw the word, so a word read of the same bytes on
 another path makes the site inconsistent. A pair whose reads share no such byte but would if bytes
-in `bytesOfUnknownOrigin` were the caller's is listed in `undecidedWidths`, and when no pair makes
-the site `false`, any such pair makes it `null`: the trace did not show whose bytes those reads
-saw. Otherwise the site is `true` when some read saw at least one byte from the slot writers,
-`null` when no read did but some read saw a byte of unknown origin, and `false` when every read
+of unknown origin were the caller's is listed in `undecidedWidths`, and when no pair makes the
+site `false`, any such pair makes it `null`: the trace did not show whose bytes those reads saw.
+Bytes of unknown origin are those in `bytesOfUnknownOrigin` and read bytes past the 256-byte
+window, which no frame maps. Otherwise the site is `true` when some read saw at least one byte
+from the slot writers, `null` when no read did but some read saw a byte of unknown origin, and
+`false` when every read
 byte is one the callee stored itself or no write on the path stored, which includes a callee that
 read nothing. Those two kinds of byte never make a pair conflict or undecided. `true` says only
 that the reads the traced paths made of the caller's bytes fit one grouping. It does not say a path that skipped a read
