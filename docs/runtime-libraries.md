@@ -76,8 +76,8 @@ LegacyFormats parts of it:
 - `ContentOverlay` brings the staged content to a patched version before `Commit`. It replaces
   or adds a file only when the target holds the hash the overlay records for it, verifies every
   payload before replacing anything, and returns records for the installed manifest. It throws
-  for an importer record list the installed-content verifier would reject. The overlay's
-  files and hashes are the restoration's data. See
+  for an importer record list with an unsafe or duplicate path; `InstalledAssetVerifier` checks
+  the rest of each record. The overlay's files and hashes are the restoration's data. See
   [content overlays](../packages/dotnet/README.md#content-overlays).
 - `InstalledContentWriter` suits incremental extractors: it replaces changed files atomically and
   skips byte-identical ones. `InstalledContentUninstaller` removes only the paths the installed
@@ -249,8 +249,9 @@ format metadata for game-specific CDDA admission. Dispose voices before cached r
 ### Overlay installed records
 
 `ContentOverlayResult.UpdateInstalledFiles` now runs each record's path through
-`PortableAssetPath.Relative` before matching it to an output, and returns every record under that
-path, so `\` separators become `/`. It throws `InvalidDataException` for a list it used to pass
+`PortableAssetPath.Relative` before matching it to an output. A record no output matches is
+returned under that path, so `\` separators become `/`; a matched record takes the output's
+spelling, as before. It throws `InvalidDataException` for a list it used to pass
 through:
 
 - a record whose path `Relative` rejects, such as a blank path, `./data/main.bin`, `../x` or a

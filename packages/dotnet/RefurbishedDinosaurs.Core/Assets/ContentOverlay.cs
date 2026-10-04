@@ -435,7 +435,7 @@ public sealed record ContentOverlayResult(string Name, IReadOnlyList<ContentOver
     /// <exception cref="InvalidDataException">
     /// A record in <paramref name="files"/> is null, its path is not accepted by
     /// <see cref="PortableAssetPath.Relative"/>, or two records name the same path ignoring case and
-    /// separators. The message names the path, or both spellings for a duplicate.
+    /// separators. For a duplicate, the message names both spellings.
     /// </exception>
     public IReadOnlyList<InstalledAsset> UpdateInstalledFiles(IEnumerable<InstalledAsset> files)
     {
