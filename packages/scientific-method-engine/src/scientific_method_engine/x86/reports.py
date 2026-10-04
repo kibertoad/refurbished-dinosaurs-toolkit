@@ -1052,19 +1052,22 @@ def _ghidra_call_edges(image, export):
         return integer(value, 0, len(image.data) - 1, "Ghidra " + label + " file offset")
     callers, unmapped, total = {}, [], 0
     for function in functions:
-        if not isinstance(function, dict) or not isinstance(function.get("address"), str) or not isinstance(function.get("edges"), list):
+        # The script writes every key, with null for an address that has no file bytes. A missing key is a malformed export.
+        if (not isinstance(function, dict) or "entry" not in function or not isinstance(function.get("address"), str)
+                or not isinstance(function.get("edges"), list)):
             raise ValueError("Invalid ghidraCallEdges function")
         total += len(function["edges"])
         if total > 8192:
             raise ValueError("ghidraCallEdges holds more than 8192 edges")
         rows = []
         for edge in function["edges"]:
-            if (not isinstance(edge, dict) or not isinstance(edge.get("siteAddress"), str) or not isinstance(edge.get("flow"), str)
-                    or not (edge.get("targetAddress") is None or isinstance(edge["targetAddress"], str))):
+            if (not isinstance(edge, dict) or not {"site", "target", "targetAddress"} <= edge.keys()
+                    or not isinstance(edge.get("siteAddress"), str) or not isinstance(edge.get("flow"), str)
+                    or not (edge["targetAddress"] is None or isinstance(edge["targetAddress"], str))):
                 raise ValueError("Invalid ghidraCallEdges edge")
-            rows.append({"site": offset(edge.get("site"), "site"), "siteAddress": edge["siteAddress"],
-                         "target": offset(edge.get("target"), "target"), "targetAddress": edge["targetAddress"], "flow": edge["flow"]})
-        entry = offset(function.get("entry"), "entry")
+            rows.append({"site": offset(edge["site"], "site"), "siteAddress": edge["siteAddress"],
+                         "target": offset(edge["target"], "target"), "targetAddress": edge["targetAddress"], "flow": edge["flow"]})
+        entry = offset(function["entry"], "entry")
         if entry is None:
             unmapped.append(function["address"])
         elif entry in callers:
@@ -1094,6 +1097,7 @@ def _ghidra_cross_check(export, nodes, outgoing, omitted):
     for caller in compared:
         ours = outgoing.get(caller, [])
         theirs = callers[caller]
+        instructions = nodes[caller]["body"]["instructions"]
         # A call neither analysis resolved matches on its site with no target.
         flows = {_ghidra_key(g): g["flow"] for g in theirs if g["site"] is not None}
         read = {(e["site"], e["target"]) for e in ours}
@@ -1104,11 +1108,20 @@ def _ghidra_cross_check(export, nodes, outgoing, omitted):
         for g in theirs:
             if g["site"] is not None and _ghidra_key(g) in read:
                 continue
+            ins = instructions.get(g["site"])
+            if ins is not None and base_mnemonic(ins) in INTERRUPTS and _ghidra_key(g)[1] is None:
+                # SLEIGH lifts INT, INT1, INT3 and INTO to a computed call with no target, while the engine assumes the
+                # interrupt returns to the next instruction and records no edge. At INT1 and INT3 Ghidra's flow is a
+                # terminator that ends the function there.
+                rows.append({"caller": caller, "site": g["site"], "target": None, "siteAddress": g["siteAddress"],
+                             "targetAddress": None, "ghidraFlow": g["flow"], "result": "interrupt", "engineEdge": None,
+                             "ghidraFallsThrough": "TERMINATOR" not in g["flow"]})
+                continue
             # Ghidra's edge is evidence the engine did not check; it never becomes an engine edge.
             rows.append({"caller": caller, "site": g["site"], "target": g["target"], "siteAddress": g["siteAddress"],
                          "targetAddress": g["targetAddress"], "ghidraFlow": g["flow"], "result": "ghidraOnly", "checked": False,
                          "engineEdge": next((e["id"] for e in ours if g["site"] is not None and e["site"] == g["site"]), None)})
-    counts = {kind: sum(r["result"] == kind for r in rows) for kind in ("agreement", "engineOnly", "ghidraOnly")}
+    counts = {kind: sum(r["result"] == kind for r in rows) for kind in ("agreement", "engineOnly", "ghidraOnly", "interrupt")}
     not_compared = {"engineCallers": sorted(nodes.keys() - callers.keys()), "ghidraCallers": sorted(callers.keys() - nodes.keys()),
                     "unmappedGhidraFunctions": export["unmappedFunctions"], "missingGhidraEntries": export["missingEntries"],
                     "unreadGhidraFunctions": export["unreadFunctions"],
@@ -1116,12 +1129,15 @@ def _ghidra_cross_check(export, nodes, outgoing, omitted):
     # A site agrees only when every edge either analysis read there agrees.
     disputed = {r["site"] for r in rows if r["result"] != "agreement"}
     return {"comparedCallers": compared, "edges": rows, "counts": counts, "notCompared": not_compared,
-            "agreed": not counts["engineOnly"] and not counts["ghidraOnly"] and not any(not_compared.values()),
+            "agreed": (not counts["engineOnly"] and not counts["ghidraOnly"] and not any(not_compared.values())
+                       and all(r["ghidraFallsThrough"] for r in rows if r["result"] == "interrupt")),
             "agreementSites": {r["site"] for r in rows if r["result"] == "agreement"} - disputed,
             "interpretation": "Edges of each caller that both the engine and the Ghidra export read, matched by site and target "
                               "file offset; an unresolved call matches an unresolved call at its site, and a Ghidra target without a file offset "
-                              "matches no engine edge. A ghidraOnly edge is Ghidra's claim: the engine did not check it and never adds it to "
-                              "its graph. Agreement means both analyses read the edge, not that it executes."}
+                              "matches no engine edge. An interrupt row is Ghidra's targetless call at an instruction the engine read as an "
+                              "interrupt and assumed to return; it counts against agreed only when Ghidra's flow ends the function there. "
+                              "A ghidraOnly edge is Ghidra's claim: the engine did not check it and never adds it to its graph. Agreement "
+                              "means both analyses read the edge, not that it executes."}
 
 
 # These branches test CX/ECX (LOOPE/LOOPNE also ZF), so an adjacent CMP/TEST never describes their predicate.

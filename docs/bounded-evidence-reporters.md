@@ -735,9 +735,10 @@ output path, a function limit (1..128) and the entries to start from. Ghidra wal
 from those entries through its call targets and its jumps to other functions' entry points. The
 export records each function's edges as file offsets. It is accepted only when its `sha256`, the
 SHA-256 Ghidra records for the program it analysed, equals the source's. It can hold at most 128
-functions and 8192 edges, and every offset must lie inside the source. Paste the export into the
-config as the value of `ghidraCallEdges`. The command then reports
-`ghidraCrossCheck`. For each caller that both the engine read and the export lists
+functions and 8192 edges, and every offset must lie inside the source. The script writes `null` for
+an address without file bytes, and a function or edge that lacks one of the keys it writes is
+rejected. Paste the export into the config as the value of `ghidraCallEdges`. The command then
+reports `ghidraCrossCheck`. For each caller that both the engine read and the export lists
 (`comparedCallers`), every edge is matched on site and target:
 
 - `agreement`: both have the edge. An unresolved call matches an unresolved call at the same site.
@@ -745,12 +746,21 @@ config as the value of `ghidraCallEdges`. The command then reports
 - `engineOnly`: only the engine has it.
 - `ghidraOnly`: only Ghidra has it. It carries `checked: false` and the id of any engine edge at the
   same site. The engine's graph, classifications and summaries never take it in.
+- `interrupt`: Ghidra's call with no target address at an `INT`, `INT1`, `INT3` or `INTO` that the
+  engine decoded in the same caller's body. SLEIGH lifts each interrupt to a computed call, while
+  the engine assumes the interrupt returns to the next instruction and records no edge. Its site is
+  never an agreement site. `ghidraFallsThrough` is false when Ghidra's flow ends the function there,
+  as it does at `INT1` and `INT3` (`COMPUTED_CALL_TERMINATOR`). The two analyses then disagree on
+  the function's extent: the row counts against `agreed`, and edges the engine reads after the
+  interrupt show as `engineOnly`. A Ghidra edge with a target address at an interrupt stays
+  `ghidraOnly`.
 
 `notCompared` lists the engine callers missing from the export, exported callers the engine did not
 read, exported functions without a file offset, and the `omittedRoutes` ids of compared callers
 (`omittedEngineRoutes`), which the edge limit kept out of the graph. It also passes on the export's
 `missingEntries` (requested addresses with no function) and `unreadFunctions` (functions the limit
-cut off). `agreed` is true only when every compared edge agrees and nothing is left uncompared.
+cut off). `counts` holds the number of rows of each result. `agreed` is true only when no row is
+`engineOnly` or `ghidraOnly`, every `interrupt` row falls through, and nothing is left uncompared.
 Agreement means both analyses read the edge, never that it executes. A `ghidraAgreementSites`
 control lists call sites that must agree, and fails the report otherwise. A site agrees only when
 every edge either side read there agrees. Requires
