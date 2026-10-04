@@ -5,7 +5,7 @@ from test_x86 import Code, report, events, configuration
 from test_pe import Code as FlatCode, report as flat_report, CODE_RAW
 from scientific_method_engine.x86.image import Image
 from scientific_method_engine.x86.machine import State
-from scientific_method_engine.x86.memory_scopes import validate_scopes, capture_scopes, retain_scopes
+from scientific_method_engine.x86.memory_scopes import validate_scopes, capture_scopes, retain_scopes, scope_history
 from scientific_method_engine.x86.values import const
 
 
@@ -217,8 +217,9 @@ class MemoryScopeTests(unittest.TestCase):
         values, unread, declared = capture_scopes(state, {"preservesMemory": [scope(bytes=4)]})
         self.assertEqual(len(state.events), event_count)
         self.assertEqual((declared[0]["cachedBytes"], declared[0]["uncachedBytes"]), (2, 2))
+        history = scope_history(state, values, unread)
         state.clear_memory()
-        retain_scopes(state, values, unread)
+        retain_scopes(state, values, unread, history)
         self.assertEqual(state.peek(state.segment("ss"), const(0x200, 16), 2).number, 0x1234)
         self.assertEqual(state.peek(state.segment("ss"), const(0x202, 16), 2).term, previous.term)
         self.assertIsNone(state.peek(state.segment("ss"), const(0x204, 16), 2).number)
@@ -240,8 +241,9 @@ class MemoryScopeTests(unittest.TestCase):
             values, unread, declared = capture_scopes(state, declarations)
             self.assertEqual((declared[0]["cachedBytes"], declared[0]["uncachedBytes"]), (1, 1))
             terms.update(unread.values())
+            history = scope_history(state, values, unread)
             state.clear_memory()
-            retain_scopes(state, values, unread)
+            retain_scopes(state, values, unread, history)
         self.assertEqual(len(terms), 1)
         # A kept uncached byte reads like any unread byte: produced by the reading site, listed missing.
         state.at = 7

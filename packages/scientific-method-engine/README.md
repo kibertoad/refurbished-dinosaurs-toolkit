@@ -126,3 +126,11 @@ survive the model's memory invalidation, and each scope is reported with the mod
 return and the effect summary. Everything else the service may do stays unknown. This input needs
 prepared protocol 3, so upgrade the reader and the engine together. See the
 [call model contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#limits-and-assumptions).
+
+The trace-family commands (`trace`, `arguments`, `effects`, `returns`, `guards`, `memory`,
+`allocation`) check `relationalControls`: assertions over reported values (reach, order, last
+writer, containment, value relation and value origin) evaluated on every bounded path. A violated
+control fails the report. A control left undecided by a stop, a limit or an unread call is
+reported as `undecided` and never counts as held. Access reports also give each byte's
+`writeOrder`, or why it has no modeled value. See the
+[controls contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#relational-controls).

@@ -42,3 +42,33 @@ it used on the path it affected. A path completed through one of them is conditi
 - A modeled service's effects outside its scopes stay unknown, so a joined parent path still has
   unknown effects. Do not describe it as effect-complete, transactional or natively reachable.
 - A stopped path, an exhausted limit or an unread callee is reported as such. It is not a negative.
+
+## Writing findings from relational controls
+
+A [relational control](bounded-evidence-reporters.md#relational-controls) that held says the
+relation holds on every bounded path under the query's assumptions. It says nothing about what the
+engine did not read, and the finding must keep the difference. Several downstream requests (Dark
+Sun gaps 30 to 34, 36 and 40 to 43) asked the engine to enforce these rules. They are rules for the
+person writing the finding:
+
+- A guard that precedes an access is not a protected read until an `order` control with the
+  guard's direction and `sameValue` holds. A failure flag set on a rejected path does not suppress
+  the calls after it, and a returned cleared pointer is not a successful release by the callee.
+- A sentinel comparison is not index validation. A slot an edge skipped holds residual frame
+  contents. Report the read and its missing producer, and call it a native defect only after the
+  caller's state and the failure's reachability are established.
+- A modeled call's register cases are the query's assumption about a service. They are not the
+  service's actual result sequence, and a wrapper's return does not show that its interrupt or
+  cleanup dependencies return.
+- An error value passed up through a recursive call does not show a local error origin, and an
+  encoded error edge alone does not show a reachable failure. Keep finite-traversal and valid-state
+  assumptions as stated assumptions.
+- A relation decided under `assume` holds for that range. Cite the range's evidence, keep a static
+  counterexample labelled as an arithmetic example until native inputs reach it, and do not turn a
+  caller's narrower range into a universal bound.
+- A bounded fill inside an extent is not the total capacity, a failure sentinel is not rollback,
+  and a control-path bound on writes is not a feasible native case.
+- A mode supplied as an input describes the paths under that mode. A bypass under it does not show
+  that other callees or the operating system have no cleanup effects.
+- A stopped path, a capped route or an undecided control is not evidence that a consumer, writer
+  or effect was absent.
