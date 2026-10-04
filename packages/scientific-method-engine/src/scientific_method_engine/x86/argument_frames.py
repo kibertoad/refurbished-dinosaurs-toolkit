@@ -21,16 +21,29 @@ def stack_cleanup(ins):
     return amount if 0 < amount < 1 << (bits - 1) else None
 
 
-def _writer(events, before, segment, base, at):
-    """The last write event before index `before` that covered stack byte `at`, and why none is known."""
-    for event in reversed(events[:before]):
+def _covered(event, segment, base, start, width, modulus):
+    """The frame offsets below `width` that a write event stored, counted from stack byte `start`."""
+    interval = event.get("interval")
+    if event["kind"] != "write" or not interval or interval["segment"] != segment or interval["base"] != base:
+        return []
+    # Symbolic stack keys wrap at the address size; linear keys do not.
+    offsets = ((at - start) % modulus if modulus else at - start for at in range(interval["start"], interval["end"]))
+    return [at for at in offsets if 0 <= at < width]
+
+
+def _writers(events, before, segment, base, start, width, modulus):
+    """The last write before index `before` that covered each frame byte, and why the others have none."""
+    writers, reason = {}, "no write on this path"
+    for j in range(before - 1, -1, -1):
+        event = events[j]
         if event["kind"] == "call-return" and event.get("unknownMemoryEffects"):
-            return None, "memory invalidated by the modeled call at " + str(event["callSite"])
-        interval = event.get("interval")
-        if event["kind"] == "write" and interval and interval["segment"] == segment and interval["base"] == base \
-                and interval["start"] <= at < interval["end"]:
-            return event, None
-    return None, "no write on this path"
+            reason = "memory invalidated by the modeled call at " + str(event["callSite"])
+            break
+        for at in _covered(event, segment, base, start, width, modulus):
+            writers.setdefault(at, event)
+        if len(writers) == width:
+            break
+    return writers, reason
 
 
 def _frame(image, events, index):
@@ -43,10 +56,13 @@ def _frame(image, events, index):
     open_reasons = []
     if not pushes:
         return None
-    # The return-address push sits at the callee's entry SP; the frame's return bytes lie above it.
-    entry = min(pushes, key=lambda e: e["interval"]["start"])["interval"]
+    # The return-address push comes last and sits at the callee's entry SP; the frame's return bytes lie above it.
+    entry = pushes[-1]["interval"]
     segment, base = entry["segment"], entry["base"]
+    modulus = None if segment == ("linear",) else 1 << image.bits
     start = entry["start"] + call["returnFrameBytes"]
+    if modulus:
+        start %= modulus
     reads = [e for e in inside if e["kind"] == "read" and e.get("argument") and e["depth"] == depth + 1]
     returned = next((e for e in inside if e["kind"] == "return" and e["depth"] == depth + 1 and e.get("callSite") == call["site"]), None)
     callee_cleanup = returned["cleanupBytes"] if returned else None
@@ -66,17 +82,19 @@ def _frame(image, events, index):
 
     # Slots: runs of argument bytes that one write event last covered.
     slots, by_byte = [], {}
+    writers, reason = _writers(events, index, segment, base, start, width, modulus)
     for at in range(width):
-        writer, reason = _writer(events, index, segment, base, start + at)
-        key = writer["order"] if writer else ("unknown", reason)
+        writer = writers.get(at)
+        key = writer["order"] if writer else "unknown"
         if slots and slots[-1]["_key"] == key and slots[-1]["offset"] + slots[-1]["width"] == at:
             slots[-1]["width"] += 1
         else:
             slot = {"_key": key, "offset": at, "width": 1}
             if writer:
+                byte_offset = start + at - writer["interval"]["start"]
                 slot.update(writerSite=writer["site"], writerOrder=writer["order"], writerDepth=writer["depth"],
                             writerRole=writer.get("role"), writerWidth=writer["width"],
-                            writerByteOffset=start + at - writer["interval"]["start"], writerValue=writer["value"])
+                            writerByteOffset=byte_offset % modulus if modulus else byte_offset, writerValue=writer["value"])
             else:
                 slot.update(writerSite=None, reason=reason)
             slots.append(slot)
@@ -84,6 +102,11 @@ def _frame(image, events, index):
     for slot in slots:
         slot.update(consumedBy=[], derivedReads=[])
 
+    # The first callee store to each frame byte: a later read of that byte sees the callee's bytes.
+    first_store = {}
+    for e in inside:
+        for at in _covered(e, segment, base, start, width, modulus):
+            first_store.setdefault(at, e["order"])
     groupings = []
     for read in reads:
         offset = read["argument"]["offsetFromEntrySP"] - read["argument"]["returnFrameBytes"]
@@ -95,10 +118,11 @@ def _frame(image, events, index):
                 covered.append(slot)
             if read["order"] not in slot["consumedBy"]:
                 slot["consumedBy"].append(read["order"])
-        # A read whose bytes no longer come from the slot's writer saw something else: an overwrite or
-        # an invalidated byte.
-        stale = [i for i, at in enumerate(span) if by_byte[at]["writerSite"] is not None
-                 and by_byte[at]["writerSite"] not in read["byteProducers"][i]["producers"]]
+        # A read byte with no known caller writer, one the callee stored to first, or one whose producers
+        # lack the slot's writer saw something other than the caller's bytes. The store check catches an
+        # overwrite derived from the argument itself, which keeps the writer among its producers.
+        stale = [i for i, at in enumerate(span) if by_byte[at]["writerSite"] is None or first_store.get(at, read["order"]) < read["order"]
+                 or by_byte[at]["writerSite"] not in read["byteProducers"][i]["producers"]]
         partial = [s["offset"] for s in covered if s["offset"] < offset or s["offset"] + s["width"] > offset + read["argument"]["width"]]
         groupings.append({"readSite": read["site"], "readOrder": read["order"], "offset": offset, "width": read["argument"]["width"],
                           "grouping": read["argument"]["grouping"], "slotOffsets": [s["offset"] for s in covered],

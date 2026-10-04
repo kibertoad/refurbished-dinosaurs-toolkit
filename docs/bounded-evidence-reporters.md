@@ -119,15 +119,17 @@ gets `argumentFrames`, one per traced call (modeled calls have none). Offsets co
 first byte above the return frame (`returnFrameBytes`, 2 or 4). A frame holds:
 
 - `slots`: runs of argument bytes that one write last covered before the call, with the writer's
-  site, order, depth, role (`push` or none), width and value. A byte no write on the path covered,
+  site, order, depth, role (`push` or none), width and value. The report keeps each cited write
+  event among the path's events. A byte no write on the path covered,
   or one a modeled call's unknown memory effects invalidated, has `writerSite: null` and a reason.
   Each slot lists the callee reads that consumed it (`consumedBy`) and `derivedReads`: argument
   reads deeper in the callee whose bytes carry the slot writer's site among their producers, such
   as a setter reading a word the callee forwarded. They match by producer site only.
 - `groupings`: one row per callee argument read, with its offset, width, LDS/LES `grouping` and
   the slots it covers. `partialSlots` names slots the read covers only in part.
-  `bytesNotFromSlotWriter` names read bytes whose producers do not include the slot's writer, for
-  example after the callee overwrote its argument.
+  `bytesNotFromSlotWriter` names read bytes that do not come from the slot's writer: bytes with no
+  known writer, bytes the callee stored to before the read (even a value computed from the
+  argument), and bytes whose producers do not include the writer.
 - `competingWidths`: pairs of read intervals that overlap without being equal.
 - `calleeCleanupBytes` (`RET n`) and `callerCleanupBytes` (an immediate `ADD SP` right after the
   call). `mappedBytes` is the larger of these and the highest byte read, at most 256.
@@ -138,7 +140,8 @@ first byte above the return frame (`returnFrameBytes`, 2 or 4). A frame holds:
 
 Only reads group slots. Adjacent pushes, a relocated segment word and a cleanup amount never join
 or split them: a segment fixup locates a segment, and the read that consumes it decides which
-words form the pointer. `argumentFrameSites` collects the frames of each call site across paths.
+words form the pointer. `argumentFrameSites` collects the frames of each call site across the ordinary `paths`;
+`declaredContinuationPaths` get no frames and do not count toward a site.
 `readWidthSets` lists each distinct set of read widths, and `agreed` holds only when one set
 remains and every frame settled. Paths that never reached the call are not represented, so a
 grouping settled on the traced paths says nothing about the others. A decompiler's parameter

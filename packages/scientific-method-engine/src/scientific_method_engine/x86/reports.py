@@ -1528,6 +1528,8 @@ def _run_report(image, config, command):
         for path in report["paths"]:
             # Returns keep the transfers, conversions and reads that depend on a declared result.
             consumed = {c["order"] for f in path.get("returnFlows", {}).get("results", ()) for c in f["consumers"]}
+            # Arguments keeps the writes its argument-frame slots cite as writers.
+            consumed |= {s["writerOrder"] for f in path.get("argumentFrames", ()) for s in f["slots"] if s["writerSite"] is not None}
             path["events"] = [e for e in path["events"] if e["kind"] in kinds or e["order"] in consumed or
                               (command == "effects" and e["kind"] == "read" and (e.get("nearPointerAccessCandidates") or e.get("nearPointerArgumentCandidates")))]
     return report

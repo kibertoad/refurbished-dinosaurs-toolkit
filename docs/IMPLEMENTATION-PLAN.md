@@ -134,7 +134,9 @@ an unbounded frame and the 256-byte window keep a frame open, and a call site ag
 traced path settled on the same read widths. Decompiler parameter lists are not an input.
 
 Synthetic acceptance: a mask, far pointer and forwarded identifier settled across a setter; a far
-call; competing widths; an unread slot, an overwritten slot and a frame without cleanup; a callee
+call; competing widths; an unread slot, an overwritten slot, a slot doubled in place and a frame
+without cleanup; a slot a modeled call invalidated; near and far frames across the stack offset
+wrap; the cited writes kept in the report; a callee
 that stops; the window limit; two paths with different widths; a PE32 frame under `RET n`; and the
 bridge case. Exit: the tests pass, the reporter guide documents the fields, and Dark Sun gap 35
 closes when its own case passes against the released engine.

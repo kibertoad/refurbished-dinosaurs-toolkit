@@ -413,6 +413,16 @@ class ArgumentFrameTests(unittest.TestCase):
                                                                          {"offset": 6, "width": 2}]])
         self.assertTrue(all(site["agreed"] for site in r["argumentFrameSites"]))
 
+    def test_the_report_keeps_the_writes_its_slots_cite(self):
+        c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("83 c4 04 c3").label("callee").emit("55 89 e5 8b 46 04 8b 46 06 5d c3")
+        r, frames = self.frames(c)
+        events = {e["order"]: e for e in r["paths"][0]["events"]}
+        cited = [s["writerOrder"] for s in frames[0]["slots"]]
+        self.assertEqual(len(cited), 2)
+        self.assertEqual([(events[o]["kind"], events[o]["site"]) for o in cited], [("write", 2), ("write", 0)])
+        # Writes no slot cites are still filtered out of the arguments report.
+        self.assertEqual(sum(e["kind"] == "write" for e in events.values()), 2)
+
     def test_a_far_call_maps_slots_above_its_four_byte_frame(self):
         data = bytes.fromhex("68 00 30 68 44 00 68 07 00 9a 12 00 00 00 83 c4 06 c3 55 89 e5 8b 46 06 c5 5e 08 c9 cb")
         cfg = configuration(data, relocations=[{"site": 12, "segment": 0x1000, "evidence": "synthetic relocated call"}])
@@ -420,6 +430,17 @@ class ArgumentFrameTests(unittest.TestCase):
         self.assertEqual(frame["returnFrameBytes"], 4)
         self.assertTrue(frame["settledOnThisPath"], frame["openReasons"])
         self.assertEqual([(g["offset"], g["width"]) for g in frame["groupings"]], [(0, 2), (2, 4)])
+
+    def test_a_far_frame_starts_at_the_return_ip_across_the_address_wrap(self):
+        # Four pops leave three pushed words at offsets 2..7, so the far call pushes CS at offset 0 and
+        # the return IP at 0xFFFE. The frame starts above the return IP, not above the CS word.
+        data = bytes.fromhex("5a 5a 5a 5a 68 00 30 68 44 00 68 07 00 9a 1a 00 00 00 83 c4 06 52 52 52 52 c3"
+                             "55 89 e5 8b 46 06 c5 5e 08 c9 cb")
+        cfg = configuration(data, relocations=[{"site": 16, "segment": 0x1000, "evidence": "synthetic relocated call"}])
+        frame = run_report(data, cfg, "arguments")["paths"][0]["argumentFrames"][0]
+        self.assertEqual(frame["returnFrameBytes"], 4)
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"]) for s in frame["slots"]], [(0, 2, 10), (2, 2, 7), (4, 2, 4)])
+        self.assertTrue(frame["settledOnThisPath"], frame["openReasons"])
 
     def test_overlapping_read_widths_compete_and_stay_open(self):
         # The callee reads the first pushed word as a byte and as a word.
@@ -443,11 +464,34 @@ class ArgumentFrameTests(unittest.TestCase):
         frame = self.frames(c)[1][0]
         self.assertEqual(frame["groupings"][0]["bytesNotFromSlotWriter"], [0, 1])
         self.assertFalse(frame["settledOnThisPath"])
+        # The callee doubles its argument in place, so the stored word still carries the push among its producers.
+        c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("55 89 e5 d1 66 04 8b 46 04 5d c3")
+        frame = self.frames(c)[1][0]
+        self.assertEqual([g["bytesNotFromSlotWriter"] for g in frame["groupings"]], [[], [0, 1]])
+        self.assertFalse(frame["settledOnThisPath"])
         # The caller rebalances with POP, so no cleanup amount bounds the frame.
         c = Code().emit("6a 01 6a 02").branch("e8", "callee").emit("59 59 c3").label("callee").emit("55 89 e5 8b 46 04 5d c3")
         frame = self.frames(c)[1][0]
         self.assertEqual((frame["callerCleanupBytes"], frame["mappedBytes"]), (None, 2))
         self.assertIn("no cleanup amount bounds the frame; slots above the highest read are not mapped", frame["openReasons"])
+
+    def test_slots_follow_the_stack_across_the_address_wrap(self):
+        # The root pops its return word, so the call's return frame sits at the top of the stack
+        # offset range and the pushed argument sits at offset 0.
+        c = Code().emit("5a 6a 07").branch("e8", "callee").emit("83 c4 02 52 c3").label("callee").emit("55 89 e5 8b 46 04 5d c3")
+        frame = self.frames(c)[1][0]
+        self.assertEqual([(s["offset"], s["width"], s["writerSite"]) for s in frame["slots"]], [(0, 2, 1)])
+        self.assertTrue(frame["settledOnThisPath"], frame["openReasons"])
+
+    def test_a_read_of_a_word_a_modeled_call_invalidated_stays_open(self):
+        c = Code().emit("6a 01").branch("e8", "service").branch("e8", "callee").emit("83 c4 02 c3")
+        c.label("service").emit("c3").label("callee").emit("55 89 e5 8b 46 04 5d c3")
+        r, frames = self.frames(c, callModels=[{"site": 2, "evidence": "synthetic service", "preserves": ["ss"], "cases": [{}]}])
+        frame = frames[0]
+        self.assertEqual((frame["slots"][0]["writerSite"], frame["slots"][0]["reason"]), (None, "memory invalidated by the modeled call at 2"))
+        self.assertEqual(frame["groupings"][0]["bytesNotFromSlotWriter"], [0, 1])
+        self.assertFalse(frame["settledOnThisPath"])
+        self.assertFalse(r["argumentFrameSites"][0]["agreed"])
 
     def test_a_callee_that_stops_leaves_its_frame_open(self):
         c = Code().emit("6a 01").branch("e8", "callee").emit("83 c4 02 c3").label("callee").emit("55 89 e5 8b 46 04 ff d3")
