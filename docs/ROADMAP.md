@@ -58,7 +58,7 @@ read here. A gap still closes only when Dark Sun's own case passes against publi
 | 42 | Requested bytes, allocator extent, clearing capacity | Relations over `allocation` output | M4 |
 | 43 | Caller ranges in arithmetic admission | A relation over an assumed input range | M4 |
 | 34 | Output cardinality versus input counts | A count relation over a bounded path set | M4 |
-| 29 | Progress across restarted scans | Termination is undecidable in general. Only restart edges and what changed across the traced iterations are reportable | M5 |
+| 29 | Progress across restarted scans | Delivered in engine 3.2.0: every traced path carries a `loops` record with its restart edges and what changed between traced iterations (ADR 0010). No field claims termination, boundedness or a successful retry. The gap closes when Dark Sun reads its own cases with a published engine (issue 114) | none here |
 | 35 | Pushed words mapped to the callee's argument widths | Generic, and overlaps Ghidra's analysis | M6 |
 
 ## Milestones
@@ -94,12 +94,6 @@ Build the controls first, with synthetic tests: a positive control, a violated c
 case for each. Then express each M4 gap from the table as controls, documented in the reporter
 guide, so Dark Sun can write its own cases. Add an engine report field only where a control needs a
 fact the reports do not yet carry.
-
-### M5. Loop progress facts (gap 29)
-
-Report each loop's restart edges, and which locations and registers changed between consecutive
-traced iterations. Flag an iteration that changed nothing. Never report that a loop terminates or
-stays bounded. That stays a research claim backed by these facts.
 
 ### M6. Analyzer scripts and argument widths (gap 35, other restorations)
 
