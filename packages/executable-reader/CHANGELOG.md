@@ -1,5 +1,11 @@
 # @scientific-method/executable-reader
 
+## 2.1.0
+
+### Minor Changes
+
+- 66ddb92: `MAX_REPORT_MIB` is exported: the most engine output, in MiB, that `run` reads before it fails (32).
+
 ## 2.0.0
 
 ### Major Changes
