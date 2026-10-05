@@ -53,11 +53,19 @@ Save logs and text reports as UTF-8, and keep the run's exit code. In Windows Po
 writes UTF-16, which a UTF-8 reader rejects or reads as noise. Pipe the output to `Out-File` with an
 explicit encoding instead. `$LASTEXITCODE` still holds the analyzer's exit code after the pipeline,
 and converting each line to a string writes stderr lines as their text, without PowerShell's
-error-record formatting:
+error-record formatting. Run the call with `$ErrorActionPreference` set to `Continue`: under `Stop`,
+Windows PowerShell 5.1 turns the analyzer's first stderr line into a terminating error, which ends
+the run and the log at that line.
 
 ```powershell
-& $analyzeHeadless @arguments 2>&1 | ForEach-Object { "$_" } |
-  Out-File -LiteralPath $log -Encoding utf8
+$previousPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+  & $analyzeHeadless @arguments 2>&1 | ForEach-Object { "$_" } |
+    Out-File -LiteralPath $log -Encoding utf8
+} finally {
+  $ErrorActionPreference = $previousPreference
+}
 if ($LASTEXITCODE -ne 0) { throw "analyzeHeadless exited with $LASTEXITCODE; see $log" }
 ```
 
@@ -76,8 +84,9 @@ tell a misaligned start from a searched range with no matches. Check the start w
 requested address when the two differ.
 
 `ReportInstructionWindow` prints a `gap:` line wherever the listing skips bytes between two
-instructions, and ends with the number printed or the point where the listing ended. A gap is
-data or bytes Ghidra did not disassemble, never a statement that the bytes are not code.
+instructions, and ends with the number printed or the point where the listing ended. A gap
+holds data, bytes Ghidra did not disassemble, or addresses between two memory blocks. It never
+says that the bytes are not code.
 `ExportBoundedFlow` lists flow targets where no instruction starts in `noInstruction`, and sets
 `limitReached` when it stopped at its instruction limit with flow left unread; either one means the
 export does not cover the whole flow from the entry.

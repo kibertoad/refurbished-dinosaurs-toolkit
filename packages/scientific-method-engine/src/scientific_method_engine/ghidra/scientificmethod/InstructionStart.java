@@ -18,8 +18,8 @@ public final class InstructionStart {
 
     /**
      * Null when an instruction starts at the address. Otherwise a sentence that names what holds
-     * the address (no memory block, the instruction or defined data that contains it, or
-     * undisassembled bytes) and the next instruction start after it, if there is one.
+     * the address (no memory block, the instruction or defined data that contains it, an
+     * uninitialized block, or undisassembled bytes) and the next instruction start after it, if there is one.
      */
     public static String missingStart(Program program, Address address) {
         Listing listing = program.getListing();
@@ -38,6 +38,9 @@ public final class InstructionStart {
                 + containing.getAddress();
         } else if (data != null) {
             holder = "it is inside defined data at " + data.getAddress();
+        } else if (!block.isInitialized()) {
+            holder = "it is in uninitialized memory block " + block.getName()
+                + ", which holds no bytes to disassemble";
         } else {
             holder = "it is undisassembled in memory block " + block.getName();
         }

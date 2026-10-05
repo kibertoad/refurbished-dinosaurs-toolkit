@@ -23,7 +23,12 @@ public class ReportInstructionWindow extends GhidraScript {
             printerr(arguments[0] + ": not an address in this program");
             return;
         }
-        int count = Integer.parseInt(arguments[1]);
+        int count;
+        try {
+            count = Integer.parseInt(arguments[1]);
+        } catch (NumberFormatException exception) {
+            count = 0;
+        }
         if (count < 1 || count > MAX_INSTRUCTIONS) {
             printerr("Instruction count must be between 1 and " + MAX_INSTRUCTIONS + ".");
             return;
@@ -44,9 +49,16 @@ public class ReportInstructionWindow extends GhidraScript {
             println(instruction.getAddress() + ": " + instruction);
             printed++;
             Instruction next = instruction.getNext();
-            Address end = instruction.getMaxAddress().next();
-            if (printed < count && next != null && !next.getAddress().equals(end)) {
-                println("gap: no instruction from " + end + " up to " + next.getAddress());
+            if (printed < count && next != null) {
+                // next() is null when the instruction ends its address space, so the gap is
+                // measured from the instruction's last byte.
+                Address last = instruction.getMaxAddress();
+                Address end = last.next();
+                if (end == null) {
+                    println("gap: no instruction after " + last + " up to " + next.getAddress());
+                } else if (!next.getAddress().equals(end)) {
+                    println("gap: no instruction from " + end + " up to " + next.getAddress());
+                }
             }
             instruction = next;
         }

@@ -34,13 +34,15 @@ public class ExportBoundedFlow extends GhidraScript {
             if (monitor.isCancelled()) throw new InterruptedException("Cancelled");
             Address at = pending.pop();
             if (visited.contains(at)) continue;
-            if (visited.size() >= limit) { limitReached = true; break; }
             visited.add(at);
             Function owner = currentProgram.getFunctionManager().getFunctionContaining(at);
             Function exact = currentProgram.getFunctionManager().getFunctionAt(at);
             if (!at.equals(entry) && exact != null) { entries.add(at.getOffset()); continue; }
             Instruction ins = currentProgram.getListing().getInstructionAt(at);
             if (ins == null) { noInstruction.add(at.getOffset()); continue; }
+            // The limit counts exported instruction records. Function-entry stops and
+            // noInstruction targets do not use it up, so a full export holds exactly limit rows.
+            if (rows.size() >= limit) { limitReached = true; break; }
             List<Long> next = new ArrayList<>(), calls = new ArrayList<>();
             var type = ins.getFlowType();
             Address fall = ins.getFallThrough();
