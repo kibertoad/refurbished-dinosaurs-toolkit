@@ -902,6 +902,119 @@ test("an emulated call establishes a rule and needs no save hash", (t) => {
   assert.equal(status, 0, output);
 });
 
+// The emulated call's experiment run from another starting state, with the fixture's starting_state
+// object, or none when it is undefined.
+function withStartingState(root: string, startingState: string, fixtureState?: Record<string, string>) {
+  establishByEmulatedCall(root);
+  replaceIn(
+    root,
+    "spec/experiments/EXP-SCORE-001.md",
+    "starting_state: emulated-call",
+    `starting_state: ${startingState}`,
+  );
+  writeFileSync(
+    join(root, "spec", "experiments", "EXP-SCORE-001.json"),
+    JSON.stringify({ experiment: "EXP-SCORE-001", starting_state: fixtureState, runs: [{ end_state: [] }] }),
+  );
+}
+
+test("a new game needs no save hash", (t) => {
+  const root = broken(t, (r) => withStartingState(r, "new-game"));
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+});
+
+test("starting_state null names a save kept with the captures, so it needs the save's hash", (t) => {
+  const missing = run(broken(t, (r) => withStartingState(r, "null")));
+  assert.equal(missing.status, 1, missing.output);
+  assert.match(
+    missing.output,
+    /EXP-SCORE-001\.json: gives the hash of the save its runs started from in starting_state\.xxh3; starting_state null names a save kept with the captures, and an experiment that starts without a save has starting_state new-game or emulated-call$/m,
+  );
+
+  const given = run(broken(t, (r) => withStartingState(r, "null", { xxh3: "e7b24d91c06f3a58b1d2c4e6f8091a3b" })));
+  assert.equal(given.status, 0, given.output);
+});
+
+test("a save patch needs the patched and the base save's hashes", (t) => {
+  const patch = (r: string) => {
+    mkdirSync(join(r, "spec", "experiments", "saves"));
+    writeFileSync(join(r, "spec", "experiments", "saves", "EXP-SCORE-001.patch.json"), "{}\n");
+  };
+  const state = "saves/EXP-SCORE-001.patch.json";
+
+  const neither = run(
+    broken(t, (r) => {
+      withStartingState(r, state, { patch: state });
+      patch(r);
+    }),
+  );
+  assert.equal(neither.status, 1, neither.output);
+  assert.match(neither.output, /gives the hash of the save its runs started from in starting_state\.xxh3$/m);
+  assert.match(neither.output, /a patch fixture gives the base save's hash as well/);
+
+  const both = run(
+    broken(t, (r) => {
+      withStartingState(r, state, {
+        patch: state,
+        base_xxh3: "3c1f0e5a9b7d42e68a0c5d1f2b4e6a80",
+        xxh3: "e7b24d91c06f3a58b1d2c4e6f8091a3b",
+      });
+      patch(r);
+    }),
+  );
+  assert.equal(both.status, 0, both.output);
+
+  const patchedOnly = run(
+    broken(t, (r) => {
+      withStartingState(r, state, { patch: state, xxh3: "e7b24d91c06f3a58b1d2c4e6f8091a3b" });
+      patch(r);
+    }),
+  );
+  assert.equal(patchedOnly.status, 1, patchedOnly.output);
+  assert.doesNotMatch(patchedOnly.output, /gives the hash of the save its runs started from/);
+  assert.match(patchedOnly.output, /a patch fixture gives the base save's hash as well/);
+});
+
+test("a committed save needs its hash", (t) => {
+  const save = (r: string) => {
+    mkdirSync(join(r, "spec", "experiments", "saves"));
+    writeFileSync(join(r, "spec", "experiments", "saves", "EXP-SCORE-001.sav"), "synthetic save\n");
+    writeFileSync(
+      join(r, "spec", "LICENSE"),
+      `${readFileSync(join(r, "spec", "LICENSE"), "utf8")}\nexperiments/saves/EXP-SCORE-001.sav\n`,
+    );
+  };
+  const state = "saves/EXP-SCORE-001.sav";
+
+  const missing = run(
+    broken(t, (r) => {
+      withStartingState(r, state);
+      save(r);
+    }),
+  );
+  assert.equal(missing.status, 1, missing.output);
+  assert.match(
+    missing.output,
+    /EXP-SCORE-001\.json: gives the hash of the save its runs started from in starting_state\.xxh3$/m,
+  );
+
+  const given = run(
+    broken(t, (r) => {
+      withStartingState(r, state, { xxh3: "e7b24d91c06f3a58b1d2c4e6f8091a3b" });
+      save(r);
+    }),
+  );
+  assert.equal(given.status, 0, given.output);
+});
+
+test("a save hash is 32 lower-case hex digits", (t) => {
+  const { status, output } = run(broken(t, (r) => withStartingState(r, "null", { xxh3: "E7B24D91C06F3A58" })));
+  assert.equal(status, 1, output);
+  assert.match(output, /EXP-SCORE-001\.json: starting_state\.xxh3 must be 32 lower-case hex digits$/m);
+  assert.doesNotMatch(output, /gives the hash of the save its runs started from/);
+});
+
 // The emulated call's fixture with its run's draws replaced.
 function withDraws(root: string, draws: unknown) {
   establishByEmulatedCall(root);
