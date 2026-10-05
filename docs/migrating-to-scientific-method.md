@@ -329,7 +329,8 @@ is superseded, or a deviation ID missing from `deviations/`, and pass. It now re
 files. A restoration with `.fs` files under `--code` or `--references` runs the check and corrects
 each citation it reports: cite the entry that replaced a superseded one, or the right ID for one
 that does not exist. A `.fs` file that holds something other than source code, such as a shader,
-moves out of the scanned directories.
+is read the same way and fails only when its text matches a spec or deviation ID. Move such a file
+out of the scanned directories, or leave its directory out of `--code` and `--references`.
 
 ### `--record-validation` records only a run of HEAD as committed
 
