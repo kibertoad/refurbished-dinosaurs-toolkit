@@ -6,7 +6,7 @@ from .image import integer
 from .machine import (State, StopPath, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
                       string_count, string_effect, check_string_form, compare_string, repeated, string_width,
                       FLAT_PORT_REASON)
-from .values import const, unknown, sources, op, extract, Value
+from .values import const, unknown, sources, op, join
 from .result_flow import validate_contracts, result_contracts
 from .loops import LoopTracker
 from .memory_scopes import validate_scopes, capture_scopes, retain_scopes, scope_history
@@ -22,26 +22,40 @@ def call_target(image, site, ins):
     return None, {"reason": "computed transfer remains unresolved"}
 
 
-def far_pointer_word(read, low, value):
-    """One word of a far pointer read: its value and the producers and writers of its two bytes."""
+def far_pointer_word(state, read, low):
+    """One word of the far pointer ``read`` has just fetched, as ``(row, word)``.
+
+    ``row`` reports the word's value and the producers and writers of its two bytes. ``word`` is the
+    modeled value of those bytes with all their sources, including the markers of declared return
+    results that ``producers`` leaves out, or None when a byte has no modeled value.
+    """
     rows = read["byteProducers"][low // 8:low // 8 + 2]
-    return {"value": extract(value, low, 16).number, "producers": sorted({p for row in rows for p in row["producers"]}),
-            "bytes": rows}
+    interval = read["interval"]
+    seg, base, start = interval["segment"], interval["base"], interval["start"]
+    keys = [(seg, base, start + i if seg == ("linear",) else (start + i) % (1 << state.bits))
+            for i in (low // 8, low // 8 + 1)]
+    word = join([state.memory[key] for key in keys]) if all(key in state.memory for key in keys) else None
+    return ({"value": None if word is None else word.number,
+             "producers": sorted({p for row in rows for p in row["producers"]}), "bytes": rows}, word)
 
 
-def far_pointer_transfer(state, image, ins, pointer):
-    """Resolve an indirect far CALL or JMP from the m16:16 ``pointer`` the trace has just read.
+def far_pointer_transfer(state, image):
+    """Resolve an indirect far CALL or JMP from the m16:16 pointer the trace has just read.
 
-    Called right after ``state.get`` read the operand, so the newest event is that read. Returns
+    Called right after ``state.get`` read the operand, so the newest event is that read; any other
+    newest event is an engine error, so the provenance never cites the wrong event. Returns
     ``(target, provenance, code_segment)``. ``provenance`` keeps the read's order and address, its
     effective segment register, and both words with the producers and writers of their bytes. The
     target is admitted only when both words are known and ``Image.far_pointer_target`` admits the
     address they form; otherwise ``target`` and ``code_segment`` are None and ``provenance`` names
-    the reason. ``code_segment`` is the value CS takes: the segment word itself, or the overlay
+    the reason. ``code_segment`` is the value CS takes: the segment word with every source of its
+    bytes (declared return results included), or the overlay
     entry region's segment when the pointer names an FBOV trampoline.
     """
     read = state.events[-1]
-    offset_word, segment_word = far_pointer_word(read, 0, pointer), far_pointer_word(read, 16, pointer)
+    if read["kind"] != "read" or read["site"] != state.at or read["width"] != 4:
+        raise RuntimeError("an indirect far transfer needs its own m16:16 read as the newest event")
+    (offset_word, _), (segment_word, segment_value) = far_pointer_word(state, read, 0), far_pointer_word(state, read, 16)
     provenance = {"encoding": "m16:16",
                   "pointerRead": {"order": read["order"], "segment": read["segment"], "offset": read["offset"],
                                   "segmentRegister": read["effectiveSegmentRegister"]},
@@ -60,7 +74,9 @@ def far_pointer_transfer(state, image, ins, pointer):
         return None, provenance, None
     if "trampoline" in admission:
         return target, provenance, const(image.region(target)["segment"], 16, state.at)
-    return target, provenance, Value(16, ("constant", segment_word["value"]), tuple(segment_word["producers"]))
+    # CS keeps every source of the segment word's bytes, so a declared result stored there stays a
+    # result origin of CS.
+    return target, provenance, segment_value
 
 
 OVERLAP_REASON = "overlapping entry-path instructions; boundary unresolved"
@@ -851,7 +867,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                     if target is None and ins.operands and ins.operands[0].type in (X86_OP_REG, X86_OP_MEM):
                         indirect_value = state.get(ins, ins.operands[0], image)
                         if m == "lcall":
-                            target, provenance, code_segment = far_pointer_transfer(state, image, ins, indirect_value)
+                            target, provenance, code_segment = far_pointer_transfer(state, image)
                     guard_checks = []
                     if indirect_value is not None:
                         for g in state.guards:
@@ -973,7 +989,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                     target, provenance = call_target(image, at, ins)
                     if target is None and m == "ljmp" and ins.operands[0].type == X86_OP_MEM:
                         pointer = state.get(ins, ins.operands[0], image)
-                        target, provenance, code_segment = far_pointer_transfer(state, image, ins, pointer)
+                        target, provenance, code_segment = far_pointer_transfer(state, image)
                         state.event("far-jump", target=target, provenance=provenance, indirectValue=pointer.report())
                         if target is None:
                             raise StopPath("unresolved jump: " + provenance["reason"])

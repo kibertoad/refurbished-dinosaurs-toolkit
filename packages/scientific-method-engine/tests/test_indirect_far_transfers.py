@@ -253,6 +253,49 @@ class FarJump(unittest.TestCase):
                 result = run("c7 06 00 02 38 00", STORE_SEGMENT, JUMP, command=command)
                 self.assertTrue(events(result, "far-jump"))
 
+    def test_projections_keep_the_pointer_read_a_kept_transfer_cites(self):
+        cases = (("effects", (STORE_OFFSET, STORE_SEGMENT, CALL, "c3"), "call"),
+                 ("effects", ("c7 06 00 02 38 00", STORE_SEGMENT, JUMP), "far-jump"),
+                 ("arguments", (STORE_OFFSET, STORE_SEGMENT, CALL, "c3"), "call"))
+        for command, parts, kind in cases:
+            with self.subTest(command=command, kind=kind):
+                path = only_path(self, run(*parts, command=command))
+                transfer = next(e for e in path["events"] if e["kind"] == kind)
+                order = transfer["provenance"]["pointerRead"]["order"]
+                read = [e for e in path["events"] if e["order"] == order]
+                self.assertEqual([(e["kind"], e["width"]) for e in read], [("read", 4)])
+        # Effects still leaves out reads no kept event cites.
+        path = only_path(self, run(STORE_OFFSET, STORE_SEGMENT, "a1 00 02", CALL, "c3", command="effects"))
+        self.assertEqual([e["width"] for e in path["events"] if e["kind"] == "read"], [4])
+
+
+class ResultOrigins(unittest.TestCase):
+    # 0000: call 0011; mov [word], ax; mov word [other], const; call far [0200]; ret
+    # 0011: mov ax, 1000 or 0030; ret (declared result in AX)
+    def run_flow(self, result_word, other_word):
+        stored = {"offset": "00 02", "segment": "02 02"}
+        other = {"offset": "c7 06 00 02 30 00", "segment": "c7 06 02 02 00 10"}[other_word]
+        value = {"offset": "30 00", "segment": "00 10"}[result_word]
+        helper = site("e8 0e 00", "a3 " + stored[result_word], other, CALL, "c3")
+        self.assertEqual(helper, 0x11)
+        return run("e8 0e 00", "a3 " + stored[result_word], other, CALL, "c3", "b8 " + value, "c3", command="trace",
+                   returnContracts=[{"entry": helper, "register": "ax", "evidence": "synthetic result contract"}])
+
+    def callee_cs(self, result):
+        path = only_path(self, result)
+        self.assertTrue(path["returned"], path["stop"])
+        return next(e for e in path["events"] if e["kind"] == "return" and e["depth"] == 1 and e["site"] == 0x33)["registers"]["cs"]
+
+    def test_a_declared_result_stored_as_the_segment_word_is_a_result_origin_of_cs(self):
+        cs = self.callee_cs(self.run_flow("segment", "offset"))
+        self.assertEqual(cs["value"], 0x1000)
+        self.assertTrue(cs.get("resultOrigins"))
+
+    def test_a_declared_result_stored_as_the_offset_word_is_not(self):
+        cs = self.callee_cs(self.run_flow("offset", "segment"))
+        self.assertEqual(cs["value"], 0x1000)
+        self.assertNotIn("resultOrigins", cs)
+
 
 class Trampolines(unittest.TestCase):
     def layout(self, entry_declared=True):

@@ -110,6 +110,8 @@ class Image:
         self.decoder = Cs(CS_ARCH_X86, CS_MODE_32 if self.flat else CS_MODE_16)
         self.decoder.detail = True
         self.cache = {}
+        # overlayExports rows by trampoline site, built on the first far_pointer_target call.
+        self.trampoline_rows = None
         self.relocations = config.get("relocations", [])
         if not isinstance(self.relocations, list) or len(self.relocations) > 100000:
             raise ValueError("Invalid relocation metadata")
@@ -126,10 +128,13 @@ class Image:
     def region(self, site):
         return next((r for r in self.regions if r["start"] <= site < r["end"]), None)
 
+    def mapped_region(self, segment, ip):
+        """The region whose declared mapping covers ``segment:ip`` exactly, or None. At most one does."""
+        return next((r for r in self.regions if r["segment"] == segment and r["ip"] <= ip < r["ip"] + r["end"] - r["start"]), None)
+
     def offset(self, segment, ip):
-        exact = [r for r in self.regions if r["segment"] == segment and r["ip"] <= ip < r["ip"] + r["end"] - r["start"]]
-        if exact:
-            r = exact[0]
+        r = self.mapped_region(segment, ip)
+        if r is not None:
             return r["start"] + ip - r["ip"]
         if self.flat:
             return None
@@ -188,21 +193,25 @@ class Image:
         transfer through a relocated trampoline does. Returns ``(None, {"reason": ...})`` when the
         pointer is not admitted.
         """
-        exact = [r for r in self.regions
-                 if r["segment"] == segment and r["ip"] <= offset < r["ip"] + r["end"] - r["start"]]
-        if not exact:
+        region = self.mapped_region(segment, offset)
+        if region is None:
             if self.offset(segment, offset) is not None:
                 return None, {"reason": "far pointer names declared resident code only through a segment alias of its mapping"}
             return None, {"reason": "far pointer names no declared code region"}
-        region = exact[0]
         if region.get("container") is not None:
             return None, {"reason": "far pointer names overlay code by its analysis segment, which is not a load address",
                           "region": region["name"]}
         site = region["start"] + offset - region["ip"]
         admission = {"rule": "exact declared region mapping", "region": region["name"], "regionSegment": region["segment"],
                      "regionIp": region["ip"], "regionStart": region["start"], "regionEvidence": region["evidence"]}
-        exports = [row for row in self.config.get("overlayExports", [])
-                   if isinstance(row, dict) and row.get("trampoline") == site]
+        if self.trampoline_rows is None:
+            # Indexed once: a traced path can take many indirect far transfers, and the source FBOV
+            # tables can list thousands of trampolines.
+            self.trampoline_rows = {}
+            for row in self.config.get("overlayExports", []):
+                if isinstance(row, dict):
+                    self.trampoline_rows.setdefault(row.get("trampoline"), []).append(row)
+        exports = self.trampoline_rows.get(site, [])
         if not exports:
             return site, admission
         if len(exports) > 1 or type(exports[0].get("entry")) is not int:

@@ -405,7 +405,8 @@ What to change:
   `completeWithinModel` and relational-control verdicts can change. An expected stop at that call
   becomes a `callModels` entry at the site, if the callee should stay unread.
 - An indirect far jump records a `far-jump` event, which `trace`, `guards` and `effects` report.
-  A test that compares a path's events as a whole adds it.
+  A test that compares a path's events as a whole adds it. `effects` also keeps
+  the pointer read that a kept indirect far call or jump cites in `provenance.pointerRead`.
 
 ### Ghidra instruction windows start only at an instruction
 

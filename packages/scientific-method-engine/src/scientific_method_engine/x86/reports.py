@@ -1780,6 +1780,9 @@ def _run_report(image, config, command):
             consumed = {c["order"] for f in path.get("returnFlows", {}).get("results", ()) for c in f["consumers"]}
             # Arguments keeps the writes its argument-frame slots cite as writers.
             consumed |= {s["writerOrder"] for f in path.get("argumentFrames", ()) for s in f["slots"] if s["writerSite"] is not None}
+            # A kept indirect far CALL or JMP keeps the pointer read its provenance cites.
+            consumed |= {e["provenance"]["pointerRead"]["order"] for e in path["events"] if e["kind"] in kinds
+                         and isinstance(e.get("provenance"), dict) and "pointerRead" in e["provenance"]}
             path["events"] = [e for e in path["events"] if e["kind"] in kinds or e["order"] in consumed or
                               (command == "effects" and e["kind"] == "read" and (e.get("nearPointerAccessCandidates") or e.get("nearPointerArgumentCandidates")))]
     return report

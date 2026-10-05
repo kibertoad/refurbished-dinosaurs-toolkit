@@ -705,7 +705,8 @@ The call event (`call`) or, for a jump, a `far-jump` event carries `target`, `in
 
 - `encoding`: `m16:16`.
 - `pointerRead`: the read's event `order`, its `segment` and `offset` values and the effective
-  `segmentRegister` (the default or an override).
+  `segmentRegister` (the default or an override). Every command that keeps the `call` or
+  `far-jump` event also keeps this read, so `effects` reports it too.
 - `offsetWord` and `segmentWord`: each word's `value` (null when unknown), the `producers` of its
   two bytes, and the two `bytes` rows of the read's `byteProducers`, with each byte's `writeOrder`
   or its `unwritten` cause.
@@ -718,7 +719,8 @@ through the exact mapping of one region: the segment word equals the region's `s
 offset lies in its IP range. `admission` then gives the `rule` (`exact declared region mapping`),
 the `region` and its `regionSegment`, `regionIp`, `regionStart` and `regionEvidence`. A call
 pushes CS and the return IP and records `returnFrameBytes: 4`; the callee runs with CS equal to
-the segment word, which keeps the word's producers, and must end in a far return that restores the
+the segment word, which keeps the word's producers and, when a declared return result was stored
+there, that result in `resultOrigins`, and must end in a far return that restores the
 caller's CS, as for an immediate far call. A jump replaces CS the same way and continues at the
 target. A `callModels` entry at the call site takes precedence: the event still names the target,
 and the model supplies the return.
@@ -1225,7 +1227,7 @@ incoming coverage claim is made.
 ## Ordered effect-path summaries
 
 `effects` also returns `effectOrdering.paths`, one summary per traced path. Its
-`timeline` retains read/write, call/return, arithmetic/compare, flag-assumption and
+`timeline` retains read/write, call/return, far-jump, arithmetic/compare, flag-assumption and
 branch provenance with entry, depth and original event order. `writeOrders` indexes all
 writes, including stack and child writes. Each call's `writesBeforeCount` is a
 prefix length of that list, not a claim that the call succeeded. Call statuses
