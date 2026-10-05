@@ -215,6 +215,15 @@ My Game/
   data track's user data from INDEX 01, and the SHA-256 of each audio track's samples
   from INDEX 01 to the next track's INDEX 00. These hashes are the same whichever format holds the
   disc, so they are what restorations' fingerprints and the formats are compared by.
+  A raw data track can run on past the ISO 9660 volume its primary volume descriptor declares,
+  and some discs hold sectors there with no user data: no sync pattern, or another mode.
+  `data.nonDataSectors` lists those sectors as `[first, stop)` ranges counted from INDEX 01, and
+  `data.nonDataSha256` is the SHA-256 of their raw 2,352 bytes in order (`[]` and `null` when there
+  are none). They add nothing to `data.sha256`. Inside the declared volume, or on a track with no
+  volume descriptor (or one whose logical block size is not 2,048 bytes), a sector without user
+  data stops the run with its sector number. When `files` is requested and a file's extent reaches
+  one of the listed sectors, the run stops with its sector number before any format is written.
+  The addresses stored in the sector headers are not checked.
 - `profile.checks`: each expectation of the profile and what the disc showed.
 - `outputs`: each format's files, with size, CRC32, MD5, SHA-1 and SHA-256 (the hashes disc
   databases such as Redump list, so you can check your dump against them yourself), what the
@@ -225,7 +234,9 @@ My Game/
     ISO-plus-audio formats drop.
   - `mismatched`: `differences` says what differs.
 - `unavailable`: formats that could not be made from this source, and why. A plain ISO has no raw
-  sectors, so no BIN/CUE, CloneCD or CHD can be made from it.
+  sectors, so no BIN/CUE, CloneCD or CHD can be made from it. A data track with sectors that hold
+  no user data has no ISO form, so the ISO formats are unavailable for it; BIN/CUE, CloneCD and
+  CHD keep those sectors and compare them byte for byte.
 
 ## Disc profiles
 

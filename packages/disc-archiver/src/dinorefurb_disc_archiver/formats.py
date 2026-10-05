@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import ccd, isofs, tools
 from .cue import CueFile, render_cue
-from .disc import COOKED_SECTOR, RAW_SECTOR, Disc, DiscError, Track
+from .disc import COOKED_SECTOR, RAW_SECTOR, Disc, DiscError, NotDataSector, Track, user_data
 from .tools import Log
 
 
@@ -172,6 +172,21 @@ def write_ccd(disc: Disc, directory: Path, name: str) -> Output:
     return Output("ccd", directory, files[0], files, notes)
 
 
+def _first_non_data_past_volume(track: Track) -> NotDataSector | None:
+    volume_end = isofs.volume_sectors(track) if track.storage == "raw" else None
+    if volume_end is None or volume_end >= track.length:
+        return None
+    index = volume_end
+    for chunk in track.iter_raw(volume_end, track.length):
+        for offset in range(0, len(chunk), RAW_SECTOR):
+            try:
+                user_data(chunk[offset : offset + RAW_SECTOR], track.mode, track.index1 + index)
+            except NotDataSector as error:
+                return error
+            index += 1
+    return None
+
+
 def _write_iso(disc: Disc, path: Path) -> list[str]:
     if not disc.data_tracks:
         raise FormatUnavailable("this disc has no data track, so it has no ISO form")
@@ -184,7 +199,21 @@ def _write_iso(disc: Disc, path: Path) -> list[str]:
         except OSError:
             shutil.copyfile(track.source, path)
     else:
-        _write(path, track.iter_user_data())
+        # Only the sectors past the declared volume may lack user data, so reading them alone
+        # settles whether the ISO can be written before any of it is.
+        problem = _first_non_data_past_volume(track)
+        if problem is not None:
+            raise FormatUnavailable(
+                f"track {track.number}: {problem}, and an ISO file holds only the 2,048 bytes of user data of "
+                "each sector. BIN/CUE, CloneCD and CHD keep the track's raw sectors."
+            )
+        try:
+            _write(path, track.iter_user_data())
+        except DiscError:
+            # A sector inside the volume without user data is a damaged dump or a BIN that does
+            # not match its sheet, which the error names. No partial ISO is left behind.
+            path.unlink(missing_ok=True)
+            raise
     if track.mode == "MODE2":
         notes.append(f"Track {track.number} is a MODE2 (CD-ROM XA) track; the ISO holds its form 1 user data.")
     others = [t.number for t in disc.data_tracks[1:]]
