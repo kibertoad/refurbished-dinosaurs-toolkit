@@ -137,11 +137,18 @@ export function checkExperiment(ctx: Context, id: string, e: Entry, isSup: boole
     try {
       const fx = JSON.parse(readFileSync(fixture, "utf8"));
       if (fx.experiment !== id) problem(fixture, `experiment must be ${id}`);
+      // Only a new game and an emulated call start without a save. starting_state null still has
+      // one: a save that cannot be committed, kept with the captures and found by its hash.
       if (
         !["new-game", "emulated-call"].includes(meta.starting_state) &&
         !(fx.starting_state && fx.starting_state.xxh3)
       )
-        problem(fixture, "gives the hash of the save its runs started from");
+        problem(
+          fixture,
+          meta.starting_state === null
+            ? "gives the hash of the save its runs started from in starting_state.xxh3; starting_state null names a save kept with the captures, and an experiment that starts without a save has starting_state new-game or emulated-call"
+            : "gives the hash of the save its runs started from in starting_state.xxh3",
+        );
       if (
         typeof meta.starting_state === "string" &&
         meta.starting_state.endsWith(".patch.json") &&
