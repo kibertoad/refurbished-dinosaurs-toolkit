@@ -12,20 +12,54 @@ from pathlib import Path
 import pycdlib
 from pycdlib.pycdlibexception import PyCdlibException
 
-from .disc import COOKED_SECTOR, DiscError, Track, user_data
+from .disc import COOKED_SECTOR, FRAMES_PER_SECOND, MSF_OFFSET, DiscError, NotDataSector, Track, user_data
 
 PVD_SECTOR = 16
 MAXIMUM_FILES = 200_000
 
 
-class UserDataStream(io.RawIOBase):
-    """A data track's user data as one seekable byte stream, the bytes an ISO file holds."""
+class UnsupportedFileSystem(DiscError):
+    """A data track whose ISO 9660 file system cannot be located: no volume descriptor, a
+    descriptor whose copies of a value disagree, or addresses that resolve to no sector or to more
+    than one place in the track."""
 
-    def __init__(self, track: Track) -> None:
+
+@dataclass(frozen=True)
+class Volume:
+    """Where a data track's ISO 9660 volume lies in the track.
+
+    ``base`` is the address the volume gives the track's first sector (INDEX 01): 0 when the volume
+    was mastered with addresses counted from the track, or the track's LBA on the disc when it was
+    mastered with the disc's addresses, as the volume in a CD-Extra disc's second session is. An
+    address ``a`` the file system gives is track sector ``a - base``.
+
+    ``end`` is the track sector just past the volume its primary volume descriptor declares, and
+    ``descriptors_end`` the track sector after the volume descriptor set and the sector that
+    follows it.
+    """
+
+    base: int
+    end: int
+    descriptors_end: int
+
+
+class UserDataStream(io.RawIOBase):
+    """A data track's user data as one seekable byte stream, the bytes an ISO file holds.
+
+    Given a :class:`Volume` with a nonzero base, the stream is laid out the way the file system
+    addresses it: the track's sectors up to ``descriptors_end`` (the system area and the volume
+    descriptors, which sit at sector 16 of the track) at their own place, and every later sector
+    at its address, so track sector ``i`` is read at sector ``i + base``. A read between the two
+    ranges raises :class:`UnsupportedFileSystem`.
+    """
+
+    def __init__(self, track: Track, volume: Volume | None = None) -> None:
         if track.is_audio:
             raise DiscError(f"track {track.number} is audio and has no file system")
         self._track = track
-        self._size = track.length * COOKED_SECTOR
+        self._base = volume.base if volume else 0
+        self._descriptors_end = volume.descriptors_end if volume else 0
+        self._size = (track.length + self._base) * COOKED_SECTOR
         self._position = 0
         self._handle = track.source.open("rb")
         self._cached: tuple[int, bytes] | None = None
@@ -44,6 +78,20 @@ class UserDataStream(io.RawIOBase):
         self._position = max(0, base + offset)
         return self._position
 
+    def _place(self, address: int) -> tuple[int, int]:
+        """The track sector at ``address`` of the stream, and the address where its run of
+        consecutive track sectors stops."""
+        if not self._base:
+            return address, self._track.length
+        if address < self._descriptors_end:
+            return address, self._descriptors_end
+        if address < self._base:
+            raise UnsupportedFileSystem(
+                f"track {self._track.number}: the file system reads sector {address}, which lies between its "
+                f"volume descriptors and LBA {self._base}, where its addresses start"
+            )
+        return address - self._base, self._track.length + self._base
+
     def _sector(self, index: int) -> bytes:
         if self._cached and self._cached[0] == index:
             return self._cached[1]
@@ -59,23 +107,33 @@ class UserDataStream(io.RawIOBase):
         self._cached = (index, data)
         return data
 
+    def read_sector(self, index: int) -> bytes:
+        """The user data of track sector ``index``."""
+        return self._sector(index)
+
     def readinto(self, buffer: bytearray | memoryview) -> int:  # type: ignore[override]
         wanted = min(len(buffer), self._size - self._position)
         if wanted <= 0:
             return 0
-        if self._track.storage == "cooked":
-            self._handle.seek(self._track.source_offset + self._position)
-            data = self._handle.read(wanted)
-        else:
-            parts = []
-            remaining, position = wanted, self._position
-            while remaining:
-                index, within = divmod(position, COOKED_SECTOR)
+        track = self._track
+        parts = []
+        remaining, position = wanted, self._position
+        while remaining:
+            address, within = divmod(position, COOKED_SECTOR)
+            index, stop = self._place(address)
+            if track.storage == "cooked":
+                count = min(remaining, stop * COOKED_SECTOR - position)
+                stored_first, _ = track.stored_range()
+                self._handle.seek(track.source_offset + (index - stored_first) * COOKED_SECTOR + within)
+                part = self._handle.read(count)
+                if len(part) < count:
+                    raise DiscError(f"{track.source} ends inside track {track.number}")
+            else:
                 part = self._sector(index)[within : within + remaining]
-                parts.append(part)
-                remaining -= len(part)
-                position += len(part)
-            data = b"".join(parts)
+            parts.append(part)
+            remaining -= len(part)
+            position += len(part)
+        data = b"".join(parts)
         buffer[: len(data)] = data
         self._position += len(data)
         return len(data)
@@ -100,19 +158,15 @@ def volume_identifier(track: Track) -> str | None:
 
 
 def volume_sectors(track: Track) -> int | None:
-    """The volume space size the primary volume descriptor declares, in 2,048-byte sectors.
+    """The track sector just past the ISO 9660 volume the primary volume descriptor declares.
 
-    None when the track has no primary volume descriptor at sector 16, when the descriptor's
-    logical block size is not 2,048 bytes (the size counts logical blocks), when the little- and
-    big-endian copies of the size disagree, or when the size does not reach past the descriptor.
+    The declared volume space size is an address, resolved against the volume's base as
+    :func:`locate` finds it. None when :func:`locate` cannot find the volume.
     """
-    descriptor = _primary_volume_descriptor(track)
-    if descriptor is None or descriptor[128:132] != b"\x00\x08\x08\x00":
+    try:
+        return locate(track).end
+    except UnsupportedFileSystem:
         return None
-    little = int.from_bytes(descriptor[80:84], "little")
-    if little != int.from_bytes(descriptor[84:88], "big") or little <= PVD_SECTOR:
-        return None
-    return little
 
 
 def _primary_volume_descriptor(track: Track) -> bytes | None:
@@ -122,6 +176,119 @@ def _primary_volume_descriptor(track: Track) -> bytes | None:
         stream.seek(PVD_SECTOR * COOKED_SECTOR)
         descriptor = stream.read(COOKED_SECTOR)
     return descriptor if descriptor[:6] == b"\x01CD001" else None
+
+
+# The volume descriptors pycdlib reads from sector 16 on: their types and identifiers.
+_DESCRIPTOR_TYPES = (0, 1, 2, 255)
+_DESCRIPTOR_IDENTIFIERS = (b"CD001", b"CDW02", b"BEA01", b"NSR02", b"NSR03", b"TEA01", b"BOOT2")
+MAXIMUM_DESCRIPTORS = 256
+
+
+def _both_endian(data: bytes, offset: int, what: str, track: Track) -> int:
+    little = int.from_bytes(data[offset : offset + 4], "little")
+    if little != int.from_bytes(data[offset + 4 : offset + 8], "big"):
+        raise UnsupportedFileSystem(f"track {track.number}: the little- and big-endian copies of the volume's {what} disagree")
+    return little
+
+
+def _bcd(value: int) -> int | None:
+    high, low = value >> 4, value & 0x0F
+    return high * 10 + low if high <= 9 and low <= 9 else None
+
+
+def _header_start(track: Track) -> int | None:
+    """The LBA of the track's INDEX 01 by the address in the header of its sector 16, if it has one."""
+    if track.storage != "raw":
+        return None
+    sector = next(track.iter_raw(PVD_SECTOR, PVD_SECTOR + 1))
+    minutes, seconds, frames = (_bcd(b) for b in sector[12:15])
+    if minutes is None or seconds is None or frames is None or seconds >= 60 or frames >= FRAMES_PER_SECOND:
+        return None
+    return (minutes * 60 + seconds) * FRAMES_PER_SECOND + frames - MSF_OFFSET - PVD_SECTOR
+
+
+def _descriptor_set_end(stream: UserDataStream, track: Track) -> int:
+    """The track sector just past the volume descriptor set that starts at sector 16."""
+    index = PVD_SECTOR
+    while index < min(track.length, PVD_SECTOR + MAXIMUM_DESCRIPTORS):
+        try:
+            sector = stream.read_sector(index)
+        except NotDataSector:
+            break
+        if sector[0] not in _DESCRIPTOR_TYPES or sector[1:6] not in _DESCRIPTOR_IDENTIFIERS:
+            break
+        index += 1
+    return index
+
+
+def _names_itself(stream: UserDataStream, index: int, extent: int) -> bool:
+    """Whether track sector ``index`` opens a directory whose ``.`` record gives ``extent``."""
+    try:
+        record = stream.read_sector(index)
+    except NotDataSector:
+        return False
+    location = extent.to_bytes(4, "little") + extent.to_bytes(4, "big")
+    return record[0] >= 34 and record[2:10] == location and bool(record[25] & 2) and record[32] == 1 and record[33] == 0
+
+
+def locate(track: Track) -> Volume:
+    """Find where the addresses of the track's ISO 9660 file system point in the track.
+
+    A volume gives its addresses counted either from the track's first sector or from the start
+    of the disc. Each base the track offers is tried: 0, the track's LBA as the disc describes it,
+    and for raw sectors the LBA by the address in the header of sector 16, which also counts the
+    gap between sessions that a cue sheet leaves out. A base fits when the root directory extent the
+    primary volume descriptor gives lands inside the track and the volume, past the volume
+    descriptors, on a directory whose ``.`` record gives that same extent. A nonzero base must also
+    lie past the volume descriptors, which sit at sector 16 of the track whatever the base.
+
+    Raises :class:`UnsupportedFileSystem` when the track has no primary volume descriptor at sector
+    16, when its logical block size is not 2,048 bytes, when the little- and big-endian copies of
+    its volume space size or root directory extent disagree, or when no base or more than one fits.
+    """
+    if track.length <= PVD_SECTOR:
+        raise UnsupportedFileSystem(f"track {track.number} is too short to hold an ISO 9660 volume descriptor at sector 16")
+    with UserDataStream(track) as stream:
+        try:
+            descriptor = stream.read_sector(PVD_SECTOR)
+        except NotDataSector as error:
+            raise UnsupportedFileSystem(f"track {track.number} holds no ISO 9660 volume descriptor: {error}") from None
+        if descriptor[:6] != b"\x01CD001":
+            raise UnsupportedFileSystem(f"track {track.number} has no ISO 9660 primary volume descriptor at sector 16")
+        if descriptor[128:132] != b"\x00\x08\x08\x00":
+            raise UnsupportedFileSystem(f"track {track.number}: the volume's logical block size is not 2,048 bytes")
+        size = _both_endian(descriptor, 80, "volume space size", track)
+        root = _both_endian(descriptor, 156 + 2, "root directory extent", track)
+        set_end = _descriptor_set_end(stream, track)
+        # pycdlib also reads the sector after the set, where mkisofs writes its own descriptor, so
+        # the stream keeps that sector at its own place. A root directory may sit there.
+        descriptors_end = set_end + 1
+        offered = {0: "the track's first sector"}
+        offered.setdefault(track.index1, f"LBA {track.index1}, where the disc's layout puts the track")
+        header = _header_start(track)
+        if header is not None:
+            offered.setdefault(header, f"LBA {header}, by the address in the track's sector headers")
+        fitting = [
+            base
+            for base in sorted(offered)
+            if (base == 0 or base >= descriptors_end)
+            and set_end <= root - base < min(track.length, size - base)
+            and _names_itself(stream, root - base, root)
+        ]
+    if len(fitting) == 1:
+        return Volume(fitting[0], size - fitting[0], descriptors_end)
+    if not fitting:
+        tried = "; ".join(offered[b] for b in sorted(offered))
+        raise UnsupportedFileSystem(
+            f"track {track.number}: the root directory the volume descriptor gives, at address {root}, is not found "
+            f"with the addresses counted from any place the track offers ({tried}), so where the file system's "
+            "addresses point is not known"
+        )
+    found = "; ".join(offered[b] for b in fitting)
+    raise UnsupportedFileSystem(
+        f"track {track.number}: the root directory the volume descriptor gives, at address {root}, is found with "
+        f"the addresses counted from each of {found}, so which one the file system uses is not known"
+    )
 
 
 @dataclass(frozen=True)
@@ -180,10 +347,12 @@ def walk(track: Track, destination: Path | None = None) -> list[FileEntry]:
     """List every file with its size and SHA-256, extracting each under ``destination`` if given.
 
     Joliet names are used when the volume has them, since they keep the long names Windows shows;
-    otherwise ISO 9660 names without their ``;1`` version.
+    otherwise ISO 9660 names without their ``;1`` version. The file system's addresses are read
+    against the base :func:`locate` finds, and :class:`UnsupportedFileSystem` is raised when it
+    finds none or when the file system reads an address that falls on no track sector.
     """
     entries: list[FileEntry] = []
-    stream = UserDataStream(track)
+    stream = UserDataStream(track, locate(track))
     iso = pycdlib.PyCdlib()
     try:
         iso.open_fp(stream)

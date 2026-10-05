@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import os
 import shutil
@@ -12,9 +13,9 @@ from unittest import mock
 import wave
 from pathlib import Path
 
-from synthetic import FILES, SyntheticDisc, iso_image, mode1_sector
+from synthetic import FILES, SyntheticCdExtra, SyntheticDisc, iso_image, mode1_sector
 
-from dinorefurb_disc_archiver import ccd, formats, pipeline
+from dinorefurb_disc_archiver import ccd, formats, isofs, pipeline
 from dinorefurb_disc_archiver.cue import read_cue, read_iso
 from dinorefurb_disc_archiver.disc import RAW_SECTOR, DiscError
 from dinorefurb_disc_archiver.formats import FormatUnavailable, write_format
@@ -430,6 +431,147 @@ class SourceLimitTests(FormatTestCase):
     def test_an_unknown_format(self) -> None:
         with self.assertRaises(formats.DiscError):
             formats.format_by_id("mdf")
+
+
+class VolumeAddressTests(FormatTestCase):
+    """Data tracks whose ISO 9660 addresses count from the track, or from the start of the disc."""
+
+    PADDING = 4
+    PATHS = dataclasses.replace(BUILTIN_PROFILES["any"], expected_paths=("DATA/LEVELS", "README.TXT"))
+
+    def source(self, extra: SyntheticCdExtra, cooked: bool = False):  # type: ignore[no-untyped-def]
+        directory = self.dir / f"source-{id(extra)}"
+        return read_cue(extra.write_cooked(directory) if cooked else extra.write_split(directory))
+
+    def assertFilesRead(self, disc, extra: SyntheticCdExtra) -> None:  # type: ignore[no-untyped-def]
+        output = self.write("files", disc)
+        for path, data in extra.files.items():
+            self.assertEqual((output.entry / path).read_bytes(), data, path)
+        manifest = derive(disc, self.dir / "out", "Extra", ["files"], self.PATHS, silent_log, {})
+        self.assertEqual(manifest["outputs"][0]["verification"]["status"], "matched")  # type: ignore[index]
+        self.assertTrue(all(c["matched"] for c in manifest["profile"]["checks"]))  # type: ignore[index]
+
+    def test_a_volume_of_a_track_at_lba_0_counts_from_the_track(self) -> None:
+        volume = isofs.locate(self.disc.first_data_track())
+        self.assertEqual((volume.base, volume.end), (0, len(self.synthetic.iso) // 2048))
+
+    def test_a_root_directory_right_after_the_descriptor_set_is_located(self) -> None:
+        image = bytearray(iso_image(joliet=False))
+        after = next(s for s in range(16, 32) if image[s * 2048] == 255) + 1
+        root = int.from_bytes(image[16 * 2048 + 158 : 16 * 2048 + 162], "little")
+        # The root directory moved to the sector after the set terminator, where mkisofs writes
+        # its own descriptor and other mastering tools may put the root.
+        image[after * 2048 : (after + 1) * 2048] = image[root * 2048 : (root + 1) * 2048]
+        location = after.to_bytes(4, "little") + after.to_bytes(4, "big")
+        image[16 * 2048 + 158 : 16 * 2048 + 166] = location
+        image[after * 2048 + 2 : after * 2048 + 10] = location
+        path = self.dir / "root-after-set.iso"
+        path.write_bytes(bytes(image))
+        volume = isofs.locate(read_iso(path).first_data_track())
+        self.assertEqual((volume.base, volume.end), (0, len(image) // 2048))
+
+    def test_a_cd_extra_volume_is_read_at_the_track_address_its_sector_headers_give(self) -> None:
+        extra = SyntheticCdExtra(padding=self.PADDING)
+        disc = self.source(extra)
+        track = disc.first_data_track()
+        # The sheet leaves out the gap between the sessions; the sector headers do not.
+        self.assertEqual(track.index1, extra.sheet_start)
+        self.assertEqual(isofs.locate(track).base, extra.start)
+        self.assertEqual(
+            fingerprint(disc)["data"],
+            {
+                "track": extra.number,
+                "sectors": extra.volume + self.PADDING,
+                "sha256": hashlib.sha256(extra.iso).hexdigest(),
+                "nonDataSectors": [[extra.volume, extra.volume + self.PADDING]],
+                "nonDataSha256": hashlib.sha256(bytes(self.PADDING * RAW_SECTOR)).hexdigest(),
+            },
+        )
+        self.assertFilesRead(disc, extra)
+
+    def test_a_cd_extra_disc_keeps_its_raw_formats_and_says_what_its_iso_is(self) -> None:
+        disc = self.source(SyntheticCdExtra(padding=self.PADDING))
+        manifest = derive(disc, self.dir / "out", "Extra", ["bincue-split", "ccd", "files", "iso"], BUILTIN_PROFILES["any"], silent_log, {})
+        outputs = {o["format"]: o for o in manifest["outputs"]}  # type: ignore[union-attr, index]
+        self.assertEqual({k: v["verification"]["status"] for k, v in outputs.items()}, {"bincue-split": "matched", "ccd": "matched", "files": "matched"})
+        (unavailable,) = manifest["unavailable"]  # type: ignore[misc]
+        self.assertEqual(unavailable["format"], "iso")
+        without_padding = self.source(SyntheticCdExtra())
+        output = self.write("iso", without_padding)
+        self.assertIn(f"counts its addresses from LBA {SyntheticCdExtra().start}", " ".join(output.notes))
+
+    def test_a_cd_extra_volume_is_read_at_the_track_address_the_sheet_gives(self) -> None:
+        extra = SyntheticCdExtra(session_gap=0)
+        for cooked in (False, True):
+            with self.subTest(cooked=cooked):
+                disc = self.source(extra, cooked)
+                self.assertEqual(isofs.locate(disc.first_data_track()).base, extra.start)
+                self.assertEqual(fingerprint(disc)["data"]["sha256"], hashlib.sha256(extra.iso).hexdigest())  # type: ignore[index]
+                self.assertFilesRead(disc, extra)
+                shutil.rmtree(self.dir / "files")
+                shutil.rmtree(self.dir / "out")
+
+    def test_a_track_after_audio_mastered_with_addresses_from_the_track(self) -> None:
+        extra = SyntheticCdExtra(absolute=False, padding=self.PADDING)
+        disc = self.source(extra)
+        self.assertEqual(isofs.locate(disc.first_data_track()).base, 0)
+        self.assertEqual(fingerprint(disc)["data"]["nonDataSectors"], [[extra.volume, extra.volume + self.PADDING]])  # type: ignore[index]
+        self.assertFilesRead(disc, extra)
+
+    def test_a_volume_mastered_for_another_place_is_unsupported(self) -> None:
+        extra = SyntheticCdExtra(shift=1000, padding=self.PADDING)
+        disc = self.source(extra)
+        with self.assertRaisesRegex(FormatUnavailable, r"is not found with the addresses counted from any place the track offers"):
+            self.write("files", disc)
+        self.assertFalse((self.dir / "files" / "Synth").exists())
+        self.assertIsNone(isofs.volume_sectors(disc.first_data_track()))
+        # Nothing past the volume is admitted when the volume cannot be located.
+        with self.assertRaisesRegex(DiscError, f"sector {extra.sheet_start + extra.volume} has no data sync pattern"):
+            fingerprint(disc)
+
+    def test_a_cooked_cd_extra_track_whose_sheet_leaves_out_the_session_gap_is_unsupported(self) -> None:
+        extra = SyntheticCdExtra()
+        disc = self.source(extra, cooked=True)
+        manifest = derive(disc, self.dir / "out", "Extra", ["files", "iso"], BUILTIN_PROFILES["any"], silent_log, {})
+        self.assertEqual([o["format"] for o in manifest["outputs"]], ["iso"])  # type: ignore[union-attr, index]
+        (unavailable,) = manifest["unavailable"]  # type: ignore[misc]
+        self.assertEqual(unavailable["format"], "files")
+        self.assertIn(f"LBA {extra.sheet_start}, where the disc's layout puts the track", unavailable["reason"])
+        self.assertFalse((self.dir / "out" / "files").exists())
+        with self.assertRaisesRegex(DiscError, "the profile lists expected paths, but the disc's files cannot be listed"):
+            derive(disc, self.dir / "out2", "Extra", ["iso"], self.PATHS, silent_log, {})
+
+    def test_a_root_directory_found_from_two_bases_is_unsupported(self) -> None:
+        extra = SyntheticCdExtra(session_gap=0, audio_lengths=[20], padding=200)
+        root = int.from_bytes(extra.iso[16 * 2048 + 158 : 16 * 2048 + 162], "little")
+        data = bytearray(extra.data_raw)
+        # The root directory's sector again at the track sector its address names when counted
+        # from the track, so the address fits both bases.
+        at = (extra.pregap + root) * RAW_SECTOR
+        relative = root - extra.start
+        data[at : at + RAW_SECTOR] = mode1_sector(extra.start + root, extra.iso[relative * 2048 : (relative + 1) * 2048])
+        directory = self.dir / "ambiguous"
+        sheet = extra.write_split(directory)
+        (directory / f"Extra (Track {extra.number}).bin").write_bytes(bytes(data))
+        disc = read_cue(sheet)
+        with self.assertRaisesRegex(isofs.UnsupportedFileSystem, "is found with the addresses counted from each of the track's first sector; LBA"):
+            isofs.locate(disc.first_data_track())
+        with self.assertRaisesRegex(FormatUnavailable, "which one the file system uses is not known"):
+            self.write("files", disc)
+        with self.assertRaisesRegex(DiscError, f"sector {extra.sheet_start + extra.volume} has no data sync pattern"):
+            fingerprint(disc)
+
+    def test_a_read_between_the_descriptors_and_the_base_is_an_error(self) -> None:
+        extra = SyntheticCdExtra()
+        track = self.source(extra).first_data_track()
+        with isofs.UserDataStream(track, isofs.locate(track)) as stream:
+            stream.seek(extra.start * 2048)
+            self.assertEqual(stream.read(2048), extra.iso[:2048])
+            stream.seek(16 * 2048)
+            self.assertEqual(stream.read(2048), extra.iso[16 * 2048 : 17 * 2048])
+            stream.seek(100 * 2048)
+            with self.assertRaisesRegex(isofs.UnsupportedFileSystem, "reads sector 100, which lies between its volume descriptors"):
+                stream.read(2048)
 
 
 if __name__ == "__main__":
