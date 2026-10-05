@@ -68,14 +68,20 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          # Full history, so the check can find where a pull request forked from its base branch
-          # and fail when the pull request deletes a spec ID, area or deviation that exists there.
-          fetch-depth: 0
       - uses: kibertoad/refurbished-dinosaurs-toolkit/actions/check-documentation@<sha>
 ```
 
-With the default `fetch-depth: 1` the check still runs, but the deleted-ID comparison is skipped
-because `origin/main` is not fetched.
+On a pull request, the check fails when the pull request deletes a spec ID, area or deviation that
+exists where it forked from its base branch. The action finds that fork point itself: it fetches
+`origin/$GITHUB_BASE_REF` and HEAD with 50 commits of history beyond what the checkout holds, then 500, then all of it, until the
+merge-base resolves, and runs the check with `--require-base`, so a fork point that still does not
+resolve fails the check. The fetch runs `git fetch origin` without the checkout's credentials when
+`persist-credentials` is `false`, which works for a public repository. A private repository either
+leaves `persist-credentials` at its default or checks out with `fetch-depth: 0`, which makes the
+fetch unnecessary.
+
+On a push there is no base branch. The check compares with where HEAD forked from `origin/main`
+when that resolves, and otherwise passes with its result line naming the comparison as skipped.
 
 The job needs only `contents: read`. When `spec/formats/` holds a `.ksy` file, the action installs
 the Kaitai Struct compiler on the runner's Java; the GitHub-hosted Linux, Windows and macOS runners
@@ -95,7 +101,7 @@ Most restorations need no inputs. Set one when the defaults do not match the rep
 | `images` | empty | Half-open address ranges of the original's flat 32-bit images, such as `0x00400000..0x004C9000`. See below. |
 | `max-range` | `0x10000` | The largest address range by which an entry records an address. |
 | `data-dirs` | from the build entries | Top-level directories of the original's data. A path into one must name a build file with its exact case. |
-| `base` | fork point | Ref whose IDs, areas and deviations must still exist. |
+| `base` | fork point | Ref whose IDs, areas and deviations must still exist. When it is set, the action fetches nothing and does not pass `--require-base`. |
 | `kaitai-version` | `0.11` | Compiler release to install, or empty to skip the install. With no `.ksy` file the install is skipped anyway. |
 | `java-version` | empty | Java to install with `actions/setup-java` before the compiler. |
 
@@ -244,6 +250,14 @@ compiler, ends with `spec check passed with skipped steps:`, the counts, and a `
 naming the Kaitai compilation and the reason; both exit with 0. Pass `--require-ksc` where the
 compilation must run, such as in CI: a missing compiler then fails the check with exit code 1.
 `--require-ksc` cannot be combined with `--no-ksy`.
+
+Without `--base`, the check compares with where HEAD forked from `origin/$GITHUB_BASE_REF`, or
+`origin/main` when that variable is unset. When that fork point does not resolve, because the
+directory is not in a git repository, the clone is shallow, or the branch was never fetched, the
+result line names the skipped step, such as `Skipped: comparison with the base branch (HEAD has no
+merge-base with origin/main, fetch it with enough history or pass --base).` Without git on `PATH`
+the skipped step names the missing git instead. Pass `--require-base` where the comparison must
+run: either case then fails the check with exit code 1.
 
 Each problem is one line that starts with the path it concerns, or `spec` for a problem with the
 spec as a whole, such as a deleted ID. When the problem breaks a numbered rule of the standard, the

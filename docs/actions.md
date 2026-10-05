@@ -9,7 +9,7 @@ SHA, as with any third-party action:
 
 | Action | Runs on | Does |
 |---|---|---|
-| `check-documentation` | any | Runs `@scientific-method/standard-checker --check` from the pinned toolkit commit. |
+| `check-documentation` | any | Runs `@scientific-method/standard-checker --check` from the pinned toolkit commit. On a pull request it fetches the base branch and fails when the comparison with it cannot run. |
 | `setup-kaitai` | any | Installs a Kaitai Struct compiler release whose SHA-256 is pinned. |
 | `verify-repository` | any with PowerShell 7 | Fails when files that must stay local could be committed. |
 | `setup-inno` | Windows | Installs a verified Inno Setup 7 compiler for building installers. |
