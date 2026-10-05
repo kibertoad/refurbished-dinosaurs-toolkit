@@ -379,7 +379,11 @@ Opening a source now fails on such a name where it used to list it:
   declared volume inside the data track, every extent inside the volume, no multi-extent entries, no
   two files sharing a path ignoring case, and the limits on directory depth, size and entry count.
   A volume that fails one throws `InvalidDataException` with the `OpenIso9660` message. `Files`
-  keeps its depth-first directory order.
+  keeps its depth-first directory order. The constructor and `ReadFile` also check each raw sector
+  they read for the MODE1/2352 sync pattern and mode byte, as `OpenCueBin` does, so an image that is
+  really MODE2 or does not match its cue sheet throws `InvalidDataException` naming the sector, and
+  a BIN shorter than the data track fails with the `OpenIso9660` message for a volume that exceeds
+  the image. `ReadFile` throws `ArgumentNullException` for a null file.
 
 The rejection messages changed. `Relative` throws `Asset reference "<reference>" is not a portable
 relative path: <rule>.`, with the reference as a JSON string, and the readers' messages say

@@ -207,17 +207,32 @@ public sealed class RawMode1Image : IDisposable
     /// <exception cref="EndOfStreamException">The range lies outside the data track.</exception>
     public byte[] Read(long offset, int count)
     {
-        if (offset < 0 || count < 0 || offset + count > (long)SectorCount * PayloadSize)
+        if (count < 0) throw new EndOfStreamException();
+        var result = new byte[count];
+        Read(offset, result);
+        return result;
+    }
+
+    // The raw image file, shared with the readers that check each sector's sync pattern and mode.
+    internal Stream RawStream => _stream;
+
+    // Raw sectors the file holds whole, which may be fewer than SectorCount when the file is truncated.
+    internal long StoredSectors => _stream.Length / RawSector;
+
+    // Fills destination with the user data at offset, without allocating.
+    internal void Read(long offset, Span<byte> destination)
+    {
+        var count = destination.Length;
+        if (offset < 0 || offset + count > (long)SectorCount * PayloadSize)
             throw new EndOfStreamException();
-        var result = new byte[count]; var written = 0;
+        var written = 0;
         while (written < count)
         {
             var logical = offset + written; var sector = logical / PayloadSize;
             var within = (int)(logical % PayloadSize); var take = Math.Min(count - written, PayloadSize - within);
             _stream.Position = sector * RawSector + PayloadOffset + within;
-            _stream.ReadExactly(result.AsSpan(written, take)); written += take;
+            _stream.ReadExactly(destination.Slice(written, take)); written += take;
         }
-        return result;
     }
 
     /// <summary>Closes the image file.</summary>
@@ -240,6 +255,8 @@ public sealed record IsoFile(string Path, uint Extent, uint Size);
 /// declared volume inside the data track, every extent inside the volume, and the limits on directory
 /// depth, size and entry count. Each name reads byte for byte as Latin-1 (ISO-8859-1) and, without its
 /// <c>;</c> version suffix and trailing dots, must pass <see cref="Core.IO.PortableAssetPath.Relative"/>.
+/// Every raw sector it reads, for the volume or for a file, must carry the MODE1/2352 sync pattern and
+/// mode byte, as for <see cref="OriginalContentSource.OpenCueBin(string)"/>.
 /// </remarks>
 public sealed class Iso9660
 {
@@ -252,7 +269,8 @@ public sealed class Iso9660
     /// <param name="image">The data track. The caller keeps it open while this instance reads files.</param>
     /// <exception cref="ArgumentNullException"><paramref name="image"/> is null.</exception>
     /// <exception cref="InvalidDataException">
-    /// The track holds no valid ISO 9660 volume, a directory record is malformed, two files share a path
+    /// A sector read is not a MODE1/2352 sector, the track holds no valid ISO 9660 volume, a directory
+    /// record is malformed, two files share a path
     /// ignoring case, or a name is not accepted by <see cref="Core.IO.PortableAssetPath.Relative"/>. The
     /// message names the identifier and the rule it breaks.
     /// </exception>
@@ -260,50 +278,28 @@ public sealed class Iso9660
     {
         ArgumentNullException.ThrowIfNull(image);
         _image = image;
+        var files = new List<IsoFile>();
+        // Only the sectors the file holds, so a truncated BIN fails the reader's volume size check
+        // instead of ending a read early.
+        var stored = (int)Math.Min(image.SectorCount, image.StoredSectors);
         using var source = new Iso9660ContentSource(
-            () => new RawMode1ImageStream(image), ContentSourceKinds.CueBin, null);
-        Files = source.Listing.ToArray();
+            () => new RawMode1UserDataStream(image.RawStream, stored, leaveOpen: true),
+            ContentSourceKinds.CueBin, null, files);
+        Files = files.ToArray();
     }
 
     /// <summary>Reads a whole file into memory.</summary>
-    public byte[] ReadFile(IsoFile file) => _image.Read((long)file.Extent * Sector, checked((int)file.Size));
-}
-
-// The data track's 2048-byte user data as a seekable stream, for the shared ISO 9660 reader.
-// Disposing it leaves the image open.
-internal sealed class RawMode1ImageStream(RawMode1Image image) : Stream
-{
-    private long position;
-
-    public override bool CanRead => true;
-    public override bool CanSeek => true;
-    public override bool CanWrite => false;
-    public override long Length => (long)image.SectorCount * 2048;
-    public override long Position
+    /// <exception cref="InvalidDataException">A sector the file covers is not a MODE1/2352 sector.</exception>
+    /// <exception cref="EndOfStreamException">The file lies outside the data track or past the end of the image file.</exception>
+    public byte[] ReadFile(IsoFile file)
     {
-        get => position;
-        set => position = value >= 0 ? value : throw new ArgumentOutOfRangeException(nameof(value));
+        ArgumentNullException.ThrowIfNull(file);
+        var offset = (long)file.Extent * Sector;
+        var result = new byte[checked((int)file.Size)];
+        if (offset + result.Length > (long)_image.SectorCount * Sector) throw new EndOfStreamException();
+        using var track = new RawMode1UserDataStream(_image.RawStream, _image.SectorCount, leaveOpen: true);
+        track.Position = offset;
+        track.ReadExactly(result);
+        return result;
     }
-
-    public override int Read(byte[] buffer, int offset, int count)
-    {
-        ArgumentOutOfRangeException.ThrowIfNegative(count);
-        var take = (int)Math.Clamp(Length - position, 0, count);
-        if (take == 0) return 0;
-        image.Read(position, take).CopyTo(buffer, offset);
-        position += take;
-        return take;
-    }
-
-    public override long Seek(long offset, SeekOrigin origin) => Position = origin switch
-    {
-        SeekOrigin.Begin => offset,
-        SeekOrigin.Current => position + offset,
-        SeekOrigin.End => Length + offset,
-        _ => throw new ArgumentOutOfRangeException(nameof(origin))
-    };
-
-    public override void Flush() { }
-    public override void SetLength(long value) => throw new NotSupportedException();
-    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }

@@ -223,6 +223,22 @@ public sealed class PortableAssetPathTests
     }
 
     [Fact]
+    public void TheMessageShowsAWhitespaceOnlyReference() =>
+        Assert.Contains("\" \\u0009\"", Assert.Throws<InvalidDataException>(() => PortableAssetPath.Relative(" \t")).Message);
+
+    [Fact]
+    public void LegacyFormatsShowsANameAsCoreDoes()
+    {
+        // Built in code: theory data with a lone surrogate does not survive serialization.
+        foreach (var name in new[] { "a\uD800b", "a\uDC00", "a\u0001\u0085\"\\b" })
+        {
+            var shown = RefurbishedDinosaurs.LegacyFormats.AssetVerifier.JsonString(name);
+            Assert.Contains($"Asset reference {shown} ",
+                Assert.Throws<InvalidDataException>(() => PortableAssetPath.Relative(name)).Message);
+        }
+    }
+
+    [Fact]
     public void ResolveFileRejectsAReservedCharacterBeforeReadingTheTree() =>
         Assert.Contains("'?'", Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveFile(
             Path.Combine(Path.GetTempPath(), $"absent-{Guid.NewGuid():N}"), "a?.dat")).Message);

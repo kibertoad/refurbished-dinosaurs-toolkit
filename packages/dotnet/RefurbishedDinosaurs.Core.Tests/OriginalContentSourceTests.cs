@@ -277,6 +277,56 @@ public sealed class OriginalContentSourceTests
     }
 
     [Fact]
+    public async Task Iso9660OnARawTrackRejectsABinShorterThanTheVolume()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"toad-raw-iso-{Guid.NewGuid():N}.bin");
+        var cooked = BuildIso([1]);
+        var raw = CueBinSourceTests.ToRaw(cooked);
+        // The BIN lost its last sector, which holds the file's data, but the track still claims it.
+        await File.WriteAllBytesAsync(path, raw[..^2352], TestContext.Current.CancellationToken);
+        try
+        {
+            using var image = new RawMode1Image(path, cooked.Length / SectorSize);
+            Assert.Contains("declared volume exceeds the image",
+                Assert.Throws<InvalidDataException>(() => new Iso9660(image)).Message);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task Iso9660OnARawTrackRejectsASectorThatIsNotMode1()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"toad-raw-iso-{Guid.NewGuid():N}.bin");
+        var cooked = BuildIso([1]);
+        var raw = CueBinSourceTests.ToRaw(cooked);
+        var fileSector = cooked.Length / SectorSize - 1;
+        try
+        {
+            // A volume descriptor sector marked MODE2 fails the constructor.
+            var mode2 = raw.ToArray();
+            mode2[16 * 2352 + 15] = 2;
+            await File.WriteAllBytesAsync(path, mode2, TestContext.Current.CancellationToken);
+            using (var image = new RawMode1Image(path, cooked.Length / SectorSize))
+                Assert.Contains("Sector 16 is mode 2",
+                    Assert.Throws<InvalidDataException>(() => new Iso9660(image)).Message);
+
+            // A file sector without the sync pattern fails ReadFile.
+            var unsynced = raw.ToArray();
+            unsynced[fileSector * 2352 + 1] = 0;
+            await File.WriteAllBytesAsync(path, unsynced, TestContext.Current.CancellationToken);
+            using (var image = new RawMode1Image(path, cooked.Length / SectorSize))
+            {
+                var iso = new Iso9660(image);
+                var file = Assert.Single(iso.Files);
+                Assert.Equal(fileSector, (int)file.Extent);
+                Assert.Contains($"Sector {fileSector} has no MODE1/2352 sync pattern",
+                    Assert.Throws<InvalidDataException>(() => iso.ReadFile(file)).Message);
+            }
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
     public async Task DirectorySourceListsOrdinaryLegacyNames()
     {
         var root = CreateTemporaryDirectory();

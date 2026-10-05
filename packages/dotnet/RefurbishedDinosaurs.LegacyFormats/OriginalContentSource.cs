@@ -431,7 +431,8 @@ internal sealed class DirectoryContentSource : OriginalContentSource
             var relative = Path.GetRelativePath(root, fullPath);
             // On Linux and macOS a '\' is part of a name, and would read as a separator below.
             if (Path.DirectorySeparatorChar == '/' && relative.Contains('\\'))
-                throw new InvalidDataException($"Source file '{relative}' has a name that holds '\\', which Windows does not allow in a file name.");
+                throw new InvalidDataException(
+                    $"Source file {AssetVerifier.JsonString(relative)} has a name that holds '\\', which Windows does not allow in a file name.");
             try
             {
                 relative = PortableAssetPath.Relative(relative);
@@ -485,15 +486,18 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     private readonly CueBinFiles? cueBin;
     private readonly long volumeLength;
     private readonly Dictionary<string, IsoEntry> files = new(StringComparer.OrdinalIgnoreCase);
-    private readonly List<IsoFile> listing = [];
+    private readonly List<IsoFile>? listing;
 
     // openImage returns a new seekable stream of 2048-byte sectors each time. A cue/bin source passes
-    // the files it chose; its audio tracks are read from the BIN.
-    public Iso9660ContentSource(Func<Stream> openImage, string kind, CueBinFiles? cueBin)
+    // the files it chose; its audio tracks are read from the BIN. When listing is given, every file
+    // is added to it in directory order, depth first, as Iso9660 lists them.
+    public Iso9660ContentSource(
+        Func<Stream> openImage, string kind, CueBinFiles? cueBin, List<IsoFile>? listing = null)
     {
         this.openImage = openImage;
         Kind = kind;
         this.cueBin = cueBin;
+        this.listing = listing;
         using var stream = openImage();
         var imageLength = stream.Length;
         if (imageLength < 18L * SectorSize)
@@ -517,8 +521,6 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
 
     public override string Kind { get; }
     public override string? Label { get; }
-    // Every file in directory order, depth first, as Iso9660 lists it.
-    internal IReadOnlyList<IsoFile> Listing => listing;
     public override CueBinSheet? Cue => cueBin?.Sheet;
     public override string? CuePath => cueBin?.CuePath;
     public override ReadOnlyMemory<byte>? CueSheetBytes =>
@@ -608,7 +610,7 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
             var entry = new ContentSourceEntry(relative, record.DataLength);
             if (!files.TryAdd(relative, new IsoEntry(entry, record.Extent)))
                 throw new InvalidDataException($"ISO9660 image contains duplicate path '{relative}'.");
-            listing.Add(new IsoFile(relative, record.Extent, record.DataLength));
+            listing?.Add(new IsoFile(relative, record.Extent, record.DataLength));
             if (files.Count > MaximumEntries)
                 throw new InvalidDataException("ISO9660 entry count exceeds the safety limit.");
         }

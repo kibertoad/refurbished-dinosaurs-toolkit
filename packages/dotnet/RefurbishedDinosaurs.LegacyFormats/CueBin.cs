@@ -192,7 +192,7 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
         try { PortableAssetPath.Relative(referencedFile); }
         catch (InvalidDataException exception)
         {
-            throw new InvalidDataException("Cue FILE must be a safe relative path.", exception);
+            throw new InvalidDataException($"Cue FILE must be a safe relative path. {exception.Message}", exception);
         }
         if (tracks.Count is 0 or > 99)
             throw new InvalidDataException("Cue sheet must contain between 1 and 99 tracks.");
@@ -340,9 +340,10 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
 /// Each raw sector is read whole and its sync pattern and mode byte checked before the payload is
 /// handed on. A cue sheet only declares what a track is; without this check an image that is really
 /// MODE2, or a BIN that does not match its sheet, would be read at the wrong offset and surface as a
-/// malformed ISO 9660 volume instead of as an image to dump again.
+/// malformed ISO 9660 volume instead of as an image to dump again. With <c>leaveOpen</c>, disposing
+/// the stream leaves <c>source</c> open, as <see cref="Iso9660"/> needs for the image the caller keeps.
 /// </remarks>
-internal sealed class RawMode1UserDataStream(Stream source, long sectorCount) : Stream
+internal sealed class RawMode1UserDataStream(Stream source, long sectorCount, bool leaveOpen = false) : Stream
 {
     private const int UserDataOffset = 16;
     private const int LogicalSectorSize = 2048;
@@ -391,7 +392,7 @@ internal sealed class RawMode1UserDataStream(Stream source, long sectorCount) : 
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) source.Dispose();
+        if (disposing && !leaveOpen) source.Dispose();
         base.Dispose(disposing);
     }
 

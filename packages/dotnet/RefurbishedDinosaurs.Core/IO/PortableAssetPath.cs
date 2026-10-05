@@ -113,8 +113,11 @@ public static class PortableAssetPath
         return path;
     }
 
+    // A whitespace-only reference is shown, so a caller that wraps the message still names the entry.
     private static string Present(string reference) => string.IsNullOrWhiteSpace(reference)
-        ? throw new InvalidDataException("Asset reference is blank.")
+        ? throw new InvalidDataException(reference is null
+            ? "Asset reference is blank."
+            : $"Asset reference {Shown(reference)} is blank.")
         : reference;
 
     // The characters Windows refuses in a file name besides the C0 controls and the two separators.
