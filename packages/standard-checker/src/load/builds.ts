@@ -41,8 +41,13 @@ export function loadBuildFiles({ config, problem }: LoadContext, entries: Map<st
       problem(path, "every item of files is a map of path, format, size and xxh3");
     const files: Meta[] = manifest.files.filter((f: Yaml) => f && typeof f === "object");
     buildFiles.set(id, files);
+    // A manifest gives one format, size and hash per file, so a path it lists twice is reported
+    // even when the two items agree. Paths compare as text, as in the list of other files.
+    const seen = new Set<string>();
     for (const f of files) {
       if (!f.path) problem(path, "every file has a path");
+      else if (seen.has(String(f.path))) problem(path, `${f.path} is listed twice`);
+      else seen.add(String(f.path));
       if (f.format === undefined || f.format === null || f.format === "")
         problem(path, `${f.path}: every file has a format`);
       else if (!locationRule(f.format)) problem(path, `${f.path}: ${unlistedFormat(f.format)}`);

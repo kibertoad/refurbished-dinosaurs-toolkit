@@ -1582,6 +1582,25 @@ test("a list of other files that belongs to no build is reported", (t) => {
   assert.match(result.output, /BLD-NOPE-1\.0\.other-files\.yaml: belongs to no build entry/);
 });
 
+// A manifest gives one size and hash per file, so a path it lists twice is reported whether or not
+// the two items agree.
+for (const [why, xxh3] of [
+  ["the same", "fedcba9876543210fedcba9876543210"],
+  ["a different", "00112233445566778899aabbccddeeff"],
+])
+  test(`a manifest that lists a path twice with ${why} hash is reported`, (t) => {
+    const root = broken(t, (r) => {
+      const path = join(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml");
+      writeFileSync(
+        path,
+        readFileSync(path, "utf8") + `  - path: DATA/SCORES.BIN\n    format: data\n    size: 2\n    xxh3: ${xxh3}\n`,
+      );
+    });
+    const result = run(root);
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /BLD-EXAMPLE-1\.0\.files\.yaml: DATA\/SCORES\.BIN is listed twice$/m);
+  });
+
 test("an offset into a PE file is reported once, as an offset, not also against Code ranges", (t) => {
   const root = broken(t, (r) => {
     establishByReading(r);
