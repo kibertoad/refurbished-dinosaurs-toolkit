@@ -131,6 +131,21 @@ export function checkExperiment(ctx: Context, id: string, e: Entry, isSup: boole
   const { file, meta } = e;
   const builds = asList(meta.builds);
   if (builds.length !== 1) problem(file, "an experiment lists exactly one build", "ENTRY-TYPES-7");
+  // The standard's experiment entry lists the starting states: a save patch, a save, new-game,
+  // emulated-call or null, where a save or a patch is in saves/. A missing field is reported with
+  // the other required fields. Which save hashes the fixture needs depends on the form, so an
+  // unknown one gets no save hash problem.
+  const state = meta.starting_state;
+  const knownState =
+    state === null ||
+    state === "new-game" ||
+    state === "emulated-call" ||
+    (typeof state === "string" && state.startsWith("saves/"));
+  if (state !== undefined && !knownState)
+    problem(
+      file,
+      `starting_state ${typeof state === "string" ? state : JSON.stringify(state)} is none of the forms the standard defines: a save or save patch in saves/, new-game, emulated-call or null`,
+    );
   const fixture = meta.fixture && join(specDir, "experiments", meta.fixture);
   if (!fixture || !existsSync(fixture)) problem(file, `fixture ${meta.fixture} does not exist`);
   else {
@@ -140,16 +155,16 @@ export function checkExperiment(ctx: Context, id: string, e: Entry, isSup: boole
       // Only a new game and an emulated call start without a save. starting_state null still has
       // one: a save that cannot be committed, kept with the captures and found by its hash.
       const save = fx.starting_state;
-      if (!["new-game", "emulated-call"].includes(meta.starting_state) && !save?.xxh3) {
+      if (knownState && state !== "new-game" && state !== "emulated-call" && !save?.xxh3) {
         const where = "gives the hash of the save its runs started from in starting_state.xxh3";
         problem(
           fixture,
-          meta.starting_state === null
+          state === null
             ? `${where}; starting_state null names a save kept with the captures, and an experiment that starts without a save has starting_state new-game or emulated-call`
             : where,
         );
       }
-      if (typeof meta.starting_state === "string" && meta.starting_state.endsWith(".patch.json") && !save?.base_xxh3)
+      if (knownState && typeof state === "string" && state.endsWith(".patch.json") && !save?.base_xxh3)
         problem(fixture, "a patch fixture gives the base save's hash as well");
       for (const key of ["xxh3", "base_xxh3"])
         if (save?.[key] && !/^[0-9a-f]{32}$/.test(String(save[key])))
@@ -165,12 +180,8 @@ export function checkExperiment(ctx: Context, id: string, e: Entry, isSup: boole
       problem(fixture, `is not valid JSON: ${(err as Error).message}`);
     }
   }
-  if (
-    typeof meta.starting_state === "string" &&
-    meta.starting_state.startsWith("saves/") &&
-    !existsSync(join(specDir, "experiments", meta.starting_state))
-  )
-    problem(file, `starting_state ${meta.starting_state} does not exist`);
+  if (typeof state === "string" && state.startsWith("saves/") && !existsSync(join(specDir, "experiments", state)))
+    problem(file, `starting_state ${state} does not exist`);
   // A recording is committed in recordings/, kept with the captures, or one of the build's files.
   if (typeof meta.recording === "string" && meta.recording !== "") {
     const rec = meta.recording;

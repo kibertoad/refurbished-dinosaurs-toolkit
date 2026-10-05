@@ -1417,6 +1417,42 @@ test("a save hash is 32 lower-case hex digits", (t) => {
   assert.doesNotMatch(output, /gives the hash of the save its runs started from/);
 });
 
+test("a starting_state the standard does not define is named, with the forms it does", (t) => {
+  const forms =
+    "is none of the forms the standard defines: a save or save patch in saves/, new-game, emulated-call or null";
+  // A typo of new-game, a value the standard has no word for, a save outside saves/ and a
+  // non-text value each fail, with or without a save hash, and get no save hash problem.
+  for (const [state, shown] of [
+    ["new_game", "new_game"],
+    ["cold-boot", "cold-boot"],
+    ["EXP-SCORE-001.patch.json", "EXP-SCORE-001.patch.json"],
+    ["42", "42"],
+    ["[new-game]", '["new-game"]'],
+  ]) {
+    for (const fixtureState of [undefined, { xxh3: "e7b24d91c06f3a58b1d2c4e6f8091a3b" }]) {
+      const { status, output } = run(broken(t, (r) => withStartingState(r, state, fixtureState)));
+      assert.equal(status, 1, output);
+      assert.ok(
+        output.includes(`EXP-SCORE-001.md: starting_state ${shown} ${forms}`),
+        `${state} with ${JSON.stringify(fixtureState)}:\n${output}`,
+      );
+      assert.doesNotMatch(output, /gives the hash of the save|base save's hash/);
+    }
+  }
+});
+
+test("an experiment without a starting_state is reported as missing the field only", (t) => {
+  const { status, output } = run(
+    broken(t, (r) => {
+      establishByEmulatedCall(r);
+      replaceIn(r, "spec/experiments/EXP-SCORE-001.md", "starting_state: emulated-call\n", "");
+    }),
+  );
+  assert.equal(status, 1, output);
+  assert.match(output, /EXP-SCORE-001\.md: front matter lacks starting_state/);
+  assert.doesNotMatch(output, /none of the forms the standard defines/);
+});
+
 // The emulated call's fixture with its run's draws replaced.
 function withDraws(root: string, draws: unknown) {
   establishByEmulatedCall(root);
