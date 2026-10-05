@@ -81,7 +81,7 @@ persistence, viewport math, input snapshots and action bindings, indexed palette
 PNG writer. LegacyFormats holds
 bounded PCX, BMP, CUE/CDDA, raw Mode 1, ISO-9660, InstallShield 5 and 6 cabinet and 16-bit PCM
 WAVE readers, and `OriginalContentSource`, which reads the original from a directory, an `.iso` image,
-a cue/bin raw disc image or an InstallShield cabinet set through one interface (ADR 0014). LegacyFormats references Core, so the two are built, versioned and published together.
+a cue/bin raw disc image, an InstallShield cabinet set (ADR 0014) or an InstallShield 3 archive (ADR 0018) through one interface. LegacyFormats references Core, so the two are built, versioned and published together.
 Media.Smacker, Media.Avi, Media.Fli, Media.Playback and Media.Audio are independent, dependency-free NuGet
 libraries. Smacker was moved from LegacyFormats; runtime package IDs and namespaces use
 RefurbishedDinosaurs, while research tooling retains ScientificMethod. See ADR 0005 and

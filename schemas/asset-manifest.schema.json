@@ -19,7 +19,7 @@
   "properties": {
     "gameId": { "type": "string", "minLength": 1 },
     "sourceEdition": { "type": "string", "minLength": 1 },
-    "sourceKind": { "enum": ["directory", "iso9660", "cue-bin", "installshield-cabinet"], "default": "directory" },
+    "sourceKind": { "enum": ["directory", "iso9660", "cue-bin", "installshield-cabinet", "installshield3-archive"], "default": "directory" },
     "volumeIdentifier": {
       "type": "string",
       "$comment": "The ISO 9660 primary volume descriptor's identifier, without its trailing spaces and NULs. Each byte reads as the Latin-1 character of the same value, control bytes included.",
