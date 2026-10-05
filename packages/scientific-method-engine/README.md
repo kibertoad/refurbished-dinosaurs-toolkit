@@ -35,16 +35,16 @@ for the other report scripts, a result count equal to the cap means the same.
 `analyzeHeadless` can exit with code 0 after a script failed to load, so check the log for the
 script's own result lines ([the Ghidra workflow](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/ghidra-workflow.md)
 says what a run must show). The scripts compile against Ghidra 12.1. `ReportConstantFirstArgumentCalls`,
-`ReportFirstArgumentCallSummary` and `ReportCallSitesWithScalars` load a shared helper from the
-`scientificmethod/` directory beside them, so pass the directory the command prints as `-scriptPath`,
+`ReportFirstArgumentCallSummary`, `ReportCallSitesWithScalars`, `ReportInstructionWindow` and
+`ExportBoundedFlow` load shared helpers from the `scientificmethod/` directory beside them, so pass the directory the command prints as `-scriptPath`,
 or copy that subdirectory along with the scripts.
 
 Reading code and data:
 
 | Script | Arguments | Prints |
 |---|---|---|
-| `ReportInstructionContext` | one or more instruction addresses | a bounded instruction window around each |
-| `ReportInstructionWindow` | address, instruction count | instructions from the address onward |
+| `ReportInstructionContext` | one or more instruction addresses | a bounded instruction window around the instruction containing each address; the header names the requested address when it is inside that instruction |
+| `ReportInstructionWindow` | address where an instruction starts, instruction count (1..200) | a header, the instructions from the address onward with a `gap:` line wherever the listing skips bytes, then the count printed or where the listing ended. An address inside an instruction, in data, in undisassembled bytes or outside memory prints an error naming what is there and the next instruction start, and no window |
 | `ReportDataBytes` | address, byte count (1..256) | the bytes at the address |
 | `ReportFunctionSummary` | one or more addresses | focused decompiler output of each containing function, its body ranges and each call without a fall-through (a sign of a wrong no-return flag), then the addresses with no function or a failed decompile |
 | `ReportDecompileWindow` | address, first line (1-based), line count (a count above 160 is cut to 160) | a window of one function's decompilation, its total line count and where the next window starts |
@@ -74,7 +74,7 @@ Exporting for comparison (each writes one file and refuses to overwrite where no
 
 | Script | Arguments | Writes |
 |---|---|---|
-| `ExportBoundedFlow` | entry, instruction limit (1..10000), output path under `analysis/original/` | instruction metadata of one bounded flow as JSON |
+| `ExportBoundedFlow` | entry where an instruction starts, instruction limit (1..10000, the most instruction records exported), output path under `analysis/original/` | instruction metadata of one bounded flow as JSON, with `limitReached` (the walk stopped at the limit with flow left unread) and `noInstruction` (flow targets where no instruction starts). An entry where no instruction starts fails the script and writes nothing |
 | `ExportFunctionInventory` | output TSV path (must not exist) | every function's start and body size |
 | `ExportCallEdges` | output JSON path (must not exist), function limit (1..128), one or more function entries | the call and tail-jump edges of the functions Ghidra reaches breadth-first from the entries, with file offsets, Ghidra's flow type (after any flow override), `fallsThrough` (whether Ghidra continues to the next instruction at the site, after any fall-through override) and `fallsThroughTo`/`fallsThroughToAddress` (where a fall-through override sends Ghidra instead, or null), as the `ghidraCallEdges` input of `callees` |
 | `ExportFunctionFingerprints` | output TSV path (replaced only when the export completes) | per-function and per-instruction fingerprints with addresses normalized, for matching functions across versions |

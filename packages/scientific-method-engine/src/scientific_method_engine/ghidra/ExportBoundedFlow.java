@@ -7,12 +7,16 @@ import ghidra.program.model.listing.Function;
 import java.nio.file.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import scientificmethod.InstructionStart;
 
 public class ExportBoundedFlow extends GhidraScript {
     @Override protected void run() throws Exception {
         String[] args = getScriptArgs();
         if (args.length != 3) throw new IllegalArgumentException("Supply entry, instruction limit (1..10000), ignored analysis/original/output.json");
         Address entry = toAddr(args[0]);
+        if (entry == null) throw new IllegalArgumentException(args[0] + ": not an address in this program");
+        String missingEntry = InstructionStart.missingStart(currentProgram, entry);
+        if (missingEntry != null) throw new IllegalArgumentException(missingEntry + " Nothing exported.");
         int limit = Integer.parseInt(args[1]);
         if (limit < 1 || limit > 10000) throw new IllegalArgumentException("Limit must be 1..10000");
         Path output = Path.of(args[2]).toAbsolutePath().normalize();
@@ -21,18 +25,24 @@ public class ExportBoundedFlow extends GhidraScript {
         Deque<Address> pending = new ArrayDeque<>();
         List<String> rows = new ArrayList<>();
         Set<Long> entries = new TreeSet<>();
+        // Flow targets where no instruction starts (inside an instruction, data or undisassembled
+        // bytes) are listed, so the export never reads as covering them.
+        Set<Long> noInstruction = new TreeSet<>();
+        boolean limitReached = false;
         entries.add(entry.getOffset()); pending.push(entry);
         while (!pending.isEmpty()) {
             if (monitor.isCancelled()) throw new InterruptedException("Cancelled");
             Address at = pending.pop();
             if (visited.contains(at)) continue;
-            if (visited.size() >= limit) break; // Missing edge targets remain explicit review gaps.
             visited.add(at);
             Function owner = currentProgram.getFunctionManager().getFunctionContaining(at);
             Function exact = currentProgram.getFunctionManager().getFunctionAt(at);
             if (!at.equals(entry) && exact != null) { entries.add(at.getOffset()); continue; }
             Instruction ins = currentProgram.getListing().getInstructionAt(at);
-            if (ins == null) continue;
+            if (ins == null) { noInstruction.add(at.getOffset()); continue; }
+            // The limit counts exported instruction records. Function-entry stops and
+            // noInstruction targets do not use it up, so a full export holds exactly limit rows.
+            if (rows.size() >= limit) { limitReached = true; break; }
             List<Long> next = new ArrayList<>(), calls = new ArrayList<>();
             var type = ins.getFlowType();
             Address fall = ins.getFallThrough();
@@ -52,8 +62,12 @@ public class ExportBoundedFlow extends GhidraScript {
                 + ",\"owner\":" + (owner == null ? "null" : owner.getEntryPoint().getOffset()) + "}");
         }
         Files.createDirectories(output.getParent());
-        String text = "{\"entries\":" + entries + ",\"instructions\":[" + String.join(",", rows) + "]}";
+        String text = "{\"entries\":" + entries + ",\"limitReached\":" + limitReached
+            + ",\"noInstruction\":" + noInstruction + ",\"instructions\":[" + String.join(",", rows) + "]}";
         Files.writeString(output, text, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW);
-        println("Exported " + rows.size() + " instruction metadata records. Ghidra addresses are view-specific; retain the import mapping separately.");
+        println("Exported " + rows.size() + " instruction metadata records"
+            + (limitReached ? "; the walk stopped at the limit of " + limit + " with flow left unread" : "")
+            + (noInstruction.isEmpty() ? "" : "; " + noInstruction.size() + " flow targets start no instruction")
+            + ". Ghidra addresses are view-specific; retain the import mapping separately.");
     }
 }
