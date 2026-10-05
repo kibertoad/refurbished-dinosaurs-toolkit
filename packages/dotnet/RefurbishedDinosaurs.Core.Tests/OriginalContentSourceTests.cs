@@ -237,6 +237,46 @@ public sealed class OriginalContentSourceTests
     }
 
     [Fact]
+    public async Task Iso9660OnARawTrackListsLatin1NamesAndReadsFiles()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"toad-raw-iso-{Guid.NewGuid():N}.bin");
+        var cooked = BuildIso([5, 6, 7]);
+        var name = cooked.AsSpan().IndexOf("TEST.BIN;1"u8);
+        cooked[name + 1] = 0xC9;
+        cooked[name + 2] = 0x82;
+        await File.WriteAllBytesAsync(path, CueBinSourceTests.ToRaw(cooked), TestContext.Current.CancellationToken);
+        try
+        {
+            using var image = new RawMode1Image(path, cooked.Length / SectorSize);
+            var iso = new Iso9660(image);
+            var file = Assert.Single(iso.Files);
+            Assert.Equal("EI/TÉ\u0082T.BIN", file.Path);
+            Assert.Equal(new byte[] { 5, 6, 7 }, iso.ReadFile(file));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Theory]
+    [InlineData((byte)'?')]
+    [InlineData((byte)'|')]
+    [InlineData((byte)0x01)]
+    public async Task Iso9660OnARawTrackRejectsANameThatIsNotPortable(byte character)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"toad-raw-iso-{Guid.NewGuid():N}.bin");
+        var cooked = BuildIso([1]);
+        cooked[cooked.AsSpan().IndexOf("TEST.BIN;1"u8) + 2] = character;
+        await File.WriteAllBytesAsync(path, CueBinSourceTests.ToRaw(cooked), TestContext.Current.CancellationToken);
+        try
+        {
+            using var image = new RawMode1Image(path, cooked.Length / SectorSize);
+            var message = Assert.Throws<InvalidDataException>(() => new Iso9660(image)).Message;
+            Assert.Contains("ISO9660 identifier \"TE", message);
+            Assert.Contains("is not a portable name", message);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
     public async Task DirectorySourceListsOrdinaryLegacyNames()
     {
         var root = CreateTemporaryDirectory();

@@ -85,7 +85,7 @@ filesystem replacement needs host controls.
 `AssetManifest`, `AssetVerifier`, `InstalledAssetVerifier`, content overlays and
 `ContentOverlayResult.UpdateInstalledFiles`, `ContentSourceExtractor`, `OriginalContentSource`
 lookups and the cue sheet `FILE` check use the same rules. Every `OriginalContentSource` this package
-opens lists only paths `Relative` accepts: a directory file, ISO 9660 name or InstallShield member
+opens, and `Iso9660`, list only paths `Relative` accepts: a directory file, ISO 9660 name or InstallShield member
 whose path it rejects fails the open with a message naming the entry and the rule, since listing the
 entry would claim a file the source cannot hand out under a portable name, and leaving it out would
 claim the source holds less than it does. A null or blank reference from data, a blank manifest game or edition and a
@@ -201,7 +201,7 @@ contexts outside per-frame loops.
 | `ContentSourceExtractor`, `ContentExtractionOptions` | Copy the files of any `OriginalContentSource`, or a selection of them, into a staging directory and get an `InstalledAsset` record for each. See [Extracting a source into a stage](#extracting-a-source-into-a-stage). |
 | `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
 | `CddaTrackFingerprints`, `CddaTrackVerification` | Record and check the fingerprint of a CD audio track in a cue/bin image, accepting a rip shifted by a drive read offset up to the fingerprint's tolerance. See [CD audio across read offsets](#cd-audio-across-read-offsets). |
-| `CueSheet`, `RawMode1Image`, `Iso9660` | Cue/bin raw disc images and the ISO 9660 file system on their data track. |
+| `CueSheet`, `RawMode1Image`, `Iso9660` | Cue/bin raw disc images and the ISO 9660 file system on their data track. `Iso9660` reads the volume with the reader behind `OpenIso9660`, so it applies the same checks, reads names as Latin-1, and fails on a name `PortableAssetPath.Relative` rejects. |
 | `CddaWave` | A CD audio track of a raw image, written out as WAVE, synchronously or with `WriteAsync`. See [Writing a CD audio track as WAVE](#writing-a-cd-audio-track-as-wave). |
 | `WavePcm16Reader` | 16-bit mono or stereo PCM WAVE files. |
 | `WavePcm16Stream` | 16-bit mono or stereo PCM WAVE files, indexed and read in frame-aligned buffers without loading the track. |

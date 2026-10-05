@@ -234,48 +234,76 @@ public sealed record IsoFile(string Path, uint Extent, uint Size);
 /// Lists and reads the files of an ISO 9660 file system on a <see cref="RawMode1Image"/>. For
 /// <c>.iso</c> files, cue/bin pairs or directories, use <see cref="OriginalContentSource.Open(string)"/>.
 /// </summary>
+/// <remarks>
+/// The volume is read and checked by the reader behind <see cref="OriginalContentSource.OpenIso9660(string)"/>,
+/// with the same rules and messages: the primary volume descriptor, both-endian fields agreeing, the
+/// declared volume inside the data track, every extent inside the volume, and the limits on directory
+/// depth, size and entry count. Each name reads byte for byte as Latin-1 (ISO-8859-1) and, without its
+/// <c>;</c> version suffix and trailing dots, must pass <see cref="Core.IO.PortableAssetPath.Relative"/>.
+/// </remarks>
 public sealed class Iso9660
 {
     private const int Sector = 2048;
     private readonly RawMode1Image _image;
-    private readonly List<IsoFile> _files = [];
     /// <summary>Every file, depth first in directory order.</summary>
-    public IReadOnlyList<IsoFile> Files => _files;
+    public IReadOnlyList<IsoFile> Files { get; }
 
-    /// <summary>Reads the primary volume descriptor and the whole directory tree.</summary>
-    /// <exception cref="InvalidDataException">The track has no primary volume or a directory record is malformed.</exception>
+    /// <summary>Reads the primary volume descriptor and the whole directory tree, and checks them.</summary>
+    /// <param name="image">The data track. The caller keeps it open while this instance reads files.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="image"/> is null.</exception>
+    /// <exception cref="InvalidDataException">
+    /// The track holds no valid ISO 9660 volume, a directory record is malformed, two files share a path
+    /// ignoring case, or a name is not accepted by <see cref="Core.IO.PortableAssetPath.Relative"/>. The
+    /// message names the identifier and the rule it breaks.
+    /// </exception>
     public Iso9660(RawMode1Image image)
     {
+        ArgumentNullException.ThrowIfNull(image);
         _image = image;
-        var descriptor = image.Read(16L * Sector, Sector);
-        if (descriptor[0] != 1 || Encoding.ASCII.GetString(descriptor, 1, 5) != "CD001")
-            throw new InvalidDataException("Track 1 is not an ISO-9660 primary volume.");
-        ReadDirectory(ParseRecord(descriptor.AsSpan(156), ""), "", new HashSet<uint>());
+        using var source = new Iso9660ContentSource(
+            () => new RawMode1ImageStream(image), ContentSourceKinds.CueBin, null);
+        Files = source.Listing.ToArray();
     }
 
     /// <summary>Reads a whole file into memory.</summary>
     public byte[] ReadFile(IsoFile file) => _image.Read((long)file.Extent * Sector, checked((int)file.Size));
+}
 
-    private void ReadDirectory(IsoFile directory, string prefix, HashSet<uint> visited)
+// The data track's 2048-byte user data as a seekable stream, for the shared ISO 9660 reader.
+// Disposing it leaves the image open.
+internal sealed class RawMode1ImageStream(RawMode1Image image) : Stream
+{
+    private long position;
+
+    public override bool CanRead => true;
+    public override bool CanSeek => true;
+    public override bool CanWrite => false;
+    public override long Length => (long)image.SectorCount * 2048;
+    public override long Position
     {
-        if (!visited.Add(directory.Extent)) return;
-        var bytes = ReadFile(directory);
-        for (var offset = 0; offset < bytes.Length;)
-        {
-            var length = bytes[offset];
-            if (length == 0) { offset = (offset / Sector + 1) * Sector; continue; }
-            if (length < 34 || offset + length > bytes.Length) throw new InvalidDataException("Invalid ISO directory record.");
-            var record = bytes.AsSpan(offset, length); var nameLength = record[32];
-            if (33 + nameLength > record.Length) throw new InvalidDataException("Invalid ISO filename length.");
-            var rawName = Encoding.ASCII.GetString(record.Slice(33, nameLength)); offset += length;
-            if (rawName is "\0" or "\u0001") continue;
-            var name = rawName.Split(';')[0].TrimEnd('.');
-            var entry = ParseRecord(record, prefix.Length == 0 ? name : $"{prefix}/{name}");
-            if ((record[25] & 2) != 0) ReadDirectory(entry, entry.Path, visited); else _files.Add(entry);
-        }
+        get => position;
+        set => position = value >= 0 ? value : throw new ArgumentOutOfRangeException(nameof(value));
     }
 
-    private static IsoFile ParseRecord(ReadOnlySpan<byte> record, string path) => new(path,
-        BinaryPrimitives.ReadUInt32LittleEndian(record.Slice(2, 4)),
-        BinaryPrimitives.ReadUInt32LittleEndian(record.Slice(10, 4)));
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        var take = (int)Math.Clamp(Length - position, 0, count);
+        if (take == 0) return 0;
+        image.Read(position, take).CopyTo(buffer, offset);
+        position += take;
+        return take;
+    }
+
+    public override long Seek(long offset, SeekOrigin origin) => Position = origin switch
+    {
+        SeekOrigin.Begin => offset,
+        SeekOrigin.Current => position + offset,
+        SeekOrigin.End => Length + offset,
+        _ => throw new ArgumentOutOfRangeException(nameof(origin))
+    };
+
+    public override void Flush() { }
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }

@@ -373,6 +373,13 @@ Opening a source now fails on such a name where it used to list it:
   where ASCII turned every byte above 0x7F into `?`. A disc whose names hold such bytes now lists
   them under their Latin-1 spelling (byte 0xC9 gives `É`), and a manifest or lookup that wrote `?`
   for them changes the same way as a volume identifier pin (see above).
+- A file or directory name read by the `Iso9660` class on a `RawMode1Image`. It now reads the volume
+  with the same reader as `OpenIso9660`, so its names are Latin-1 and checked as above, and it also
+  applies that reader's other checks, which it skipped before: both-endian fields agreeing, the
+  declared volume inside the data track, every extent inside the volume, no multi-extent entries, no
+  two files sharing a path ignoring case, and the limits on directory depth, size and entry count.
+  A volume that fails one throws `InvalidDataException` with the `OpenIso9660` message. `Files`
+  keeps its depth-first directory order.
 
 The rejection messages changed. `Relative` throws `Asset reference "<reference>" is not a portable
 relative path: <rule>.`, with the reference as a JSON string, and the readers' messages say
