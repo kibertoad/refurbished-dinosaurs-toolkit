@@ -21,7 +21,7 @@ internal static class SyntheticInstallShieldCabinet
 {
     public const int DescriptorOffset = 0x200;
     public const int VolumeDataOffset = 0x200;
-    private const int FileTableOffset = 0x280;
+    public const int FileTableOffset = 0x280;
     private const int ChunkInput = 0x8000;
 
     public static uint VersionWord(int major) => major switch
@@ -37,11 +37,13 @@ internal static class SyntheticInstallShieldCabinet
     /// <summary>
     /// Returns each file of the set by name: <c>data1.hdr</c>, <c>data1.cab</c>, <c>data2.cab</c>...
     /// With <paramref name="headerInCabinet"/>, there is no <c>data1.hdr</c>: <c>data1.cab</c> starts
-    /// with the header region and holds its members after it.
+    /// with the header region and holds its members after it. <paramref name="cabinetDescriptorSize"/>
+    /// replaces the cabinet descriptor size the common header declares, which by default covers the
+    /// descriptor and everything after it (the file table, descriptors and names).
     /// </summary>
     public static Dictionary<string, byte[]> Build(
         int major, IReadOnlyList<CabinetFile> files, long volumeCapacity = long.MaxValue, uint? versionWord = null,
-        bool headerInCabinet = false)
+        bool headerInCabinet = false, uint? cabinetDescriptorSize = null)
     {
         var word = versionWord ?? VersionWord(major);
         var raws = files.Select(file => file.LinkTo is null && !file.Invalid ? Raw(file) : []).ToArray();
@@ -51,6 +53,7 @@ internal static class SyntheticInstallShieldCabinet
             : VolumeDataOffset;
         var parts = Layout(files, raws, volumeCapacity, dataStart, out var volumeCount);
         var header = Header(major, files, raws, parts, word);
+        if (cabinetDescriptorSize is { } size) BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(16), size);
         var result = new Dictionary<string, byte[]>();
         if (!headerInCabinet) result["data1.hdr"] = header;
         for (var volume = 1; volume <= volumeCount; volume++)

@@ -12,11 +12,13 @@ namespace RefurbishedDinosaurs.LegacyFormats;
 /// <param name="MaximumFiles">The most members the set may list.</param>
 /// <param name="MaximumExpandedBytes">The most bytes all listed members may expand to together.</param>
 /// <param name="MaximumHeaderBytes">
-/// The largest header region that is read into memory. For a <c>.hdr</c> header the region is the
-/// whole file. For a <c>.cab</c> that holds the header, it runs from the file's start to the end of
-/// the cabinet descriptor the common header places. Header data past that end is reported as
-/// truncated. The volumes are found by name, so a <c>data1.cab</c> that holds the header is also
-/// read as volume 1.
+/// The most header bytes read into memory. A <c>.hdr</c> header is read whole, so a longer file fails
+/// the open. A <c>.cab</c> that holds the header is read from its start only as far as the header's
+/// structures reach (the cabinet descriptor, the file table, the file descriptors and the names),
+/// wherever they lie before the member data, so a cabinet of any size opens. A structure that ends
+/// past this many bytes into the <c>.cab</c> fails the open with a message naming the limit; one that
+/// ends past the end of the file is reported as a truncated header. The volumes are found by name,
+/// so a <c>data1.cab</c> that holds the header is also read as volume 1.
 /// </param>
 /// <param name="MaximumNameBytes">
 /// The longest file or directory name, in bytes before its NUL terminator, that is read from the
@@ -114,10 +116,10 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     private readonly bool version5Layout;
 
     // limits has been validated by the caller.
-    internal InstallShieldCabinetSource(byte[] header, Func<int, Stream> openVolume, InstallShieldCabinetLimits limits)
+    internal InstallShieldCabinetSource(
+        InstallShieldHeaderReader reader, Func<int, Stream> openVolume, InstallShieldCabinetLimits limits)
     {
         this.openVolume = openVolume;
-        var reader = new HeaderReader(header, limits.MaximumNameBytes);
         var signature = reader.UInt32(0);
         if (signature == MicrosoftCabinetSignature)
             throw new InvalidDataException("File is a Microsoft cabinet, not an InstallShield cabinet.");
@@ -143,8 +145,9 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         if (fileCount > limits.MaximumFiles)
             throw new InvalidDataException(
                 $"InstallShield cabinet declares {fileCount} files, more than the limit of {limits.MaximumFiles}.");
-        if (directoryCount > header.Length / 4)
-            throw new InvalidDataException("InstallShield directory count exceeds the header.");
+        // The directory part of the file table has to be in the header before its names are read,
+        // which also bounds the array below by the bytes the header can hold.
+        reader.Require(table, 4L * directoryCount, "file table");
 
         // A directory's name is read when an entry needs it, so a name no entry uses is never read.
         var directories = new string?[directoryCount];
@@ -318,7 +321,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         _ => null
     };
 
-    private static FileDescriptor ReadVersion5Descriptor(HeaderReader reader, long offset, int size)
+    private static FileDescriptor ReadVersion5Descriptor(InstallShieldHeaderReader reader, long offset, int size)
     {
         reader.Require(offset, size, "file descriptor");
         return new(
@@ -334,7 +337,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
             Volume: 0);
     }
 
-    private static FileDescriptor ReadVersion6Descriptor(HeaderReader reader, long offset)
+    private static FileDescriptor ReadVersion6Descriptor(InstallShieldHeaderReader reader, long offset)
     {
         reader.Require(offset, Version6DescriptorSize, "file descriptor");
         return new(
@@ -459,63 +462,125 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     private sealed record Member(
         ContentSourceEntry Entry, int Index, int DataIndex, bool Compressed, bool Obfuscated, byte[]? Md5,
         InstallShieldSegment[] Segments);
-
-    private sealed class HeaderReader(byte[] data, int maximumNameBytes)
-    {
-        public void Require(long offset, long length, string what)
-        {
-            if (offset < 0 || length < 0 || offset > data.Length - length)
-                throw new InvalidDataException(
-                    $"InstallShield header is truncated: its {what} lies past the end of the {data.Length}-byte header region.");
-        }
-
-        public byte Byte(long offset)
-        {
-            Require(offset, 1, "data");
-            return data[offset];
-        }
-
-        public ushort UInt16(long offset)
-        {
-            Require(offset, 2, "data");
-            return BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan((int)offset));
-        }
-
-        public uint UInt32(long offset)
-        {
-            Require(offset, 4, "data");
-            return BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan((int)offset));
-        }
-
-        public ulong UInt64(long offset)
-        {
-            Require(offset, 8, "data");
-            return BinaryPrimitives.ReadUInt64LittleEndian(data.AsSpan((int)offset));
-        }
-
-        public byte[] Bytes(long offset, int length)
-        {
-            Require(offset, length, "data");
-            return data.AsSpan((int)offset, length).ToArray();
-        }
-
-        // Names are NUL-terminated single-byte strings, read as ISO 8859-1. The terminator is looked
-        // for only within the name limit, so no name costs more than that to read.
-        public string String(long offset, string what)
-        {
-            Require(offset, 1, what);
-            var window = (int)Math.Min((long)maximumNameBytes + 1, data.Length - offset);
-            var end = Array.IndexOf(data, (byte)0, (int)offset, window);
-            if (end >= 0) return Encoding.Latin1.GetString(data, (int)offset, end - (int)offset);
-            if (window <= maximumNameBytes)
-                throw new InvalidDataException($"InstallShield header is truncated: a {what} has no terminator.");
-            throw new InvalidDataException(
-                $"InstallShield header has a {what} longer than the limit of {maximumNameBytes} bytes.");
-        }
-    }
 }
 
 internal sealed record InstallShieldSegment(int Volume, long Offset, long Length);
+
+// The header bytes a source is opened from. A .hdr is read whole. A .cab that holds the header is
+// also volume 1, and its header structures (cabinet descriptor, file table, file descriptors, names)
+// can lie anywhere before its member data: Unshield reads the whole file and does not bound them by
+// the cabinet descriptor's size. So a .cab is read forward from its start only as far as the
+// structures the source asks for reach, and never past the header limit.
+internal sealed class InstallShieldHeaderReader : IDisposable
+{
+    private const int MinimumRead = 4096;
+    private readonly Stream? stream;
+    private readonly long length;
+    private readonly int limit;
+    private readonly int maximumNameBytes;
+    private readonly string description;
+    private byte[] data;
+    private int filled;
+
+    private InstallShieldHeaderReader(
+        Stream? stream, byte[] data, long length, int limit, int maximumNameBytes, string description)
+    {
+        this.stream = stream;
+        this.data = data;
+        filled = stream is null ? data.Length : 0;
+        this.length = length;
+        this.limit = limit;
+        this.maximumNameBytes = maximumNameBytes;
+        this.description = description;
+    }
+
+    // A .hdr file, read whole by the caller.
+    public static InstallShieldHeaderReader Whole(byte[] data, string fileName, int maximumNameBytes) =>
+        new(null, data, data.Length, data.Length, maximumNameBytes, $"header file '{fileName}'");
+
+    // A .cab that holds the header. The reader owns the stream and reads it forward on demand.
+    public static InstallShieldHeaderReader Forward(Stream stream, string fileName, InstallShieldCabinetLimits limits) =>
+        new(stream, [], stream.Length, limits.MaximumHeaderBytes, limits.MaximumNameBytes, $"cabinet '{fileName}'");
+
+    public void Dispose() => stream?.Dispose();
+
+    public void Require(long offset, long count, string what)
+    {
+        if (offset < 0 || count < 0 || offset > length - count)
+            throw new InvalidDataException(
+                $"InstallShield header is truncated: its {what} lies past the end of the {length}-byte {description}.");
+        var end = offset + count;
+        if (end > limit)
+            throw new InvalidDataException(
+                $"InstallShield header's {what} ends {end} bytes into {description}, past the header limit of {limit} bytes.");
+        Load(end);
+    }
+
+    public byte Byte(long offset)
+    {
+        Require(offset, 1, "data");
+        return data[offset];
+    }
+
+    public ushort UInt16(long offset)
+    {
+        Require(offset, 2, "data");
+        return BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan((int)offset));
+    }
+
+    public uint UInt32(long offset)
+    {
+        Require(offset, 4, "data");
+        return BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan((int)offset));
+    }
+
+    public ulong UInt64(long offset)
+    {
+        Require(offset, 8, "data");
+        return BinaryPrimitives.ReadUInt64LittleEndian(data.AsSpan((int)offset));
+    }
+
+    public byte[] Bytes(long offset, int count)
+    {
+        Require(offset, count, "data");
+        return data.AsSpan((int)offset, count).ToArray();
+    }
+
+    // Names are NUL-terminated single-byte strings, read as ISO 8859-1. The terminator is looked
+    // for only within the name limit, so no name costs more than that to read.
+    public string String(long offset, string what)
+    {
+        Require(offset, 1, what);
+        var window = (int)Math.Min((long)maximumNameBytes + 1, length - offset);
+        // Within the header limit; a name that would need bytes past it fails on the limit below.
+        var searched = (int)Math.Min(window, limit - offset);
+        Load(offset + searched);
+        var end = Array.IndexOf(data, (byte)0, (int)offset, searched);
+        if (end >= 0) return Encoding.Latin1.GetString(data, (int)offset, end - (int)offset);
+        if (searched < window) Require(offset, window, what);
+        if (window <= maximumNameBytes)
+            throw new InvalidDataException($"InstallShield header is truncated: a {what} has no terminator.");
+        throw new InvalidDataException(
+            $"InstallShield header has a {what} longer than the limit of {maximumNameBytes} bytes.");
+    }
+
+    // end is at most the smaller of the file's length and the header limit, so it fits an int.
+    private void Load(long end)
+    {
+        if (end <= filled) return;
+        var size = (int)Math.Min(Math.Max(end, Math.Max(2L * filled, MinimumRead)), Math.Min(length, limit));
+        if (size > data.Length) Array.Resize(ref data, size);
+        try
+        {
+            stream!.ReadExactly(data.AsSpan(filled, size - filled));
+        }
+        catch (EndOfStreamException exception)
+        {
+            throw new InvalidDataException($"InstallShield {description} ended before its declared length.", exception);
+        }
+        filled = size;
+    }
+}
 
 internal static class InstallShieldCabinetOpener
 {
@@ -526,7 +591,7 @@ internal static class InstallShieldCabinetOpener
         var directory = Path.GetDirectoryName(fullPath)!;
         var fileName = Path.GetFileName(fullPath);
         var prefix = VolumePrefix(fileName);
-        var header = ReadHeader(new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read), fileName, limits);
+        using var header = OpenHeader(new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read), fileName, limits);
         // Each volume's file is looked up once, not on every member read.
         var found = new ConcurrentDictionary<int, string>();
         return new InstallShieldCabinetSource(header, volume =>
@@ -556,7 +621,7 @@ internal static class InstallShieldCabinetOpener
         var prefix = VolumePrefix(fileName);
         if (!container.TryGetFile(relative, out _))
             throw new FileNotFoundException("InstallShield cabinet header was not found in the source.", relative);
-        var header = ReadHeader(container.OpenRead(relative), fileName, limits);
+        using var header = OpenHeader(container.OpenRead(relative), fileName, limits);
         return new InstallShieldCabinetSource(header, volume =>
         {
             var name = $"{directory}{prefix}{volume}.cab";
@@ -575,39 +640,21 @@ internal static class InstallShieldCabinetOpener
         return prefix.Length > 0 ? prefix : throw new InvalidDataException($"InstallShield header name '{fileName}' has no volume prefix.");
     }
 
-    // A .hdr file is read whole. A .cab that holds the header is also volume 1, so only its header
-    // region is read: the common header up to the end of the cabinet descriptor it places.
-    private static byte[] ReadHeader(Stream stream, string fileName, InstallShieldCabinetLimits limits)
+    // A .hdr file is read whole. A .cab that holds the header is also volume 1, so it is read forward
+    // only as far as the header's structures reach (see InstallShieldHeaderReader).
+    private static InstallShieldHeaderReader OpenHeader(Stream stream, string fileName, InstallShieldCabinetLimits limits)
     {
+        if (Path.GetExtension(fileName).Equals(".cab", StringComparison.OrdinalIgnoreCase))
+            return InstallShieldHeaderReader.Forward(stream, fileName, limits);
         using (stream)
         {
             var length = stream.Length;
-            if (Path.GetExtension(fileName).Equals(".cab", StringComparison.OrdinalIgnoreCase))
-            {
-                var common = new byte[(int)Math.Min(length, InstallShieldCabinetSource.CommonHeaderSize)];
-                stream.ReadExactly(common);
-                // Anything else is refused by the source with the reason the common header gives.
-                if (common.Length < InstallShieldCabinetSource.CommonHeaderSize ||
-                    BinaryPrimitives.ReadUInt32LittleEndian(common) != InstallShieldCabinetSource.Signature)
-                    return common;
-                var end = (long)BinaryPrimitives.ReadUInt32LittleEndian(common.AsSpan(12)) +
-                          BinaryPrimitives.ReadUInt32LittleEndian(common.AsSpan(16));
-                if (end > limits.MaximumHeaderBytes)
-                    throw new InvalidDataException(
-                        $"InstallShield header region of '{fileName}' is {end} bytes, more than the limit of {limits.MaximumHeaderBytes}.");
-                // A region that runs past the file is reported as a truncated header by the source.
-                var region = new byte[Math.Max(InstallShieldCabinetSource.CommonHeaderSize, Math.Min(end, length))];
-                common.CopyTo(region, 0);
-                stream.ReadExactly(region.AsSpan(InstallShieldCabinetSource.CommonHeaderSize));
-                return region;
-            }
-
             if (length > limits.MaximumHeaderBytes)
                 throw new InvalidDataException(
                     $"InstallShield header is {length} bytes, more than the limit of {limits.MaximumHeaderBytes}.");
             var bytes = new byte[length];
             stream.ReadExactly(bytes);
-            return bytes;
+            return InstallShieldHeaderReader.Whole(bytes, fileName, limits.MaximumNameBytes);
         }
     }
 }

@@ -415,7 +415,7 @@ public sealed class InstallShieldCabinetTests
             SyntheticInstallShieldCabinet.WriteTo(root, set);
             var path = Path.Combine(root, "data1.cab");
 
-            // The limit bounds the header region, which is all that is read of the file to open it.
+            // The limit bounds the header bytes, which are all that is read of the file to open it.
             var limits = new InstallShieldCabinetLimits(MaximumHeaderBytes: region);
             using (var source = OriginalContentSource.OpenInstallShieldCabinet(path, limits))
             {
@@ -428,20 +428,85 @@ public sealed class InstallShieldCabinetTests
             await using (var stream = nested.OpenRead("readme.txt"))
                 Assert.Equal(Text, await ReadAll(stream));
 
-            Assert.Contains("header region", Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(
-                path, new InstallShieldCabinetLimits(MaximumHeaderBytes: region - 1))).Message);
-            // A descriptor size that stops short of the file table leaves the table outside the region
-            // read, though the file holds it; the message names the region's size.
-            var shortened = cabinet.ToArray();
-            BinaryPrimitives.WriteInt32LittleEndian(shortened.AsSpan(16), 0x30);
-            File.WriteAllBytes(path, shortened);
-            Assert.Contains($"past the end of the {SyntheticInstallShieldCabinet.DescriptorOffset + 0x30}-byte header region",
-                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(path)).Message);
+            Assert.Contains($"into cabinet 'data1.cab', past the header limit of {region - 1} bytes", Assert.Throws<InvalidDataException>(
+                () => OriginalContentSource.OpenInstallShieldCabinet(path, new InstallShieldCabinetLimits(MaximumHeaderBytes: region - 1))).Message);
             File.WriteAllBytes(path, cabinet[..(region - 10)]);
             Assert.Contains("truncated",
                 Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(path)).Message);
             File.WriteAllBytes(path, cabinet[..10]);
             Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(path));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(0, true)]
+    [InlineData(5, false)]
+    [InlineData(5, true)]
+    [InlineData(6, false)]
+    [InlineData(6, true)]
+    public async Task OpensACabinetWhoseHeaderStructuresLiePastTheDeclaredCabinetDescriptor(int major, bool offsetsDeclared)
+    {
+        // Unshield reads the whole .cab as the header, so the file table, the file descriptors and the
+        // names can lie past the end of the cabinet descriptor the common header declares: either the
+        // declared size covers only the descriptor's fields, or it also covers the file table's offsets
+        // but not the descriptors and names they point at.
+        var root = TemporaryDirectory();
+        try
+        {
+            CabinetFile[] files =
+            [
+                new("", "gone.bin", Text, Invalid: true),
+                new("Bin", "noise.bin", Noise),
+                new("", "readme.txt", Text, Compressed: false)
+            ];
+            const int directories = 2;
+            var offsets = directories + (major == 6 ? 0 : files.Length);
+            var declared = offsetsDeclared ? (uint)(SyntheticInstallShieldCabinet.FileTableOffset + 4 * offsets) : 0x30u;
+            var set = SyntheticInstallShieldCabinet.Build(major, files, headerInCabinet: true, cabinetDescriptorSize: declared);
+            var cabinet = set["data1.cab"];
+            // Volume 1's data starts where the header ends.
+            var headerLength = BinaryPrimitives.ReadInt32LittleEndian(cabinet.AsSpan(20));
+            Assert.True(headerLength > SyntheticInstallShieldCabinet.DescriptorOffset + declared);
+            SyntheticInstallShieldCabinet.WriteTo(root, set);
+            var path = Path.Combine(root, "data1.cab");
+
+            using (var source = OriginalContentSource.OpenInstallShieldCabinet(path))
+            {
+                Assert.Equal(["Bin/noise.bin", "readme.txt"], source.Files.Select(entry => entry.Path));
+                Assert.Equal([(0, (string?)"gone.bin")], source.SkippedFiles.Select(file => (file.Index, file.Path)));
+                await using var stream = source.OpenRead("bin/noise.bin");
+                Assert.Equal(Noise, await ReadAll(stream));
+            }
+            // The header's structures end where the member data starts, so a limit of exactly that
+            // many bytes opens the set, through another source too, and one byte less does not.
+            var exact = new InstallShieldCabinetLimits(MaximumHeaderBytes: headerLength);
+            using (var container = OriginalContentSource.OpenDirectory(root))
+            using (var nested = OriginalContentSource.OpenInstallShieldCabinet(container, "data1.cab", exact))
+            await using (var stream = nested.OpenRead("readme.txt"))
+                Assert.Equal(Text, await ReadAll(stream));
+            Assert.Contains($"into cabinet 'data1.cab', past the header limit of {headerLength - 1} bytes",
+                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(
+                    path, new InstallShieldCabinetLimits(MaximumHeaderBytes: headerLength - 1))).Message);
+
+            // A file descriptor or a file table placed past the end of the file is a truncated header.
+            var damaged = cabinet.ToArray();
+            if (major == 6)
+                BinaryPrimitives.WriteInt32LittleEndian(damaged.AsSpan(SyntheticInstallShieldCabinet.DescriptorOffset + 0x2c), cabinet.Length);
+            else
+                BinaryPrimitives.WriteInt32LittleEndian(damaged.AsSpan(Table(cabinet) + 4 * (directories + 1)), cabinet.Length);
+            File.WriteAllBytes(path, damaged);
+            Assert.Contains($"its file descriptor lies past the end of the {cabinet.Length}-byte cabinet 'data1.cab'",
+                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(path)).Message);
+            damaged = cabinet.ToArray();
+            BinaryPrimitives.WriteInt32LittleEndian(damaged.AsSpan(SyntheticInstallShieldCabinet.DescriptorOffset + 0x0c), cabinet.Length);
+            File.WriteAllBytes(path, damaged);
+            Assert.Contains("its file table lies past the end",
+                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(path)).Message);
         }
         finally
         {
