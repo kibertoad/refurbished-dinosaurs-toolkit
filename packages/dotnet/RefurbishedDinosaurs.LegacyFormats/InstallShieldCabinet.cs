@@ -94,9 +94,9 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
 {
     // The layout (common header, cabinet descriptor, file table, volume headers, chunked deflate and
     // the obfuscation) follows Unshield's reading of the format: https://github.com/twogood/unshield.
-    internal const uint Signature = 0x28635349;
+    private const uint Signature = 0x28635349;
     private const uint MicrosoftCabinetSignature = 0x4643534d;
-    internal const int CommonHeaderSize = 20;
+    private const int CommonHeaderSize = 20;
     private const int DescriptorFieldsSize = 0x30;
     private const int Version6DescriptorSize = 0x57;
     private const int Version5DescriptorSize = 0x3a;
@@ -134,10 +134,11 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         version5Layout = MajorVersion is 0 or 5;
 
         long descriptor = reader.UInt32(12);
-        var descriptorSize = reader.UInt32(16);
-        if (descriptorSize < DescriptorFieldsSize)
+        // As in Unshield, the declared descriptor size only has to be nonzero. It bounds nothing the
+        // reader reads, so the descriptor's fields are read whatever size it declares.
+        if (reader.UInt32(16) == 0)
             throw new InvalidDataException("InstallShield header has no cabinet descriptor.");
-        reader.Require(descriptor, descriptorSize, "cabinet descriptor");
+        reader.Require(descriptor, DescriptorFieldsSize, "cabinet descriptor");
         var table = descriptor + reader.UInt32(descriptor + 0x0c);
         var directoryCount = reader.UInt32(descriptor + 0x1c);
         var fileCount = reader.UInt32(descriptor + 0x28);
@@ -564,12 +565,15 @@ internal sealed class InstallShieldHeaderReader : IDisposable
             $"InstallShield header has a {what} longer than the limit of {maximumNameBytes} bytes.");
     }
 
-    // end is at most the smaller of the file's length and the header limit, so it fits an int.
+    // end is at most the smaller of the file's length and the header limit, so it fits an int. The
+    // buffer grows by doubling, but each read stops MinimumRead bytes past end at most, so little of
+    // the member data after the header is read.
     private void Load(long end)
     {
         if (end <= filled) return;
-        var size = (int)Math.Min(Math.Max(end, Math.Max(2L * filled, MinimumRead)), Math.Min(length, limit));
-        if (size > data.Length) Array.Resize(ref data, size);
+        var available = Math.Min(length, limit);
+        var size = (int)Math.Min(Math.Max(end, (long)filled + MinimumRead), available);
+        if (size > data.Length) Array.Resize(ref data, (int)Math.Min(Math.Max(size, 2L * data.Length), available));
         try
         {
             stream!.ReadExactly(data.AsSpan(filled, size - filled));
@@ -645,7 +649,17 @@ internal static class InstallShieldCabinetOpener
     private static InstallShieldHeaderReader OpenHeader(Stream stream, string fileName, InstallShieldCabinetLimits limits)
     {
         if (Path.GetExtension(fileName).Equals(".cab", StringComparison.OrdinalIgnoreCase))
-            return InstallShieldHeaderReader.Forward(stream, fileName, limits);
+        {
+            try
+            {
+                return InstallShieldHeaderReader.Forward(stream, fileName, limits);
+            }
+            catch
+            {
+                stream.Dispose();
+                throw;
+            }
+        }
         using (stream)
         {
             var length = stream.Length;

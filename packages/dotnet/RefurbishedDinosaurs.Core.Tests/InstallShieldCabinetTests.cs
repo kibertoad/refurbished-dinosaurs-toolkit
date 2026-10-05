@@ -430,7 +430,8 @@ public sealed class InstallShieldCabinetTests
 
             Assert.Contains($"into cabinet 'data1.cab', past the header limit of {region - 1} bytes", Assert.Throws<InvalidDataException>(
                 () => OriginalContentSource.OpenInstallShieldCabinet(path, new InstallShieldCabinetLimits(MaximumHeaderBytes: region - 1))).Message);
-            File.WriteAllBytes(path, cabinet[..(region - 10)]);
+            // The declared descriptor size bounds nothing, so the cut is inside the file table.
+            File.WriteAllBytes(path, cabinet[..(Table(cabinet) + 2)]);
             Assert.Contains("truncated",
                 Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(path)).Message);
             File.WriteAllBytes(path, cabinet[..10]);
@@ -507,6 +508,73 @@ public sealed class InstallShieldCabinetTests
             File.WriteAllBytes(path, damaged);
             Assert.Contains("its file table lies past the end",
                 Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(path)).Message);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(0, true)]
+    [InlineData(5, false)]
+    [InlineData(5, true)]
+    [InlineData(6, false)]
+    [InlineData(6, true)]
+    public async Task OpensAHeaderWhoseDeclaredCabinetDescriptorSizeIsAnyNonzeroValue(int major, bool headerInCabinet)
+    {
+        // As in Unshield, the declared cabinet descriptor size only has to be nonzero: a size smaller
+        // than the descriptor's fields, past the end of the file or past the header limit opens.
+        CabinetFile[] files = [new("Bin", "noise.bin", Noise), new("", "readme.txt", Text, Compressed: false)];
+        var headerName = headerInCabinet ? "data1.cab" : "data1.hdr";
+        var limits = new InstallShieldCabinetLimits(MaximumHeaderBytes: 1024 * 1024);
+        foreach (var declared in new uint[] { 1, 0x2f, 0x1000_0000, uint.MaxValue })
+        {
+            var root = TemporaryDirectory();
+            try
+            {
+                SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(
+                    major, files, headerInCabinet: headerInCabinet, cabinetDescriptorSize: declared));
+                using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, headerName), limits);
+                Assert.Equal(["Bin/noise.bin", "readme.txt"], source.Files.Select(entry => entry.Path));
+                await using var stream = source.OpenRead("bin/noise.bin");
+                Assert.Equal(Noise, await ReadAll(stream));
+            }
+            finally
+            {
+                Directory.Delete(root, true);
+            }
+        }
+
+        var empty = TemporaryDirectory();
+        try
+        {
+            SyntheticInstallShieldCabinet.WriteTo(empty, SyntheticInstallShieldCabinet.Build(
+                major, files, headerInCabinet: headerInCabinet, cabinetDescriptorSize: 0));
+            Assert.Equal("InstallShield header has no cabinet descriptor.", Assert.Throws<InvalidDataException>(
+                () => OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(empty, headerName))).Message);
+        }
+        finally
+        {
+            Directory.Delete(empty, true);
+        }
+    }
+
+    [Fact]
+    public void RefusesAHeaderCabinetWhoseStreamEndsBeforeItsReportedLength()
+    {
+        var root = TemporaryDirectory();
+        try
+        {
+            var set = SyntheticInstallShieldCabinet.Build(6, [new("", "readme.txt", Text, Compressed: false)], headerInCabinet: true);
+            var cabinet = set["data1.cab"];
+            var headerLength = BinaryPrimitives.ReadInt32LittleEndian(cabinet.AsSpan(20));
+            // The file stops inside the header, but its stream reports the whole cabinet's length.
+            File.WriteAllBytes(Path.Combine(root, "data1.cab"), cabinet[..(headerLength - 10)]);
+            using var container = new OverstatedLengthSource(OriginalContentSource.OpenDirectory(root), cabinet.Length);
+            Assert.Equal("InstallShield cabinet 'data1.cab' ended before its declared length.", Assert.Throws<InvalidDataException>(
+                () => OriginalContentSource.OpenInstallShieldCabinet(container, "data1.cab")).Message);
         }
         finally
         {
@@ -828,5 +896,41 @@ public sealed class InstallShieldCabinetTests
         var path = Path.Combine(Path.GetTempPath(), "installshield-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(path);
         return path;
+    }
+
+    // Passes a source through, but every stream it opens reports the given length.
+    private sealed class OverstatedLengthSource(OriginalContentSource inner, long length) : OriginalContentSource
+    {
+        public override string Kind => inner.Kind;
+        public override string? Label => inner.Label;
+        public override IReadOnlyList<ContentSourceEntry> Files => inner.Files;
+
+        public override bool TryGetFile(string relativePath, out ContentSourceEntry? entry) =>
+            inner.TryGetFile(relativePath, out entry);
+
+        public override Stream OpenRead(string relativePath) => new OverstatedLengthStream(inner.OpenRead(relativePath), length);
+
+        public override void Dispose() => inner.Dispose();
+    }
+
+    private sealed class OverstatedLengthStream(Stream inner, long length) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => inner.CanSeek;
+        public override bool CanWrite => false;
+        public override long Length => length;
+        public override long Position { get => inner.Position; set => inner.Position = value; }
+        public override int Read(byte[] buffer, int offset, int count) => inner.Read(buffer, offset, count);
+        public override int Read(Span<byte> buffer) => inner.Read(buffer);
+        public override long Seek(long offset, SeekOrigin origin) => inner.Seek(offset, origin);
+        public override void Flush() { }
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) inner.Dispose();
+            base.Dispose(disposing);
+        }
     }
 }

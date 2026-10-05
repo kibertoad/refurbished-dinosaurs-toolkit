@@ -235,7 +235,8 @@ libraries that cannot read BI_RLE8.
 from a `dataN.cab` that holds the header. A `.cab` is read from its start only as far as the header's
 structures (cabinet descriptor, file table, file descriptors and names) reach, wherever they lie
 before the member data, as Unshield reads them; a `data1.cab` that holds the header is also read as
-volume 1. `OpenInstallShieldCabinet(container, headerPath)` opens a set
+volume 1. As in Unshield, the cabinet descriptor size the header declares only has to be nonzero:
+it does not bound what is read, in a `.hdr` or a `.cab`. `OpenInstallShieldCabinet(container, headerPath)` opens a set
 inside another source, such as the ISO 9660 volume of a cue/bin image, and reads the volumes through
 that source whenever a member is read. Volumes are `data1.cab`, `data2.cab` and so on beside the
 header, matched ignoring case.

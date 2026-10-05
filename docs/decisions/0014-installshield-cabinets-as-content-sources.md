@@ -29,12 +29,13 @@ The cabinet format is a container. Its layout is not game content, and no open t
    second copy of that loop.
 3. Opening checks everything the header declares before any member is read: every member path passes
    `PortableAssetPath.Relative`, every member's data lies inside its volumes, no two different
-   members share a path, and the member count, expanded total, header region and name length are
+   members share a path, and the member count, expanded total, header bytes read and name length are
    within caller limits. A name is searched for its terminator only up to the name limit, so the work
    spent on each entry's name is bounded however the header is laid out. A `.hdr` file is read
    whole. A set with no `.hdr` keeps its header at the start of a `dataN.cab`. Unshield reads that
-   whole file as the header, and the cabinet descriptor's declared size does not bound where the
-   file table, the file descriptors and the names lie. So the reader reads the `.cab` forward from
+   whole file as the header and only checks that the cabinet descriptor's declared size is nonzero,
+   so that size bounds neither the descriptor's fields nor where the file table, the file
+   descriptors and the names lie. The reader does the same for a `.hdr` and a `.cab`. So the reader reads the `.cab` forward from
    its start only as far as the structures it reads reach, never past the header limit, and a
    cabinet of any size opens. A structure past the header limit fails the open naming the limit;
    one past the end of the file is a truncated header. Volumes
