@@ -96,10 +96,12 @@ public enum InstallShieldSkippedFileKind
     DuplicatesListedMember,
 
     /// <summary>
-    /// The entry's data is stored outside the cabinet's volumes: its data offset is the exact length
-    /// of the volume that would hold it, which is how Unshield recognizes such a file. The reader
-    /// does not read files outside the cabinet. Entries at the same path that share its data, or
-    /// version 6 copies of it that are also stored outside, have this kind too.
+    /// The entry's data is stored outside the cabinet's volumes: the entry is not split, has stored
+    /// bytes, and its data offset is the exact length of the volume that would hold it, which is how
+    /// Unshield recognizes such a file. The reader does not read files outside the cabinet. Entries
+    /// that link to its data, and version 6 copies of it at its path that are also stored outside,
+    /// have this kind too. A volume cut short exactly where its last member's data starts reads the
+    /// same way, so the reason gives the offset and the volume.
     /// </summary>
     StoredOutsideCabinet,
 }
