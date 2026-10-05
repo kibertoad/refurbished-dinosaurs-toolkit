@@ -34,7 +34,7 @@ problems under other sections carry no label yet.
 |---|---|---|
 | `--root <dir>` | The repository to check. | the current directory |
 | `--check` | Fail when an index or `PARITY.md` is stale, instead of rewriting it. | rewrite |
-| `--base <ref>` | Also fail when a spec ID, area or deviation that exists at `<ref>` is gone. | where HEAD forked from `origin/$GITHUB_BASE_REF` or `origin/main`, when that resolves |
+| `--base <ref>` | Also fail when a spec ID, area or deviation that exists at `<ref>` is gone, or when a superseded format entry has no layout table although it had one at `<ref>`. | where HEAD forked from `origin/$GITHUB_BASE_REF` or `origin/main`, when that resolves |
 | `--no-ksy` | Skip compiling the Kaitai definitions in `spec/formats/`. The result line names the skipped compilation. | compile |
 | `--require-ksc` | Fail when `spec/formats/` holds Kaitai definitions and no compiler is found, instead of passing with the compilation skipped. | pass with the compilation skipped |
 | `--glossary <path>` | Also accept the terms of a draft glossary file, or of a directory of them. | none |
