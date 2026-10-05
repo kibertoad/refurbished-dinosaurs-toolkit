@@ -365,8 +365,21 @@ test("a compiler on PATH whose --version fails is named with its output", (t) =>
   const { bin, log } = compilerInstall(t, false);
   const { output } = runWithPath(t, bin);
   assert.match(output, /kaitai-struct-compiler\S* --version failed, so it is not used:\s+install not found/);
+  assert.ok(output.includes(join(bin, "kaitai-struct-compiler")), output);
   assert.throws(() => readFileSync(log, "utf8"));
 });
+
+test(
+  "a compiler on PATH that cannot be started is named with the reason",
+  { skip: process.platform === "win32" && "a .bat on Windows always starts, through cmd.exe" },
+  (t) => {
+    const bin = mkdtempSync(join(tmpdir(), "ksc bin "));
+    t.after(() => rmSync(bin, { recursive: true, force: true }));
+    writeFileSync(join(bin, "kaitai-struct-compiler"), "#!/nonexistent/interpreter\n", { mode: 0o755 });
+    const { output } = runWithPath(t, bin);
+    assert.match(output, /kaitai-struct-compiler --version failed, so it is not used:\s+\S.*ENOENT/);
+  },
+);
 
 test(
   "a compiler path and a root with spaces reach the compiler whole",

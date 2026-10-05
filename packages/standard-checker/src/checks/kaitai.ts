@@ -34,11 +34,7 @@ export function compileKaitai(ctx: Context) {
           try {
             runTool(compiler.cmd, [...fixed, ...batch]);
           } catch (err) {
-            const failure = err as { stdout?: unknown; stderr?: unknown };
-            problem(
-              null,
-              `Kaitai definitions do not compile:\n${String(failure.stdout ?? "")}${String(failure.stderr ?? "")}`,
-            );
+            problem(null, `Kaitai definitions do not compile:\n${toolOutput(err)}`);
           }
         }
       } finally {
@@ -89,9 +85,7 @@ function findKaitai() {
       runTool(cmd, ["--version"]);
       return { cmd, args: [] };
     } catch (err) {
-      const failure = err as { stdout?: unknown; stderr?: unknown };
-      const output = `${String(failure.stdout ?? "")}${String(failure.stderr ?? "")}`.trim();
-      console.warn(`warning: ${cmd} --version failed, so it is not used${output ? `:\n${output}` : "."}`);
+      console.warn(`warning: ${cmd} --version failed, so it is not used:\n${toolOutput(err).trim()}`);
     }
   }
   return null;
@@ -99,17 +93,27 @@ function findKaitai() {
 
 const isBareName = (cmd: string) => !/[\\/]/.test(cmd);
 
-// The first file on PATH that runs as `name`, or null when there is none. On Windows it returns a
-// full path, which matters: cmd.exe runs a .bat that it found on PATH under a quoted bare name with
-// %~dp0 set to the working directory, and the compiler's launcher finds its jars through %~dp0. A
+// What a failed runTool call printed or, when it printed nothing because the program could not be
+// started, the error's message.
+function toolOutput(err: unknown) {
+  const failure = err as { stdout?: unknown; stderr?: unknown; message?: unknown };
+  const output = `${String(failure.stdout ?? "")}${String(failure.stderr ?? "")}`;
+  return output.trim() ? output : String(failure.message ?? err);
+}
+
+// The path of the first file on PATH that runs as `name`, or null when there is none. The path
+// matters on Windows: cmd.exe runs a .bat that it found on PATH under a quoted bare name with %~dp0
+// set to the working directory, and the compiler's launcher finds its jars through %~dp0. There a
 // name without one of the PATHEXT extensions is tried with each, in PATH order and then PATHEXT
 // order as cmd.exe searches, so the extensionless Unix script that ships beside the .bat launcher
-// is skipped. Elsewhere it returns the name, which execFileSync looks up on PATH itself.
+// is skipped. Elsewhere it takes the first executable file of that name, as execFileSync would.
 function findOnPath(name: string) {
   const windows = process.platform === "win32";
-  const pathExts = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
-  const hasExt = pathExts.some((e) => extname(name).toLowerCase() === e.toLowerCase());
-  const exts = windows && !hasExt ? pathExts : [""];
+  let exts = [""];
+  if (windows) {
+    const pathExts = (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+    if (!pathExts.some((e) => extname(name).toLowerCase() === e.toLowerCase())) exts = pathExts;
+  }
   const dirs = (process.env.PATH ?? "")
     .split(delimiter)
     .map((d) => (windows ? d.replace(/"/g, "") : d))
@@ -118,9 +122,9 @@ function findOnPath(name: string) {
     for (const ext of exts) {
       const file = join(dir, name + ext);
       try {
-        if (!statSync(file).isFile()) continue;
+        if (!statSync(file, { throwIfNoEntry: false })?.isFile()) continue;
         if (!windows) accessSync(file, constants.X_OK);
-        return windows ? file : name;
+        return file;
       } catch {}
     }
   return null;
