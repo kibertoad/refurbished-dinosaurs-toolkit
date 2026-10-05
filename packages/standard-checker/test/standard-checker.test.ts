@@ -299,6 +299,91 @@ test("an area without backticks that is removed since the base is reported", (t)
   assert.match(output, /area EXTRA exists at HEAD and has been removed or renamed/);
 });
 
+// A compiler install laid out as the official release is: bin/ holds an extensionless Unix script
+// and, on Windows, a .bat launcher that finds the install through its own directory (%~dp0), as
+// the real one finds its jars. The directory name has a space. The launcher answers --version and
+// logs the arguments of every other call. With working: false it fails as a launcher whose install
+// is broken does.
+function compilerInstall(t: TestContext, working = true) {
+  const home = mkdtempSync(join(tmpdir(), "ksc home "));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const bin = join(home, "bin");
+  mkdirSync(bin);
+  mkdirSync(join(home, "lib"));
+  if (working) writeFileSync(join(home, "lib", "compiler.jar"), "");
+  const log = join(home, "calls.log");
+  const name = "kaitai-struct-compiler";
+  const unix = [
+    "#!/bin/sh",
+    // PATH holds only bin/, so the script uses shell built-ins alone.
+    `[ -f "\${0%/*}/../lib/compiler.jar" ] || { echo "install not found" >&2; exit 1; }`,
+    `[ "$1" = "--version" ] && { echo "${name} 0.11"; exit 0; }`,
+    `echo "$*" >> "${log}"`,
+    "",
+  ];
+  writeFileSync(join(bin, name), unix.join("\n"), { mode: 0o755 });
+  const bat = [
+    "@echo off",
+    'if not exist "%~dp0..\\lib\\compiler.jar" (echo install not found 1>&2& exit /b 1)',
+    `if "%~1"=="--version" (echo ${name} 0.11& exit /b 0)`,
+    `echo %* >> "${log}"`,
+    "",
+  ];
+  if (process.platform === "win32") writeFileSync(join(bin, `${name}.bat`), bat.join("\r\n"));
+  return { bin, log };
+}
+
+// Runs the checker with KSC set to ksc, or unset, and PATH holding only bin. The working directory
+// is elsewhere, since cmd.exe resolves %~dp0 against it when it runs a .bat under a bare name.
+function runWithPath(t: TestContext, bin: string, ksc?: string) {
+  const root = broken(t, () => {});
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) if (!/^(path|ksc)$/i.test(key)) env[key] = value;
+  env.PATH = bin;
+  if (ksc !== undefined) env.KSC = ksc;
+  const result = spawnSync(process.execPath, [script, "--root", root, "--check"], {
+    encoding: "utf8",
+    env,
+    cwd: tmpdir(),
+  });
+  return { status: result.status, output: result.stdout + result.stderr };
+}
+
+test("the compiler's official launcher pair is found on PATH and compiles", (t) => {
+  const { bin, log } = compilerInstall(t);
+  const { status, output } = runWithPath(t, bin);
+  assert.equal(status, 0, output);
+  assert.doesNotMatch(output, /no Kaitai Struct compiler found/);
+  assert.match(readFileSync(log, "utf8"), /fmt_score_001\.ksy/);
+});
+
+test("a KSC that names the compiler without a path is looked up on PATH", (t) => {
+  const { bin, log } = compilerInstall(t);
+  const { status, output } = runWithPath(t, bin, "kaitai-struct-compiler");
+  assert.equal(status, 0, output);
+  assert.match(readFileSync(log, "utf8"), /fmt_score_001\.ksy/);
+});
+
+test("a compiler on PATH whose --version fails is named with its output", (t) => {
+  const { bin, log } = compilerInstall(t, false);
+  const { output } = runWithPath(t, bin);
+  assert.match(output, /kaitai-struct-compiler\S* --version failed, so it is not used:\s+install not found/);
+  assert.ok(output.includes(join(bin, "kaitai-struct-compiler")), output);
+  assert.throws(() => readFileSync(log, "utf8"));
+});
+
+test(
+  "a compiler on PATH that cannot be started is named with the reason",
+  { skip: process.platform === "win32" && "a .bat on Windows always starts, through cmd.exe" },
+  (t) => {
+    const bin = mkdtempSync(join(tmpdir(), "ksc bin "));
+    t.after(() => rmSync(bin, { recursive: true, force: true }));
+    writeFileSync(join(bin, "kaitai-struct-compiler"), "#!/nonexistent/interpreter\n", { mode: 0o755 });
+    const { output } = runWithPath(t, bin);
+    assert.match(output, /kaitai-struct-compiler --version failed, so it is not used:\s+\S.*ENOENT/);
+  },
+);
+
 test(
   "a compiler path and a root with spaces reach the compiler whole",
   { skip: process.platform !== "win32" && "Windows only" },

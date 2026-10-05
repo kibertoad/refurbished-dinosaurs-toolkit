@@ -49,6 +49,14 @@ The `KSC` environment variable names the Kaitai Struct compiler. Without it, the
 `kaitai-struct-compiler` or `ksc` on `PATH`. When it finds neither, it skips the compilation and
 names it in the result line, or with `--require-ksc` reports the missing compiler as a problem.
 
+On Windows the search tries each name with the `PATHEXT` extensions, as `cmd.exe` does, so it finds
+the `.bat` launcher of the official release and skips the extensionless Unix script beside it. The
+checker then runs the launcher by its full path. A `KSC` that holds a bare name, with no directory,
+is looked up on `PATH` the same way.
+
+On every platform, a launcher found on `PATH` whose `--version` fails is not used, and the checker
+prints a warning naming its path, with its output.
+
 ## In GitHub Actions
 
 The toolkit's `actions/check-documentation` composite action runs this checker with `--check`,

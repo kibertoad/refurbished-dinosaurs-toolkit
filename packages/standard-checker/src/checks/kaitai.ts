@@ -2,9 +2,9 @@
 
 import { execFileSync } from "node:child_process";
 import type { ExecFileSyncOptions } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, delimiter, extname, join } from "node:path";
 import type { Context } from "../context.ts";
 
 /**
@@ -47,9 +47,7 @@ export function compileKaitai(ctx: Context) {
       } catch (err) {
         // A compiler that cannot be started, such as a KSC naming a missing file, prints nothing,
         // so its error message is the only account of the failure.
-        const failure = err as { stdout?: unknown; stderr?: unknown; message?: string };
-        const output = `${String(failure.stdout ?? "")}${String(failure.stderr ?? "")}`;
-        problem(null, `Kaitai definitions do not compile:\n${output || (failure.message ?? String(err))}`);
+        problem(null, `Kaitai definitions do not compile:\n${toolOutput(err)}`);
       }
     }
   } finally {
@@ -82,14 +80,61 @@ function kaitaiBatches(fixed: string[], files: string[]) {
   return batches;
 }
 
+// KSC is used as given, except that a bare command name is looked up on PATH like the default
+// names. A name found on PATH whose --version fails is named on stderr, so a broken launcher does
+// not read as a missing one.
 function findKaitai() {
-  if (process.env.KSC) return { cmd: process.env.KSC, args: [] };
-  for (const cmd of ["kaitai-struct-compiler", "ksc"]) {
+  const ksc = process.env.KSC;
+  if (ksc) return { cmd: isBareName(ksc) ? (findOnPath(ksc) ?? ksc) : ksc, args: [] };
+  for (const name of ["kaitai-struct-compiler", "ksc"]) {
+    const cmd = findOnPath(name);
+    if (!cmd) continue;
     try {
       runTool(cmd, ["--version"]);
       return { cmd, args: [] };
-    } catch {}
+    } catch (err) {
+      console.warn(`warning: ${cmd} --version failed, so it is not used:\n${toolOutput(err).trim()}`);
+    }
   }
+  return null;
+}
+
+const isBareName = (cmd: string) => !/[\\/]/.test(cmd);
+
+// What a failed runTool call printed or, when it printed nothing because the program could not be
+// started, the error's message.
+function toolOutput(err: unknown) {
+  const failure = err as { stdout?: unknown; stderr?: unknown; message?: unknown };
+  const output = `${String(failure.stdout ?? "")}${String(failure.stderr ?? "")}`;
+  return output.trim() ? output : String(failure.message ?? err);
+}
+
+// The path of the first file on PATH that runs as `name`, or null when there is none. The path
+// matters on Windows: cmd.exe runs a .bat that it found on PATH under a quoted bare name with %~dp0
+// set to the working directory, and the compiler's launcher finds its jars through %~dp0. There a
+// name without one of the PATHEXT extensions is tried with each, in PATH order and then PATHEXT
+// order as cmd.exe searches, so the extensionless Unix script that ships beside the .bat launcher
+// is skipped. Elsewhere it takes the first executable file of that name, as execFileSync would.
+function findOnPath(name: string) {
+  const windows = process.platform === "win32";
+  let exts = [""];
+  if (windows) {
+    const pathExts = (process.env.PATHEXT || ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+    if (!pathExts.some((e) => extname(name).toLowerCase() === e.toLowerCase())) exts = pathExts;
+  }
+  const dirs = (process.env.PATH ?? "")
+    .split(delimiter)
+    .map((d) => (windows ? d.replace(/"/g, "") : d))
+    .filter(Boolean);
+  for (const dir of dirs)
+    for (const ext of exts) {
+      const file = join(dir, name + ext);
+      try {
+        if (!statSync(file, { throwIfNoEntry: false })?.isFile()) continue;
+        if (!windows) accessSync(file, constants.X_OK);
+        return file;
+      } catch {}
+    }
   return null;
 }
 
