@@ -185,6 +185,27 @@ public sealed class ContentOverlayTests : IDisposable
         Assert.False(File.Exists(Path.Combine(_content, "DATA", "added.dat")));
     }
 
+    [Theory]
+    [InlineData("extra/bad|name.dat")]
+    [InlineData("extra/bad*name.dat")]
+    [InlineData("extra/bad\u0007name.dat")]
+    public void ARecordWithACharacterWindowsRefusesIsRejectedWhenOpened(string path)
+    {
+        var error = Assert.Throws<InvalidDataException>(
+            () => ContentOverlay.OpenZip(Zip(Manifest(Record(path, Added, null)), (path, Added))));
+        Assert.Contains("is not a portable relative path", error.Message);
+    }
+
+    [Fact]
+    public async Task OrdinaryLegacyNamesAreAdded()
+    {
+        const string path = "Extra Files~1/#1 & 2+!'(x)[y]@Données.dat";
+        using var overlay = ContentOverlay.OpenZip(Zip(Manifest(Record(path, Added, null)), (path, Added)));
+        var result = await overlay.ApplyAsync(_content, Token);
+        Assert.Equal(path, Assert.Single(result.Outputs).Path);
+        Assert.Equal(Added, File.ReadAllBytes(Path.Combine(_content, path)));
+    }
+
     [Fact]
     public async Task APayloadThatChangedSizeAfterOpeningLeavesEveryTargetAndNoTemporaryFile()
     {
@@ -360,6 +381,8 @@ public sealed class ContentOverlayTests : IDisposable
     [InlineData("./DATA/MAIN.BIN")]
     [InlineData("../outside.bin")]
     [InlineData("/DATA/MAIN.BIN")]
+    [InlineData("DATA/MAIN?.BIN")]
+    [InlineData("DATA/MAIN.BIN")]
     [InlineData("")]
     [InlineData(null)]
     public async Task InstalledRecordsTheVerifierWouldRejectAreRejected(string? path)

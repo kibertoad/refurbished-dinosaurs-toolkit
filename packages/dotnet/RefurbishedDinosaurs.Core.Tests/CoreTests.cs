@@ -22,6 +22,9 @@ public sealed class CoreTests
     [InlineData("../secret.dat")]
     [InlineData("C:secret.dat")]
     [InlineData("data/secret.dat.")]
+    [InlineData("data/secret?.dat")]
+    [InlineData("data/se<cret>.dat")]
+    [InlineData("data/secret.dat")]
     [InlineData(" ")]
     public void ManifestRejectsPathsOutsideThePortableForm(string path)
     {

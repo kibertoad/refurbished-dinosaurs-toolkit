@@ -252,7 +252,7 @@ public static class AssetVerifier
 
     // Writes an identifier as a JSON string, so a control character in a label (C0, DEL or C1)
     // stays on one line of the report and the value can be copied into a manifest as it stands.
-    private static string JsonString(string value)
+    internal static string JsonString(string value)
     {
         var text = new System.Text.StringBuilder("\"", value.Length + 2);
         foreach (var c in value)

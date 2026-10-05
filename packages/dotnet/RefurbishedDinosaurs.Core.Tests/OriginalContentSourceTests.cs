@@ -194,14 +194,95 @@ public sealed class OriginalContentSourceTests
     [Theory]
     [InlineData((byte)':')]
     [InlineData((byte)0x07)]
+    [InlineData((byte)0x7F)]
+    [InlineData((byte)'<')]
+    [InlineData((byte)'>')]
+    [InlineData((byte)'"')]
+    [InlineData((byte)'|')]
+    [InlineData((byte)'?')]
+    [InlineData((byte)'*')]
+    [InlineData((byte)'\\')]
     public async Task Iso9660SourceRejectsFileNamesUnsafeOnDisk(byte character)
     {
         var path = Path.Combine(Path.GetTempPath(), $"toad-iso-name-{Guid.NewGuid():N}.iso");
         var image = BuildIso([1]);
         image[image.AsSpan().IndexOf("TEST.BIN;1"u8) + 2] = character;
         await File.WriteAllBytesAsync(path, image, TestContext.Current.CancellationToken);
-        try { Assert.Throws<InvalidDataException>(() => OriginalContentSource.Open(path)); }
+        try
+        {
+            var message = Assert.Throws<InvalidDataException>(() => OriginalContentSource.Open(path)).Message;
+            // The identifier is shown as a JSON string, with its version suffix.
+            Assert.Contains("ISO9660 identifier \"TE", message);
+        }
         finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task Iso9660SourceReadsEachNameByteAsTheLatin1CharacterOfTheSameValue()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"toad-iso-name-{Guid.NewGuid():N}.iso");
+        var image = BuildIso([1]);
+        var name = image.AsSpan().IndexOf("TEST.BIN;1"u8);
+        // A Windows-1252 letter and a byte that is a letter in DOS code page 437 and a C1 control in Latin-1.
+        image[name + 1] = 0xC9;
+        image[name + 2] = 0x82;
+        await File.WriteAllBytesAsync(path, image, TestContext.Current.CancellationToken);
+        try
+        {
+            using var source = OriginalContentSource.Open(path);
+            Assert.Equal("EI/TÉ\u0082T.BIN", Assert.Single(source.Files).Path);
+            Assert.True(source.TryGetFile("ei/té\u0082t.bin", out _));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public async Task DirectorySourceListsOrdinaryLegacyNames()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            string[] names = ["My Data~1/#1 & 2+!'(x)[y]@z.bin", "Données/ÉCRAN Ü.PCX"];
+            foreach (var name in names)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(root, name))!);
+                await File.WriteAllBytesAsync(Path.Combine(root, name), [1], TestContext.Current.CancellationToken);
+            }
+            using var source = OriginalContentSource.OpenDirectory(root);
+            Assert.Equal(names.OrderBy(name => name, StringComparer.OrdinalIgnoreCase), source.Files.Select(entry => entry.Path));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
+    [InlineData("bad?name.dat", "'?'")]
+    [InlineData("Data/bad|name.dat", "'|'")]
+    [InlineData("Data/bad<name.dat", "'<'")]
+    [InlineData("Icon\r", "U+000D")]
+    [InlineData("CON", "reserved Windows device name")]
+    [InlineData("trailing.", "ends with a dot or a space")]
+    [InlineData("back\\slash.dat", "'\\'")]
+    public async Task DirectorySourceRejectsAFileWhoseNameIsNotPortable(string name, string rule)
+    {
+        // Windows refuses these names, so only Linux and macOS can hold such a directory.
+        if (OperatingSystem.IsWindows()) return;
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "Data"));
+            await File.WriteAllBytesAsync(Path.Combine(root, "Data", "fine.dat"), [1], TestContext.Current.CancellationToken);
+            await File.WriteAllBytesAsync(Path.Combine(root, name), [2], TestContext.Current.CancellationToken);
+            var message = Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenDirectory(root)).Message;
+            Assert.Contains("Source file", message);
+            Assert.Contains(rule, message);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
     }
 
     [Fact]

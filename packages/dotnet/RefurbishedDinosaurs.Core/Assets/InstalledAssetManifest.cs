@@ -251,9 +251,9 @@ public static class InstalledAssetVerifier
                 relative = PortableAssetPath.Relative(asset.Path);
                 target = SafePath.Below(fullRoot, relative);
             }
-            catch (InvalidDataException)
+            catch (InvalidDataException exception)
             {
-                issues.Add(new(InstalledAssetProblem.UnsafePath, asset.Path, $"Unsafe path: {asset.Path}"));
+                issues.Add(new(InstalledAssetProblem.UnsafePath, asset.Path, $"Unsafe path. {exception.Message}"));
                 continue;
             }
             if (!listed.Add(target))

@@ -135,7 +135,12 @@ public sealed class InstallShieldCabinetTests
     [InlineData(0, @"..\Escape", "x.bin")]
     [InlineData(0, "", @"..\x.bin")]
     [InlineData(5, "", @"..\x.bin")]
-    public void RejectsAMemberPathThatIsNotRelativeWhenOpened(int major, string directory, string name)
+    [InlineData(6, "Data", "bad>name.bin")]
+    [InlineData(6, "Bad\"Dir", "x.bin")]
+    [InlineData(6, "Data", "bad*\u001fname.bin")]
+    [InlineData(5, "Data", "bad?name.bin")]
+    [InlineData(0, "Data", "bad\u0009name.bin")]
+    public void RejectsAMemberPathThatIsNotPortableWhenOpened(int major, string directory, string name)
     {
         var root = TemporaryDirectory();
         try
@@ -144,7 +149,8 @@ public sealed class InstallShieldCabinetTests
                 [new("Data", "fine.bin", Text), new(directory, name, Text)]));
             var exception = Assert.Throws<InvalidDataException>(
                 () => OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr")));
-            Assert.Contains("InstallShield file 1", exception.Message);
+            Assert.Contains("InstallShield file 1 has a path that is not portable", exception.Message);
+            Assert.Contains("is not a portable relative path: ", exception.Message);
         }
         finally
         {

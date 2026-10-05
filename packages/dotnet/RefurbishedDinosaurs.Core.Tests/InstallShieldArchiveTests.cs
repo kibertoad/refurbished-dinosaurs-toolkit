@@ -305,10 +305,42 @@ public sealed class InstallShieldArchiveTests
     [InlineData(@"C:\Windows", "x.bin")]
     [InlineData(@"\Rooted", "x.bin")]
     [InlineData("Data", "CON")]
-    public void RejectsAMemberPathThatIsNotRelativeWhenOpened(string directory, string name)
+    [InlineData("Data", "bad<name.bin")]
+    [InlineData("Data", "bad?name.bin")]
+    [InlineData("Bad|Dir", "x.bin")]
+    [InlineData("Data", "bad\u0001name.bin")]
+    [InlineData("Data", "bad\u007fname.bin")]
+    public void RejectsAMemberPathThatIsNotPortableWhenOpened(string directory, string name)
     {
         var bytes = SyntheticInstallShieldArchive.Build([new("Data", "fine.bin", Text), new(directory, name, Text)]);
-        Assert.Contains("file 1 has a path that is not relative", Assert.Throws<InvalidDataException>(() => Open(bytes)).Message);
+        var message = Assert.Throws<InvalidDataException>(() => Open(bytes)).Message;
+        Assert.Contains("file 1 has a path that is not portable", message);
+        Assert.Contains("is not a portable relative path: ", message);
+    }
+
+    [Fact]
+    public void ListsMembersWithOrdinaryLegacyNamesAndLatin1Bytes()
+    {
+        // Bytes 0xC9 and 0x82 read as Latin-1: a Windows-1252 letter and a DOS code page 437 letter.
+        var bytes = SyntheticInstallShieldArchive.Build(
+        [
+            new("My Data~1", "#1 & 2+!'(x)[y]@z.bin", Text),
+            new("Données", "ÉCRAN\u0082.PCX", Text)
+        ]);
+        using var source = Open(bytes);
+        Assert.Equal(
+            ["Données/ÉCRAN\u0082.PCX", "My Data~1/#1 & 2+!'(x)[y]@z.bin"],
+            source.Files.Select(entry => entry.Path));
+    }
+
+    [Fact]
+    public void AnInvalidMarkedMemberWithAReservedCharacterIsSkippedWithoutAPath()
+    {
+        var bytes = SyntheticInstallShieldArchive.Build(
+            [new("Data", "kept.bin", Text), new("Data", "gone?.bin", Text, Invalid: true)]);
+        using var source = Open(bytes);
+        Assert.Equal(["Data/kept.bin"], source.Files.Select(entry => entry.Path));
+        Assert.Equal([(1, (string?)null)], source.SkippedFiles.Select(file => (file.Index, file.Path)));
     }
 
     [Fact]

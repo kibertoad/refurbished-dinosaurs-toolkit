@@ -140,7 +140,8 @@ public sealed class PortableAssetPathTests
     [InlineData("data/a.dat", "DATA/A.DAT", "twice")]
     [InlineData("data/a.dat", "DATA/A.DAT/b.dat", "both a file and a directory")]
     [InlineData("data/a.dat/b.dat", "DATA/A.DAT", "both a file and a directory")]
-    [InlineData("data/a.dat", "../a.dat", "relative path components")]
+    [InlineData("data/a.dat", "../a.dat", "is not a portable relative path")]
+    [InlineData("data/a.dat", "data/a|b.dat", "is not a portable relative path")]
     public void ALayoutRejectsAPathThatClashesIgnoringCase(string first, string second, string message)
     {
         var layout = new PortablePathLayout();
@@ -149,4 +150,80 @@ public sealed class PortableAssetPathTests
         Assert.Contains(message, exception.Message);
         Assert.Equal(1, layout.Count);
     }
+
+    [Theory]
+    [InlineData("bad<name.dat", "'<'")]
+    [InlineData("bad>name.dat", "'>'")]
+    [InlineData("bad\"name.dat", "'\"'")]
+    [InlineData("bad|name.dat", "'|'")]
+    [InlineData("data/bad?name.dat", "'?'")]
+    [InlineData("bad*/name.dat", "'*'")]
+    [InlineData("data:stream", "':'")]
+    public void RelativeRejectsEveryCharacterWindowsRefusesInAName(string reference, string character)
+    {
+        var exception = Assert.Throws<InvalidDataException>(() => PortableAssetPath.Relative(reference));
+        Assert.Contains($"it contains {character}, which Windows does not allow in a file name", exception.Message);
+        Assert.Throws<InvalidDataException>(() => PortableAssetPath.WithoutDriveRoot($"C:\\{reference}"));
+    }
+
+    [Fact]
+    public void RelativeRejectsEveryC0ControlCharacterAndDel()
+    {
+        for (var code = 0; code <= 0x7f; code = code == 0x1f ? 0x7f : code + 1)
+        {
+            var reference = $"data/bad{(char)code}name.dat";
+            var exception = Assert.Throws<InvalidDataException>(() => PortableAssetPath.Relative(reference));
+            Assert.Contains($"it contains the control character U+{code:X4}", exception.Message);
+            // The reference is shown as a JSON string, so a control character stays visible on one line.
+            Assert.Contains($"\"data/bad\\u{code:X4}name.dat\"", exception.Message);
+        }
+    }
+
+    [Fact]
+    public void RelativeRejectsAnUnpairedSurrogate()
+    {
+        // Built in code: theory data with a lone surrogate does not survive serialization.
+        (string Reference, string CodePoint)[] cases =
+        [
+            ("bad\uD800name.dat", "U+D800"), ("bad\uDC00name.dat", "U+DC00"), ("bad\uD800", "U+D800"),
+            ("\uDC00\uD800.dat", "U+DC00")
+        ];
+        foreach (var (reference, codePoint) in cases)
+        {
+            var exception = Assert.Throws<InvalidDataException>(() => PortableAssetPath.Relative(reference));
+            Assert.Contains($"it contains the unpaired surrogate {codePoint}", exception.Message);
+            Assert.Contains($"\\u{codePoint[2..]}", exception.Message);
+        }
+    }
+
+    [Theory]
+    [InlineData("My Game/Save Files/slot 1.sav")]
+    [InlineData("DATA/~TEMP~1.DAT")]
+    [InlineData("#1 & 2 + 3!/it's (final) [v2] @home.dat")]
+    [InlineData("a{b}c=d,e;f%g$h^i`j.dat")]
+    [InlineData("Donn\u00E9es/\u00C9CRAN \u00DC \u00DF \u00F1 \u00FF.PCX")]
+    // C1 controls are what a Latin-1 reading gives for bytes 0x80 to 0x9F of a DOS or Shift-JIS name.
+    [InlineData("MUSIC/\u0082T\u0085\u009F.WAV")]
+    [InlineData("\u00A0nbsp/pair \uD83E\uDD95.dat")]
+    public void RelativeAdmitsOrdinaryLegacyNames(string reference) =>
+        Assert.Equal(reference, PortableAssetPath.Relative(reference));
+
+    [Theory]
+    [InlineData("/data/a.dat", "it is rooted")]
+    [InlineData("data//a.dat", "it has an empty component")]
+    [InlineData("data/../a.dat", "it has a '..' component")]
+    [InlineData("data/./a.dat", "it has a '.' component")]
+    [InlineData("data /a.dat", "component \"data \" ends with a dot or a space")]
+    [InlineData("data/Aux.txt", "component \"Aux.txt\" is the reserved Windows device name Aux")]
+    public void TheMessageNamesTheRuleAReferenceBreaks(string reference, string rule)
+    {
+        var exception = Assert.Throws<InvalidDataException>(() => PortableAssetPath.Relative(reference));
+        Assert.Contains("is not a portable relative path", exception.Message);
+        Assert.Contains(rule, exception.Message);
+    }
+
+    [Fact]
+    public void ResolveFileRejectsAReservedCharacterBeforeReadingTheTree() =>
+        Assert.Contains("'?'", Assert.Throws<InvalidDataException>(() => PortableAssetPath.ResolveFile(
+            Path.Combine(Path.GetTempPath(), $"absent-{Guid.NewGuid():N}"), "a?.dat")).Message);
 }
