@@ -76,8 +76,8 @@ public sealed class CueBinSourceTests
         try
         {
             var payload = new byte[] { 5, 3, 9 };
-            await WriteAsync(root, WithRecordsPastTheVolume(OriginalContentSourceTests.BuildIso(payload)),
-                PastVolumeCue);
+            var iso = OriginalContentSourceTests.BuildIso(payload);
+            await WriteAsync(root, WithRecordsPastTheVolume(iso), PastVolumeCue);
             using var source = OriginalContentSource.OpenCueBin(root);
             Assert.Equal(PastVolumeDataTrack, source.Cue?.DataTrackSectors);
             Assert.Equal(IsoSectors, source.VolumeBlocks);
@@ -92,7 +92,10 @@ public sealed class CueBinSourceTests
             await using (var volume = source.OpenVolume())
             {
                 Assert.Equal(IsoSectors * CookedSector, volume.Length);
-                await volume.CopyToAsync(Stream.Null, TestContext.Current.CancellationToken);
+                var actual = new byte[iso.Length];
+                await volume.ReadExactlyAsync(actual, TestContext.Current.CancellationToken);
+                Assert.Equal(iso, actual);
+                Assert.Equal(0, await volume.ReadAsync(new byte[1], TestContext.Current.CancellationToken));
             }
         }
         finally { Directory.Delete(root, true); }
@@ -120,25 +123,25 @@ public sealed class CueBinSourceTests
         finally { Directory.Delete(root, true); }
     }
 
+    // The EI directory's record in the root directory, and TEST.BIN's record in the EI directory, each
+    // pointed at the first repeated record and at the first zero-filled record past the volume.
     [Theory]
-    [InlineData(RootDirectorySector)] // the EI directory's record in the root directory
-    [InlineData(GameDirectorySector)] // TEST.BIN's record in the EI directory
-    public async Task ExtentsIntoTheRecordsPastTheVolumeStillFail(int directorySector)
+    [InlineData(RootDirectorySector, IsoSectors)]
+    [InlineData(RootDirectorySector, IsoSectors + RepeatedRecords)]
+    [InlineData(GameDirectorySector, IsoSectors)]
+    [InlineData(GameDirectorySector, IsoSectors + RepeatedRecords)]
+    public async Task ExtentsIntoTheRecordsPastTheVolumeStillFail(int directorySector, int extent)
     {
         var root = CreateTemporaryDirectory();
         try
         {
             var iso = OriginalContentSourceTests.BuildIso([1]);
             // Both records follow the "." and ".." records, 34 bytes each; the extent sits 2 bytes in.
-            // Sector 24 holds a repeated record and sector 27 a zero-filled one, both inside the data track.
-            foreach (var extent in new uint[] { 24, 27 })
-            {
-                OriginalContentSourceTests.WriteBothEndianUInt32(
-                    iso.AsSpan(directorySector * CookedSector), 68 + 2, extent);
-                await WriteAsync(root, WithRecordsPastTheVolume(iso), PastVolumeCue);
-                var failure = Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenCueBin(root));
-                Assert.Contains("outside the declared volume", failure.Message, StringComparison.Ordinal);
-            }
+            OriginalContentSourceTests.WriteBothEndianUInt32(
+                iso.AsSpan(directorySector * CookedSector), 68 + 2, (uint)extent);
+            await WriteAsync(root, WithRecordsPastTheVolume(iso), PastVolumeCue);
+            var failure = Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenCueBin(root));
+            Assert.Contains("outside the declared volume", failure.Message, StringComparison.Ordinal);
         }
         finally { Directory.Delete(root, true); }
     }
@@ -525,11 +528,13 @@ public sealed class CueBinSourceTests
     // The synthetic volume from BuildIso declares 23 sectors. The data track below runs 7 sectors
     // past it: its last 3 sectors repeated with their stored addresses, then 4 zero-filled records.
     // Track 02's INDEX 00 ends the data track, followed by a pregap and a second of audio.
-    private const int IsoSectors = 23;
-    private const int RootDirectorySector = 20;
-    private const int GameDirectorySector = 21;
-    private const int PayloadSector = 22;
-    private const int PastVolumeDataTrack = IsoSectors + 3 + 4;
+    private const int IsoSectors = OriginalContentSourceTests.IsoSectors;
+    private const int RootDirectorySector = OriginalContentSourceTests.IsoRootDirectorySector;
+    private const int GameDirectorySector = OriginalContentSourceTests.IsoGameDirectorySector;
+    private const int PayloadSector = OriginalContentSourceTests.IsoPayloadSector;
+    private const int RepeatedRecords = 3;
+    private const int ZeroFilledRecords = 4;
+    private const int PastVolumeDataTrack = IsoSectors + RepeatedRecords + ZeroFilledRecords;
     private const string PastVolumeCue =
         "FILE \"game.bin\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n" +
         "TRACK 02 AUDIO\nINDEX 00 00:00:30\nINDEX 01 00:02:30\n";
@@ -540,7 +545,8 @@ public sealed class CueBinSourceTests
         var volume = ToRaw(iso);
         var image = new byte[(PastVolumeDataTrack + 150 + 75) * RawSector];
         volume.CopyTo(image, 0);
-        volume.AsSpan((IsoSectors - 3) * RawSector, 3 * RawSector).CopyTo(image.AsSpan(IsoSectors * RawSector));
+        volume.AsSpan((IsoSectors - RepeatedRecords) * RawSector, RepeatedRecords * RawSector)
+            .CopyTo(image.AsSpan(IsoSectors * RawSector));
         return image;
     }
 

@@ -409,38 +409,42 @@ public sealed class OriginalContentSourceTests
         finally { File.Delete(path); }
     }
 
+    // The layout BuildIso writes: a volume of IsoSectors sectors whose root directory, EI directory and
+    // TEST.BIN each fill one sector at its end.
+    internal const int IsoSectors = 23;
+    internal const int IsoRootDirectorySector = 20;
+    internal const int IsoGameDirectorySector = 21;
+    internal const int IsoPayloadSector = 22;
+
     internal static byte[] BuildIso(byte[] payload)
     {
-        const int rootSector = 20;
-        const int gameSector = 21;
-        const int payloadSector = 22;
-        var image = new byte[23 * SectorSize];
+        var image = new byte[IsoSectors * SectorSize];
 
         var pvd = image.AsSpan(16 * SectorSize, SectorSize);
         pvd[0] = 1;
         "CD001"u8.CopyTo(pvd[1..]);
         pvd[6] = 1;
         WritePaddedAscii(pvd[40..72], "SYNTHETIC_EI");
-        WriteBothEndianUInt32(pvd, 80, 23);
+        WriteBothEndianUInt32(pvd, 80, IsoSectors);
         WriteBothEndianUInt16(pvd, 128, SectorSize);
-        WriteDirectoryRecord(pvd, 156, rootSector, SectorSize, isDirectory: true, [0]);
+        WriteDirectoryRecord(pvd, 156, IsoRootDirectorySector, SectorSize, isDirectory: true, [0]);
 
         var terminator = image.AsSpan(17 * SectorSize, SectorSize);
         terminator[0] = 255;
         "CD001"u8.CopyTo(terminator[1..]);
         terminator[6] = 1;
 
-        var root = image.AsSpan(rootSector * SectorSize, SectorSize);
-        var rootOffset = WriteDirectoryRecord(root, 0, rootSector, SectorSize, true, [0]);
-        rootOffset += WriteDirectoryRecord(root, rootOffset, rootSector, SectorSize, true, [1]);
-        WriteDirectoryRecord(root, rootOffset, gameSector, SectorSize, true, "EI"u8);
+        var root = image.AsSpan(IsoRootDirectorySector * SectorSize, SectorSize);
+        var rootOffset = WriteDirectoryRecord(root, 0, IsoRootDirectorySector, SectorSize, true, [0]);
+        rootOffset += WriteDirectoryRecord(root, rootOffset, IsoRootDirectorySector, SectorSize, true, [1]);
+        WriteDirectoryRecord(root, rootOffset, IsoGameDirectorySector, SectorSize, true, "EI"u8);
 
-        var game = image.AsSpan(gameSector * SectorSize, SectorSize);
-        var gameOffset = WriteDirectoryRecord(game, 0, gameSector, SectorSize, true, [0]);
-        gameOffset += WriteDirectoryRecord(game, gameOffset, rootSector, SectorSize, true, [1]);
-        WriteDirectoryRecord(game, gameOffset, payloadSector, payload.Length, false, "TEST.BIN;1"u8);
+        var game = image.AsSpan(IsoGameDirectorySector * SectorSize, SectorSize);
+        var gameOffset = WriteDirectoryRecord(game, 0, IsoGameDirectorySector, SectorSize, true, [0]);
+        gameOffset += WriteDirectoryRecord(game, gameOffset, IsoRootDirectorySector, SectorSize, true, [1]);
+        WriteDirectoryRecord(game, gameOffset, IsoPayloadSector, payload.Length, false, "TEST.BIN;1"u8);
 
-        payload.CopyTo(image.AsSpan(payloadSector * SectorSize));
+        payload.CopyTo(image.AsSpan(IsoPayloadSector * SectorSize));
         return image;
     }
 
