@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -268,11 +268,170 @@ test("a glossary term that names a superseded entry is reported", (t) => {
   assert.match(output, /add_points cites RULE-SCORE-002, which is superseded/);
 });
 
+test("a Markdown file under --references that cites a superseded entry is reported, and a deviation file is not", (t) => {
+  const root = broken(t, (r) => {
+    copyRule(r, "RULE-SCORE-002", (text) =>
+      text
+        .replace("status: sourced", "status: superseded")
+        .replace("superseded_by: []", "superseded_by: [RULE-SCORE-001]"),
+    );
+    mkdirSync(join(r, "notes"));
+    writeFileSync(join(r, "notes", "handover.md"), "# Handover\n\nNext: implement RULE-SCORE-002.\n");
+    withDeviation(r);
+    replaceIn(r, "deviations/DEV-SCORE-001.md", "Counts two points.", "Counts two points, as RULE-SCORE-002 did.");
+  });
+  const stale = run(root, "--references", "notes");
+  assert.equal(stale.status, 1);
+  assert.match(stale.output, /handover\.md: cites RULE-SCORE-002, which is superseded; cite what replaced it$/m);
+  assert.doesNotMatch(stale.output, /DEV-SCORE-001\.md: cites RULE-SCORE-002/);
+  replaceIn(root, "notes/handover.md", "RULE-SCORE-002", "RULE-SCORE-001");
+  const replaced = run(root, "--references", "notes");
+  assert.equal(replaced.status, 0, replaced.output);
+});
+
 test("? in a files pattern matches one character", (t) => {
   const root = broken(t, (r) =>
     replaceIn(r, "spec/formats/FMT-SCORE-001.md", 'files: ["DATA/SCORES.BIN"]', 'files: ["DATA/SCORES.BI?"]'),
   );
   const { status, output } = run(root, "--check");
+  assert.equal(status, 0, output);
+});
+
+// An unknown format entry that only lists a file: no layout table, no definition, no evidence.
+// status and supersededBy give its front matter; a live entry gets a parity row.
+function addListing(root: string, status: string, supersededBy: string) {
+  writeFileSync(
+    join(root, "spec", "formats", "FMT-SCORE-002.md"),
+    [
+      "---",
+      "id: FMT-SCORE-002",
+      "title: An unstudied listing of DATA/SCORES.BIN",
+      `status: ${status}`,
+      "builds: [BLD-EXAMPLE-1.0]",
+      `superseded_by: [${supersededBy}]`,
+      'files: ["DATA/SCORES.BIN"]',
+      "byte_order: little",
+      "size: null",
+      "text: false",
+      "definition: null",
+      "evidence: []",
+      "conflicting: []",
+      "split_with: []",
+      "related: []",
+      "---",
+      "",
+      "## Layout",
+      "",
+      "None known.",
+      "",
+      "## Enumerations and flags",
+      "",
+      "None known.",
+      "",
+      "## Differences between builds",
+      "",
+      "None known.",
+      "",
+      "## Coverage",
+      "",
+      "None.",
+      "",
+      "## Open questions",
+      "",
+      "None known.",
+      "",
+    ].join("\n"),
+  );
+  if (status !== "superseded")
+    replaceIn(
+      root,
+      "parity/SCORE.md",
+      "| `RULE-SCORE-001` |",
+      `| \`FMT-SCORE-002\` | An unstudied listing of DATA/SCORES.BIN | ${status} | missing | None | None | ${status} | None |\n| \`RULE-SCORE-001\` |`,
+    );
+}
+
+test("an unknown format entry needs no layout table", (t) => {
+  const root = broken(t, (r) => addListing(r, "unknown", ""));
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+});
+
+test("an unknown format entry superseded by its replacement keeps no layout table", (t) => {
+  const root = broken(t, (r) => addListing(r, "superseded", "FMT-SCORE-001"));
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+});
+
+test("a superseded format entry without a layout table still names what replaced it", (t) => {
+  const missing = run(broken(t, (r) => addListing(r, "superseded", "")));
+  assert.equal(missing.status, 1);
+  assert.match(
+    missing.output,
+    /FMT-SCORE-002\.md: a superseded entry names what replaced or disproved it in superseded_by \[IDENTIFIERS-7\]$/m,
+  );
+  assert.doesNotMatch(missing.output, /Layout has no table/);
+  const unresolved = run(broken(t, (r) => addListing(r, "superseded", "FMT-SCORE-009")));
+  assert.equal(unresolved.status, 1);
+  assert.match(unresolved.output, /FMT-SCORE-002\.md: .*FMT-SCORE-009/);
+  assert.doesNotMatch(unresolved.output, /Layout has no table/);
+});
+
+test("a format entry above unknown needs a layout table", (t) => {
+  const root = broken(t, (r) => {
+    const fmt = join(r, "spec", "formats", "FMT-SCORE-001.md");
+    const text = readFileSync(fmt, "utf8");
+    const stripped = text.replace(/\| Offset[\s\S]*Total size 2 \| \| \|\n/, "");
+    assert.notEqual(stripped, text, "FMT-SCORE-001.md has no layout table to remove");
+    writeFileSync(fmt, stripped);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.match(output, /FMT-SCORE-001\.md: Layout has no table$/m);
+});
+
+// Commits the restoration at root, so that --base HEAD compares with what it holds now.
+function commitBase(root: string) {
+  const git = (...args: string[]) =>
+    assert.equal(
+      spawnSync("git", ["-C", root, "-c", "user.name=test", "-c", "user.email=test@example.com", ...args]).status,
+      0,
+    );
+  git("init", "-q");
+  git("add", ".");
+  git("commit", "-q", "-m", "base");
+}
+
+// The parity row addListing gives a live FMT-SCORE-002, which a superseded one may not keep.
+const LISTING_ROW =
+  "| `FMT-SCORE-002` | An unstudied listing of DATA/SCORES.BIN | unknown | missing | None | None | unknown | None |\n";
+
+test("a format entry superseded since the base may not drop its layout table", (t) => {
+  const root = broken(t, (r) => {
+    addListing(r, "unknown", "");
+    replaceIn(
+      r,
+      "spec/formats/FMT-SCORE-002.md",
+      "## Layout\n\nNone known.\n",
+      "## Layout\n\n| Offset | Size | Type | Name | Meaning | Status | Evidence |\n|---|---|---|---|---|---|---|\n| 0 | 2 | u2 | count | Unread. | unknown | None |\n",
+    );
+    commitBase(r);
+    addListing(r, "superseded", "FMT-SCORE-001");
+    replaceIn(r, "parity/SCORE.md", LISTING_ROW, "");
+  });
+  const { status, output } = run(root, "--base", "HEAD");
+  assert.equal(status, 1, output);
+  assert.match(output, /FMT-SCORE-002\.md: Layout has no table, but it had one at HEAD \[IDENTIFIERS-7\]$/m);
+});
+
+test("a format entry superseded since the base that had no layout table there needs none", (t) => {
+  const root = broken(t, (r) => {
+    addListing(r, "unknown", "");
+    commitBase(r);
+    addListing(r, "superseded", "FMT-SCORE-001");
+    replaceIn(r, "parity/SCORE.md", LISTING_ROW, "");
+  });
+  const { status, output } = run(root, "--base", "HEAD");
   assert.equal(status, 0, output);
 });
 
@@ -298,6 +457,91 @@ test("an area without backticks that is removed since the base is reported", (t)
   assert.equal(status, 1);
   assert.match(output, /area EXTRA exists at HEAD and has been removed or renamed/);
 });
+
+// A compiler install laid out as the official release is: bin/ holds an extensionless Unix script
+// and, on Windows, a .bat launcher that finds the install through its own directory (%~dp0), as
+// the real one finds its jars. The directory name has a space. The launcher answers --version and
+// logs the arguments of every other call. With working: false it fails as a launcher whose install
+// is broken does.
+function compilerInstall(t: TestContext, working = true) {
+  const home = mkdtempSync(join(tmpdir(), "ksc home "));
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  const bin = join(home, "bin");
+  mkdirSync(bin);
+  mkdirSync(join(home, "lib"));
+  if (working) writeFileSync(join(home, "lib", "compiler.jar"), "");
+  const log = join(home, "calls.log");
+  const name = "kaitai-struct-compiler";
+  const unix = [
+    "#!/bin/sh",
+    // PATH holds only bin/, so the script uses shell built-ins alone.
+    `[ -f "\${0%/*}/../lib/compiler.jar" ] || { echo "install not found" >&2; exit 1; }`,
+    `[ "$1" = "--version" ] && { echo "${name} 0.11"; exit 0; }`,
+    `echo "$*" >> "${log}"`,
+    "",
+  ];
+  writeFileSync(join(bin, name), unix.join("\n"), { mode: 0o755 });
+  const bat = [
+    "@echo off",
+    'if not exist "%~dp0..\\lib\\compiler.jar" (echo install not found 1>&2& exit /b 1)',
+    `if "%~1"=="--version" (echo ${name} 0.11& exit /b 0)`,
+    `echo %* >> "${log}"`,
+    "",
+  ];
+  if (process.platform === "win32") writeFileSync(join(bin, `${name}.bat`), bat.join("\r\n"));
+  return { bin, log };
+}
+
+// Runs the checker with KSC set to ksc, or unset, and PATH holding only bin. The working directory
+// is elsewhere, since cmd.exe resolves %~dp0 against it when it runs a .bat under a bare name.
+function runWithPath(t: TestContext, bin: string, ksc?: string) {
+  const root = broken(t, () => {});
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) if (!/^(path|ksc)$/i.test(key)) env[key] = value;
+  env.PATH = bin;
+  if (ksc !== undefined) env.KSC = ksc;
+  const result = spawnSync(process.execPath, [script, "--root", root, "--check"], {
+    encoding: "utf8",
+    env,
+    cwd: tmpdir(),
+  });
+  return { status: result.status, output: result.stdout + result.stderr };
+}
+
+test("the compiler's official launcher pair is found on PATH and compiles", (t) => {
+  const { bin, log } = compilerInstall(t);
+  const { status, output } = runWithPath(t, bin);
+  assert.equal(status, 0, output);
+  assert.doesNotMatch(output, /no Kaitai Struct compiler found/);
+  assert.match(readFileSync(log, "utf8"), /fmt_score_001\.ksy/);
+});
+
+test("a KSC that names the compiler without a path is looked up on PATH", (t) => {
+  const { bin, log } = compilerInstall(t);
+  const { status, output } = runWithPath(t, bin, "kaitai-struct-compiler");
+  assert.equal(status, 0, output);
+  assert.match(readFileSync(log, "utf8"), /fmt_score_001\.ksy/);
+});
+
+test("a compiler on PATH whose --version fails is named with its output", (t) => {
+  const { bin, log } = compilerInstall(t, false);
+  const { output } = runWithPath(t, bin);
+  assert.match(output, /kaitai-struct-compiler\S* --version failed, so it is not used:\s+install not found/);
+  assert.ok(output.includes(join(bin, "kaitai-struct-compiler")), output);
+  assert.throws(() => readFileSync(log, "utf8"));
+});
+
+test(
+  "a compiler on PATH that cannot be started is named with the reason",
+  { skip: process.platform === "win32" && "a .bat on Windows always starts, through cmd.exe" },
+  (t) => {
+    const bin = mkdtempSync(join(tmpdir(), "ksc bin "));
+    t.after(() => rmSync(bin, { recursive: true, force: true }));
+    writeFileSync(join(bin, "kaitai-struct-compiler"), "#!/nonexistent/interpreter\n", { mode: 0o755 });
+    const { output } = runWithPath(t, bin);
+    assert.match(output, /kaitai-struct-compiler --version failed, so it is not used:\s+\S.*ENOENT/);
+  },
+);
 
 test(
   "a compiler path and a root with spaces reach the compiler whole",
@@ -1173,7 +1417,8 @@ test("--record-validation writes a record that a changed test file no longer mat
   const recorded = run(root, "--record-validation", "BLD-EXAMPLE-1.0");
   assert.equal(recorded.status, 0, recorded.output);
   const record = readFileSync(join(root, "VALIDATION.md"), "utf8");
-  assert.match(record, /^- Commit: [0-9a-f]{40}$/m);
+  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  assert.match(record, new RegExp(`^- Commit: ${head}$`, "m"));
   assert.match(record, /^- Builds: BLD-EXAMPLE-1\.0$/m);
   assert.match(record, /^\| `tests\/Score\.test\.ts` \| `[0-9a-f]{64}` \|$/m);
   assert.equal(run(root, "--check").status, 0);
@@ -1188,6 +1433,71 @@ test("--record-validation writes a record that a changed test file no longer mat
   const changed = run(root, "--check");
   assert.equal(changed.status, 1);
   assert.match(changed.output, /RULE-SCORE-001: tests\/Score\.test\.ts has changed since VALIDATION\.md recorded it/);
+});
+
+test("--record-validation records only a run of HEAD as committed", (t) => {
+  const root = broken(t, (r) => {
+    validateRow(r);
+    writeFileSync(join(r, ".gitignore"), "local/\n");
+    writeFileSync(join(r, "notes.txt"), "notes\n");
+    // The commit carries regenerated indexes and PARITY.md, as one that passes the check does.
+    run(r);
+    commitAll(r);
+  });
+  const test = join(root, "tests", "Score.test.ts");
+  const committed = readFileSync(test, "utf8");
+  const refused = (expected: RegExp) => {
+    const result = run(root, "--record-validation", "BLD-EXAMPLE-1.0");
+    assert.equal(result.status, 2, result.output);
+    assert.match(result.output, /the working tree differs from HEAD \(/);
+    assert.match(result.output, expected);
+    assert.equal(existsSync(join(root, "VALIDATION.md")), false);
+  };
+
+  // A marked test file changed since HEAD, staged or not.
+  writeFileSync(test, `${LOCAL_TEST}expect(kill(0)).toBe(2);\n`);
+  refused(/\(tests\/Score\.test\.ts\)/);
+  spawnSync("git", ["add", "-A"], { cwd: root });
+  refused(/\(tests\/Score\.test\.ts\)/);
+  spawnSync("git", ["reset", "-q", "--hard"], { cwd: root });
+  assert.equal(readFileSync(test, "utf8"), committed);
+
+  // A tracked file outside the marked tests, such as the code they exercise, changed or renamed. A
+  // rename lists only its new path.
+  writeFileSync(join(root, "notes.txt"), "changed\n");
+  refused(/\(notes\.txt\)/);
+  spawnSync("git", ["reset", "-q", "--hard"], { cwd: root });
+
+  // git status does not report an edit to a file marked assume-unchanged or skip-worktree.
+  for (const mark of ["assume-unchanged", "skip-worktree"]) {
+    spawnSync("git", ["update-index", `--${mark}`, "notes.txt"], { cwd: root });
+    writeFileSync(join(root, "notes.txt"), "changed\n");
+    refused(/\(notes\.txt\)/);
+    writeFileSync(join(root, "notes.txt"), "notes\n");
+    spawnSync("git", ["update-index", `--no-${mark}`, "notes.txt"], { cwd: root });
+  }
+
+  spawnSync("git", ["mv", "notes.txt", "notes.md"], { cwd: root });
+  refused(/\(notes\.md\)/);
+  spawnSync("git", ["reset", "-q", "--hard"], { cwd: root });
+  rmSync(join(root, "notes.md"), { force: true });
+
+  // An untracked directory is listed once, and past five paths the rest are counted.
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src", "score.ts"), "export const kill = (n: number) => n + 1;\n");
+  refused(/\(src\/\)/);
+  for (const n of [1, 2, 3, 4, 5, 6]) writeFileSync(join(root, `extra-${n}.txt`), "\n");
+  refused(/, and 2 more\)/);
+  rmSync(join(root, "src"), { recursive: true });
+  for (const n of [1, 2, 3, 4, 5, 6]) rmSync(join(root, `extra-${n}.txt`));
+
+  // An ignored file is not part of the tested tree, and an earlier record is what the run replaces.
+  mkdirSync(join(root, "local"));
+  writeFileSync(join(root, "local", "run.log"), "passed\n");
+  assert.equal(run(root, "--record-validation", "BLD-EXAMPLE-1.0").status, 0);
+  const again = run(root, "--record-validation", "BLD-EXAMPLE-1.0");
+  assert.equal(again.status, 0, again.output);
+  assert.equal(run(root, "--check").status, 0);
 });
 
 test("VALIDATION.md lists only the marked test files of validated rows", (t) => {
@@ -1582,6 +1892,25 @@ test("a list of other files that belongs to no build is reported", (t) => {
   assert.match(result.output, /BLD-NOPE-1\.0\.other-files\.yaml: belongs to no build entry/);
 });
 
+// A manifest gives one size and hash per file, so a path it lists twice is reported whether or not
+// the two items agree.
+for (const [why, xxh3] of [
+  ["the same", "fedcba9876543210fedcba9876543210"],
+  ["a different", "00112233445566778899aabbccddeeff"],
+])
+  test(`a manifest that lists a path twice with ${why} hash is reported`, (t) => {
+    const root = broken(t, (r) => {
+      const path = join(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml");
+      writeFileSync(
+        path,
+        readFileSync(path, "utf8") + `  - path: DATA/SCORES.BIN\n    format: data\n    size: 2\n    xxh3: ${xxh3}\n`,
+      );
+    });
+    const result = run(root);
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /BLD-EXAMPLE-1\.0\.files\.yaml: DATA\/SCORES\.BIN is listed twice$/m);
+  });
+
 test("an offset into a PE file is reported once, as an offset, not also against Code ranges", (t) => {
   const root = broken(t, (r) => {
     establishByReading(r);
@@ -1692,6 +2021,38 @@ test("a list of other files compares a numeric path as text", (t) => {
   assert.equal(result.status, 1, result.output);
   assert.match(result.output, /1990 is listed twice/);
   assert.doesNotMatch(result.output, /every other file has a path/);
+});
+
+test("a manifest compares a numeric path as text, so a file named 0 has a path", (t) => {
+  const root = broken(t, (r) => {
+    const path = join(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml");
+    const item = "  - path: 0\n    format: data\n    size: 2\n    xxh3: 00112233445566778899aabbccddeeff\n";
+    writeFileSync(path, readFileSync(path, "utf8") + item + item);
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /BLD-EXAMPLE-1\.0\.files\.yaml: 0 is listed twice$/m);
+  assert.doesNotMatch(result.output, /every file has a path/);
+});
+
+test("a manifest path that is a map is reported, not compared as [object Object]", (t) => {
+  const root = broken(t, (r) => {
+    const path = join(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml");
+    const item = (key: string) =>
+      `  - path:\n      ${key}: 1\n    format: data\n    size: 2\n    xxh3: 00112233445566778899aabbccddeeff\n`;
+    writeFileSync(path, readFileSync(path, "utf8") + item("a") + item("b"));
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /BLD-EXAMPLE-1\.0\.files\.yaml: a path is text, not a map or list$/m);
+  assert.doesNotMatch(result.output, /is listed twice/);
+});
+
+test("a list of other files reports a path that is a list", (t) => {
+  const root = broken(t, otherFiles("other_files:\n  - path: [a, b]\n    reason: a save slot\n"));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /other-files\.yaml: a path is text, not a map or list$/m);
 });
 
 for (const format of ["MZ", "COM", "NE", "PE", "LE", "LX", "ELF"])

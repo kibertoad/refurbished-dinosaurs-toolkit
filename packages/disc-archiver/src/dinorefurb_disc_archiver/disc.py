@@ -157,21 +157,28 @@ class Track:
                 position += count
 
 
+class NotDataSector(DiscError):
+    """A raw sector of a data track that holds no user data of the mode its track declares."""
+
+
 def user_data(sector: memoryview | bytes, mode: str, lba: int) -> bytes:
-    """The 2,048 bytes of user data in one raw sector, after checking its sync and mode bytes."""
+    """The 2,048 bytes of user data in one raw sector, after checking its sync and mode bytes.
+
+    Raises :class:`NotDataSector` when the sector holds no such user data.
+    """
     if bytes(sector[:12]) != SYNC:
-        raise DiscError(f"sector {lba} has no data sync pattern")
+        raise NotDataSector(f"sector {lba} has no data sync pattern")
     sector_mode = sector[15]
     if mode == "MODE1":
         if sector_mode != 1:
-            raise DiscError(f"sector {lba} is mode {sector_mode}, not the MODE1 its track declares")
+            raise NotDataSector(f"sector {lba} is mode {sector_mode}, not the MODE1 its track declares")
         return bytes(sector[16:2064])
     if sector_mode != 2:
-        raise DiscError(f"sector {lba} is mode {sector_mode}, not the MODE2 its track declares")
+        raise NotDataSector(f"sector {lba} is mode {sector_mode}, not the MODE2 its track declares")
     # CD-ROM XA: the submode byte repeats at 18 and 22. Bit 5 marks a form 2 sector, whose 2,324
     # bytes of user data have no 2,048-byte form.
     if sector[18] & 0x20:
-        raise DiscError(f"sector {lba} is a MODE2 form 2 sector, which an ISO file cannot hold")
+        raise NotDataSector(f"sector {lba} is a MODE2 form 2 sector, which an ISO file cannot hold")
     return bytes(sector[24:2072])
 
 

@@ -260,8 +260,9 @@ public abstract class OriginalContentSource : IDisposable
 
     /// <summary>
     /// Opens an InstallShield cabinet set of major version 0, 5 or 6 from a file. <paramref name="path"/> is the
-    /// <c>dataN.hdr</c> header, or a <c>dataN.cab</c> that holds the header. Of a <c>.cab</c>, only the
-    /// bytes up to the end of the cabinet descriptor are read as the header. The volumes are the files
+    /// <c>dataN.hdr</c> header, or a <c>dataN.cab</c> that holds the header. A <c>.cab</c> is read as
+    /// the header only as far as the header's structures reach, within
+    /// <see cref="InstallShieldCabinetLimits.MaximumHeaderBytes"/>. The volumes are the files
     /// in the same directory named like the header up to its first dot or digit, then the volume
     /// number and <c>.cab</c>, matched ignoring case: <c>data1.cab</c>, <c>data2.cab</c> and so on. A
     /// <c>data1.cab</c> that holds the header is therefore also read as volume 1.

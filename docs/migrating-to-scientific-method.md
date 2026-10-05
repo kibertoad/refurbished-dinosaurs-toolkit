@@ -48,8 +48,26 @@ older Python to 3.12 in the same change.
 A requirements file that also pins the engine's dependencies, such as `capstone==5.0.7`, adds
 `pypcode==4.0.0` and, from engine 1.0, `xxhash==4.0.1` beside it. Neither has runtime dependencies
 of its own. Under `pip install --require-hashes` every dependency needs its hashes, so list the hash
-of each of their wheels for the platforms you install on, or pip refuses the whole file. A
-validation script that asserts the installed Capstone version should assert pypcode's too.
+of each of their wheels for the platforms you install on, or pip refuses the whole file.
+
+A validation script that checks the installed versions reads them from the requirements file and
+compares each pinned distribution with `importlib.metadata.version`, instead of repeating version
+literals. A literal goes stale when Dependabot updates the requirements file, and fails the gate on
+an environment that matches the file, while a list kept by hand misses the transitive pins
+(pypcode, xxhash) that nobody remembered to add.
+
+The script reads requirements the way pip does. It joins lines ending in `\`, drops comments and
+`--hash` options, and follows `-r` includes, so a hash-locked file is not mistaken for unpinned
+lines. It skips a requirement whose environment marker is false for the running interpreter,
+because pip installs nothing for it. It rejects a requirement that pins no single exact version
+(`==` without a `*` wildcard). It normalizes names as pip does (lower case, each run of `-`, `_`
+and `.` becomes one `-`) before rejecting a distribution pinned twice, so `PyPCode` and `pypcode`
+count as one. It compares the pinned and installed versions as PEP 440 versions, for example with
+`packaging.version.Version`, because `==1.0` is satisfied by an installed `1.0.0` that a string
+comparison rejects. Each failure names the distribution.
+
+A version check reads installed metadata only: whether the installed files match the locked hashes
+is settled by installing with `--require-hashes`, so keep that install step.
 
 The reader and the engine have independent versions. Any engine works with any reader that
 speaks the same prepared-config protocol; a mismatch stops with an error naming both packages, and
@@ -209,9 +227,21 @@ after this one.
 
 ## 6. Verify
 
-- No file under `tools/evidence/x86-reporter/`, `vendor/check-documentation.mjs`, `x86-lock.json`
-  or `sync-x86.mjs` remains, and `git grep -e x86-reporter -e check-documentation.mjs` finds
-  nothing outside history notes.
+- No file under `tools/evidence/x86-reporter/`, `vendor/check-documentation.mjs`, `x86-lock.json`,
+  `sync-x86.mjs` or `tests/evidence/vendor.test.mjs` remains, and
+  `git grep -e x86-reporter -e check-documentation.mjs -e x86-lock -e sync-x86 -e vendor.test.mjs`
+  finds nothing outside dated records of earlier runs, such as history notes or a validation log.
+- The documents that tell a reader what to run now (the agent guide, the implementation plan, the
+  validation guide, READMEs) name the commands this move installed, such as
+  `pnpm exec standard-checker`, and no vendored path. Where they mention a toolkit or template
+  revision, they point at where it is pinned (`package.json` and the lockfile, the requirements
+  file, the workflow step that pins `actions/check-documentation` by commit SHA, a lock the
+  repository keeps) instead of repeating the version or commit, because a dependency update or a
+  refresh changes those files and leaves a copied number behind. Dated records of earlier runs keep
+  the commands and revisions they ran with. The documentation check reads `spec/`, `parity/`,
+  `deviations/` and the IDs that code cites, and does not look at the commands a document gives,
+  so review these documents by hand. Refreshing the repository's copy of the standard does not
+  change them either.
 - A report from a recorded case gives the same JSON as before the move, apart from fields that
   name the reporter's location.
 - CI passes, including the documentation check with `--check`.
@@ -289,6 +319,21 @@ A tool that parses the output sees these changes. Existing line prefixes are kep
   next window's first line.
 - `ExportFunctionFingerprints` writes its rows to a temporary file and replaces the output only when
   the export completes.
+
+## Standard checker upgrades
+
+### `--record-validation` records only a run of HEAD as committed
+
+`--record-validation` wrote `git rev-parse HEAD` as the record's Commit while hashing the marked test
+files in the working tree, so a record made before committing a change named the parent of the
+tree the run tested. It now exits with 2 and lists the paths when the working tree differs from
+HEAD in anything other than `VALIDATION.md`, untracked files that git does not ignore included.
+
+A script or hook that recorded a run before committing the change it tested now commits the change
+first, runs the marked tests against that commit, records, and commits `VALIDATION.md` on the same
+branch. The commit before the record fails the check for each validated row whose marked test file
+changed, so a hook that requires the check to pass on every commit lets that commit through or runs
+on push instead. Records already committed stay valid: the check compares only the hashes.
 
 ## Engine upgrades
 

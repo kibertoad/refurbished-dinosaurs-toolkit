@@ -99,9 +99,25 @@ Most restorations need no inputs. Set one when the defaults do not match the rep
 | `kaitai-version` | `0.11` | Compiler release to install, or empty to skip the install. With no `.ksy` file the install is skipped anyway. |
 | `java-version` | empty | Java to install with `actions/setup-java` before the compiler. |
 
-The code directories are scanned for `.cs`, `.ts`, `.mjs`, `.js`, `.ps1`, `.fs`, `.md` and `.json`
-files, skipping `bin`, `obj`, `node_modules`, `.git` and `artifacts`. Every spec or deviation ID
-they cite must exist and not be superseded.
+The code and reference directories are scanned for `.cs`, `.ts`, `.mjs`, `.js`, `.ps1`, `.fs`,
+`.md` and `.json` files, skipping `bin`, `obj`, `node_modules`, `.git` and `artifacts`. Every spec
+or deviation ID cited in those files, other than `.fs` files, and in the Markdown files of
+`parity/` and `deviations/` must exist, and a cited spec ID must not be superseded. A deviation file
+may cite the superseded entry it departed from.
+
+A passing citation check shows only that each cited ID exists and, outside `deviations/`, is not
+superseded. A `BLD-` or `SRC-` alias that names no entry is skipped, because an alias can collide
+with an ordinary word. Notes, plans and handovers outside the scanned directories are not read at
+all. In the files it reads, the check does not compare the words around a citation with the entry
+the citation names, so a note that calls a bitmap entry a configuration entry passes as long as the
+ID exists. When prose describes what an entry is, take the description from the entry:
+`spec/index/by-kind.md` lists every spec ID with its title and status (builds and sources have no
+status and record a replacement in `superseded_by`), `deviations/` holds the deviations, and the
+entry itself has its evidence and, for a format, the files it describes. An index that would pass
+the line limit is a directory of the same name, such as `spec/index/by-kind/`, split by area, then
+by kind. Reviewing that agreement is part of the restoration's own review of its notes and plans;
+the checker does not compare prose with titles, because a paraphrase is a legitimate way to cite an
+entry.
 
 ### Addresses in code comments
 
@@ -252,11 +268,18 @@ pnpm exec standard-checker --record-validation BLD-GOG-EN-1.1
 ```
 
 This writes `VALIDATION.md` at the root: the commit, the date, the builds the run used, and the
-SHA-256 of every marked test file a validated row lists, hashed with CRLF read as LF. Commit it with
-the change. From then on the check, in CI as well, fails a validated row whose marked test file is
-missing from the record or has changed since, and a record that lists any other file. A
-restoration whose validated rows list no marked file needs no record. The checker cannot tell
-whether the tests passed; running them before recording is the maintainer's part.
+SHA-256 of every marked test file a validated row lists, hashed with CRLF read as LF. The standard
+defines the commit as the commit the run tested, and the check writes HEAD there, so the run has to
+test HEAD as committed. The check refuses to record, and exits with 2, when the working tree differs
+from HEAD in anything other than `VALIDATION.md`, including untracked files that git does not
+ignore. A record cannot name the commit that contains it, so a change to a validated row's marked
+tests or the code they exercise goes in two commits on the same branch: first the change, then,
+after the run against that commit, the new `VALIDATION.md`. The record holds hashes of the marked
+test files only, so the check fails on the first commit when a marked test file changed, and passes
+it when only the code they exercise did. From then on the check, in CI as well, fails a validated
+row whose marked test file is missing from the record or has changed since, and a record that lists
+any other file. A restoration whose validated rows list no marked file needs no record. The checker
+cannot tell whether the tests passed; running them before recording is the maintainer's part.
 
 ## Moving a restoration onto it
 
@@ -350,6 +373,13 @@ not own active function, table or clock names; live rules still cannot define
 the same name outside a declared split group. References to superseded entries
 continue to fail where the Standard requires a living citation.
 
+A superseded format entry stays as it was when it was replaced, so it needs neither a Kaitai
+definition nor a layout table. An `unknown` entry that only listed a file can be retired by setting
+`status: superseded` and naming its replacement in `superseded_by`, with its Layout section still
+saying `None known.`. A format entry at any status other than `unknown` or `superseded` needs a
+layout table. Because the entry stays as it was, one that had a layout table at the base (`--base`,
+or where the branch forked) fails when it has none now.
+
 ### Locations by file format
 
 Each location in a finding names a shipped file and gives either an `address` or an `offset`.
@@ -421,8 +451,12 @@ manifest leaves out. Where that list would take the entry past the line limit, i
 `reason`, and the section names the file. The checker fails a list that the section does not
 name, a section that names a list that does not exist, a list that belongs to no build, an item
 without a path or a reason, a path listed twice, and a path that is also in the manifest. It
-cannot tell whether the listing itself is complete; the section's account of how it was made is
-left to review.
+also fails a manifest that lists a path twice, whether or not the two items agree. In both files a
+path is text: an unquoted name such as `1990` or `0` is read as that text, and a path written as a
+map or list fails. The checker cannot tell whether the listing itself is complete. The standard
+keeps no copy of the listing in the repository, only the section's account of how it was made,
+which is left to review, and the checker reads no paths from an Other files section written as
+prose.
 
 A file in any other format fails the manifest check, and so does a packed file whose unpacked
 form is in any other format. Before such a file is documented, the Standard must decide how

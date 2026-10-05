@@ -64,8 +64,8 @@ LegacyFormats parts of it:
   built in memory for a negative control, and reads the same files and volume as the image on disk.
 - `OriginalContentSource.OpenInstallShieldCabinet` lists and reads the members of an InstallShield
   cabinet set of major version 0, 5 or 6, on disk or inside a disc source, through the same
-  interface. It opens from a `dataN.hdr`, or from a `dataN.cab` that holds the header, reading only
-  that file's header region. It checks every member's path, extent and the set's limits when it
+  interface. It opens from a `dataN.hdr`, or from a `dataN.cab` that holds the header, reading that
+  file only as far as the header's structures reach. It checks every member's path, extent and the set's limits when it
   opens, and each member's size (and MD5 for version 6) when it is read to the end. Entries it does
   not list are in `SkippedFiles` with a reason: entries marked invalid or without a name or data
   (whose names need not read), version 6 links to them, entries at a listed member's path that
