@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import sys
@@ -12,7 +13,7 @@ from pathlib import Path
 
 from synthetic import FILES, SyntheticDisc, iso_image, mode1_sector
 
-from dinorefurb_disc_archiver import ccd, formats
+from dinorefurb_disc_archiver import ccd, formats, pipeline
 from dinorefurb_disc_archiver.cue import read_cue, read_iso
 from dinorefurb_disc_archiver.disc import RAW_SECTOR, DiscError
 from dinorefurb_disc_archiver.formats import FormatUnavailable, write_format
@@ -256,6 +257,113 @@ class DataFormatTests(FormatTestCase):
         verification = manifest["outputs"][0]["verification"]  # type: ignore[index]
         self.assertEqual(verification["status"], "partial")
         self.assertIn("Ogg Vorbis is lossy", " ".join(verification["notCompared"]))
+
+
+class PastTheVolumeTests(FormatTestCase):
+    """A data track that runs on past the ISO 9660 volume its descriptor declares."""
+
+    REPEATED = 4
+    BLANK = 6
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.volume = len(self.synthetic.iso) // 2048
+        data = self.synthetic.data_raw
+        # The last sectors of the volume again, stored addresses and all, then sectors of zeros.
+        self.repeated = data[-self.REPEATED * RAW_SECTOR :]
+        self.tail = self.repeated + bytes(self.BLANK * RAW_SECTOR)
+        self.source = self.dir / "padded"
+        self.sheet = self.synthetic.write_split(self.source)
+        (self.source / "Synth (Track 1).bin").write_bytes(data + self.tail)
+        self.padded = read_cue(self.sheet)
+
+    def test_sectors_without_user_data_past_the_volume_are_listed_and_hashed_raw(self) -> None:
+        found = fingerprint(self.padded)
+        first = self.volume + self.REPEATED
+        repeated_user = b"".join(self.repeated[i * RAW_SECTOR + 16 : i * RAW_SECTOR + 2064] for i in range(self.REPEATED))
+        self.assertEqual(
+            found["data"],
+            {
+                "track": 1,
+                "sectors": self.volume + self.REPEATED + self.BLANK,
+                "sha256": hashlib.sha256(self.synthetic.iso + repeated_user).hexdigest(),
+                "nonDataSectors": [[first, first + self.BLANK]],
+                "nonDataSha256": hashlib.sha256(bytes(self.BLANK * RAW_SECTOR)).hexdigest(),
+            },
+        )
+        self.assertEqual(found["volumeIdentifier"], "SYNTH_DISC")
+        self.assertEqual(self.reference["data"]["nonDataSectors"], [])  # type: ignore[index]
+        self.assertIsNone(self.reference["data"]["nonDataSha256"])  # type: ignore[index]
+
+    def test_separate_runs_and_sectors_of_another_mode_are_each_listed(self) -> None:
+        mode2 = mode1_sector(self.volume + 1, bytes(2048), mode=2)
+        tail = bytes(RAW_SECTOR) + mode2 + self.repeated[:RAW_SECTOR] + bytes(2 * RAW_SECTOR)
+        (self.source / "Synth (Track 1).bin").write_bytes(self.synthetic.data_raw + tail)
+        found = fingerprint(read_cue(self.sheet))
+        v = self.volume
+        self.assertEqual(found["data"]["nonDataSectors"], [[v, v + 2], [v + 3, v + 5]])  # type: ignore[index]
+        self.assertEqual(found["data"]["nonDataSha256"], hashlib.sha256(bytes(RAW_SECTOR) + mode2 + bytes(2 * RAW_SECTOR)).hexdigest())  # type: ignore[index]
+
+    def test_raw_formats_keep_and_verify_the_sectors_past_the_volume(self) -> None:
+        manifest = derive(self.padded, self.dir / "out", "Synth", ["bincue-split", "bincue", "ccd", "iso", "files"], BUILTIN_PROFILES["any"], silent_log, {})
+        outputs = {o["format"]: o["verification"] for o in manifest["outputs"]}  # type: ignore[union-attr, index]
+        self.assertEqual({k: v["status"] for k, v in outputs.items()}, {"bincue-split": "matched", "bincue": "matched", "ccd": "matched", "files": "matched"})
+        self.assertIn("raw sectors past the ISO 9660 volume that hold no user data", outputs["bincue"]["compared"])
+        self.assertEqual(
+            (self.dir / "out" / "bincue-split" / "Synth (Track 1).bin").read_bytes(), (self.source / "Synth (Track 1).bin").read_bytes()
+        )
+        (unavailable,) = manifest["unavailable"]  # type: ignore[misc]
+        self.assertEqual(unavailable["format"], "iso")
+        self.assertIn(f"sector {self.volume + self.REPEATED} has no data sync pattern", unavailable["reason"])
+        self.assertFalse((self.dir / "out" / "iso").exists())
+
+    def test_the_iso_formats_are_unavailable_and_leave_no_file(self) -> None:
+        for identifier in ("iso", "iso-wav"):
+            with self.assertRaisesRegex(FormatUnavailable, "BIN/CUE, CloneCD and CHD keep"):
+                self.write(identifier, self.padded)
+            self.assertEqual(list((self.dir / identifier).glob("*.iso")), [])
+
+    def test_a_copy_that_changes_a_sector_past_the_volume_is_a_mismatch(self) -> None:
+        reference = fingerprint(self.padded)
+        changed = bytearray(self.tail)
+        changed[-1] = 1
+        (self.source / "Synth (Track 1).bin").write_bytes(self.synthetic.data_raw + bytes(changed))
+        result = pipeline.Verification()
+        pipeline._compare(reference, fingerprint(read_cue(self.sheet)), result, layout=True, audio=True)
+        self.assertEqual(result.differences, ["the data track's sectors without user data differ from the source"])
+
+    def test_a_sector_without_user_data_inside_the_volume_is_refused(self) -> None:
+        data = bytearray(self.synthetic.data_raw)
+        inside = self.volume - 1
+        data[inside * RAW_SECTOR : (inside + 1) * RAW_SECTOR] = bytes(RAW_SECTOR)
+        (self.source / "Synth (Track 1).bin").write_bytes(bytes(data) + self.tail)
+        with self.assertRaisesRegex(DiscError, f"sector {inside} has no data sync pattern"):
+            fingerprint(read_cue(self.sheet))
+
+    def test_a_volume_descriptor_whose_size_copies_disagree_admits_nothing(self) -> None:
+        iso = bytearray(self.synthetic.iso)
+        iso[16 * 2048 + 84 : 16 * 2048 + 88] = (self.volume + 1).to_bytes(4, "big")
+        data = SyntheticDisc(bytes(iso)).data_raw
+        (self.source / "Synth (Track 1).bin").write_bytes(data + self.tail)
+        with self.assertRaisesRegex(DiscError, f"sector {self.volume + self.REPEATED} has no data sync pattern"):
+            fingerprint(read_cue(self.sheet))
+
+    def test_stored_header_addresses_are_not_checked(self) -> None:
+        data = bytearray(self.synthetic.data_raw)
+        for lba in range(self.volume):
+            data[lba * RAW_SECTOR + 12 : lba * RAW_SECTOR + 15] = b"\x00\x02\x00"
+        (self.source / "Synth (Track 1).bin").write_bytes(bytes(data))
+        self.assertEqual(fingerprint(read_cue(self.sheet)), self.reference)
+
+    def test_a_file_whose_extent_lies_past_the_volume_fails_with_the_sector(self) -> None:
+        iso = bytearray(iso_image(joliet=False))
+        record = iso.index(b"README.TXT;1") - 33
+        extent = len(iso) // 2048 + self.REPEATED
+        iso[record + 2 : record + 10] = extent.to_bytes(4, "little") + extent.to_bytes(4, "big")
+        data = SyntheticDisc(bytes(iso)).data_raw
+        (self.source / "Synth (Track 1).bin").write_bytes(data + self.tail)
+        with self.assertRaisesRegex(DiscError, f"sector {extent} has no data sync pattern"):
+            self.write("files", read_cue(self.sheet))
 
 
 class SourceLimitTests(FormatTestCase):

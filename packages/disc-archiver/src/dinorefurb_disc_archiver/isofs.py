@@ -93,14 +93,34 @@ def volume_identifier(track: Track) -> str | None:
     ``OriginalContentSource.Label`` reads it, so identifiers that differ in any byte before the
     padding give different strings, and a value copied from one matches the other.
     """
+    descriptor = _primary_volume_descriptor(track)
+    if descriptor is None:
+        return None
+    return descriptor[40:72].decode("latin-1").rstrip(" \x00") or None
+
+
+def volume_sectors(track: Track) -> int | None:
+    """The volume space size the primary volume descriptor declares, in 2,048-byte sectors.
+
+    None when the track has no primary volume descriptor at sector 16, when the little- and
+    big-endian copies of the size disagree, or when the size does not reach past the descriptor.
+    """
+    descriptor = _primary_volume_descriptor(track)
+    if descriptor is None:
+        return None
+    little = int.from_bytes(descriptor[80:84], "little")
+    if little != int.from_bytes(descriptor[84:88], "big") or little <= PVD_SECTOR:
+        return None
+    return little
+
+
+def _primary_volume_descriptor(track: Track) -> bytes | None:
     if track.length <= PVD_SECTOR:
         return None
     with UserDataStream(track) as stream:
         stream.seek(PVD_SECTOR * COOKED_SECTOR)
         descriptor = stream.read(COOKED_SECTOR)
-    if descriptor[:6] != b"\x01CD001":
-        return None
-    return descriptor[40:72].decode("latin-1").rstrip(" \x00") or None
+    return descriptor if descriptor[:6] == b"\x01CD001" else None
 
 
 @dataclass(frozen=True)

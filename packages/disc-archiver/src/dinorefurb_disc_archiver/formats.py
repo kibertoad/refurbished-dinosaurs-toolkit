@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import ccd, isofs, tools
 from .cue import CueFile, render_cue
-from .disc import COOKED_SECTOR, RAW_SECTOR, Disc, DiscError, Track
+from .disc import COOKED_SECTOR, RAW_SECTOR, Disc, DiscError, NotDataSector, Track
 from .tools import Log
 
 
@@ -184,7 +184,14 @@ def _write_iso(disc: Disc, path: Path) -> list[str]:
         except OSError:
             shutil.copyfile(track.source, path)
     else:
-        _write(path, track.iter_user_data())
+        try:
+            _write(path, track.iter_user_data())
+        except NotDataSector as error:
+            path.unlink(missing_ok=True)
+            raise FormatUnavailable(
+                f"track {track.number}: {error}, and an ISO file holds only the 2,048 bytes of user data of "
+                "each sector. BIN/CUE, CloneCD and CHD keep the track's raw sectors."
+            ) from None
     if track.mode == "MODE2":
         notes.append(f"Track {track.number} is a MODE2 (CD-ROM XA) track; the ISO holds its form 1 user data.")
     others = [t.number for t in disc.data_tracks[1:]]
