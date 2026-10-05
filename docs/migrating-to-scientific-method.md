@@ -48,8 +48,16 @@ older Python to 3.12 in the same change.
 A requirements file that also pins the engine's dependencies, such as `capstone==5.0.7`, adds
 `pypcode==4.0.0` and, from engine 1.0, `xxhash==4.0.1` beside it. Neither has runtime dependencies
 of its own. Under `pip install --require-hashes` every dependency needs its hashes, so list the hash
-of each of their wheels for the platforms you install on, or pip refuses the whole file. A
-validation script that asserts the installed Capstone version should assert pypcode's too.
+of each of their wheels for the platforms you install on, or pip refuses the whole file.
+
+A validation script that checks the installed versions reads them from the requirements file and
+compares each pinned distribution with `importlib.metadata.version`, instead of repeating version
+literals. A literal goes stale when Dependabot updates the requirements file, and fails the gate on
+an environment that matches it, while a list kept by hand misses the transitive pins (pypcode,
+xxhash) that nobody remembered to add. Have the script reject a line that pins no exact version
+(`==`) and a distribution pinned twice, and name the distribution in each failure. A version
+check reads installed metadata only: whether the installed files match the locked hashes is
+settled by installing with `--require-hashes`, so keep that install step.
 
 The reader and the engine have independent versions. Any engine works with any reader that
 speaks the same prepared-config protocol; a mismatch stops with an error naming both packages, and
