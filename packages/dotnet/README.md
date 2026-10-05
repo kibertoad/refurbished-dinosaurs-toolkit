@@ -185,10 +185,28 @@ contexts outside per-frame loops.
 | `WavePcm16Reader` | 16-bit mono or stereo PCM WAVE files. |
 | `WavePcm16Stream` | 16-bit mono or stereo PCM WAVE files, indexed and read in frame-aligned buffers without loading the track. |
 | `WavePcm16Writer` | Writes canonical 16-bit mono or stereo PCM WAVE files. |
-| `PcxDecoder`, `RawIndexedImageDecoder`, `IndexedImage` | 8-bit RLE PCX, and headerless indexed pixels, with RGBA conversion. |
+| `PcxDecoder`, `PcxImage`, `PcxShortStreamRepair`, `PcxStreamShortfall`, `RawIndexedImageDecoder`, `IndexedImage` | 8-bit RLE PCX, and headerless indexed pixels, with RGBA conversion. See [PCX images](#pcx-images). |
 | `ImageLimits` | `DefaultMaximumPixels`, the pixel limit `BmpDecoder`, `PcxDecoder` and `RawIndexedImageDecoder` apply when no `maximumPixels` is passed. |
 | `Rle8BitmapDecoder` | 8-bit BMP (BI_RLE8 or BI_RGB), rewritten as uncompressed BI_RGB. |
 | `BmpDecoder`, `BmpImage` | 8-bit BMP (BI_RGB or BI_RLE8) and 24-bit or 32-bit BI_RGB BMP, decoded to opaque RGBA rows top to bottom. See [BMP images](#bmp-images). |
+
+## PCX images
+
+`PcxDecoder.Decode(bytes)` reads an 8-bit, single-plane RLE PCX file with the 256-colour palette
+after a `0x0C` marker at the end, and returns a `PcxImage`: one palette index per pixel, rows top to
+bottom with the scanline padding removed, and the palette. Any other bit depth, plane count or
+palette placement, a malformed run, a run past the declared scanlines, bytes left between the
+pixels and the palette marker, and an image over `maximumPixels` throw `InvalidDataException`. So
+does an RLE stream that ends before the declared scanlines are full.
+
+Some writers left that stream short. `PcxDecoder.Decode(bytes, new PcxShortStreamRepair(fillIndex))`
+reads such a file: every pixel the stream does not supply takes `fillIndex`, and
+`PcxImage.Shortfall` reports the decoded scanline bytes that were missing (padding included) and how
+many pixels were filled. The filled pixels are the last `FilledPixels` entries of `Indices`.
+`Shortfall` is null when the stream was complete, and the image then has the dimensions, indices
+and palette that `Decode(bytes)` returns. The repair covers only a stream that ends at a token
+boundary: a run token directly before the palette marker, with no value byte, still throws. Which fill index matches what the original
+program showed is for the caller to establish.
 
 ## BMP images
 
