@@ -637,6 +637,13 @@ class BitwiseBoundTests(unittest.TestCase):
         self.assertEqual(self.check(divide + " 89 c3", "le", 0xffff // 10)["verdict"], "held")
         self.assertEqual(self.check(divide + " 89 c3", "le", 0xffff // 10 - 1)["verdict"], "undecided")
 
+    def test_an_arithmetic_shift_is_bounded_only_when_the_sign_bit_is_clear(self):
+        # and bx,7FFFh; sar bx,4: the sign bit is clear, so the shift is a logical one.
+        self.assertEqual(self.check("8b 1e 00 02 81 e3 ff 7f c1 fb 04", "le", 0x07ff)["verdict"], "held")
+        self.assertEqual(self.check("8b 1e 00 02 81 e3 ff 7f c1 fb 04", "le", 0x07fe)["verdict"], "undecided")
+        # sar bx,4 of an unmasked word may shift ones in from the top.
+        self.assertEqual(self.check("8b 1e 00 02 c1 fb 04", "le", 0xfffe)["verdict"], "undecided")
+
     def test_or_keeps_its_constant_bits_and_the_operands_highest_bit(self):
         # movzx bx,byte [0200h]; or bx,10h
         self.assertEqual(self.check("0f b6 1e 00 02 83 cb 10", "ge", 0x10)["verdict"], "held")
@@ -651,6 +658,23 @@ class BitwiseBoundTests(unittest.TestCase):
         self.assertEqual(verdict(run(c, [rule], registers=FRAME), "bound")["verdict"], "undecided")
         assumed = {**rule, "assume": [{"value": {"entryRegister": "cx"}, "min": 0, "max": 7, "evidence": "synthetic caller range"}]}
         self.assertEqual(verdict(run(c, [assumed], registers=FRAME), "bound")["verdict"], "held")
+
+    def test_an_assumption_on_a_masked_value_keeps_the_narrower_range(self):
+        # mov bx,[0200h]; and bx,3, with BX itself assumed at most 100: the mask still bounds it by 3.
+        c = Code().emit("8b 1e 00 02 81 e3 03 00").label("return").emit("c3")
+
+        def bound(op, right, lo, hi):
+            rule = control("bound", "relation", at={"site": c.labels["return"], "event": "checkpoint"}, op=op,
+                           left={"field": "registers.bx"}, right=right,
+                           assume=[{"value": {"field": "registers.bx"}, "min": lo, "max": hi, "evidence": "synthetic range"}])
+            return verdict(run(c, [rule], registers=FRAME), "bound")
+
+        self.assertEqual(bound("le", 3, 0, 100)["verdict"], "held")
+        self.assertEqual(bound("le", 1, 0, 1)["verdict"], "held")
+        # A range the mask rules out would make any relation hold, so the occurrence is undecided.
+        excluded = bound("ge", 5, 5, 10)
+        self.assertEqual(excluded["verdict"], "undecided")
+        self.assertIn("outside the range 0..3", excluded["paths"][0]["occurrences"][0]["reason"])
 
     def test_a_stopped_path_leaves_a_masked_bound_undecided(self):
         # One path calls through BX and stops before the masked load.

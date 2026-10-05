@@ -293,8 +293,6 @@ HIDDEN = "hidden-occurrences"
 
 
 def _atom_range(atom, ranges):
-    if atom in ranges:
-        return ranges[atom]
     if atom[0] == HIDDEN:
         return 0, inf
     if atom[0] == "signed":
@@ -306,8 +304,9 @@ def _atom_range(atom, ranges):
 def _unsigned(term, bits, ranges):
     """Bounds on the term's unsigned value at its width, read from bitwise structure and assumptions.
 
-    A mask, a shift or division by a constant, a remainder, a zero extension or an extracted field
-    narrows the width's full range; any other term keeps it.
+    An assumed range, a constant, ``and``, ``or``, ``xor``, a shift right or division by a constant
+    (an arithmetic shift only when its operand's sign bit is clear), a remainder by a constant, a zero extension or an extracted field narrows the width's full
+    range; any other term keeps it.
     """
     if (term, bits) in ranges:
         return ranges[(term, bits)]
@@ -321,10 +320,14 @@ def _unsigned(term, bits, ranges):
             return 0, min(ahi, bhi)
         # Neither operand sets a bit above its own highest bit; OR keeps every bit of each operand.
         return max(alo, blo) if tag == "or" else 0, (1 << max(ahi, bhi).bit_length()) - 1
-    if tag in ("shr", "udiv", "umod") and term[2][0] == "constant":
+    if tag in ("shr", "sar", "udiv", "umod") and term[2][0] == "constant":
         lo, hi = _unsigned(term[1], bits, ranges)
         k = term[2][1] & top
-        if tag == "shr":
+        if tag == "sar" and hi >> (bits - 1):
+            # An operand that may have its sign bit set shifts ones in from the top.
+            return 0, top
+        if tag in ("shr", "sar"):
+            # With the sign bit clear, an arithmetic shift right is the logical one.
             # Shift terms carry x86's five-bit count mask; a count the mask changes keeps only the upper bound.
             s = k & 31
             return lo >> s if s == k else 0, hi >> s
@@ -567,6 +570,13 @@ def _ranges(control, path, anchor):
         if a["max"] >= 1 << atom[1]:
             raise ValueError(f"Relational control {control['name']} assumption range exceeds the value's width")
         ranges[atom] = (a["min"], a["max"])
+    # The assumed value's own expression may bound it too: keep the narrower range, and refuse an
+    # assumption the expression rules out, since a relation would hold over an empty range.
+    for atom, (lo, hi) in list(ranges.items()):
+        slo, shi = _unsigned(atom[0], atom[1], {k: v for k, v in ranges.items() if k != atom})
+        if lo > shi or hi < slo:
+            raise _Unresolved(f"the assumed range {lo}..{hi} is outside the range {slo}..{shi} the value's expression allows here")
+        ranges[atom] = max(lo, slo), min(hi, shi)
     return ranges
 
 
