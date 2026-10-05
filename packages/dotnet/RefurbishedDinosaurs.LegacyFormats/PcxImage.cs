@@ -38,7 +38,31 @@ public record IndexedImage(int Width, int Height, byte[] Indices, byte[] Palette
 /// <param name="Indices">One palette index per pixel, rows top to bottom, no padding.</param>
 /// <param name="PaletteRgb">The file's 256-colour palette.</param>
 public sealed record PcxImage(int Width, int Height, byte[] Indices, byte[] PaletteRgb)
-    : IndexedImage(Width, Height, Indices, PaletteRgb);
+    : IndexedImage(Width, Height, Indices, PaletteRgb)
+{
+    /// <summary>
+    /// How far the RLE stream fell short of the declared scanlines, when a
+    /// <see cref="PcxShortStreamRepair"/> filled the rest. Null when the stream covered every scanline.
+    /// </summary>
+    public PcxStreamShortfall? Shortfall { get; init; }
+}
+
+/// <summary>
+/// Lets <see cref="PcxDecoder.Decode(ReadOnlySpan{byte}, PcxShortStreamRepair, int)"/> finish an image
+/// whose RLE stream ends, at a token boundary, before the declared scanlines are full.
+/// </summary>
+/// <param name="FillIndex">The palette index written into every pixel the stream does not supply.</param>
+public sealed record PcxShortStreamRepair(byte FillIndex);
+
+/// <summary>What a <see cref="PcxShortStreamRepair"/> filled in.</summary>
+/// <param name="MissingScanlineBytes">
+/// Decoded scanline bytes, scanline padding included, that the stream did not supply. Always positive.
+/// </param>
+/// <param name="FilledPixels">
+/// Pixels set to <see cref="PcxShortStreamRepair.FillIndex"/>. They are the last <paramref name="FilledPixels"/>
+/// entries of <see cref="IndexedImage.Indices"/>. Zero when only the padding of the last scanline was missing.
+/// </param>
+public sealed record PcxStreamShortfall(long MissingScanlineBytes, int FilledPixels);
 
 /// <summary>Wraps headerless pixel and palette data whose dimensions come from elsewhere.</summary>
 public static class RawIndexedImageDecoder
@@ -75,12 +99,43 @@ public static class PcxDecoder
     private const int HeaderSize = 128;
     private const int PaletteSize = 768;
 
-    /// <summary>Decodes a whole PCX file. Scanline padding is removed.</summary>
+    /// <summary>
+    /// Decodes a whole PCX file. Scanline padding is removed. An RLE stream that ends before the
+    /// declared scanlines are full throws; <see cref="Decode(ReadOnlySpan{byte}, PcxShortStreamRepair, int)"/>
+    /// fills such a stream instead and reports the shortfall.
+    /// </summary>
     /// <param name="source">The file.</param>
     /// <param name="maximumPixels">The largest image accepted, in pixels. Defaults to <see cref="ImageLimits.DefaultMaximumPixels"/>.</param>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="maximumPixels"/> is negative.</exception>
-    /// <exception cref="InvalidDataException">The file is another PCX variant or malformed, or exceeds the pixel limit.</exception>
-    public static PcxImage Decode(ReadOnlySpan<byte> source, int maximumPixels = ImageLimits.DefaultMaximumPixels)
+    /// <exception cref="InvalidDataException">The file is another PCX variant or malformed, its stream ends early, or it exceeds the pixel limit.</exception>
+    public static PcxImage Decode(ReadOnlySpan<byte> source, int maximumPixels = ImageLimits.DefaultMaximumPixels) =>
+        DecodeCore(source, null, maximumPixels);
+
+    /// <summary>
+    /// Decodes a whole PCX file whose RLE stream may end before the declared scanlines are full. The
+    /// missing pixels take <see cref="PcxShortStreamRepair.FillIndex"/>, and
+    /// <see cref="PcxImage.Shortfall"/> reports how much was missing. A file whose stream is complete
+    /// decodes as <see cref="Decode(ReadOnlySpan{byte}, int)"/> would, with a null shortfall.
+    /// </summary>
+    /// <param name="source">The file.</param>
+    /// <param name="shortStreamRepair">The fill to use for the pixels a short stream does not supply.</param>
+    /// <param name="maximumPixels">The largest image accepted, in pixels. Defaults to <see cref="ImageLimits.DefaultMaximumPixels"/>.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="shortStreamRepair"/> is null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="maximumPixels"/> is negative.</exception>
+    /// <exception cref="InvalidDataException">
+    /// The file is another PCX variant or malformed, or exceeds the pixel limit. A run token directly
+    /// before the palette marker, with no value byte, is still malformed: the stream claims pixels it
+    /// does not give.
+    /// </exception>
+    public static PcxImage Decode(
+        ReadOnlySpan<byte> source, PcxShortStreamRepair shortStreamRepair,
+        int maximumPixels = ImageLimits.DefaultMaximumPixels)
+    {
+        ArgumentNullException.ThrowIfNull(shortStreamRepair);
+        return DecodeCore(source, shortStreamRepair, maximumPixels);
+    }
+
+    private static PcxImage DecodeCore(ReadOnlySpan<byte> source, PcxShortStreamRepair? repair, int maximumPixels)
     {
         if (maximumPixels < 0) throw new ArgumentOutOfRangeException(nameof(maximumPixels));
         if (source.Length < HeaderSize + 1 + PaletteSize) throw new InvalidDataException("PCX resource is too short.");
@@ -110,7 +165,11 @@ public static class PcxDecoder
         var input = HeaderSize;
         while (output < scanlineBytes)
         {
-            if (input >= paletteOffset) throw new InvalidDataException("PCX pixel stream ended early.");
+            if (input >= paletteOffset)
+            {
+                if (repair is null) throw new InvalidDataException("PCX pixel stream ended early.");
+                break;
+            }
             var token = source[input++];
             var count = 1;
             var value = token;
@@ -134,6 +193,16 @@ public static class PcxDecoder
         }
         if (input != paletteOffset) throw new InvalidDataException("PCX has unexpected bytes between pixels and palette.");
 
-        return new PcxImage(width, height, indices, source[(paletteOffset + 1)..].ToArray());
+        PcxStreamShortfall? shortfall = null;
+        if (output < scanlineBytes)
+        {
+            // Every scanline byte from output on is missing, so the unfilled pixels are a suffix of indices.
+            var row = (int)(output / bytesPerLine);
+            var column = (int)(output % bytesPerLine);
+            var firstFilled = column < width ? row * width + column : (row + 1) * width;
+            indices.AsSpan(firstFilled).Fill(repair!.FillIndex);
+            shortfall = new PcxStreamShortfall(scanlineBytes - output, pixelCount - firstFilled);
+        }
+        return new PcxImage(width, height, indices, source[(paletteOffset + 1)..].ToArray()) { Shortfall = shortfall };
     }
 }

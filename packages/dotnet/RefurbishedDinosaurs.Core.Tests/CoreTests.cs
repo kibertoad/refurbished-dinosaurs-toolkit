@@ -238,6 +238,56 @@ public sealed class CoreTests
         Assert.True(GC.GetAllocatedBytesForCurrentThread() - before < 1024 * 1024);
     }
 
+    [Fact]
+    public void PcxShortStreamThrowsUnlessARepairFillsAndReportsIt()
+    {
+        // 3x2 with 4-byte scanlines; the stream supplies row 0, its padding and one pixel of row 1.
+        var shortStream = Pcx(3, 2, 4, [0xC4, 7, 5]);
+        var strict = Assert.Throws<InvalidDataException>(() => PcxDecoder.Decode(shortStream));
+        Assert.Contains("ended early", strict.Message);
+
+        var repaired = PcxDecoder.Decode(shortStream, new PcxShortStreamRepair(9));
+        Assert.Equal([7, 7, 7, 5, 9, 9], repaired.Indices);
+        Assert.Equal(new PcxStreamShortfall(3, 2), repaired.Shortfall);
+        Assert.Equal(IndexedPalette.ByteSize, repaired.PaletteRgb.Length);
+
+        // A stream that stops inside row 0's padding leaves all of row 1 to the fill.
+        var inPadding = PcxDecoder.Decode(Pcx(3, 2, 4, [1, 2, 3]), new PcxShortStreamRepair(0));
+        Assert.Equal([1, 2, 3, 0, 0, 0], inPadding.Indices);
+        Assert.Equal(new PcxStreamShortfall(5, 3), inPadding.Shortfall);
+
+        // Only the last scanline's padding is missing: no pixel is filled, but the shortfall is still reported.
+        var paddingOnly = PcxDecoder.Decode(Pcx(3, 2, 4, [0xC7, 4]), new PcxShortStreamRepair(9));
+        Assert.Equal([4, 4, 4, 4, 4, 4], paddingOnly.Indices);
+        Assert.Equal(new PcxStreamShortfall(1, 0), paddingOnly.Shortfall);
+        Assert.Throws<InvalidDataException>(() => PcxDecoder.Decode(Pcx(3, 2, 4, [0xC7, 4])));
+
+        // An empty stream fills every pixel.
+        var empty = PcxDecoder.Decode(Pcx(3, 2, 4, []), new PcxShortStreamRepair(2));
+        Assert.Equal([2, 2, 2, 2, 2, 2], empty.Indices);
+        Assert.Equal(new PcxStreamShortfall(8, 6), empty.Shortfall);
+    }
+
+    [Fact]
+    public void PcxRepairLeavesCompleteAndMalformedStreamsAsTheStrictDecoderReadsThem()
+    {
+        var complete = Pcx(3, 2, 4, [0xC5, 7, 1, 2, 9]);
+        var repaired = PcxDecoder.Decode(complete, new PcxShortStreamRepair(9));
+        Assert.Null(repaired.Shortfall);
+        Assert.Equal(PcxDecoder.Decode(complete).Indices, repaired.Indices);
+
+        // A run token with no value byte before the palette marker claims pixels it does not give.
+        var danglingRun = Assert.Throws<InvalidDataException>(
+            () => PcxDecoder.Decode(Pcx(3, 2, 4, [1, 2, 3, 0xC3]), new PcxShortStreamRepair(0)));
+        Assert.Contains("invalid RLE run", danglingRun.Message);
+        // A run past the declared scanlines and bytes left after them are rejected as before.
+        Assert.Throws<InvalidDataException>(
+            () => PcxDecoder.Decode(Pcx(3, 2, 4, [0xC9, 1]), new PcxShortStreamRepair(0)));
+        Assert.Throws<InvalidDataException>(
+            () => PcxDecoder.Decode(Pcx(3, 2, 4, [0xC8, 1, 5]), new PcxShortStreamRepair(0)));
+        Assert.Throws<ArgumentNullException>(() => PcxDecoder.Decode(complete, (PcxShortStreamRepair)null!));
+    }
+
     private static byte[] Pcx(int width, int height, int bytesPerLine, byte[] pixelStream)
     {
         var file = new byte[128 + pixelStream.Length + 1 + IndexedPalette.ByteSize];
