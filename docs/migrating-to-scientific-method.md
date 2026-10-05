@@ -50,24 +50,48 @@ A requirements file that also pins the engine's dependencies, such as `capstone=
 of its own. Under `pip install --require-hashes` every dependency needs its hashes, so list the hash
 of each of their wheels for the platforms you install on, or pip refuses the whole file.
 
-A validation script that checks the installed versions reads them from the requirements file and
-compares each pinned distribution with `importlib.metadata.version`, instead of repeating version
-literals. A literal goes stale when Dependabot updates the requirements file, and fails the gate on
-an environment that matches the file, while a list kept by hand misses the transitive pins
-(pypcode, xxhash) that nobody remembered to add.
+A gate that checks the installed versions asks pip whether the environment satisfies the
+requirements file, instead of repeating version literals or parsing the file. A literal goes stale
+when Dependabot updates the requirements file, and a list kept by hand misses the transitive pins
+(pypcode, xxhash) that nobody remembered to add. Run a dry run with the evidence interpreter, using
+pip 23.0 or later (pip 22.2 added `--dry-run` and `--report`, and 23.0 made the report format
+stable):
 
-The script reads requirements the way pip does. It joins lines ending in `\`, drops comments and
-`--hash` options, and follows `-r` includes, so a hash-locked file is not mistaken for unpinned
-lines. It skips a requirement whose environment marker is false for the running interpreter,
-because pip installs nothing for it. It rejects a requirement that pins no single exact version
-(`==` without a `*` wildcard). It normalizes names as pip does (lower case, each run of `-`, `_`
-and `.` becomes one `-`) before rejecting a distribution pinned twice, so `PyPCode` and `pypcode`
-count as one. It compares the pinned and installed versions as PEP 440 versions, for example with
-`packaging.version.Version`, because `==1.0` is satisfied by an installed `1.0.0` that a string
-comparison rejects. Each failure names the distribution.
+```sh
+python -m pip install --dry-run --no-deps --no-index \
+  --report pip-report.json -r requirements-evidence.txt
+```
 
-A version check reads installed metadata only: whether the installed files match the locked hashes
-is settled by installing with `--require-hashes`, so keep that install step.
+The gate passes when pip exits with 0 and the report's `install` list is empty. pip reads the file
+itself: it joins `\` continuations, follows `-r` includes, skips a requirement whose environment
+marker is false, matches names regardless of case and of `-`, `_` and `.`, and compares versions
+under PEP 440, so `==1.0` is satisfied by an installed `1.0.0`. A distribution pinned twice at
+different versions fails the resolution.
+
+`--no-index` keeps the dry run off the network. A satisfied environment passes without an index.
+A pin the environment does not satisfy, whether the installed version differs or the distribution
+is missing, then has no candidate to install, so pip exits with 1 and names the requirement
+(`No matching distribution found for alpha==1.1.0`). pip stops at the first such pin, so fixing one
+can reveal the next. Treat any entry in the `install` list as a failure too, naming its
+`metadata.name` and `metadata.version`: a `--find-links` line in the requirements file gives pip
+somewhere to install from even under `--no-index`.
+
+pip accepts a satisfied requirement that pins no single exact version, such as `alpha>=1.0` or
+`alpha==1.*`, so reject those separately. Every line of the requirements file and of each file it
+includes whose first non-blank character is a letter or digit is one requirement, as lockers such
+as `pip-compile --generate-hashes` write them, and it must have the form `name==version` with no
+`*`.
+This prints each line that breaks the rule, so the gate fails when it prints anything. List every
+file that the requirements file includes with `-r` after `requirements-evidence.txt`:
+
+```sh
+grep -hE '^[[:space:]]*[A-Za-z0-9]' requirements-evidence.txt | grep -vE \
+  '^[[:space:]]*[A-Za-z0-9][A-Za-z0-9._-]*(\[[^]]*\])? *==[A-Za-z0-9.+!_-]+ *(;[^\#]*)?( +--hash=[^ ]+)* *\\? *(#.*)?$'
+```
+
+The dry run reads installed metadata and checks no hashes: an installed distribution passes even
+when its locked hash differs. Whether the installed files match the locked hashes is settled by
+installing with `--require-hashes`, so keep that install step.
 
 The reader and the engine have independent versions. Any engine works with any reader that
 speaks the same prepared-config protocol; a mismatch stops with an error naming both packages, and
