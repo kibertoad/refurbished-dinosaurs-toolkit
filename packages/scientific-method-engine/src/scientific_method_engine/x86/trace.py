@@ -11,7 +11,7 @@ from .result_flow import validate_contracts, result_contracts
 from .loops import LoopTracker
 from .memory_scopes import validate_scopes, capture_scopes, retain_scopes, scope_history
 from .pcode_backend import interrupt_vector
-from .relational import memory_probes, probe_memory
+from .relational import checkpoint_anchors, memory_probes, probe_memory
 
 def call_target(image, site, ins):
     if ins.mnemonic in ("lcall", "ljmp"):
@@ -500,9 +500,10 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
     total_string_steps = 0
     string_limit = budget_input(config, "stringIterations")
     total_limit = budget_input(config, "totalSteps")
-    # lastWriter controls with an address inspect it at their checkpoint anchors.
+    # A control anchored at a checkpoint gets that checkpoint; a lastWriter control with an address
+    # inspects it there.
     probes = memory_probes(config)
-    checkpoints = set(config.get("checkpoints", [])) | set(probes)
+    checkpoints = set(config.get("checkpoints", [])) | checkpoint_anchors(config)
     # How often one path may pass the same instruction; a loop with a known bound needs it raised.
     visit_limit = budget_input(config, "visitLimit")
     # An unset field takes the value of the matching ordinary input.

@@ -36,6 +36,20 @@ class ReachTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bypass violated on path"):
             run(c, [control("bypass", "reach", at={"site": c.labels["store"], "event": "write"}, expect="never")])
 
+    def test_a_checkpoint_anchor_gets_its_checkpoint_without_listing_it(self):
+        # The store site is not in checkpoints, yet the path that reaches it reports a checkpoint
+        # there, so a never control is violated instead of holding for want of the event.
+        c = self.code()
+        never = control("bypass", "reach", at={"site": c.labels["store"], "event": "checkpoint"}, expect="never")
+        with self.assertRaisesRegex(ValueError, "bypass violated on path"):
+            run(c, [never])
+        held = verdict(run(c, [never], registers={"ax": 0}), "bypass")
+        self.assertEqual(held["verdict"], "held")
+        always = control("always", "reach", at={"site": c.labels["store"], "event": "checkpoint"}, expect="always")
+        result = run(c, [always], registers={"ax": 1})
+        self.assertEqual(verdict(result, "always")["verdict"], "held")
+        self.assertIn(c.labels["store"], [e["site"] for p in result["paths"] for e in p["events"] if e["kind"] == "checkpoint"])
+
     def test_a_returned_path_without_the_site_violates_always(self):
         c = self.code()
         with self.assertRaisesRegex(ValueError, "never reached the anchor"):
@@ -357,9 +371,18 @@ class LastWriterTests(unittest.TestCase):
                   "16-bit general register"),
                  (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "base": "ds", "width": 2}),
                   "16-bit general register"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "base": None, "width": 2}),
+                  "16-bit general register"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "base": ["bx"], "width": 2}),
+                  "16-bit general register"),
                  (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "displacement": "2", "width": 2}),
-                  "displacement must be an integer"),
+                  "displacement must be a 16-bit integer"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "displacement": 0x10022, "width": 2}),
+                  "displacement must be a 16-bit integer"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "displacement": -0x8001, "width": 2}),
+                  "displacement must be a 16-bit integer"),
                  (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "width": 0}), "width"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "width": 33}), "width"),
                  (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "width": 2, "index": "si"}),
                   "address names segment"),
                  (control("a", "lastWriter", at=end, byteWriters=[["entryState"]], address={"segment": "ds", "width": 2}),
@@ -367,6 +390,12 @@ class LastWriterTests(unittest.TestCase):
         for rule, message in cases:
             with self.assertRaisesRegex(ValueError, message):
                 run(c, [rule], registers=FRAME)
+        # The widest address and a negative displacement are accepted.
+        widest = control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "displacement": 0x40, "width": 32})
+        self.assertEqual(verdict(run(c, [widest], registers=FRAME), "a")["verdict"], "held")
+        below = control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "displacement": -2, "width": 2})
+        occurrence = verdict(run(c, [below], registers=FRAME), "a")["paths"][0]["occurrences"][0]
+        self.assertEqual(occurrence["address"]["offset"]["value"], 0xfffe)
 
 
 class ContainmentTests(unittest.TestCase):

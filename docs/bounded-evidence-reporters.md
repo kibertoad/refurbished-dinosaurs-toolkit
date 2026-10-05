@@ -1297,7 +1297,8 @@ Each control has a unique `name`, a `kind`, its anchors in `at` (one object or a
 optional `evidence` and, on `containment` and `relation` controls, optional `assume`. An anchor is `{ "site": <file offset>, "event": <kind> }`,
 where the event kind is one the path reports at that instruction: `read`, `write`, `compare`,
 `branch`, `call`, `call-return`, `return`, `checkpoint` and so on. Add a site to `checkpoints` to
-get a `checkpoint` event with every register at that instruction.
+get a `checkpoint` event with every register at that instruction. The engine adds the site of every
+`checkpoint` anchor to `checkpoints`, so a control anchored there needs no separate entry.
 
 A value reference names one reported value:
 
@@ -1331,11 +1332,11 @@ nodes.
 
 A `lastWriter` control with `address: { "segment", "base", "displacement", "width" }` asks the same
 question of memory the program does not read, such as an output a callee stores and its caller never
-reads back. Its anchors are `checkpoint` events, and the engine adds their sites to `checkpoints`.
-`segment` is a segment register, `base` an optional general register of the image's address width,
-`displacement` an integer (default 0) and `width` 1..32 bytes; `byteWriters` then lists `width`
-bytes. Before the anchor instruction runs, the engine takes the address from the registers at that
-point and reports, on the checkpoint's `memoryProbes` row for the control, each byte's writer or
+reads back. Its anchors are `checkpoint` events. `segment` is a segment register, `base` an
+optional general register of the image's address width, `displacement` a signed or unsigned integer
+of that width (default 0) and `width` 1..32 bytes; `byteWriters` then lists `width` bytes. Before
+the anchor instruction runs, the engine takes the address from the registers at that point and
+reports, on the checkpoint's `memoryProbes` row for the control, each byte's writer or
 why it has no modeled value, as a read of those bytes would. The inspection adds no `read` event
 and changes nothing on the path. The same undecided rules apply: a byte a modeled call or a
 possibly aliasing write dropped, or that a write through an unknown address may have stored, has

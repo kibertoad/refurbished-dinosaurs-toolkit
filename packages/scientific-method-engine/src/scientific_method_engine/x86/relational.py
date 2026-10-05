@@ -8,6 +8,7 @@ from bisect import bisect_right
 from math import inf
 from .image import integer
 from .machine import ALIASES, NO_WRITE, State, StopPath
+from .memory_scopes import SEGMENTS
 from .values import const, op
 
 KINDS = ("reach", "order", "lastWriter", "containment", "relation", "origin")
@@ -92,23 +93,35 @@ def _operand(operand, image, name, budget):
         _term(operand, image, name)
 
 
-SEGMENT_REGISTERS = ("cs", "ds", "es", "ss", "fs", "gs")
-
-
 def _address(control, image):
     """Check a lastWriter address: a segment register, an optional base register, a displacement and a width."""
     address, name = control["address"], control["name"]
     if not isinstance(address, dict) or set(address) - {"segment", "base", "displacement", "width"} or "segment" not in address:
         raise ValueError(f"Relational control {name} address names segment, and optionally base, displacement and width")
-    if address["segment"] not in SEGMENT_REGISTERS:
+    if address["segment"] not in SEGMENTS:
         raise ValueError(f"Relational control {name} address segment must be a segment register")
-    base = address.get("base")
-    if base is not None and (base not in ALIASES or ALIASES[base][0] in SEGMENT_REGISTERS or ALIASES[base][1] != 0
-                             or ALIASES[base][2] != image.bits):
-        raise ValueError(f"Relational control {name} address base must be a {image.bits}-bit general register")
-    if type(address.get("displacement", 0)) is not int:
-        raise ValueError(f"Relational control {name} address displacement must be an integer")
+    if "base" in address:
+        base = address["base"]
+        if (not isinstance(base, str) or base not in ALIASES or ALIASES[base][0] in SEGMENTS or ALIASES[base][1] != 0
+                or ALIASES[base][2] != image.bits):
+            raise ValueError(f"Relational control {name} address base must be a {image.bits}-bit general register")
+    # Signed or unsigned in the address width; a wider value would silently name another offset.
+    displacement = address.get("displacement", 0)
+    if type(displacement) is not int or not -(1 << (image.bits - 1)) <= displacement < 1 << image.bits:
+        raise ValueError(f"Relational control {name} address displacement must be a {image.bits}-bit integer")
     integer(address.get("width"), 1, 32, "lastWriter address width")
+
+
+def checkpoint_anchors(config):
+    """The sites of every relational control's checkpoint anchors, which the trace adds to checkpoints.
+
+    Reads controls that validate_controls accepted.
+    """
+    sites = set()
+    for control in config.get("relationalControls", []):
+        anchors = control["at"] if isinstance(control["at"], list) else [control["at"]]
+        sites.update(a["site"] for a in anchors if a.get("event") == "checkpoint")
+    return sites
 
 
 def memory_probes(config):
@@ -120,7 +133,7 @@ def memory_probes(config):
     for control in config.get("relationalControls", []):
         if control.get("kind") == "lastWriter" and "address" in control:
             anchors = control["at"] if isinstance(control["at"], list) else [control["at"]]
-            for site in sorted({a["site"] for a in anchors}):
+            for site in {a["site"] for a in anchors}:
                 probes.setdefault(site, []).append((control["name"], control["address"]))
     return probes
 
@@ -131,7 +144,7 @@ def probe_memory(state, name, address):
     The row carries ``byteProducers`` as a read of those bytes would report them, or ``unresolved``
     when the address cannot be inspected.
     """
-    offset = const(address.get("displacement", 0) % (1 << state.bits), state.bits)
+    offset = const(address.get("displacement", 0), state.bits)
     if "base" in address:
         offset = op("add", state.reg(address["base"]), offset)
     segment = state.segment(address["segment"])
@@ -606,7 +619,7 @@ def _occurrence(control, path, anchor, image):
                                      "address": {k: accessed[k] for k in ("segment", "offset", "width")}}
         lists = control.get("byteWriters") or [control["writers"]] * accessed["width"]
         if len(lists) != accessed["width"]:
-            raise ValueError(f"Relational control {control['name']} byteWriters lists {len(lists)} bytes; the read at {anchor['site']} has {anchor['width']}")
+            raise ValueError(f"Relational control {control['name']} byteWriters lists {len(lists)} bytes; the access at {anchor['site']} has {accessed['width']}")
         rows, verdicts = [], []
         for row, allowed in zip(accessed["byteProducers"], lists):
             if row.get("writeOrder") is not None:
