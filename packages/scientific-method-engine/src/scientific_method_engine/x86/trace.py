@@ -11,6 +11,7 @@ from .result_flow import validate_contracts, result_contracts
 from .loops import LoopTracker
 from .memory_scopes import validate_scopes, capture_scopes, retain_scopes, scope_history
 from .pcode_backend import interrupt_vector
+from .relational import memory_probes, probe_memory
 
 def call_target(image, site, ins):
     if ins.mnemonic in ("lcall", "ljmp"):
@@ -499,7 +500,9 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
     total_string_steps = 0
     string_limit = budget_input(config, "stringIterations")
     total_limit = budget_input(config, "totalSteps")
-    checkpoints = set(config.get("checkpoints", []))
+    # lastWriter controls with an address inspect it at their checkpoint anchors.
+    probes = memory_probes(config)
+    checkpoints = set(config.get("checkpoints", [])) | set(probes)
     # How often one path may pass the same instruction; a loop with a known bound needs it raised.
     visit_limit = budget_input(config, "visitLimit")
     # An unset field takes the value of the matching ordinary input.
@@ -732,7 +735,8 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                 elif state.visits[at] > visit_limit:
                     raise StopPath(f"instruction repeated more than {visit_limit} times; raise visitLimit or read the loop's bound")
                 if at in checkpoints:
-                    state.event("checkpoint", registers=snapshot(state))
+                    state.event("checkpoint", registers=snapshot(state),
+                                **({"memoryProbes": [probe_memory(state, n, a) for n, a in probes[at]]} if at in probes else {}))
                 m, following = ins.mnemonic, at + ins.size
                 is_string = string_instruction(ins)
                 if (0xf2 in ins.prefix or 0xf3 in ins.prefix) and not is_string:

@@ -1752,6 +1752,19 @@ test("relational controls pass through preparation and fail, hold or stay undeci
   const stopped = run(["memory", query({ relationalControls: [writer([68, "entryState"])], maxSteps: 2 })]);
   assert.equal(stopped.relationalControls.controls[0].verdict, "undecided");
   assert.equal(stopped.relationalControls.allHeld, false);
+  // The same word inspected at the return, where nothing reads it.
+  const atReturn = (writers: unknown[]) => ({
+    ...writer(writers),
+    at: { site: 77, event: "checkpoint" },
+    address: { segment: "ds", displacement: 0x22, width: 2 },
+  });
+  const inspected = run(["memory", query({ relationalControls: [atReturn([68, "entryState"])] })]).relationalControls;
+  assert.equal(inspected.allHeld, true);
+  assert.deepEqual(
+    inspected.controls[0].paths.map((p: Report) => p.occurrences[0].address.offset.value).sort(),
+    [0x22, 0x22],
+  );
+  assert.throws(() => run(["memory", query({ relationalControls: [atReturn([68])] })]), /cleanup slot violated/);
 });
 
 test("an output count past a modeled call is a lower bound through the source bridge", (t) => {
