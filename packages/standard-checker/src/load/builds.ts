@@ -9,6 +9,18 @@ import type { Entry, Meta, Yaml } from "../types.ts";
 import { parseYaml } from "../yaml.ts";
 
 /**
+ * Returns a manifest or other-files path as text, or reports it and returns undefined when it is
+ * missing or is a map or list. The YAML reader turns a bare name such as 1990 or 0 into a number,
+ * so a number or boolean is a path written without quotes and is read as its text.
+ */
+function pathText(value: Yaml, file: string, missing: string, problem: LoadContext["problem"]): string | undefined {
+  if (value === null || value === undefined || value === "") problem(file, missing);
+  else if (typeof value === "object") problem(file, "a path is text, not a map or list");
+  else return String(value);
+  return undefined;
+}
+
+/**
  * Reads and checks the manifest of every build entry, and reports a manifest or list of other files
  * that belongs to no build. Returns build ID -> the items of its files list that are maps.
  */
@@ -41,8 +53,15 @@ export function loadBuildFiles({ config, problem }: LoadContext, entries: Map<st
       problem(path, "every item of files is a map of path, format, size and xxh3");
     const files: Meta[] = manifest.files.filter((f: Yaml) => f && typeof f === "object");
     buildFiles.set(id, files);
+    // A manifest gives one format, size and hash per file, so a path it lists twice is reported
+    // even when the two items agree. Paths compare as text, as in the list of other files.
+    const seen = new Set<string>();
     for (const f of files) {
-      if (!f.path) problem(path, "every file has a path");
+      const p = pathText(f.path, path, "every file has a path", problem);
+      if (p !== undefined) {
+        if (seen.has(p)) problem(path, `${p} is listed twice`);
+        seen.add(p);
+      }
       if (f.format === undefined || f.format === null || f.format === "")
         problem(path, `${f.path}: every file has a format`);
       else if (!locationRule(f.format)) problem(path, `${f.path}: ${unlistedFormat(f.format)}`);
@@ -104,11 +123,8 @@ export function checkOtherFiles(
         problem(path, "every item of other_files is a map of path and reason");
         continue;
       }
-      if (item.path === null || item.path === undefined || item.path === "") {
-        problem(path, "every other file has a path");
-        continue;
-      }
-      const other = String(item.path);
+      const other = pathText(item.path, path, "every other file has a path", problem);
+      if (other === undefined) continue;
       if (item.reason === null || String(item.reason).trim() === "")
         problem(path, `${other}: every other file gives the reason the manifest leaves it out`);
       if (other.includes("\\")) problem(path, `${other}: paths use forward slashes`);
