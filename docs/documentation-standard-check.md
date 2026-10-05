@@ -103,6 +103,14 @@ The code directories are scanned for `.cs`, `.ts`, `.mjs`, `.js`, `.ps1`, `.fs`,
 files, skipping `bin`, `obj`, `node_modules`, `.git` and `artifacts`. Every spec or deviation ID
 they cite must exist and not be superseded.
 
+A passing citation check shows only that each cited ID resolves to a live entry. The check does
+not read the words around a citation, so a note that calls a bitmap entry a configuration entry
+passes as long as the ID exists. When prose describes what an entry is, take the description from
+the entry: `spec/index/by-kind.md` and `spec/index/by-area.md` list every ID with its title and
+status, and the entry itself has its files and evidence. Reviewing that agreement is part of the
+restoration's own review of its notes and plans; the checker does not compare prose with titles,
+because a paraphrase is a legitimate way to cite an entry.
+
 ### Addresses in code comments
 
 An address of the original that a comment in the code gives must be recorded in an entry the
