@@ -209,20 +209,21 @@ after this one.
 
 ## 6. Verify
 
-- No file under `tools/evidence/x86-reporter/`, `vendor/check-documentation.mjs`, `x86-lock.json`
-  or `sync-x86.mjs` remains, and
-  `git grep -e x86-reporter -e check-documentation.mjs -e x86-lock -e sync-x86` finds nothing
-  outside history notes.
+- No file under `tools/evidence/x86-reporter/`, `vendor/check-documentation.mjs`, `x86-lock.json`,
+  `sync-x86.mjs` or `tests/evidence/vendor.test.mjs` remains, and
+  `git grep -e x86-reporter -e check-documentation.mjs -e x86-lock -e sync-x86 -e vendor.test.mjs`
+  finds nothing outside dated records of earlier runs, such as history notes or a validation log.
 - The documents that tell a reader what to run now (the agent guide, the implementation plan, the
   validation guide, READMEs) name the commands this move installed, such as
   `pnpm exec standard-checker`, and no vendored path. Where they mention a toolkit or template
-  revision, they point at the file that pins it (`package.json`, the requirements file, the
-  workflow's action SHA, a lock the repository keeps) instead of repeating the version or commit,
-  because Dependabot and refreshes update those files and leave a copied number behind. Dated
-  records of earlier runs, such as a validation log, keep the commands and revisions they ran with.
-  The documentation check reads the standard's records and does not look at the commands a
-  document gives, so review these documents by hand; refreshing pinned rules copies does not
-  change them.
+  revision, they point at where it is pinned (`package.json` and the lockfile, the requirements
+  file, the workflow step that pins `actions/check-documentation` by commit SHA, a lock the
+  repository keeps) instead of repeating the version or commit, because a dependency update or a
+  refresh changes those files and leaves a copied number behind. Dated records of earlier runs keep
+  the commands and revisions they ran with. The documentation check reads `spec/`, `parity/`,
+  `deviations/` and the IDs that code cites, and does not look at the commands a document gives,
+  so review these documents by hand. Refreshing the repository's copy of the standard does not
+  change them either.
 - A report from a recorded case gives the same JSON as before the move, apart from fields that
   name the reporter's location.
 - CI passes, including the documentation check with `--check`.
