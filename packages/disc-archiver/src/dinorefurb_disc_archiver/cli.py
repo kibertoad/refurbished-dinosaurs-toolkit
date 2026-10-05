@@ -9,11 +9,11 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import backends, drives, isofs, redumper, tools
+from . import backends, drives, redumper, tools
 from .disc import DiscError
 from .formats import FORMAT_IDS, FORMATS
 from .notice import NOTICE
-from .pipeline import archive, fingerprint, manifest_ok, open_source, package_version
+from .pipeline import archive, fingerprint, manifest_ok, open_source, package_version, profile_paths
 from .profile import BUILTIN_PROFILES, check_profile, load_profile
 
 EXIT_OK = 0
@@ -186,13 +186,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.command == "check":
             with tempfile.TemporaryDirectory() as work, open_source(arguments.input, Path(work), _log) as disc:
                 found = fingerprint(disc)
-                paths = None
-                if profile.expected_paths and disc.data_tracks:
-                    try:
-                        paths = [e.path for e in isofs.walk(disc.first_data_track())]
-                    except isofs.UnsupportedFileSystem as error:
-                        raise DiscError(f"the profile lists expected paths, but the disc's files cannot be listed: {error}") from None
-                checks = check_profile(profile, found, paths)
+                checks = check_profile(profile, found, profile_paths(profile, disc))
             print(json.dumps({"disc": found, "checks": [c.as_json() for c in checks]}, indent=2))
             return EXIT_OK if all(c.matched for c in checks) else EXIT_MISMATCH
         if not _require_acceptance(arguments):

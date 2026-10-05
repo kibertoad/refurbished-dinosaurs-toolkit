@@ -172,8 +172,8 @@ def write_ccd(disc: Disc, directory: Path, name: str) -> Output:
     return Output("ccd", directory, files[0], files, notes)
 
 
-def _first_non_data_past_volume(track: Track) -> NotDataSector | None:
-    volume_end = isofs.volume_sectors(track) if track.storage == "raw" else None
+def _first_non_data_past_volume(track: Track, volume: isofs.Volume | None) -> NotDataSector | None:
+    volume_end = volume.end if volume is not None and track.storage == "raw" else None
     if volume_end is None or volume_end >= track.length:
         return None
     index = volume_end
@@ -192,6 +192,10 @@ def _write_iso(disc: Disc, path: Path) -> list[str]:
         raise FormatUnavailable("this disc has no data track, so it has no ISO form")
     track = disc.first_data_track()
     notes = []
+    try:
+        volume: isofs.Volume | None = isofs.locate(track)
+    except isofs.UnsupportedFileSystem:
+        volume = None
     if track.storage == "cooked" and track.source_offset == 0 and track.source.stat().st_size == track.length * COOKED_SECTOR:
         # The source already is this ISO: link it rather than hold the same bytes twice.
         try:
@@ -201,7 +205,7 @@ def _write_iso(disc: Disc, path: Path) -> list[str]:
     else:
         # Only the sectors past the declared volume may lack user data, so reading them alone
         # settles whether the ISO can be written before any of it is.
-        problem = _first_non_data_past_volume(track)
+        problem = _first_non_data_past_volume(track, volume)
         if problem is not None:
             raise FormatUnavailable(
                 f"track {track.number}: {problem}, and an ISO file holds only the 2,048 bytes of user data of "
@@ -216,13 +220,9 @@ def _write_iso(disc: Disc, path: Path) -> list[str]:
             raise
     if track.mode == "MODE2":
         notes.append(f"Track {track.number} is a MODE2 (CD-ROM XA) track; the ISO holds its form 1 user data.")
-    try:
-        base = isofs.locate(track).base
-    except isofs.UnsupportedFileSystem:
-        base = 0
-    if base:
+    if volume is not None and volume.base:
         notes.append(
-            f"Track {track.number}'s file system counts its addresses from LBA {base}, where the track sits on the disc, "
+            f"Track {track.number}'s file system counts its addresses from LBA {volume.base}, where the track sits on the disc, "
             "and the ISO starts at the track's first sector, so programs that read an ISO's files with addresses "
             "counted from its start do not find them. The files format holds them."
         )
@@ -327,7 +327,8 @@ def write_files(disc: Disc, directory: Path, name: str) -> Output:
     try:
         entries = isofs.walk(disc.first_data_track(), tree)
     except isofs.UnsupportedFileSystem as error:
-        # walk locates the volume before it writes anything, so no partial tree is left behind.
+        # A volume that cannot be located stops walk before it writes anything. A read that stops
+        # it partway leaves files behind, which derive removes with the format's folder.
         raise FormatUnavailable(str(error)) from None
     notes = [f"{len(entries)} files from track {disc.first_data_track().number}'s file system."]
     if disc.audio_tracks:

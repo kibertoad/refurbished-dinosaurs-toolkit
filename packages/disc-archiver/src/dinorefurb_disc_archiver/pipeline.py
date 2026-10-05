@@ -302,6 +302,20 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
     return result
 
 
+def profile_paths(profile: Profile, disc: Disc) -> list[str] | None:
+    """The paths of the first data track's files, for a profile that lists expected paths.
+
+    None when the profile lists none or the disc has no data track. Raises :class:`DiscError` when
+    the files cannot be listed, since the profile's expectation then cannot be checked.
+    """
+    if not profile.expected_paths or not disc.data_tracks:
+        return None
+    try:
+        return [e.path for e in isofs.walk(disc.first_data_track())]
+    except isofs.UnsupportedFileSystem as error:
+        raise DiscError(f"the profile lists expected paths, but the disc's files cannot be listed: {error}") from None
+
+
 def derive(
     disc: Disc,
     root: Path,
@@ -323,17 +337,12 @@ def derive(
     # before any format is written, as a damaged dump stops at the fingerprint.
     data = reference["data"]
     past_volume = data is not None and bool(data["nonDataSectors"])  # type: ignore[index]
-    # Sectors past the volume are admitted only once the volume is located, so the files of such a
-    # track can always be listed, and only the profile's paths can meet a volume walk cannot read.
-    try:
-        entries = (
+    paths = profile_paths(profile, disc)
+    if paths is None and disc.data_tracks and "files" in requested and past_volume:
+        try:
             isofs.walk(disc.first_data_track())
-            if disc.data_tracks and (profile.expected_paths or ("files" in requested and past_volume))
-            else None
-        )
-    except isofs.UnsupportedFileSystem as error:
-        raise DiscError(f"the profile lists expected paths, but the disc's files cannot be listed: {error}") from None
-    paths = [e.path for e in entries] if profile.expected_paths and entries is not None else None
+        except isofs.UnsupportedFileSystem:
+            pass  # write_files makes the files format unavailable with this reason.
     checks = check_profile(profile, reference, paths)
     for check in checks:
         log(f"profile: {check.name}: expected {check.expected!r}, found {check.found!r} - {'ok' if check.matched else 'MISMATCH'}")

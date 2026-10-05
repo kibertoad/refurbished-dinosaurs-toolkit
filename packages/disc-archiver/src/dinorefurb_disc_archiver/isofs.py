@@ -50,7 +50,7 @@ class UserDataStream(io.RawIOBase):
     addresses it: the track's sectors up to ``descriptors_end`` (the system area and the volume
     descriptors, which sit at sector 16 of the track) at their own place, and every later sector
     at its address, so track sector ``i`` is read at sector ``i + base``. A read between the two
-    ranges is an error.
+    ranges raises :class:`UnsupportedFileSystem`.
     """
 
     def __init__(self, track: Track, volume: Volume | None = None) -> None:
@@ -86,7 +86,7 @@ class UserDataStream(io.RawIOBase):
         if address < self._descriptors_end:
             return address, self._descriptors_end
         if address < self._base:
-            raise DiscError(
+            raise UnsupportedFileSystem(
                 f"track {self._track.number}: the file system reads sector {address}, which lies between its "
                 f"volume descriptors and LBA {self._base}, where its addresses start"
             )
@@ -207,7 +207,8 @@ def _header_start(track: Track) -> int | None:
     return (minutes * 60 + seconds) * FRAMES_PER_SECOND + frames - MSF_OFFSET - PVD_SECTOR
 
 
-def _descriptors_end(stream: UserDataStream, track: Track) -> int:
+def _descriptor_set_end(stream: UserDataStream, track: Track) -> int:
+    """The track sector just past the volume descriptor set that starts at sector 16."""
     index = PVD_SECTOR
     while index < min(track.length, PVD_SECTOR + MAXIMUM_DESCRIPTORS):
         try:
@@ -217,8 +218,7 @@ def _descriptors_end(stream: UserDataStream, track: Track) -> int:
         if sector[0] not in _DESCRIPTOR_TYPES or sector[1:6] not in _DESCRIPTOR_IDENTIFIERS:
             break
         index += 1
-    # pycdlib reads the sector after the set, where mkisofs writes its own descriptor.
-    return index + 1
+    return index
 
 
 def _names_itself(stream: UserDataStream, index: int, extent: int) -> bool:
@@ -259,7 +259,10 @@ def locate(track: Track) -> Volume:
             raise UnsupportedFileSystem(f"track {track.number}: the volume's logical block size is not 2,048 bytes")
         size = _both_endian(descriptor, 80, "volume space size", track)
         root = _both_endian(descriptor, 156 + 2, "root directory extent", track)
-        descriptors_end = _descriptors_end(stream, track)
+        set_end = _descriptor_set_end(stream, track)
+        # pycdlib also reads the sector after the set, where mkisofs writes its own descriptor, so
+        # the stream keeps that sector at its own place. A root directory may sit there.
+        descriptors_end = set_end + 1
         offered = {0: "the track's first sector"}
         offered.setdefault(track.index1, f"LBA {track.index1}, where the disc's layout puts the track")
         header = _header_start(track)
@@ -269,7 +272,7 @@ def locate(track: Track) -> Volume:
             base
             for base in sorted(offered)
             if (base == 0 or base >= descriptors_end)
-            and descriptors_end <= root - base < min(track.length, size - base)
+            and set_end <= root - base < min(track.length, size - base)
             and _names_itself(stream, root - base, root)
         ]
     if len(fitting) == 1:
@@ -346,7 +349,7 @@ def walk(track: Track, destination: Path | None = None) -> list[FileEntry]:
     Joliet names are used when the volume has them, since they keep the long names Windows shows;
     otherwise ISO 9660 names without their ``;1`` version. The file system's addresses are read
     against the base :func:`locate` finds, and :class:`UnsupportedFileSystem` is raised when it
-    finds none.
+    finds none or when the file system reads an address that falls on no track sector.
     """
     entries: list[FileEntry] = []
     stream = UserDataStream(track, locate(track))

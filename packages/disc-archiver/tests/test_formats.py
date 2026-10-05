@@ -455,6 +455,21 @@ class VolumeAddressTests(FormatTestCase):
         volume = isofs.locate(self.disc.first_data_track())
         self.assertEqual((volume.base, volume.end), (0, len(self.synthetic.iso) // 2048))
 
+    def test_a_root_directory_right_after_the_descriptor_set_is_located(self) -> None:
+        image = bytearray(iso_image(joliet=False))
+        after = next(s for s in range(16, 32) if image[s * 2048] == 255) + 1
+        root = int.from_bytes(image[16 * 2048 + 158 : 16 * 2048 + 162], "little")
+        # The root directory moved to the sector after the set terminator, where mkisofs writes
+        # its own descriptor and other mastering tools may put the root.
+        image[after * 2048 : (after + 1) * 2048] = image[root * 2048 : (root + 1) * 2048]
+        location = after.to_bytes(4, "little") + after.to_bytes(4, "big")
+        image[16 * 2048 + 158 : 16 * 2048 + 166] = location
+        image[after * 2048 + 2 : after * 2048 + 10] = location
+        path = self.dir / "root-after-set.iso"
+        path.write_bytes(bytes(image))
+        volume = isofs.locate(read_iso(path).first_data_track())
+        self.assertEqual((volume.base, volume.end), (0, len(image) // 2048))
+
     def test_a_cd_extra_volume_is_read_at_the_track_address_its_sector_headers_give(self) -> None:
         extra = SyntheticCdExtra(padding=self.PADDING)
         disc = self.source(extra)
@@ -555,7 +570,7 @@ class VolumeAddressTests(FormatTestCase):
             stream.seek(16 * 2048)
             self.assertEqual(stream.read(2048), extra.iso[16 * 2048 : 17 * 2048])
             stream.seek(100 * 2048)
-            with self.assertRaisesRegex(DiscError, "reads sector 100, which lies between its volume descriptors"):
+            with self.assertRaisesRegex(isofs.UnsupportedFileSystem, "reads sector 100, which lies between its volume descriptors"):
                 stream.read(2048)
 
 
