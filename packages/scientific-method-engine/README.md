@@ -153,7 +153,8 @@ The trace-family commands (`trace`, `arguments`, `effects`, `returns`, `guards`,
 writer, containment, value relation and value origin) evaluated on every bounded path. A violated
 control fails the report. A control left undecided by a stop, a limit or an unread call is
 reported as `undecided` and never counts as held. Access reports also give each byte's
-`writeOrder`, or why it has no modeled value. See the
+`writeOrder`, or why it has no modeled value. A last-writer control with an `address` asks the
+same of memory the program never reads back, at a checkpoint. See the
 [controls contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#relational-controls).
 
 A trace-family query whose entry lies inside a function body names the function's entry in

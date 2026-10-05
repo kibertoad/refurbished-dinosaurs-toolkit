@@ -19,14 +19,15 @@ def verdict(result, name):
     return next(c for c in result["relationalControls"]["controls"] if c["name"] == name)
 
 
-def wrapper_case(test="a8 01"):
+def wrapper_case(test="a8 01", read=True):
     """A caller passes one far scratch pointer twice to a wrapper around INT 33h.
 
     The wrapper stores CX then DX through the two pointers and copies BX to AX; the caller reads
-    the scratch word into CX and tests bit zero of AL (``test``), or of CL to test the scratch word.
+    the scratch word into CX (unless ``read`` is false) and tests bit zero of AL (``test``), or of
+    CL to test the scratch word.
     """
     c = (Code().emit("1e b8 40 00 50 1e 50").branch("e8", "wrapper").emit("83 c4 08")
-         .label("scratch").emit("8b 0e 40 00").label("test").emit(test).branch("74", "zero").emit("c3")
+         .label("scratch").emit("8b 0e 40 00" if read else "").label("test").emit(test).branch("74", "zero").emit("c3")
          .label("zero").emit("c3")
          .label("wrapper").emit("55 89 e5").label("int").emit("cd 33")
          .emit("c4 7e 04").label("first").emit("26 89 0d").emit("c4 7e 08").label("second").emit("26 89 15")
@@ -199,6 +200,53 @@ class InterruptModelTests(unittest.TestCase):
         self.assertEqual(r["paths"][0]["stop"], "step limit; loop progress unresolved")
         self.assertEqual(verdict(r, "later store")["verdict"], "undecided")
         self.assertEqual(verdict(r, "predicate")["verdict"], "undecided")
+
+    def test_a_caller_that_never_reads_the_scratch_word_names_its_last_writer_at_a_checkpoint(self):
+        c, service = wrapper_case(read=False)
+        address = {"segment": "ds", "displacement": 0x40, "width": 2}
+
+        def later(writer="second"):
+            return control("later store", "lastWriter", at={"site": c.labels["test"], "event": "checkpoint"},
+                           address=address, writers=[c.labels[writer]])
+        r = report(c, "effects", registers=FRAME, callModels=[service], relationalControls=[later(), self.wrapper_controls(c)[1]])
+        self.assertTrue(r["relationalControls"]["allHeld"])
+        self.assertFalse([e for e in r["paths"][0]["events"] if e["kind"] == "read" and e["offset"].get("value") == 0x40])
+        with self.assertRaisesRegex(ValueError, "later store violated"):
+            report(c, registers=FRAME, callModels=[service], relationalControls=[later("first")])
+        # Without the frame scope the path stops in the wrapper and never reaches the checkpoint.
+        unscoped = {k: v for k, v in service.items() if k != "preservesMemory"}
+        r = report(c, registers=FRAME, callModels=[unscoped], relationalControls=[later()])
+        self.assertEqual(verdict(r, "later store")["verdict"], "undecided")
+
+    def test_a_query_inside_the_callers_body_returns_with_the_caller_in_entry_frame(self):
+        # The caller passes the far address of its own frame word twice and never reads it back.
+        c = (Code().emit("55 89 e5 83 ec 02").label("pushes").emit("16 8d 46 fe 50 16 50").branch("e8", "wrapper")
+             .emit("83 c4 08").label("test").emit("a8 01").branch("74", "zero").emit("89 ec 5d c3")
+             .label("zero").emit("89 ec 5d c3")
+             .label("wrapper").emit("55 89 e5").label("int").emit("cd 33")
+             .emit("c4 7e 04").label("first").emit("26 89 0d").emit("c4 7e 08").label("second").emit("26 89 15")
+             .emit("89 d8 5d c3"))
+        frame = {"segment": "ss", "base": "bp", "bytes": 12, "evidence": "synthetic saved BP, return word and four argument words"}
+        service = model(c.labels["int"], [{"registers": {"cx": 5, "dx": 7}}], preserves=["ds", "ss", "ebp"],
+                        preservesMemory=[frame])
+        regions = [{"name": "synthetic", "start": 0, "end": len(c.bytes()), "ip": 0, "segment": 0x1000, "resident": True,
+                    "entries": [0, c.labels["pushes"]], "evidence": "synthetic declared code extent"}]
+        local = {"segment": "ss", "base": "bp", "displacement": -2, "width": 2}
+        controls = [control("predicate", "origin", at={"site": c.labels["test"], "event": "compare"}, value={"field": "left"},
+                            expect={"inputs": {"include": [{"modeledCall": c.labels["int"], "register": "bx"}]}}),
+                    control("later store", "lastWriter", at={"site": c.labels["test"], "event": "checkpoint"}, address=local,
+                            writers=[c.labels["second"]])]
+        query = {"regions": regions, "entry": c.labels["pushes"], "registers": {"ss": 0x3000}, "callModels": [service],
+                 "relationalControls": controls}
+        # Without the frame, BP and SP are unrelated unknowns: the store through BP may alias the
+        # wrapper's return word, and no path returns.
+        r = report(c, **query)
+        self.assertFalse([p for p in r["paths"] if p["returned"]])
+        self.assertEqual(verdict(r, "predicate")["verdict"], "undecided")
+        r = report(c, **query, entryFrame={"from": 0})
+        self.assertTrue(r["entryFrame"]["established"])
+        self.assertTrue(all(p["returned"] for p in r["paths"]))
+        self.assertTrue(r["relationalControls"]["allHeld"])
 
     def test_an_entry_frame_trace_continues_through_a_modeled_interrupt(self):
         # From the wrapper's entry, the frame trace reaches the code after the interrupt only through the model.

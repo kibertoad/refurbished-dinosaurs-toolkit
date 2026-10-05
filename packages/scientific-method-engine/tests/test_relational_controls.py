@@ -36,6 +36,20 @@ class ReachTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "bypass violated on path"):
             run(c, [control("bypass", "reach", at={"site": c.labels["store"], "event": "write"}, expect="never")])
 
+    def test_a_checkpoint_anchor_gets_its_checkpoint_without_listing_it(self):
+        # The store site is not in checkpoints, yet the path that reaches it reports a checkpoint
+        # there, so a never control is violated instead of holding for want of the event.
+        c = self.code()
+        never = control("bypass", "reach", at={"site": c.labels["store"], "event": "checkpoint"}, expect="never")
+        with self.assertRaisesRegex(ValueError, "bypass violated on path"):
+            run(c, [never])
+        held = verdict(run(c, [never], registers={"ax": 0}), "bypass")
+        self.assertEqual(held["verdict"], "held")
+        always = control("always", "reach", at={"site": c.labels["store"], "event": "checkpoint"}, expect="always")
+        result = run(c, [always], registers={"ax": 1})
+        self.assertEqual(verdict(result, "always")["verdict"], "held")
+        self.assertIn(c.labels["store"], [e["site"] for p in result["paths"] for e in p["events"] if e["kind"] == "checkpoint"])
+
     def test_a_returned_path_without_the_site_violates_always(self):
         c = self.code()
         with self.assertRaisesRegex(ValueError, "never reached the anchor"):
@@ -291,6 +305,97 @@ class LastWriterTests(unittest.TestCase):
             run(c, [control("word", "lastWriter", at=at, writers=[c.labels["low"]])], registers=FRAME)
         with self.assertRaisesRegex(ValueError, "lists 1 bytes"):
             run(c, [control("short", "lastWriter", at=at, byteWriters=[[c.labels["low"]]])], registers=FRAME)
+
+    def outputs(self):
+        # Two stores to one word and no read of it before the return.
+        return Code().label("first").emit("a3 22 00").label("second").emit("89 1e 22 00").label("end").emit("c3")
+
+    def at_end(self, c, name="slot", **fields):
+        fields.setdefault("address", {"segment": "ds", "displacement": 0x22, "width": 2})
+        return control(name, "lastWriter", at={"site": c.labels["end"], "event": "checkpoint"}, **fields)
+
+    def test_an_address_at_a_checkpoint_names_the_later_store_without_a_read(self):
+        c = self.outputs()
+        r = run(c, [self.at_end(c, writers=[c.labels["second"]])], registers=FRAME)
+        result = verdict(r, "slot")
+        self.assertEqual(result["verdict"], "held")
+        occurrence = result["paths"][0]["occurrences"][0]
+        self.assertEqual([b["writer"]["site"] for b in occurrence["bytes"]], [c.labels["second"]] * 2)
+        self.assertEqual((occurrence["address"]["segment"]["value"], occurrence["address"]["offset"]["value"]), (0x2000, 0x22))
+        # The checkpoint carries the inspected bytes; the path reports no read of them.
+        events = r["paths"][0]["events"]
+        checkpoint = next(e for e in events if e["kind"] == "checkpoint")
+        self.assertEqual(checkpoint["memoryProbes"][0]["control"], "slot")
+        self.assertFalse([e for e in events if e["kind"] == "read" and e["site"] != c.labels["end"]])
+        with self.assertRaisesRegex(ValueError, "first violated.*byte 0 was written at site 3"):
+            run(c, [self.at_end(c, "first", writers=[c.labels["first"]])], registers=FRAME)
+
+    def test_an_address_through_a_base_register_reads_the_register_at_the_checkpoint(self):
+        c = self.outputs()
+        address = {"segment": "ds", "base": "bx", "displacement": 2, "width": 2}
+        held = self.at_end(c, writers=[c.labels["second"]], address=address)
+        self.assertEqual(verdict(run(c, [held], registers={**FRAME, "bx": 0x20}), "slot")["verdict"], "held")
+        # With BX unknown the address may be any word, which either store may or may not have reached.
+        result = verdict(run(c, [held], registers=FRAME), "slot")
+        self.assertEqual(result["verdict"], "undecided")
+        self.assertEqual(result["paths"][0]["occurrences"][0]["bytes"][0]["unwritten"]["cause"],
+                         "possibly written by an aliasing write")
+
+    def test_an_address_past_a_modeled_call_or_never_written_keeps_its_cause(self):
+        c = (Code().label("second").emit("89 1e 22 00").label("service").branch("e8", "external").label("end").emit("c3")
+             .label("external").emit("c3"))
+        model = [{"site": c.labels["service"], "evidence": "synthetic unread service", "cases": [{}]}]
+        result = verdict(run(c, [self.at_end(c, writers=[c.labels["second"]])], registers=FRAME, callModels=model), "slot")
+        self.assertEqual(result["verdict"], "undecided")
+        self.assertEqual(result["paths"][0]["occurrences"][0]["bytes"][0]["unwritten"]["cause"], "dropped by a modeled call")
+        other = {"segment": "ds", "displacement": 0x40, "width": 1}
+        held = self.at_end(c, writers=["entryState"], address=other)
+        self.assertEqual(verdict(run(c, [held], registers=FRAME), "slot")["verdict"], "held")
+        with self.assertRaisesRegex(ValueError, "slot violated.*entryState is not listed"):
+            run(c, [self.at_end(c, writers=[c.labels["second"]], address=other)], registers=FRAME)
+
+    def test_an_address_that_cannot_be_inspected_is_undecided(self):
+        c = self.outputs()
+        crossing = {"segment": "ds", "displacement": 0xffff, "width": 2}
+        result = verdict(run(c, [self.at_end(c, writers=["entryState"], address=crossing)], registers=FRAME), "slot")
+        self.assertEqual(result["verdict"], "undecided")
+        self.assertIn("cannot be inspected", result["paths"][0]["occurrences"][0]["reason"])
+
+    def test_an_address_is_checked_before_tracing(self):
+        c = self.outputs()
+        end = {"site": c.labels["end"], "event": "checkpoint"}
+        cases = [(control("a", "lastWriter", at={"site": c.labels["end"], "event": "read"}, writers=["entryState"],
+                          address={"segment": "ds", "width": 2}), "checkpoint events"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ax", "width": 2}), "segment register"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "base": "bl", "width": 2}),
+                  "16-bit general register"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "base": "ds", "width": 2}),
+                  "16-bit general register"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "base": None, "width": 2}),
+                  "16-bit general register"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "base": ["bx"], "width": 2}),
+                  "16-bit general register"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "displacement": "2", "width": 2}),
+                  "displacement must be a 16-bit integer"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "displacement": 0x10022, "width": 2}),
+                  "displacement must be a 16-bit integer"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "displacement": -0x8001, "width": 2}),
+                  "displacement must be a 16-bit integer"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "width": 0}), "width"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "width": 33}), "width"),
+                 (control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "width": 2, "index": "si"}),
+                  "address names segment"),
+                 (control("a", "lastWriter", at=end, byteWriters=[["entryState"]], address={"segment": "ds", "width": 2}),
+                  "lists 1 bytes; its address has 2")]
+        for rule, message in cases:
+            with self.assertRaisesRegex(ValueError, message):
+                run(c, [rule], registers=FRAME)
+        # The widest address and a negative displacement are accepted.
+        widest = control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "displacement": 0x40, "width": 32})
+        self.assertEqual(verdict(run(c, [widest], registers=FRAME), "a")["verdict"], "held")
+        below = control("a", "lastWriter", at=end, writers=["entryState"], address={"segment": "ds", "displacement": -2, "width": 2})
+        occurrence = verdict(run(c, [below], registers=FRAME), "a")["paths"][0]["occurrences"][0]
+        self.assertEqual(occurrence["address"]["offset"]["value"], 0xfffe)
 
 
 class ContainmentTests(unittest.TestCase):

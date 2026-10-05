@@ -23,6 +23,7 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "or continues at another address than the next instruction (ghidraFallsThroughElsewhere).\n"
          "trace, arguments, effects, returns, guards, memory and allocation check relationalControls:\n"
          "a violated control fails the report; an undecided one is reported and never counts as held.\n"
+         "A lastWriter control with an address inspects that memory at its checkpoint anchors without a read.\n"
          "entryFrame {from} starts an entry inside the function at from, in the frame a trace from there observed.\n"
          "Declared table continuations are separate conditional paths that spend continuationBudget\n"
          "(paths, totalSteps, maxSteps, visitLimit, stringIterations); ordinary computed transfers remain stopped.\n"
