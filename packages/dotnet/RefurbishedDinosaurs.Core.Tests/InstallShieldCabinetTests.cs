@@ -379,7 +379,8 @@ public sealed class InstallShieldCabinetTests
             ]));
             using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
             Assert.Equal(["Copy/linked.bin", "original.bin"], source.Files.Select(entry => entry.Path));
-            Assert.Equal([(2, "gone.bin"), (3, "original.bin")], source.SkippedFiles.Select(file => (file.Index, file.Path)));
+            Assert.Equal([(2, "gone.bin", InstallShieldSkippedFileKind.MarkedInvalid), (3, "original.bin", InstallShieldSkippedFileKind.SharesListedData)],
+                source.SkippedFiles.Select(file => (file.Index, file.Path, file.Kind)));
             Assert.Equal("The file shares the data of file 0 at 'original.bin', which is listed.", source.SkippedFiles[1].Reason);
             await using var stream = source.OpenRead("copy/linked.bin");
             Assert.Equal(Noise, await ReadAll(stream));
@@ -607,6 +608,11 @@ public sealed class InstallShieldCabinetTests
             using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
             Assert.Equal(["original.bin"], source.Files.Select(entry => entry.Path));
             Assert.Equal([1, 2, 3, 4], source.SkippedFiles.Select(file => file.Index));
+            Assert.Equal(
+            [
+                InstallShieldSkippedFileKind.MarkedInvalid, InstallShieldSkippedFileKind.LinksToUnavailableEntry,
+                InstallShieldSkippedFileKind.NoDataOffset, InstallShieldSkippedFileKind.LinksToUnavailableEntry
+            ], source.SkippedFiles.Select(file => file.Kind));
             Assert.Equal("Copy/to-gone.bin", source.SkippedFiles[1].Path);
             Assert.Equal("The file links to file 1, which the cabinet marks invalid.", source.SkippedFiles[1].Reason);
             Assert.Equal("Copy/to-empty-offset.bin", source.SkippedFiles[3].Path);
@@ -657,7 +663,7 @@ public sealed class InstallShieldCabinetTests
             using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
             Assert.Equal(["Data/other.bin", "Data/same.bin"], source.Files.Select(entry => entry.Path));
             var skipped = Assert.Single(source.SkippedFiles);
-            Assert.Equal((1, "data/SAME.BIN"), (skipped.Index, skipped.Path));
+            Assert.Equal((1, "data/SAME.BIN", InstallShieldSkippedFileKind.DuplicatesListedMember), (skipped.Index, skipped.Path, skipped.Kind));
             Assert.Equal("The file duplicates file 0 at 'Data/same.bin': same expanded size and MD5.", skipped.Reason);
             await using var stream = source.OpenRead("data/same.bin");
             Assert.Equal(Noise, await ReadAll(stream));
@@ -764,6 +770,37 @@ public sealed class InstallShieldCabinetTests
     [InlineData(0)]
     [InlineData(5)]
     [InlineData(6)]
+    public void GivesEachSkippedEntryTheKindOfItsReason(int major)
+    {
+        var root = TemporaryDirectory();
+        try
+        {
+            var set = SyntheticInstallShieldCabinet.Build(major,
+                [new("", "kept.bin", Text), new("", "nameless.bin", Text), new("", "no-data.bin", Text)]);
+            var header = set["data1.hdr"];
+            var (name, dataOffset) = major == 6 ? (0x3a, 0x12) : (0, 0x26);
+            BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(FileDescriptor(header, major, 1) + name), 0);
+            BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(FileDescriptor(header, major, 2) + dataOffset), 0);
+            SyntheticInstallShieldCabinet.WriteTo(root, set);
+
+            using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
+            Assert.Equal("kept.bin", Assert.Single(source.Files).Path);
+            Assert.Equal(
+            [
+                (1, (string?)null, InstallShieldSkippedFileKind.NoName, "The file has no name."),
+                (2, "no-data.bin", InstallShieldSkippedFileKind.NoDataOffset, "The file has no data offset.")
+            ], source.SkippedFiles.Select(file => (file.Index, file.Path, file.Kind, file.Reason)));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(5)]
+    [InlineData(6)]
     public void SkipsAnEntryLeftOutWhoseNameOrDirectoryDoesNotRead(int major)
     {
         var root = TemporaryDirectory();
@@ -787,6 +824,7 @@ public sealed class InstallShieldCabinetTests
                 Assert.Equal(["Data/kept.bin"], source.Files.Select(entry => entry.Path));
                 Assert.Equal([(1, (string?)null), (2, null), (3, null)], source.SkippedFiles.Select(file => (file.Index, file.Path)));
                 Assert.All(source.SkippedFiles, file => Assert.Equal("The cabinet marks the file invalid.", file.Reason));
+                Assert.All(source.SkippedFiles, file => Assert.Equal(InstallShieldSkippedFileKind.MarkedInvalid, file.Kind));
             }
 
             // A listed entry's name still has to read.
@@ -833,7 +871,7 @@ public sealed class InstallShieldCabinetTests
     }
 
     [Fact]
-    public async Task ReportsMarkerDelimitedChunksAsUnsupported()
+    public async Task NamesTheMarkerDelimitedFormWhenALengthPrefixedChunkHasLengthZero()
     {
         var root = TemporaryDirectory();
         try
@@ -844,7 +882,9 @@ public sealed class InstallShieldCabinetTests
             SyntheticInstallShieldCabinet.WriteTo(root, set);
             using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
             await using var stream = source.OpenRead("packed.bin");
-            Assert.Contains("00 00 FF FF", (await Assert.ThrowsAsync<InvalidDataException>(() => ReadAll(stream))).Message);
+            var message = (await Assert.ThrowsAsync<InvalidDataException>(() => ReadAll(stream))).Message;
+            Assert.Contains("chunk of length zero", message);
+            Assert.Contains("InstallShieldCompressedFormat.MarkerDelimitedChunks", message);
         }
         finally
         {
