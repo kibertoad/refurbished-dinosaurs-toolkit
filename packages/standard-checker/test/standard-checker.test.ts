@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1258,7 +1258,8 @@ test("--record-validation writes a record that a changed test file no longer mat
   const recorded = run(root, "--record-validation", "BLD-EXAMPLE-1.0");
   assert.equal(recorded.status, 0, recorded.output);
   const record = readFileSync(join(root, "VALIDATION.md"), "utf8");
-  assert.match(record, /^- Commit: [0-9a-f]{40}$/m);
+  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  assert.match(record, new RegExp(`^- Commit: ${head}$`, "m"));
   assert.match(record, /^- Builds: BLD-EXAMPLE-1\.0$/m);
   assert.match(record, /^\| `tests\/Score\.test\.ts` \| `[0-9a-f]{64}` \|$/m);
   assert.equal(run(root, "--check").status, 0);
@@ -1273,6 +1274,71 @@ test("--record-validation writes a record that a changed test file no longer mat
   const changed = run(root, "--check");
   assert.equal(changed.status, 1);
   assert.match(changed.output, /RULE-SCORE-001: tests\/Score\.test\.ts has changed since VALIDATION\.md recorded it/);
+});
+
+test("--record-validation records only a run of HEAD as committed", (t) => {
+  const root = broken(t, (r) => {
+    validateRow(r);
+    writeFileSync(join(r, ".gitignore"), "local/\n");
+    writeFileSync(join(r, "notes.txt"), "notes\n");
+    // The commit carries regenerated indexes and PARITY.md, as one that passes the check does.
+    run(r);
+    commitAll(r);
+  });
+  const test = join(root, "tests", "Score.test.ts");
+  const committed = readFileSync(test, "utf8");
+  const refused = (expected: RegExp) => {
+    const result = run(root, "--record-validation", "BLD-EXAMPLE-1.0");
+    assert.equal(result.status, 2, result.output);
+    assert.match(result.output, /the working tree differs from HEAD \(/);
+    assert.match(result.output, expected);
+    assert.equal(existsSync(join(root, "VALIDATION.md")), false);
+  };
+
+  // A marked test file changed since HEAD, staged or not.
+  writeFileSync(test, `${LOCAL_TEST}expect(kill(0)).toBe(2);\n`);
+  refused(/\(tests\/Score\.test\.ts\)/);
+  spawnSync("git", ["add", "-A"], { cwd: root });
+  refused(/\(tests\/Score\.test\.ts\)/);
+  spawnSync("git", ["reset", "-q", "--hard"], { cwd: root });
+  assert.equal(readFileSync(test, "utf8"), committed);
+
+  // A tracked file outside the marked tests, such as the code they exercise, changed or renamed. A
+  // rename lists only its new path.
+  writeFileSync(join(root, "notes.txt"), "changed\n");
+  refused(/\(notes\.txt\)/);
+  spawnSync("git", ["reset", "-q", "--hard"], { cwd: root });
+
+  // git status does not report an edit to a file marked assume-unchanged or skip-worktree.
+  for (const mark of ["assume-unchanged", "skip-worktree"]) {
+    spawnSync("git", ["update-index", `--${mark}`, "notes.txt"], { cwd: root });
+    writeFileSync(join(root, "notes.txt"), "changed\n");
+    refused(/\(notes\.txt\)/);
+    writeFileSync(join(root, "notes.txt"), "notes\n");
+    spawnSync("git", ["update-index", `--no-${mark}`, "notes.txt"], { cwd: root });
+  }
+
+  spawnSync("git", ["mv", "notes.txt", "notes.md"], { cwd: root });
+  refused(/\(notes\.md\)/);
+  spawnSync("git", ["reset", "-q", "--hard"], { cwd: root });
+  rmSync(join(root, "notes.md"), { force: true });
+
+  // An untracked directory is listed once, and past five paths the rest are counted.
+  mkdirSync(join(root, "src"));
+  writeFileSync(join(root, "src", "score.ts"), "export const kill = (n: number) => n + 1;\n");
+  refused(/\(src\/\)/);
+  for (const n of [1, 2, 3, 4, 5, 6]) writeFileSync(join(root, `extra-${n}.txt`), "\n");
+  refused(/, and 2 more\)/);
+  rmSync(join(root, "src"), { recursive: true });
+  for (const n of [1, 2, 3, 4, 5, 6]) rmSync(join(root, `extra-${n}.txt`));
+
+  // An ignored file is not part of the tested tree, and an earlier record is what the run replaces.
+  mkdirSync(join(root, "local"));
+  writeFileSync(join(root, "local", "run.log"), "passed\n");
+  assert.equal(run(root, "--record-validation", "BLD-EXAMPLE-1.0").status, 0);
+  const again = run(root, "--record-validation", "BLD-EXAMPLE-1.0");
+  assert.equal(again.status, 0, again.output);
+  assert.equal(run(root, "--check").status, 0);
 });
 
 test("VALIDATION.md lists only the marked test files of validated rows", (t) => {

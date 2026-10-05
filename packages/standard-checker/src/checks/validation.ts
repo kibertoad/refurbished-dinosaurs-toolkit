@@ -36,6 +36,13 @@ export function checkValidation(ctx: Context, { validatedTests }: Parity) {
         console.error(`--record-validation: ${b} is not a build entry`);
         process.exit(2);
       }
+    const files = [...validatedTests.keys()].sort();
+    if (!files.length) {
+      console.error(
+        '--record-validation: no validated row lists a test file with a "needs: GAME_DIR" comment, so there is nothing to record',
+      );
+      process.exit(2);
+    }
     let commit: string;
     try {
       commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoDir, encoding: "utf8" }).trim();
@@ -43,10 +50,76 @@ export function checkValidation(ctx: Context, { validatedTests }: Parity) {
       console.error("--record-validation: git rev-parse HEAD failed");
       process.exit(2);
     }
-    const files = [...validatedTests.keys()].sort();
-    if (!files.length) {
+    // Commit is the commit the run tested, so the run must have tested HEAD as committed. Any change
+    // to a tracked file, or an untracked file that git does not ignore, anywhere in the repository
+    // means it tested something else. Only an earlier VALIDATION.md may differ, since this run
+    // replaces it. An untracked directory is listed once, and submodules are compared whatever the
+    // repository's submodule.*.ignore or diff.ignoreSubmodules settings say.
+    const changed: string[] = [];
+    try {
+      const status = execFileSync(
+        "git",
+        [
+          "status",
+          "--porcelain=v1",
+          "-z",
+          "--untracked-files=normal",
+          "--ignore-submodules=none",
+          "--",
+          ":/",
+          ":(exclude)VALIDATION.md",
+        ],
+        { cwd: repoDir, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 },
+      ).split("\0");
+      for (let i = 0; i < status.length; i++) {
+        if (!status[i]) continue;
+        changed.push(status[i].slice(3));
+        // A rename or copy is followed by its source path.
+        if (/[RC]/.test(status[i].slice(0, 2))) i++;
+      }
+      // git status does not look at a file marked assume-unchanged or skip-worktree, so a file with
+      // either mark that is present is hashed and compared with HEAD here. A sparse checkout leaves
+      // its skip-worktree files absent, and an absent file was not part of what the run tested.
+      const top = execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: repoDir, encoding: "utf8" }).trim();
+      const marked = execFileSync(
+        "git",
+        ["ls-files", "-v", "-z", "--full-name", "--", ":/", ":(exclude)VALIDATION.md"],
+        { cwd: repoDir, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 },
+      )
+        .split("\0")
+        .filter((e) => e && (e[0] === "S" || /[a-z]/.test(e[0])))
+        .map((e) => e.slice(2))
+        .filter((p) => existsSync(join(top, p)));
+      if (marked.length) {
+        const worktree = execFileSync("git", ["hash-object", "--stdin-paths"], {
+          cwd: top,
+          encoding: "utf8",
+          input: marked.join("\n") + "\n",
+        }).split("\n");
+        const head = new Map<string, string>();
+        for (const line of execFileSync(
+          "git",
+          ["--literal-pathspecs", "ls-tree", "-r", "-z", "HEAD", "--", ...marked],
+          {
+            cwd: top,
+            encoding: "utf8",
+          },
+        ).split("\0")) {
+          const tab = line.indexOf("\t");
+          if (tab > 0) head.set(line.slice(tab + 1), line.slice(0, tab).split(" ")[2]);
+        }
+        marked.forEach((p, i) => {
+          if (head.get(p) !== worktree[i]) changed.push(p);
+        });
+      }
+    } catch {
+      console.error("--record-validation: git status failed");
+      process.exit(2);
+    }
+    if (changed.length) {
+      const shown = changed.slice(0, 5).join(", ") + (changed.length > 5 ? `, and ${changed.length - 5} more` : "");
       console.error(
-        '--record-validation: no validated row lists a test file with a "needs: GAME_DIR" comment, so there is nothing to record',
+        `--record-validation: the working tree differs from HEAD (${shown}), so HEAD is not the commit the run tested. Commit the change, run the marked tests against that commit, then record`,
       );
       process.exit(2);
     }

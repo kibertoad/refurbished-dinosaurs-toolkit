@@ -30,8 +30,10 @@
 //   --record-validation <builds>
 //                       write VALIDATION.md for the test files of the validated rows that carry a
 //                       "needs: GAME_DIR" comment, naming the comma-separated build IDs the run
-//                       used. Run it only after every test in those files passed, with none
-//                       skipped, against the original's files
+//                       used and HEAD as the commit the run tested. Run it only after every test
+//                       in those files passed, with none skipped, against the original's files
+//                       and HEAD as committed; it refuses when the working tree differs from HEAD
+//                       in anything other than VALIDATION.md
 //
 // Each problem is one line that starts with the path it concerns, or spec for the spec as a whole.
 // A problem that breaks a numbered rule of the standard ends with the rule's label, such as

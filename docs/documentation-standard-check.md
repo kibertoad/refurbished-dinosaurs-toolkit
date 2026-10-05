@@ -252,11 +252,18 @@ pnpm exec standard-checker --record-validation BLD-GOG-EN-1.1
 ```
 
 This writes `VALIDATION.md` at the root: the commit, the date, the builds the run used, and the
-SHA-256 of every marked test file a validated row lists, hashed with CRLF read as LF. Commit it with
-the change. From then on the check, in CI as well, fails a validated row whose marked test file is
-missing from the record or has changed since, and a record that lists any other file. A
-restoration whose validated rows list no marked file needs no record. The checker cannot tell
-whether the tests passed; running them before recording is the maintainer's part.
+SHA-256 of every marked test file a validated row lists, hashed with CRLF read as LF. The standard
+defines the commit as the commit the run tested, and the check writes HEAD there, so the run has to
+test HEAD as committed. The check refuses to record, and exits with 2, when the working tree differs
+from HEAD in anything other than `VALIDATION.md`, including untracked files that git does not
+ignore. A record cannot name the commit that contains it, so a change to a validated row's marked
+tests or the code they exercise goes in two commits on the same branch: first the change, then,
+after the run against that commit, the new `VALIDATION.md`. The record holds hashes of the marked
+test files only, so the check fails on the first commit when a marked test file changed, and passes
+it when only the code they exercise did. From then on the check, in CI as well, fails a validated
+row whose marked test file is missing from the record or has changed since, and a record that lists
+any other file. A restoration whose validated rows list no marked file needs no record. The checker
+cannot tell whether the tests passed; running them before recording is the maintainer's part.
 
 ## Moving a restoration onto it
 
