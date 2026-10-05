@@ -127,3 +127,10 @@ test("the workflow runs the tools' and actions' tests through run-tests.ts and c
   assert.match(workflow, /^\s*run: node tools\/ci\/run-tests\.ts$/m);
   assert.doesNotMatch(workflow, /(tools|actions)\/\*\*/);
 });
+
+test("the workflow's changes job exposes every area, so a job gated on one can run", () => {
+  const workflow = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
+  for (const area of Object.keys(AREAS)) {
+    assert.match(workflow, new RegExp(`^\\s+[\\w-]+: \\$\\{\\{ steps\\.areas\\.outputs\\.${area} \\}\\}$`, "m"), area);
+  }
+});

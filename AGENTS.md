@@ -114,7 +114,8 @@ A change to the Ghidra scripts runs the `ghidra-scripts` CI job, which compiles 
 jars of the Ghidra 12.1.3 release pinned in `.github/workflows/ci.yml`. To compile them before
 pushing, run the same command against a Ghidra 12.1 install (use `:` in place of `;` outside
 Windows). The second glob takes in the helper classes the scripts share, which sit in package
-directories beside them so that Ghidra does not list them as scripts:
+directories beside them so that Ghidra does not list them as scripts. A change to the command,
+such as a new glob, goes into both copies:
 
 ```sh
 javac -proc:none -nowarn -d "$(mktemp -d)" \

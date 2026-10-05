@@ -159,8 +159,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
+      # The release zip is ghidra_<version>_PUBLIC_<build date>.zip.
       GHIDRA_VERSION: 12.1.3
-      GHIDRA_ZIP: ghidra_12.1.3_PUBLIC_20260817.zip
+      GHIDRA_BUILD_DATE: '20260817'
       GHIDRA_SHA256: 93a5d11a9ad510622acaaf908c556a7b9b764d338e78a7567f3689bf5081fd54
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -170,27 +171,38 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      # Holds only the jars the compile reads, so a later run skips downloading the release.
-      - name: Cache the Ghidra jars
+      # Holds only the jars the compile reads, so a later run of the same pull request skips
+      # downloading the release. The key carries the digest, so a new pin downloads afresh.
+      - name: Restore the Ghidra jars
         id: ghidra-cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/ghidra-lib
-          key: ghidra-lib-${{ env.GHIDRA_VERSION }}
+          key: ghidra-lib-${{ env.GHIDRA_VERSION }}-${{ env.GHIDRA_SHA256 }}
       - name: Download the Ghidra jars
         if: steps.ghidra-cache.outputs.cache-hit != 'true'
         shell: bash
         env:
           GHIDRA_LIB: ${{ runner.temp }}/ghidra-lib
         run: |
-          zip="$RUNNER_TEMP/$GHIDRA_ZIP"
-          curl -fsSL --retry 3 -o "$zip" "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/$GHIDRA_ZIP"
+          name="ghidra_${GHIDRA_VERSION}_PUBLIC_${GHIDRA_BUILD_DATE}.zip"
+          zip="$RUNNER_TEMP/$name"
+          curl -fsSL --retry 3 -o "$zip" "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/$name"
           echo "$GHIDRA_SHA256  $zip" | sha256sum -c -
           # Names the jars instead of passing a wildcard, since unzip builds differ on whether "*"
-          # matches "/".
-          unzip -Z1 "$zip" | grep -E "^ghidra_${GHIDRA_VERSION}_PUBLIC/Ghidra/.+/lib/[^/]+\.jar$" |
-            xargs unzip -q "$zip" -d "$GHIDRA_LIB"
+          # matches "/". The version's dots are escaped so that each matches only a dot.
+          version="${GHIDRA_VERSION//./\\.}"
+          unzip -Z1 "$zip" | grep -E "^ghidra_${version}_PUBLIC/Ghidra/.+/lib/[^/]+\.jar$" |
+            xargs -r unzip -q "$zip" -d "$GHIDRA_LIB"
           rm "$zip"
+      # Saved before the compile, so a pull request whose scripts fail to compile still keeps the
+      # jars for its next run.
+      - name: Save the Ghidra jars
+        if: steps.ghidra-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ghidra-lib
+          key: ${{ steps.ghidra-cache.outputs.cache-primary-key }}
       - name: Compile the Ghidra scripts
         shell: bash
         env:
