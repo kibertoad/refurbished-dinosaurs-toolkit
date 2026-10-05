@@ -286,6 +286,9 @@ public sealed class CoreTests
         Assert.Throws<InvalidDataException>(
             () => PcxDecoder.Decode(Pcx(3, 2, 4, [0xC8, 1, 5]), new PcxShortStreamRepair(0)));
         Assert.Throws<ArgumentNullException>(() => PcxDecoder.Decode(complete, (PcxShortStreamRepair)null!));
+        // The repair does not lift the pixel limit.
+        Assert.Throws<ArgumentOutOfRangeException>(() => PcxDecoder.Decode(complete, new PcxShortStreamRepair(0), -1));
+        Assert.Throws<InvalidDataException>(() => PcxDecoder.Decode(Pcx(3, 2, 4, []), new PcxShortStreamRepair(0), 5));
     }
 
     private static byte[] Pcx(int width, int height, int bytesPerLine, byte[] pixelStream)

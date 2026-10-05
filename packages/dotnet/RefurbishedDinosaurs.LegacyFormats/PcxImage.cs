@@ -199,7 +199,7 @@ public static class PcxDecoder
             // Every scanline byte from output on is missing, so the unfilled pixels are a suffix of indices.
             var row = (int)(output / bytesPerLine);
             var column = (int)(output % bytesPerLine);
-            var firstFilled = column < width ? row * width + column : (row + 1) * width;
+            var firstFilled = row * width + Math.Min(column, width);
             indices.AsSpan(firstFilled).Fill(repair!.FillIndex);
             shortfall = new PcxStreamShortfall(scanlineBytes - output, pixelCount - firstFilled);
         }
