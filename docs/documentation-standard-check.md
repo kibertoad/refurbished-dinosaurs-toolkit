@@ -278,6 +278,36 @@ on the single files gets one problem per file saying where it moves:
 
 No ID changes, so code and tests that cite IDs stay as they are.
 
+## Field names in procedures
+
+The checker reports a field name after a dot that is not a Name in the layout of the structure's
+format, such as `probe.made_up_field` after `let probe = new FMT-DATA-005`. It checks a field only
+where it knows the structure's type, and it knows a type only where the type is written in the
+notation's form: a format ID (`FMT-DATA-005`), a pointer to one (`PTR32<FMT-DATA-005>`) or a list of
+either (`FMT-DATA-005[]`, `FMT-DATA-005[count]`). It reads the type from:
+
+- a `let` with a type (`let gang: FMT-DATA-005 = ...`), `let gang = new FMT-DATA-005`, or a `let`
+  whose value has a known type: another name or field, `copy` of one, a function whose `define`
+  gives its result type (`-> FMT-DATA-005`), or `call` of a rule whose Outputs section opens with
+  `Returns` and the type (`Returns a FMT-DATA-005, the gang it made.`);
+- the rule's Parameters section, written `` `gang`: FMT-DATA-005 `` or `` `gang: FMT-DATA-005` ``,
+  and the typed parameters of a `define`;
+- for a name that is not a local, its glossary entry, written `` `gang: FMT-DATA-005` ``, or a
+  location of the form ``kept in the field `players` of FMT-SAVE-001`` whose layout row has a type;
+- the list a `for each` loop visits, whose element type the loop variable takes.
+
+A field takes the type in its layout row, so `world.occupancy.cell_count` is checked against the
+layout of `occupancy`'s type in turn. A field that the entries of a format split by build give
+different types has no type. An index into a list gives its element, and an index on a
+pointer gives the structure it points at. A format named anywhere else in prose, such as
+"the entry whose state is FMT-DATA-003", gives no type, because prose names formats for many reasons.
+A name whose type comes from none of these, or that two declarations give different types, is not
+checked, and neither is a format whose layout table has the wrong columns or a row with the wrong
+number of cells. A declaration that writes no type, such as a parameter the Parameters section
+describes only in prose, leaves the type another declaration writes in place. A format whose Layout
+section has no table yet has no fields, so every field named on it is reported. The problem names
+where the type came from, so a type stated wrongly can be fixed where it is written.
+
 ## What it does not check
 
 A few checks in the standard's list need something the checker does not have, and are left to
@@ -287,8 +317,9 @@ review:
   assigns to a value from outside the game, since the glossary does not mark kinds in a form a
   checker can read;
 - that a neutral name is the one from the entry's first build;
-- that no list of fixed length is given to `append`, `insert` or `remove_at`, and that every field
-  a procedure names is in its format's layout;
+- that no list of fixed length is given to `append`, `insert` or `remove_at`;
+- a field name on a structure whose type is not written in one of the forms
+  [above](#field-names-in-procedures);
 - that a Kaitai definition's fixed sizes match its layout table;
 - the fixture schema beyond a run's `draws`, the field paths of fixtures and save patches, and
   the hashes of saves and recordings, since the schemas are not published yet and xxHash3 needs a

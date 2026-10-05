@@ -49,6 +49,7 @@ export function checkEntries(ctx: Context): FormatNames {
   const names: FormatNames = {
     enumNames: new Map<string, string[]>(), // name -> format IDs
     fieldNames: new Map<string, Set<string>>(), // format ID -> Set of names
+    layouts: new Map<string, Map<string, string>>(), // format ID -> layout Name -> Type
   };
 
   for (const [id, e] of entries) {
