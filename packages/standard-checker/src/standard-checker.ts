@@ -111,7 +111,4 @@ generateParity(ctx, parity, generated);
 writeGenerated(ctx, generated);
 checkLineLimits(ctx);
 
-report(
-  spec.entries.size,
-  `${spec.entries.size} entries, ${parity.rows.size} parity rows, ${deviations.size} deviations.`,
-);
+report({ entries: spec.entries.size, parityRows: parity.rows.size, deviations: deviations.size });

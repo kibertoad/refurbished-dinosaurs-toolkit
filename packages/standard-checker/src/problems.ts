@@ -24,9 +24,20 @@ export type Problem = (file: string | null, message: string, rule?: Rule) => voi
 /**
  * Records a step of the check that did not run, with the reason, such as "Kaitai compilation of 2
  * definitions (--no-ksy)". The result line names every skipped step, so a pass never reads as a
- * full check when part of it did not run.
+ * full check when part of it did not run. The line joins the steps with "; ", so a step's text
+ * must not contain "; ".
  */
 export type Skip = (step: string) => void;
+
+/** What a run found, for the result line. */
+export interface Counts {
+  /** Spec entries. */
+  entries: number;
+  /** PARITY.md rows. */
+  parityRows: number;
+  /** Deviations. */
+  deviations: number;
+}
 
 /** The problem collector of one run. */
 export interface Problems {
@@ -39,7 +50,7 @@ export interface Problems {
    * steps, and exits with 1. With none, prints the result line: "spec check passed: " and counts,
    * or "spec check passed with skipped steps: " and counts followed by the skipped steps.
    */
-  report(entryCount: number, counts: string): void;
+  report(counts: Counts): void;
 }
 
 /** Creates the collector for a run over repoDir, against which problem paths are printed. */
@@ -59,12 +70,13 @@ export function createProblems(repoDir: string): Problems {
     skipped.push(step);
   };
   const skippedLine = () => `Skipped: ${skipped.join("; ")}.`;
-  const report = (entryCount: number, counts: string) => {
+  const report = ({ entries, parityRows, deviations }: Counts) => {
+    const counts = `${entries} entries, ${parityRows} parity rows, ${deviations} deviations.`;
     // The same problem can be found twice, such as a term that cites one finding in two places.
     const unique = [...new Set(problems)];
     if (unique.length) {
       for (const p of unique) console.error(p);
-      console.error(`\n${unique.length} problem(s) in ${entryCount} spec entries.`);
+      console.error(`\n${unique.length} problem(s) in ${entries} spec entries.`);
       if (citedRule)
         console.error(
           "A label in brackets, such as [STATUS-14], names the rule of the documentation standard that the problem breaks. The standard opens it with the heading ###### STATUS-14, anchored at https://dinorefurb.com/documentation-standard/#status-14 and at #status-14 in a vendored copy.",

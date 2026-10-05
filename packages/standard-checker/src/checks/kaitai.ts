@@ -33,7 +33,7 @@ export function compileKaitai(ctx: Context) {
   }
   const compiler = findKaitai();
   if (!compiler) {
-    const missing = "no Kaitai Struct compiler found; set KSC or install kaitai-struct-compiler";
+    const missing = "no Kaitai Struct compiler found, set KSC or install kaitai-struct-compiler";
     if (requireKsc) problem(null, `${missing}. --require-ksc requires compiling the ${definitions} in spec/formats/`);
     else skip(`Kaitai compilation of ${definitions} (${missing})`);
     return;
@@ -45,11 +45,11 @@ export function compileKaitai(ctx: Context) {
       try {
         runTool(compiler.cmd, [...fixed, ...batch]);
       } catch (err) {
-        const failure = err as { stdout?: unknown; stderr?: unknown };
-        problem(
-          null,
-          `Kaitai definitions do not compile:\n${String(failure.stdout ?? "")}${String(failure.stderr ?? "")}`,
-        );
+        // A compiler that cannot be started, such as a KSC naming a missing file, prints nothing,
+        // so its error message is the only account of the failure.
+        const failure = err as { stdout?: unknown; stderr?: unknown; message?: string };
+        const output = `${String(failure.stdout ?? "")}${String(failure.stderr ?? "")}`;
+        problem(null, `Kaitai definitions do not compile:\n${output || (failure.message ?? String(err))}`);
       }
     }
   } finally {

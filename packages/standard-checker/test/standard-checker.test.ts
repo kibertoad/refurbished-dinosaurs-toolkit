@@ -395,7 +395,7 @@ test("a missing compiler passes with the Kaitai compilation named as skipped", (
   assert.equal(status, 0, output);
   assert.match(
     output,
-    /spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\. Skipped: Kaitai compilation of 1 definition \(no Kaitai Struct compiler found; set KSC or install kaitai-struct-compiler\)\./,
+    /spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\. Skipped: Kaitai compilation of 1 definition \(no Kaitai Struct compiler found, set KSC or install kaitai-struct-compiler\)\./,
   );
   assert.doesNotMatch(output, /spec check passed:/);
 });
@@ -405,7 +405,7 @@ test("--require-ksc fails when no compiler is found", (t) => {
   assert.equal(status, 1, output);
   assert.match(
     output,
-    /^spec: no Kaitai Struct compiler found; set KSC or install kaitai-struct-compiler\. --require-ksc requires compiling the 1 definition in spec\/formats\/$/m,
+    /^spec: no Kaitai Struct compiler found, set KSC or install kaitai-struct-compiler\. --require-ksc requires compiling the 1 definition in spec\/formats\/$/m,
   );
   assert.doesNotMatch(output, /spec check passed/);
 });
@@ -418,6 +418,14 @@ test("a compiler that runs gives a full pass, with or without --require-ksc", (t
     assert.match(output, /spec check passed: 4 entries, 2 parity rows, 0 deviations\.$/m);
     assert.doesNotMatch(output, /Skipped/);
   }
+});
+
+test("a KSC that cannot be started fails with the reason", (t) => {
+  const missing = join(mkdtempSync(join(tmpdir(), "no-ksc-")), "ksc-missing");
+  t.after(() => rmSync(dirname(missing), { recursive: true, force: true }));
+  const { status, output } = runKaitai(t, fixture, missing, "--require-ksc");
+  assert.equal(status, 1, output);
+  assert.match(output, /^spec: Kaitai definitions do not compile:\n\S/m);
 });
 
 test("a spec with no Kaitai definitions skips nothing when no compiler is found", (t) => {
