@@ -220,8 +220,10 @@ My Game/
   `data.nonDataSectors` lists those sectors as `[first, stop)` ranges counted from INDEX 01, and
   `data.nonDataSha256` is the SHA-256 of their raw 2,352 bytes in order (`[]` and `null` when there
   are none). They add nothing to `data.sha256`. Inside the declared volume, or on a track with no
-  volume descriptor, a sector without user data stops the run with its sector number. The
-  addresses stored in the sector headers are not checked.
+  volume descriptor (or one whose logical block size is not 2,048 bytes), a sector without user
+  data stops the run with its sector number. When `files` is requested and a file's extent reaches
+  one of the listed sectors, the run stops with its sector number before any format is written.
+  The addresses stored in the sector headers are not checked.
 - `profile.checks`: each expectation of the profile and what the disc showed.
 - `outputs`: each format's files, with size, CRC32, MD5, SHA-1 and SHA-256 (the hashes disc
   databases such as Redump list, so you can check your dump against them yourself), what the

@@ -102,11 +102,12 @@ def volume_identifier(track: Track) -> str | None:
 def volume_sectors(track: Track) -> int | None:
     """The volume space size the primary volume descriptor declares, in 2,048-byte sectors.
 
-    None when the track has no primary volume descriptor at sector 16, when the little- and
+    None when the track has no primary volume descriptor at sector 16, when the descriptor's
+    logical block size is not 2,048 bytes (the size counts logical blocks), when the little- and
     big-endian copies of the size disagree, or when the size does not reach past the descriptor.
     """
     descriptor = _primary_volume_descriptor(track)
-    if descriptor is None:
+    if descriptor is None or descriptor[128:132] != b"\x00\x08\x08\x00":
         return None
     little = int.from_bytes(descriptor[80:84], "little")
     if little != int.from_bytes(descriptor[84:88], "big") or little <= PVD_SECTOR:

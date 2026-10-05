@@ -8,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import wave
 from pathlib import Path
 
@@ -348,6 +349,22 @@ class PastTheVolumeTests(FormatTestCase):
         with self.assertRaisesRegex(DiscError, f"sector {self.volume + self.REPEATED} has no data sync pattern"):
             fingerprint(read_cue(self.sheet))
 
+    def test_a_volume_descriptor_with_another_logical_block_size_admits_nothing(self) -> None:
+        iso = bytearray(self.synthetic.iso)
+        iso[16 * 2048 + 128 : 16 * 2048 + 132] = (512).to_bytes(2, "little") + (512).to_bytes(2, "big")
+        data = SyntheticDisc(bytes(iso)).data_raw
+        (self.source / "Synth (Track 1).bin").write_bytes(data + self.tail)
+        with self.assertRaisesRegex(DiscError, f"sector {self.volume + self.REPEATED} has no data sync pattern"):
+            fingerprint(read_cue(self.sheet))
+
+    def test_a_copy_that_adds_sectors_without_user_data_is_a_mismatch(self) -> None:
+        reference = fingerprint(self.padded)
+        found = {**reference, "data": {**reference["data"], "nonDataSectors": [], "nonDataSha256": None}}  # type: ignore[dict-item]
+        result = pipeline.Verification()
+        pipeline._compare(found, reference, result, layout=False, audio=False)
+        self.assertIn("raw sectors past the ISO 9660 volume that hold no user data", result.compared)
+        self.assertEqual(result.differences, ["the data track's sectors without user data differ from the source"])
+
     def test_stored_header_addresses_are_not_checked(self) -> None:
         data = bytearray(self.synthetic.data_raw)
         for lba in range(self.volume):
@@ -364,6 +381,25 @@ class PastTheVolumeTests(FormatTestCase):
         (self.source / "Synth (Track 1).bin").write_bytes(data + self.tail)
         with self.assertRaisesRegex(DiscError, f"sector {extent} has no data sync pattern"):
             self.write("files", read_cue(self.sheet))
+        out = self.dir / "out"
+        with self.assertRaisesRegex(DiscError, f"sector {extent} has no data sync pattern"):
+            derive(read_cue(self.sheet), out, "Synth", ["bincue", "files"], BUILTIN_PROFILES["any"], silent_log, {})
+        self.assertFalse((out / "bincue").exists())
+
+    def test_the_iso_formats_are_found_unavailable_without_writing_the_iso(self) -> None:
+        with mock.patch.object(formats, "_write", side_effect=AssertionError("the ISO was written")):
+            with self.assertRaisesRegex(FormatUnavailable, f"sector {self.volume + self.REPEATED} has no data sync pattern"):
+                self.write("iso", self.padded)
+
+    def test_writing_an_iso_of_a_track_without_user_data_inside_the_volume_is_an_error(self) -> None:
+        data = bytearray(self.synthetic.data_raw)
+        inside = self.volume - 1
+        data[inside * RAW_SECTOR : (inside + 1) * RAW_SECTOR] = bytes(RAW_SECTOR)
+        (self.source / "Synth (Track 1).bin").write_bytes(bytes(data))
+        with self.assertRaisesRegex(DiscError, f"sector {inside} has no data sync pattern") as raised:
+            self.write("iso", read_cue(self.sheet))
+        self.assertNotIsInstance(raised.exception, FormatUnavailable)
+        self.assertEqual(list((self.dir / "iso").glob("*.iso")), [])
 
 
 class SourceLimitTests(FormatTestCase):

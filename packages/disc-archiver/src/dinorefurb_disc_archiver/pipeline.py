@@ -24,7 +24,7 @@ from pathlib import Path
 
 from . import ccd, isofs, tools
 from .cue import read_cue, read_iso
-from .disc import RAW_SECTOR, Disc, DiscError, Track, is_data_sector, user_data
+from .disc import RAW_SECTOR, Disc, DiscError, NotDataSector, Track, user_data
 from .formats import FORMATS, FormatUnavailable, Output, track_file_name, write_format
 from .notice import NOTICE_FILENAME, write_notice
 from .profile import Profile, check_profile, recommended_formats
@@ -108,14 +108,16 @@ def _data_fingerprint(track: Track) -> dict[str, object]:
         view = memoryview(chunk)
         for offset in range(0, len(chunk), RAW_SECTOR):
             sector = view[offset : offset + RAW_SECTOR]
-            if volume_end is not None and index >= volume_end and not is_data_sector(sector, track.mode):
+            try:
+                user.update(user_data(sector, track.mode, track.index1 + index))
+            except NotDataSector:
+                if volume_end is None or index < volume_end:
+                    raise
                 raw.update(sector)
                 if ranges and ranges[-1][1] == index:
                     ranges[-1][1] = index + 1
                 else:
                     ranges.append([index, index + 1])
-            else:
-                user.update(user_data(sector, track.mode, track.index1 + index))
             index += 1
     return {
         "track": track.number,
@@ -129,9 +131,9 @@ def _data_fingerprint(track: Track) -> dict[str, object]:
 def fingerprint(disc: Disc) -> dict[str, object]:
     """The disc's layout and content hashes, the same whichever format holds it.
 
-    The data hash covers the first data track's user data from INDEX 01 to the track's end. Each
-    audio hash covers the track's raw samples from INDEX 01 to the next track's INDEX 00, the
-    range restorations fingerprint.
+    The data hash covers the first data track's user data from INDEX 01 to the track's end, apart
+    from the sectors past the volume described below. Each audio hash covers the track's raw
+    samples from INDEX 01 to the next track's INDEX 00, the range restorations fingerprint.
 
     A raw data track may run past the ISO 9660 volume its primary volume descriptor declares, and
     the sectors there may hold no user data of the track's mode (no sync pattern, another mode, or
@@ -222,7 +224,7 @@ def _compare(reference: dict, found: dict, result: Verification, layout: bool, a
         result.compared.append("data track user data")
         if theirs is None or theirs["sha256"] != mine["sha256"]:
             result.differences.append("the data track's user data differs from the source")
-        if mine["nonDataSectors"]:
+        if mine["nonDataSectors"] or (theirs is not None and theirs["nonDataSectors"]):
             result.compared.append("raw sectors past the ISO 9660 volume that hold no user data")
         if theirs is not None and (theirs["nonDataSectors"], theirs["nonDataSha256"]) != (mine["nonDataSectors"], mine["nonDataSha256"]):
             result.differences.append("the data track's sectors without user data differ from the source")
@@ -312,11 +314,21 @@ def derive(
     write_notice(root)
     log("Reading the source and computing its fingerprint")
     reference = fingerprint(disc)
-    paths = [e.path for e in isofs.walk(disc.first_data_track())] if profile.expected_paths and disc.data_tracks else None
+    requested = set(formats)
+    # The fingerprint admits sectors without user data past the volume, and a file extent that
+    # reaches one fails only when the file is read. Reading the files here stops such a run
+    # before any format is written, as a damaged dump stops at the fingerprint.
+    data = reference["data"]
+    past_volume = data is not None and bool(data["nonDataSectors"])  # type: ignore[index]
+    entries = (
+        isofs.walk(disc.first_data_track())
+        if disc.data_tracks and (profile.expected_paths or ("files" in requested and past_volume))
+        else None
+    )
+    paths = [e.path for e in entries] if profile.expected_paths and entries is not None else None
     checks = check_profile(profile, reference, paths)
     for check in checks:
         log(f"profile: {check.name}: expected {check.expected!r}, found {check.found!r} - {'ok' if check.matched else 'MISMATCH'}")
-    requested = set(formats)
     wanted = [f.id for f in FORMATS if f.id in requested]
     # A format's folder is replaced whole below, so it must not hold the source being read.
     sources = {t.source.resolve() for t in disc.tracks} | ({disc.origin.resolve()} if disc.origin else set())
