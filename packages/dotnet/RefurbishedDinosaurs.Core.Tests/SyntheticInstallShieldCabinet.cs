@@ -11,6 +11,13 @@ internal sealed record CabinetFile(
     int? LinkTo = null, bool Invalid = false);
 
 /// <summary>
+/// One file group of a synthetic InstallShield cabinet set: a name and a range of file-table indexes,
+/// written as given, so a range may be reversed or reach past the table. Groups with the same
+/// <paramref name="List"/> are chained in the order given.
+/// </summary>
+internal sealed record CabinetGroup(string Name, int FirstFile, int LastFile, int List = 0);
+
+/// <summary>
 /// Writes InstallShield cabinet sets of major version 0, 5 and 6 for tests. No open tool writes the
 /// format, so this follows the layout Unshield (MIT) reads: a header with a cabinet descriptor and
 /// file table, and volumes whose headers record the first and last member they hold, split members
@@ -39,20 +46,24 @@ internal static class SyntheticInstallShieldCabinet
     /// With <paramref name="headerInCabinet"/>, there is no <c>data1.hdr</c>: <c>data1.cab</c> starts
     /// with the header region and holds its members after it. <paramref name="cabinetDescriptorSize"/>
     /// replaces the cabinet descriptor size the common header declares, which by default covers the
-    /// descriptor and everything after it (the file table, descriptors and names).
+    /// descriptor and everything after it (the file table, descriptors and names). <paramref name="groups"/>
+    /// are written after the file table, as Unshield reads them: each list's head in the descriptor's
+    /// group lists at 0x3e, a 12-byte list entry and a group descriptor per group. Without groups, the
+    /// lists are all zero.
     /// </summary>
     public static Dictionary<string, byte[]> Build(
         int major, IReadOnlyList<CabinetFile> files, long volumeCapacity = long.MaxValue, uint? versionWord = null,
-        bool headerInCabinet = false, uint? cabinetDescriptorSize = null)
+        bool headerInCabinet = false, uint? cabinetDescriptorSize = null, IReadOnlyList<CabinetGroup>? groups = null)
     {
         var word = versionWord ?? VersionWord(major);
+        groups ??= [];
         var raws = files.Select(file => file.LinkTo is null && !file.Invalid ? Raw(file) : []).ToArray();
         // The header's length does not depend on where the members lie, so a first pass sizes it.
         var dataStart = headerInCabinet
-            ? Header(major, files, raws, Layout(files, raws, volumeCapacity, VolumeDataOffset, out _), word).Length
+            ? Header(major, files, raws, Layout(files, raws, volumeCapacity, VolumeDataOffset, out _), word, groups).Length
             : VolumeDataOffset;
         var parts = Layout(files, raws, volumeCapacity, dataStart, out var volumeCount);
-        var header = Header(major, files, raws, parts, word);
+        var header = Header(major, files, raws, parts, word, groups);
         if (cabinetDescriptorSize is { } size) BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(16), size);
         var result = new Dictionary<string, byte[]>();
         if (!headerInCabinet) result["data1.hdr"] = header;
@@ -128,7 +139,8 @@ internal static class SyntheticInstallShieldCabinet
     }
 
     private static byte[] Header(
-        int major, IReadOnlyList<CabinetFile> files, byte[][] raws, List<Part>[] parts, uint versionWord)
+        int major, IReadOnlyList<CabinetFile> files, byte[][] raws, List<Part>[] parts, uint versionWord,
+        IReadOnlyList<CabinetGroup> groups)
     {
         var directories = files.Select(file => file.Directory).Distinct().ToList();
         var table = new MemoryStream();
@@ -203,13 +215,14 @@ internal static class SyntheticInstallShieldCabinet
         foreach (var offset in offsets) writer.Write((uint)offset);
         writer.Flush();
         var tableBytes = table.ToArray();
+        var (groupBytes, heads) = Groups(major, groups, FileTableOffset + tableBytes.Length);
 
-        var header = new byte[DescriptorOffset + FileTableOffset + tableBytes.Length];
+        var header = new byte[DescriptorOffset + FileTableOffset + tableBytes.Length + groupBytes.Length];
         var span = header.AsSpan();
         BinaryPrimitives.WriteUInt32LittleEndian(span, 0x28635349);
         BinaryPrimitives.WriteUInt32LittleEndian(span[4..], versionWord);
         BinaryPrimitives.WriteUInt32LittleEndian(span[12..], DescriptorOffset);
-        BinaryPrimitives.WriteUInt32LittleEndian(span[16..], (uint)(FileTableOffset + tableBytes.Length));
+        BinaryPrimitives.WriteUInt32LittleEndian(span[16..], (uint)(header.Length - DescriptorOffset));
         var descriptor = span[DescriptorOffset..];
         BinaryPrimitives.WriteUInt32LittleEndian(descriptor[0x0c..], FileTableOffset);
         BinaryPrimitives.WriteUInt32LittleEndian(descriptor[0x14..], (uint)tableBytes.Length);
@@ -218,7 +231,54 @@ internal static class SyntheticInstallShieldCabinet
         BinaryPrimitives.WriteUInt32LittleEndian(descriptor[0x28..], (uint)files.Count);
         BinaryPrimitives.WriteUInt32LittleEndian(descriptor[0x2c..], (uint)descriptors);
         tableBytes.CopyTo(descriptor[FileTableOffset..]);
+        groupBytes.CopyTo(descriptor[(FileTableOffset + tableBytes.Length)..]);
+        for (var list = 0; list < heads.Length; list++)
+            BinaryPrimitives.WriteUInt32LittleEndian(descriptor[(GroupListsOffset + 4 * list)..], heads[list]);
         return header;
+    }
+
+    /// <summary>Where the cabinet descriptor holds the heads of its 71 file group lists.</summary>
+    public const int GroupListsOffset = 0x3e;
+
+    // The group lists' entries, the group descriptors and their names, placed at start bytes into the
+    // cabinet descriptor, with the head of each list. A group descriptor holds its name offset and,
+    // at 0x4c and 0x50 (version 0 and 5) or 0x16 and 0x1a (version 6), its first and last file.
+    private static (byte[] Bytes, uint[] Heads) Groups(int major, IReadOnlyList<CabinetGroup> groups, int start)
+    {
+        var (firstAt, size) = Version5Layout(major) ? (0x4c, 0x54) : (0x16, 0x1e);
+        var heads = new uint[71];
+        var bytes = new MemoryStream();
+        var writer = new BinaryWriter(bytes);
+        var previous = new Dictionary<int, long>();
+        foreach (var group in groups)
+        {
+            var entry = start + bytes.Position;
+            var descriptor = entry + 12;
+            var name = descriptor + size;
+            if (previous.TryGetValue(group.List, out var before))
+            {
+                // Chain this entry from the previous one in the same list.
+                var at = bytes.Position;
+                bytes.Position = before - start + 8;
+                writer.Write((uint)entry);
+                bytes.Position = at;
+            }
+            else
+                heads[group.List] = (uint)entry;
+            previous[group.List] = entry;
+
+            writer.Write((uint)name);
+            writer.Write((uint)descriptor);
+            writer.Write(0u);
+            var fields = new byte[size];
+            BinaryPrimitives.WriteUInt32LittleEndian(fields, (uint)name);
+            BinaryPrimitives.WriteInt32LittleEndian(fields.AsSpan(firstAt), group.FirstFile);
+            BinaryPrimitives.WriteInt32LittleEndian(fields.AsSpan(firstAt + 4), group.LastFile);
+            writer.Write(fields);
+            WriteString(writer, group.Name);
+        }
+        writer.Flush();
+        return (bytes.ToArray(), heads);
     }
 
     private static byte[] Volume(
