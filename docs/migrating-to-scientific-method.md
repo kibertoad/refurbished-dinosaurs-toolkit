@@ -322,6 +322,16 @@ A tool that parses the output sees these changes. Existing line prefixes are kep
 
 ## Standard checker upgrades
 
+### `.fs` files are citation-checked
+
+The citation check skipped `.fs` files, so an F# source could cite a spec ID that does not exist or
+is superseded, or a deviation ID missing from `deviations/`, and pass. It now reads them like `.cs`
+files. A restoration with `.fs` files under `--code` or `--references` runs the check and corrects
+each citation it reports: cite the entry that replaced a superseded one, or the right ID for one
+that does not exist. A `.fs` file that holds something other than source code, such as a shader,
+is read the same way and fails only when its text matches a spec or deviation ID. Move such a file
+out of the scanned directories, or leave its directory out of `--code` and `--references`.
+
 ### `--record-validation` records only a run of HEAD as committed
 
 `--record-validation` wrote `git rev-parse HEAD` as the record's Commit while hashing the marked test

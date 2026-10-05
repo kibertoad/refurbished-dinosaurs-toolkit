@@ -184,6 +184,29 @@ test("an unknown ID in code is reported, and --code chooses where to look", (t) 
   assert.equal(elsewhere.status, 0, elsewhere.output);
 });
 
+test("an F# file is citation-checked like a C# file", (t) => {
+  const root = broken(t, (r) => {
+    copyRule(r, "RULE-SCORE-002", (text) =>
+      text
+        .replace("status: sourced", "status: superseded")
+        .replace("superseded_by: []", "superseded_by: [RULE-SCORE-001]"),
+    );
+    mkdirSync(join(r, "src"));
+    writeFileSync(
+      join(r, "src", "Score.fs"),
+      "// Implements RULE-SCORE-002 and RULE-SCORE-003, as DEV-SCORE-001 says.\n",
+    );
+  });
+  const cited = run(root);
+  assert.equal(cited.status, 1);
+  assert.match(cited.output, /Score\.fs: cites RULE-SCORE-002, which is superseded; cite what replaced it$/m);
+  assert.match(cited.output, /Score\.fs: cites RULE-SCORE-003, which does not exist in the spec$/m);
+  assert.match(cited.output, /Score\.fs: cites DEV-SCORE-001, which is not in deviations\/$/m);
+  writeFileSync(join(root, "src", "Score.fs"), "// Implements RULE-SCORE-001.\n");
+  const valid = run(root);
+  assert.equal(valid.status, 0, valid.output);
+});
+
 test("a PLACEHOLDER keeps a row from being complete only under --code", (t) => {
   const root = broken(t, (r) => {
     mkdirSync(join(r, "extra"));
