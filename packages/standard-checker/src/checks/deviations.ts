@@ -1,7 +1,7 @@
 // The deviation log: one file per deviation in deviations/, named after its ID and opening with it
 // as a # heading, followed by its items.
 
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Context } from "../context.ts";
 import { checkResolves, isSuperseded } from "../evidence.ts";
@@ -16,6 +16,10 @@ export interface Deviation {
   departs: string[];
   /** Whether its Dropped item says it was dropped. */
   dropped: boolean;
+  /** Whether its Default is mandatory. */
+  mandatory: boolean;
+  /** The test files its Tests item lists, which check the rebuild does what the deviation says. */
+  tests: string[];
   /** Its file. */
   file: string;
 }
@@ -61,6 +65,7 @@ export function checkDeviations(ctx: Context): Map<string, Deviation> {
           "Setting",
           "Default",
           ...("Justification" in item ? ["Justification"] : []),
+          ...("Tests" in item ? ["Tests"] : []),
           "Dropped",
         ];
         if (
@@ -82,10 +87,28 @@ export function checkDeviations(ctx: Context): Map<string, Deviation> {
             if (isSuperseded(entries, x)) problem(file, `${title} departs from ${x}, which is superseded`);
           checkDeviationDefault(ctx, file, title, item, departs);
         }
-        deviations.set(title, { departs, dropped, file });
+        const tests = "Tests" in item ? checkDeviationTests(ctx, file, title, item.Tests) : [];
+        deviations.set(title, { departs, dropped, mandatory: item.Default === "mandatory", tests, file });
       }
   }
   return deviations;
+}
+
+// The Tests item lists the test files that check the rebuild does what the deviation says, by their
+// path from the repository root. Each exists and mentions the deviation's ID.
+function checkDeviationTests(ctx: Context, path: string, title: string, cell: string): string[] {
+  const files = cell
+    .split(",")
+    .map((x) => x.replaceAll("`", "").trim())
+    .filter(Boolean);
+  if (files.length === 0) ctx.problem(path, `${title}: Tests lists at least one test file`);
+  for (const tf of files) {
+    const p = join(ctx.config.repoDir, tf);
+    if (!existsSync(p)) ctx.problem(path, `${title}: test file ${tf} does not exist`);
+    else if (!readFileSync(p, "utf8").includes(title))
+      ctx.problem(path, `${title}: test file ${tf} does not mention ${title}`);
+  }
+  return files;
 }
 
 // Default is off, on or mandatory. Only the fix of an unintended, not-relied-on bug is on by right;

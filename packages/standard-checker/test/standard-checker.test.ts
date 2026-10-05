@@ -960,6 +960,44 @@ test("a deviation file passes, and its file name must be its ID", (t) => {
   assert.match(bad.output, /DEV-SCORE-002\.md: file name must be DEV-SCORE-001\.md/);
 });
 
+test("a complete row whose mandatory deviations all have tests is deviated", (t) => {
+  const mandatory = (tests: string) =>
+    "# DEV-SCORE-001\n\n- Departs from: RULE-SCORE-001\n- Reason: Counts two points.\n- Setting: None\n" +
+    `- Default: mandatory\n- Justification: Nobody would switch it back.\n${tests}- Dropped: no\n`;
+  const setStatus = (r: string, from: string, to: string) => replaceIn(r, "parity/SCORE.md", from, to);
+  const root = broken(t, (r) => {
+    writeFileSync(join(r, "deviations", "DEV-SCORE-001.md"), mandatory(""));
+    setStatus(
+      r,
+      row("RULE-SCORE-001"),
+      row("RULE-SCORE-001").replace("missing | None | None | sourced", "complete | None | DEV-SCORE-001 | implemented"),
+    );
+  });
+  const untested = run(root);
+  assert.equal(untested.status, 0, untested.output);
+
+  mkdirSync(join(root, "tests"));
+  writeFileSync(join(root, "tests", "Double.ts"), "// DEV-SCORE-001: a kill counts two points.\n");
+  writeFileSync(join(root, "deviations", "DEV-SCORE-001.md"), mandatory("- Tests: tests/Double.ts\n"));
+  const stale = run(root);
+  assert.equal(stale.status, 1);
+  assert.match(stale.output, /RULE-SCORE-001: Status must be deviated/);
+  setStatus(root, "| DEV-SCORE-001 | implemented |", "| DEV-SCORE-001 | deviated |");
+  const tested = run(root);
+  assert.equal(tested.status, 0, tested.output);
+  assert.match(readFileSync(join(root, "PARITY.md"), "utf8"), /\| deviated \| 1 \|/);
+
+  writeFileSync(join(root, "tests", "Double.ts"), "// A kill counts two points.\n");
+  writeFileSync(
+    join(root, "deviations", "DEV-SCORE-001.md"),
+    mandatory("- Tests: tests/Double.ts, tests/Missing.ts\n"),
+  );
+  const broke = run(root);
+  assert.equal(broke.status, 1);
+  assert.match(broke.output, /DEV-SCORE-001: test file tests\/Double\.ts does not mention DEV-SCORE-001/);
+  assert.match(broke.output, /DEV-SCORE-001: test file tests\/Missing\.ts does not exist/);
+});
+
 test("a deviation file deleted since the base is reported", (t) => {
   const root = broken(t, (r) => {
     withDeviation(r);

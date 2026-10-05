@@ -148,9 +148,13 @@ export function checkParity(ctx: Context, deviations: Map<string, Deviation>): P
           .sort(compareIds);
         if (listedDevs.slice().sort(compareIds).join(",") !== expectedDevs.join(","))
           problem(file, `${specId}: Deviations must be ${expectedDevs.join(", ") || "None"}`);
+        // A row whose entry a mandatory deviation replaces cannot be compared with the original. It is
+        // deviated once every mandatory deviation it lists has tests of its own.
+        const mandatory = listedDevs.map((x) => deviations.get(x)).filter((d) => d?.mandatory && !d.dropped);
+        const deviated = mandatory.length > 0 && mandatory.every((d) => d!.tests.length > 0);
         let expectedStatus: string;
         if (code !== "complete" || e.meta.status === "disputed") expectedStatus = e.meta.status;
-        else if (testFiles.length === 0) expectedStatus = "implemented";
+        else if (testFiles.length === 0) expectedStatus = deviated ? "deviated" : "implemented";
         else if (["supported", "established"].includes(e.meta.status)) expectedStatus = "validated";
         else {
           problem(
