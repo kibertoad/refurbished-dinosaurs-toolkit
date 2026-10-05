@@ -53,11 +53,21 @@ of each of their wheels for the platforms you install on, or pip refuses the who
 A validation script that checks the installed versions reads them from the requirements file and
 compares each pinned distribution with `importlib.metadata.version`, instead of repeating version
 literals. A literal goes stale when Dependabot updates the requirements file, and fails the gate on
-an environment that matches it, while a list kept by hand misses the transitive pins (pypcode,
-xxhash) that nobody remembered to add. Have the script reject a line that pins no exact version
-(`==`) and a distribution pinned twice, and name the distribution in each failure. A version
-check reads installed metadata only: whether the installed files match the locked hashes is
-settled by installing with `--require-hashes`, so keep that install step.
+an environment that matches the file, while a list kept by hand misses the transitive pins
+(pypcode, xxhash) that nobody remembered to add.
+
+The script reads requirements the way pip does. It joins lines ending in `\`, drops comments and
+`--hash` options, and follows `-r` includes, so a hash-locked file is not mistaken for unpinned
+lines. It skips a requirement whose environment marker is false for the running interpreter,
+because pip installs nothing for it. It rejects a requirement that pins no single exact version
+(`==` without a `*` wildcard). It normalizes names as pip does (lower case, each run of `-`, `_`
+and `.` becomes one `-`) before rejecting a distribution pinned twice, so `PyPCode` and `pypcode`
+count as one. It compares the pinned and installed versions as PEP 440 versions, for example with
+`packaging.version.Version`, because `==1.0` is satisfied by an installed `1.0.0` that a string
+comparison rejects. Each failure names the distribution.
+
+A version check reads installed metadata only: whether the installed files match the locked hashes
+is settled by installing with `--require-hashes`, so keep that install step.
 
 The reader and the engine have independent versions. Any engine works with any reader that
 speaks the same prepared-config protocol; a mismatch stops with an error naming both packages, and
