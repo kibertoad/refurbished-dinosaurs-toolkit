@@ -162,6 +162,50 @@ public sealed class InstallShieldPathConflictTests
         Assert.Throws<FileNotFoundException>(() => source.OpenEntry(0));
     }
 
+    [Fact]
+    public async Task NamesTheFirstEntryOfAFileStoredOutsideWithACopyInside()
+    {
+        // Entry 0 is stored outside, entry 2 is its version 6 copy inside, and entry 1 is a different file.
+        var copied = Bytes(4000, 5);
+        using var source = Open(6,
+            [new("", "same.bin", copied, Outside: true), new("", "same.bin", Second), new("", "same.bin", copied)]);
+
+        var conflict = Assert.Single(source.PathConflicts);
+        Assert.Equal(
+            [(2, new[] { 0 }), (1, [])],
+            conflict.Files.Select(file => (file.Metadata.Index, file.SharedBy.Select(entry => entry.Index).ToArray())));
+        Assert.Empty(conflict.StoredOutside);
+        const string held = "The path holds different files: files 0 and 1, so none is listed at it.";
+        Assert.Equal(
+            [(0, Skip.StoredOutsideCabinet), (1, Skip.PathHeldByDifferentFiles), (2, Skip.PathHeldByDifferentFiles)],
+            source.SkippedFiles.Select(file => (file.Index, file.Kind)));
+        Assert.Equal(held, source.SkippedFiles[2].Reason);
+        Assert.Equal(copied, await ReadAll(source.OpenEntry(0)));
+        Assert.Equal(copied, await ReadAll(source.OpenEntry(2)));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(5)]
+    [InlineData(6)]
+    public void ReportsAPathWhoseDifferentFilesAreAllStoredOutside(int major)
+    {
+        using var source = Open(major,
+            [new("", "same.bin", First, Outside: true), new("", "same.bin", Second, Outside: true), new("", "other.bin", Other)]);
+
+        Assert.Equal(["other.bin"], source.Files.Select(entry => entry.Path));
+        var conflict = Assert.Single(source.PathConflicts);
+        Assert.Empty(conflict.Files);
+        Assert.Equal([0, 1], conflict.StoredOutside.Select(entry => entry.Index));
+        Assert.Equal(
+            [(0, Skip.StoredOutsideCabinet), (1, Skip.StoredOutsideCabinet)],
+            source.SkippedFiles.Select(file => (file.Index, file.Kind)));
+        Assert.Throws<FileNotFoundException>(() => source.OpenEntry(0));
+        Assert.Throws<FileNotFoundException>(() => source.OpenEntry(1));
+        Assert.Contains("holds different files at this path",
+            Assert.Throws<FileNotFoundException>(() => source.OpenRead("same.bin")).Message);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(5)]

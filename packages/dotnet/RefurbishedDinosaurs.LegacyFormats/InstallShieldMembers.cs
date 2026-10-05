@@ -38,13 +38,24 @@ public sealed record InstallShieldMember(
 /// their expanded sizes and MD5s match; equal names or sizes alone never make them one file.
 /// </param>
 /// <param name="StoredOutside">
-/// The entries at the path whose data is stored outside the cabinet, in table order, which
-/// <see cref="InstallShieldCabinetSource.SkippedFiles"/> lists as
-/// <see cref="InstallShieldSkippedFileKind.StoredOutsideCabinet"/>. They are not read. Empty for an
-/// InstallShield 3 archive.
+/// The entries at the path whose data is stored outside the cabinet and whose file the cabinet does
+/// not also hold inside, in table order, which <see cref="InstallShieldCabinetSource.SkippedFiles"/>
+/// lists as <see cref="InstallShieldSkippedFileKind.StoredOutsideCabinet"/>. They are not read. An
+/// entry stored outside that a version 6 copy inside the cabinet matches in expanded size and MD5 is
+/// in that copy's <see cref="InstallShieldMember.SharedBy"/> in <paramref name="Files"/> instead, and
+/// reads that copy's bytes. Empty for an InstallShield 3 archive.
 /// </param>
 public sealed record InstallShieldPathConflict(
-    string Path, IReadOnlyList<InstallShieldMember> Files, IReadOnlyList<InstallShieldEntryMetadata> StoredOutside);
+    string Path, IReadOnlyList<InstallShieldMember> Files, IReadOnlyList<InstallShieldEntryMetadata> StoredOutside)
+{
+    // The reason every entry at such a path is skipped with, naming the first entry of each file:
+    // "files 3 and 14", "files 3, 14 and 20". A conflict holds at least two files.
+    internal static string HeldReason(IEnumerable<int> firstEntries)
+    {
+        var all = firstEntries.Select(index => index.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+        return $"The path holds different files: files {string.Join(", ", all[..^1])} and {all[^1]}, so none is listed at it.";
+    }
+}
 
 /// <summary>What the header records about one file-table entry, beyond its data.</summary>
 /// <param name="Index">The entry's index in the cabinet's or archive's file table.</param>

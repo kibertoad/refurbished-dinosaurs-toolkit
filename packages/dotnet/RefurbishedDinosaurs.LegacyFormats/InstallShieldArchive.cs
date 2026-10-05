@@ -250,8 +250,7 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
                 members.Add(path, files[0]);
                 continue;
             }
-            var all = files.Select(file => file.Index.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToArray();
-            var held = $"The path holds different files: files {string.Join(", ", all[..^1])} and {all[^1]}, so none is listed at it.";
+            var held = InstallShieldPathConflict.HeldReason(files.Select(file => file.Index));
             skipped.AddRange(files.Select(file =>
                 new InstallShieldSkippedFile(file.Index, file.Entry.Path, InstallShieldSkippedFileKind.PathHeldByDifferentFiles, held)));
             conflicts.Add(new(path, files.Select(file => file.Metadata).ToArray(), []));

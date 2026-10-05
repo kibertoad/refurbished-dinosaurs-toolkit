@@ -364,7 +364,8 @@ files, so `TryGetFile`, `TryGetMember` and `OpenRead` do not find it, and the re
 - `PathConflicts` lists each such path, ordered by path, with `Files`: each file the cabinet holds
   inside its volumes as an `InstallShieldMember` (`Entry`, `Metadata` with its file groups, and
   `SharedBy`), in the table order of its first entry. `StoredOutside` gives the metadata of the
-  entries at the path stored outside the cabinet.
+  entries at the path stored outside the cabinet whose file it does not also hold inside; an entry
+  stored outside with a matching version 6 copy inside is in that copy's `SharedBy`.
 - Every entry at the path is in `SkippedFiles` as `PathHeldByDifferentFiles`, with a reason naming
   the first entry of each file, except entries stored outside, which stay `StoredOutsideCabinet`.
 - `OpenEntry(index)` reads a file by the file-table index of any of its entries, with the same checks

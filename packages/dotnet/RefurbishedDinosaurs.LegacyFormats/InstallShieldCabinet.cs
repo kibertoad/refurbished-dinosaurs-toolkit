@@ -421,7 +421,10 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 continue;
             }
             conflicts.Add((path, files));
-            var held = $"The path holds different files: {DifferentFiles(files.Select(file => file.Index))}, so none is listed at it.";
+            // A version 6 copy inside the cabinet that took the place of entries stored outside is read
+            // from its own entry, but the file's first entry is the first of those.
+            var held = InstallShieldPathConflict.HeldReason(
+                files.Select(file => file.SharedBy.Prepend(file.Listed).Min(entry => entry.Index)));
             foreach (var file in files)
             {
                 if (file.Segments is not null)
@@ -568,7 +571,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         var path = PortableAssetPath.Relative(relativePath);
         if (!members.TryGetValue(path, out var member))
             throw new FileNotFoundException(contested.Contains(path)
-                ? "InstallShield cabinet holds different files at this path; PathConflicts lists them, and OpenEntry reads each by its index."
+                ? "InstallShield cabinet holds different files at this path; PathConflicts lists them, and OpenEntry reads each one held inside the cabinet by its index."
                 : "InstallShield cabinet has no such file.", relativePath);
         return Open(member);
     }
@@ -581,9 +584,10 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     /// <see cref="InstallShieldMember.SharedBy"/> reads the bytes of the member it belongs to.
     /// </summary>
     /// <exception cref="FileNotFoundException">
-    /// No such entry holds a file the source reads: the index is outside the file table, or the entry is in
-    /// <see cref="SkippedFiles"/> for a reason other than
-    /// <see cref="InstallShieldSkippedFileKind.PathHeldByDifferentFiles"/>, or a volume is gone.
+    /// No such entry holds a file the source reads: the index is outside the file table; the entry is
+    /// marked invalid, has no name or data offset, or links to an entry that cannot be read; or it is
+    /// stored outside the cabinet and no version 6 copy inside matches it. A volume being gone also
+    /// throws.
     /// </exception>
     public Stream OpenEntry(int index)
     {
@@ -759,13 +763,6 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     private sealed record VolumeHeader(
         long Length, uint FirstIndex, uint LastIndex, long FirstOffset, long FirstExpanded, long FirstCompressed,
         long LastOffset, long LastExpanded, long LastCompressed);
-
-    // "file 3", "files 3 and 14", "files 3, 14 and 20".
-    private static string DifferentFiles(IEnumerable<int> indexes)
-    {
-        var all = indexes.Select(index => index.ToString(System.Globalization.CultureInfo.InvariantCulture)).ToArray();
-        return $"files {string.Join(", ", all[..^1])} and {all[^1]}";
-    }
 
     // One file a path holds, from the first entry that holds it (Listed). Segments is null when it is
     // stored outside the cabinet. Skipped holds the records of its other entries, and of the first
