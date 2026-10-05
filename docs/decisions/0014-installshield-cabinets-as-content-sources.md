@@ -81,6 +81,7 @@ The cabinet format is a container. Its layout is not game content, and no open t
 A restoration can drop its child-process parser once its own set reads and matches, including one
 that installs by file group. Components are not modelled, and file groups do not take part in a
 member's identity, so two members at one path that point 5 cannot show to be the same file cannot be
-told apart and the open fails, even when they lie in different groups; that case, marker-delimited
-compressed data and files stored outside the cabinet each need a restoration's provenance before they
-are added.
+told apart and the open fails, even when they lie in different groups; that case needs a
+restoration's provenance before it is added. Marker-delimited compressed data and members stored
+outside the cabinet are handled as [ADR 0019](0019-installshield-compressed-format-and-outside-storage.md)
+decides.

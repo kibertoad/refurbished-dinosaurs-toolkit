@@ -69,8 +69,11 @@ LegacyFormats parts of it:
   opens, and each member's size (and MD5 for version 6) when it is read to the end. Entries it does
   not list are in `SkippedFiles` with a reason: entries marked invalid or without a name or data
   (whose names need not read), version 6 links to them, entries at a listed member's path that
-  share its data, and version 6 copies of a listed member at the same path with the same size and
-  MD5. Decode into the staging directory and verify the output there as for
+  share its data, version 6 copies of a listed member at the same path with the same size and
+  MD5, and entries stored outside the cabinet's volumes, each with a `Kind` to test. The header
+  does not say whether compressed data is in length-prefixed chunks or delimited by `00 00 FF FF`
+  markers (Unshield's `-O`), so the caller passes an `InstallShieldCompressedFormat`; the reader
+  never switches forms on its own. Decode into the staging directory and verify the output there as for
   any other source; [InstallShield cabinets](../packages/dotnet/README.md#installshield-cabinets)
   lists the supported subset. A member's path is its directory and name joined. Where the
   restoration installs files by file group, `Members` gives each member's file-table index,
@@ -399,3 +402,25 @@ text or catches `InvalidDataException` alone.
 
 Rename such entries in manifests, overlays and lookups. Restorations that checked these characters
 themselves before calling `Relative` can drop the check.
+
+### InstallShield skipped-entry kinds and members stored outside
+
+`InstallShieldSkippedFile` gains a `Kind` (`InstallShieldSkippedFileKind`) between `Path` and
+`Reason`, so its constructor and deconstruction take four values. Code that deconstructs it, or
+builds one, adds the kind; code that matched `Reason` text to tell skip reasons apart can test
+`Kind` instead. The reason texts are unchanged.
+
+An InstallShield cabinet set that lists a member stored outside its volumes (a member whose data
+offset is exactly the length of the volume where its data starts, as Unshield tells it) now opens.
+The member goes to `SkippedFiles` with the kind `StoredOutsideCabinet`, and the set's other members
+read. It used to fail the open with `InvalidDataException`: "InstallShield file N lies past the end
+of volume V, which is shorter than the header claims". Code that took that failure to mean the set
+could not be used checks `SkippedFiles` for this kind instead, and reads such a file from its own
+media if it needs it. Other extents past the end of a volume still fail the open with that message.
+
+Both `OpenInstallShieldCabinet` overloads take a last optional argument,
+`InstallShieldCompressedFormat compressedFormat`, after the limits. Existing calls compile
+unchanged; code compiled against the previous release is rebuilt. The default reads compressed
+members as before, and a chunk that does not read now says so with a message naming
+`MarkerDelimitedChunks`. A set whose members read under `unshield -O` is opened with
+`InstallShieldCompressedFormat.MarkerDelimitedChunks`.

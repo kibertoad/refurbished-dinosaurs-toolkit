@@ -264,7 +264,7 @@ header, matched ignoring case.
 
 | Supported | Not supported |
 |---|---|
-| Major versions 0, 5 and 6, as the header's version word gives them under Unshield's rule. Stored and compressed members, obfuscated members, members split across volumes, and version 6 members that link to another member's data. | Every other major version, and a version word in neither encoding Unshield reads, which throw `NotSupportedException` naming the word. Compressed data delimited by `00 00 FF FF` markers with no chunk lengths (what Unshield reads with `-O`). Members stored outside the cabinet. Components, and an installer's placement of files: members are listed by directory and name, and file groups are reported as metadata (see [Member metadata and file groups](#member-metadata-and-file-groups)). |
+| Major versions 0, 5 and 6, as the header's version word gives them under Unshield's rule. Stored and compressed members, obfuscated members, members split across volumes, and version 6 members that link to another member's data. Compressed data in length-prefixed chunks (Unshield's default) or delimited by `00 00 FF FF` markers with no chunk lengths (what Unshield reads with `-O`), as the caller selects (see [Compressed formats](#compressed-formats)). | Every other major version, and a version word in neither encoding Unshield reads, which throw `NotSupportedException` naming the word. Reading members stored outside the cabinet: they are listed in `SkippedFiles` (see [Members stored outside the cabinet](#members-stored-outside-the-cabinet)). Components, and an installer's placement of files: members are listed by directory and name, and file groups are reported as metadata (see [Member metadata and file groups](#member-metadata-and-file-groups)). |
 
 Opening reads the header and the volume headers and checks every listed member before any member is
 read: its directory and name joined must pass `PortableAssetPath.Relative`, its data must lie inside the
@@ -285,7 +285,9 @@ Entries the cabinet marks invalid, or that have no name or no data offset, are l
 reason names the entry it links to. A link outside the file table or a link cycle fails the open.
 Unshield does not read the names of entries left out, so a name or directory of theirs that does not
 read, or that does not form a relative path, does not fail the open: the skipped entry's path is
-`null` instead.
+`null` instead. Each `InstallShieldSkippedFile` has a `Kind` to test (`MarkedInvalid`, `NoName`,
+`NoDataOffset`, `LinksToUnavailableEntry`, `SharesListedData`, `DuplicatesListedMember` or
+`StoredOutsideCabinet`) beside its `Reason`.
 
 Two entries at the same path, ignoring case, are listed once when one links to the other's data; the
 other goes to `SkippedFiles` with a reason naming the listed entry. In a version 6 set, two entries
@@ -303,6 +305,53 @@ exactly its declared size and, for version 6, that its bytes match the MD5 the h
 check throws `InvalidDataException` before the last bytes are returned, so `AssetVerifier` reports the
 file as `Unreadable`. Version 5 headers carry no checksum the reader checks, so version 5 members are
 checked by size only.
+
+### Compressed formats
+
+The header does not record how a set's compressed members store their deflate data, so the caller
+passes an `InstallShieldCompressedFormat` to `OpenInstallShieldCabinet` (as its third argument), and
+the source reports it as `CompressedFormat`:
+
+| Value | Stored bytes | Unshield |
+|---|---|---|
+| `LengthPrefixedChunks` (default) | Chunks, each a 16-bit little-endian length and raw deflate data that expands to at most 64 KiB. | Default extraction. |
+| `MarkerDelimitedChunks` | Raw deflate data with no lengths. Each chunk ends with the empty stored block `00 00 FF FF` that a deflate flush writes, and no block is final. | `-O` ("old compression"). |
+
+```csharp
+using var cabinet = OriginalContentSource.OpenInstallShieldCabinet(disc, "data1.hdr", null,
+    InstallShieldCompressedFormat.MarkerDelimitedChunks);
+```
+
+Every compressed member of the set is read in the chosen form. A member that does not decode in it
+throws `InvalidDataException` from its read, and the reader never tries the other form. Under the
+default, a chunk that does not read (a zero length, a length past the member's stored bytes, data
+that does not inflate or expands past 64 KiB) says so and names `MarkerDelimitedChunks`, so a set
+that reads under `unshield -O` and fails here is a sign to open it with that value.
+
+Marker-delimited data is decoded as one deflate stream, so the reader does not search for the
+markers: four marker bytes inside a chunk's data are read as data, and a chunk may expand to more
+than 64 KiB. Reading such a member to its end checks that it expands to exactly its declared size,
+that the decoder reaches the end of its stored bytes with no final block, and that they end with
+`00 00 FF FF`; the version 6 MD5 check applies as for the default form.
+
+### Members stored outside the cabinet
+
+A member is stored outside the cabinet when it has stored bytes and its data offset is exactly the
+length of the volume where its data starts, split or not, as Unshield tells it. It is not listed: it
+goes to `SkippedFiles` with the kind `StoredOutsideCabinet` and a reason giving the offset and the
+volume, and the rest of the set opens. Entries that share its data, and version 6 copies of it that
+are also stored outside, are skipped the same way; a version 6 copy whose own data is inside the
+cabinet is listed. A different file at its path fails the open, as for any two files at one path.
+The reader does not look for or read files outside the cabinet; read such a file from your own
+media and check it there.
+
+Any other extent past the end of a volume is damage: an offset past its length, or data that starts
+inside it and runs past its end. It fails the open with `InvalidDataException` ("lies past the end of
+volume N, which is shorter than the header claims"). The offset rule cannot tell a member stored
+outside from a volume cut short exactly where its last member's data starts, so compare the volume
+named in the reason with your source media when the skip is unexpected.
+
+### Format provenance
 
 The reader is managed code in this package, under its MIT license, with no third-party parser. Its
 reading of the layout follows [Unshield](https://github.com/twogood/unshield) (MIT). No open tool writes

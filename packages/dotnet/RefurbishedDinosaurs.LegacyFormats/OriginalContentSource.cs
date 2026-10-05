@@ -125,7 +125,7 @@ public abstract class OriginalContentSource : IDisposable
     /// <summary>
     /// Opens <paramref name="path"/> as a directory source when it is a directory, as a cue/bin image
     /// (see <see cref="OpenCueBin"/>) when it is a <c>.cue</c> file, as an InstallShield cabinet set
-    /// (see <see cref="OpenInstallShieldCabinet(string, InstallShieldCabinetLimits?)"/>) with the
+    /// (see <see cref="OpenInstallShieldCabinet(string, InstallShieldCabinetLimits?, InstallShieldCompressedFormat)"/>) with the
     /// default limits when it is a <c>.hdr</c> file, as an InstallShield 3 archive (see
     /// <see cref="OpenInstallShieldArchive(string, InstallShieldArchiveLimits?)"/>) with the default
     /// limits when any other file starts with that format's signature, and as an ISO 9660 image (see
@@ -285,30 +285,43 @@ public abstract class OriginalContentSource : IDisposable
     /// </summary>
     /// <param name="path">The header file.</param>
     /// <param name="limits">The bounds to apply, or <see langword="null"/> for <see cref="InstallShieldCabinetLimits.Default"/>.</param>
+    /// <param name="compressedFormat">
+    /// How the set's compressed members store their deflate data. The header does not record it, so
+    /// the caller chooses; the default is what Unshield reads without <c>-O</c>.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="compressedFormat"/> is not a defined value.</exception>
     /// <exception cref="FileNotFoundException">The header or a volume a member needs does not exist.</exception>
     /// <exception cref="InvalidDataException">
     /// The header or a volume is truncated or malformed, a member's path is not accepted by <see cref="PortableAssetPath.Relative"/>, two different
     /// members share a path, or the set exceeds <paramref name="limits"/>.
     /// </exception>
     /// <exception cref="NotSupportedException">The header's InstallShield major version is not 0, 5 or 6.</exception>
-    public static InstallShieldCabinetSource OpenInstallShieldCabinet(string path, InstallShieldCabinetLimits? limits = null)
+    public static InstallShieldCabinetSource OpenInstallShieldCabinet(
+        string path, InstallShieldCabinetLimits? limits = null,
+        InstallShieldCompressedFormat compressedFormat = InstallShieldCompressedFormat.LengthPrefixedChunks)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         limits ??= InstallShieldCabinetLimits.Default;
         limits.Validate();
-        return InstallShieldCabinetOpener.FromDirectory(path, limits);
+        ValidateCompressedFormat(compressedFormat);
+        return InstallShieldCabinetOpener.FromDirectory(path, limits, compressedFormat);
     }
 
     /// <summary>
     /// Opens an InstallShield cabinet set of major version 0, 5 or 6 held in another source, such as the ISO 9660 volume of
     /// a disc image. Volumes are looked up in <paramref name="container"/> as
-    /// <see cref="OpenInstallShieldCabinet(string, InstallShieldCabinetLimits?)"/> describes, and are
+    /// <see cref="OpenInstallShieldCabinet(string, InstallShieldCabinetLimits?, InstallShieldCompressedFormat)"/> describes, and are
     /// opened through it whenever a member is read, so keep <paramref name="container"/> usable while
     /// the cabinet set is in use.
     /// </summary>
     /// <param name="container">The source holding the header and its volumes.</param>
     /// <param name="headerPath">The header's path in <paramref name="container"/>.</param>
     /// <param name="limits">The bounds to apply, or <see langword="null"/> for <see cref="InstallShieldCabinetLimits.Default"/>.</param>
+    /// <param name="compressedFormat">
+    /// How the set's compressed members store their deflate data. The header does not record it, so
+    /// the caller chooses; the default is what Unshield reads without <c>-O</c>.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="compressedFormat"/> is not a defined value.</exception>
     /// <exception cref="FileNotFoundException">The header or a volume a member needs is not in <paramref name="container"/>.</exception>
     /// <exception cref="InvalidDataException">
     /// <paramref name="headerPath"/> is not accepted by <see cref="PortableAssetPath.Relative"/>, the
@@ -317,12 +330,21 @@ public abstract class OriginalContentSource : IDisposable
     /// </exception>
     /// <exception cref="NotSupportedException">The header's InstallShield major version is not 0, 5 or 6.</exception>
     public static InstallShieldCabinetSource OpenInstallShieldCabinet(
-        OriginalContentSource container, string headerPath, InstallShieldCabinetLimits? limits = null)
+        OriginalContentSource container, string headerPath, InstallShieldCabinetLimits? limits = null,
+        InstallShieldCompressedFormat compressedFormat = InstallShieldCompressedFormat.LengthPrefixedChunks)
     {
         ArgumentNullException.ThrowIfNull(container);
         limits ??= InstallShieldCabinetLimits.Default;
         limits.Validate();
-        return InstallShieldCabinetOpener.FromSource(container, headerPath, limits);
+        ValidateCompressedFormat(compressedFormat);
+        return InstallShieldCabinetOpener.FromSource(container, headerPath, limits, compressedFormat);
+    }
+
+    private static void ValidateCompressedFormat(InstallShieldCompressedFormat compressedFormat)
+    {
+        if (!Enum.IsDefined(compressedFormat))
+            throw new ArgumentOutOfRangeException(nameof(compressedFormat), compressedFormat,
+                "The compressed format is not a defined InstallShieldCompressedFormat value.");
     }
 
     /// <summary>

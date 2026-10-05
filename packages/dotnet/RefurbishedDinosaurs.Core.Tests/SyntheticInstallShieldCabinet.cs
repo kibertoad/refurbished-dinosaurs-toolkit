@@ -5,10 +5,15 @@ using System.Text;
 
 namespace RefurbishedDinosaurs.Core.Tests;
 
-/// <summary>One member of a synthetic InstallShield cabinet set.</summary>
+/// <summary>
+/// One member of a synthetic InstallShield cabinet set. <paramref name="Stored"/> replaces the bytes
+/// written for the member (before obfuscation), so a test can store malformed data under a valid
+/// header. An <paramref name="Outside"/> member is stored outside the cabinet: its bytes are not
+/// written, and its data offset is the length of the volume that would hold it.
+/// </summary>
 internal sealed record CabinetFile(
     string Directory, string Name, byte[] Data, bool Compressed = true, bool Obfuscated = false,
-    int? LinkTo = null, bool Invalid = false);
+    int? LinkTo = null, bool Invalid = false, byte[]? Stored = null, bool Outside = false);
 
 /// <summary>
 /// One file group of a synthetic InstallShield cabinet set: a name and a range of file-table indexes,
@@ -49,15 +54,17 @@ internal static class SyntheticInstallShieldCabinet
     /// descriptor and everything after it (the file table, descriptors and names). <paramref name="groups"/>
     /// are written after the file table, as Unshield reads them: each list's head in the descriptor's
     /// group lists at 0x3e, a 12-byte list entry and a group descriptor per group. Without groups, the
-    /// lists are all zero.
+    /// lists are all zero. With <paramref name="markerDelimited"/>, compressed members are written as
+    /// marker-delimited chunks (<see cref="MarkerChunks"/>) instead of length-prefixed ones.
     /// </summary>
     public static Dictionary<string, byte[]> Build(
         int major, IReadOnlyList<CabinetFile> files, long volumeCapacity = long.MaxValue, uint? versionWord = null,
-        bool headerInCabinet = false, uint? cabinetDescriptorSize = null, IReadOnlyList<CabinetGroup>? groups = null)
+        bool headerInCabinet = false, uint? cabinetDescriptorSize = null, IReadOnlyList<CabinetGroup>? groups = null,
+        bool markerDelimited = false)
     {
         var word = versionWord ?? VersionWord(major);
         groups ??= [];
-        var raws = files.Select(file => file.LinkTo is null && !file.Invalid ? Raw(file) : []).ToArray();
+        var raws = files.Select(file => file.LinkTo is null && !file.Invalid ? Raw(file, markerDelimited) : []).ToArray();
         // The header's length does not depend on where the members lie, so a first pass sizes it.
         var dataStart = headerInCabinet
             ? Header(major, files, raws, Layout(files, raws, volumeCapacity, VolumeDataOffset, out _), word, groups).Length
@@ -95,9 +102,44 @@ internal static class SyntheticInstallShieldCabinet
         return output.ToArray();
     }
 
-    private static byte[] Raw(CabinetFile file)
+    /// <summary>
+    /// The marker-delimited form of <paramref name="data"/> (what Unshield reads with <c>-O</c>): raw
+    /// deflate data with no chunk lengths, flushed after every <paramref name="chunkInput"/> bytes of
+    /// input so each chunk ends with the empty stored block <c>00 00 FF FF</c>, and no final block.
+    /// Each chunk is compressed on its own unless <paramref name="continuous"/>, which keeps one
+    /// stream whose chunks may refer back to earlier ones.
+    /// </summary>
+    public static byte[] MarkerChunks(
+        byte[] data, int chunkInput = ChunkInput, CompressionLevel level = CompressionLevel.Optimal, bool continuous = false)
     {
-        var raw = file.Compressed ? Chunks(file.Data) : file.Data.ToArray();
+        using var output = new MemoryStream();
+        // DeflateStream.Flush ends what it has written with an empty stored block. The final block that
+        // disposing writes is cut off by copying the output before it.
+        if (continuous)
+        {
+            using var deflate = new DeflateStream(output, level, leaveOpen: true);
+            for (var offset = 0; offset < data.Length; offset += chunkInput)
+            {
+                deflate.Write(data, offset, Math.Min(chunkInput, data.Length - offset));
+                deflate.Flush();
+            }
+            return output.ToArray();
+        }
+        for (var offset = 0; offset < data.Length; offset += chunkInput)
+        {
+            using var chunk = new MemoryStream();
+            using var deflate = new DeflateStream(chunk, level, leaveOpen: true);
+            deflate.Write(data, offset, Math.Min(chunkInput, data.Length - offset));
+            deflate.Flush();
+            output.Write(chunk.ToArray());
+        }
+        return output.ToArray();
+    }
+
+    private static byte[] Raw(CabinetFile file, bool markerDelimited)
+    {
+        var raw = file.Stored?.ToArray()
+                  ?? (!file.Compressed ? file.Data.ToArray() : markerDelimited ? MarkerChunks(file.Data) : Chunks(file.Data));
         if (!file.Obfuscated) return raw;
         uint seed = 0;
         for (var index = 0; index < raw.Length; index++, seed++)
@@ -115,9 +157,15 @@ internal static class SyntheticInstallShieldCabinet
         var parts = files.Select(_ => new List<Part>()).ToArray();
         var volume = 1;
         long used = 0;
+        var outside = new List<(int Index, int Volume)>();
         for (var index = 0; index < files.Count; index++)
         {
             if (files[index].LinkTo is not null || files[index].Invalid) continue;
+            if (files[index].Outside)
+            {
+                outside.Add((index, volume));
+                continue;
+            }
             long remaining = raws[index].Length;
             long start = 0;
             do
@@ -135,6 +183,11 @@ internal static class SyntheticInstallShieldCabinet
             } while (remaining > 0);
         }
         volumeCount = volume;
+        // A member stored outside gets an empty part at the end of its volume, so its data offset is
+        // the volume's length and the volume header's index range covers it.
+        foreach (var (index, held) in outside)
+            parts[index].Add(new(held, (held == 1 ? firstDataStart : VolumeDataOffset) +
+                parts.SelectMany(list => list).Where(part => part.Volume == held).Sum(part => part.Length), 0, 0));
         return parts;
     }
 
@@ -303,6 +356,8 @@ internal static class SyntheticInstallShieldCabinet
         (long Offset, long Expanded, long Compressed) Record(int index)
         {
             var part = parts[index].Single(item => item.Volume == volume);
+            // A member stored outside records its whole sizes, as an unsplit member does.
+            if (files[index].Outside) return (part.Offset, files[index].Data.Length, raws[index].Length);
             var expanded = files[index].Compressed ? files[index].Data.Length : part.Length;
             return (part.Offset, expanded, part.Length);
         }

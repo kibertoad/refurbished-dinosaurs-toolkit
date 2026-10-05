@@ -297,6 +297,7 @@ public sealed class InstallShieldArchiveTests
         Assert.Equal(["Data/kept.bin"], source.Files.Select(entry => entry.Path));
         Assert.Equal([(1, (string?)"Data/gone.bin"), (2, null)], source.SkippedFiles.Select(file => (file.Index, file.Path)));
         Assert.All(source.SkippedFiles, file => Assert.Equal("The archive marks the file invalid.", file.Reason));
+        Assert.All(source.SkippedFiles, file => Assert.Equal(InstallShieldSkippedFileKind.MarkedInvalid, file.Kind));
     }
 
     [Theory]
