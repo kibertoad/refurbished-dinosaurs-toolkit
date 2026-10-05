@@ -188,7 +188,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 found = fingerprint(disc)
                 paths = None
                 if profile.expected_paths and disc.data_tracks:
-                    paths = [e.path for e in isofs.walk(disc.first_data_track())]
+                    try:
+                        paths = [e.path for e in isofs.walk(disc.first_data_track())]
+                    except isofs.UnsupportedFileSystem as error:
+                        raise DiscError(f"the profile lists expected paths, but the disc's files cannot be listed: {error}") from None
                 checks = check_profile(profile, found, paths)
             print(json.dumps({"disc": found, "checks": [c.as_json() for c in checks]}, indent=2))
             return EXIT_OK if all(c.matched for c in checks) else EXIT_MISMATCH

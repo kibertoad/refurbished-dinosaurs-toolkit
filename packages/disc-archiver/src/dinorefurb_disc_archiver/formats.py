@@ -216,6 +216,16 @@ def _write_iso(disc: Disc, path: Path) -> list[str]:
             raise
     if track.mode == "MODE2":
         notes.append(f"Track {track.number} is a MODE2 (CD-ROM XA) track; the ISO holds its form 1 user data.")
+    try:
+        base = isofs.locate(track).base
+    except isofs.UnsupportedFileSystem:
+        base = 0
+    if base:
+        notes.append(
+            f"Track {track.number}'s file system counts its addresses from LBA {base}, where the track sits on the disc, "
+            "and the ISO starts at the track's first sector, so programs that read an ISO's files with addresses "
+            "counted from its start do not find them. The files format holds them."
+        )
     others = [t.number for t in disc.data_tracks[1:]]
     if others:
         notes.append(f"Data tracks {others} are not in the ISO, which holds only track {track.number}.")
@@ -314,7 +324,11 @@ def write_files(disc: Disc, directory: Path, name: str) -> Output:
     if not disc.data_tracks:
         raise FormatUnavailable("this disc has no data track, so it has no files")
     tree = directory / name
-    entries = isofs.walk(disc.first_data_track(), tree)
+    try:
+        entries = isofs.walk(disc.first_data_track(), tree)
+    except isofs.UnsupportedFileSystem as error:
+        # walk locates the volume before it writes anything, so no partial tree is left behind.
+        raise FormatUnavailable(str(error)) from None
     notes = [f"{len(entries)} files from track {disc.first_data_track().number}'s file system."]
     if disc.audio_tracks:
         notes.append(f"The {len(disc.audio_tracks)} audio tracks are not files and are left out.")

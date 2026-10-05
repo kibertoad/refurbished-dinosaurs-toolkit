@@ -77,8 +77,8 @@ Writing the copy (`--format`, repeat for several):
 | `iso-flac` | `.iso`, one `.flac` per audio track, `.cue` | Data user data and lossless audio from each track's INDEX 01. Needs `ffmpeg`. |
 | `iso-wav` | `.iso`, one `.wav` per audio track, `.cue` | The same with WAV audio: the DOSBox-style sheet. |
 | `iso-ogg` | `.iso`, one `.ogg` per audio track, `.cue` | The form many re-releases ship. Lossy. Needs `ffmpeg`. |
-| `iso` | `.iso` | The data track's user data only. Audio tracks are left out. |
-| `files` | a directory | The data track's files, with Joliet names where the disc has them, and their dates. |
+| `iso` | `.iso` | The data track's user data only. Audio tracks are left out. A CD-Extra disc's ISO keeps the addresses counted from the start of the disc, so most programs cannot list its files; the manifest notes it. |
+| `files` | a directory | The data track's files, with Joliet names where the disc has them, and their dates. Unavailable, with the reason, when the file system cannot be located (see [Data tracks after audio](#data-tracks-after-audio)). |
 
 `--format all` writes every format that can be made. `--format recommended`, the default,
 writes what the disc profile recommends.
@@ -223,7 +223,9 @@ My Game/
   volume descriptor (or one whose logical block size is not 2,048 bytes), a sector without user
   data stops the run with its sector number. When `files` is requested and a file's extent reaches
   one of the listed sectors, the run stops with its sector number before any format is written.
-  The addresses stored in the sector headers are not checked.
+  The declared size is an address, resolved as [Data tracks after audio](#data-tracks-after-audio)
+  describes; a track whose file system cannot be located admits no sector past its volume. The
+  addresses stored in the sector headers are not checked.
 - `profile.checks`: each expectation of the profile and what the disc showed.
 - `outputs`: each format's files, with size, CRC32, MD5, SHA-1 and SHA-256 (the hashes disc
   databases such as Redump list, so you can check your dump against them yourself), what the
@@ -237,6 +239,30 @@ My Game/
   sectors, so no BIN/CUE, CloneCD or CHD can be made from it. A data track with sectors that hold
   no user data has no ISO form, so the ISO formats are unavailable for it; BIN/CUE, CloneCD and
   CHD keep those sectors and compare them byte for byte.
+
+## Data tracks after audio
+
+A CD-Extra (Enhanced CD) disc holds its audio in a first session and its data track in a second.
+That track's ISO 9660 volume is usually mastered with addresses counted from the start of the
+disc, while a volume on a disc's first track counts from the track. The archiver reads the
+primary volume descriptor at sector 16 of the track and tries each place the addresses can count
+from:
+
+- the track's first sector;
+- the track's LBA with the disc's tracks laid out back to back from LBA 0, as the archiver reads
+  every image;
+- for raw sectors, the LBA the header of sector 16 gives. A cue sheet lays the sessions out back
+  to back without the lead-out and lead-in between them, and so does a CloneCD image, so on a
+  CD-Extra dump this is the place that fits.
+
+A place fits when the root directory extent the descriptor gives lands inside the track and the
+volume, past the volume descriptors, on a directory whose `.` record gives that same extent.
+Every address the file system gives, its file extents and declared volume size included, is read
+against the one place that fits. When none fits, or more than one does, the archiver does not choose: `files` is
+unavailable with the reason, a profile's `expectedPaths` stop the run, and the fingerprint admits
+no sector past the volume. An ISO-plus-cue copy of a CD-Extra disc made by another tool keeps no
+sector headers, so unless its sheet places the track where it sits on the disc its files cannot be
+located.
 
 ## Disc profiles
 
@@ -281,8 +307,10 @@ The supported imports are the names in `dinorefurb_disc_archiver.__all__`.
 
 ## Limits
 
-- Single-session discs only. A cue sheet's first track must start at `INDEX 01 00:00:00`;
-  `POSTGAP`, `MODE2/2336`, `CDG` and `MOTOROLA` files are refused.
+- Sessions are not kept. A cue sheet's `REM SESSION` lines are ignored, so a multisession disc's
+  tracks are laid out back to back without the gap between sessions, in the manifest's track
+  starts and in the BIN/CUE, CloneCD and CHD written from it. A cue sheet's first track must start
+  at `INDEX 01 00:00:00`; `POSTGAP`, `MODE2/2336`, `CDG` and `MOTOROLA` files are refused.
 - Cue sheets are limited to 1 MiB and 99 tracks, profiles to 64 KiB, file systems to 200,000 files.
 - `data-copy` stops at the first sector that still fails after five reads. Nothing stands in for
   an unread sector.

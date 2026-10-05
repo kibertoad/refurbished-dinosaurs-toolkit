@@ -139,10 +139,13 @@ def fingerprint(disc: Disc) -> dict[str, object]:
     the sectors there may hold no user data of the track's mode (no sync pattern, another mode, or
     a MODE2 form 2 sector). Those sectors are listed in ``data.nonDataSectors`` as ``[first,
     stop)`` ranges counted from INDEX 01, their raw 2,352 bytes are hashed in order into
-    ``data.nonDataSha256``, and they add nothing to ``data.sha256``. Every sector inside the
-    declared volume, and every sector of a track with no volume descriptor, must hold user data,
-    or a :class:`DiscError` names the first that does not. The sector headers' stored addresses
-    are not checked.
+    ``data.nonDataSha256``, and they add nothing to ``data.sha256``. The declared volume space
+    size is an address, counted from the track's first sector or, for a volume mastered with the
+    disc's addresses (a CD-Extra disc's second session), from the start of the disc;
+    ``isofs.locate`` finds which from the root directory. Every sector inside the declared volume,
+    and every sector of a track whose volume cannot be located, must hold user data, or a
+    :class:`DiscError` names the first that does not. The sector headers' stored addresses are
+    not checked; the address in the header of sector 16 is one of the bases ``isofs.locate`` tries.
     """
     data = None
     volume = None
@@ -320,11 +323,16 @@ def derive(
     # before any format is written, as a damaged dump stops at the fingerprint.
     data = reference["data"]
     past_volume = data is not None and bool(data["nonDataSectors"])  # type: ignore[index]
-    entries = (
-        isofs.walk(disc.first_data_track())
-        if disc.data_tracks and (profile.expected_paths or ("files" in requested and past_volume))
-        else None
-    )
+    # Sectors past the volume are admitted only once the volume is located, so the files of such a
+    # track can always be listed, and only the profile's paths can meet a volume walk cannot read.
+    try:
+        entries = (
+            isofs.walk(disc.first_data_track())
+            if disc.data_tracks and (profile.expected_paths or ("files" in requested and past_volume))
+            else None
+        )
+    except isofs.UnsupportedFileSystem as error:
+        raise DiscError(f"the profile lists expected paths, but the disc's files cannot be listed: {error}") from None
     paths = [e.path for e in entries] if profile.expected_paths and entries is not None else None
     checks = check_profile(profile, reference, paths)
     for check in checks:
