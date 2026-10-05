@@ -249,12 +249,13 @@ defines the commit as the commit the run tested, and the check writes HEAD there
 test HEAD as committed. The check refuses to record, and exits with 2, when the working tree differs
 from HEAD in anything other than `VALIDATION.md`, including untracked files that git does not
 ignore. A record cannot name the commit that contains it, so a change to a validated row's marked
-tests or the code they exercise goes in two commits on the same branch: first the change, on which
-the check fails because the record no longer matches, then, after the run against that commit, the
-new `VALIDATION.md`. From then on the check, in CI as well, fails a validated row whose marked test file is
-missing from the record or has changed since, and a record that lists any other file. A
-restoration whose validated rows list no marked file needs no record. The checker cannot tell
-whether the tests passed; running them before recording is the maintainer's part.
+tests or the code they exercise goes in two commits on the same branch: first the change, then,
+after the run against that commit, the new `VALIDATION.md`. The record holds hashes of the marked
+test files only, so the check fails on the first commit when a marked test file changed, and passes
+it when only the code they exercise did. From then on the check, in CI as well, fails a validated
+row whose marked test file is missing from the record or has changed since, and a record that lists
+any other file. A restoration whose validated rows list no marked file needs no record. The checker
+cannot tell whether the tests passed; running them before recording is the maintainer's part.
 
 ## Moving a restoration onto it
 

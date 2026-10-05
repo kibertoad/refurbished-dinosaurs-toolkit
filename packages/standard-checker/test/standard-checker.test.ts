@@ -974,6 +974,7 @@ test("--record-validation records only a run of HEAD as committed", (t) => {
   const root = broken(t, (r) => {
     validateRow(r);
     writeFileSync(join(r, ".gitignore"), "local/\n");
+    writeFileSync(join(r, "notes.txt"), "notes\n");
     // The commit carries regenerated indexes and PARITY.md, as one that passes the check does.
     run(r);
     commitAll(r);
@@ -996,11 +997,34 @@ test("--record-validation records only a run of HEAD as committed", (t) => {
   spawnSync("git", ["reset", "-q", "--hard"], { cwd: root });
   assert.equal(readFileSync(test, "utf8"), committed);
 
-  // A file outside the marked tests, such as the code they exercise, and an untracked one.
+  // A tracked file outside the marked tests, such as the code they exercise, changed or renamed. A
+  // rename lists only its new path.
+  writeFileSync(join(root, "notes.txt"), "changed\n");
+  refused(/\(notes\.txt\)/);
+  spawnSync("git", ["reset", "-q", "--hard"], { cwd: root });
+
+  // git status does not report an edit to a file marked assume-unchanged or skip-worktree.
+  for (const mark of ["assume-unchanged", "skip-worktree"]) {
+    spawnSync("git", ["update-index", `--${mark}`, "notes.txt"], { cwd: root });
+    writeFileSync(join(root, "notes.txt"), "changed\n");
+    refused(/\(notes\.txt\)/);
+    writeFileSync(join(root, "notes.txt"), "notes\n");
+    spawnSync("git", ["update-index", `--no-${mark}`, "notes.txt"], { cwd: root });
+  }
+
+  spawnSync("git", ["mv", "notes.txt", "notes.md"], { cwd: root });
+  refused(/\(notes\.md\)/);
+  spawnSync("git", ["reset", "-q", "--hard"], { cwd: root });
+  rmSync(join(root, "notes.md"), { force: true });
+
+  // An untracked directory is listed once, and past five paths the rest are counted.
   mkdirSync(join(root, "src"));
   writeFileSync(join(root, "src", "score.ts"), "export const kill = (n: number) => n + 1;\n");
-  refused(/\(src\/score\.ts\)/);
+  refused(/\(src\/\)/);
+  for (const n of [1, 2, 3, 4, 5, 6]) writeFileSync(join(root, `extra-${n}.txt`), "\n");
+  refused(/, and 2 more\)/);
   rmSync(join(root, "src"), { recursive: true });
+  for (const n of [1, 2, 3, 4, 5, 6]) rmSync(join(root, `extra-${n}.txt`));
 
   // An ignored file is not part of the tested tree, and an earlier record is what the run replaces.
   mkdirSync(join(root, "local"));
