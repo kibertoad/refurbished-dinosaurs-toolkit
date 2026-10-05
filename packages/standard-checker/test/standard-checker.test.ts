@@ -1713,6 +1713,38 @@ test("a list of other files compares a numeric path as text", (t) => {
   assert.doesNotMatch(result.output, /every other file has a path/);
 });
 
+test("a manifest compares a numeric path as text, so a file named 0 has a path", (t) => {
+  const root = broken(t, (r) => {
+    const path = join(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml");
+    const item = "  - path: 0\n    format: data\n    size: 2\n    xxh3: 00112233445566778899aabbccddeeff\n";
+    writeFileSync(path, readFileSync(path, "utf8") + item + item);
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /BLD-EXAMPLE-1\.0\.files\.yaml: 0 is listed twice$/m);
+  assert.doesNotMatch(result.output, /every file has a path/);
+});
+
+test("a manifest path that is a map is reported, not compared as [object Object]", (t) => {
+  const root = broken(t, (r) => {
+    const path = join(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml");
+    const item = (key: string) =>
+      `  - path:\n      ${key}: 1\n    format: data\n    size: 2\n    xxh3: 00112233445566778899aabbccddeeff\n`;
+    writeFileSync(path, readFileSync(path, "utf8") + item("a") + item("b"));
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /BLD-EXAMPLE-1\.0\.files\.yaml: a path is text, not a map or list$/m);
+  assert.doesNotMatch(result.output, /is listed twice/);
+});
+
+test("a list of other files reports a path that is a list", (t) => {
+  const root = broken(t, otherFiles("other_files:\n  - path: [a, b]\n    reason: a save slot\n"));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /other-files\.yaml: a path is text, not a map or list$/m);
+});
+
 for (const format of ["MZ", "COM", "NE", "PE", "LE", "LX", "ELF"])
   test(`explicit ${format} file-data locations retain shipped offsets`, (t) => {
     const root = broken(t, (r) => {

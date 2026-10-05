@@ -421,10 +421,12 @@ manifest leaves out. Where that list would take the entry past the line limit, i
 `reason`, and the section names the file. The checker fails a list that the section does not
 name, a section that names a list that does not exist, a list that belongs to no build, an item
 without a path or a reason, a path listed twice, and a path that is also in the manifest. It
-also fails a manifest that lists a path twice, whether or not the two items agree. It cannot tell
-whether the listing itself is complete: the standard keeps no copy of the listing in the
-repository, only the section's account of how it was made, so that account is left to review, and
-an Other files section written as prose is not read for paths.
+also fails a manifest that lists a path twice, whether or not the two items agree. In both files a
+path is text: an unquoted name such as `1990` or `0` is read as that text, and a path written as a
+map or list fails. The checker cannot tell whether the listing itself is complete. The standard
+keeps no copy of the listing in the repository, only the section's account of how it was made,
+which is left to review, and the checker reads no paths from an Other files section written as
+prose.
 
 A file in any other format fails the manifest check, and so does a packed file whose unpacked
 form is in any other format. Before such a file is documented, the Standard must decide how
