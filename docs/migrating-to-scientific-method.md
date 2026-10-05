@@ -294,6 +294,28 @@ A tool that parses the output sees these changes. Existing line prefixes are kep
 
 Engine releases that need a change in a restoration are listed here, newest first.
 
+### Ghidra instruction windows start only at an instruction
+
+`ReportInstructionWindow` used to start at the next instruction when no instruction started at the
+requested address, with nothing in its output to say so. It now prints an error that names what is
+at the address (an instruction that contains it, defined data, undisassembled bytes or no memory
+block) and the next instruction start, and prints no window. Rerun such a query from the
+instruction start the error names. A successful window now opens with a
+`===== up to <n> instructions from <address> =====` header, prints a `gap: no instruction from <a>
+up to <b>` line wherever the listing skips bytes, and ends with `Printed <n> instructions.` or
+`The listing ends after <k> of <n> instructions.` A tool that parses the window skips these lines.
+
+`ExportBoundedFlow` fails without writing a file when no instruction starts at its entry, where it
+used to write an export with no instructions. Its JSON gains `limitReached` and `noInstruction`.
+A test that compares an export as a whole adds both fields.
+
+`ReportInstructionContext` adds `(contains <address>)` to a header whose instruction starts before
+the requested address.
+
+`ReportInstructionWindow` and `ExportBoundedFlow` now load `scientificmethod/InstructionStart.java`,
+so run them with the package's script directory as `-scriptPath`, or copy the `scientificmethod/`
+directory along with them.
+
 ### The Ghidra cross-check rows carry the engine's side
 
 Each `callees` `ghidraCrossCheck` row that carries `ghidraFallsThrough` now also carries

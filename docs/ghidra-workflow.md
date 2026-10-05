@@ -37,8 +37,8 @@ or load. The exit code alone accepts an empty run. Treat a run as evidence only 
   others;
 - each script printed its own result lines. Most report scripts end with a count, a summary or an
   explicit "no match" line; the ones that list rows without a closing line (`ReportCallArguments`,
-  `ReportInstructionWindow`, `ReportDataBytes`, `ReportSymbolReferences` with matches) show their
-  run through a header or the rows themselves. Export scripts write their file only when the walk
+  `ReportDataBytes`, `ReportSymbolReferences` with matches) show their run through a header or the
+  rows themselves. Export scripts write their file only when the walk
   completes, so a missing file means the export failed. `ExportFunctionFingerprints` replaces an
   existing file and leaves it in place when it fails, so write it to a new path or check the log for
   its `Wrote` line;
@@ -48,6 +48,39 @@ or load. The exit code alone accepts an empty run. Treat a run as evidence only 
 
 Keep Ghidra's user settings and OSGi bundle cache in writable storage. A restricted profile that
 cannot write them fails script loading in exactly this silent way.
+
+Save logs and text reports as UTF-8, and keep the run's exit code. In Windows PowerShell 5.1, `>`
+writes UTF-16, which a UTF-8 reader rejects or reads as noise. Pipe the output to `Out-File` with an
+explicit encoding instead. `$LASTEXITCODE` still holds the analyzer's exit code after the pipeline,
+and converting each line to a string writes stderr lines as their text, without PowerShell's
+error-record formatting:
+
+```powershell
+& $analyzeHeadless @arguments 2>&1 | ForEach-Object { "$_" } |
+  Out-File -LiteralPath $log -Encoding utf8
+if ($LASTEXITCODE -ne 0) { throw "analyzeHeadless exited with $LASTEXITCODE; see $log" }
+```
+
+The same lines work in PowerShell 7. Windows PowerShell 5.1 writes a byte order mark with
+`-Encoding utf8`, so a reader of these logs accepts one.
+
+## Starting at an address
+
+`ReportInstructionWindow` and `ExportBoundedFlow` start only where an instruction starts. Given an
+address inside an instruction, in data, in undisassembled bytes or outside every memory block, they
+print an error that names what is there and the next instruction start, and print or write nothing
+else. An empty result from a range query is evidence only when the query says its start resolved:
+a script or local tool that looks up an exact start and prints nothing when the lookup fails cannot
+tell a misaligned start from a searched range with no matches. Check the start with
+`ReportInstructionContext`, which shows the instruction that contains an address and names the
+requested address when the two differ.
+
+`ReportInstructionWindow` prints a `gap:` line wherever the listing skips bytes between two
+instructions, and ends with the number printed or the point where the listing ended. A gap is
+data or bytes Ghidra did not disassemble, never a statement that the bytes are not code.
+`ExportBoundedFlow` lists flow targets where no instruction starts in `noInstruction`, and sets
+`limitReached` when it stopped at its instruction limit with flow left unread; either one means the
+export does not cover the whole flow from the entry.
 
 ## Reading capped and partial reports
 

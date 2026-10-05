@@ -24,6 +24,10 @@ public class ReportInstructionContext extends GhidraScript {
         Listing listing = currentProgram.getListing();
         for (String argument : arguments) {
             Address address = toAddr(argument);
+            if (address == null) {
+                printerr(argument + ": not an address in this program");
+                continue;
+            }
             Instruction focus = listing.getInstructionContaining(address);
             if (focus == null) {
                 printerr(argument + ": no containing instruction");
@@ -32,7 +36,10 @@ public class ReportInstructionContext extends GhidraScript {
 
             Function function = currentProgram.getFunctionManager()
                 .getFunctionContaining(focus.getAddress());
+            // An address inside an instruction shows the instruction that contains it, and the
+            // header names the requested address so the two are never read as the same.
             println("===== " + focus.getAddress()
+                + (focus.getAddress().equals(address) ? "" : " (contains " + address + ")")
                 + (function == null ? "" : " in " + function.getEntryPoint()
                     + " " + function.getName()) + " =====");
 
