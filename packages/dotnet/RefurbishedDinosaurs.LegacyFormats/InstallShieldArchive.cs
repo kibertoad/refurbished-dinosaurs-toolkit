@@ -41,9 +41,15 @@ public sealed record InstallShieldArchiveLimits(
 /// Opening reads the header, the directory table and the file table, and checks each entry: the
 /// directory it names is the one the directory table's file counts give it, its directory and name
 /// joined pass <see cref="PortableAssetPath.Relative"/>, its stored bytes lie inside the archive, a
-/// stored entry's two sizes agree, no two listed entries share a path ignoring case, and the entry
-/// count and expanded total are within <see cref="InstallShieldArchiveLimits"/>. Members are decoded
-/// only when read.
+/// stored entry's two sizes agree, and the entry count and expanded total are within
+/// <see cref="InstallShieldArchiveLimits"/>. Members are decoded only when read.
+/// </para>
+/// <para>
+/// A path, ignoring case, that two or more valid entries name lists none of them, since the archive
+/// records nothing that shows them to be one file: <see cref="PathConflicts"/> gives each with its
+/// metadata, <see cref="SkippedFiles"/> lists each as
+/// <see cref="InstallShieldSkippedFileKind.PathHeldByDifferentFiles"/>, and <see cref="OpenEntry"/>
+/// reads each by its index.
 /// </para>
 /// <para>
 /// An archive whose header sets a split flag is read when it is part 1 of a set of 1 part, so that
@@ -77,6 +83,8 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
 
     private readonly Func<Stream> openArchive;
     private readonly Dictionary<string, Member> members = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<int, Member> readable = [];
+    private readonly HashSet<string> contested = new(StringComparer.OrdinalIgnoreCase);
 
     // limits has been validated by the caller. openArchive returns a new seekable stream over the
     // whole archive each time.
@@ -146,6 +154,8 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
                 $"InstallShield 3 directories hold {declaredFiles} files, but the header declares {fileCount}.");
 
         var skipped = new List<InstallShieldSkippedFile>();
+        // The entries at each path. A path with one lists it; a path with more lists none of them.
+        var byPath = new Dictionary<string, List<Member>>(StringComparer.OrdinalIgnoreCase);
         long expandedTotal = 0;
         offset = 0;
         var directory = 0;
@@ -211,9 +221,6 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
             if (dataOffset < HeaderSize || dataOffset > archiveLength - storedSize)
                 throw new InvalidDataException(
                     $"InstallShield 3 file {index} at '{path}' lies outside the {archiveLength}-byte archive.");
-            if (members.TryGetValue(path!, out var existing))
-                throw new InvalidDataException(
-                    $"InstallShield 3 archive holds two files at '{path}' (file {existing.Index} and file {index}).");
             // The joined path is accepted, so the directory alone is too: its characters and
             // components are among the path's.
             var directoryName = directories[directory].Name;
@@ -221,7 +228,11 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
             var metadata = new InstallShieldEntryMetadata(index, directory,
                 portableDirectories[directory] ??= directoryName.Length == 0 ? string.Empty : PortableAssetPath.Relative(directoryName),
                 name.Replace('\\', '/'), InstallShieldFileGroupMembership.NoFileGroups);
-            members.Add(path!, new Member(entry, index, stored, dataOffset, storedSize, new(entry, metadata, [])));
+            var member = new Member(entry, index, stored, dataOffset, storedSize, new(entry, metadata, []));
+            readable.Add(index, member);
+            // The archive has no links or checksums, so entries at one path are different files.
+            if (byPath.TryGetValue(path!, out var files)) files.Add(member);
+            else byPath.Add(path!, [member]);
             if (expandedSize > limits.MaximumExpandedBytes - expandedTotal)
                 throw new InvalidDataException(
                     $"InstallShield 3 archive expands to more than the limit of {limits.MaximumExpandedBytes} bytes.");
@@ -231,10 +242,26 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
             throw new InvalidDataException(
                 $"InstallShield 3 file table holds {offset} bytes of entries, but the header declares {fileTable.Length}.");
 
-        SkippedFiles = skipped;
+        var conflicts = new List<InstallShieldPathConflict>();
+        foreach (var (path, files) in byPath)
+        {
+            if (files.Count == 1)
+            {
+                members.Add(path, files[0]);
+                continue;
+            }
+            var held = InstallShieldPathConflict.HeldReason(files.Select(file => file.Index));
+            skipped.AddRange(files.Select(file =>
+                new InstallShieldSkippedFile(file.Index, file.Entry.Path, InstallShieldSkippedFileKind.PathHeldByDifferentFiles, held)));
+            conflicts.Add(new(path, files.Select(file => file.Metadata).ToArray(), []));
+            contested.Add(path);
+        }
+
+        SkippedFiles = skipped.OrderBy(file => file.Index).ToArray();
         var listed = members.Values.OrderBy(member => member.Entry.Path, StringComparer.OrdinalIgnoreCase).ToArray();
         Files = listed.Select(member => member.Entry).ToArray();
         Members = listed.Select(member => member.Metadata).ToArray();
+        PathConflicts = conflicts.OrderBy(conflict => conflict.Path, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
     /// <inheritdoc />
@@ -243,7 +270,10 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
     public override string? Label => null;
     /// <inheritdoc />
     public override IReadOnlyList<ContentSourceEntry> Files { get; }
-    /// <summary>File-table entries the archive marks invalid, in table order. They are not listed.</summary>
+    /// <summary>
+    /// File-table entries that are not listed, in table order: entries the archive marks invalid, and
+    /// the entries at a path that holds more than one (<see cref="PathConflicts"/>).
+    /// </summary>
     public IReadOnlyList<InstallShieldSkippedFile> SkippedFiles { get; }
 
     /// <summary>
@@ -251,9 +281,20 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
     /// <see cref="Files"/>, in the shape <see cref="InstallShieldCabinetSource.Members"/> gives: each
     /// entry's index, directory index, directory and name. The archive format has no file groups, so
     /// every membership is <see cref="InstallShieldFileGroupMembershipKind.NoFileGroups"/>, and
-    /// <see cref="InstallShieldMember.SharedBy"/> is empty, since two entries at one path fail the open.
+    /// <see cref="InstallShieldMember.SharedBy"/> is empty, since the format has no links or checksums.
     /// </summary>
     public IReadOnlyList<InstallShieldMember> Members { get; }
+
+    /// <summary>
+    /// The paths, ignoring case, that more than one entry names, ordered by path. The archive has no
+    /// links or checksums, so each entry is a different file: <see cref="Files"/> lists none of them,
+    /// each is in <see cref="SkippedFiles"/> as
+    /// <see cref="InstallShieldSkippedFileKind.PathHeldByDifferentFiles"/>, and
+    /// <see cref="OpenEntry"/> reads it by index. Their data was checked as a listed member's is and
+    /// counts toward <see cref="InstallShieldArchiveLimits.MaximumExpandedBytes"/>. Empty when every
+    /// path names one entry.
+    /// </summary>
+    public IReadOnlyList<InstallShieldPathConflict> PathConflicts { get; }
 
     /// <summary>Finds a listed member by path, ignoring case, as <see cref="TryGetFile"/> does.</summary>
     /// <exception cref="InvalidDataException"><paramref name="relativePath"/> is not accepted by <see cref="PortableAssetPath.Relative"/>.</exception>
@@ -289,11 +330,30 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
     /// <exception cref="InvalidDataException"><paramref name="relativePath"/> is not accepted by <see cref="PortableAssetPath.Relative"/>.</exception>
     public override Stream OpenRead(string relativePath)
     {
-        if (!members.TryGetValue(PortableAssetPath.Relative(relativePath), out var member))
-            throw new FileNotFoundException("InstallShield 3 archive has no such file.", relativePath);
-        return new InstallShieldArchiveMemberStream(
-            member.Entry.Path, member.Entry.Size, member.Stored, member.DataOffset, member.StoredSize, openArchive);
+        var path = PortableAssetPath.Relative(relativePath);
+        if (!members.TryGetValue(path, out var member))
+            throw new FileNotFoundException(contested.Contains(path)
+                ? "InstallShield 3 archive holds different files at this path; PathConflicts lists them, and OpenEntry reads each by its index."
+                : "InstallShield 3 archive has no such file.", relativePath);
+        return Open(member);
     }
+
+    /// <summary>
+    /// Opens the file a file-table entry holds, by the entry's index, as <see cref="OpenRead"/> opens a
+    /// member: a listed member's entry, or an entry of <see cref="PathConflicts"/>.
+    /// </summary>
+    /// <exception cref="FileNotFoundException">
+    /// The index is outside the file table, or the archive marks the entry invalid.
+    /// </exception>
+    public Stream OpenEntry(int index)
+    {
+        if (!readable.TryGetValue(index, out var member))
+            throw new FileNotFoundException($"InstallShield 3 archive file {index} holds no file the source reads.");
+        return Open(member);
+    }
+
+    private InstallShieldArchiveMemberStream Open(Member member) => new(
+        member.Entry.Path, member.Entry.Size, member.Stored, member.DataOffset, member.StoredSize, openArchive);
 
     /// <inheritdoc />
     public override void Dispose() { }

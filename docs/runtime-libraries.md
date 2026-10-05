@@ -70,7 +70,9 @@ LegacyFormats parts of it:
   not list are in `SkippedFiles` with a reason: entries marked invalid or without a name or data
   (whose names need not read), version 6 links to them, entries at a listed member's path that
   share its data, version 6 copies of a listed member at the same path with the same size and
-  MD5, and entries stored outside the cabinet's volumes, each with a `Kind` to test. The header
+  MD5, entries stored outside the cabinet's volumes, and the entries at a path that holds
+  different files, each with a `Kind` to test. Such a path lists none of its files: `PathConflicts`
+  gives each with its metadata, and `OpenEntry` reads it by its file-table index. The header
   does not say whether compressed data is in length-prefixed chunks or delimited by `00 00 FF FF`
   markers (Unshield's `-O`), so the caller passes an `InstallShieldCompressedFormat`; the reader
   never switches forms on its own. Decode into the staging directory and verify the output there as for
@@ -424,3 +426,23 @@ unchanged; code compiled against the previous release is rebuilt. The default re
 members as before, and a chunk that does not read now says so with a message naming
 `MarkerDelimitedChunks`. A set whose members read under `unshield -O` is opened with
 `InstallShieldCompressedFormat.MarkerDelimitedChunks`.
+
+### Different files at one InstallShield path
+
+An InstallShield cabinet set or InstallShield 3 archive with two or more different files at one
+path, ignoring case, now opens. It used to fail the open with `InvalidDataException`:
+"InstallShield cabinet holds two different files at 'P' (file A and file B)", or for an archive
+"InstallShield 3 archive holds two files at 'P'". Entries count as one file only as before: a
+version 6 link to the other's data, or a version 6 copy with the same expanded size and MD5.
+
+`Files` lists none of the files at such a path, so `TryGetFile`, `TryGetMember` and `OpenRead`
+do not find it, and the source does not choose one. Every entry at the path goes to `SkippedFiles`
+with the new kind `PathHeldByDifferentFiles`, except entries stored outside the cabinet, which keep
+`StoredOutsideCabinet`. `PathConflicts` lists each such path with its files (`InstallShieldMember`,
+with metadata and file groups) and the entries stored outside, and `OpenEntry(index)` reads a file
+by its file-table index.
+
+Code that took the open's failure to mean the set could not be used checks `PathConflicts`
+instead. Code that extracts `Files` and expects one of these paths finds it missing, and picks the
+file to install from `PathConflicts`, for example by file group. Code with an exhaustive `switch`
+over `InstallShieldSkippedFileKind` adds the new value.

@@ -251,26 +251,6 @@ public sealed class InstallShieldOutsideStorageTests
         }
     }
 
-    [Theory]
-    [InlineData(0)]
-    [InlineData(5)]
-    [InlineData(6)]
-    public void RefusesADifferentFileAtThePathOfAFileStoredOutside(int major)
-    {
-        var root = TemporaryDirectory();
-        try
-        {
-            SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(major,
-                [new("", "same.bin", Bytes(4000, 1), Outside: true), new("", "same.bin", Bytes(4000, 2))]));
-            Assert.Contains("two different files at 'same.bin'",
-                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"))).Message);
-        }
-        finally
-        {
-            Directory.Delete(root, true);
-        }
-    }
-
     // The offset of a file descriptor's data offset field in a header of major version 0, 5 or 6.
     private static int DataOffsetField(byte[] header, int major, int index)
     {

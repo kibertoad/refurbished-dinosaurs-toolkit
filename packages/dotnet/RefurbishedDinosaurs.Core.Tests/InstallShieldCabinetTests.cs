@@ -393,10 +393,12 @@ public sealed class InstallShieldCabinetTests
         root = TemporaryDirectory();
         try
         {
+            // Different files at one path are reported, not listed (InstallShieldPathConflictTests).
             SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(6,
                 [new("Data", "same.bin", Noise), new("data", "SAME.BIN", Text)]));
-            Assert.Contains("two different files",
-                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"))).Message);
+            using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
+            Assert.Empty(source.Files);
+            Assert.Equal([0, 1], Assert.Single(source.PathConflicts).Files.Select(file => file.Metadata.Index));
         }
         finally
         {
@@ -683,27 +685,6 @@ public sealed class InstallShieldCabinetTests
             using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
             Assert.Equal(["Data/same.bin"], source.Files.Select(entry => entry.Path));
             Assert.Equal(1, Assert.Single(source.SkippedFiles).Index);
-        }
-        finally
-        {
-            Directory.Delete(root, true);
-        }
-    }
-
-    [Theory]
-    [InlineData(0, 7)]
-    [InlineData(5, 7)]
-    [InlineData(6, 8)]
-    public void RefusesDuplicateEntriesAtOnePathThatAreNotShownIdentical(int major, int secondSeed)
-    {
-        // Versions 0 and 5 record no MD5, so identical bytes still fail; in version 6 the MD5s differ.
-        var root = TemporaryDirectory();
-        try
-        {
-            SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(major,
-                [new("Data", "same.bin", Noise), new("Data", "same.bin", Bytes(Noise.Length, secondSeed))]));
-            Assert.Contains("two different files",
-                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"))).Message);
         }
         finally
         {

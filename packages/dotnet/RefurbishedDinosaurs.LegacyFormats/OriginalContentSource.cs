@@ -292,8 +292,8 @@ public abstract class OriginalContentSource : IDisposable
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="compressedFormat"/> is not a defined value.</exception>
     /// <exception cref="FileNotFoundException">The header or a volume a member needs does not exist.</exception>
     /// <exception cref="InvalidDataException">
-    /// The header or a volume is truncated or malformed, a member's path is not accepted by <see cref="PortableAssetPath.Relative"/>, two different
-    /// members share a path, or the set exceeds <paramref name="limits"/>.
+    /// The header or a volume is truncated or malformed, a member's path is not accepted by <see cref="PortableAssetPath.Relative"/>, or the set
+    /// exceeds <paramref name="limits"/>.
     /// </exception>
     /// <exception cref="NotSupportedException">The header's InstallShield major version is not 0, 5 or 6.</exception>
     public static InstallShieldCabinetSource OpenInstallShieldCabinet(
@@ -325,8 +325,8 @@ public abstract class OriginalContentSource : IDisposable
     /// <exception cref="FileNotFoundException">The header or a volume a member needs is not in <paramref name="container"/>.</exception>
     /// <exception cref="InvalidDataException">
     /// <paramref name="headerPath"/> is not accepted by <see cref="PortableAssetPath.Relative"/>, the
-    /// header or a volume is truncated or malformed, a member's path is not accepted by <see cref="PortableAssetPath.Relative"/>, two different
-    /// members share a path, or the set exceeds <paramref name="limits"/>.
+    /// header or a volume is truncated or malformed, a member's path is not accepted by <see cref="PortableAssetPath.Relative"/>, or the set
+    /// exceeds <paramref name="limits"/>.
     /// </exception>
     /// <exception cref="NotSupportedException">The header's InstallShield major version is not 0, 5 or 6.</exception>
     public static InstallShieldCabinetSource OpenInstallShieldCabinet(
@@ -358,7 +358,7 @@ public abstract class OriginalContentSource : IDisposable
     /// <exception cref="InvalidDataException">
     /// The file is not an InstallShield 3 archive, its header or tables are truncated or malformed, a
     /// member's path is not accepted by <see cref="PortableAssetPath.Relative"/> or its data lies outside the archive, a member of a split archive
-    /// of one part names another part, two members share a path, or the archive exceeds
+    /// of one part names another part, or the archive exceeds
     /// <paramref name="limits"/>.
     /// </exception>
     /// <exception cref="NotSupportedException">

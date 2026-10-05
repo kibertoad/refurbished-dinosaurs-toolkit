@@ -104,6 +104,15 @@ public enum InstallShieldSkippedFileKind
     /// same way, so the reason gives the offset and the volume.
     /// </summary>
     StoredOutsideCabinet,
+
+    /// <summary>
+    /// The entry's path, ignoring case, holds two or more files that the source cannot show to be the
+    /// same, so the path lists none of them. The reason names the first entry of each file. The
+    /// source's <c>PathConflicts</c> gives each file with its metadata, and <c>OpenEntry</c> reads it by
+    /// the entry's index. An entry stored outside the cabinet at such a path keeps
+    /// <see cref="StoredOutsideCabinet"/>.
+    /// </summary>
+    PathHeldByDifferentFiles,
 }
 
 /// <summary>
@@ -143,8 +152,12 @@ public sealed record InstallShieldSkippedFile(int Index, string? Path, InstallSh
 /// first in table order is listed, and the other goes to <see cref="SkippedFiles"/>. In a version 6
 /// set, two entries stored apart at one path with the same expanded size and the same MD5 are taken
 /// as one file: the first in table order is listed, and the other goes to <see cref="SkippedFiles"/>
-/// without its stored bytes being read. Any other pair of entries at one
-/// path fails the open, and so does every such pair in a version 5 set, which records no MD5.
+/// without its stored bytes being read. Any other pair of entries at one path, and every such pair
+/// in a version 5 set, which records no MD5, holds different files. Such a path lists none of them:
+/// <see cref="PathConflicts"/> gives each file with its metadata, every entry at the path goes to
+/// <see cref="SkippedFiles"/> as <see cref="InstallShieldSkippedFileKind.PathHeldByDifferentFiles"/>,
+/// and <see cref="OpenEntry"/> reads each file by an entry's index. The reader never picks one of
+/// them for the path.
 /// </para>
 /// <para>
 /// An entry whose data lies outside the cabinet's volumes is not listed: it goes to
@@ -201,6 +214,9 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
 
     private readonly Func<int, Stream> openVolume;
     private readonly Dictionary<string, Member> members = new(StringComparer.OrdinalIgnoreCase);
+    // The file each entry's index reads: a listed member's entries and a contested path's files inside the cabinet.
+    private readonly Dictionary<int, Member> readable = [];
+    private readonly HashSet<string> contested = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, VolumeHeader> volumes = [];
     // Major versions 0 and 5 share the file descriptor and volume header layout.
     private readonly bool version5Layout;
@@ -281,9 +297,10 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 : ReadVersion6Descriptor(reader, table + descriptorsOffset + (long)index * Version6DescriptorSize);
 
         var skipped = new List<InstallShieldSkippedFile>();
-        // Entries whose data lies outside the volumes, by path. They are not listed, but they still
-        // take part in the rule that one path holds one file.
-        var outside = new Dictionary<string, Member>(StringComparer.OrdinalIgnoreCase);
+        // The different files at each path, in the order their first entries come in the table. A
+        // path that ends up with one file lists it, or skips it when it is stored outside; a path
+        // with more lists none of them, and each one held inside the cabinet is read by index.
+        var byPath = new Dictionary<string, List<Member>>(StringComparer.OrdinalIgnoreCase);
         long expandedTotal = 0;
         for (var index = 0; index < descriptors.Length; index++)
         {
@@ -312,7 +329,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 continue;
             }
 
-            // A listed entry's path has to read and be relative, or the open fails.
+            // Any other entry's path has to read and be relative, or the open fails.
             var (path, directoryName, name) = EntryPath(index, file);
 
             var dataIndex = ResolveLink(descriptors, index);
@@ -331,65 +348,61 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
             // Version 0 and 5 descriptors carry no MD5 the reader checks, so theirs is null.
             var md5 = data.Md5;
             var entryName = new EntryName(index, file.DirectoryIndex, directoryName, name);
-            bool SameFile(Member existing) => existing.Md5 is not null && md5 is not null &&
-                existing.Entry.Size == data.ExpandedSize && existing.Md5.AsSpan().SequenceEqual(md5);
-            if (members.TryGetValue(path, out var existing))
+            if (!byPath.TryGetValue(path, out var files)) byPath.Add(path, files = []);
+
+            var linked = files.Find(existing => existing.DataIndex == dataIndex);
+            if (linked is not null)
             {
-                if (existing.DataIndex == dataIndex)
-                {
-                    skipped.Add(new(index, path, InstallShieldSkippedFileKind.SharesListedData,
-                        $"The file shares the data of file {existing.Index} at '{existing.Entry.Path}', which is listed."));
-                    existing.SharedBy.Add(entryName);
-                    continue;
-                }
-                // Version 6 records each file's MD5, so two copies stored apart can be told to be the
-                // same file. The copy listed is the one checked when read; the other is not read, and
-                // neither are its volumes, so a duplicate in a missing or damaged volume is still skipped.
-                if (SameFile(existing))
-                {
-                    skipped.Add(new(index, path, InstallShieldSkippedFileKind.DuplicatesListedMember,
-                        $"The file duplicates file {existing.Index} at '{existing.Entry.Path}': same expanded size and MD5."));
-                    existing.SharedBy.Add(entryName);
-                    continue;
-                }
-                throw TwoFiles(path, existing.DataIndex, dataIndex);
+                linked.SharedBy.Add(entryName);
+                linked.Skipped.Add(linked.Segments is null
+                    ? new(new(index, path, InstallShieldSkippedFileKind.StoredOutsideCabinet,
+                        $"The file shares the data of file {linked.Index} at '{linked.Entry.Path}', which is stored outside the cabinet."), null)
+                    : new(new(index, path, InstallShieldSkippedFileKind.SharesListedData,
+                        $"The file shares the data of file {linked.Index} at '{linked.Entry.Path}', which is listed."),
+                        $"The file shares the data of file {linked.Index} at '{linked.Entry.Path}'."));
+                continue;
             }
-            Member? outsideCopy = null;
-            if (outside.TryGetValue(path, out var stored))
+            // Version 6 records each file's MD5, so two copies stored apart can be told to be the
+            // same file. The copy kept is the one checked when read; the other is not read, and
+            // neither are its volumes, so a duplicate in a missing or damaged volume is still skipped.
+            var same = files.Find(existing => existing.Md5 is not null && md5 is not null &&
+                existing.Entry.Size == data.ExpandedSize && existing.Md5.AsSpan().SequenceEqual(md5));
+            if (same is { Segments: not null })
             {
-                if (stored.DataIndex == dataIndex)
-                {
-                    skipped.Add(new(index, path, InstallShieldSkippedFileKind.StoredOutsideCabinet,
-                        $"The file shares the data of file {stored.Index} at '{stored.Entry.Path}', which is stored outside the cabinet."));
-                    stored.SharedBy.Add(entryName);
-                    continue;
-                }
-                // A version 6 copy of a file stored outside is listed when its own data is inside.
-                if (!SameFile(stored)) throw TwoFiles(path, stored.DataIndex, dataIndex);
-                outsideCopy = stored;
+                var duplicate = $"The file duplicates file {same.Index} at '{same.Entry.Path}': same expanded size and MD5.";
+                same.SharedBy.Add(entryName);
+                same.Skipped.Add(new(new(index, path, InstallShieldSkippedFileKind.DuplicatesListedMember, duplicate), duplicate));
+                continue;
             }
 
             var segments = Segments(dataIndex, data, descriptors.Length, out var outsideVolume);
             var member = new Member(
                 new ContentSourceEntry(path, data.ExpandedSize), index, dataIndex, (data.Flags & CompressedFlag) != 0,
-                (data.Flags & ObfuscatedFlag) != 0, md5, segments ?? [], entryName, []);
+                (data.Flags & ObfuscatedFlag) != 0, md5, segments, entryName);
             if (segments is null)
             {
                 var evidence = $"its data offset, {data.DataOffset}, is the length of volume {outsideVolume}, which would hold it";
-                skipped.Add(new(index, path, InstallShieldSkippedFileKind.StoredOutsideCabinet,
-                    outsideCopy is not null
-                        ? $"The file duplicates file {outsideCopy.Index} at '{outsideCopy.Entry.Path}' (same expanded size and MD5), and is also stored outside the cabinet: {evidence}."
+                var record = new InstallShieldSkippedFile(index, path, InstallShieldSkippedFileKind.StoredOutsideCabinet,
+                    same is not null
+                        ? $"The file duplicates file {same.Index} at '{same.Entry.Path}' (same expanded size and MD5), and is also stored outside the cabinet: {evidence}."
                         : dataIndex == index
                             ? $"The file is stored outside the cabinet: {evidence}."
-                            : $"The file links to file {dataIndex}, which is stored outside the cabinet: {evidence}."));
-                if (outsideCopy is not null) outsideCopy.SharedBy.Add(entryName);
-                else outside.Add(path, member);
+                            : $"The file links to file {dataIndex}, which is stored outside the cabinet: {evidence}.");
+                if (same is not null) same.SharedBy.Add(entryName);
+                else files.Add(member);
+                (same ?? member).Skipped.Add(new(record, null));
                 continue;
             }
-            // The entries stored outside at this path hold the same file, so the member listed here
-            // shares them, as it would had they come after it in the table.
-            if (outsideCopy is not null) member.SharedBy.AddRange(outsideCopy.SharedBy.Prepend(outsideCopy.Listed));
-            members.Add(path, member);
+            if (same is not null)
+            {
+                // A version 6 copy of a file stored outside is read when its own data is inside. The
+                // entries stored outside hold the same file, so it takes their place and shares them,
+                // as it would had they come after it in the table.
+                member.SharedBy.AddRange(same.SharedBy.Prepend(same.Listed));
+                member.Skipped.AddRange(same.Skipped);
+                files[files.IndexOf(same)] = member;
+            }
+            else files.Add(member);
             // Compared this way round, the total cannot overflow even when the limit is near long.MaxValue.
             if (data.ExpandedSize > limits.MaximumExpandedBytes - expandedTotal)
                 throw new InvalidDataException(
@@ -397,23 +410,62 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
             expandedTotal += data.ExpandedSize;
         }
 
-        SkippedFiles = skipped;
+        var conflicts = new List<(string Path, List<Member> Files)>();
+        foreach (var (path, files) in byPath)
+        {
+            if (files.Count == 1)
+            {
+                var only = files[0];
+                skipped.AddRange(only.Skipped.Select(entry => entry.Record));
+                if (only.Segments is not null) members.Add(path, only);
+                continue;
+            }
+            conflicts.Add((path, files));
+            // A version 6 copy inside the cabinet that took the place of entries stored outside is read
+            // from its own entry, but the file's first entry is the first of those.
+            var held = InstallShieldPathConflict.HeldReason(
+                files.Select(file => file.SharedBy.Prepend(file.Listed).Min(entry => entry.Index)));
+            foreach (var file in files)
+            {
+                if (file.Segments is not null)
+                    skipped.Add(new(file.Index, file.Entry.Path, InstallShieldSkippedFileKind.PathHeldByDifferentFiles, held));
+                // Entries stored outside keep that kind, since it is why they are not read.
+                skipped.AddRange(file.Skipped.Select(entry => entry.Contested is null ? entry.Record
+                    : entry.Record with { Kind = InstallShieldSkippedFileKind.PathHeldByDifferentFiles, Reason = $"{held} {entry.Contested}" }));
+            }
+        }
+
+        SkippedFiles = skipped.OrderBy(file => file.Index).ToArray();
         var listed = members.Values.OrderBy(member => member.Entry.Path, StringComparer.OrdinalIgnoreCase).ToArray();
         Files = listed.Select(member => member.Entry).ToArray();
+        conflicts.Sort((left, right) => StringComparer.OrdinalIgnoreCase.Compare(left.Path, right.Path));
 
         // The file groups are read last, from the header already open, so a set that opens without
-        // them opens the same way with them: what does not read is reported, never thrown.
+        // them opens the same way with them: what does not read is reported, never thrown. They are
+        // read for every entry of a listed member and of a contested path.
+        var described = listed.Concat(conflicts.SelectMany(conflict => conflict.Files)).ToArray();
         var groupTable = InstallShieldFileGroupTable.Read(reader, descriptor, MajorVersion, descriptors.Length, limits);
-        var (memberships, groupProblem) = groupTable.Memberships(listed
+        var (memberships, groupProblem) = groupTable.Memberships(described
             .SelectMany(member => member.SharedBy.Prepend(member.Listed)).Select(entry => entry.Index)
             .Order().ToArray());
         FileGroups = groupTable.Groups;
         FileGroupProblem = groupProblem;
         InstallShieldEntryMetadata Metadata(EntryName entry) => new(
             entry.Index, entry.DirectoryIndex, entry.Directory, entry.Name, memberships[entry.Index]);
-        foreach (var member in listed)
+        foreach (var member in described)
+        {
             member.Metadata = new(member.Entry, Metadata(member.Listed), member.SharedBy.Select(Metadata).ToArray());
+            if (member.Segments is null) continue;
+            foreach (var entry in member.SharedBy.Prepend(member.Listed)) readable.Add(entry.Index, member);
+        }
         Members = listed.Select(member => member.Metadata!).ToArray();
+        PathConflicts = conflicts.Select(conflict => new InstallShieldPathConflict(
+            conflict.Path,
+            conflict.Files.Where(file => file.Segments is not null).Select(file => file.Metadata!).ToArray(),
+            conflict.Files.Where(file => file.Segments is null)
+                .SelectMany(file => file.SharedBy.Prepend(file.Listed)).OrderBy(entry => entry.Index).Select(Metadata).ToArray()))
+            .ToArray();
+        foreach (var conflict in PathConflicts) contested.Add(conflict.Path);
     }
 
     /// <inheritdoc />
@@ -438,8 +490,9 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     /// path is <see langword="null"/> when they do not read), version 6 entries whose link ends at an
     /// entry the cabinet marks invalid or that has no data offset, entries that share a listed member's data
     /// at the same path, version 6 entries stored apart from a listed member at the same path
-    /// with the same expanded size and MD5, and entries stored outside the cabinet's volumes. Each
-    /// reason names the entry it refers to.
+    /// with the same expanded size and MD5, entries stored outside the cabinet's volumes, and the
+    /// entries at a path that holds different files (<see cref="PathConflicts"/>). Each reason names
+    /// the entries it refers to.
     /// </summary>
     public IReadOnlyList<InstallShieldSkippedFile> SkippedFiles { get; }
 
@@ -450,6 +503,17 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     /// <see cref="Files"/> or <see cref="OpenRead"/>: a member's path is its directory and name joined.
     /// </summary>
     public IReadOnlyList<InstallShieldMember> Members { get; }
+
+    /// <summary>
+    /// The paths, ignoring case, that hold two or more files the source cannot show to be the same,
+    /// ordered by path. <see cref="Files"/> lists none of their files, and every entry at them is in
+    /// <see cref="SkippedFiles"/>. Each file the cabinet holds inside its volumes is given with its
+    /// entries' metadata and file groups, and <see cref="OpenEntry"/> reads it by index; its data was
+    /// checked to lie inside the volumes and counts toward
+    /// <see cref="InstallShieldCabinetLimits.MaximumExpandedBytes"/>, as a listed member's does.
+    /// Empty when every path holds one file.
+    /// </summary>
+    public IReadOnlyList<InstallShieldPathConflict> PathConflicts { get; }
 
     /// <summary>
     /// The file groups the cabinet descriptor lists, in the order Unshield reads them: its 71 lists in
@@ -504,12 +568,37 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     /// <exception cref="InvalidDataException"><paramref name="relativePath"/> is not accepted by <see cref="PortableAssetPath.Relative"/>.</exception>
     public override Stream OpenRead(string relativePath)
     {
-        if (!members.TryGetValue(PortableAssetPath.Relative(relativePath), out var member))
-            throw new FileNotFoundException("InstallShield cabinet has no such file.", relativePath);
-        return new InstallShieldMemberStream(
-            member.Entry.Path, member.Entry.Size, member.Compressed ? CompressedFormat : null, member.Obfuscated,
-            member.Md5, member.Segments, openVolume);
+        var path = PortableAssetPath.Relative(relativePath);
+        if (!members.TryGetValue(path, out var member))
+            throw new FileNotFoundException(contested.Contains(path)
+                ? "InstallShield cabinet holds different files at this path; PathConflicts lists them, and OpenEntry reads each one held inside the cabinet by its index."
+                : "InstallShield cabinet has no such file.", relativePath);
+        return Open(member);
     }
+
+    /// <summary>
+    /// Opens the file a file-table entry holds, by the entry's index, as <see cref="OpenRead"/> opens a
+    /// member. The entry is one of a listed member (<see cref="InstallShieldMember.Metadata"/> or
+    /// <see cref="InstallShieldMember.SharedBy"/> in <see cref="Members"/>), or of a file of a path that
+    /// holds different files (<see cref="InstallShieldPathConflict.Files"/>). An entry in
+    /// <see cref="InstallShieldMember.SharedBy"/> reads the bytes of the member it belongs to.
+    /// </summary>
+    /// <exception cref="FileNotFoundException">
+    /// No such entry holds a file the source reads: the index is outside the file table; the entry is
+    /// marked invalid, has no name or data offset, or links to an entry that cannot be read; or it is
+    /// stored outside the cabinet and no version 6 copy inside matches it. A volume being gone also
+    /// throws.
+    /// </exception>
+    public Stream OpenEntry(int index)
+    {
+        if (!readable.TryGetValue(index, out var member))
+            throw new FileNotFoundException($"InstallShield cabinet file {index} holds no file the source reads.");
+        return Open(member);
+    }
+
+    private InstallShieldMemberStream Open(Member member) => new(
+        member.Entry.Path, member.Entry.Size, member.Compressed ? CompressedFormat : null, member.Obfuscated,
+        member.Md5, member.Segments!, openVolume);
 
     /// <inheritdoc />
     public override void Dispose() { }
@@ -571,9 +660,6 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         }
         throw new InvalidDataException($"InstallShield file {index} is part of a link cycle.");
     }
-
-    private static InvalidDataException TwoFiles(string path, int first, int second) =>
-        new($"InstallShield cabinet holds two different files at '{path}' (file {first} and file {second}).");
 
     // Where a member's stored bytes lie, following the volume headers as Unshield does. Returns null,
     // with the volume in outsideVolume, when the member is stored outside the cabinet: as Unshield
@@ -678,12 +764,20 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         long Length, uint FirstIndex, uint LastIndex, long FirstOffset, long FirstExpanded, long FirstCompressed,
         long LastOffset, long LastExpanded, long LastCompressed);
 
+    // One file a path holds, from the first entry that holds it (Listed). Segments is null when it is
+    // stored outside the cabinet. Skipped holds the records of its other entries, and of the first
+    // when it is stored outside, each with the reason to give when its path holds other files too
+    // (null keeps the record as it is).
     private sealed record Member(
         ContentSourceEntry Entry, int Index, int DataIndex, bool Compressed, bool Obfuscated, byte[]? Md5,
-        InstallShieldSegment[] Segments, EntryName Listed, List<EntryName> SharedBy)
+        InstallShieldSegment[]? Segments, EntryName Listed)
     {
+        public List<EntryName> SharedBy { get; } = [];
+        public List<SkippedEntry> Skipped { get; } = [];
         public InstallShieldMember? Metadata { get; set; }
     }
+
+    private sealed record SkippedEntry(InstallShieldSkippedFile Record, string? Contested);
 
     private sealed record EntryName(int Index, int DirectoryIndex, string Directory, string Name);
 }
