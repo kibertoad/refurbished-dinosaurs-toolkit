@@ -33,6 +33,9 @@ function run(root: string, ...args: string[]) {
 // The skipped step that a root without a fork point adds to the result line, as a pattern.
 const NO_FORK_POINT =
   "comparison with the base branch \\(HEAD has no merge-base with origin/main, fetch it with enough history or pass --base\\)";
+// The skipped step that a run without git on PATH adds to the result line, as a pattern.
+const NO_GIT =
+  "comparison with the base branch \\(git was not found to look up HEAD's merge-base with origin/main, install it or pass --base\\)";
 
 // A copy of the fixture with edit(root) applied, removed after the test.
 function broken(t: TestContext, edit: (root: string) => void) {
@@ -624,7 +627,7 @@ test(
 
 // Runs the checker without --no-ksy, with KSC set to ksc or unset, and with a PATH that holds only
 // an empty directory, so that no compiler is found on it. Nor is git, so the comparison with the
-// base branch is always skipped.
+// base branch is always skipped, naming the missing git.
 function runKaitai(t: TestContext, root: string, ksc: string | null, ...args: string[]) {
   const emptyPath = mkdtempSync(join(tmpdir(), "no-ksc-"));
   t.after(() => rmSync(emptyPath, { recursive: true, force: true }));
@@ -662,7 +665,7 @@ test("a missing compiler passes with the Kaitai compilation named as skipped", (
   assert.match(
     output,
     new RegExp(
-      `spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\\. Skipped: Kaitai compilation of 1 definition \\(no Kaitai Struct compiler found, set KSC or install kaitai-struct-compiler\\); ${NO_FORK_POINT}\\.`,
+      `spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\\. Skipped: Kaitai compilation of 1 definition \\(no Kaitai Struct compiler found, set KSC or install kaitai-struct-compiler\\); ${NO_GIT}\\.`,
     ),
   );
   assert.doesNotMatch(output, /spec check passed:/);
@@ -686,7 +689,7 @@ test("a compiler that runs leaves the Kaitai compilation out of the skipped step
     assert.match(
       output,
       new RegExp(
-        `spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\\. Skipped: ${NO_FORK_POINT}\\.$`,
+        `spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\\. Skipped: ${NO_GIT}\\.$`,
         "m",
       ),
     );
@@ -723,7 +726,7 @@ test("a spec with no Kaitai definitions skips no compilation when no compiler is
   assert.match(
     output,
     new RegExp(
-      `spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\\. Skipped: ${NO_FORK_POINT}\\.$`,
+      `spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\\. Skipped: ${NO_GIT}\\.$`,
       "m",
     ),
   );

@@ -73,7 +73,7 @@ jobs:
 
 On a pull request, the check fails when the pull request deletes a spec ID, area or deviation that
 exists where it forked from its base branch. The action finds that fork point itself: it fetches
-`origin/$GITHUB_BASE_REF` and HEAD with 50 commits of history, then 500, then all of it, until the
+`origin/$GITHUB_BASE_REF` and HEAD with 50 commits of history beyond what the checkout holds, then 500, then all of it, until the
 merge-base resolves, and runs the check with `--require-base`, so a fork point that still does not
 resolve fails the check. The fetch runs `git fetch origin` without the checkout's credentials when
 `persist-credentials` is `false`, which works for a public repository. A private repository either
@@ -254,8 +254,9 @@ Without `--base`, the check compares with where HEAD forked from `origin/$GITHUB
 `origin/main` when that variable is unset. When that fork point does not resolve, because the
 directory is not in a git repository, the clone is shallow, or the branch was never fetched, the
 result line names the skipped step, such as `Skipped: comparison with the base branch (HEAD has no
-merge-base with origin/main, fetch it with enough history or pass --base).` Pass `--require-base`
-where the comparison must run: the same case then fails the check with exit code 1.
+merge-base with origin/main, fetch it with enough history or pass --base).` Without git on `PATH`
+the skipped step names the missing git instead. Pass `--require-base` where the comparison must
+run: either case then fails the check with exit code 1.
 
 Each problem is one line that starts with the path it concerns, or `spec` for a problem with the
 spec as a whole, such as a deleted ID. When the problem breaks a numbered rule of the standard, the

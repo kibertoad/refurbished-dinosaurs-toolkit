@@ -26,8 +26,9 @@ Without `--base`, the checker compares the spec with where HEAD forked from `ori
 or from `origin/main` when that variable is unset. Outside a git repository, in a shallow clone, or
 when that branch was never fetched, the fork point does not resolve and the comparison does not
 run. The result line then names it, such as `Skipped: comparison with the base branch (HEAD has no
-merge-base with origin/main, fetch it with enough history or pass --base).` With `--require-base`,
-the same case is a problem and the run fails.
+merge-base with origin/main, fetch it with enough history or pass --base).` Without git on `PATH`
+the skipped step names the missing git instead. With `--require-base`, either case is a problem and
+the run fails.
 
 A problem that breaks a numbered rule of the standard ends with the rule's label in brackets, such
 as `[STATUS-14]`. The standard opens that rule with the heading `###### STATUS-14`, anchored at

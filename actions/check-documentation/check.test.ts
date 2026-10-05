@@ -51,10 +51,9 @@ function tempDir(t: TestContext, prefix: string) {
 // and whose feature branch forks from the base commit and adds `ahead` commits. Returns the
 // origin's path and the base commit. fast-import writes every commit in one process, so a long
 // history is cheap.
-function origin(t: TestContext, ahead: number, { shaWants = true } = {}) {
+function origin(t: TestContext, ahead: number) {
   const dir = tempDir(t, "origin-");
   git(dir, "init", "-q", "-b", "main");
-  if (shaWants) git(dir, "config", "uploadpack.allowAnySHA1InWant", "true");
   let mark = 0;
   const commit = (ref: string, message: string, from?: string) => {
     mark++;
@@ -74,13 +73,14 @@ function origin(t: TestContext, ahead: number, { shaWants = true } = {}) {
   return { dir, base: git(dir, "rev-parse", "main~3") };
 }
 
-// Clones one branch of the origin with one commit of history, as actions/checkout does by default.
-function shallowClone(t: TestContext, originDir: string, branch: string) {
+// Clones one branch of the origin with `depth` commits of history, by default one, as actions/checkout
+// does.
+function shallowClone(t: TestContext, originDir: string, branch: string, depth = 1) {
   const dir = join(tempDir(t, "clone-"), "repo");
   const url = pathToFileURL(originDir).href;
   const result = spawnSync(
     "git",
-    ["-c", "core.autocrlf=false", "clone", "-q", "--depth", "1", "--no-tags", "--branch", branch, url, dir],
+    ["-c", "core.autocrlf=false", "clone", "-q", "--depth", String(depth), "--no-tags", "--branch", branch, url, dir],
     { encoding: "utf8" },
   );
   assert.equal(result.status, 0, result.stderr);
@@ -118,12 +118,33 @@ test("fetch-base.sh fetches the whole history for a fork point beyond 500 commit
   assert.equal(mergeBase(clone, "main"), base, output);
 });
 
-test("fetch-base.sh finds the fork point from a server that serves no commit by its ID", { skip }, (t) => {
-  const { dir, base } = origin(t, 5, { shaWants: false });
-  const clone = shallowClone(t, dir, "feature");
+test("fetch-base.sh keeps the history a deeper clone already holds", { skip }, (t) => {
+  // The clone holds 530 commits, past the fork point 520 back, and lacks only the base branch. A
+  // fetch with a depth of 50 or 500 would cut HEAD's history short of the fork point, leaving only
+  // the fetch of the whole history.
+  const { dir, base } = origin(t, 520);
+  const clone = shallowClone(t, dir, "feature", 530);
+  assert.equal(mergeBase(clone, "main"), "");
   const { status, output } = runScript("fetch-base.sh", [clone, "main"]);
   assert.equal(status, 0, output);
   assert.equal(mergeBase(clone, "main"), base, output);
+  assert.equal(git(clone, "rev-parse", "--is-shallow-repository"), "true");
+});
+
+test("fetch-base.sh deepens the base branch alone when the server does not have HEAD", { skip }, (t) => {
+  // The feature branch sits at the base commit and the clone commits on top of it, so the fetch
+  // that names HEAD's commit fails, and only the fetch of the base branch alone can find the fork
+  // point without fetching the whole history.
+  const { dir, base } = origin(t, 0);
+  git(dir, "branch", "feature", base);
+  const clone = shallowClone(t, dir, "feature");
+  writeFileSync(join(clone, "local.txt"), "A commit the server does not have.\n");
+  git(clone, "add", "local.txt");
+  git(clone, "commit", "-q", "-m", "local");
+  const { status, output } = runScript("fetch-base.sh", [clone, "main"]);
+  assert.equal(status, 0, output);
+  assert.equal(mergeBase(clone, "main"), base, output);
+  assert.equal(git(clone, "rev-parse", "--is-shallow-repository"), "true");
 });
 
 test("fetch-base.sh fetches the base branch into a full clone that lacks it", { skip }, (t) => {
@@ -210,11 +231,9 @@ test("check.sh with no base branch, as on a push, names the skipped comparison",
 
 test("check.sh with a base input compares with it and fetches nothing", { skip }, (t) => {
   const clone = shallowClone(t, documentedOrigin(t), "feature");
-  const { status, output } = runScript(
-    "check.sh",
-    [],
-    checkEnv(clone, { GITHUB_BASE_REF: "no-such-branch", DOC_BASE: "HEAD" }),
-  );
+  const { status, output } = runScript("check.sh", [], checkEnv(clone, { GITHUB_BASE_REF: "main", DOC_BASE: "HEAD" }));
   assert.equal(status, 0, output);
   assert.doesNotMatch(output, /comparison with the base branch|merge-base/);
+  // The base branch exists on the origin, and nothing fetched it.
+  assert.equal(git(clone, "for-each-ref", "refs/remotes/origin/main"), "");
 });

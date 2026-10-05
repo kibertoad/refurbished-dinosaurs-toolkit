@@ -19,33 +19,33 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>) {
   const { repoDir, baseArg, requireBase } = ctx.config;
   // Without --base, compare with the point this branch left the base branch (the pull request's
   // target in CI), not that branch's tip: an entry added on the base branch after this branch
-  // forked is not one this branch deleted.
+  // forked is not one this branch deleted. A base that resolves but cannot be listed is a problem.
   const git = (...args: string[]) =>
     execFileSync("git", ["-C", repoDir, ...args], { stdio: ["ignore", "pipe", "ignore"] }).toString();
-  let listing: string;
-  let base: string;
-  if (baseArg) {
-    base = baseArg;
-    try {
-      listing = git("ls-tree", "-r", "--name-only", base, "--", "spec", "deviations");
-    } catch {
-      problem(null, `cannot list spec/ at ${base}`);
-      return;
-    }
-  } else {
+  let base = baseArg;
+  if (!base) {
     const target = process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : "origin/main";
     try {
       base = git("merge-base", "HEAD", target).trim();
-      listing = git("ls-tree", "-r", "--name-only", base, "--", "spec", "deviations");
-    } catch {
+    } catch (error) {
       // Outside a git repository, in a shallow clone, or without the base branch fetched, there is
       // no fork point, and the deleted-ID checks cannot run. The run says so instead of reading as
       // a full check.
-      const missing = `HEAD has no merge-base with ${target}, fetch it with enough history or pass --base`;
+      const missing =
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+          ? `git was not found to look up HEAD's merge-base with ${target}, install it or pass --base`
+          : `HEAD has no merge-base with ${target}, fetch it with enough history or pass --base`;
       if (requireBase) problem(null, `${missing}. --require-base requires the comparison with the base branch`);
       else skip(`comparison with the base branch (${missing})`);
       return;
     }
+  }
+  let listing: string;
+  try {
+    listing = git("ls-tree", "-r", "--name-only", base, "--", "spec", "deviations");
+  } catch {
+    problem(null, `cannot list spec/ at ${base}`);
+    return;
   }
   for (const p of listing.split("\n")) {
     const m =

@@ -335,6 +335,18 @@ branch. The commit before the record fails the check for each validated row whos
 changed, so a hook that requires the check to pass on every commit lets that commit through or runs
 on push instead. Records already committed stay valid: the check compares only the hashes.
 
+### The comparison with the base branch is named when it does not run
+
+Without `--base`, a run whose fork point with `origin/$GITHUB_BASE_REF` (or `origin/main`) does not
+resolve ends with `spec check passed with skipped steps:` and names the comparison, where it used to
+print `spec check passed:`. A script that matches the full pass line passes `--base`, fetches the
+base branch, or accepts the skipped steps.
+
+`actions/check-documentation` fetches the base branch on a pull request and fails when the fork
+point still does not resolve. A private repository whose checkout sets `persist-credentials: false`
+with the default `fetch-depth` cannot fetch, so its pull request checks start failing: keep the
+default credentials, check out with `fetch-depth: 0`, or set the action's `base` input.
+
 ## Engine upgrades
 
 Engine releases that need a change in a restoration are listed here, newest first.
