@@ -11,6 +11,7 @@ public sealed class InstallShieldCabinetTests
     private static readonly byte[] Text = "plain stored member\r\n"u8.ToArray();
 
     [Theory]
+    [InlineData(0)]
     [InlineData(5)]
     [InlineData(6)]
     public async Task ListsAndExpandsNestedStoredCompressedAndObfuscatedMembers(int major)
@@ -53,6 +54,8 @@ public sealed class InstallShieldCabinetTests
     }
 
     [Theory]
+    [InlineData(0, true)]
+    [InlineData(0, false)]
     [InlineData(5, true)]
     [InlineData(5, false)]
     [InlineData(6, true)]
@@ -124,17 +127,20 @@ public sealed class InstallShieldCabinetTests
     }
 
     [Theory]
-    [InlineData(@"..\Escape", "x.bin")]
-    [InlineData("", @"..\x.bin")]
-    [InlineData(@"C:\Windows", "x.bin")]
-    [InlineData(@"\Rooted", "x.bin")]
-    [InlineData("Data", "CON")]
-    public void RejectsAMemberPathThatIsNotRelativeWhenOpened(string directory, string name)
+    [InlineData(6, @"..\Escape", "x.bin")]
+    [InlineData(6, "", @"..\x.bin")]
+    [InlineData(6, @"C:\Windows", "x.bin")]
+    [InlineData(6, @"\Rooted", "x.bin")]
+    [InlineData(6, "Data", "CON")]
+    [InlineData(0, @"..\Escape", "x.bin")]
+    [InlineData(0, "", @"..\x.bin")]
+    [InlineData(5, "", @"..\x.bin")]
+    public void RejectsAMemberPathThatIsNotRelativeWhenOpened(int major, string directory, string name)
     {
         var root = TemporaryDirectory();
         try
         {
-            SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(6,
+            SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(major,
                 [new("Data", "fine.bin", Text), new(directory, name, Text)]));
             var exception = Assert.Throws<InvalidDataException>(
                 () => OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr")));
@@ -146,13 +152,15 @@ public sealed class InstallShieldCabinetTests
         }
     }
 
-    [Fact]
-    public void RejectsASetOverItsLimitsWhenOpened()
+    [Theory]
+    [InlineData(0)]
+    [InlineData(5)]
+    public void RejectsASetOverItsLimitsWhenOpened(int major)
     {
         var root = TemporaryDirectory();
         try
         {
-            SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(5,
+            SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(major,
                 [new("", "a.bin", Text), new("", "b.bin", Noise)]));
             var header = Path.Combine(root, "data1.hdr");
             Assert.Contains("limit", Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(
@@ -193,6 +201,7 @@ public sealed class InstallShieldCabinetTests
     }
 
     [Theory]
+    [InlineData(0)]
     [InlineData(5)]
     [InlineData(6)]
     public void RejectsATruncatedHeaderOrVolume(int major)
@@ -252,6 +261,7 @@ public sealed class InstallShieldCabinetTests
     }
 
     [Theory]
+    [InlineData(0)]
     [InlineData(5)]
     [InlineData(6)]
     public async Task ReportsAMemberThatExpandsToAnotherSizeThanDeclared(int major)
@@ -351,6 +361,7 @@ public sealed class InstallShieldCabinetTests
     }
 
     [Theory]
+    [InlineData(0)]
     [InlineData(5)]
     [InlineData(6)]
     public async Task OpensASetWhoseHeaderIsHeldInADataCabLargerThanTheHeaderLimit(int major)
@@ -498,11 +509,12 @@ public sealed class InstallShieldCabinetTests
     }
 
     [Theory]
+    [InlineData(0, 7)]
     [InlineData(5, 7)]
     [InlineData(6, 8)]
     public void RefusesDuplicateEntriesAtOnePathThatAreNotShownIdentical(int major, int secondSeed)
     {
-        // Version 5 records no MD5, so identical bytes still fail; in version 6 the MD5s differ.
+        // Versions 0 and 5 record no MD5, so identical bytes still fail; in version 6 the MD5s differ.
         var root = TemporaryDirectory();
         try
         {
@@ -517,17 +529,116 @@ public sealed class InstallShieldCabinetTests
         }
     }
 
+    // Every word Unshield reads as major version 0, in both encodings, opens with the version 0 layout.
     [Theory]
-    [InlineData(0x01003000u)]
-    [InlineData(0x02000000u | 700)]
-    [InlineData(0x09000000u)]
-    public async Task RefusesVersionsOtherThanFiveAndSix(uint versionWord)
+    [InlineData(0x01000004u)]
+    [InlineData(0x01000000u)]
+    [InlineData(0x01ff0fffu)]
+    [InlineData(0x02000000u)]
+    [InlineData(0x04000063u)]
+    public async Task OpensEveryVersionWordThatReadsAsMajorVersionZero(uint versionWord)
+    {
+        var root = TemporaryDirectory();
+        try
+        {
+            SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(0,
+                [new("Data", "packed.bin", Noise), new("", "readme.txt", Text, Compressed: false)], versionWord: versionWord));
+            using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
+            Assert.Equal(0, source.MajorVersion);
+            Assert.Equal(["Data/packed.bin", "readme.txt"], source.Files.Select(entry => entry.Path));
+            await using var stream = source.OpenRead("data/packed.bin");
+            Assert.Equal(Noise, await ReadAll(stream));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task SplitsAVersion0MemberOnlyWhenItsDescriptorSaysSo()
+    {
+        var root = TemporaryDirectory();
+        try
+        {
+            CabinetFile[] files = [new("", "first.bin", Bytes(1000, 1)), new("", "split.bin", Bytes(40_000, 3))];
+            var set = SyntheticInstallShieldCabinet.Build(0, files, volumeCapacity: 20_000);
+            SyntheticInstallShieldCabinet.WriteTo(root, set);
+            using (var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr")))
+            await using (var stream = source.OpenRead("split.bin"))
+                Assert.Equal(files[1].Data, await ReadAll(stream));
+
+            // Without the flag, the volume headers' record of the member does not make it split, as it
+            // would in version 5, so its whole data is taken to lie in the first volume, and the open fails.
+            var header = set["data1.hdr"];
+            var flags = FileDescriptor(header, 0, 1) + 8;
+            BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(flags),
+                (ushort)(BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(flags)) & ~1));
+            SyntheticInstallShieldCabinet.WriteTo(root, set);
+            Assert.Contains("InstallShield file 1 lies past the end of volume 1",
+                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"))).Message);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(5)]
+    [InlineData(6)]
+    public void SkipsAnEntryLeftOutWhoseNameOrDirectoryDoesNotRead(int major)
+    {
+        var root = TemporaryDirectory();
+        try
+        {
+            var set = SyntheticInstallShieldCabinet.Build(major,
+                [new("Data", "kept.bin", Text), new("Gone", "gone.bin", Text, Invalid: true), new("Data", "no-directory.bin", Text, Invalid: true)]);
+            var header = set["data1.hdr"];
+            var (name, directory) = major == 6 ? (0x3a, 0x3e) : (0, 4);
+            // The first invalid entry's name lies past the header, and so does the directory only it uses.
+            BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(FileDescriptor(header, major, 1) + name), 0x7fff_0000);
+            BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(Table(header) + 4), 0x7fff_0000);
+            // The second names a directory that does not exist.
+            BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(FileDescriptor(header, major, 2) + directory), 99);
+            var path = Path.Combine(root, "data1.hdr");
+            SyntheticInstallShieldCabinet.WriteTo(root, set);
+
+            using (var source = OriginalContentSource.OpenInstallShieldCabinet(path))
+            {
+                Assert.Equal(["Data/kept.bin"], source.Files.Select(entry => entry.Path));
+                Assert.Equal([(1, (string?)null), (2, null)], source.SkippedFiles.Select(file => (file.Index, file.Path)));
+                Assert.All(source.SkippedFiles, file => Assert.Equal("The cabinet marks the file invalid.", file.Reason));
+            }
+
+            // A listed entry's name still has to read.
+            BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(FileDescriptor(header, major, 0) + name), 0x7fff_0000);
+            SyntheticInstallShieldCabinet.WriteTo(root, set);
+            Assert.Contains("file name",
+                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(path)).Message);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(0x01003000u, "major version 3")]
+    [InlineData(0x01001004u, "major version 1")]
+    [InlineData(0x02000000u | 700, "major version 7")]
+    [InlineData(0x04000000u | 1200, "major version 12")]
+    [InlineData(0x09000000u, "neither version-word encoding")]
+    [InlineData(0x00000000u, "neither version-word encoding")]
+    public async Task RefusesVersionsOtherThanZeroFiveAndSix(uint versionWord, string reason)
     {
         var root = TemporaryDirectory();
         try
         {
             SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(6, [new("", "a.bin", Text)], versionWord: versionWord));
-            Assert.Throws<NotSupportedException>(() => OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr")));
+            Assert.Contains(reason, Assert.Throws<NotSupportedException>(
+                () => OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"))).Message);
             var manifest = new AssetManifest("game", "retail", [new("a.bin", Text.Length, FileFingerprint.Xxh3(Text))],
                 ContentSourceKinds.InstallShieldCabinet);
             var issue = Assert.Single((await AssetVerifier.VerifyAsync(
@@ -573,21 +684,26 @@ public sealed class InstallShieldCabinetTests
                index * 0x57;
     }
 
+    // The offset of the file table in a header.
+    private static int Table(byte[] header) => SyntheticInstallShieldCabinet.DescriptorOffset +
+        BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(SyntheticInstallShieldCabinet.DescriptorOffset + 0x0c));
+
+    // The offset of a file descriptor in a header of major version 0, 5 or 6.
+    private static int FileDescriptor(byte[] header, int major, int index)
+    {
+        if (major == 6) return Version6Descriptor(header, index);
+        var directories = BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(SyntheticInstallShieldCabinet.DescriptorOffset + 0x1c));
+        return Table(header) + BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(Table(header) + 4 * (directories + index)));
+    }
+
     // Points the only member's expanded size at another value.
     private static void SetExpandedSize(byte[] header, int major, int size)
     {
-        var table = SyntheticInstallShieldCabinet.DescriptorOffset +
-                    BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(SyntheticInstallShieldCabinet.DescriptorOffset + 0x0c));
-        if (major == 5)
-        {
-            var descriptor = table + BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(table + 4));
-            BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(descriptor + 10), (uint)size);
-        }
+        var descriptor = FileDescriptor(header, major, 0);
+        if (major == 6)
+            BinaryPrimitives.WriteUInt64LittleEndian(header.AsSpan(descriptor + 2), (ulong)size);
         else
-        {
-            var descriptors = table + BinaryPrimitives.ReadInt32LittleEndian(header.AsSpan(SyntheticInstallShieldCabinet.DescriptorOffset + 0x2c));
-            BinaryPrimitives.WriteUInt64LittleEndian(header.AsSpan(descriptors + 2), (ulong)size);
-        }
+            BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(descriptor + 10), (uint)size);
     }
 
     private static async Task<byte[]> ReadAll(Stream stream)

@@ -36,13 +36,15 @@ public sealed record InstallShieldCabinetLimits(
 
 /// <summary>A file-table entry an <see cref="InstallShieldCabinetSource"/> does not list.</summary>
 /// <param name="Index">The entry's index in the cabinet's file table.</param>
-/// <param name="Path">The entry's path, when it has a name.</param>
+/// <param name="Path">
+/// The entry's path, when it has a name that reads and is relative; otherwise <see langword="null"/>.
+/// </param>
 /// <param name="Reason">Why the entry is not listed.</param>
 public sealed record InstallShieldSkippedFile(int Index, string? Path, string Reason);
 
 /// <summary>
-/// The files of an InstallShield 5 or 6 cabinet set (<c>dataN.hdr</c> with <c>dataN.cab</c> volumes)
-/// as an <see cref="OriginalContentSource"/>. Open it with
+/// The files of an InstallShield cabinet set of major version 0, 5 or 6 (<c>dataN.hdr</c> with
+/// <c>dataN.cab</c> volumes) as an <see cref="OriginalContentSource"/>. Open it with
 /// <see cref="OriginalContentSource.OpenInstallShieldCabinet(string, InstallShieldCabinetLimits?)"/>
 /// or, for a set inside another source such as a disc image,
 /// <see cref="OriginalContentSource.OpenInstallShieldCabinet(OriginalContentSource, string, InstallShieldCabinetLimits?)"/>.
@@ -55,10 +57,17 @@ public sealed record InstallShieldSkippedFile(int Index, string? Path, string Re
 /// decoded only when read.
 /// </para>
 /// <para>
+/// Major version 0 is the version word Unshield reads as 0, such as <c>0x01000004</c>. Its file
+/// descriptors and volume headers have the version 5 layout, with two differences: a version 0
+/// descriptor ends after the data offset, and a version 0 member is split across volumes only when
+/// its descriptor says so. Everything this class says of version 5 holds for version 0 too.
+/// </para>
+/// <para>
 /// Two entries at one path, ignoring case, that share data through a link are listed once: the
-/// first in table order is listed, and the other goes to <see cref="SkippedFiles"/>. In a version 6 set, two entries stored apart at one path with the same expanded size and the same
-/// MD5 are taken as one file: the first in table order is listed, and the other goes to
-/// <see cref="SkippedFiles"/> without its stored bytes being read. Any other pair of entries at one
+/// first in table order is listed, and the other goes to <see cref="SkippedFiles"/>. In a version 6
+/// set, two entries stored apart at one path with the same expanded size and the same MD5 are taken
+/// as one file: the first in table order is listed, and the other goes to <see cref="SkippedFiles"/>
+/// without its stored bytes being read. Any other pair of entries at one
 /// path fails the open, and so does every such pair in a version 5 set, which records no MD5.
 /// </para>
 /// <para>
@@ -78,6 +87,8 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     private const int DescriptorFieldsSize = 0x30;
     private const int Version6DescriptorSize = 0x57;
     private const int Version5DescriptorSize = 0x3a;
+    // Unshield reads a version 0 descriptor only up to its data offset, with no MD5 after it.
+    private const int Version0DescriptorSize = 0x2a;
     private const int MaximumVolume = 255;
     private const ushort InvalidFlag = 8;
     private const ushort CompressedFlag = 4;
@@ -88,6 +99,8 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     private readonly Func<int, Stream> openVolume;
     private readonly Dictionary<string, Member> members = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, VolumeHeader> volumes = [];
+    // Major versions 0 and 5 share the file descriptor and volume header layout.
+    private readonly bool version5Layout;
 
     // limits has been validated by the caller.
     internal InstallShieldCabinetSource(byte[] header, Func<int, Stream> openVolume, InstallShieldCabinetLimits limits)
@@ -100,10 +113,12 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         if (signature != Signature)
             throw new InvalidDataException("File is not an InstallShield cabinet header.");
         var version = reader.UInt32(4);
-        MajorVersion = ReadMajorVersion(version);
-        if (MajorVersion is not (5 or 6))
+        MajorVersion = ReadMajorVersion(version) ?? throw new NotSupportedException(
+            $"InstallShield cabinet version word 0x{version:x8} follows neither version-word encoding the reader knows.");
+        if (MajorVersion is not (0 or 5 or 6))
             throw new NotSupportedException(
-                $"InstallShield cabinet version word 0x{version:x8} reads as major version {MajorVersion}; only 5 and 6 are supported.");
+                $"InstallShield cabinet version word 0x{version:x8} reads as major version {MajorVersion}; only 0, 5 and 6 are supported.");
+        version5Layout = MajorVersion is 0 or 5;
 
         long descriptor = reader.UInt32(12);
         var descriptorSize = reader.UInt32(16);
@@ -120,14 +135,35 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         if (directoryCount > header.Length / 4)
             throw new InvalidDataException("InstallShield directory count exceeds the header.");
 
-        var directories = new string[directoryCount];
-        for (var index = 0; index < directories.Length; index++)
-            directories[index] = reader.String(table + reader.UInt32(table + 4L * index), "directory name");
+        // A directory's name is read when an entry needs it, so a name no entry uses is never read.
+        var directories = new string?[directoryCount];
+        string DirectoryName(int index, ushort directory)
+        {
+            if (directory >= directories.Length)
+                throw new InvalidDataException($"InstallShield file {index} names directory {directory}, which does not exist.");
+            return directories[directory] ??= reader.String(table + reader.UInt32(table + 4L * directory), "directory name");
+        }
+
+        string EntryPath(int index, FileDescriptor file)
+        {
+            var name = reader.String(table + file.NameOffset, "file name");
+            var directory = DirectoryName(index, file.DirectoryIndex);
+            var combined = directory.Length == 0 ? name : $"{directory}\\{name}";
+            try
+            {
+                return PortableAssetPath.Relative(combined);
+            }
+            catch (InvalidDataException exception)
+            {
+                throw new InvalidDataException($"InstallShield file {index} has a path that is not relative: '{combined}'.", exception);
+            }
+        }
 
         var descriptors = new FileDescriptor[fileCount];
         for (var index = 0; index < descriptors.Length; index++)
-            descriptors[index] = MajorVersion == 5
-                ? ReadVersion5Descriptor(reader, table + reader.UInt32(table + 4L * (directoryCount + index)))
+            descriptors[index] = version5Layout
+                ? ReadVersion5Descriptor(reader, table + reader.UInt32(table + 4L * (directoryCount + index)),
+                    MajorVersion == 0 ? Version0DescriptorSize : Version5DescriptorSize)
                 : ReadVersion6Descriptor(reader, table + descriptorsOffset + (long)index * Version6DescriptorSize);
 
         var skipped = new List<InstallShieldSkippedFile>();
@@ -135,33 +171,31 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         for (var index = 0; index < descriptors.Length; index++)
         {
             var file = descriptors[index];
-            string? path = null;
-            if (file.NameOffset != 0)
-            {
-                if (file.DirectoryIndex >= directories.Length)
-                    throw new InvalidDataException($"InstallShield file {index} names directory {file.DirectoryIndex}, which does not exist.");
-                var name = reader.String(table + file.NameOffset, "file name");
-                var directory = directories[file.DirectoryIndex];
-                var combined = directory.Length == 0 ? name : $"{directory}\\{name}";
-                try
-                {
-                    path = PortableAssetPath.Relative(combined);
-                }
-                catch (InvalidDataException exception)
-                {
-                    throw new InvalidDataException($"InstallShield file {index} has a path that is not relative: '{combined}'.", exception);
-                }
-            }
-
             var reason = (file.Flags & InvalidFlag) != 0 ? "The cabinet marks the file invalid."
-                : path is null ? "The file has no name."
+                : file.NameOffset == 0 ? "The file has no name."
                 : file.DataOffset == 0 ? "The file has no data offset."
                 : null;
             if (reason is not null)
             {
-                skipped.Add(new(index, path, reason));
+                // As in Unshield, the name of an entry left out does not have to read: its path is
+                // recorded when it reads and is relative, and is null otherwise.
+                string? skippedPath = null;
+                if (file.NameOffset != 0)
+                {
+                    try
+                    {
+                        skippedPath = EntryPath(index, file);
+                    }
+                    catch (InvalidDataException)
+                    {
+                    }
+                }
+                skipped.Add(new(index, skippedPath, reason));
                 continue;
             }
+
+            // A listed entry's path has to read and be relative, or the open fails.
+            var path = EntryPath(index, file);
 
             var dataIndex = ResolveLink(descriptors, index);
             var data = descriptors[dataIndex];
@@ -176,8 +210,8 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
 
             if (data.ExpandedSize < 0 || data.CompressedSize < 0)
                 throw new InvalidDataException($"InstallShield file {index} declares a size beyond 2^63 bytes.");
-            var md5 = MajorVersion >= 6 ? data.Md5 : null;
-            if (members.TryGetValue(path!, out var existing))
+            var md5 = version5Layout ? null : data.Md5;
+            if (members.TryGetValue(path, out var existing))
             {
                 if (existing.DataIndex == dataIndex)
                 {
@@ -198,8 +232,8 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 throw new InvalidDataException(
                     $"InstallShield cabinet holds two different files at '{path}' (file {existing.DataIndex} and file {dataIndex}).");
             }
-            members.Add(path!, new Member(
-                new ContentSourceEntry(path!, data.ExpandedSize), index, dataIndex, (data.Flags & CompressedFlag) != 0,
+            members.Add(path, new Member(
+                new ContentSourceEntry(path, data.ExpandedSize), index, dataIndex, (data.Flags & CompressedFlag) != 0,
                 (data.Flags & ObfuscatedFlag) != 0, md5, Segments(dataIndex, data, descriptors.Length)));
             // Compared this way round, the total cannot overflow even when the limit is near long.MaxValue.
             if (data.ExpandedSize > limits.MaximumExpandedBytes - expandedTotal)
@@ -219,12 +253,13 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     public override string? Label => null;
     /// <inheritdoc />
     public override IReadOnlyList<ContentSourceEntry> Files { get; }
-    /// <summary>The InstallShield major version the header's version word gives: 5 or 6.</summary>
+    /// <summary>The InstallShield major version the header's version word gives: 0, 5 or 6.</summary>
     public int MajorVersion { get; }
     /// <summary>
     /// File-table entries that are not listed, in table order: entries the cabinet marks invalid,
-    /// entries with no name or no data offset, version 6 entries whose link ends at an entry the
-    /// cabinet marks invalid or that has no data offset, entries that share a listed member's data
+    /// entries with no name or no data offset (their name and directory are not checked, and the
+    /// path is <see langword="null"/> when they do not read), version 6 entries whose link ends at an
+    /// entry the cabinet marks invalid or that has no data offset, entries that share a listed member's data
     /// at the same path, and version 6 entries stored apart from a listed member at the same path
     /// with the same expanded size and MD5. Each reason names the entry it refers to.
     /// </summary>
@@ -261,16 +296,19 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     /// <inheritdoc />
     public override void Dispose() { }
 
-    internal static int ReadMajorVersion(uint version) => (version >> 24) switch
+    // The two encodings Unshield reads: a top byte of 1 keeps the major version in bits 12 to 15,
+    // and a top byte of 2 or 4 keeps a hundredfold version in the low word. Both give 0 for some
+    // words. Any other top byte gives null.
+    internal static int? ReadMajorVersion(uint version) => (version >> 24) switch
     {
         1 => (int)((version >> 12) & 0xf),
         2 or 4 => (int)(version & 0xffff) / 100,
-        _ => 0
+        _ => null
     };
 
-    private static FileDescriptor ReadVersion5Descriptor(HeaderReader reader, long offset)
+    private static FileDescriptor ReadVersion5Descriptor(HeaderReader reader, long offset, int size)
     {
-        reader.Require(offset, Version5DescriptorSize, "file descriptor");
+        reader.Require(offset, size, "file descriptor");
         return new(
             Flags: reader.UInt16(offset + 8),
             ExpandedSize: reader.UInt32(offset + 10),
@@ -321,16 +359,19 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     {
         var compressed = (file.Flags & CompressedFlag) != 0;
         var remaining = compressed ? file.CompressedSize : file.ExpandedSize;
-        var volume = MajorVersion == 5 ? 1 : file.Volume;
+        var volume = version5Layout ? 1 : file.Volume;
         var header = Volume(volume, index);
         var split = (file.Flags & SplitFlag) != 0;
-        if (MajorVersion == 5)
+        if (version5Layout)
         {
-            // Version 5 descriptors do not name a volume: the member is in the first volume whose
-            // last file index reaches it, and is split when that volume's record of it disagrees.
+            // Version 0 and 5 descriptors do not name a volume: the member is in the first volume
+            // whose last file index reaches it.
             while (index > header.LastIndex) header = Volume(++volume, index);
-            split |= (index < fileCount - 1 && index == header.LastIndex && header.LastCompressed != file.CompressedSize)
-                     || (index > 0 && index == header.FirstIndex && header.FirstCompressed != file.CompressedSize);
+            // A version 5 member is also split when that volume's record of it disagrees. Unshield
+            // infers this for version 5 only, so a version 0 member is split only when its flag says so.
+            if (MajorVersion == 5)
+                split |= (index < fileCount - 1 && index == header.LastIndex && header.LastCompressed != file.CompressedSize)
+                         || (index > 0 && index == header.FirstIndex && header.FirstCompressed != file.CompressedSize);
         }
 
         var segments = new List<InstallShieldSegment>();
@@ -367,7 +408,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
             throw new InvalidDataException($"InstallShield file {index} names volume {volume}, which is out of range.");
         if (volumes.TryGetValue(volume, out var cached)) return cached;
         using var stream = openVolume(volume);
-        var size = MajorVersion == 5 ? 40 : 64;
+        var size = version5Layout ? 40 : 64;
         var bytes = new byte[CommonHeaderSize + size];
         try
         {
@@ -387,7 +428,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
             return value >= 0 ? value
                 : throw new InvalidDataException($"InstallShield volume {volume} header holds a value beyond 2^63.");
         }
-        var header = MajorVersion == 5
+        var header = version5Layout
             ? new VolumeHeader(stream.Length, U32(8), U32(12), U32(16), U32(20), U32(24),
                 U32(28) == 0 ? 0x7fffffff : U32(28), U32(32), U32(36))
             : new VolumeHeader(stream.Length, U32(8), U32(12), U64(16), U64(24), U64(32), U64(40), U64(48), U64(56));

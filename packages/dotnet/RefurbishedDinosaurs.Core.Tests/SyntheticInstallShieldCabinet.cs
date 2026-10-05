@@ -11,9 +11,11 @@ internal sealed record CabinetFile(
     int? LinkTo = null, bool Invalid = false);
 
 /// <summary>
-/// Writes InstallShield 5 and 6 cabinet sets for tests. No open tool writes the format, so this
-/// follows the layout Unshield (MIT) reads: a header with a cabinet descriptor and file table, and
-/// volumes whose headers record the first and last member they hold, split members included.
+/// Writes InstallShield cabinet sets of major version 0, 5 and 6 for tests. No open tool writes the
+/// format, so this follows the layout Unshield (MIT) reads: a header with a cabinet descriptor and
+/// file table, and volumes whose headers record the first and last member they hold, split members
+/// included. Version 0 uses the version 5 layout with descriptors that end after the data offset
+/// and a split flag on split members.
 /// </summary>
 internal static class SyntheticInstallShieldCabinet
 {
@@ -22,7 +24,15 @@ internal static class SyntheticInstallShieldCabinet
     private const int FileTableOffset = 0x280;
     private const int ChunkInput = 0x8000;
 
-    public static uint VersionWord(int major) => major == 5 ? 0x01005000u : 0x02000000u | (uint)(major * 100);
+    public static uint VersionWord(int major) => major switch
+    {
+        0 => 0x01000004u,
+        5 => 0x01005000u,
+        _ => 0x02000000u | (uint)(major * 100)
+    };
+
+    // Major versions 0 and 5 share the descriptor and volume header layout.
+    private static bool Version5Layout(int major) => major is 0 or 5;
 
     /// <summary>
     /// Returns each file of the set by name: <c>data1.hdr</c>, <c>data1.cab</c>, <c>data2.cab</c>...
@@ -120,10 +130,10 @@ internal static class SyntheticInstallShieldCabinet
         var directories = files.Select(file => file.Directory).Distinct().ToList();
         var table = new MemoryStream();
         var writer = new BinaryWriter(table);
-        var offsets = new long[directories.Count + (major == 5 ? files.Count : 0)];
+        var offsets = new long[directories.Count + (Version5Layout(major) ? files.Count : 0)];
         writer.Write(new byte[offsets.Length * 4]);
         long descriptors = 0;
-        if (major != 5)
+        if (!Version5Layout(major))
         {
             descriptors = table.Position;
             writer.Write(new byte[files.Count * 0x57]);
@@ -147,12 +157,13 @@ internal static class SyntheticInstallShieldCabinet
             var data = files[target];
             var raw = raws[target];
             var first = parts[target].FirstOrDefault();
-            // Version 5 descriptors carry no split flag: readers tell a split member from the volume headers.
+            // Version 5 descriptors carry no split flag: readers tell a split member from the volume
+            // headers. Version 0 and 6 descriptors carry it.
             var flags = (ushort)((data.Compressed ? 4 : 0) | (data.Obfuscated ? 2 : 0) |
                                  (major != 5 && parts[target].Count > 1 ? 1 : 0) | (file.Invalid ? 8 : 0));
             var md5 = MD5.HashData(data.Data);
             long dataOffset = file.Invalid ? 0 : first?.Offset ?? VolumeDataOffset;
-            if (major == 5)
+            if (Version5Layout(major))
             {
                 offsets[directories.Count + index] = table.Position;
                 writer.Write((uint)names[index]);
@@ -163,7 +174,7 @@ internal static class SyntheticInstallShieldCabinet
                 writer.Write((uint)raw.Length);
                 writer.Write(new byte[0x14]);
                 writer.Write((uint)dataOffset);
-                writer.Write(md5);
+                if (major == 5) writer.Write(md5);
             }
             else
             {
@@ -236,7 +247,7 @@ internal static class SyntheticInstallShieldCabinet
         var first = held.Length == 0 ? (0L, 0L, 0L) : Record(held[0]);
         var last = held.Length == 0 ? (0L, 0L, 0L) : Record(held[^1]);
         var fields = span[20..];
-        if (major == 5)
+        if (Version5Layout(major))
         {
             uint[] values =
             [

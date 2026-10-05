@@ -15,7 +15,7 @@ limits and exceptions of each type.
 | Package | Use it for | References |
 |---|---|---|
 | `RefurbishedDinosaurs.Core` | Identifying, importing, installing and checking content from the player's original; content and settings locations; startup diagnostics; input snapshots and action bindings; deterministic randomness; recoverable saves and settings; viewport and palette helpers. | nothing |
-| `RefurbishedDinosaurs.LegacyFormats` | Game-independent PCX, BMP, CUE/CDDA, raw Mode 1, ISO 9660, InstallShield 5 and 6 cabinet and PCM WAVE readers, a canonical PCM WAVE writer, a streaming WAVE reader, and `OriginalContentSource`. | Core |
+| `RefurbishedDinosaurs.LegacyFormats` | Game-independent PCX, BMP, CUE/CDDA, raw Mode 1, ISO 9660, InstallShield (major versions 0, 5 and 6) cabinet and PCM WAVE readers, a canonical PCM WAVE writer, a streaming WAVE reader, and `OriginalContentSource`. | Core |
 | `RefurbishedDinosaurs.Media.Smacker`, `.Avi`, `.Fli` | Movie decoding. | nothing |
 | `RefurbishedDinosaurs.Media.Playback` | Frame cadence for any of the movie decoders. | nothing |
 | `RefurbishedDinosaurs.Media.Audio` | PCM sample conversion and the lifetimes of backend voices and cached audio resources. | nothing |
@@ -62,12 +62,13 @@ LegacyFormats parts of it:
   that carry the same files. The pins add checks; every file is still verified.
   `OpenIso9660(Stream)` opens an `.iso` image held in a seekable stream, such as a modified copy
   built in memory for a negative control, and reads the same files and volume as the image on disk.
-- `OriginalContentSource.OpenInstallShieldCabinet` lists and reads the members of an InstallShield 5
-  or 6 cabinet set, on disk or inside a disc source, through the same interface. It opens from a
+- `OriginalContentSource.OpenInstallShieldCabinet` lists and reads the members of an InstallShield
+  cabinet set of major version 0, 5 or 6, on disk or inside a disc source, through the same interface. It opens from a
   `dataN.hdr`, or from a `dataN.cab` that holds the header, reading only that file's header region.
   It checks every member's path, extent and the set's limits when it opens, and each member's size
   (and MD5 for version 6) when it is read to the end. Entries it does not list are in `SkippedFiles`
-  with a reason: entries marked invalid or without data, version 6 links to them, entries at a
+  with a reason: entries marked invalid or without a name or data (whose names need not read),
+  version 6 links to them, entries at a
   listed member's path that share its data, and version 6 copies of a listed member at the same path
   with the same size and MD5. Decode into the staging directory and verify the output there as for
   any other source; [InstallShield cabinets](../packages/dotnet/README.md#installshield-cabinets)

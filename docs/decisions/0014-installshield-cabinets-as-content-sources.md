@@ -15,10 +15,13 @@ The cabinet format is a container. Its layout is not game content, and no open t
 
 ## Decision
 
-1. LegacyFormats reads InstallShield 5 and 6 cabinet sets with managed code of its own, under the
-   package's MIT license. No third-party parser or native library is added. The layout follows
-   Unshield's reading of the format. Other versions are refused with `NotSupportedException` until a
-   restoration brings provenance for one.
+1. LegacyFormats reads InstallShield cabinet sets of major version 0, 5 and 6 with managed code of
+   its own, under the package's MIT license. No third-party parser or native library is added. The
+   layout follows Unshield's reading of the format, and so does the major version a version word
+   gives. Major version 0 is read with the version 5 layout, as Unshield reads it, without the
+   version 5 split inference Unshield does not apply to it. Other versions, and version words in
+   neither encoding Unshield reads, are refused with `NotSupportedException` until a restoration
+   brings provenance for one.
 2. A cabinet set is an `OriginalContentSource` of kind `installshield-cabinet`. It opens from a
    header file, or from a header inside another source, so a set on a disc image is read without
    copying the cabinets out first. Writing members into a stage, hashing them and recording installed
@@ -36,7 +39,8 @@ The cabinet format is a container. Its layout is not game content, and no open t
    failed check throws before the member's last bytes are returned. Version 5 is checked by size
    only, and the documentation says so.
 4. Entries the cabinet marks invalid, or that have no name or no data offset, are listed in
-   `SkippedFiles` instead of disappearing. So is a version 6 entry whose link chain ends at such an
+   `SkippedFiles` instead of disappearing. Unshield does not read their names, so their name and
+   directory are not checked; a skipped entry's path is recorded only when it reads and is relative. So is a version 6 entry whose link chain ends at such an
    entry, with a reason naming the entry it links to: one stale link leaves the rest of the set
    readable. A link outside the file table or a link cycle means the header is damaged, and the open
    fails.
