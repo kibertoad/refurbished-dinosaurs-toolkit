@@ -5,6 +5,7 @@ occurrence is held, violated or undecided. A violation on any path fails the que
 whose paths were not all read (a stop, a limit, a dropped path) is undecided, never held.
 """
 from bisect import bisect_right
+from math import inf
 from .image import integer
 from .machine import ALIASES, NO_WRITE, State
 
@@ -217,11 +218,16 @@ def validate_controls(config, image):
     return controls
 
 
-# Linear forms: (constant, {atom: coefficient}); an atom is (term, bits) or ("signed", term, bits).
+# Linear forms: (constant, {atom: coefficient}); an atom is (term, bits), ("signed", term, bits) or
+# (HIDDEN, site, event), the events at a site that modeled callees before the anchor may have added.
+HIDDEN = "hidden-occurrences"
+
 
 def _atom_range(atom, ranges):
     if atom in ranges:
         return ranges[atom]
+    if atom[0] == HIDDEN:
+        return 0, inf
     if atom[0] == "signed":
         half = 1 << (atom[2] - 1)
         return -half, half - 1
@@ -367,7 +373,8 @@ class _Path:
         return bisect_right(self.by_site.get((site, kind), ()), through)
 
     def modeled_before(self, order):
-        return [self.events[o]["callSite"] for o in self.modeled[:bisect_right(self.modeled, order - 1)]]
+        # A modeled call's own return at the order counts: its callee ran before that event.
+        return [self.events[o]["callSite"] for o in self.modeled[:bisect_right(self.modeled, order)]]
 
     def value(self, term, anchor):
         if "entryRegister" in term:
@@ -404,13 +411,34 @@ class _Path:
             return _scaled(self.form(operand["mul"][0], anchor, ranges, modular), operand["mul"][1])
         if "occurrences" in operand:
             o = operand["occurrences"]
-            return self.count(o["site"], o["event"], anchor["order"]), {}
+            count = self.count(o["site"], o["event"], anchor["order"])
+            # A modeled callee the path did not read may have run the counted site, so past one the
+            # read count is a lower bound: the form adds a hidden count of zero or more.
+            if self.modeled_before(anchor["order"]):
+                return count, {(HIDDEN, o["site"], o["event"]): 1}
+            return count, {}
         value = self.value(operand, anchor)
         # A form congruent modulo the value's own width is congruent modulo any narrower modulus.
         # A narrower value needs its integer value, which only a wrap-free range gives.
         if modular is not None and value["bits"] >= modular:
             return _modular(value["expression"], value["bits"], ranges)
         return _integer(value["expression"], value["bits"], operand.get("signed", False), ranges)
+
+
+def _bound(value):
+    """An interval end as reports carry it: None for an end no read event bounds."""
+    return None if value in (inf, -inf) else value
+
+
+def _hidden(path, anchor, *forms):
+    """The reason for an undecided result whose forms hold counts that modeled calls may have raised."""
+    counted = sorted({(atom[1], atom[2]) for form in forms for atom in form[1] if atom[0] == HIDDEN})
+    if not counted:
+        return {}
+    calls = path.modeled_before(anchor["order"])
+    names = ", ".join(f"{event} events at {site}" for site, event in counted)
+    return {"reason": f"the count of {names} passed modeled calls at {', '.join(map(str, calls))}, whose callees may "
+                      f"hold more of them, so the read count is only a lower bound", "modeledCalls": calls}
 
 
 def _ranges(control, path, anchor):
@@ -489,7 +517,8 @@ def _occurrence(control, path, anchor, image):
             detail.update(taken=found.get("taken"), decidedBy=found.get("decidedBy"), branchReason=found.get("reason"))
             if found.get("taken") != control["branch"]["taken"]:
                 # A modeled callee after the read execution may have run the branch again.
-                modeled = [e["callSite"] for e in between if e["kind"] == "call-return" and e.get("modeled")]
+                modeled = [e["callSite"] for e in events[found["order"] + 1:order + 1]
+                           if e["kind"] == "call-return" and e.get("modeled")]
                 if modeled:
                     detail.update(reason="the last read execution of the branch went the other way; a later modeled call is unread",
                                   modeledCalls=modeled)
@@ -554,12 +583,17 @@ def _occurrence(control, path, anchor, image):
             constant = difference[0] % size
             atoms = {a: k % size for a, k in difference[1].items() if k % size}
             if atoms:
-                return "undecided", {"reason": f"left and right are not shown congruent modulo 2**{modulo}"}
+                return "undecided", _hidden(path, anchor, difference) or {
+                    "reason": f"left and right are not shown congruent modulo 2**{modulo}"}
             same = constant == 0
             held = same if control["op"] == "eq" else not same
             return "held" if held else "violated", {"leftMinusRightModulo": constant}
         lo, hi = _interval(difference, ranges)
-        return _decide(difference, control["op"], ranges), {"leftMinusRight": {"min": lo, "max": hi}}
+        verdict = _decide(difference, control["op"], ranges)
+        detail = {"leftMinusRight": {"min": _bound(lo), "max": _bound(hi)}}
+        if verdict == "undecided":
+            detail.update(_hidden(path, anchor, difference))
+        return verdict, detail
     if kind == "containment":
         interval = control["interval"]
         try:
@@ -571,6 +605,8 @@ def _occurrence(control, path, anchor, image):
         if segment["expression"] != anchor["segment"]["expression"] or segment["bits"] != anchor["segment"]["bits"]:
             return "undecided", {"reason": "the write's segment is not shown equal to the interval's segment",
                                  "writeSegment": anchor["segment"], "intervalSegment": segment}
+        if any(atom[0] == HIDDEN for atom in start[1]):
+            return "undecided", _hidden(path, anchor, start)
         bits = anchor["offset"]["bits"]
         size = 1 << bits
         relative = _combine(_modular(anchor["offset"]["expression"], bits, ranges), start, -1)
@@ -583,7 +619,11 @@ def _occurrence(control, path, anchor, image):
         room = _combine(_combine(length, relative, -1), (anchor["width"], {}), -1)
         rlo, rhi = _interval(relative, ranges)
         llo, lhi = _interval(length, ranges)
-        return _decide(room, "ge", ranges), {"relativeStart": {"min": rlo, "max": rhi}, "width": anchor["width"], "length": {"min": llo, "max": lhi}}
+        verdict = _decide(room, "ge", ranges)
+        detail = {"relativeStart": {"min": rlo, "max": rhi}, "width": anchor["width"], "length": {"min": _bound(llo), "max": _bound(lhi)}}
+        if verdict == "undecided":
+            detail.update(_hidden(path, anchor, length))
+        return verdict, detail
     # origin
     try:
         value = path.value(control["value"], anchor)

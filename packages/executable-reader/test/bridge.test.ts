@@ -1754,6 +1754,47 @@ test("relational controls pass through preparation and fail, hold or stay undeci
   assert.equal(stopped.relationalControls.allHeld, false);
 });
 
+test("an output count past a modeled call is a lower bound through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(20, 28);
+  // call append; call append; ret; append: mov [bx],al; inc bx; ret
+  data.set([0xe8, 0x04, 0, 0xe8, 0x01, 0, 0xc3, 0x88, 0x07, 0x43, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const capacity = (right: number) => ({
+    name: "capacity",
+    kind: "relation",
+    at: { site: 70, event: "return" },
+    op: "le",
+    left: { occurrences: { site: 71, event: "write" } },
+    right,
+  });
+  const query = (extra: Record<string, unknown>) => {
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({
+        ...config,
+        xxh3: sourceXxh3(data),
+        registers: { ds: 0x2000, ss: 0x3000, sp: 0xff00 },
+        ...extra,
+      }),
+    );
+    return join(dir, "config.json");
+  };
+  const held = run(["trace", query({ relationalControls: [capacity(2)] })]).relationalControls;
+  assert.equal(held.allHeld, true);
+  assert.throws(() => run(["trace", query({ relationalControls: [capacity(1)] })]), /capacity violated/);
+  const model = { site: 67, evidence: "synthetic unread append call", cases: [{}] };
+  const hidden = run(["trace", query({ relationalControls: [capacity(1)], callModels: [model] })]).relationalControls;
+  assert.equal(hidden.controls[0].verdict, "undecided");
+  assert.match(hidden.controls[0].paths[0].occurrences[0].reason, /passed modeled calls at 67/);
+  assert.deepEqual(hidden.controls[0].paths[0].occurrences[0].leftMinusRight, { min: 0, max: null });
+  // The one append read before the modeled call already exceeds a capacity of zero.
+  assert.throws(
+    () => run(["trace", query({ relationalControls: [capacity(0)], callModels: [model] })]),
+    /capacity violated/,
+  );
+});
+
 test("entryFrame passes through preparation and lets a narrower entry return through its function's frame", (t) => {
   const { dir, data, config } = fixture(t);
   // Keep the MZ relocation away from the code below.
