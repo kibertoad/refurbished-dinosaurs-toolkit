@@ -42,8 +42,11 @@ public sealed record InstallShieldCabinetLimits(
     }
 }
 
-/// <summary>A file-table entry an <see cref="InstallShieldCabinetSource"/> does not list.</summary>
-/// <param name="Index">The entry's index in the cabinet's file table.</param>
+/// <summary>
+/// A file-table entry an <see cref="InstallShieldCabinetSource"/> or an
+/// <see cref="InstallShieldArchiveSource"/> does not list.
+/// </summary>
+/// <param name="Index">The entry's index in the cabinet's or archive's file table.</param>
 /// <param name="Path">
 /// The entry's path, when it has a name that reads and is relative; otherwise <see langword="null"/>.
 /// </param>

@@ -15,7 +15,7 @@ limits and exceptions of each type.
 | Package | Use it for | References |
 |---|---|---|
 | `RefurbishedDinosaurs.Core` | Identifying, importing, installing and checking content from the player's original; content and settings locations; startup diagnostics; input snapshots and action bindings; deterministic randomness; recoverable saves and settings; viewport and palette helpers. | nothing |
-| `RefurbishedDinosaurs.LegacyFormats` | Game-independent PCX, BMP, CUE/CDDA, raw Mode 1, ISO 9660, InstallShield (major versions 0, 5 and 6) cabinet and PCM WAVE readers, a canonical PCM WAVE writer, a streaming WAVE reader, and `OriginalContentSource`. | Core |
+| `RefurbishedDinosaurs.LegacyFormats` | Game-independent PCX, BMP, CUE/CDDA, raw Mode 1, ISO 9660, InstallShield (major versions 0, 5 and 6) cabinet and PCM WAVE readers, an InstallShield 3 archive reader, a canonical PCM WAVE writer, a streaming WAVE reader, and `OriginalContentSource`. | Core |
 | `RefurbishedDinosaurs.Media.Smacker`, `.Avi`, `.Fli` | Movie decoding. | nothing |
 | `RefurbishedDinosaurs.Media.Playback` | Frame cadence for any of the movie decoders. | nothing |
 | `RefurbishedDinosaurs.Media.Audio` | PCM sample conversion and the lifetimes of backend voices and cached audio resources. | nothing |
@@ -73,6 +73,14 @@ LegacyFormats parts of it:
   MD5. Decode into the staging directory and verify the output there as for
   any other source; [InstallShield cabinets](../packages/dotnet/README.md#installshield-cabinets)
   lists the supported subset.
+- `OriginalContentSource.OpenInstallShieldArchive` lists and reads the members of an unsplit
+  InstallShield 3 archive (such as a disc's `_SETUP.1`) through the same interface, from a file, from
+  inside a disc source, or from a stream holding an archive carved out of a self-extractor. Its source
+  kind is `installshield3-archive`, and `Open(path)` picks it by the file's signature. It checks the
+  tables and every member's path and extent when it opens, and each compressed member's size and end
+  code when it is read to the end; the format records no checksum. A split archive is refused with
+  `NotSupportedException`. See
+  [InstallShield 3 archives](../packages/dotnet/README.md#installshield-3-archives).
 - `ContentSourceExtractor.ExtractAsync` copies the files of any source, or a selection, into the
   staging directory below a prefix, hashes each while it copies, and returns the `InstalledAsset`
   records for the installed manifest. It checks file-count and byte limits and every path before it

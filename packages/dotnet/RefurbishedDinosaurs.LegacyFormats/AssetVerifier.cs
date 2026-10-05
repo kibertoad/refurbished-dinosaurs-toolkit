@@ -140,7 +140,8 @@ public static class AssetVerifier
     /// source that cannot be opened is reported as <see cref="AssetProblem.Unreadable"/>.
     /// </summary>
     /// <param name="path">
-    /// The directory, <c>.iso</c> image, <c>.cue</c> sheet or InstallShield <c>.hdr</c> header holding the original.
+    /// The directory, <c>.iso</c> image, <c>.cue</c> sheet, InstallShield <c>.hdr</c> header or
+    /// InstallShield 3 archive holding the original.
     /// </param>
     /// <param name="manifest">The manifest, validated before the source is opened.</param>
     /// <param name="cancellationToken">Cancels between files and during hashing.</param>
@@ -175,7 +176,8 @@ public static class AssetVerifier
     /// manifests cannot tell them apart and <see cref="EditionIdentification.IsAmbiguous"/> is set.
     /// </remarks>
     /// <param name="path">
-    /// The directory, <c>.iso</c> image, <c>.cue</c> sheet or InstallShield <c>.hdr</c> header holding the original.
+    /// The directory, <c>.iso</c> image, <c>.cue</c> sheet, InstallShield <c>.hdr</c> header or
+    /// InstallShield 3 archive holding the original.
     /// </param>
     /// <param name="editions">The supported editions' manifests.</param>
     /// <param name="cancellationToken">Cancels between files and during hashing.</param>

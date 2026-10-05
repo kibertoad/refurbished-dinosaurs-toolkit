@@ -23,14 +23,19 @@ public static class ContentSourceKinds
     /// <c>dataN.cab</c> that holds the header) with its <c>dataN.cab</c> volumes beside it.
     /// </summary>
     public const string InstallShieldCabinet = "installshield-cabinet";
+    /// <summary>
+    /// An InstallShield 3 archive: one unsplit file, often named <c>_SETUP.1</c> or <c>*.Z</c>,
+    /// holding the directory and file tables and the members' data.
+    /// </summary>
+    public const string InstallShieldArchive = "installshield3-archive";
 
     /// <summary>Whether <paramref name="kind"/> is one of the kinds above.</summary>
-    public static bool IsSupported(string kind) => kind is Directory or Iso9660 or CueBin or InstallShieldCabinet;
+    public static bool IsSupported(string kind) => kind is Directory or Iso9660 or CueBin or InstallShieldCabinet or InstallShieldArchive;
 }
 
 /// <summary>
 /// Read access to the user's original files, from an installed directory, an ISO 9660 image, a
-/// cue/bin raw disc image or an InstallShield cabinet set, behind one interface. Paths are relative with <c>/</c> or <c>\</c>
+/// cue/bin raw disc image, an InstallShield cabinet set or an InstallShield 3 archive, behind one interface. Paths are relative with <c>/</c> or <c>\</c>
 /// separators and match ignoring case.
 /// </summary>
 public abstract class OriginalContentSource : IDisposable
@@ -117,10 +122,15 @@ public abstract class OriginalContentSource : IDisposable
     /// Opens <paramref name="path"/> as a directory source when it is a directory, as a cue/bin image
     /// (see <see cref="OpenCueBin"/>) when it is a <c>.cue</c> file, as an InstallShield cabinet set
     /// (see <see cref="OpenInstallShieldCabinet(string, InstallShieldCabinetLimits?)"/>) with the
-    /// default limits when it is a <c>.hdr</c> file, and as an ISO 9660 image (see
-    /// <see cref="OpenIso9660(string)"/>) when it is any other file.
+    /// default limits when it is a <c>.hdr</c> file, as an InstallShield 3 archive (see
+    /// <see cref="OpenInstallShieldArchive(string, InstallShieldArchiveLimits?)"/>) with the default
+    /// limits when any other file starts with that format's signature, and as an ISO 9660 image (see
+    /// <see cref="OpenIso9660(string)"/>) otherwise.
     /// </summary>
-    /// <exception cref="NotSupportedException">The cabinet set's InstallShield major version is not 0, 5 or 6.</exception>
+    /// <exception cref="NotSupportedException">
+    /// The cabinet set's InstallShield major version is not 0, 5 or 6, or the InstallShield 3 archive
+    /// is split into parts.
+    /// </exception>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="InvalidDataException">The image is not a valid volume of its kind.</exception>
     public static OriginalContentSource Open(string path)
@@ -132,6 +142,7 @@ public abstract class OriginalContentSource : IDisposable
             var extension = Path.GetExtension(path);
             if (extension.Equals(".cue", StringComparison.OrdinalIgnoreCase)) return OpenCueBin(path);
             if (extension.Equals(".hdr", StringComparison.OrdinalIgnoreCase)) return OpenInstallShieldCabinet(path);
+            if (InstallShieldArchiveOpener.HasSignature(path)) return OpenInstallShieldArchive(path);
             return OpenIso9660(path);
         }
         throw new FileNotFoundException("Original-content source does not exist.", path);
@@ -142,13 +153,17 @@ public abstract class OriginalContentSource : IDisposable
     /// <param name="kind">One of <see cref="ContentSourceKinds"/>.</param>
     /// <exception cref="InvalidDataException"><paramref name="kind"/> is unsupported, or the image is not a valid volume of that kind.</exception>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
-    /// <exception cref="NotSupportedException">The cabinet set's InstallShield major version is not 0, 5 or 6.</exception>
+    /// <exception cref="NotSupportedException">
+    /// The cabinet set's InstallShield major version is not 0, 5 or 6, or the InstallShield 3 archive
+    /// is split into parts.
+    /// </exception>
     public static OriginalContentSource Open(string path, string kind) => kind switch
     {
         ContentSourceKinds.Directory => OpenDirectory(path),
         ContentSourceKinds.Iso9660 => OpenIso9660(path),
         ContentSourceKinds.CueBin => OpenCueBin(path),
         ContentSourceKinds.InstallShieldCabinet => OpenInstallShieldCabinet(path),
+        ContentSourceKinds.InstallShieldArchive => OpenInstallShieldArchive(path),
         _ => throw new InvalidDataException($"Unsupported original-content source kind '{kind}'.")
     };
 
@@ -292,6 +307,87 @@ public abstract class OriginalContentSource : IDisposable
         limits ??= InstallShieldCabinetLimits.Default;
         limits.Validate();
         return InstallShieldCabinetOpener.FromSource(container, headerPath, limits);
+    }
+
+    /// <summary>
+    /// Opens an InstallShield 3 archive from a file, such as a disc's <c>_SETUP.1</c>. The archive is
+    /// checked when opened, as <see cref="InstallShieldArchiveSource"/> describes, and the file is
+    /// opened again whenever a member is read.
+    /// </summary>
+    /// <param name="path">The archive file.</param>
+    /// <param name="limits">The bounds to apply, or <see langword="null"/> for <see cref="InstallShieldArchiveLimits.Default"/>.</param>
+    /// <exception cref="FileNotFoundException">The archive does not exist.</exception>
+    /// <exception cref="InvalidDataException">
+    /// The file is not an InstallShield 3 archive, its header or tables are truncated or malformed, a
+    /// member's path is not relative or its data lies outside the archive, two members share a path,
+    /// or the archive exceeds <paramref name="limits"/>.
+    /// </exception>
+    /// <exception cref="NotSupportedException">
+    /// The archive is one part of a split archive, holds an entry that spans parts, or has a header
+    /// of another size.
+    /// </exception>
+    public static InstallShieldArchiveSource OpenInstallShieldArchive(string path, InstallShieldArchiveLimits? limits = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        limits ??= InstallShieldArchiveLimits.Default;
+        limits.Validate();
+        return InstallShieldArchiveOpener.FromFile(path, limits);
+    }
+
+    /// <summary>
+    /// Opens an InstallShield 3 archive held in another source, such as the ISO 9660 volume of a disc
+    /// image. The archive is opened through <paramref name="container"/> whenever a member is read, so
+    /// keep <paramref name="container"/> usable while the archive is in use.
+    /// </summary>
+    /// <param name="container">The source holding the archive.</param>
+    /// <param name="archivePath">The archive's path in <paramref name="container"/>.</param>
+    /// <param name="limits">The bounds to apply, or <see langword="null"/> for <see cref="InstallShieldArchiveLimits.Default"/>.</param>
+    /// <exception cref="FileNotFoundException">The archive is not in <paramref name="container"/>.</exception>
+    /// <exception cref="InvalidDataException">
+    /// <paramref name="archivePath"/> is not accepted by <see cref="PortableAssetPath.Relative"/>, or
+    /// the archive is not valid as <see cref="OpenInstallShieldArchive(string, InstallShieldArchiveLimits?)"/> describes.
+    /// </exception>
+    /// <exception cref="NotSupportedException">
+    /// The archive is one part of a split archive, holds an entry that spans parts, or has a header
+    /// of another size.
+    /// </exception>
+    public static InstallShieldArchiveSource OpenInstallShieldArchive(
+        OriginalContentSource container, string archivePath, InstallShieldArchiveLimits? limits = null)
+    {
+        ArgumentNullException.ThrowIfNull(container);
+        limits ??= InstallShieldArchiveLimits.Default;
+        limits.Validate();
+        return InstallShieldArchiveOpener.FromSource(container, archivePath, limits);
+    }
+
+    /// <summary>
+    /// Opens an InstallShield 3 archive from a stream, such as an archive carved out of a
+    /// self-extracting program. The archive's first byte is at position 0 of the stream, and its
+    /// offsets count from there. The caller keeps ownership: the source never disposes
+    /// <paramref name="archive"/>, which must stay open and unchanged while the source or a stream
+    /// opened from it is in use. Member streams each keep their own position and may be read at the
+    /// same time; each read seeks <paramref name="archive"/> under a lock that every source opened over
+    /// it shares, so read <paramref name="archive"/> only through these sources.
+    /// </summary>
+    /// <param name="archive">A readable, seekable stream holding the archive.</param>
+    /// <param name="limits">The bounds to apply, or <see langword="null"/> for <see cref="InstallShieldArchiveLimits.Default"/>.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="archive"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="archive"/> cannot be read or cannot seek.</exception>
+    /// <exception cref="InvalidDataException">
+    /// The archive is not valid as <see cref="OpenInstallShieldArchive(string, InstallShieldArchiveLimits?)"/> describes.
+    /// </exception>
+    /// <exception cref="NotSupportedException">
+    /// The archive is one part of a split archive, holds an entry that spans parts, or has a header
+    /// of another size.
+    /// </exception>
+    public static InstallShieldArchiveSource OpenInstallShieldArchive(Stream archive, InstallShieldArchiveLimits? limits = null)
+    {
+        ArgumentNullException.ThrowIfNull(archive);
+        if (!archive.CanRead || !archive.CanSeek)
+            throw new ArgumentException("The InstallShield 3 archive stream must be readable and seekable.", nameof(archive));
+        limits ??= InstallShieldArchiveLimits.Default;
+        limits.Validate();
+        return InstallShieldArchiveOpener.FromStream(archive, limits);
     }
 }
 

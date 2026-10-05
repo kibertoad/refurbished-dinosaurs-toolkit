@@ -6,8 +6,8 @@
 - `RefurbishedDinosaurs.Core`: dependency-free building blocks for importing, installing and checking
   content from the user's original, plus deterministic randomness, state comparison and display
   helpers.
-- `RefurbishedDinosaurs.LegacyFormats`: PCX, bitmap, optical-disc, InstallShield cabinet and PCM WAVE readers, and a PCM
-  WAVE writer.
+- `RefurbishedDinosaurs.LegacyFormats`: PCX, bitmap, optical-disc, InstallShield cabinet, InstallShield 3
+  archive and PCM WAVE readers, and a PCM WAVE writer.
 - `RefurbishedDinosaurs.Media.Smacker`: SMK containers, palette/video decoding and packed audio.
 - `RefurbishedDinosaurs.Media.Avi`: AVI containers, Cinepak, cumulative RLE8 and Microsoft ADPCM.
 - `RefurbishedDinosaurs.Media.Fli`: AF11 FLI indexing, streaming and indexed frame decoding.
@@ -175,7 +175,8 @@ contexts outside per-frame loops.
 | Types | Reads |
 |---|---|
 | `AssetVerifier` | Check the player's original against an `AssetManifest` through any `OriginalContentSource`, and `IdentifyAsync` the supported edition it is, or that several editions match. |
-| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image or an InstallShield cabinet set behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin` and `OpenInstallShieldCabinet` take it explicitly. `OpenIso9660(stream)` opens an `.iso` image from a readable, seekable stream the caller keeps and the source never disposes; the streams it opens each keep their own position over it. A cue/bin source gives the sheet as `Cue` and the full paths of the files `OpenCueBin` chose as `CuePath` and `BinPath`. It reads the `.cue` once and gives those bytes as `CueSheetBytes`: hash them to record the sheet that was parsed, since the file at `CuePath` may have been replaced after the source opened. An `.iso` or cue/bin source opened from a path records the image's length and last-write time when it opens, and each read of the `.iso` or BIN through the source (`OpenRead`, `OpenVolume`, `OpenBin` and the audio checks) fails with an `IOException` when either has changed; a rewrite that keeps both is not detected. A stream opened from `BinPath` is not checked, so read the image with `OpenBin`. |
+| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image, an InstallShield cabinet set or an InstallShield 3 archive behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path, and from the first bytes for an InstallShield 3 archive; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin`, `OpenInstallShieldCabinet` and `OpenInstallShieldArchive` take it explicitly. `OpenIso9660(stream)` opens an `.iso` image from a readable, seekable stream the caller keeps and the source never disposes; the streams it opens each keep their own position over it. A cue/bin source gives the sheet as `Cue` and the full paths of the files `OpenCueBin` chose as `CuePath` and `BinPath`. It reads the `.cue` once and gives those bytes as `CueSheetBytes`: hash them to record the sheet that was parsed, since the file at `CuePath` may have been replaced after the source opened. An `.iso` or cue/bin source opened from a path records the image's length and last-write time when it opens, and each read of the `.iso` or BIN through the source (`OpenRead`, `OpenVolume`, `OpenBin` and the audio checks) fails with an `IOException` when either has changed; a rewrite that keeps both is not detected. A stream opened from `BinPath` is not checked, so read the image with `OpenBin`. |
+| `InstallShieldArchiveSource`, `InstallShieldArchiveLimits` | The members of an unsplit InstallShield 3 archive (such as `_SETUP.1`), from a file, inside another source or from a stream. See [InstallShield 3 archives](#installshield-3-archives). |
 | `InstallShieldCabinetSource`, `InstallShieldCabinetLimits` | The members of an InstallShield cabinet set of major version 0, 5 or 6 (`dataN.hdr` and `dataN.cab`), on disk or inside another source. See [InstallShield cabinets](#installshield-cabinets). |
 | `ContentSourceExtractor`, `ContentExtractionOptions` | Copy the files of any `OriginalContentSource`, or a selection of them, into a staging directory and get an `InstalledAsset` record for each. See [Extracting a source into a stage](#extracting-a-source-into-a-stage). |
 | `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
@@ -282,6 +283,52 @@ The reader is managed code in this package, under its MIT license, with no third
 reading of the layout follows [Unshield](https://github.com/twogood/unshield) (MIT). No open tool writes
 the format, so the tests build their cabinets with a writer in the test project that follows the same
 layout; a restoration's own set, compared against another extractor, is the check against real media.
+
+## InstallShield 3 archives
+
+InstallShield 3 keeps a whole installation in one archive file, often `_SETUP.1` on the disc or a
+`.Z` file. The format is unrelated to the cabinets above, so it is its own source kind,
+`installshield3-archive` ([ADR 0018](../../docs/decisions/0018-installshield-3-archives-as-content-sources.md)).
+
+- `OriginalContentSource.OpenInstallShieldArchive(path)` opens an archive file, and opens it again
+  whenever a member is read.
+- `OpenInstallShieldArchive(container, archivePath)` opens an archive inside another source, such as
+  the ISO 9660 volume of a disc image, and reads it through that source.
+- `OpenInstallShieldArchive(stream)` opens an archive held in a readable, seekable stream whose
+  position 0 is the archive's first byte, such as an archive carved out of a self-extracting patch at
+  a known offset. The caller keeps the stream, as for `OpenIso9660(stream)`.
+- `Open(path)` opens a file as an archive when it starts with the archive signature (`13 5D 65 8C`),
+  and `Open(path, "installshield3-archive")` opens it by kind.
+
+| Supported | Not supported |
+|---|---|
+| Unsplit archives with the 0x3A-byte header field block. Members stored as they are and members compressed with the PKWARE Data Compression Library (coded or plain literals, 1, 2 or 4 KiB dictionary), in any number of directories. | Archives split into parts (`_SETUP.1`, `_SETUP.2` and so on), and entries marked as spanning parts, which throw `NotSupportedException` with the header's flags and part count. A header with a field block of another size, which throws `NotSupportedException`. Passwords, file dates and attributes are not read. |
+
+Opening reads the header, the directory table and the file table and checks them before any member
+is read: both tables lie inside the archive, their entries fill exactly the sizes the header declares,
+each name ends with its NUL, and the directory a file entry names is the one the directory table's
+file counts place it in. Every listed member's directory and name joined must pass
+`PortableAssetPath.Relative`, its stored bytes must lie inside the archive after the header, a stored
+member's two sizes must agree, no two listed members may share a path ignoring case, and the archive
+must stay within `InstallShieldArchiveLimits` (65,535 entries, 8 GiB expanded and 16 MiB of tables by
+default). A failed check throws `InvalidDataException`. Entries the archive marks invalid are left out
+and listed in `SkippedFiles`; their path is `null` when it is not relative. Names are read as
+ISO 8859-1.
+
+`OpenRead` decodes a member while it is read, and seeks as a cabinet member stream does. The archive
+records no checksum, so a member is checked by size and framing only: reading a compressed member to
+its end checks that it expands to exactly its declared size, that the end code follows, and that no
+whole byte of its stored data is left after it. A failed check throws `InvalidDataException` before
+the last bytes are returned, so `AssetVerifier` reports the file as `Unreadable`. A damaged member that
+keeps its size and framing is not detected; pin the files you need by XXH3-128 in the manifest.
+
+The reader, including its PKWARE DCL decoder, is managed code in this package under its MIT license.
+Its reading of the layout follows [unshieldv3](https://github.com/wfr/unshieldv3) (Apache-2.0) and
+[idecomp](https://github.com/lephilousophe/idecomp) (GPL-3.0), and the decoder follows the format
+description implemented by zlib's `contrib/blast`; no code is taken from them. The tests build archives
+with a writer in the test project, and also decode the format description's example and a stream an
+independent decoder expanded. A restoration's own archive, compared entry by entry against another
+extractor, is the check against real media.
 
 ## Extracting a source into a stage
 

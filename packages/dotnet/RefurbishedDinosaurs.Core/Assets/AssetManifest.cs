@@ -14,7 +14,8 @@ namespace RefurbishedDinosaurs.Core.Assets;
 /// <param name="Files">The expected files, with paths relative to the original's root.</param>
 /// <param name="SourceKind">
 /// How the copy is read, one of the <c>ContentSourceKinds</c> of RefurbishedDinosaurs.LegacyFormats:
-/// <c>directory</c>, <c>iso9660</c>, <c>cue-bin</c> or <c>installshield-cabinet</c>.
+/// <c>directory</c>, <c>iso9660</c>, <c>cue-bin</c>, <c>installshield-cabinet</c> or
+/// <c>installshield3-archive</c>.
 /// </param>
 public sealed record AssetManifest(
     string GameId,
