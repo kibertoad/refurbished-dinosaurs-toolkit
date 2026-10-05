@@ -12,6 +12,7 @@ How much of the spec in `spec/` the rebuild does. The rows are in `parity/`, one
 | established | 0 |
 | disputed | 0 |
 | implemented | 0 |
+| deviated | 0 |
 | validated | 0 |
 
 | Code | Rows |

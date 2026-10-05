@@ -6,7 +6,7 @@ import { basename, join } from "node:path";
 import { collectPlaceholders } from "../code-files.ts";
 import type { Context } from "../context.ts";
 import { mayBeInterrupted, onlyEmulatedRuns } from "../evidence.ts";
-import { markdownTree, walk } from "../files.ts";
+import { checkTestFiles, markdownTree, NEEDS_GAME, walk } from "../files.ts";
 import { areaOf, compareIds, kindOf } from "../ids.ts";
 import { readText, tables } from "../markdown.ts";
 import { LINE_LIMIT } from "../standard.ts";
@@ -41,10 +41,9 @@ export function checkParity(ctx: Context, deviations: Map<string, Deviation>): P
   const parityRows = new Map<string, { cells: string[]; file: string }>(); // spec ID -> { cells, file }
   const parityCounts: { status: Record<string, number>; code: Record<string, number> } = { status: {}, code: {} };
   const validatedTests = new Map<string, Array<{ specId: string; file: string }>>(); // marked test file of a validated row -> [{ specId, file }]
-  // A test file that reads the original's files through GAME_DIR says so with this comment. It runs
+  // A test file that reads the original's files through GAME_DIR says so with NEEDS_GAME. It runs
   // only on a maintainer's machine, so its validated rows need it in VALIDATION.md; every other test
   // runs in CI.
-  const NEEDS_GAME = /needs:\s*GAME_DIR/;
   const needsGame = (p: string) => existsSync(p) && NEEDS_GAME.test(readFileSync(p, "utf8"));
   // A PARITY.md that still holds the rows is left alone until they have moved, so the check does not
   // overwrite them with the totals.
@@ -115,26 +114,7 @@ export function checkParity(ctx: Context, deviations: Map<string, Deviation>): P
           problem(file, `${specId}: an unknown entry cannot be complete`);
         if (code === "complete" && placeholders.has(specId))
           problem(file, `${specId}: a PLACEHOLDER comment cites it, so it cannot be complete`);
-        const testFiles =
-          tests === "None"
-            ? []
-            : tests
-                .split(",")
-                .map((x) => x.trim())
-                .filter(Boolean);
-        for (const tf of testFiles) {
-          const p = join(repoDir, tf);
-          if (!existsSync(p)) problem(file, `${specId}: test file ${tf} does not exist`);
-          else {
-            const text = readFileSync(p, "utf8");
-            if (!text.includes(specId)) problem(file, `${specId}: test file ${tf} does not mention ${specId}`);
-            if (text.includes("GAME_DIR") && !NEEDS_GAME.test(text))
-              problem(
-                file,
-                `${specId}: test file ${tf} mentions GAME_DIR without a "needs: GAME_DIR" comment, so CI would skip it unseen`,
-              );
-          }
-        }
+        const testFiles = checkTestFiles(ctx, file, specId, tests);
         const listedDevs =
           devs === "None"
             ? []
@@ -148,9 +128,26 @@ export function checkParity(ctx: Context, deviations: Map<string, Deviation>): P
           .sort(compareIds);
         if (listedDevs.slice().sort(compareIds).join(",") !== expectedDevs.join(","))
           problem(file, `${specId}: Deviations must be ${expectedDevs.join(", ") || "None"}`);
+        // A row whose entry a mandatory deviation replaces entirely cannot be compared with the original,
+        // so it has no tests of its own: they belong in the deviation's Tests item. It is deviated once
+        // every mandatory deviation it lists has tests.
+        const mandatory = listedDevs
+          .map((x) => deviations.get(x))
+          .filter((d): d is Deviation => Boolean(d?.mandatory && !d.dropped));
+        const replacing = listedDevs.find((x) => {
+          const d = deviations.get(x);
+          return d?.mandatory && !d.dropped && d.replaces.includes(specId);
+        });
+        const replaced = replacing !== undefined;
+        if (replaced && testFiles.length > 0)
+          problem(
+            file,
+            `${specId}: ${replacing} replaces it, so Tests must be None; list the tests in the deviation's Tests item`,
+          );
+        const deviated = replaced && mandatory.every((d) => d.tests.length > 0);
         let expectedStatus: string;
         if (code !== "complete" || e.meta.status === "disputed") expectedStatus = e.meta.status;
-        else if (testFiles.length === 0) expectedStatus = "implemented";
+        else if (testFiles.length === 0 || replaced) expectedStatus = deviated ? "deviated" : "implemented";
         else if (["supported", "established"].includes(e.meta.status)) expectedStatus = "validated";
         else {
           problem(

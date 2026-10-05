@@ -25,7 +25,7 @@ export function generateParity(ctx: Context, parity: Parity, generated: Map<stri
     "",
     "| Status | Rows |",
     "|---|---|",
-    ...["unknown", "sourced", "supported", "established", "disputed", "implemented", "validated"].map(
+    ...["unknown", "sourced", "supported", "established", "disputed", "implemented", "deviated", "validated"].map(
       (k) => `| ${k} | ${parityCounts.status[k] ?? 0} |`,
     ),
     "",

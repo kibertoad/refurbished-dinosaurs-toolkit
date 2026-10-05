@@ -5,7 +5,7 @@ import { existsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Context } from "../context.ts";
 import { checkResolves, isSuperseded } from "../evidence.ts";
-import { termFiles } from "../files.ts";
+import { checkTestFiles, termFiles } from "../files.ts";
 import { areaOf, idsIn, kindOf } from "../ids.ts";
 import { readText } from "../markdown.ts";
 import type { Entry } from "../types.ts";
@@ -14,8 +14,14 @@ import type { Entry } from "../types.ts";
 export interface Deviation {
   /** The spec IDs its Departs from item names. */
   departs: string[];
+  /** The spec IDs its Replaces item names: the entries it replaces entirely. */
+  replaces: string[];
   /** Whether its Dropped item says it was dropped. */
   dropped: boolean;
+  /** Whether its Default is mandatory. */
+  mandatory: boolean;
+  /** The test files its Tests item lists, which check the rebuild does what the deviation says. */
+  tests: string[];
   /** Its file. */
   file: string;
 }
@@ -57,10 +63,12 @@ export function checkDeviations(ctx: Context): Map<string, Deviation> {
         const item: Record<string, string> = Object.fromEntries(items);
         const order = [
           "Departs from",
+          ...("Replaces" in item ? ["Replaces"] : []),
           "Reason",
           "Setting",
           "Default",
           ...("Justification" in item ? ["Justification"] : []),
+          ...("Tests" in item ? ["Tests"] : []),
           "Dropped",
         ];
         if (
@@ -74,15 +82,37 @@ export function checkDeviations(ctx: Context): Map<string, Deviation> {
         const dropped = Boolean(item.Dropped) && item.Dropped !== "no";
         if (dropped && !/^\d{4}-\d{2}-\d{2}\b/.test(item.Dropped))
           problem(file, `${title}: Dropped gives the date, YYYY-MM-DD, and the reason`);
+        const replaces = idsIn(item.Replaces);
         checkResolves(ctx, file, departs, `${title} Departs from`);
+        checkResolves(ctx, file, replaces, `${title} Replaces`);
+        // The Tests item lists the test files that check the rebuild does what the deviation says. A
+        // dropped deviation's tests may have gone with it.
+        let tests: string[] = [];
         if (!dropped) {
           if (!departs.some((x) => ["RULE", "FMT", "SCR"].includes(kindOf(x))))
             problem(file, `${title}: Departs from names at least one rule, format or screen`);
           for (const x of departs)
             if (isSuperseded(entries, x)) problem(file, `${title} departs from ${x}, which is superseded`);
           checkDeviationDefault(ctx, file, title, item, departs);
+          // Replaces names the entries of Departs from that a mandatory deviation replaces entirely, which
+          // is what lets their rows become deviated.
+          if ("Replaces" in item) {
+            if (item.Default !== "mandatory") problem(file, `${title}: only a mandatory deviation has a Replaces item`);
+            if (replaces.length === 0) problem(file, `${title}: Replaces names at least one entry`);
+            for (const x of replaces) {
+              if (!departs.includes(x)) problem(file, `${title}: Replaces names ${x}, which Departs from does not`);
+              if (!["RULE", "FMT", "SCR"].includes(kindOf(x)))
+                problem(file, `${title}: Replaces names ${x}, which is not a rule, format or screen`);
+            }
+          }
+          // Nothing records a local run of a deviation's tests, so they run in CI and never need GAME_DIR.
+          if ("Tests" in item) {
+            tests = checkTestFiles(ctx, file, title, item.Tests, false);
+            if (tests.length === 0)
+              problem(file, `${title}: Tests lists at least one test file; leave the item out when there is none`);
+          }
         }
-        deviations.set(title, { departs, dropped, file });
+        deviations.set(title, { departs, replaces, dropped, mandatory: item.Default === "mandatory", tests, file });
       }
   }
   return deviations;
