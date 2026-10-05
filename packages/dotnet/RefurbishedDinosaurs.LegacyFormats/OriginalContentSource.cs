@@ -24,8 +24,8 @@ public static class ContentSourceKinds
     /// </summary>
     public const string InstallShieldCabinet = "installshield-cabinet";
     /// <summary>
-    /// An InstallShield 3 archive: one unsplit file, often named <c>_SETUP.1</c> or <c>*.Z</c>,
-    /// holding the directory and file tables and the members' data.
+    /// An InstallShield 3 archive: one file, often named <c>_SETUP.1</c> or <c>*.Z</c>, holding the
+    /// directory and file tables and the members' data. It is unsplit, or a split archive of one part.
     /// </summary>
     public const string InstallShieldArchive = "installshield3-archive";
 
@@ -129,7 +129,7 @@ public abstract class OriginalContentSource : IDisposable
     /// </summary>
     /// <exception cref="NotSupportedException">
     /// The cabinet set's InstallShield major version is not 0, 5 or 6, or the InstallShield 3 archive
-    /// is split into parts.
+    /// is split into parts that are not all in this file.
     /// </exception>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="InvalidDataException">The image is not a valid volume of its kind.</exception>
@@ -155,7 +155,7 @@ public abstract class OriginalContentSource : IDisposable
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="NotSupportedException">
     /// The cabinet set's InstallShield major version is not 0, 5 or 6, or the InstallShield 3 archive
-    /// is split into parts.
+    /// is split into parts that are not all in this file.
     /// </exception>
     public static OriginalContentSource Open(string path, string kind) => kind switch
     {
@@ -319,12 +319,13 @@ public abstract class OriginalContentSource : IDisposable
     /// <exception cref="FileNotFoundException">The archive does not exist.</exception>
     /// <exception cref="InvalidDataException">
     /// The file is not an InstallShield 3 archive, its header or tables are truncated or malformed, a
-    /// member's path is not relative or its data lies outside the archive, two members share a path,
-    /// or the archive exceeds <paramref name="limits"/>.
+    /// member's path is not relative or its data lies outside the archive, a member of a split archive
+    /// of one part names another part, two members share a path, or the archive exceeds
+    /// <paramref name="limits"/>.
     /// </exception>
     /// <exception cref="NotSupportedException">
-    /// The archive is one part of a split archive, holds an entry that spans parts, or has a header
-    /// of another size.
+    /// The archive is one part of a split archive of more than one part, holds an entry that spans
+    /// parts, or has a header of another size.
     /// </exception>
     public static InstallShieldArchiveSource OpenInstallShieldArchive(string path, InstallShieldArchiveLimits? limits = null)
     {
@@ -348,8 +349,8 @@ public abstract class OriginalContentSource : IDisposable
     /// the archive is not valid as <see cref="OpenInstallShieldArchive(string, InstallShieldArchiveLimits?)"/> describes.
     /// </exception>
     /// <exception cref="NotSupportedException">
-    /// The archive is one part of a split archive, holds an entry that spans parts, or has a header
-    /// of another size.
+    /// The archive is one part of a split archive of more than one part, holds an entry that spans
+    /// parts, or has a header of another size.
     /// </exception>
     public static InstallShieldArchiveSource OpenInstallShieldArchive(
         OriginalContentSource container, string archivePath, InstallShieldArchiveLimits? limits = null)
@@ -377,8 +378,8 @@ public abstract class OriginalContentSource : IDisposable
     /// The archive is not valid as <see cref="OpenInstallShieldArchive(string, InstallShieldArchiveLimits?)"/> describes.
     /// </exception>
     /// <exception cref="NotSupportedException">
-    /// The archive is one part of a split archive, holds an entry that spans parts, or has a header
-    /// of another size.
+    /// The archive is one part of a split archive of more than one part, holds an entry that spans
+    /// parts, or has a header of another size.
     /// </exception>
     public static InstallShieldArchiveSource OpenInstallShieldArchive(Stream archive, InstallShieldArchiveLimits? limits = null)
     {

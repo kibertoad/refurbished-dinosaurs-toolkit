@@ -20,8 +20,9 @@ internal static class SyntheticInstallShieldArchive
     /// <summary>
     /// Builds an archive. Files are written in the order given and directories in the order they first
     /// appear, so files of one directory must be given together for the directory counts to place them.
+    /// Every file entry names part 1 as its first and last part.
     /// </summary>
-    public static byte[] Build(IReadOnlyList<ArchiveFile> files, ushort archiveFlags = 0, byte totalParts = 1)
+    public static byte[] Build(IReadOnlyList<ArchiveFile> files, ushort archiveFlags = 0, byte totalParts = 1, byte partNumber = 1)
     {
         var directories = files.Select(file => file.Directory).Distinct().ToList();
         using var output = new MemoryStream();
@@ -82,7 +83,7 @@ internal static class SyntheticInstallShieldArchive
         BinaryPrimitives.WriteUInt32LittleEndian(header[18..], (uint)bytes.Length);
         BinaryPrimitives.WriteUInt32LittleEndian(header[22..], (uint)files.Sum(file => file.Data.Length));
         header[30] = totalParts;
-        header[31] = 1;
+        header[31] = partNumber;
         BinaryPrimitives.WriteUInt32LittleEndian(header[41..], (uint)directoriesOffset);
         BinaryPrimitives.WriteUInt32LittleEndian(header[45..], (uint)(filesOffset - directoriesOffset));
         BinaryPrimitives.WriteUInt16LittleEndian(header[49..], (ushort)directories.Count);

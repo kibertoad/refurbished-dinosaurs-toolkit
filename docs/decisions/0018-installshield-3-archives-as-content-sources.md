@@ -34,10 +34,14 @@ The archive layout and the compression format are containers. Neither is game co
    they must agree), every listed path passes `PortableAssetPath.Relative`, every member's stored
    bytes lie inside the archive after the header, a stored member's two sizes agree, no two listed
    members share a path, and the entry count and expanded total are within the caller's limits.
-4. Only unsplit archives are read. An archive whose header marks it as one part of a split set, or
-   that holds an entry marked as spanning parts, is refused with `NotSupportedException`, and so is
-   a header that declares a field block of another size. Split archives are added when a restoration
-   brings provenance for one.
+4. Only archives that hold all of their data are read: unsplit archives, and split archives of one
+   part. The second kind sets a split flag in its header and declares itself part 1 of 1; each of its
+   listed entries must name part 1 as its first and last part, or opening throws
+   `InvalidDataException`. Any part of a split set of more than one part, a header that declares
+   another part number or count, an unsplit header that declares more than one part, and an entry
+   marked as spanning parts are refused with `NotSupportedException` naming the header's flags, part
+   number and part count, and so is a header that declares a field block of another size. Split sets
+   of several parts are added when a restoration brings provenance for one.
 5. The archive records no checksum. Reading a compressed member to its end checks that its data
    expands to exactly the declared size, ends with the end code, and leaves no whole stored byte
    after it; a stored member is checked by size. A failed check throws before the member's last
@@ -57,6 +61,6 @@ The archive layout and the compression format are containers. Neither is game co
 ## Consequences
 
 A restoration can open an InstallShield 3 archive through the same interface as its disc and drop
-its child-process extractor once its own archive reads and matches. A split archive still needs
-another extractor until a restoration brings one, and a damaged member that keeps its size and
-framing is not detected, since the format records nothing more to check against.
+its child-process extractor once its own archive reads and matches. A split set of several parts
+still needs another extractor until a restoration brings one, and a damaged member that keeps its
+size and framing is not detected, since the format records nothing more to check against.
