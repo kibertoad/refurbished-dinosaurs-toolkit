@@ -1,17 +1,13 @@
-using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using RefurbishedDinosaurs.Core.Assets;
 using Xunit;
+using static RefurbishedDinosaurs.Core.Tests.OverlayFixtures;
 
 namespace RefurbishedDinosaurs.Core.Tests;
 
 public sealed class ContentOverlayTests : IDisposable
 {
-    private static readonly byte[] Base = "base bytes"u8.ToArray();
-    private static readonly byte[] Patched = "patched bytes, longer"u8.ToArray();
-    private static readonly byte[] Added = "added"u8.ToArray();
-
     private readonly string _work = Directory.CreateTempSubdirectory("overlay-tests-").FullName;
     private readonly string _content;
 
@@ -27,42 +23,10 @@ public sealed class ContentOverlayTests : IDisposable
 
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
-    private static object Record(string path, byte[] payload, string? baseXxh3, string? xxh3 = null, long? bytes = null) => new
-    {
-        path,
-        bytes = bytes ?? payload.Length,
-        baseXxh3,
-        xxh3 = xxh3 ?? FileFingerprint.Xxh3(payload)
-    };
-
-    private static object Manifest(params object[] files) => new
-    {
-        formatVersion = 1,
-        name = "synthetic-overlay-1",
-        gameId = "synthetic-game",
-        fromVersion = "1.0",
-        toVersion = "1.1",
-        files
-    };
-
-    private static object StandardManifest(string? patchedXxh3 = null) => Manifest(
-        Record("data/main.bin", Patched, FileFingerprint.Xxh3(Base), patchedXxh3),
-        Record("extra/new/added.dat", Added, null));
-
-    private static (string Path, byte[] Payload)[] StandardPayloads =>
-        [("data/main.bin", Patched), ("extra/new/added.dat", Added)];
-
     private string Zip(object manifest, params (string Path, byte[] Payload)[] payloads)
     {
         var path = Path.Combine(_work, $"overlay-{Guid.NewGuid():N}.zip");
-        using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
-        using (var stream = archive.CreateEntry(ContentOverlay.ManifestFileName).Open())
-            JsonSerializer.Serialize(stream, manifest);
-        foreach (var (name, payload) in payloads)
-        {
-            using var stream = archive.CreateEntry($"{ContentOverlay.PayloadDirectory}/{name}").Open();
-            stream.Write(payload);
-        }
+        File.WriteAllBytes(path, ZipBytes(manifest, payloads));
         return path;
     }
 
@@ -198,6 +162,27 @@ public sealed class ContentOverlayTests : IDisposable
         Assert.Equal(FileFingerprint.Xxh3(Patched), error.FoundXxh3);
         Assert.Equal(Base, File.ReadAllBytes(Path.Combine(_content, "DATA", "MAIN.BIN")));
         Assert.Equal(["DATA", "DATA/MAIN.BIN", "keep.txt"], ContentEntries());
+    }
+
+    [Fact]
+    public async Task TargetsFollowThePortablePathRules()
+    {
+        async Task Rejected(string path)
+        {
+            using var overlay = ContentOverlay.OpenZip(Zip(Manifest(Record(path, Added, null)), (path, Added)));
+            await Assert.ThrowsAsync<InvalidDataException>(() => overlay.ApplyAsync(_content, Token));
+        }
+
+        await Rejected("data");
+        await Rejected("keep.txt/added.dat");
+        // Names that differ only in case and links need a case-sensitive file system and link rights.
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()) return;
+        Directory.CreateDirectory(Path.Combine(_content, "data"));
+        await Rejected("Data/added.dat");
+        Directory.Delete(Path.Combine(_content, "data"));
+        Directory.CreateSymbolicLink(Path.Combine(_content, "linked"), Path.Combine(_content, "DATA"));
+        await Rejected("LINKED/added.dat");
+        Assert.False(File.Exists(Path.Combine(_content, "DATA", "added.dat")));
     }
 
     [Fact]

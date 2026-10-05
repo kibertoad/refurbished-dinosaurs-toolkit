@@ -129,6 +129,14 @@ boundary and continuation limits remain explicit gaps or stops. Partial-table sp
 partial evidence, never complete dispatch or native-reachability claims. See the
 [table contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#evidenced-indirect-jump-tables).
 
+A call model may also sit at an `INT n` instruction in the real-mode model. The interrupt is
+still reported as a hardware boundary with its vector, the handler is not executed, and each case
+returns to the next instruction with SP and CS as before the interrupt. Registers, flags and memory
+the model does not preserve or set are unknown. `leavesFlags: true` describes a service that returns
+with a far return and leaves the interrupt's FLAGS word on the stack. Without a model, and at INT1,
+INT3 (in either encoding), INTO or any PE32 interrupt, the path stops at the interrupt as before. See
+[ADR 0017](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/decisions/0017-call-models-at-interrupt-sites.md).
+
 A call model may declare `preservesMemory`: up to 32 scopes (4,096 bytes in total), each naming a
 segment register, an address-width base register, an optional displacement, a byte count and the
 evidence for assuming the service leaves those bytes alone. Scopes resolve against the pre-call

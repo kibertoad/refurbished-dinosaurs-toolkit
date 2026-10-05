@@ -60,9 +60,12 @@ traversal references on every host, along with components Windows reads differen
 or space, or a reserved device name such as `CON` or `nul.dat`). `WithoutDriveRoot` explicitly
 discards an ASCII Windows drive root when a game stores installation paths. `ResolveFile` matches
 every component ignoring ordinal case, rejects a missing root, ambiguous matches and links, and
-returns the actual relative spelling. It lists hidden and system entries and fails on an unreadable
-directory, so it never skips a name another host would match. The resolver is for trusted, stable
-content directories; concurrent filesystem replacement needs host controls.
+returns the actual relative spelling. A component with two matches is ambiguous even when one of
+them is spelled exactly. It lists hidden and system entries and fails on an unreadable directory, so
+it never skips a name another host would match. `ResolveDirectory` applies the same rules to a
+directory, for a game that names a directory and then opens files in it by name, and throws when the
+last component is a file. Both resolvers are for trusted, stable content directories; concurrent
+filesystem replacement needs host controls.
 
 `AssetManifest`, `AssetVerifier`, `OriginalContentSource` lookups and the cue sheet `FILE` check
 use the same rules. A null or blank reference from data, a blank manifest game or edition and a
@@ -78,17 +81,22 @@ A content overlay adds or replaces files in a content directory, usually a
 `files/<path>`. Each record gives the target path, the payload's size, the XXH3-128 the target must
 have first (`baseXxh3`, null for an added file that must not exist) and the payload's XXH3-128.
 
+`OpenZip(stream)` opens the zip from a readable, seekable stream, such as an overlay embedded as a
+resource, with the same checks and limits as `OpenZip(path)`. The archive starts at position 0. The
+caller keeps the stream: the overlay reads payloads from it until it is disposed and never disposes
+it. A stream that cannot read or seek throws `ArgumentException`.
+
 Opening rejects a manifest with a duplicate path (ignoring case), a path `PortableAssetPath.Relative`
 rejects, a path that is also a directory of another record, a missing, unlisted or linked payload,
 a payload of another size than its record, an `overlay.json` or `files` directory that is a link,
 and anything over `ContentOverlayLimits` (100,000 files, 1 GiB a file, 4 GiB in all and a 4 MiB
 manifest by default).
 
-`ApplyAsync` checks every target before it writes anything, finding each path component ignoring
-case. A target that already has the payload's size and hash counts as applied and is not written,
-so a rerun writes nothing. A target with neither hash, a replaced file that is missing, or an added
-file that exists throws `ContentOverlayException` with a `ContentOverlayProblem`, the path and the
-hash found. Then every payload is copied into a scratch directory under the root and hashed as it
+`ApplyAsync` checks every target before it writes anything, finding each path component with the
+rules of `PortableAssetPath.ResolveFile`. A target that already has the payload's size and hash
+counts as applied and is not written, so a rerun writes nothing. A target with neither hash, a
+replaced file that is missing, or an added file that exists throws `ContentOverlayException` with a
+`ContentOverlayProblem`, the path and the hash found. Then every payload is copied into a scratch directory under the root and hashed as it
 is copied; a payload whose size or hash differs from its record throws before any target is
 replaced, and the scratch directory is always removed. Only then are the copies moved over their
 targets. Those moves are not one transaction, so after any exception dispose the stage without
@@ -119,16 +127,28 @@ Two pressings of a disc can carry the same files in different ISO 9660 volumes. 
 | `VolumeBlocks` | `OriginalContentSource.VolumeBlocks`, the declared volume space size in 2048-byte blocks | `WrongVolumeSize` |
 | `VolumeXxh3` | XXH3-128 of `OriginalContentSource.OpenVolume()`, the declared blocks from block 0 | `WrongVolumeHash` |
 
+`Label` reads each byte of the descriptor's 32-byte identifier as the Latin-1 (ISO-8859-1) character
+of the same value and drops the trailing spaces and NULs, so byte 0xC9 is `É` (U+00C9) and
+identifiers that differ in a byte before their trailing padding give different labels.
+`VolumeIdentifier` writes those characters and is compared with `Label` ordinally. A control byte
+reads as its control character, so a Shift-JIS lead byte 0x85 is written `"\u0085"` in JSON.
+`Validate` accepts 1 to 32 characters from U+0000 to U+00FF that do not end in a space or NUL,
+which is every label a descriptor can give. The `WrongVolumeIdentifier` detail writes both
+identifiers as JSON strings with control characters escaped, so the found value can be copied into
+the manifest.
+
 `OpenVolume` reads the same bytes from an `.iso` image and from the data track of a cue/bin image
 of one disc, and leaves out padding after the declared volume, so one `VolumeXxh3` serves both.
 Record it from a reference copy with `FileFingerprint.Xxh3Async(source.OpenVolume())`.
 `AssetVerifier` checks the pins before the files, skips the hash when the identifier or size
 already differs, and reports a source with no volume, or a volume it cannot read, as `Unreadable`.
-It checks every file whatever the pins found. The pins enter `Fingerprint()`, so editions that
-differ only in their volume get different fingerprints. Adding a pin to a manifest that has shipped
-changes its fingerprint, so a copy installed with the unpinned manifest has a `SourceFingerprint`
-that no longer matches and has to be imported again. `Validate` rejects a pin on any other source
-kind.
+`AssetManifest.PinsVolume` is true when a manifest gives any of the three fields, and only then is
+the volume checked. `IdentifyAsync` reads the volume once per source and reports that read's hash,
+or its failure, for every pinned edition. It checks every file whatever the pins found. The pins
+enter `Fingerprint()`, so editions that differ only in their volume get different fingerprints.
+Adding a pin to a manifest that has shipped changes its fingerprint, so a copy installed with the
+unpinned manifest has a `SourceFingerprint` that no longer matches and has to be imported again.
+`Validate` rejects a pin on any other source kind.
 
 The `.bin`, `.cue` and `.iso` files themselves cannot be pinned: the cue's text and the `.bin`'s
 audio sectors change between rips of one disc.
@@ -155,7 +175,7 @@ contexts outside per-frame loops.
 | Types | Reads |
 |---|---|
 | `AssetVerifier` | Check the player's original against an `AssetManifest` through any `OriginalContentSource`, and `IdentifyAsync` the supported edition it is, or that several editions match. |
-| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image or an InstallShield cabinet set behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin` and `OpenInstallShieldCabinet` take it explicitly. A cue/bin source gives the sheet as `Cue` and the full paths of the files `OpenCueBin` chose as `CuePath` and `BinPath`. |
+| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image or an InstallShield cabinet set behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin` and `OpenInstallShieldCabinet` take it explicitly. `OpenIso9660(stream)` opens an `.iso` image from a readable, seekable stream the caller keeps and the source never disposes; the streams it opens each keep their own position over it. A cue/bin source gives the sheet as `Cue` and the full paths of the files `OpenCueBin` chose as `CuePath` and `BinPath`. It reads the `.cue` once and gives those bytes as `CueSheetBytes`: hash them to record the sheet that was parsed, since the file at `CuePath` may have been replaced after the source opened. An `.iso` or cue/bin source opened from a path records the image's length and last-write time when it opens, and each read of the `.iso` or BIN through the source (`OpenRead`, `OpenVolume`, `OpenBin` and the audio checks) fails with an `IOException` when either has changed; a rewrite that keeps both is not detected. A stream opened from `BinPath` is not checked, so read the image with `OpenBin`. |
 | `InstallShieldCabinetSource`, `InstallShieldCabinetLimits` | The members of an InstallShield 5 or 6 cabinet set (`dataN.hdr` and `dataN.cab`), on disk or inside another source. See [InstallShield cabinets](#installshield-cabinets). |
 | `ContentSourceExtractor`, `ContentExtractionOptions` | Copy the files of any `OriginalContentSource`, or a selection of them, into a staging directory and get an `InstalledAsset` record for each. See [Extracting a source into a stage](#extracting-a-source-into-a-stage). |
 | `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
@@ -166,6 +186,7 @@ contexts outside per-frame loops.
 | `WavePcm16Stream` | 16-bit mono or stereo PCM WAVE files, indexed and read in frame-aligned buffers without loading the track. |
 | `WavePcm16Writer` | Writes canonical 16-bit mono or stereo PCM WAVE files. |
 | `PcxDecoder`, `RawIndexedImageDecoder`, `IndexedImage` | 8-bit RLE PCX, and headerless indexed pixels, with RGBA conversion. |
+| `ImageLimits` | `DefaultMaximumPixels`, the pixel limit `BmpDecoder`, `PcxDecoder` and `RawIndexedImageDecoder` apply when no `maximumPixels` is passed. |
 | `Rle8BitmapDecoder` | 8-bit BMP (BI_RLE8 or BI_RGB), rewritten as uncompressed BI_RGB. |
 | `BmpDecoder`, `BmpImage` | 8-bit BMP (BI_RGB or BI_RLE8) and 24-bit or 32-bit BI_RGB BMP, decoded to opaque RGBA rows top to bottom. See [BMP images](#bmp-images). |
 
@@ -182,9 +203,9 @@ Every pixel is opaque: the fourth byte of a 32-bit BI_RGB pixel is unused by the
 Pixels a BI_RLE8 stream skips take palette index 0. The file is checked before any pixel buffer is
 allocated: the `BM` signature, a declared file size equal to the length, a positive width, a nonzero
 height, one plane, a palette that ends before the pixel data, rows padded to 4 bytes that fit in the
-file, and at most `maximumPixels` pixels (16,777,216 by default). A pixel whose palette index is past
-the palette's last colour also throws. Pass `requireDeclaredFileSize: false` for files whose writer
-left the size field zero or wrong.
+file, and at most `maximumPixels` pixels (`ImageLimits.DefaultMaximumPixels`, 16,777,216, by
+default). A pixel whose palette index is past the palette's last colour also throws. Pass
+`requireDeclaredFileSize: false` for files whose writer left the size field zero or wrong.
 
 `Rle8BitmapDecoder` keeps a different job: it rewrites an 8-bit BMP as an uncompressed 8-bit BMP for
 libraries that cannot read BI_RLE8.
@@ -270,7 +291,9 @@ track, its length in samples (16-bit stereo pairs, 588 to a sector), a tolerance
 length and XXH3-128, and the XXH3-128 of the central samples, which leave out the tolerance at each
 end. Record one from a reference rip with `CddaTrackFingerprints.RecordAsync`, which refuses an
 anchor whose samples repeat within twice the tolerance (the range a rip shifted by up to the
-tolerance shows the verifier), and list it in a `cue-bin` manifest's `AudioTracks`.
+tolerance shows the verifier), and list it in a `cue-bin` manifest's `AudioTracks`. To record from
+an opened source, pass its `OpenBin()` stream and the track's `Cue.TrackExtent`, so the samples come
+from the BIN the source checked.
 
 `AssetVerifier` checks each track after the files. A track starts at its `INDEX 01` and ends at the
 next track's `INDEX 00`, that track's `INDEX 01` without one, or the end of the image. The checks
@@ -286,8 +309,10 @@ run in order, and each problem carries `AudioTrack`:
 A shifted rip moves the end of a track into the sectors after it, so the checks read past the
 track's extent into the rest of the image. When a check needs samples past the end of the image, the
 track is reported as `Unreadable`, with the check that was not made. A source that is not a cue/bin
-image reports each track as `Unreadable`. The tolerance is at most 5880 samples and the anchor at
-most 44100 samples, since the anchor is hashed once per shift.
+image reports each track as `Unreadable`. `IdentifyAsync` verifies a track once per source and
+reports the outcome, a failed read included, for every edition that lists the same fingerprint.
+The tolerance is at most 5880 samples and the anchor at most 44100 samples, since the anchor is
+hashed once per shift.
 
 ## Writing a CD audio track as WAVE
 

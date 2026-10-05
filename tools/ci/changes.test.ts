@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { AREAS, changedAreas } from "./changes.ts";
+import { readFileSync } from "node:fs";
+import { matchesGlob } from "node:path";
+import { AREAS, TYPESCRIPT_TEST_GLOBS, TYPESCRIPT_TEST_ROOTS, changedAreas } from "./changes.ts";
 
 const on = (files: string[]) =>
   Object.entries(changedAreas(files))
@@ -86,4 +88,24 @@ test("the engine tests run inside the TypeScript job, so every engine path also 
     const file = path.endsWith("/") ? `${path}x` : path;
     assert.equal(changedAreas([file]).typescript, true, path);
   }
+});
+
+test("the TypeScript job's test globs match every test file that turns the job on, at any depth", () => {
+  // packages/ stays out: the packages' tests run through their own `test` scripts.
+  assert.deepEqual([...TYPESCRIPT_TEST_ROOTS].sort(), ["actions/", "tools/"]);
+  for (const root of TYPESCRIPT_TEST_ROOTS) {
+    for (const file of [`${root}x.test.ts`, `${root}newdir/x.test.ts`, `${root}newdir/nested/deeper/x.test.ts`]) {
+      assert.equal(changedAreas([file]).typescript, true, file);
+      assert.ok(
+        TYPESCRIPT_TEST_GLOBS.some((glob) => matchesGlob(file, glob)),
+        `${file} turns the TypeScript job on but no test glob runs it`,
+      );
+    }
+  }
+});
+
+test("the workflow runs the tools' and actions' tests through run-tests.ts and carries no test globs of its own", () => {
+  const workflow = readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8");
+  assert.match(workflow, /^\s*run: node tools\/ci\/run-tests\.ts$/m);
+  assert.doesNotMatch(workflow, /(tools|actions)\/\*\*/);
 });

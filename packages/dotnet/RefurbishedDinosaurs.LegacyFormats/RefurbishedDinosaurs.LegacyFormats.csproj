@@ -8,4 +8,8 @@
   <ItemGroup>
     <ProjectReference Include="../RefurbishedDinosaurs.Core/RefurbishedDinosaurs.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The tests reach AssetVerifier.IdentifyAsync's opener overload to count reads of a source. -->
+    <InternalsVisibleTo Include="RefurbishedDinosaurs.Core.Tests" />
+  </ItemGroup>
 </Project>

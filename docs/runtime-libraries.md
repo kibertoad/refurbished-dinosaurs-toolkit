@@ -50,11 +50,18 @@ LegacyFormats parts of it:
   on a line it cannot read rather than skipping it. A cue/bin source names the cue sheet and the raw
   image file it chose from a directory, a `.cue` or a `.bin` input as `CuePath` and `BinPath` (the
   image is the file the sheet's `FILE` names, whatever its extension), so the importer hashes and
-  reads the same files instead of repeating the selection.
+  reads the same files instead of repeating the selection. The source reads the `.cue` once, when it
+  opens, and gives those bytes as `CueSheetBytes`: hash them, since the file at `CuePath` may have
+  been replaced after the sheet was parsed. An `.iso` or cue/bin source records the image's length
+  and last-write time when it opens, and every read of the `.iso` or BIN through the source,
+  including `OpenBin`, fails with an `IOException` when either has changed. A rewrite that keeps
+  both is not detected. A stream the importer opens from `BinPath` itself is not checked.
 - An `.iso` or cue/bin source also gives its ISO 9660 volume: the identifier (`Label`), the size in
   blocks (`VolumeBlocks`) and the bytes (`OpenVolume`). An `iso9660` or `cue-bin` manifest can pin
   them with `VolumeIdentifier`, `VolumeBlocks` and `VolumeXxh3`, which tells apart two pressings
   that carry the same files. The pins add checks; every file is still verified.
+  `OpenIso9660(Stream)` opens an `.iso` image held in a seekable stream, such as a modified copy
+  built in memory for a negative control, and reads the same files and volume as the image on disk.
 - `OriginalContentSource.OpenInstallShieldCabinet` lists and reads the members of an InstallShield 5
   or 6 cabinet set, on disk or inside a disc source, through the same interface. It opens from a
   `dataN.hdr`, or from a `dataN.cab` that holds the header, reading only that file's header region.
@@ -75,6 +82,10 @@ LegacyFormats parts of it:
   `AssetVerifier.IdentifyAsync` tries every edition against the player's copy and reports why the
   others did not match. It names an edition only when exactly one matches, and sets `IsAmbiguous`
   when the manifests cannot tell two apart. A file it cannot read is reported as `Unreadable`.
+  The volume and each file are read once per source however many editions check them, and a CD
+  audio track is verified once per source for each `CddaTrackFingerprint` the editions list. A
+  failed read is reported for every edition that checks it, so all editions get the answer of one
+  read.
   `AssetManifest.Fingerprint()` names the edition in the installed manifest.
 - A `cue-bin` manifest can also list `AudioTracks`, each a `CddaTrackFingerprint` recorded with
   `CddaTrackFingerprints.RecordAsync`. `AssetVerifier` accepts a track shifted by a drive read
@@ -86,7 +97,8 @@ LegacyFormats parts of it:
   or adds a file only when the target holds the hash the overlay records for it, verifies every
   payload before replacing anything, and returns records for the installed manifest. It throws
   for an importer record list with an unsafe or duplicate path; `InstalledAssetVerifier` checks
-  the rest of each record. The overlay's files and hashes are the restoration's data. See
+  the rest of each record. The overlay's files and hashes are the restoration's data. It opens
+  from a zip file, a directory, or a seekable stream holding a zip, such as an embedded resource. See
   [content overlays](../packages/dotnet/README.md#content-overlays).
 - `InstalledContentWriter` suits incremental extractors: it replaces changed files atomically and
   skips byte-identical ones. `InstalledContentUninstaller` removes only the paths the installed
@@ -108,7 +120,8 @@ Pass every file reference that comes from data, such as a manifest, a script or 
 through `PortableAssetPath.Relative`, which rejects the same names on every host. Call
 `WithoutDriveRoot` only when the original format stores an installation path with a drive root.
 `ResolveFile` then finds the file in the verified content directory, ignoring case and refusing an
-ambiguous match. The rules are in [portable asset references](../packages/dotnet/README.md#portable-asset-references).
+ambiguous match, and `ResolveDirectory` does the same for a directory. The rules are in
+[portable asset references](../packages/dotnet/README.md#portable-asset-references).
 
 ## Saves and settings
 
@@ -283,3 +296,41 @@ through:
 manifest built from such a list never verified. Fix the importer so each installed file has one
 record with a portable relative path, or catch `InvalidDataException` where the overlay is applied
 and report it as an import failure.
+
+### Shared image pixel limit
+
+`BmpDecoder.DefaultMaximumPixels` is removed. Use `ImageLimits.DefaultMaximumPixels` in
+RefurbishedDinosaurs.LegacyFormats, which holds the same value (16,777,216) and is the default
+`maximumPixels` of `BmpDecoder`, `PcxDecoder` and `RawIndexedImageDecoder`.
+
+`PcxDecoder` and `RawIndexedImageDecoder` now throw `InvalidDataException` for dimensions whose
+product passes `int` range, where they threw `OverflowException`. `PcxDecoder` checks a negative
+`maximumPixels` before reading the file, so it throws `ArgumentOutOfRangeException` for a short or
+malformed file too. It also stops allocating a padded scanline buffer, so memory stays within the
+pixel limit however wide the declared scanlines are. Drop any `OverflowException` handling around
+these calls.
+
+### Latin-1 volume identifiers
+
+`OriginalContentSource.Label` on an `.iso` or cue/bin source now reads each byte of the primary
+volume descriptor's identifier as the Latin-1 (ISO-8859-1) character of the same value. It read the
+identifier as ASCII before, which turned every byte above 0x7F into `?`. Byte 0xC9 now gives `É`
+(U+00C9), so two identifiers that differ only in such a byte give different labels. Trailing
+spaces and NULs are still removed, and an identifier with only ASCII bytes reads as before.
+
+`AssetManifest.Validate` and `schemas/asset-manifest.schema.json` now accept a `VolumeIdentifier`
+of 1 to 32 characters from U+0000 to U+00FF that does not end in a space or NUL. That is every
+label a descriptor can give, control bytes included: a Shift-JIS lead byte 0x85 is `"\u0085"`.
+Characters above U+00FF are rejected.
+
+The `WrongVolumeIdentifier` detail now writes both identifiers as JSON strings (`"DISC\u0085"`,
+with `"` and `\` escaped and each control character as a `\u` escape) where it used single quotes.
+Code that parses the detail reads the JSON string instead.
+
+This affects code that compares `Label`, and manifests whose `VolumeIdentifier` writes `?` for a
+byte above 0x7F. Such a pin no longer matches the disc and fails with `WrongVolumeIdentifier`.
+Replace each `?` that stands for a high byte with that byte's Latin-1 character (in JSON, `"\u00C9"`
+or the character itself, and `"\u0085"` for a control byte), reading the value from `Label` of a
+reference copy or from the `WrongVolumeIdentifier` detail. Changing the pin changes the manifest's
+`Fingerprint()`, so copies installed with the old manifest are imported again. Code that compares
+`Label` with a string holding `?` for those bytes changes the same way.
