@@ -322,19 +322,21 @@ from the header the open already read:
   `Entry.Path` is `Directory` and `Name` joined with `/`. `SharedBy` gives the entries at the same path
   that are in `SkippedFiles` because they hold the same data (a link, or a version 6 copy with the same
   size and MD5), each with its own index, names and groups; reading the member gives their bytes.
-- `FileGroups` lists the groups the cabinet descriptor lists, in Unshield's order: `Index`, `Name`
-  (ISO 8859-1), `FirstFile` and `LastFile` (inclusive), and a `Problem` when the group's descriptor,
-  name or range does not read or lies outside the file table.
+- `FileGroups` lists the groups the cabinet descriptor lists, in Unshield's order, each once: `Index`,
+  `Name` (ISO 8859-1), `FirstFile` and `LastFile` (inclusive, the header's unsigned values), and a
+  `Problem` when the group's descriptor, name or range does not read or lies outside the file table.
 - Each entry's `FileGroups` membership has a `Kind`: `NoFileGroups` (the descriptor lists none),
   `None`, `One`, `Several` (the indexes of every group that holds it, none chosen) or `Undetermined`.
   An entry is `Undetermined` when a group whose range is malformed may hold it (`MalformedGroups`):
   a range that reaches past the table may hold the entries from its first file on, and a range that did
-  not read, holds a negative index or is reversed may hold any. Every entry is `Undetermined` when the
+  not read or is reversed may hold any. Every entry is `Undetermined` when the
   group lists did not read whole: `FileGroupProblem` then says why (a list entry that does not read, a
-  list that returns to an entry already read, a structure past the header limit, or more groups, or
+  list that returns to an entry it already read, a structure past the header limit, or more groups, or
   more (entry, group) pairs, than `MaximumFiles`).
 
-The groups never fail the open and never change `Files`, `SkippedFiles` or what a member reads. A group
+Malformed groups never fail the open and never change `Files`, `SkippedFiles` or what a member reads.
+An I/O error from the stream a `.cab` that holds the header is read from still fails the open, as it
+does for any other header structure. A group
 name is data: the reader does not check it with `PortableAssetPath.Relative`, since an installer's group
 name need not be a file name. A caller that builds a path from it checks the path it builds. An adapter that
 installs each group below its own name reads:
@@ -345,8 +347,9 @@ foreach (var entry in member.SharedBy.Prepend(member.Metadata))
 {
     if (entry.FileGroups.Kind != InstallShieldFileGroupMembershipKind.One) continue; // decide these yourself
     var group = cabinet.FileGroups[entry.FileGroups.Groups[0]].Name;
+    if (string.IsNullOrEmpty(group)) continue; // a name that did not read, or is empty: decide these too
     var installed = PortableAssetPath.Relative(string.Join('/',
-        new[] { group, entry.Directory, entry.Name }.Where(part => !string.IsNullOrEmpty(part))));
+        new[] { group, entry.Directory, entry.Name }.Where(part => part.Length > 0)));
     // copy cabinet.OpenRead(member.Entry.Path) to installed
 }
 ```

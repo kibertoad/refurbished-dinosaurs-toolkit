@@ -79,17 +79,29 @@ public sealed class InstallShieldMemberMetadataTests
         {
             Assert.Null(source.FileGroups[0].Problem);
             Assert.Equal("Its range, files 1 to 99, reaches past the 3-entry file table.", source.FileGroups[1].Problem);
-            Assert.Equal((1, 99), (source.FileGroups[1].FirstFile, source.FileGroups[1].LastFile));
+            Assert.Equal(((long?)1, (long?)99), (source.FileGroups[1].FirstFile, source.FileGroups[1].LastFile));
             Assert.Equal(
                 [(Kind.One, new[] { 0 }, Array.Empty<int>()), (Kind.Undetermined, [], [1]), (Kind.Undetermined, [], [1])],
                 source.Members.Select(Membership));
         }
 
-        // A reversed range or a negative index may hold any entry; the well-formed group still counts.
+        // Indexes are unsigned, as Unshield reads them: 0xffffffff is past the table, so a range that
+        // starts there holds no entry, and the other entries keep their groups.
+        using (var source = Open(major, files, [new("Low", 0, 0), new("High", -1, -1)]))
+        {
+            Assert.Equal("Its range, files 4294967295 to 4294967295, reaches past the 3-entry file table.", source.FileGroups[1].Problem);
+            Assert.Equal(((long?)uint.MaxValue, (long?)uint.MaxValue), (source.FileGroups[1].FirstFile, source.FileGroups[1].LastFile));
+            Assert.Equal(
+                [(Kind.One, new[] { 0 }, Array.Empty<int>()), (Kind.None, [], []), (Kind.None, [], [])],
+                source.Members.Select(Membership));
+        }
+
+        // A reversed range may hold any entry, including one that reads as reversed only because its
+        // first index is past the table; the well-formed group still counts.
         foreach (var (group, problem) in new[]
                  {
                      (new CabinetGroup("Reversed", 2, 1), "Its range, files 2 to 1, is reversed."),
-                     (new CabinetGroup("Negative", -1, 1), "Its range, files -1 to 1, holds a negative index.")
+                     (new CabinetGroup("High", -1, 1), "Its range, files 4294967295 to 1, is reversed.")
                  })
         {
             using var source = Open(major, files, [new("Low", 0, 0), group]);
@@ -165,7 +177,7 @@ public sealed class InstallShieldMemberMetadataTests
         BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(ListEntry(header, 1) + 8), (uint)(ListEntry(header, 0) - SyntheticInstallShieldCabinet.DescriptorOffset));
         using (var source = Open(set))
         {
-            Assert.Contains("which was already read", source.FileGroupProblem);
+            Assert.Contains("returns to its entry", source.FileGroupProblem);
             Assert.Equal(["First", "Second"], source.FileGroups.Select(group => group.Name));
             // The groups read give what they hold, but the list did not end, so no membership is final.
             Assert.Equal([0], source.Members[0].Metadata.FileGroups.Groups);
@@ -196,6 +208,40 @@ public sealed class InstallShieldMemberMetadataTests
         // At the limit, the memberships are read.
         using (var source = Open(6, files, [new("One", 0, 0), new("Two", 1, 1)], limits))
             Assert.All(source.Members, member => Assert.Equal(Kind.One, member.Metadata.FileGroups.Kind));
+
+        // A list that loops after groups whose ranges pass the pair limit: both reasons are reported.
+        var set = SyntheticInstallShieldCabinet.Build(6, files, groups: [new("All", 0, 1), new("Again", 0, 1)]);
+        var header = set["data1.hdr"];
+        BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(ListEntry(header, 1) + 8), (uint)(ListEntry(header, 0) - SyntheticInstallShieldCabinet.DescriptorOffset));
+        using (var source = Open(set, limits))
+        {
+            Assert.StartsWith("File group list 0 returns to its entry", source.FileGroupProblem);
+            Assert.Contains("more than 2 entries with their groups", source.FileGroupProblem);
+            AssertAllUndetermined(source);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(5)]
+    [InlineData(6)]
+    public void ReadsListsThatJoinAnEarlierListOnce(int major)
+    {
+        CabinetFile[] files = [new("", "a.bin", Text), new("", "b.bin", Text)];
+        var set = SyntheticInstallShieldCabinet.Build(major, files, groups: [new("First", 0, 0), new("Second", 1, 1, List: 1)]);
+        var header = set["data1.hdr"];
+        // The second group names the first group's name: the two share one string.
+        header.AsSpan(GroupDescriptor(header, 0), 4).CopyTo(header.AsSpan(GroupDescriptor(header, 1)));
+        // List 2 starts at list 0's entry, so it joins list 0: that group is listed once, with no problem.
+        var lists = SyntheticInstallShieldCabinet.DescriptorOffset + SyntheticInstallShieldCabinet.GroupListsOffset;
+        header.AsSpan(lists, 4).CopyTo(header.AsSpan(lists + 4 * 2));
+        using var source = Open(set);
+
+        Assert.Null(source.FileGroupProblem);
+        Assert.Equal(["First", "First"], source.FileGroups.Select(group => group.Name));
+        Assert.Same(source.FileGroups[0].Name, source.FileGroups[1].Name);
+        Assert.Equal([(Kind.One, new[] { 0 }), (Kind.One, [1])],
+            source.Members.Select(member => (member.Metadata.FileGroups.Kind, member.Metadata.FileGroups.Groups.ToArray())));
     }
 
     [Theory]

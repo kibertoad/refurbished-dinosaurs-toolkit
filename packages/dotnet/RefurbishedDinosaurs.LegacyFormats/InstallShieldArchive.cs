@@ -150,6 +150,8 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
         offset = 0;
         var directory = 0;
         var directoryFilesLeft = directories.Length > 0 ? directories[0].Files : 0;
+        // Each directory's name with / separators, checked once, when a listed path in it is accepted.
+        var portableDirectories = new string?[directories.Length];
         table = new TableReader(fileTable, "file table");
         for (var index = 0; index < fileCount; index++)
         {
@@ -217,8 +219,8 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
             var directoryName = directories[directory].Name;
             var entry = new ContentSourceEntry(path!, expandedSize);
             var metadata = new InstallShieldEntryMetadata(index, directory,
-                directoryName.Length == 0 ? string.Empty : PortableAssetPath.Relative(directoryName), name.Replace('\\', '/'),
-                InstallShieldFileGroupMembership.NoFileGroups);
+                portableDirectories[directory] ??= directoryName.Length == 0 ? string.Empty : PortableAssetPath.Relative(directoryName),
+                name.Replace('\\', '/'), InstallShieldFileGroupMembership.NoFileGroups);
             members.Add(path!, new Member(entry, index, stored, dataOffset, storedSize, new(entry, metadata, [])));
             if (expandedSize > limits.MaximumExpandedBytes - expandedTotal)
                 throw new InvalidDataException(

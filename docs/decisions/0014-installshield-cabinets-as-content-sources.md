@@ -64,9 +64,11 @@ The cabinet format is a container. Its layout is not game content, and no open t
    already read, and a restoration builds installed paths from that. A group name is data: it is not
    checked as a path, since installers do not restrict it to one, and a caller checks any path it
    builds. Membership is reported as read, never chosen: no group, one, several, or undetermined
-   when a malformed group may hold the entry or the group lists did not read whole. Reading groups
-   never fails the open, and their counts are bounded by the header limit and the file limit (at
-   most that many groups and that many (entry, group) pairs). InstallShield 3 archives
+   when a malformed group may hold the entry or the group lists did not read whole. Ranges are read
+   unsigned, as Unshield reads them, and a list that reaches an entry an earlier list read ends
+   there, so each group is listed once. A malformed group or group list never fails the open (an
+   I/O error from the source still does), and their counts are bounded by the header limit and the
+   file limit (at most that many groups and that many (entry, group) pairs). InstallShield 3 archives
    ([ADR 0018](0018-installshield-3-archives-as-content-sources.md)) have no file groups and report
    their members in the same shape with no groups.
 7. Tests build cabinets with a writer in the test project. The writer and the reader come from the

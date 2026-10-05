@@ -61,7 +61,8 @@ public enum InstallShieldFileGroupMembershipKind
     /// (<see cref="InstallShieldCabinetSource.FileGroupProblem"/>), or a group whose range is malformed
     /// may hold it (<see cref="InstallShieldFileGroupMembership.MalformedGroups"/>).
     /// <see cref="InstallShieldFileGroupMembership.Groups"/> still lists the well-formed groups that
-    /// were read and hold it.
+    /// were read and hold it, unless the ranges name more (entry, group) pairs than the file limit, when
+    /// it is empty.
     /// </summary>
     Undetermined
 }
@@ -74,9 +75,9 @@ public enum InstallShieldFileGroupMembershipKind
 /// </param>
 /// <param name="MalformedGroups">
 /// Indexes into <see cref="InstallShieldCabinetSource.FileGroups"/> of the groups whose range is not
-/// well-formed and may hold the entry, in list order: a group whose range did not read, holds a negative
-/// index or is reversed may hold any entry, and a group whose range reaches past the file table may hold
-/// any entry from its first file on. Not empty only when <see cref="Kind"/> is
+/// well-formed and may hold the entry, in list order: a group whose range did not read or is reversed may
+/// hold any entry, and a group whose range reaches past the file table may hold any entry from its first
+/// file on. Not empty only when <see cref="Kind"/> is
 /// <see cref="InstallShieldFileGroupMembershipKind.Undetermined"/>.
 /// </param>
 public sealed record InstallShieldFileGroupMembership(
@@ -96,20 +97,26 @@ public sealed record InstallShieldFileGroupMembership(
 /// data: it is not checked with <see cref="PortableAssetPath.Relative"/>, since an InstallShield group
 /// name need not be a file name. A caller that builds a path from it checks that path.
 /// </param>
-/// <param name="FirstFile">The first file-table index of the group's range, or <see langword="null"/> when it does not read.</param>
-/// <param name="LastFile">The last file-table index of the group's range, inclusive, or <see langword="null"/> when it does not read.</param>
+/// <param name="FirstFile">
+/// The first file-table index of the group's range, the header's unsigned 32-bit value, or
+/// <see langword="null"/> when it does not read.
+/// </param>
+/// <param name="LastFile">
+/// The last file-table index of the group's range, inclusive, the header's unsigned 32-bit value, or
+/// <see langword="null"/> when it does not read.
+/// </param>
 /// <param name="Problem">
 /// Why the group's descriptor, name or range is not usable, or <see langword="null"/> when all three
 /// read and the range lies inside the file table. A group whose range is well-formed gives its members
 /// even when its name has a problem.
 /// </param>
-public sealed record InstallShieldFileGroup(int Index, string? Name, int? FirstFile, int? LastFile, string? Problem);
+public sealed record InstallShieldFileGroup(int Index, string? Name, long? FirstFile, long? LastFile, string? Problem);
 
 // The file groups of a cabinet, read as Unshield reads them: the cabinet descriptor holds 71 offsets
 // at 0x3e, each the head of a list of 12-byte entries (name offset, descriptor offset, next entry
 // offset), and each group descriptor starts with its name offset and holds its first and last file
-// index at 0x4c and 0x50 for major versions 0 and 5, or 0x16 and 0x1a for version 6. Every offset is
-// relative to the cabinet descriptor. Nothing here fails the open: what does not read is reported.
+// index at 0x4c and 0x50 for major versions 0 and 5, or 0x16 and 0x1a for version 6, unsigned as
+// Unshield reads them. Every offset is relative to the cabinet descriptor. Nothing here fails the open: what does not read is reported.
 internal sealed class InstallShieldFileGroupTable
 {
     private const int ListOffset = 0x3e;
@@ -132,18 +139,26 @@ internal sealed class InstallShieldFileGroupTable
     }
 
     public IReadOnlyList<InstallShieldFileGroup> Groups { get; }
-    public string? Problem { get; private set; }
+    // Why the lists did not read whole, or null. Memberships adds the pair limit to it.
+    public string? Problem { get; }
 
     public static InstallShieldFileGroupTable Read(
         InstallShieldHeaderReader reader, long descriptor, int majorVersion, int fileCount, InstallShieldCabinetLimits limits)
     {
         var groups = new List<InstallShieldFileGroup>();
+        // The entries every list has reached, and those the current list has. A list that returns to
+        // its own entry loops. A list that reaches an entry an earlier list read joins that list, so
+        // the rest of it is read already: it ends there, and each group is listed once.
+        var read = new HashSet<uint>();
         var visited = new HashSet<uint>();
+        // Group names by offset, so groups that share a name share one string.
+        var names = new Dictionary<uint, (string? Name, string? Problem)>();
         var listed = false;
         var (firstAt, lastAt) = majorVersion == 6 ? (0x16, 0x1a) : (0x4c, 0x50);
         for (var list = 0; list < ListCount; list++)
         {
             uint next;
+            visited.Clear();
             try
             {
                 next = reader.UInt32(descriptor + ListOffset + 4L * list);
@@ -156,7 +171,8 @@ internal sealed class InstallShieldFileGroupTable
             {
                 listed = true;
                 if (!visited.Add(next))
-                    return new(groups, true, $"File group list {list} returns to the entry at descriptor offset 0x{next:x}, which was already read.", fileCount, limits.MaximumFiles);
+                    return new(groups, true, $"File group list {list} returns to its entry at descriptor offset 0x{next:x}.", fileCount, limits.MaximumFiles);
+                if (!read.Add(next)) break;
                 if (groups.Count == limits.MaximumFiles)
                     return new(groups, true, $"The cabinet lists more than {limits.MaximumFiles} file groups, the file limit; the rest are not read.", fileCount, limits.MaximumFiles);
                 uint groupDescriptor;
@@ -170,24 +186,25 @@ internal sealed class InstallShieldFileGroupTable
                 {
                     return new(groups, true, $"An entry of file group list {list} does not read. {exception.Message}", fileCount, limits.MaximumFiles);
                 }
-                groups.Add(ReadGroup(reader, descriptor, groups.Count, groupDescriptor, firstAt, lastAt, fileCount));
+                groups.Add(ReadGroup(reader, descriptor, groups.Count, groupDescriptor, firstAt, lastAt, fileCount, names));
             }
         }
         return new(groups, listed, null, fileCount, limits.MaximumFiles);
     }
 
     private static InstallShieldFileGroup ReadGroup(
-        InstallShieldHeaderReader reader, long descriptor, int index, uint offset, int firstAt, int lastAt, int fileCount)
+        InstallShieldHeaderReader reader, long descriptor, int index, uint offset, int firstAt, int lastAt, int fileCount,
+        Dictionary<uint, (string? Name, string? Problem)> names)
     {
         if (offset == 0) return new(index, null, null, null, "The group's list entry names no group descriptor.");
         uint nameOffset;
-        int first, last;
+        uint first, last;
         try
         {
             reader.Require(descriptor + offset, lastAt + 4, "file group descriptor");
             nameOffset = reader.UInt32(descriptor + offset);
-            first = (int)reader.UInt32(descriptor + offset + firstAt);
-            last = (int)reader.UInt32(descriptor + offset + lastAt);
+            first = reader.UInt32(descriptor + offset + firstAt);
+            last = reader.UInt32(descriptor + offset + lastAt);
         }
         catch (InvalidDataException exception)
         {
@@ -200,34 +217,39 @@ internal sealed class InstallShieldFileGroupTable
             problems.Add("The group has no name.");
         else
         {
-            try
+            if (!names.TryGetValue(nameOffset, out var read))
             {
-                name = reader.String(descriptor + nameOffset, "file group name");
+                try
+                {
+                    read = (reader.String(descriptor + nameOffset, "file group name"), null);
+                }
+                catch (InvalidDataException exception)
+                {
+                    read = (null, $"The group's name does not read. {exception.Message}");
+                }
+                names[nameOffset] = read;
             }
-            catch (InvalidDataException exception)
-            {
-                problems.Add($"The group's name does not read. {exception.Message}");
-            }
+            name = read.Name;
+            if (read.Problem is not null) problems.Add(read.Problem);
         }
-        if (first < 0 || last < 0)
-            problems.Add($"Its range, files {first} to {last}, holds a negative index.");
-        else if (first > last)
+        if (first > last)
             problems.Add($"Its range, files {first} to {last}, is reversed.");
         else if (last >= fileCount)
             problems.Add($"Its range, files {first} to {last}, reaches past the {fileCount}-entry file table.");
         return new(index, name, first, last, problems.Count == 0 ? null : string.Join(' ', problems));
     }
 
-    // The membership of each entry in entries (file-table indexes, ascending, distinct). The groups'
-    // ranges together may name at most the file limit of (entry, group) pairs, which keeps the lists
-    // this builds bounded however the ranges overlap.
-    public Dictionary<int, InstallShieldFileGroupMembership> Memberships(int[] entries)
+    // The membership of each entry in entries (file-table indexes, ascending, distinct), and Problem
+    // with the pair limit added when it is reached. The groups' ranges together may name at most the
+    // file limit of (entry, group) pairs, which keeps the lists this builds bounded however the ranges
+    // overlap.
+    public (Dictionary<int, InstallShieldFileGroupMembership> ByEntry, string? Problem) Memberships(int[] entries)
     {
         var result = new Dictionary<int, InstallShieldFileGroupMembership>(entries.Length);
         if (!listed && Problem is null)
         {
             foreach (var entry in entries) result[entry] = InstallShieldFileGroupMembership.NoFileGroups;
-            return result;
+            return (result, null);
         }
 
         var held = new Dictionary<int, List<int>>();
@@ -236,18 +258,20 @@ internal sealed class InstallShieldFileGroupTable
         var exhausted = false;
         foreach (var group in Groups)
         {
-            int from, to;
+            long from, to;
             Dictionary<int, List<int>> target;
-            if (group is { FirstFile: { } first, LastFile: { } last } && first >= 0 && first <= last)
+            if (group is { FirstFile: { } first, LastFile: { } last } && first <= last)
             {
                 // A range inside the table holds its entries; one that reaches past it may hold the
                 // entries from its first file on.
-                (from, to, target) = last < fileCount ? (first, last, held) : (first, int.MaxValue, suspected);
+                (from, to, target) = last < fileCount ? (first, last, held) : (first, long.MaxValue, suspected);
             }
             else
-                (from, to, target) = (0, int.MaxValue, suspected);
+                (from, to, target) = (0, long.MaxValue, suspected);
 
-            var start = Array.BinarySearch(entries, from);
+            // A range that starts past the table holds no entry.
+            if (from >= fileCount) continue;
+            var start = Array.BinarySearch(entries, (int)from);
             if (start < 0) start = ~start;
             for (var position = start; position < entries.Length && entries[position] <= to; position++)
             {
@@ -262,9 +286,11 @@ internal sealed class InstallShieldFileGroupTable
             if (exhausted) break;
         }
 
+        var problem = Problem;
         if (exhausted)
         {
-            Problem = $"The file groups' ranges name more than {maximumPairs} entries with their groups, the file limit; memberships are not read.";
+            var pairsProblem = $"The file groups' ranges name more than {maximumPairs} entries with their groups, the file limit; memberships are not read.";
+            problem = problem is null ? pairsProblem : $"{problem} {pairsProblem}";
             held.Clear();
             suspected.Clear();
         }
@@ -272,7 +298,7 @@ internal sealed class InstallShieldFileGroupTable
         {
             IReadOnlyList<int> groups = held.TryGetValue(entry, out var heldBy) ? heldBy : [];
             IReadOnlyList<int> malformed = suspected.TryGetValue(entry, out var suspectedBy) ? suspectedBy : [];
-            var kind = Problem is not null || malformed.Count > 0 ? InstallShieldFileGroupMembershipKind.Undetermined
+            var kind = problem is not null || malformed.Count > 0 ? InstallShieldFileGroupMembershipKind.Undetermined
                 : groups.Count switch
                 {
                     0 => InstallShieldFileGroupMembershipKind.None,
@@ -281,6 +307,6 @@ internal sealed class InstallShieldFileGroupTable
                 };
             result[entry] = new(kind, groups, malformed);
         }
-        return result;
+        return (result, problem);
     }
 }

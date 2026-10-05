@@ -97,7 +97,8 @@ public sealed record InstallShieldSkippedFile(int Index, string? Path, string Re
 /// reported as data and is not checked as a path. The groups never fail the open: a list that does not
 /// read, a malformed group and an entry held by several groups are each reported, with
 /// <see cref="FileGroupProblem"/>, <see cref="InstallShieldFileGroup.Problem"/> and
-/// <see cref="InstallShieldFileGroupMembership.Kind"/>.
+/// <see cref="InstallShieldFileGroupMembership.Kind"/>. An I/O error from the stream a header-holding
+/// <c>.cab</c> is read from still fails the open, as it does for the rest of the header.
 /// </para>
 /// </remarks>
 public sealed class InstallShieldCabinetSource : OriginalContentSource
@@ -168,6 +169,8 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 throw new InvalidDataException($"InstallShield file {index} names directory {directory}, which does not exist.");
             return directories[directory] ??= reader.String(table + reader.UInt32(table + 4L * directory), "directory name");
         }
+        // Each directory's name with / separators, checked once, when a path in it is first accepted.
+        var portableDirectories = new string?[directoryCount];
 
         // The path, and the directory and name it joins with / separators. When the joined path is
         // accepted, so is the directory alone, since its characters and components are among the path's.
@@ -179,7 +182,9 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
             try
             {
                 var path = PortableAssetPath.Relative(combined);
-                return (path, directory.Length == 0 ? string.Empty : PortableAssetPath.Relative(directory), name.Replace('\\', '/'));
+                var portable = portableDirectories[file.DirectoryIndex] ??=
+                    directory.Length == 0 ? string.Empty : PortableAssetPath.Relative(directory);
+                return (path, portable, name.Replace('\\', '/'));
             }
             catch (InvalidDataException exception)
             {
@@ -281,11 +286,11 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         // The file groups are read last, from the header already open, so a set that opens without
         // them opens the same way with them: what does not read is reported, never thrown.
         var groupTable = InstallShieldFileGroupTable.Read(reader, descriptor, MajorVersion, descriptors.Length, limits);
-        var memberships = groupTable.Memberships(listed
+        var (memberships, groupProblem) = groupTable.Memberships(listed
             .SelectMany(member => member.SharedBy.Prepend(member.Listed)).Select(entry => entry.Index)
             .Order().ToArray());
         FileGroups = groupTable.Groups;
-        FileGroupProblem = groupTable.Problem;
+        FileGroupProblem = groupProblem;
         InstallShieldEntryMetadata Metadata(EntryName entry) => new(
             entry.Index, entry.DirectoryIndex, entry.Directory, entry.Name, memberships[entry.Index]);
         foreach (var member in listed)
@@ -329,10 +334,10 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
 
     /// <summary>
     /// Why the file groups were not read whole, or <see langword="null"/> when they were: a list entry
-    /// that does not read, a list that returns to an entry already read, more groups than
+    /// that does not read, a list that returns to an entry it already read, more groups than
     /// <see cref="InstallShieldCabinetLimits.MaximumFiles"/>, or ranges that together name more
     /// (entry, group) pairs than that limit. <see cref="FileGroups"/> then holds the groups read
-    /// before the problem, and every entry's membership is
+    /// before the problem (every group, when only the pairs pass the limit), and every entry's membership is
     /// <see cref="InstallShieldFileGroupMembershipKind.Undetermined"/>. The open does not fail on it,
     /// since members are read without their groups.
     /// </summary>
