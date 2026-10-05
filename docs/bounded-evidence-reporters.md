@@ -1459,7 +1459,14 @@ occurrence where an assumption cannot apply (see below).
 Each value's expression becomes a linear form over its unknown subterms, reading additions,
 subtractions, offsets, multiplications and shifts by constants, and zero and sign extensions. A
 value counts as an integer only when the ranges of its unknowns show it cannot wrap its width;
-otherwise the whole value is one unknown of its width. A relation holds when every value the
+otherwise the whole value is one unknown of its width. Such an unknown ranges over its whole width
+unless its expression bounds it: `and` is at most the smaller operand bound, so a constant mask
+bounds it by the mask; `or` and `xor` stay below the next power of two above both operands, and
+`or` is at least its larger operand; a shift right or a division by a constant divides the
+operand's bounds; a remainder by a constant is below the constant; a zero extension keeps the
+narrower value's bounds; and an extracted field keeps the bounds of the bits it takes when the
+operand cannot reach the bits above them. These are unsigned bounds. A signed reading uses them only
+when they leave the sign bit clear. A relation holds when every value the
 unknowns allow satisfies it, is violated when none does, and is undecided otherwise. The branches a
 path took are not solved, so a relation that fails for part of a range is undecided.
 

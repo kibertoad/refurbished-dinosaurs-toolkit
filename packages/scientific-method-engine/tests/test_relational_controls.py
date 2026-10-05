@@ -594,6 +594,71 @@ class RelationTests(unittest.TestCase):
         self.assertEqual(verdict(run(c, [bounded], registers=FRAME), "byte")["verdict"], "held")
 
 
+class BitwiseBoundTests(unittest.TestCase):
+    """Unsigned bounds read from masks, shifts, division and extracted fields of an unknown loaded word."""
+
+    def check(self, body, op, right, signed=False, before=""):
+        # mov bx,[0200h] (or the body's own load), then the body, then a checkpoint at the return.
+        self.c = Code().emit(before).emit(body).label("return").emit("c3")
+        left = {"field": "registers.bx", **({"signed": True} if signed else {})}
+        rule = control("bound", "relation", at={"site": self.c.labels["return"], "event": "checkpoint"}, op=op, left=left, right=right)
+        return verdict(run(self.c, [rule], registers=FRAME), "bound")
+
+    def test_a_constant_mask_bounds_an_unknown_word(self):
+        # and bx,3
+        held = self.check("8b 1e 00 02 81 e3 03 00", "le", 3)
+        self.assertEqual(held["verdict"], "held")
+        self.assertEqual(held["paths"][0]["occurrences"][0]["leftMinusRight"], {"min": -3, "max": 0})
+        self.assertEqual(self.check("8b 1e 00 02 81 e3 03 00", "le", 2)["verdict"], "undecided")
+        with self.assertRaisesRegex(ValueError, "bound violated"):
+            self.check("8b 1e 00 02 81 e3 03 00", "gt", 3)
+
+    def test_an_unmasked_word_stays_undecided(self):
+        self.assertEqual(self.check("8b 1e 00 02", "le", 3)["verdict"], "undecided")
+
+    def test_a_mask_with_the_sign_bit_leaves_the_signed_value_undecided(self):
+        # and bx,8003h: the unsigned value is at most 8003h, while the signed value may be negative.
+        self.assertEqual(self.check("8b 1e 00 02 81 e3 03 80", "le", 0x8003)["verdict"], "held")
+        self.assertEqual(self.check("8b 1e 00 02 81 e3 03 80", "ge", 0, signed=True)["verdict"], "undecided")
+        # With the sign bit masked off, the signed value is the unsigned one.
+        self.assertEqual(self.check("8b 1e 00 02 81 e3 03 00", "ge", 0, signed=True)["verdict"], "held")
+
+    def test_shifts_extracted_fields_and_division_by_constants_bound_the_value(self):
+        # shr bx,4
+        self.assertEqual(self.check("8b 1e 00 02 c1 eb 04", "le", 0x0fff)["verdict"], "held")
+        self.assertEqual(self.check("8b 1e 00 02 c1 eb 04", "le", 0x0ffe)["verdict"], "undecided")
+        # mov ax,[0200h]; and ax,0FF0h; movzx bx,ah: the high byte of the masked word is at most 0Fh.
+        self.assertEqual(self.check("a1 00 02 25 f0 0f 0f b6 dc", "le", 0x0f)["verdict"], "held")
+        self.assertEqual(self.check("a1 00 02 25 f0 0f 0f b6 dc", "le", 0x0e)["verdict"], "undecided")
+        # xor dx,dx; mov ax,[0200h]; mov cx,10; div cx; then the remainder or the quotient into BX.
+        divide = "31 d2 a1 00 02 b9 0a 00 f7 f1"
+        self.assertEqual(self.check(divide + " 89 d3", "le", 9)["verdict"], "held")
+        self.assertEqual(self.check(divide + " 89 d3", "le", 8)["verdict"], "undecided")
+        self.assertEqual(self.check(divide + " 89 c3", "le", 0xffff // 10)["verdict"], "held")
+        self.assertEqual(self.check(divide + " 89 c3", "le", 0xffff // 10 - 1)["verdict"], "undecided")
+
+    def test_or_keeps_its_constant_bits_and_the_operands_highest_bit(self):
+        # movzx bx,byte [0200h]; or bx,10h
+        self.assertEqual(self.check("0f b6 1e 00 02 83 cb 10", "ge", 0x10)["verdict"], "held")
+        self.assertEqual(self.check("0f b6 1e 00 02 83 cb 10", "le", 0xff)["verdict"], "held")
+        self.assertEqual(self.check("0f b6 1e 00 02 83 cb 10", "le", 0xfe)["verdict"], "undecided")
+
+    def test_an_assumed_range_bounds_the_masked_operand(self):
+        # mov bx,cx; and bx,0FFh, with CX assumed at most 7.
+        c = Code().emit("89 cb 81 e3 ff 00").label("return").emit("c3")
+        rule = control("bound", "relation", at={"site": c.labels["return"], "event": "checkpoint"}, op="le",
+                       left={"field": "registers.bx"}, right=7)
+        self.assertEqual(verdict(run(c, [rule], registers=FRAME), "bound")["verdict"], "undecided")
+        assumed = {**rule, "assume": [{"value": {"entryRegister": "cx"}, "min": 0, "max": 7, "evidence": "synthetic caller range"}]}
+        self.assertEqual(verdict(run(c, [assumed], registers=FRAME), "bound")["verdict"], "held")
+
+    def test_a_stopped_path_leaves_a_masked_bound_undecided(self):
+        # One path calls through BX and stops before the masked load.
+        result = self.check("8b 1e 00 02 81 e3 03 00", "le", 3, before="85 c0 74 02 ff d3")
+        self.assertEqual(result["verdict"], "undecided")
+        self.assertIn("stopped", " ".join(result["reasons"]))
+
+
 class OriginTests(unittest.TestCase):
     def recursion(self, local=""):
         # The helper counts AX down and returns FFFF from its base case; the root tests the result.
