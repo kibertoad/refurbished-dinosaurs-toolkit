@@ -6,6 +6,7 @@ interface Options {
   glossary: string[];
   check?: boolean;
   "no-ksy"?: boolean;
+  "require-ksc"?: boolean;
   root?: string;
   base?: string;
   code?: string;
@@ -26,6 +27,8 @@ export interface Config {
   checkOnly: boolean;
   /** --no-ksy: skip compiling the Kaitai definitions. */
   skipKsy: boolean;
+  /** --require-ksc: fail when there are Kaitai definitions and no compiler is found. */
+  requireKsc: boolean;
   /** --base, or null when it was not given. */
   baseArg: string | null;
   /** Every --glossary path, in order. */
@@ -56,7 +59,7 @@ export const dirList = (value: string | undefined, fallback: string[]) =>
         .map((x) => x.trim())
         .filter(Boolean);
 
-const FLAGS = ["--check", "--no-ksy"];
+const FLAGS = ["--check", "--no-ksy", "--require-ksc"];
 const VALUED = [
   "--root",
   "--base",
@@ -96,6 +99,11 @@ export function parseOptions(argv: string[]): Config {
     process.exit(2);
   }
   const skipKsy = options["no-ksy"] === true;
+  const requireKsc = options["require-ksc"] === true;
+  if (skipKsy && requireKsc) {
+    console.error("--require-ksc requires the Kaitai compilation that --no-ksy skips, so they cannot be combined");
+    process.exit(2);
+  }
   const baseArg = options.base ?? null;
   const codeRoots = dirList(options.code, ["src", "tests", "tools"]);
   const referenceRoots = dirList(options.references, []);
@@ -119,6 +127,7 @@ export function parseOptions(argv: string[]): Config {
     specDir,
     checkOnly,
     skipKsy,
+    requireKsc,
     baseArg,
     glossaryDrafts: options.glossary,
     codeRoots,
