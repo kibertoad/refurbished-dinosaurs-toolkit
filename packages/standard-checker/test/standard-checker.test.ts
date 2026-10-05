@@ -856,6 +856,55 @@ test("a save patch needs the patched and the base save's hashes", (t) => {
     }),
   );
   assert.equal(both.status, 0, both.output);
+
+  const patchedOnly = run(
+    broken(t, (r) => {
+      withStartingState(r, state, { patch: state, xxh3: "e7b24d91c06f3a58b1d2c4e6f8091a3b" });
+      patch(r);
+    }),
+  );
+  assert.equal(patchedOnly.status, 1, patchedOnly.output);
+  assert.doesNotMatch(patchedOnly.output, /gives the hash of the save its runs started from/);
+  assert.match(patchedOnly.output, /a patch fixture gives the base save's hash as well/);
+});
+
+test("a committed save needs its hash", (t) => {
+  const save = (r: string) => {
+    mkdirSync(join(r, "spec", "experiments", "saves"));
+    writeFileSync(join(r, "spec", "experiments", "saves", "EXP-SCORE-001.sav"), "synthetic save\n");
+    writeFileSync(
+      join(r, "spec", "LICENSE"),
+      `${readFileSync(join(r, "spec", "LICENSE"), "utf8")}\nexperiments/saves/EXP-SCORE-001.sav\n`,
+    );
+  };
+  const state = "saves/EXP-SCORE-001.sav";
+
+  const missing = run(
+    broken(t, (r) => {
+      withStartingState(r, state);
+      save(r);
+    }),
+  );
+  assert.equal(missing.status, 1, missing.output);
+  assert.match(
+    missing.output,
+    /EXP-SCORE-001\.json: gives the hash of the save its runs started from in starting_state\.xxh3$/m,
+  );
+
+  const given = run(
+    broken(t, (r) => {
+      withStartingState(r, state, { xxh3: "e7b24d91c06f3a58b1d2c4e6f8091a3b" });
+      save(r);
+    }),
+  );
+  assert.equal(given.status, 0, given.output);
+});
+
+test("a save hash is 32 lower-case hex digits", (t) => {
+  const { status, output } = run(broken(t, (r) => withStartingState(r, "null", { xxh3: "E7B24D91C06F3A58" })));
+  assert.equal(status, 1, output);
+  assert.match(output, /EXP-SCORE-001\.json: starting_state\.xxh3 must be 32 lower-case hex digits$/m);
+  assert.doesNotMatch(output, /gives the hash of the save its runs started from/);
 });
 
 // The emulated call's fixture with its run's draws replaced.
