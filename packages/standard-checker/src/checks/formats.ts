@@ -16,6 +16,11 @@ export interface FormatNames {
   enumNames: Map<string, string[]>;
   /** Format ID -> the names of its layout and enumeration rows. */
   fieldNames: Map<string, Set<string>>;
+  /**
+   * Format ID -> the Name of each layout row -> its Type cell, for a format whose layout tables all
+   * have the right columns. A format without a Layout table has an empty map.
+   */
+  layouts: Map<string, Map<string, string>>;
 }
 
 /** The IDs cited in the last column of the tables of an entry's sections (of every section when sectionTitles is left out). */
@@ -32,7 +37,7 @@ export function tableIds(e: Entry, sectionTitles?: string[]) {
 export function checkFormat(ctx: Context, e: Entry, formatNames: FormatNames) {
   const { problem } = ctx;
   const { entries, buildFiles } = ctx.spec;
-  const { enumNames, fieldNames } = formatNames;
+  const { enumNames, fieldNames, layouts } = formatNames;
   const { file, meta } = e;
   const id = meta.id;
   const first = asList(meta.builds)[0];
@@ -105,16 +110,37 @@ export function checkFormat(ctx: Context, e: Entry, formatNames: FormatNames) {
       if (nameCol >= 0 && row[nameCol]) names.add(row[nameCol].replaceAll("`", ""));
     }
   };
+  // A row whose status is wrong still names a field, so the field checks of rules read every row.
+  const layoutTypes = new Map<string, string>();
+  let wellFormed = true;
   if (layout) {
     const ts = tables(layout.text);
     const wanted = meta.text === true ? TEXT_LAYOUT : BINARY_LAYOUT;
     if (meta.status !== "unknown" && ts.length === 0) problem(file, "Layout has no table");
     for (const t of ts) {
-      if (t.header.join("|") !== wanted.join("|"))
+      if (t.header.join("|") !== wanted.join("|")) {
         problem(file, `a layout table has the columns ${wanted.join(" | ")}`);
-      else visit(t, "layout");
+        wellFormed = false;
+        continue;
+      }
+      visit(t, "layout");
+      const nameCol = t.header.indexOf("Name");
+      const typeCol = t.header.indexOf("Type");
+      for (const row of t.rows) {
+        if (row.length !== t.header.length || !row[nameCol]) continue;
+        // A cell that names more than one field, or a path into a field (`items[i].count`), still
+        // names the field it starts with, though not its type.
+        for (const name of (row[nameCol].match(/`[^`]+`/g) ?? [row[nameCol]]).map((n) =>
+          n.replaceAll("`", "").trim(),
+        )) {
+          const lead = /^[A-Za-z_][A-Za-z0-9_]*/.exec(name)?.[0];
+          if (lead === name) layoutTypes.set(name, row[typeCol]);
+          else if (lead && !layoutTypes.has(lead)) layoutTypes.set(lead, "");
+        }
+      }
     }
   }
+  if (wellFormed) layouts.set(id, layoutTypes);
   // An enumeration table kept in a value file counts as one of the entry's tables.
   const enumTables = enums ? [...tables(enums.text), ...valueFileTables(ctx, e, enums.text)] : [];
   e.valueTables = enumTables.filter((t) => t.file);

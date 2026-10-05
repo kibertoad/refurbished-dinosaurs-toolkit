@@ -42,9 +42,9 @@
 // scalars, flow lists, and block lists of flat maps.
 //
 // This file reads the options and runs the phases in order: load the spec, check the entries, the
-// rules and what crosses entries, compile the Kaitai definitions, check the deviations, parity,
-// VALIDATION.md, the code's references and comments and the base ref, then write or check the
-// generated files. Every phase reports into one collector, which prints the problems at the end in
+// rules, the field names in their procedures and what crosses entries, compile the Kaitai
+// definitions, check the deviations, parity, VALIDATION.md, the code's references and comments and
+// the base ref, then write or check the generated files. Every phase reports into one collector, which prints the problems at the end in
 // the order they were found.
 
 import { readFileSync } from "node:fs";
@@ -55,6 +55,7 @@ import { checkCommentAddresses } from "./checks/comment-addresses.ts";
 import { checkAcrossEntries } from "./checks/cross-entry.ts";
 import { checkDeviations } from "./checks/deviations.ts";
 import { checkEntries } from "./checks/entries.ts";
+import { checkFieldNames } from "./checks/fields.ts";
 import { compileKaitai } from "./checks/kaitai.ts";
 import { checkParity } from "./checks/parity.ts";
 import { checkReferences } from "./checks/references.ts";
@@ -90,6 +91,7 @@ const ctx: Context = { config, problem, spec, codeFiles: createCodeFiles(config,
 
 const formatNames = checkEntries(ctx);
 checkRules(ctx, formatNames);
+checkFieldNames(ctx, formatNames);
 checkAcrossEntries(ctx, formatNames);
 compileKaitai(ctx);
 const deviations = checkDeviations(ctx);

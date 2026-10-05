@@ -1789,3 +1789,166 @@ for (const [option, value] of [
     const result = run(fixture, option, value);
     assert.equal(result.status, 2, result.output);
   });
+
+// FMT-SCORE-001 with a pointer to another record, glossary terms of each shape the field check
+// reads, and RULE-SCORE-002, which returns a record, for the field name tests.
+function withTypedNames(r: string) {
+  const best = "| `0x00` | 2 | `UINT16LE` | `best` | The best score. | sourced | SRC-MANUAL |";
+  const next = "| `0x02` | 4 | `PTR32<FMT-SCORE-001>` | `next` | The next record. | sourced | SRC-MANUAL |";
+  replaceIn(
+    r,
+    "spec/formats/FMT-SCORE-001.md",
+    `${best}\n| \`0x02\` | | | | Total size 2 | | |`,
+    `${best}\n${next}\n| \`0x06\` | | | | Total size 6 | | |`,
+  );
+  replaceIn(r, "spec/formats/FMT-SCORE-001.md", "size: 2", "size: 6");
+  const term = (name: string, text: string) =>
+    writeFileSync(join(r, "spec", "glossary", `${name}.md`), `# ${name}\n\n${text}\n`);
+  term("best_record", "`best_record: FMT-SCORE-001`, the record the game keeps for the best score.");
+  term("records", "`records: FMT-SCORE-001[]`, a list the game keeps in the order the file holds them.");
+  term("follower", "The record after the best one, kept in the field `next` of FMT-SCORE-001.");
+  term("best_value", "The best score, kept in the field `best` of FMT-SCORE-001.");
+  term("prose", "The view a hotkey opens, one of the records of FMT-SCORE-001.");
+  copyRule(r, "RULE-SCORE-002", (text) =>
+    text.replace("Returns the new score.", "Returns a `FMT-SCORE-001`, the best record. Changes nothing."),
+  );
+  replaceIn(r, "parity/SCORE.md", row("RULE-SCORE-001"), row("RULE-SCORE-001") + "\n" + row("RULE-SCORE-002"));
+  replaceIn(r, "spec/rules/RULE-SCORE-001.md", "related: []", "related: [FMT-SCORE-001, RULE-SCORE-002]");
+  replaceIn(
+    r,
+    "spec/rules/RULE-SCORE-001.md",
+    "- `n`: the score before the kill.",
+    "- `n`: the score before the kill.\n- `record`: FMT-SCORE-001, the record to compare with.\n" +
+      "- `entry`: the entry whose record is FMT-SCORE-001.",
+  );
+}
+
+// Puts lines into RULE-SCORE-001's procedure, before its return.
+function procedure(r: string, lines: string[]) {
+  replaceIn(
+    r,
+    "spec/rules/RULE-SCORE-001.md",
+    "    return n + 1",
+    [...lines.map((l) => `    ${l}`), "    return n + 1"].join("\n"),
+  );
+}
+
+test("field names whose structure has a known type pass when the layout has them", (t) => {
+  const root = broken(t, (r) => {
+    withTypedNames(r);
+    procedure(r, [
+      "let probe = new FMT-SCORE-001",
+      "probe.best = n",
+      "probe.next.next.best = record.best",
+      "let typed: FMT-SCORE-001 = copy(best_record)",
+      "typed.best = best_record.best + follower.best",
+      "let got = call RULE-SCORE-002(n)",
+      "let after = got.next",
+      "for each r in records:",
+      "    r.best = after.best + records[0].next.best",
+      "let plain = n",
+      "plain.anything = 0",
+    ]);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+});
+
+test("a field name missing from its structure's layout is reported with where the type came from", (t) => {
+  const root = broken(t, (r) => {
+    withTypedNames(r);
+    procedure(r, [
+      "let probe = new FMT-SCORE-001",
+      "probe.made_up_field = 1",
+      "probe.next.made_up_field = record.worst",
+      "best_record.runner_up = follower.missing",
+      "let got = call RULE-SCORE-002(n)",
+      "got.missing = 0",
+      "for each r in records:",
+      "    r.missing = records[probe.lost].best",
+    ]);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  const named = (chain: string, field: string, source: string) =>
+    assert.match(
+      output,
+      new RegExp(
+        `RULE-SCORE-001\\.md: ${chain.replaceAll(".", "\\.")} names ${field}, which is not in the layout of FMT-SCORE-001 \\(${chain.split(".")[0]} has its type from ${source}\\)$`,
+        "m",
+      ),
+    );
+  named("probe.made_up_field", "made_up_field", "its let");
+  named("probe.next.made_up_field", "made_up_field", "its let");
+  named("record.worst", "worst", "the Parameters section");
+  named("best_record.runner_up", "runner_up", "the glossary entry for best_record");
+  named("follower.missing", "missing", "the glossary entry for follower");
+  named("got.missing", "missing", "the Outputs of RULE-SCORE-002");
+  named("r.missing", "missing", "the list its loop visits");
+  named("probe.lost", "lost", "its let");
+});
+
+test("a name whose type is not resolved, or that a local hides, stays unchecked", (t) => {
+  const root = broken(t, (r) => {
+    withTypedNames(r);
+    writeFileSync(
+      join(r, "spec", "glossary", "either.md"),
+      "# either\n\nA record that is FMT-SCORE-001 in one place and FMT-SCORE-009 in another.\n",
+    );
+    procedure(r, [
+      "best_value.anything = 0",
+      "either.anything = 0",
+      "prose.anything = 0",
+      "entry.anything = 0",
+      "let plain = n",
+      "plain.anything = 0",
+      "let best_record = n",
+      "best_record.anything = 0",
+    ]);
+  });
+  const { output } = run(root);
+  assert.doesNotMatch(output, /names anything/);
+});
+
+test("a format whose layout table is malformed leaves its fields unchecked", (t) => {
+  const root = broken(t, (r) => {
+    withTypedNames(r);
+    procedure(r, ["record.anything = 0"]);
+    replaceIn(
+      r,
+      "spec/formats/FMT-SCORE-001.md",
+      "| Offset | Size | Type | Name | Meaning | Status | Evidence |",
+      "| Offset | Size | Kind | Name | Meaning | Status | Evidence |",
+    );
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /a layout table has the columns/);
+  assert.doesNotMatch(output, /names anything/);
+});
+
+test("a format without a layout table has no fields", (t) => {
+  const root = broken(t, (r) => {
+    withTypedNames(r);
+    procedure(r, ["record.best = 0"]);
+    const file = join(r, "spec", "formats", "FMT-SCORE-001.md");
+    const text = readFileSync(file, "utf8");
+    writeFileSync(file, text.replace(/## Layout\n[\s\S]*?\n## /, "## Layout\n\nNot read yet.\n\n## "));
+  });
+  const { output } = run(root);
+  assert.match(
+    output,
+    /RULE-SCORE-001\.md: record\.best names best, which is not in the layout of FMT-SCORE-001 \(record has its type from the Parameters section\)$/m,
+  );
+});
+
+test("a Name cell that names several fields, or a path into one, names each field it starts with", (t) => {
+  const root = broken(t, (r) => {
+    withTypedNames(r);
+    replaceIn(r, "spec/formats/FMT-SCORE-001.md", "| `best` |", "| `best`, `slots[i].count` |");
+    procedure(r, ["record.best = record.slots[0].count", "record.count = 0"]);
+  });
+  const { output } = run(root);
+  assert.doesNotMatch(output, /names (best|slots),/);
+  assert.match(output, /RULE-SCORE-001\.md: record\.count names count, which is not in the layout of FMT-SCORE-001/);
+});
