@@ -960,10 +960,13 @@ test("a deviation file passes, and its file name must be its ID", (t) => {
   assert.match(bad.output, /DEV-SCORE-002\.md: file name must be DEV-SCORE-001\.md/);
 });
 
-test("a complete row whose mandatory deviations all have tests is deviated", (t) => {
-  const mandatory = (tests: string) =>
-    "# DEV-SCORE-001\n\n- Departs from: RULE-SCORE-001\n- Reason: Counts two points.\n- Setting: None\n" +
-    `- Default: mandatory\n- Justification: Nobody would switch it back.\n${tests}- Dropped: no\n`;
+// A mandatory DEV-SCORE-001 with the Tests item tests and the Replaces item replaces, each of which is
+// empty or ends with a newline.
+const mandatory = (tests: string, dropped = "no", replaces = "- Replaces: RULE-SCORE-001\n") =>
+  `# DEV-SCORE-001\n\n- Departs from: RULE-SCORE-001\n${replaces}- Reason: Counts two points.\n- Setting: None\n` +
+  `- Default: mandatory\n- Justification: Nobody would switch it back.\n${tests}- Dropped: ${dropped}\n`;
+
+test("a complete row whose entry a tested mandatory deviation replaces is deviated", (t) => {
   const setStatus = (r: string, from: string, to: string) => replaceIn(r, "parity/SCORE.md", from, to);
   const root = broken(t, (r) => {
     writeFileSync(join(r, "deviations", "DEV-SCORE-001.md"), mandatory(""));
@@ -978,6 +981,11 @@ test("a complete row whose mandatory deviations all have tests is deviated", (t)
 
   mkdirSync(join(root, "tests"));
   writeFileSync(join(root, "tests", "Double.ts"), "// DEV-SCORE-001: a kill counts two points.\n");
+  // A deviation that changes only part of the entry leaves the row to tests that compare it.
+  writeFileSync(join(root, "deviations", "DEV-SCORE-001.md"), mandatory("- Tests: tests/Double.ts\n", "no", ""));
+  const partial = run(root);
+  assert.equal(partial.status, 0, partial.output);
+
   writeFileSync(join(root, "deviations", "DEV-SCORE-001.md"), mandatory("- Tests: tests/Double.ts\n"));
   const stale = run(root);
   assert.equal(stale.status, 1);
@@ -996,6 +1004,120 @@ test("a complete row whose mandatory deviations all have tests is deviated", (t)
   assert.equal(broke.status, 1);
   assert.match(broke.output, /DEV-SCORE-001: test file tests\/Double\.ts does not mention DEV-SCORE-001/);
   assert.match(broke.output, /DEV-SCORE-001: test file tests\/Missing\.ts does not exist/);
+});
+
+test("a row whose entry a mandatory deviation replaces has no tests of its own", (t) => {
+  const root = broken(t, (r) => {
+    mkdirSync(join(r, "tests"));
+    writeFileSync(join(r, "tests", "Double.ts"), "// DEV-SCORE-001\n");
+    writeFileSync(join(r, "tests", "Orig.ts"), "// RULE-SCORE-001\n");
+    writeFileSync(join(r, "deviations", "DEV-SCORE-001.md"), mandatory("- Tests: tests/Double.ts\n"));
+    replaceIn(
+      r,
+      "parity/SCORE.md",
+      row("RULE-SCORE-001"),
+      row("RULE-SCORE-001").replace(
+        "missing | None | None | sourced",
+        "complete | tests/Orig.ts | DEV-SCORE-001 | deviated",
+      ),
+    );
+  });
+  const listed = run(root);
+  assert.equal(listed.status, 1);
+  assert.match(
+    listed.output,
+    /RULE-SCORE-001: DEV-SCORE-001 replaces it, so Tests must be None; list the tests in the deviation's Tests item/,
+  );
+  assert.doesNotMatch(listed.output, /RULE-SCORE-001: Status must be/);
+  assert.doesNotMatch(listed.output, /the evidence belongs in the spec entry first/);
+
+  replaceIn(root, "parity/SCORE.md", "| tests/Orig.ts |", "| None |");
+  const moved = run(root);
+  assert.equal(moved.status, 0, moved.output);
+});
+
+test("a deviation's Tests item lists files that mention the whole ID and never use GAME_DIR", (t) => {
+  const root = broken(t, (r) => mkdirSync(join(r, "tests")));
+  const devFile = join(root, "deviations", "DEV-SCORE-001.md");
+  const outcome = (tests: string, text: string, dropped = "no") => {
+    writeFileSync(join(root, "tests", "Double.ts"), text);
+    writeFileSync(devFile, mandatory(tests, dropped));
+    return run(root);
+  };
+
+  const dir = outcome("- Tests: tests\n", "// DEV-SCORE-001\n");
+  assert.equal(dir.status, 1);
+  assert.match(dir.output, /DEV-SCORE-001: test file tests is not a file/);
+
+  const longer = outcome("- Tests: tests/Double.ts\n", "// DEV-SCORE-0010\n");
+  assert.equal(longer.status, 1);
+  assert.match(longer.output, /DEV-SCORE-001: test file tests\/Double\.ts does not mention DEV-SCORE-001/);
+
+  const game = outcome("- Tests: tests/Double.ts\n", "// DEV-SCORE-001\nconst dir = process.env.GAME_DIR;\n");
+  assert.equal(game.status, 1);
+  assert.match(game.output, /DEV-SCORE-001: test file tests\/Double\.ts mentions GAME_DIR, but it has to run in CI/);
+  const marked = outcome("- Tests: tests/Double.ts\n", "// DEV-SCORE-001\n// needs: GAME_DIR\n");
+  assert.equal(marked.status, 1);
+  assert.match(marked.output, /DEV-SCORE-001: test file tests\/Double\.ts mentions GAME_DIR, but it has to run in CI/);
+
+  const none = outcome("- Tests: None\n", "// DEV-SCORE-001\n");
+  assert.equal(none.status, 1);
+  assert.match(none.output, /DEV-SCORE-001: Tests lists at least one test file/);
+
+  const dropped = outcome("- Tests: tests/Missing.ts\n", "// DEV-SCORE-001\n", "2026-01-01 the original came back");
+  assert.doesNotMatch(dropped.output, /test file tests\/Missing\.ts/);
+});
+
+test("a complete row stays implemented while one of its mandatory deviations has no tests", (t) => {
+  const root = broken(t, (r) => {
+    mkdirSync(join(r, "tests"));
+    writeFileSync(join(r, "tests", "Double.ts"), "// DEV-SCORE-001\n");
+    writeFileSync(join(r, "deviations", "DEV-SCORE-001.md"), mandatory("- Tests: tests/Double.ts\n"));
+    writeFileSync(
+      join(r, "deviations", "DEV-SCORE-002.md"),
+      mandatory("").replace("# DEV-SCORE-001", "# DEV-SCORE-002"),
+    );
+    replaceIn(
+      r,
+      "parity/SCORE.md",
+      row("RULE-SCORE-001"),
+      row("RULE-SCORE-001").replace(
+        "missing | None | None | sourced",
+        "complete | None | DEV-SCORE-001, DEV-SCORE-002 | implemented",
+      ),
+    );
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+});
+
+test("a Replaces item belongs to a mandatory deviation and names rules, formats or screens it departs from", (t) => {
+  const root = broken(t, () => {});
+  const outcome = (text: string) => {
+    writeFileSync(join(root, "deviations", "DEV-SCORE-001.md"), text);
+    return run(root);
+  };
+
+  const other = outcome(mandatory("", "no", "- Replaces: RULE-SCORE-002\n"));
+  assert.equal(other.status, 1);
+  assert.match(other.output, /DEV-SCORE-001: Replaces names RULE-SCORE-002, which Departs from does not/);
+
+  const empty = outcome(mandatory("", "no", "- Replaces: None\n"));
+  assert.equal(empty.status, 1);
+  assert.match(empty.output, /DEV-SCORE-001: Replaces names at least one entry/);
+
+  const late = outcome(mandatory("", "no", "").replace("- Setting:", "- Replaces: RULE-SCORE-001\n- Setting:"));
+  assert.equal(late.status, 1);
+  assert.match(late.output, /DEV-SCORE-001: items must be Departs from, Replaces, Reason/);
+
+  const optional = outcome(
+    mandatory("").replace(
+      "- Setting: None\n- Default: mandatory\n- Justification: Nobody would switch it back.\n",
+      "- Setting: Scoring\n- Default: off\n",
+    ),
+  );
+  assert.equal(optional.status, 1);
+  assert.match(optional.output, /DEV-SCORE-001: only a mandatory deviation has a Replaces item/);
 });
 
 test("a deviation file deleted since the base is reported", (t) => {
