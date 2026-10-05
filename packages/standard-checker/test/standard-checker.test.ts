@@ -6,17 +6,33 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const script = join(here, "..", "src", "standard-checker.ts");
 const fixture = join(here, "valid");
 
+// The fixture sits inside the toolkit's own repository, so git may not look for a repository above
+// the test directory or the temporary directory, and a CI run's GITHUB_BASE_REF does not reach the
+// checker. A root is then a git repository only when a test makes it one.
+function checkerEnv(env: NodeJS.ProcessEnv = process.env) {
+  const result: NodeJS.ProcessEnv = { ...env, GIT_CEILING_DIRECTORIES: [here, tmpdir()].join(delimiter) };
+  delete result.GITHUB_BASE_REF;
+  return result;
+}
+
 function run(root: string, ...args: string[]) {
-  const result = spawnSync(process.execPath, [script, "--root", root, "--no-ksy", ...args], { encoding: "utf8" });
+  const result = spawnSync(process.execPath, [script, "--root", root, "--no-ksy", ...args], {
+    encoding: "utf8",
+    env: checkerEnv(),
+  });
   return { status: result.status, output: result.stdout + result.stderr };
 }
+
+// The skipped step that a root without a fork point adds to the result line, as a pattern.
+const NO_FORK_POINT =
+  "comparison with the base branch \\(HEAD has no merge-base with origin/main, fetch it with enough history or pass --base\\)";
 
 // A copy of the fixture with edit(root) applied, removed after the test.
 function broken(t: TestContext, edit: (root: string) => void) {
@@ -39,7 +55,9 @@ test("the fixture passes with fresh indexes", () => {
   assert.equal(status, 0, output);
   assert.match(
     output,
-    /spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\. Skipped: Kaitai compilation of 1 definition \(--no-ksy\)\./,
+    new RegExp(
+      `spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\\. Skipped: Kaitai compilation of 1 definition \\(--no-ksy\\); ${NO_FORK_POINT}\\.`,
+    ),
   );
 });
 
@@ -502,7 +520,7 @@ function runWithPath(t: TestContext, bin: string, ksc?: string) {
   if (ksc !== undefined) env.KSC = ksc;
   const result = spawnSync(process.execPath, [script, "--root", root, "--check"], {
     encoding: "utf8",
-    env,
+    env: checkerEnv(env),
     cwd: tmpdir(),
   });
   return { status: result.status, output: result.stdout + result.stderr };
@@ -605,7 +623,8 @@ test(
 );
 
 // Runs the checker without --no-ksy, with KSC set to ksc or unset, and with a PATH that holds only
-// an empty directory, so that no compiler is found on it.
+// an empty directory, so that no compiler is found on it. Nor is git, so the comparison with the
+// base branch is always skipped.
 function runKaitai(t: TestContext, root: string, ksc: string | null, ...args: string[]) {
   const emptyPath = mkdtempSync(join(tmpdir(), "no-ksc-"));
   t.after(() => rmSync(emptyPath, { recursive: true, force: true }));
@@ -615,7 +634,10 @@ function runKaitai(t: TestContext, root: string, ksc: string | null, ...args: st
     if (value !== undefined && !/^(path|ksc)$/i.test(name)) env[name] = value;
   env.PATH = emptyPath;
   if (ksc) env.KSC = ksc;
-  const result = spawnSync(process.execPath, [script, "--root", root, "--check", ...args], { encoding: "utf8", env });
+  const result = spawnSync(process.execPath, [script, "--root", root, "--check", ...args], {
+    encoding: "utf8",
+    env: checkerEnv(env),
+  });
   return { status: result.status, output: result.stdout + result.stderr };
 }
 
@@ -639,7 +661,9 @@ test("a missing compiler passes with the Kaitai compilation named as skipped", (
   assert.equal(status, 0, output);
   assert.match(
     output,
-    /spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\. Skipped: Kaitai compilation of 1 definition \(no Kaitai Struct compiler found, set KSC or install kaitai-struct-compiler\)\./,
+    new RegExp(
+      `spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\\. Skipped: Kaitai compilation of 1 definition \\(no Kaitai Struct compiler found, set KSC or install kaitai-struct-compiler\\); ${NO_FORK_POINT}\\.`,
+    ),
   );
   assert.doesNotMatch(output, /spec check passed:/);
 });
@@ -654,13 +678,19 @@ test("--require-ksc fails when no compiler is found", (t) => {
   assert.doesNotMatch(output, /spec check passed/);
 });
 
-test("a compiler that runs gives a full pass, with or without --require-ksc", (t) => {
+test("a compiler that runs leaves the Kaitai compilation out of the skipped steps, with or without --require-ksc", (t) => {
   const ksc = workingCompiler(t);
   for (const args of [[], ["--require-ksc"]]) {
     const { status, output } = runKaitai(t, fixture, ksc, ...args);
     assert.equal(status, 0, output);
-    assert.match(output, /spec check passed: 4 entries, 2 parity rows, 0 deviations\.$/m);
-    assert.doesNotMatch(output, /Skipped/);
+    assert.match(
+      output,
+      new RegExp(
+        `spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\\. Skipped: ${NO_FORK_POINT}\\.$`,
+        "m",
+      ),
+    );
+    assert.doesNotMatch(output, /Kaitai compilation/);
   }
 });
 
@@ -672,7 +702,7 @@ test("a KSC that cannot be started fails with the reason", (t) => {
   assert.match(output, /^spec: Kaitai definitions do not compile:\n\S/m);
 });
 
-test("a spec with no Kaitai definitions skips nothing when no compiler is found", (t) => {
+test("a spec with no Kaitai definitions skips no compilation when no compiler is found", (t) => {
   const root = broken(t, (r) => {
     replaceIn(
       r,
@@ -690,7 +720,13 @@ test("a spec with no Kaitai definitions skips nothing when no compiler is found"
   });
   const { status, output } = runKaitai(t, root, null, "--require-ksc");
   assert.equal(status, 0, output);
-  assert.match(output, /spec check passed: 4 entries, 2 parity rows, 0 deviations\.$/m);
+  assert.match(
+    output,
+    new RegExp(
+      `spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\\. Skipped: ${NO_FORK_POINT}\\.$`,
+      "m",
+    ),
+  );
 });
 
 test("--no-ksy still reports a definition that belongs to no format entry, and names the skip", (t) => {
@@ -700,13 +736,109 @@ test("--no-ksy still reports a definition that belongs to no format entry, and n
   const { status, output } = run(root, "--check");
   assert.equal(status, 1, output);
   assert.match(output, /^spec\/formats\/fmt_other_001\.ksy: belongs to no format entry \(FMT-OTHER-001\)$/m);
-  assert.match(output, /^Skipped: Kaitai compilation of 2 definitions \(--no-ksy\)\.$/m);
+  assert.match(
+    output,
+    new RegExp(`^Skipped: Kaitai compilation of 2 definitions \\(--no-ksy\\); ${NO_FORK_POINT}\\.$`, "m"),
+  );
 });
 
 test("--require-ksc cannot be combined with --no-ksy", () => {
   const { status, output } = run(fixture, "--require-ksc");
   assert.equal(status, 2);
   assert.match(output, /--require-ksc requires the Kaitai compilation that --no-ksy skips/);
+});
+
+// Commits the restoration at root and points origin/main, and origin/<branch> for each branch
+// given, at that commit, so that HEAD has a fork point with each.
+function withForkPoint(root: string, ...branches: string[]) {
+  const git = (...args: string[]) =>
+    assert.equal(
+      spawnSync("git", ["-C", root, "-c", "user.name=test", "-c", "user.email=test@example.com", ...args]).status,
+      0,
+    );
+  git("init", "-q");
+  git("add", ".");
+  git("commit", "-q", "-m", "base");
+  for (const branch of ["main", ...branches]) git("update-ref", `refs/remotes/origin/${branch}`, "HEAD");
+}
+
+// Runs the checker with --no-ksy and GITHUB_BASE_REF set to baseRef.
+function runOnBranch(root: string, baseRef: string, ...args: string[]) {
+  const result = spawnSync(process.execPath, [script, "--root", root, "--no-ksy", ...args], {
+    encoding: "utf8",
+    env: { ...checkerEnv(), GITHUB_BASE_REF: baseRef },
+  });
+  return { status: result.status, output: result.stdout + result.stderr };
+}
+
+test("a fork point that does not resolve passes with the base comparison named as skipped", (t) => {
+  const { status, output } = run(fixture, "--check");
+  assert.equal(status, 0, output);
+  assert.match(output, new RegExp(`^spec check passed with skipped steps: .*; ${NO_FORK_POINT}\\.$`, "m"));
+  // In CI the fork point is looked for on the pull request's base branch, and the skip names it.
+  const root = broken(t, (r) => withForkPoint(r));
+  const onBranch = runOnBranch(root, "release");
+  assert.equal(onBranch.status, 0, onBranch.output);
+  assert.match(
+    onBranch.output,
+    /; comparison with the base branch \(HEAD has no merge-base with origin\/release, fetch it with enough history or pass --base\)\.$/m,
+  );
+});
+
+test("--require-base fails when the fork point does not resolve", () => {
+  const { status, output } = run(fixture, "--check", "--require-base");
+  assert.equal(status, 1, output);
+  assert.match(
+    output,
+    /^spec: HEAD has no merge-base with origin\/main, fetch it with enough history or pass --base\. --require-base requires the comparison with the base branch$/m,
+  );
+  assert.doesNotMatch(output, /spec check passed/);
+  assert.doesNotMatch(output, /comparison with the base branch \(/);
+});
+
+test("a fork point that resolves runs the comparison and skips nothing for it", (t) => {
+  const root = broken(t, (r) => {
+    replaceIn(
+      r,
+      "spec/README.md",
+      "| `SCORE` | The high-score table and how a score is counted. |",
+      "| `SCORE` | The high-score table and how a score is counted. |\n| `EXTRA` | Nothing yet. |",
+    );
+    withForkPoint(r, "release");
+  });
+  for (const args of [[], ["--require-base"]]) {
+    const { status, output } = run(root, ...args);
+    assert.equal(status, 0, output);
+    assert.match(
+      output,
+      /^spec check passed with skipped steps: .* Skipped: Kaitai compilation of 1 definition \(--no-ksy\)\.$/m,
+    );
+    assert.doesNotMatch(output, /comparison with the base branch/);
+  }
+  // The comparison ran: an area removed since the fork point is reported, against origin/main or
+  // against the branch GITHUB_BASE_REF names.
+  replaceIn(root, "spec/README.md", "\n| `EXTRA` | Nothing yet. |", "");
+  for (const { status, output } of [run(root, "--require-base"), runOnBranch(root, "release")]) {
+    assert.equal(status, 1, output);
+    assert.match(
+      output,
+      /^spec: area EXTRA exists at [0-9a-f]{40} and has been removed or renamed \[IDENTIFIERS-5\]$/m,
+    );
+  }
+});
+
+test("an explicit --base runs the comparison without a fork point, with or without --require-base", (t) => {
+  const root = broken(t, (r) => commitBase(r));
+  for (const args of [[], ["--require-base"]]) {
+    const { status, output } = run(root, "--check", "--base", "HEAD", ...args);
+    assert.equal(status, 0, output);
+    assert.doesNotMatch(output, /comparison with the base branch/);
+  }
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-001.md"));
+  const { status, output } = run(root, "--base", "HEAD", "--require-base");
+  assert.equal(status, 1, output);
+  assert.match(output, /^spec: RULE-SCORE-001 exists at HEAD and has been deleted or renamed \[IDENTIFIERS-6\]$/m);
+  assert.doesNotMatch(output, /HEAD has no merge-base/);
 });
 
 test("a data path with a space is read whole", (t) => {

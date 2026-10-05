@@ -9,7 +9,10 @@
 //   --root <dir>        the repository to check (default: the current directory)
 //   --check             fail when an index or PARITY.md is stale instead of rewriting it
 //   --base <ref>        also fail when an ID or area that exists at <ref> is gone (default: where
-//                       HEAD forked from origin/$GITHUB_BASE_REF or origin/main, when it resolves)
+//                       HEAD forked from origin/$GITHUB_BASE_REF or origin/main; when that does not
+//                       resolve, the result line names the comparison as skipped)
+//   --require-base      fail when no --base is given and the fork point does not resolve, instead
+//                       of passing with the comparison skipped
 //   --no-ksy            skip compiling the Kaitai definitions; the result line names the skip
 //   --require-ksc       fail when spec/formats/ holds Kaitai definitions and no compiler is found,
 //                       instead of passing with the compilation skipped

@@ -7,6 +7,7 @@ interface Options {
   check?: boolean;
   "no-ksy"?: boolean;
   "require-ksc"?: boolean;
+  "require-base"?: boolean;
   root?: string;
   base?: string;
   code?: string;
@@ -31,6 +32,8 @@ export interface Config {
   requireKsc: boolean;
   /** --base, or null when it was not given. */
   baseArg: string | null;
+  /** --require-base: fail when no --base is given and the base branch's fork point does not resolve. */
+  requireBase: boolean;
   /** Every --glossary path, in order. */
   glossaryDrafts: string[];
   /** The --code directories, relative to repoDir. */
@@ -59,7 +62,7 @@ export const dirList = (value: string | undefined, fallback: string[]) =>
         .map((x) => x.trim())
         .filter(Boolean);
 
-const FLAGS = ["--check", "--no-ksy", "--require-ksc"];
+const FLAGS = ["--check", "--no-ksy", "--require-ksc", "--require-base"];
 const VALUED = [
   "--root",
   "--base",
@@ -129,6 +132,7 @@ export function parseOptions(argv: string[]): Config {
     skipKsy,
     requireKsc,
     baseArg,
+    requireBase: options["require-base"] === true,
     glossaryDrafts: options.glossary,
     codeRoots,
     referenceRoots,

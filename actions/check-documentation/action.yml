@@ -26,7 +26,7 @@ inputs:
     required: false
     default: ""
   base:
-    description: Ref whose spec IDs, areas and deviations must still exist. Empty uses where HEAD forked from origin/$GITHUB_BASE_REF or origin/main.
+    description: Ref whose spec IDs, areas and deviations must still exist. Empty uses where HEAD forked from origin/$GITHUB_BASE_REF or origin/main. On a pull request the action fetches the base branch with enough history for that, and fails when the fork point still does not resolve; elsewhere the result line names the comparison as skipped.
     required: false
     default: ""
   kaitai-version:
@@ -96,13 +96,6 @@ runs:
         # install exports KSC, which the check takes without running it, so today this guards
         # against an install that stops setting KSC; a KSC that does not run fails as a compile error.
         DOC_REQUIRE_KSC: ${{ inputs.kaitai-version != '' && steps.ksy.outputs.found == 'true' }}
-      run: |
-        set -euo pipefail
-        args=(--root "$DOC_ROOT" --check --code "$DOC_CODE" --references "$DOC_REFERENCES")
-        if [ "$DOC_REQUIRE_KSC" = "true" ]; then args+=(--require-ksc); fi
-        if [ -n "$DOC_IMAGES" ]; then args+=(--images "$DOC_IMAGES"); fi
-        if [ -n "$DOC_MAX_RANGE" ]; then args+=(--max-range "$DOC_MAX_RANGE"); fi
-        if [ -n "$DOC_DATA_DIRS" ]; then args+=(--data-dirs "$DOC_DATA_DIRS"); fi
-        if [ -n "$DOC_BASE" ]; then args+=(--base "$DOC_BASE"); fi
-        # Node runs the TypeScript source directly; it imports only Node built-ins.
-        node "$GITHUB_ACTION_PATH/../../packages/standard-checker/src/standard-checker.ts" "${args[@]}"
+      # On a pull request with no base input, check.sh fetches the base branch and passes
+      # --require-base, so a comparison with the base branch that cannot run fails the check.
+      run: bash "$GITHUB_ACTION_PATH/check.sh"

@@ -22,6 +22,13 @@ step of the check did not run, it ends with `spec check passed with skipped step
 `Skipped: Kaitai compilation of 2 definitions (--no-ksy).` A failing run lists the skipped steps
 after its problems.
 
+Without `--base`, the checker compares the spec with where HEAD forked from `origin/$GITHUB_BASE_REF`,
+or from `origin/main` when that variable is unset. Outside a git repository, in a shallow clone, or
+when that branch was never fetched, the fork point does not resolve and the comparison does not
+run. The result line then names it, such as `Skipped: comparison with the base branch (HEAD has no
+merge-base with origin/main, fetch it with enough history or pass --base).` With `--require-base`,
+the same case is a problem and the run fails.
+
 A problem that breaks a numbered rule of the standard ends with the rule's label in brackets, such
 as `[STATUS-14]`. The standard opens that rule with the heading `###### STATUS-14`, anchored at
 `#status-14` on the site and in the copies restorations vendor, so the rule can be read on its
@@ -34,7 +41,8 @@ problems under other sections carry no label yet.
 |---|---|---|
 | `--root <dir>` | The repository to check. | the current directory |
 | `--check` | Fail when an index or `PARITY.md` is stale, instead of rewriting it. | rewrite |
-| `--base <ref>` | Also fail when a spec ID, area or deviation that exists at `<ref>` is gone, or when a superseded format entry has no layout table although it had one at `<ref>`. | where HEAD forked from `origin/$GITHUB_BASE_REF` or `origin/main`, when that resolves |
+| `--base <ref>` | Also fail when a spec ID, area or deviation that exists at `<ref>` is gone, or when a superseded format entry has no layout table although it had one at `<ref>`. | where HEAD forked from `origin/$GITHUB_BASE_REF` or `origin/main`; when that does not resolve, the comparison is named as skipped |
+| `--require-base` | Fail when no `--base` is given and the fork point does not resolve, instead of passing with the comparison skipped. | pass with the comparison skipped |
 | `--no-ksy` | Skip compiling the Kaitai definitions in `spec/formats/`. The result line names the skipped compilation. | compile |
 | `--require-ksc` | Fail when `spec/formats/` holds Kaitai definitions and no compiler is found, instead of passing with the compilation skipped. | pass with the compilation skipped |
 | `--glossary <path>` | Also accept the terms of a draft glossary file, or of a directory of them. | none |
@@ -63,7 +71,8 @@ prints a warning naming its path, with its output.
 The toolkit's `actions/check-documentation` composite action runs this checker with `--check`,
 installs a pinned Kaitai compiler when the repository has `.ksy` files (and then passes
 `--require-ksc`), and exposes every option
-above as an input. Pin the action to the toolkit commit whose `packages/standard-checker` matches
+above as an input. On a pull request with no `base` input, it fetches the base branch with enough
+history for the fork point and passes `--require-base`. Pin the action to the toolkit commit whose `packages/standard-checker` matches
 the version installed here, so CI and local runs apply the same checks.
 
 [The documentation standard check guide](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/documentation-standard-check.md)
