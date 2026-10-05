@@ -176,22 +176,102 @@ public sealed class InstallShieldArchiveTests
     }
 
     [Theory]
-    [InlineData((ushort)1, (byte)1)]
-    [InlineData((ushort)2, (byte)1)]
-    [InlineData((ushort)0, (byte)3)]
-    public void RefusesASplitArchive(ushort archiveFlags, byte totalParts)
+    [InlineData((ushort)0x0001)]
+    [InlineData((ushort)0x0002)]
+    [InlineData((ushort)0x0003)]
+    public async Task ReadsASplitArchiveOfOnePart(ushort archiveFlags)
     {
-        using var archive = new MemoryStream(SyntheticInstallShieldArchive.Build([new("", "a.bin", Text)], archiveFlags, totalParts));
-        Assert.Contains("split archive", Assert.Throws<NotSupportedException>(() => OriginalContentSource.OpenInstallShieldArchive(archive)).Message);
+        // A header that sets a split flag but declares itself part 1 of 1 holds every member's data,
+        // as each entry confirms by naming part 1. The members read as they do in an unsplit archive.
+        ArchiveFile[] files =
+        [
+            new("", "readme.txt", Text, Stored: true),
+            new("Data", "prose.txt", Prose),
+            new("Data", "random.bin", Bytes(3000, 7), CodedLiterals: false, DictionaryBits: 4),
+            new("Data", "gone.bin", Text, Invalid: true)
+        ];
+        using var source = Open(SyntheticInstallShieldArchive.Build(files, archiveFlags, totalParts: 1, partNumber: 1));
+        Assert.Equal(["Data/prose.txt", "Data/random.bin", "readme.txt"], source.Files.Select(entry => entry.Path));
+        Assert.Equal("Data/gone.bin", Assert.Single(source.SkippedFiles).Path);
+        foreach (var file in files.Where(file => !file.Invalid))
+        {
+            await using var stream = source.OpenRead(file.Directory.Length == 0 ? file.Name : $"{file.Directory}/{file.Name}");
+            Assert.Equal(file.Data, await ReadAll(stream));
+        }
     }
 
-    [Fact]
-    public void RefusesAnEntryThatSpansParts()
+    [Theory]
+    [InlineData((ushort)1, (byte)2, (byte)1, "flags 0x0001, part 1, 2 parts")]
+    [InlineData((ushort)2, (byte)3, (byte)1, "flags 0x0002, part 1, 3 parts")]
+    [InlineData((ushort)1, (byte)0, (byte)1, "flags 0x0001, part 1, 0 parts")]
+    [InlineData((ushort)1, (byte)0, (byte)2, "flags 0x0001, part 2, 0 parts")]
+    [InlineData((ushort)3, (byte)1, (byte)2, "flags 0x0003, part 2, 1 parts")]
+    [InlineData((ushort)1, (byte)1, (byte)0, "flags 0x0001, part 0, 1 parts")]
+    [InlineData((ushort)0, (byte)3, (byte)1, "flags 0x0000, part 1, 3 parts")]
+    public void RefusesASplitArchiveThatIsNotWholeInOneFile(ushort archiveFlags, byte totalParts, byte partNumber, string header)
     {
-        var bytes = SyntheticInstallShieldArchive.Build([new("", "a.bin", Text), new("", "b.bin", Text)]);
+        // A first part of several, a later part (which declares 0 parts), a part number past the count,
+        // and an unsplit header that declares several parts all need data from files not given.
+        using var archive = new MemoryStream(SyntheticInstallShieldArchive.Build([new("", "a.bin", Text)], archiveFlags, totalParts, partNumber));
+        var message = Assert.Throws<NotSupportedException>(() => OriginalContentSource.OpenInstallShieldArchive(archive)).Message;
+        Assert.Contains(
+            archiveFlags == 0 ? "sets no split flag but declares more than one part" : "one part of a split archive",
+            message);
+        Assert.Contains(header, message);
+    }
+
+    [Theory]
+    [InlineData((byte)1, (byte)2)]
+    [InlineData((byte)2, (byte)2)]
+    [InlineData((byte)0, (byte)1)]
+    [InlineData((byte)0, (byte)0)]
+    public void RejectsAnEntryInAnotherPartOfASplitArchiveOfOnePart(byte firstPart, byte lastPart)
+    {
+        var bytes = SyntheticInstallShieldArchive.Build([new("", "a.bin", Text), new("Data", "b.bin", Prose)], archiveFlags: 1);
+        var entry = SyntheticInstallShieldArchive.FileEntry(bytes, 1);
+        bytes[entry] = lastPart;
+        bytes[entry + 28] = firstPart;
+        Assert.Contains($"file 1 at 'Data/b.bin' lies in parts {firstPart} to {lastPart}, but the archive is a split archive of one part",
+            Assert.Throws<InvalidDataException>(() => Open(bytes)).Message);
+
+        // An unsplit archive's entries do not name their parts, so the same bytes there are not read.
+        bytes = SyntheticInstallShieldArchive.Build([new("", "a.bin", Text), new("Data", "b.bin", Prose)]);
+        entry = SyntheticInstallShieldArchive.FileEntry(bytes, 1);
+        bytes[entry] = lastPart;
+        bytes[entry + 28] = firstPart;
+        using var source = Open(bytes);
+        Assert.Equal(2, source.Files.Count);
+    }
+
+    [Theory]
+    [InlineData((ushort)0)]
+    [InlineData((ushort)1)]
+    public void RefusesAnEntryThatSpansParts(ushort archiveFlags)
+    {
+        var bytes = SyntheticInstallShieldArchive.Build([new("", "a.bin", Text), new("", "b.bin", Text)], archiveFlags);
         var flags = SyntheticInstallShieldArchive.FileEntry(bytes, 1) + 25;
         BinaryPrimitives.WriteUInt16LittleEndian(bytes.AsSpan(flags), 0x100);
         Assert.Contains("file 1 at 'b.bin' spans archive parts", Assert.Throws<NotSupportedException>(() => Open(bytes)).Message);
+    }
+
+    [Fact]
+    public async Task ChecksTheExtentsAndDataOfASplitArchiveOfOnePart()
+    {
+        // A member whose stored bytes run past the end of the file.
+        var bytes = SyntheticInstallShieldArchive.Build([new("", "a.bin", Text, Stored: true), new("", "b.bin", Prose)], archiveFlags: 1);
+        var entry = SyntheticInstallShieldArchive.FileEntry(bytes, 1);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(entry + 7), (uint)bytes.Length);
+        Assert.Contains($"file 1 at 'b.bin' lies outside the {bytes.Length}-byte archive",
+            Assert.Throws<InvalidDataException>(() => Open(bytes)).Message);
+
+        // A compressed member whose stored bytes stop before its end code.
+        bytes = SyntheticInstallShieldArchive.Build([new("", "a.bin", Text, Stored: true), new("", "b.bin", Prose)], archiveFlags: 1);
+        entry = SyntheticInstallShieldArchive.FileEntry(bytes, 1);
+        var storedSize = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(entry + 7));
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(entry + 7), storedSize - 2);
+        using var source = Open(bytes);
+        await using var stream = source.OpenRead("b.bin");
+        await Assert.ThrowsAsync<InvalidDataException>(() => ReadAll(stream));
     }
 
     [Fact]
@@ -410,8 +490,8 @@ public sealed class InstallShieldArchiveTests
             var result = await AssetVerifier.VerifyAsync(path, manifest, TestContext.Current.CancellationToken);
             Assert.Equal(AssetProblem.Unreadable, Assert.Single(result.Issues).Problem);
 
-            // A split archive is reported as unreadable, with the reason.
-            File.WriteAllBytes(path, SyntheticInstallShieldArchive.Build([new("", "packed.bin", Prose)], archiveFlags: 1));
+            // A split archive whose other parts are not in this file is reported as unreadable, with the reason.
+            File.WriteAllBytes(path, SyntheticInstallShieldArchive.Build([new("", "packed.bin", Prose)], archiveFlags: 1, totalParts: 2));
             result = await AssetVerifier.VerifyAsync(path, manifest, TestContext.Current.CancellationToken);
             Assert.Contains("split archive", Assert.Single(result.Issues).Detail);
         }

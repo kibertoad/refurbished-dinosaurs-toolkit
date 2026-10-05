@@ -73,12 +73,13 @@ LegacyFormats parts of it:
   MD5. Decode into the staging directory and verify the output there as for
   any other source; [InstallShield cabinets](../packages/dotnet/README.md#installshield-cabinets)
   lists the supported subset.
-- `OriginalContentSource.OpenInstallShieldArchive` lists and reads the members of an unsplit
-  InstallShield 3 archive (such as a disc's `_SETUP.1`) through the same interface, from a file, from
-  inside a disc source, or from a stream holding an archive carved out of a self-extractor. Its source
-  kind is `installshield3-archive`, and `Open(path)` picks it by the file's signature. It checks the
-  tables and every member's path and extent when it opens, and each compressed member's size and end
-  code when it is read to the end; the format records no checksum. A split archive is refused with
+- `OriginalContentSource.OpenInstallShieldArchive` lists and reads the members of an InstallShield 3
+  archive held in one file (such as a disc's `_SETUP.1`) through the same interface, from a file,
+  from inside a disc source, or from a stream holding an archive carved out of a self-extractor. Its
+  source kind is `installshield3-archive`, and `Open(path)` picks it by the file's signature. It
+  checks the tables and every member's path and extent when it opens, and each compressed member's
+  size and end code when it is read to the end; the format records no checksum. An archive split
+  into more than one part, or whose header names another part number or count, is refused with
   `NotSupportedException`. See
   [InstallShield 3 archives](../packages/dotnet/README.md#installshield-3-archives).
 - `ContentSourceExtractor.ExtractAsync` copies the files of any source, or a selection, into the

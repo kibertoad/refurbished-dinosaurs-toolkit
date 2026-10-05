@@ -46,9 +46,13 @@ public sealed record InstallShieldArchiveLimits(
 /// only when read.
 /// </para>
 /// <para>
-/// An archive split into parts, or holding an entry marked as spanning parts, is refused with
-/// <see cref="NotSupportedException"/>. Entries the archive marks invalid are listed in
-/// <see cref="SkippedFiles"/>.
+/// An archive whose header sets a split flag is read when it is part 1 of a set of 1 part, so that
+/// every member's data is in this file: each listed entry must then name part 1 as its first and last
+/// part, or opening throws <see cref="InvalidDataException"/>. Any other part of a split set, a
+/// first part that declares more parts or none, and an unsplit archive that declares more than one
+/// part are refused with <see cref="NotSupportedException"/> naming the header's flags, part number
+/// and part count. So is an entry marked as spanning parts. Entries the archive marks invalid are
+/// listed in <see cref="SkippedFiles"/>.
 /// </para>
 /// <para>
 /// The archive records no checksum. Reading a compressed member to its end checks that its PKWARE
@@ -94,15 +98,22 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
         var archiveFlags = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(10));
         var fileCount = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(12));
         var totalParts = header[30];
+        var partNumber = header[31];
         long directoriesOffset = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(41));
         long directoriesSize = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(45));
         var directoryCount = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(49));
         long filesOffset = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(51));
         long filesSize = BinaryPrimitives.ReadUInt32LittleEndian(header.AsSpan(55));
 
-        if ((archiveFlags & SplitArchiveFlags) != 0 || totalParts > 1)
+        // A split set's first part declares the part count and later parts declare 0. A set of one
+        // part holds all of its members' data, which each entry confirms by naming part 1 below.
+        var split = (archiveFlags & SplitArchiveFlags) != 0;
+        if (split ? partNumber != 1 || totalParts != 1 : totalParts > 1)
             throw new NotSupportedException(
-                $"InstallShield 3 archive is one part of a split archive (flags 0x{archiveFlags:x4}, {totalParts} parts); only unsplit archives are supported.");
+                (split
+                    ? "InstallShield 3 archive is one part of a split archive"
+                    : "InstallShield 3 archive sets no split flag but declares more than one part")
+                + $" (flags 0x{archiveFlags:x4}, part {partNumber}, {totalParts} parts); only unsplit archives and split archives of one part are supported.");
         if (fileCount > limits.MaximumFiles)
             throw new InvalidDataException(
                 $"InstallShield 3 archive declares {fileCount} files, more than the limit of {limits.MaximumFiles}.");
@@ -145,12 +156,14 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
             while (directoryFilesLeft == 0) directoryFilesLeft = directories[++directory].Files;
             directoryFilesLeft--;
 
+            var lastPart = table.Byte(offset);
             var directoryIndex = table.UInt16(offset + 1);
             long expandedSize = table.UInt32(offset + 3);
             long storedSize = table.UInt32(offset + 7);
             long dataOffset = table.UInt32(offset + 11);
             var entrySize = table.UInt16(offset + 23);
             var flags = table.UInt16(offset + 25);
+            var firstPart = table.Byte(offset + 28);
             var nameSize = table.Byte(offset + 29);
             if (entrySize < FileFixedSize + nameSize + 1)
                 throw new InvalidDataException($"InstallShield 3 file {index} declares an entry of {entrySize} bytes, too short for its name.");
@@ -183,7 +196,12 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
             }
             if ((flags & SpansPartsFlag) != 0)
                 throw new NotSupportedException(
-                    $"InstallShield 3 file {index} at '{path}' spans archive parts; only unsplit archives are supported.");
+                    $"InstallShield 3 file {index} at '{path}' spans archive parts; only members held whole in one part are supported.");
+            // Only a split archive's entries name their parts. In a set of one part, any other part
+            // would hold data this file does not have.
+            if (split && (firstPart != 1 || lastPart != 1))
+                throw new InvalidDataException(
+                    $"InstallShield 3 file {index} at '{path}' lies in parts {firstPart} to {lastPart}, but the archive is a split archive of one part.");
             var stored = (flags & StoredFlag) != 0;
             if (stored && storedSize != expandedSize)
                 throw new InvalidDataException(
