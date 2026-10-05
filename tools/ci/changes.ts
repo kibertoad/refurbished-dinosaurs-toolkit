@@ -49,6 +49,9 @@ export const AREAS = {
   // The action runs the checker from its source and installs Kaitai through setup-kaitai.
   documentationAction: ["actions/check-documentation/", "actions/setup-kaitai/", "packages/standard-checker/"],
   softwareOpenGl: ["actions/setup-software-opengl/"],
+  // The scripts and their helper classes. They ship in the engine's package, so a change to them
+  // also runs the engine and TypeScript jobs through the engine's prefix.
+  ghidraScripts: ["packages/scientific-method-engine/src/scientific_method_engine/ghidra/"],
 } satisfies Record<string, string[]>;
 
 export type Area = keyof typeof AREAS;
