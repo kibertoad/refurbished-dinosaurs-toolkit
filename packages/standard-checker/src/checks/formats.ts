@@ -117,7 +117,11 @@ export function checkFormat(ctx: Context, e: Entry, formatNames: FormatNames) {
   if (layout) {
     const ts = tables(layout.text);
     const wanted = meta.text === true ? TEXT_LAYOUT : BINARY_LAYOUT;
-    if (meta.status !== "unknown" && ts.length === 0) problem(file, "Layout has no table");
+    // An unknown entry claims nothing, so its Layout may say None known. A superseded entry stays as
+    // it was when it was replaced (IDENTIFIERS-7), so one retired from unknown keeps no table either,
+    // the same way the definition check above lets it keep no definition.
+    if (meta.status !== "unknown" && meta.status !== "superseded" && ts.length === 0)
+      problem(file, "Layout has no table");
     for (const t of ts) {
       if (t.header.join("|") !== wanted.join("|")) {
         problem(file, `a layout table has the columns ${wanted.join(" | ")}`);

@@ -342,6 +342,11 @@ not own active function, table or clock names; live rules still cannot define
 the same name outside a declared split group. References to superseded entries
 continue to fail where the Standard requires a living citation.
 
+A superseded format entry stays as it was when it was replaced, so it needs neither a Kaitai
+definition nor a layout table. An `unknown` entry that only listed a file can be retired by setting
+`status: superseded` and naming its replacement in `superseded_by`, with its Layout section still
+saying `None known.`. Every format entry at any other status needs a layout table.
+
 ### Locations by file format
 
 Each location in a finding names a shipped file and gives either an `address` or an `offset`.

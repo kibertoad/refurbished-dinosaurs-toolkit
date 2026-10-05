@@ -273,6 +273,97 @@ test("? in a files pattern matches one character", (t) => {
   assert.equal(status, 0, output);
 });
 
+// An unknown format entry that only lists a file: no layout table, no definition, no evidence.
+// status and supersededBy give its front matter; a live entry gets a parity row.
+function addListing(root: string, status: string, supersededBy: string) {
+  writeFileSync(
+    join(root, "spec", "formats", "FMT-SCORE-002.md"),
+    [
+      "---",
+      "id: FMT-SCORE-002",
+      "title: An unstudied listing of DATA/SCORES.BIN",
+      `status: ${status}`,
+      "builds: [BLD-EXAMPLE-1.0]",
+      `superseded_by: [${supersededBy}]`,
+      'files: ["DATA/SCORES.BIN"]',
+      "byte_order: little",
+      "size: null",
+      "text: false",
+      "definition: null",
+      "evidence: []",
+      "conflicting: []",
+      "split_with: []",
+      "related: []",
+      "---",
+      "",
+      "## Layout",
+      "",
+      "None known.",
+      "",
+      "## Enumerations and flags",
+      "",
+      "None known.",
+      "",
+      "## Differences between builds",
+      "",
+      "None known.",
+      "",
+      "## Coverage",
+      "",
+      "None.",
+      "",
+      "## Open questions",
+      "",
+      "None known.",
+      "",
+    ].join("\n"),
+  );
+  if (status !== "superseded")
+    replaceIn(
+      root,
+      "parity/SCORE.md",
+      "| `RULE-SCORE-001` |",
+      `| \`FMT-SCORE-002\` | An unstudied listing of DATA/SCORES.BIN | ${status} | missing | None | None | ${status} | None |\n| \`RULE-SCORE-001\` |`,
+    );
+}
+
+test("an unknown format entry needs no layout table", (t) => {
+  const root = broken(t, (r) => addListing(r, "unknown", ""));
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+});
+
+test("an unknown format entry superseded by its replacement keeps no layout table", (t) => {
+  const root = broken(t, (r) => addListing(r, "superseded", "FMT-SCORE-001"));
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+});
+
+test("a superseded format entry without a layout table still names what replaced it", (t) => {
+  const missing = run(broken(t, (r) => addListing(r, "superseded", "")));
+  assert.equal(missing.status, 1);
+  assert.match(
+    missing.output,
+    /FMT-SCORE-002\.md: a superseded entry names what replaced or disproved it in superseded_by \[IDENTIFIERS-7\]$/m,
+  );
+  assert.doesNotMatch(missing.output, /Layout has no table/);
+  const unresolved = run(broken(t, (r) => addListing(r, "superseded", "FMT-SCORE-009")));
+  assert.equal(unresolved.status, 1);
+  assert.match(unresolved.output, /FMT-SCORE-002\.md: .*FMT-SCORE-009/);
+  assert.doesNotMatch(unresolved.output, /Layout has no table/);
+});
+
+test("a format entry above unknown needs a layout table", (t) => {
+  const root = broken(t, (r) => {
+    const fmt = join(r, "spec", "formats", "FMT-SCORE-001.md");
+    const text = readFileSync(fmt, "utf8");
+    writeFileSync(fmt, text.replace(/\| Offset[\s\S]*Total size 2 \| \| \|\n/, ""));
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(output, /FMT-SCORE-001\.md: Layout has no table$/m);
+});
+
 test("an area without backticks that is removed since the base is reported", (t) => {
   const root = broken(t, (r) => {
     replaceIn(
