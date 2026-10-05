@@ -157,8 +157,9 @@ public sealed class CoreTests
         var values = new List<int>();
         for (var i = 0; i < 3; i++)
         {
-            state = MsvcRandom.NextState(state);
-            values.Add(MsvcRandom.Value(state));
+            var expectedState = MsvcRandom.NextState(state);
+            values.Add(MsvcRandom.NextRaw(ref state));
+            Assert.Equal(expectedState, state);
         }
         Assert.Equal([41, 18467, 6334], values);
 
@@ -166,11 +167,31 @@ public sealed class CoreTests
         state = 0xdeadbeef;
         for (var i = 0; i < 1000; i++)
         {
-            state = MsvcRandom.NextState(state);
-            Assert.Equal(random.NextRaw(), MsvcRandom.Value(state));
+            Assert.Equal(random.NextRaw(), MsvcRandom.NextRaw(ref state));
             Assert.Equal(random.State, state);
         }
         Assert.Equal(0x235ac6u, MsvcRandom.NextState(0xffffffff));
+
+        // States whose successors are 0xffffffff and 0x8000ffff pin the 15-bit mask of bits 16..30.
+        state = 0xe7bdc4ec;
+        Assert.Equal(0x7fff, MsvcRandom.NextRaw(ref state));
+        Assert.Equal(0xffffffffu, state);
+        state = 0x9912c4ec;
+        Assert.Equal(0, MsvcRandom.NextRaw(ref state));
+        Assert.Equal(0x8000ffffu, state);
+    }
+
+    [Fact]
+    public void MsvcRandomStaticNextIntKeepsModuloAndRefusesNonPositiveMaximum()
+    {
+        var state = 1u;
+        Assert.Equal(1, MsvcRandom.NextInt(ref state, 10));
+        Assert.Equal(7, MsvcRandom.NextInt(ref state, 10));
+        Assert.Equal(4, MsvcRandom.NextInt(ref state, 10));
+
+        var before = state;
+        Assert.Throws<ArgumentOutOfRangeException>(() => MsvcRandom.NextInt(ref state, 0));
+        Assert.Equal(before, state);
     }
 
     [Fact]
