@@ -18,7 +18,8 @@ export interface FormatNames {
   fieldNames: Map<string, Set<string>>;
   /**
    * Format ID -> the Name of each layout row -> its Type cell, for a format whose layout tables all
-   * have the right columns. A format without a Layout table has an empty map.
+   * have the right columns and whose rows all have one cell per column. A format without a Layout
+   * table has an empty map.
    */
   layouts: Map<string, Map<string, string>>;
 }
@@ -127,7 +128,12 @@ export function checkFormat(ctx: Context, e: Entry, formatNames: FormatNames) {
       const nameCol = t.header.indexOf("Name");
       const typeCol = t.header.indexOf("Type");
       for (const row of t.rows) {
-        if (row.length !== t.header.length || !row[nameCol]) continue;
+        // A row with the wrong number of cells may hold a field whose Name cell cannot be found.
+        if (row.length !== t.header.length) {
+          wellFormed = false;
+          continue;
+        }
+        if (!row[nameCol]) continue;
         // A cell that names more than one field, or a path into a field (`items[i].count`), still
         // names the field it starts with, though not its type.
         for (const name of (row[nameCol].match(/`[^`]+`/g) ?? [row[nameCol]]).map((n) =>

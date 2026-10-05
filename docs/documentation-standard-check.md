@@ -297,11 +297,14 @@ either (`FMT-DATA-005[]`, `FMT-DATA-005[count]`). It reads the type from:
 - the list a `for each` loop visits, whose element type the loop variable takes.
 
 A field takes the type in its layout row, so `world.occupancy.cell_count` is checked against the
-layout of `occupancy`'s type in turn. An index into a list gives its element, and an index on a
+layout of `occupancy`'s type in turn. A field that the entries of a format split by build give
+different types has no type. An index into a list gives its element, and an index on a
 pointer gives the structure it points at. A format named anywhere else in prose, such as
 "the entry whose state is FMT-DATA-003", gives no type, because prose names formats for many reasons.
 A name whose type comes from none of these, or that two declarations give different types, is not
-checked, and neither is a format whose layout table has the wrong columns. A format whose Layout
+checked, and neither is a format whose layout table has the wrong columns or a row with the wrong
+number of cells. A declaration that writes no type, such as a parameter the Parameters section
+describes only in prose, leaves the type another declaration writes in place. A format whose Layout
 section has no table yet has no fields, so every field named on it is reported. The problem names
 where the type came from, so a type stated wrongly can be fixed where it is written.
 

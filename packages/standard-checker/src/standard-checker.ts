@@ -44,8 +44,8 @@
 // This file reads the options and runs the phases in order: load the spec, check the entries, the
 // rules, the field names in their procedures and what crosses entries, compile the Kaitai
 // definitions, check the deviations, parity, VALIDATION.md, the code's references and comments and
-// the base ref, then write or check the generated files. Every phase reports into one collector, which prints the problems at the end in
-// the order they were found.
+// the base ref, then write or check the generated files. Every phase reports into one collector,
+// which prints the problems at the end in the order they were found.
 
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";

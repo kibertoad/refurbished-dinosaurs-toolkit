@@ -1952,3 +1952,93 @@ test("a Name cell that names several fields, or a path into one, names each fiel
   assert.doesNotMatch(output, /names (best|slots),/);
   assert.match(output, /RULE-SCORE-001\.md: record\.count names count, which is not in the layout of FMT-SCORE-001/);
 });
+
+test("a typed define parameter keeps its type when the Parameters section describes it in prose", (t) => {
+  const root = broken(t, (r) => {
+    withTypedNames(r);
+    replaceIn(
+      r,
+      "spec/rules/RULE-SCORE-001.md",
+      "define add_points(n: UINT16):",
+      "define add_points(n: UINT16, held: FMT-SCORE-001):",
+    );
+    replaceIn(
+      r,
+      "spec/rules/RULE-SCORE-001.md",
+      "- `n`: the score before the kill.",
+      "- `n`: the score before the kill.\n- `held`: the record held.",
+    );
+    procedure(r, ["held.missing = 0"]);
+  });
+  const { output } = run(root);
+  assert.match(
+    output,
+    /RULE-SCORE-001\.md: held\.missing names missing, which is not in the layout of FMT-SCORE-001 \(held has its type from its define\)$/m,
+  );
+});
+
+test("every name the Parameters section opens a code span with is a local, in either typed form", (t) => {
+  const root = broken(t, (r) => {
+    withTypedNames(r);
+    replaceIn(
+      r,
+      "spec/rules/RULE-SCORE-001.md",
+      "- `n`: the score before the kill.",
+      "- `n`: the score before the kill, and `best_record`, a count.\n- `held: FMT-SCORE-001`, the record held.",
+    );
+    procedure(r, ["best_record.anything = 0", "held.best = 0", "held.missing = 0"]);
+  });
+  const { output } = run(root);
+  assert.doesNotMatch(output, /names anything/);
+  assert.doesNotMatch(output, /held is neither a local nor a glossary term/);
+  assert.match(output, /held\.missing names missing, .* \(held has its type from the Parameters section\)$/m);
+});
+
+test("a # inside a string does not hide the procedure lines after it", (t) => {
+  const root = broken(t, (r) => {
+    withTypedNames(r);
+    procedure(r, ['let label = "#"', "let best_record = n", 'let z = "x"', "best_record.anything = 0"]);
+  });
+  const { output } = run(root);
+  assert.doesNotMatch(output, /names anything/);
+});
+
+test("a let whose value only starts with a call takes no type from it", (t) => {
+  const root = broken(t, (r) => {
+    withTypedNames(r);
+    procedure(r, ["define make(x) -> FMT-SCORE-001:", "    return x", "let a = make(n) + min(n, 1)", "a.anything = 0"]);
+  });
+  const { output } = run(root);
+  assert.doesNotMatch(output, /names anything/);
+});
+
+test("a layout row with the wrong number of cells leaves its format's fields unchecked", (t) => {
+  const root = broken(t, (r) => {
+    withTypedNames(r);
+    replaceIn(
+      r,
+      "spec/formats/FMT-SCORE-001.md",
+      "| The best score. | sourced | SRC-MANUAL |",
+      "| The best score. | sourced |",
+    );
+    procedure(r, ["record.best = 0"]);
+  });
+  const { output } = run(root);
+  assert.match(output, /has 6 cells, not 7/);
+  assert.doesNotMatch(output, /names best/);
+});
+
+test("a field the entries of a split format give different types has no type", (t) => {
+  const root = broken(t, (r) => {
+    withTypedNames(r);
+    const text = readFileSync(join(r, "spec", "formats", "FMT-SCORE-001.md"), "utf8");
+    writeFileSync(
+      join(r, "spec", "formats", "FMT-SCORE-002.md"),
+      text.replace("id: FMT-SCORE-001", "id: FMT-SCORE-002").replace("`PTR32<FMT-SCORE-001>`", "`UINT32LE`"),
+    );
+    replaceIn(r, "spec/formats/FMT-SCORE-001.md", "split_with: []", "split_with: [FMT-SCORE-002]");
+    procedure(r, ["record.next.anything = 0"]);
+  });
+  const { output } = run(root);
+  assert.doesNotMatch(output, /names anything/);
+});

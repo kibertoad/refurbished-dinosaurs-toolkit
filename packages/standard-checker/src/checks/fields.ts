@@ -18,12 +18,14 @@
 // structure it points at; an index on anything else, or a field of a list, ends what is known. A
 // format's mention in prose gives no type, since prose names formats for many reasons. A name whose
 // type is not written in one of these forms, or that two declarations give different types, stays
-// unchecked.
+// unchecked. A declaration that writes no type, such as a parameter the Parameters section describes
+// in prose or an untyped parameter of a define, gives none and so differs from no other.
 
 import type { Context } from "../context.ts";
 import { asList } from "../ids.ts";
 import type { Entry } from "../types.ts";
 import type { FormatNames } from "./formats.ts";
+import { parameterNames, withoutCommentsAndStrings } from "./rules.ts";
 
 /**
  * A type that holds a structure: the format IDs of one format (more than one for a format split by
@@ -69,6 +71,16 @@ const RETURNS = new RegExp(String.raw`^Returns\s+(?:an?\s+)?\x60?(${STRUCTURE_TY
 
 const LOWER = /[a-z_][a-z0-9_]*/y;
 const FIELD = /[A-Za-z_][A-Za-z0-9_]*/y;
+
+// Whether the bracket that opens at text[open] closes at the end of text.
+function closesAtEnd(text: string, open: number) {
+  let depth = 0;
+  for (let k = open; k < text.length; k++) {
+    if (text[k] === "(") depth++;
+    else if (text[k] === ")" && --depth === 0) return k === text.length - 1;
+  }
+  return false;
+}
 
 // Reads a chain that starts at i, or returns null when text[i] does not start a lower-case name.
 function readChain(text: string, i: number): Chain | null {
@@ -131,14 +143,24 @@ export function checkFieldNames(ctx: Context, { layouts }: FormatNames) {
     }
     return found;
   };
-  // The layout rows of a format, or null when one of its entries has a malformed layout table.
+  // The layout rows of a format, or null when one of its entries has a malformed layout table. A
+  // field whose entries give it different types has no type.
+  const formatRows = new Map<string, Map<string, string> | null>();
+  const plain = (type: string) => type.replaceAll("`", "").trim();
   const rowsOf = (format: string[]): Map<string, string> | null => {
-    const rows = new Map<string, string>();
+    const key = format.join(" ");
+    if (formatRows.has(key)) return formatRows.get(key)!;
+    let rows: Map<string, string> | null = new Map<string, string>();
     for (const id of format) {
       const layout = layouts.get(id);
-      if (!layout) return null;
-      for (const [name, type] of layout) if (!rows.has(name)) rows.set(name, type);
+      if (!layout) {
+        rows = null;
+        break;
+      }
+      for (const [name, type] of layout)
+        rows.set(name, rows.has(name) && plain(rows.get(name)!) !== plain(type) ? "" : type);
     }
+    formatRows.set(key, rows);
     return rows;
   };
 
@@ -171,13 +193,14 @@ export function checkFieldNames(ctx: Context, { layouts }: FormatNames) {
     return m ? typeOf(m[1]) : null;
   };
 
-  const strip = (code: string) => code.replace(/#.*$/gm, "").replace(/"[^"]*"/g, '""');
   const live = [...entries.values()].filter((e) => e.kind === "RULE" && e.meta.status !== "superseded" && e.code);
 
   // Functions whose define gives a structure as the result: define name(...) -> FMT-...
   const functionTypes = new Map<string, Type | null>();
   for (const e of live)
-    for (const m of strip(e.code!).matchAll(/\bdefine\s+([a-z_][a-z0-9_]*)\s*\([^)]*\)\s*->\s*([^:\n]+):/g)) {
+    for (const m of withoutCommentsAndStrings(e.code!).matchAll(
+      /\bdefine\s+([a-z_][a-z0-9_]*)\s*\([^)]*\)\s*->\s*([^:\n]+):/g,
+    )) {
       const type = typeOf(m[2]);
       // The entries of a split rule define the same function; if they disagree, its type is unknown.
       const disagrees = functionTypes.has(m[1]) && !sameType(functionTypes.get(m[1])!, type);
@@ -187,25 +210,28 @@ export function checkFieldNames(ctx: Context, { layouts }: FormatNames) {
   for (const e of live) checkRule(e);
 
   function checkRule(e: Entry) {
-    const lines = strip(e.code!).split("\n");
+    const lines = withoutCommentsAndStrings(e.code!).split("\n");
     const params = e.sections.find((s) => s.title === "Parameters")?.text ?? "";
 
-    // Each declaration, with how to work out its type once other names have theirs.
+    // Each declaration, with how to work out its type once other names have theirs: a type, null for
+    // a value whose type is not known, or undefined for a declaration that writes no type.
     type Known = (name: string) => Typed | null;
-    const declarations: { name: string; type: (known: Known) => Typed | null }[] = [];
-    const declare = (name: string, type: (known: Known) => Typed | null) => declarations.push({ name, type });
-    const fixed = (type: Type | null | undefined, source: string) => () => (type ? { ...type, source } : null);
+    type Declared = Typed | null | undefined;
+    const declarations: { name: string; type: (known: Known) => Declared }[] = [];
+    const declare = (name: string, type: (known: Known) => Declared) => declarations.push({ name, type });
+    const fixed = (type: Type | null | undefined, source: string) => () =>
+      type === undefined ? undefined : type ? { ...type, source } : null;
 
-    for (const line of params.split("\n")) {
-      const m = /`([a-z_][a-z0-9_]*)/.exec(line);
-      if (m) declare(m[1], fixed(typedNames(line).get(m[1]), "the Parameters section"));
-    }
+    const typedParams = typedNames(params);
+    for (const name of parameterNames(params))
+      declare(name, fixed(typedParams.has(name) ? typedParams.get(name) : undefined, "the Parameters section"));
     for (const line of lines) {
       const d = /\bdefine\s+[a-z_][a-z0-9_]*\s*\(([^)]*)\)/.exec(line);
       if (d)
         for (const p of d[1].split(",")) {
           const [name, type] = p.split(":");
-          if (/^[a-z_][a-z0-9_]*$/.test(name.trim())) declare(name.trim(), fixed(typeOf(type), "its define"));
+          if (/^[a-z_][a-z0-9_]*$/.test(name.trim()))
+            declare(name.trim(), fixed(type === undefined ? undefined : typeOf(type), "its define"));
         }
       const l = /^\s*let\s+([a-z_][a-z0-9_]*)\s*(?::\s*([^=]+?))?\s*=\s*(.+?)\s*$/.exec(line);
       if (l) {
@@ -236,6 +262,7 @@ export function checkFieldNames(ctx: Context, { layouts }: FormatNames) {
       const found = new Map<string, Typed | null>();
       for (const d of declarations) {
         const t = d.type(known);
+        if (t === undefined) continue;
         found.set(d.name, found.has(d.name) && !sameType(found.get(d.name)!, t) ? null : t);
       }
       const next = new Map<string, Typed>();
@@ -264,15 +291,17 @@ export function checkFieldNames(ctx: Context, { layouts }: FormatNames) {
       const format = formatOf(made[1]);
       return format ? { format, pointer: false, list: false, source } : null;
     }
-    const called = /^call\s+(RULE-[A-Z][A-Z0-9]*-\d{3,})\s*\(.*\)$/.exec(v);
-    if (called) {
+    // A call is the whole value only when the bracket after its name closes at the end, so
+    // make(a) + other(b) is not a call of make.
+    const called = /^call\s+(RULE-[A-Z][A-Z0-9]*-\d{3,})\s*\(/.exec(v);
+    if (called && closesAtEnd(v, called[0].length - 1)) {
       const type = returnType(called[1]);
       return type ? { ...type, source: `the Outputs of ${called[1]}` } : null;
     }
-    const copied = /^copy\s*\((.*)\)$/.exec(v);
-    if (copied) return valueType(copied[1], known, source);
-    const fn = /^([a-z_][a-z0-9_]*)\s*\(.*\)$/.exec(v);
-    if (fn) {
+    const copied = /^copy\s*\(/.exec(v);
+    if (copied && closesAtEnd(v, copied[0].length - 1)) return valueType(v.slice(copied[0].length, -1), known, source);
+    const fn = /^([a-z_][a-z0-9_]*)\s*\(/.exec(v);
+    if (fn && closesAtEnd(v, fn[0].length - 1)) {
       const type = functionTypes.get(fn[1]);
       return type ? { ...type, source: `the define of ${fn[1]}` } : null;
     }
