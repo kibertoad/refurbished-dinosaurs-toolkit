@@ -357,11 +357,58 @@ test("a format entry above unknown needs a layout table", (t) => {
   const root = broken(t, (r) => {
     const fmt = join(r, "spec", "formats", "FMT-SCORE-001.md");
     const text = readFileSync(fmt, "utf8");
-    writeFileSync(fmt, text.replace(/\| Offset[\s\S]*Total size 2 \| \| \|\n/, ""));
+    const stripped = text.replace(/\| Offset[\s\S]*Total size 2 \| \| \|\n/, "");
+    assert.notEqual(stripped, text, "FMT-SCORE-001.md has no layout table to remove");
+    writeFileSync(fmt, stripped);
   });
   const { status, output } = run(root);
-  assert.equal(status, 1);
+  assert.equal(status, 1, output);
   assert.match(output, /FMT-SCORE-001\.md: Layout has no table$/m);
+});
+
+// Commits the restoration at root, so that --base HEAD compares with what it holds now.
+function commitBase(root: string) {
+  const git = (...args: string[]) =>
+    assert.equal(
+      spawnSync("git", ["-C", root, "-c", "user.name=test", "-c", "user.email=test@example.com", ...args]).status,
+      0,
+    );
+  git("init", "-q");
+  git("add", ".");
+  git("commit", "-q", "-m", "base");
+}
+
+// The parity row addListing gives a live FMT-SCORE-002, which a superseded one may not keep.
+const LISTING_ROW =
+  "| `FMT-SCORE-002` | An unstudied listing of DATA/SCORES.BIN | unknown | missing | None | None | unknown | None |\n";
+
+test("a format entry superseded since the base may not drop its layout table", (t) => {
+  const root = broken(t, (r) => {
+    addListing(r, "unknown", "");
+    replaceIn(
+      r,
+      "spec/formats/FMT-SCORE-002.md",
+      "## Layout\n\nNone known.\n",
+      "## Layout\n\n| Offset | Size | Type | Name | Meaning | Status | Evidence |\n|---|---|---|---|---|---|---|\n| 0 | 2 | u2 | count | Unread. | unknown | None |\n",
+    );
+    commitBase(r);
+    addListing(r, "superseded", "FMT-SCORE-001");
+    replaceIn(r, "parity/SCORE.md", LISTING_ROW, "");
+  });
+  const { status, output } = run(root, "--base", "HEAD");
+  assert.equal(status, 1, output);
+  assert.match(output, /FMT-SCORE-002\.md: Layout has no table, but it had one at HEAD \[IDENTIFIERS-7\]$/m);
+});
+
+test("a format entry superseded since the base that had no layout table there needs none", (t) => {
+  const root = broken(t, (r) => {
+    addListing(r, "unknown", "");
+    commitBase(r);
+    addListing(r, "superseded", "FMT-SCORE-001");
+    replaceIn(r, "parity/SCORE.md", LISTING_ROW, "");
+  });
+  const { status, output } = run(root, "--base", "HEAD");
+  assert.equal(status, 0, output);
 });
 
 test("an area without backticks that is removed since the base is reported", (t) => {

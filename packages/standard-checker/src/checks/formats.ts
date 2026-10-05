@@ -42,13 +42,16 @@ export function checkFormat(ctx: Context, e: Entry, formatNames: FormatNames) {
   const { file, meta } = e;
   const id = meta.id;
   const first = asList(meta.builds)[0];
+  // An unknown entry claims nothing, and a superseded entry stays as it was when it was replaced
+  // (IDENTIFIERS-7), so neither needs a definition or a layout table, nor a status set by its rows.
+  const claimsContent = meta.status !== "unknown" && meta.status !== "superseded";
   if (meta.text === true) {
     if (meta.definition !== null || meta.size !== null || meta.byte_order !== null)
       problem(file, "a text format has definition, size and byte_order null");
   } else {
     if (!["little", "big"].includes(meta.byte_order))
       problem(file, "byte_order must be little or big for a binary format");
-    if (meta.status !== "unknown" && meta.status !== "superseded") {
+    if (claimsContent) {
       const expected = `${id.toLowerCase().replaceAll("-", "_")}.ksy`;
       if (meta.definition !== expected) problem(file, `definition must be ${expected}`);
       else if (!existsSync(join(dirname(file), expected))) problem(file, `definition ${expected} does not exist`);
@@ -117,11 +120,7 @@ export function checkFormat(ctx: Context, e: Entry, formatNames: FormatNames) {
   if (layout) {
     const ts = tables(layout.text);
     const wanted = meta.text === true ? TEXT_LAYOUT : BINARY_LAYOUT;
-    // An unknown entry claims nothing, so its Layout may say None known. A superseded entry stays as
-    // it was when it was replaced (IDENTIFIERS-7), so one retired from unknown keeps no table either,
-    // the same way the definition check above lets it keep no definition.
-    if (meta.status !== "unknown" && meta.status !== "superseded" && ts.length === 0)
-      problem(file, "Layout has no table");
+    if (claimsContent && ts.length === 0) problem(file, "Layout has no table");
     for (const t of ts) {
       if (t.header.join("|") !== wanted.join("|")) {
         problem(file, `a layout table has the columns ${wanted.join(" | ")}`);
@@ -175,7 +174,7 @@ export function checkFormat(ctx: Context, e: Entry, formatNames: FormatNames) {
       enumNames.get(n)!.push(id);
     }
   }
-  if (meta.status !== "superseded" && meta.status !== "unknown") {
+  if (claimsContent) {
     const expected = disputed ? "disputed" : lowest;
     if (expected && meta.status !== expected)
       problem(file, `status must be ${expected}, the lowest status among its rows`);

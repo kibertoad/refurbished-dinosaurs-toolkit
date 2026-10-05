@@ -345,7 +345,9 @@ continue to fail where the Standard requires a living citation.
 A superseded format entry stays as it was when it was replaced, so it needs neither a Kaitai
 definition nor a layout table. An `unknown` entry that only listed a file can be retired by setting
 `status: superseded` and naming its replacement in `superseded_by`, with its Layout section still
-saying `None known.`. Every format entry at any other status needs a layout table.
+saying `None known.`. A format entry at any status other than `unknown` or `superseded` needs a
+layout table. Because the entry stays as it was, one that had a layout table at the base (`--base`,
+or where the branch forked) fails when it has none now.
 
 ### Locations by file format
 
