@@ -37,11 +37,12 @@ The archive layout and the compression format are containers. Neither is game co
 4. Only archives that hold all of their data are read: unsplit archives, and split archives of one
    part. The second kind sets a split flag in its header and declares itself part 1 of 1; each of its
    listed entries must name part 1 as its first and last part, or opening throws
-   `InvalidDataException`. Any part of a split set of more than one part, a header that declares
-   another part number or count, an unsplit header that declares more than one part, and an entry
-   marked as spanning parts are refused with `NotSupportedException` naming the header's flags, part
-   number and part count, and so is a header that declares a field block of another size. Split sets
-   of several parts are added when a restoration brings provenance for one.
+   `InvalidDataException`. Any part of a split set of more than one part, a split header that
+   declares another part number or count, and an unsplit header that declares more than one part are
+   refused with `NotSupportedException` naming the header's flags, part number and part count. An
+   entry marked as spanning parts is refused with `NotSupportedException` naming the entry, and so is
+   a header that declares a field block of another size. An unsplit header's part number is not
+   read. Split sets of several parts are added when a restoration brings provenance for one.
 5. The archive records no checksum. Reading a compressed member to its end checks that its data
    expands to exactly the declared size, ends with the end code, and leaves no whole stored byte
    after it; a stored member is checked by size. A failed check throws before the member's last

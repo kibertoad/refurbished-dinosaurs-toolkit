@@ -110,7 +110,10 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
         var split = (archiveFlags & SplitArchiveFlags) != 0;
         if (split ? partNumber != 1 || totalParts != 1 : totalParts > 1)
             throw new NotSupportedException(
-                $"InstallShield 3 archive is one part of a split archive (flags 0x{archiveFlags:x4}, part {partNumber}, {totalParts} parts); only unsplit archives and split archives of one part are supported.");
+                (split
+                    ? "InstallShield 3 archive is one part of a split archive"
+                    : "InstallShield 3 archive sets no split flag but declares more than one part")
+                + $" (flags 0x{archiveFlags:x4}, part {partNumber}, {totalParts} parts); only unsplit archives and split archives of one part are supported.");
         if (fileCount > limits.MaximumFiles)
             throw new InvalidDataException(
                 $"InstallShield 3 archive declares {fileCount} files, more than the limit of {limits.MaximumFiles}.");

@@ -214,7 +214,9 @@ public sealed class InstallShieldArchiveTests
         // and an unsplit header that declares several parts all need data from files not given.
         using var archive = new MemoryStream(SyntheticInstallShieldArchive.Build([new("", "a.bin", Text)], archiveFlags, totalParts, partNumber));
         var message = Assert.Throws<NotSupportedException>(() => OriginalContentSource.OpenInstallShieldArchive(archive)).Message;
-        Assert.Contains("one part of a split archive", message);
+        Assert.Contains(
+            archiveFlags == 0 ? "sets no split flag but declares more than one part" : "one part of a split archive",
+            message);
         Assert.Contains(header, message);
     }
 
@@ -237,7 +239,8 @@ public sealed class InstallShieldArchiveTests
         entry = SyntheticInstallShieldArchive.FileEntry(bytes, 1);
         bytes[entry] = lastPart;
         bytes[entry + 28] = firstPart;
-        Assert.Equal(2, Open(bytes).Files.Count);
+        using var source = Open(bytes);
+        Assert.Equal(2, source.Files.Count);
     }
 
     [Theory]

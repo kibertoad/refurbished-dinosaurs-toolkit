@@ -302,18 +302,18 @@ InstallShield 3 keeps a whole installation in one archive file, often `_SETUP.1`
 
 | Supported | Not supported |
 |---|---|
-| Archives with the 0x3A-byte header field block that hold all of their data: unsplit archives, and split archives of one part (a split flag, 0x1 or 0x2 at offset 10, with part 1 of 1 at offsets 31 and 30). Members stored as they are and members compressed with the PKWARE Data Compression Library (coded or plain literals, 1, 2 or 4 KiB dictionary), in any number of directories. | Any part of a split archive of more than one part (`_SETUP.1`, `_SETUP.2` and so on), and an unsplit header that declares more than one part, which throw `NotSupportedException` with the header's flags, part number and part count. Entries marked as spanning parts, which throw `NotSupportedException` naming the entry. A header with a field block of another size, which throws `NotSupportedException`. Passwords, file dates and attributes are not read. |
+| Archives with the 0x3A-byte header field block that hold all of their data: unsplit archives, and split archives of one part (a split flag, 0x1 or 0x2 at offset 10, with part 1 of 1 at offsets 31 and 30). Members stored as they are and members compressed with the PKWARE Data Compression Library (coded or plain literals, 1, 2 or 4 KiB dictionary), in any number of directories. | Any part of a split archive of more than one part (`_SETUP.1`, `_SETUP.2` and so on), a split header that declares another part number or count, and an unsplit header that declares more than one part, which throw `NotSupportedException` with the header's flags, part number and part count. Entries marked as spanning parts, which throw `NotSupportedException` naming the entry. A header with a field block of another size, which throws `NotSupportedException`. Passwords, file dates and attributes are not read. |
 
 Opening reads the header, the directory table and the file table and checks them before any member
 is read: both tables lie inside the archive, their entries fill exactly the sizes the header declares,
 each name ends with its NUL, and the directory a file entry names is the one the directory table's
 file counts place it in. Every listed member's directory and name joined must pass
 `PortableAssetPath.Relative`, its stored bytes must lie inside the archive after the header, a stored
-member's two sizes must agree, in a split archive of one part it must name part 1 as its first and
-last part, no two listed members may share a path ignoring case, and the archive must stay within `InstallShieldArchiveLimits` (65,535 entries, 8 GiB expanded and 16 MiB of tables by
-default). A failed check throws `InvalidDataException`. Entries the archive marks invalid are left out
-and listed in `SkippedFiles`; their path is `null` when it is not relative. Names are read as
-ISO 8859-1.
+member's two sizes must agree, a member of a split archive of one part must name part 1 as its first
+and last part, no two listed members may share a path ignoring case, and the archive must stay within
+`InstallShieldArchiveLimits` (65,535 entries, 8 GiB expanded and 16 MiB of tables by default). A
+failed check throws `InvalidDataException`. Entries the archive marks invalid are left out and listed
+in `SkippedFiles`; their path is `null` when it is not relative. Names are read as ISO 8859-1.
 
 `OpenRead` decodes a member while it is read, and seeks as a cabinet member stream does. The archive
 records no checksum, so a member is checked by size and framing only: reading a compressed member to

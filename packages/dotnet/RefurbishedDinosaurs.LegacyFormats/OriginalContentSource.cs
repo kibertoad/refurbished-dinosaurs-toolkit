@@ -129,7 +129,7 @@ public abstract class OriginalContentSource : IDisposable
     /// </summary>
     /// <exception cref="NotSupportedException">
     /// The cabinet set's InstallShield major version is not 0, 5 or 6, or the InstallShield 3 archive
-    /// is split into parts that are not all in this file.
+    /// is split into parts that are not all in this file or names another part number or count.
     /// </exception>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="InvalidDataException">The image is not a valid volume of its kind.</exception>
@@ -155,7 +155,7 @@ public abstract class OriginalContentSource : IDisposable
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="NotSupportedException">
     /// The cabinet set's InstallShield major version is not 0, 5 or 6, or the InstallShield 3 archive
-    /// is split into parts that are not all in this file.
+    /// is split into parts that are not all in this file or names another part number or count.
     /// </exception>
     public static OriginalContentSource Open(string path, string kind) => kind switch
     {
@@ -324,8 +324,9 @@ public abstract class OriginalContentSource : IDisposable
     /// <paramref name="limits"/>.
     /// </exception>
     /// <exception cref="NotSupportedException">
-    /// The archive is one part of a split archive of more than one part, holds an entry that spans
-    /// parts, or has a header of another size.
+    /// The archive is one part of a split archive of more than one part, its header sets a split flag
+    /// and names a part number or part count other than 1, it holds an entry that spans parts, or it
+    /// has a header of another size.
     /// </exception>
     public static InstallShieldArchiveSource OpenInstallShieldArchive(string path, InstallShieldArchiveLimits? limits = null)
     {
@@ -349,8 +350,9 @@ public abstract class OriginalContentSource : IDisposable
     /// the archive is not valid as <see cref="OpenInstallShieldArchive(string, InstallShieldArchiveLimits?)"/> describes.
     /// </exception>
     /// <exception cref="NotSupportedException">
-    /// The archive is one part of a split archive of more than one part, holds an entry that spans
-    /// parts, or has a header of another size.
+    /// The archive is one part of a split archive of more than one part, its header sets a split flag
+    /// and names a part number or part count other than 1, it holds an entry that spans parts, or it
+    /// has a header of another size.
     /// </exception>
     public static InstallShieldArchiveSource OpenInstallShieldArchive(
         OriginalContentSource container, string archivePath, InstallShieldArchiveLimits? limits = null)
@@ -378,8 +380,9 @@ public abstract class OriginalContentSource : IDisposable
     /// The archive is not valid as <see cref="OpenInstallShieldArchive(string, InstallShieldArchiveLimits?)"/> describes.
     /// </exception>
     /// <exception cref="NotSupportedException">
-    /// The archive is one part of a split archive of more than one part, holds an entry that spans
-    /// parts, or has a header of another size.
+    /// The archive is one part of a split archive of more than one part, its header sets a split flag
+    /// and names a part number or part count other than 1, it holds an entry that spans parts, or it
+    /// has a header of another size.
     /// </exception>
     public static InstallShieldArchiveSource OpenInstallShieldArchive(Stream archive, InstallShieldArchiveLimits? limits = null)
     {
