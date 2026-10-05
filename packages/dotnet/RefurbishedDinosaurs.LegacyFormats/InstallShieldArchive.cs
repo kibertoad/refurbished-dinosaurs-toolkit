@@ -193,7 +193,7 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
 
             if ((flags & InvalidFlag) != 0)
             {
-                skipped.Add(new(index, path, "The archive marks the file invalid."));
+                skipped.Add(new(index, path, InstallShieldSkippedFileKind.MarkedInvalid, "The archive marks the file invalid."));
                 continue;
             }
             if ((flags & SpansPartsFlag) != 0)

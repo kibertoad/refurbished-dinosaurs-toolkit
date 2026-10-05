@@ -45,6 +45,66 @@ public sealed record InstallShieldCabinetLimits(
 }
 
 /// <summary>
+/// How the compressed members of an InstallShield cabinet set store their deflate data. The header
+/// records no field that says which one a set uses, so the caller chooses it when opening the set,
+/// and every compressed member of the set is read that way. A member that does not decode in the
+/// chosen form fails its read; the reader never tries it in the other form.
+/// </summary>
+public enum InstallShieldCompressedFormat
+{
+    /// <summary>
+    /// A run of chunks, each a 16-bit little-endian length and that many bytes of raw deflate data
+    /// that expands to at most 64 KiB. This is what Unshield reads by default, and the default here.
+    /// </summary>
+    LengthPrefixedChunks = 0,
+
+    /// <summary>
+    /// One raw deflate stream with no chunk lengths, flushed to a byte boundary after each chunk, so
+    /// each chunk ends with the empty stored block <c>00 00 FF FF</c>. This is what Unshield reads with
+    /// <c>-O</c> ("old compression"). The stored bytes are decoded as one deflate stream, so a
+    /// <c>00 00 FF FF</c> that occurs inside a chunk's data is read as data, and chunks are not
+    /// required to expand to 64 KiB or less.
+    /// </summary>
+    MarkerDelimitedChunks = 1,
+}
+
+/// <summary>Why an <see cref="InstallShieldSkippedFile"/> is not listed.</summary>
+public enum InstallShieldSkippedFileKind
+{
+    /// <summary>The cabinet or archive marks the entry invalid.</summary>
+    MarkedInvalid,
+
+    /// <summary>The entry has no name.</summary>
+    NoName,
+
+    /// <summary>The entry has no data offset.</summary>
+    NoDataOffset,
+
+    /// <summary>
+    /// A version 6 entry whose link chain ends at an entry the cabinet marks invalid or that has no
+    /// data offset.
+    /// </summary>
+    LinksToUnavailableEntry,
+
+    /// <summary>The entry shares the data of the listed member at its path through a link.</summary>
+    SharesListedData,
+
+    /// <summary>
+    /// A version 6 entry stored apart from the listed member at its path, with the same expanded size
+    /// and MD5.
+    /// </summary>
+    DuplicatesListedMember,
+
+    /// <summary>
+    /// The entry's data is stored outside the cabinet's volumes: its data offset is the exact length
+    /// of the volume that would hold it, which is how Unshield recognizes such a file. The reader
+    /// does not read files outside the cabinet. Entries at the same path that share its data, or
+    /// version 6 copies of it that are also stored outside, have this kind too.
+    /// </summary>
+    StoredOutsideCabinet,
+}
+
+/// <summary>
 /// A file-table entry an <see cref="InstallShieldCabinetSource"/> or an
 /// <see cref="InstallShieldArchiveSource"/> does not list.
 /// </summary>
@@ -52,15 +112,16 @@ public sealed record InstallShieldCabinetLimits(
 /// <param name="Path">
 /// The entry's path, when it has a name that reads and <see cref="PortableAssetPath.Relative"/> accepts; otherwise <see langword="null"/>.
 /// </param>
-/// <param name="Reason">Why the entry is not listed.</param>
-public sealed record InstallShieldSkippedFile(int Index, string? Path, string Reason);
+/// <param name="Kind">Why the entry is not listed, as a value a caller can test.</param>
+/// <param name="Reason">Why the entry is not listed, naming any other entry the reason refers to.</param>
+public sealed record InstallShieldSkippedFile(int Index, string? Path, InstallShieldSkippedFileKind Kind, string Reason);
 
 /// <summary>
 /// The files of an InstallShield cabinet set of major version 0, 5 or 6 (<c>dataN.hdr</c> with
 /// <c>dataN.cab</c> volumes) as an <see cref="OriginalContentSource"/>. Open it with
-/// <see cref="OriginalContentSource.OpenInstallShieldCabinet(string, InstallShieldCabinetLimits?)"/>
+/// <see cref="OriginalContentSource.OpenInstallShieldCabinet(string, InstallShieldCabinetLimits?, InstallShieldCompressedFormat)"/>
 /// or, for a set inside another source such as a disc image,
-/// <see cref="OriginalContentSource.OpenInstallShieldCabinet(OriginalContentSource, string, InstallShieldCabinetLimits?)"/>.
+/// <see cref="OriginalContentSource.OpenInstallShieldCabinet(OriginalContentSource, string, InstallShieldCabinetLimits?, InstallShieldCompressedFormat)"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -84,10 +145,25 @@ public sealed record InstallShieldSkippedFile(int Index, string? Path, string Re
 /// path fails the open, and so does every such pair in a version 5 set, which records no MD5.
 /// </para>
 /// <para>
+/// An entry whose data lies outside the cabinet's volumes is not listed: it goes to
+/// <see cref="SkippedFiles"/> as <see cref="InstallShieldSkippedFileKind.StoredOutsideCabinet"/>,
+/// and the rest of the set opens. As Unshield tells it, such an entry is not split and its data
+/// offset is exactly the length of the volume that would hold it. An extent that starts past that
+/// length, or that starts inside the volume and runs past its end, is damage and fails the open.
+/// Files stored outside the cabinet are not looked for or read.
+/// </para>
+/// <para>
+/// Compressed members are decoded in the <see cref="InstallShieldCompressedFormat"/> chosen when the
+/// set is opened (<see cref="CompressedFormat"/>), since the header does not say which one the set
+/// uses. A member that does not decode in that form fails its read; it is never tried in the other.
+/// </para>
+/// <para>
 /// Reading a member to its end checks that its data expands to exactly the declared size and, for
 /// a version 6 set, that the expanded bytes match the MD5 the header records. A failed check throws
 /// <see cref="InvalidDataException"/> from the read that would have returned the member's last bytes.
-/// Version 5 members are checked by size only.
+/// Version 5 members are checked by size only. A member read as
+/// <see cref="InstallShieldCompressedFormat.MarkerDelimitedChunks"/> is also checked to end with the
+/// <c>00 00 FF FF</c> marker, with the decoder reaching the end of its stored bytes.
 /// </para>
 /// <para>
 /// <see cref="Members"/> gives each listed member's file-table index, directory and name, and the
@@ -103,8 +179,9 @@ public sealed record InstallShieldSkippedFile(int Index, string? Path, string Re
 /// </remarks>
 public sealed class InstallShieldCabinetSource : OriginalContentSource
 {
-    // The layout (common header, cabinet descriptor, file table, volume headers, chunked deflate and
-    // the obfuscation) follows Unshield's reading of the format: https://github.com/twogood/unshield.
+    // The layout (common header, cabinet descriptor, file table, volume headers, both forms of
+    // compressed data, members stored outside the cabinet and the obfuscation) follows Unshield's
+    // reading of the format: https://github.com/twogood/unshield.
     private const uint Signature = 0x28635349;
     private const uint MicrosoftCabinetSignature = 0x4643534d;
     private const int CommonHeaderSize = 20;
@@ -126,11 +203,13 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     // Major versions 0 and 5 share the file descriptor and volume header layout.
     private readonly bool version5Layout;
 
-    // limits has been validated by the caller.
+    // limits and compressedFormat have been validated by the caller.
     internal InstallShieldCabinetSource(
-        InstallShieldHeaderReader reader, Func<int, Stream> openVolume, InstallShieldCabinetLimits limits)
+        InstallShieldHeaderReader reader, Func<int, Stream> openVolume, InstallShieldCabinetLimits limits,
+        InstallShieldCompressedFormat compressedFormat)
     {
         this.openVolume = openVolume;
+        CompressedFormat = compressedFormat;
         var signature = reader.UInt32(0);
         if (signature == MicrosoftCabinetSignature)
             throw new InvalidDataException("File is a Microsoft cabinet, not an InstallShield cabinet.");
@@ -200,14 +279,18 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 : ReadVersion6Descriptor(reader, table + descriptorsOffset + (long)index * Version6DescriptorSize);
 
         var skipped = new List<InstallShieldSkippedFile>();
+        // Entries whose data lies outside the volumes, by path. They are not listed, but they still
+        // take part in the rule that one path holds one file.
+        var outside = new Dictionary<string, Member>(StringComparer.OrdinalIgnoreCase);
         long expandedTotal = 0;
         for (var index = 0; index < descriptors.Length; index++)
         {
             var file = descriptors[index];
-            var reason = (file.Flags & InvalidFlag) != 0 ? "The cabinet marks the file invalid."
-                : file.NameOffset == 0 ? "The file has no name."
-                : file.DataOffset == 0 ? "The file has no data offset."
-                : null;
+            var (kind, reason) = (file.Flags & InvalidFlag) != 0
+                ? (InstallShieldSkippedFileKind.MarkedInvalid, "The cabinet marks the file invalid.")
+                : file.NameOffset == 0 ? (InstallShieldSkippedFileKind.NoName, "The file has no name.")
+                : file.DataOffset == 0 ? (InstallShieldSkippedFileKind.NoDataOffset, "The file has no data offset.")
+                : (default, (string?)null);
             if (reason is not null)
             {
                 // As in Unshield, the name of an entry left out does not have to read: its path is
@@ -223,7 +306,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                     {
                     }
                 }
-                skipped.Add(new(index, skippedPath, reason));
+                skipped.Add(new(index, skippedPath, kind, reason));
                 continue;
             }
 
@@ -237,7 +320,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 : null;
             if (linkReason is not null)
             {
-                skipped.Add(new(index, path, linkReason));
+                skipped.Add(new(index, path, InstallShieldSkippedFileKind.LinksToUnavailableEntry, linkReason));
                 continue;
             }
 
@@ -245,33 +328,61 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 throw new InvalidDataException($"InstallShield file {index} declares a size beyond 2^63 bytes.");
             // Version 0 and 5 descriptors carry no MD5 the reader checks, so theirs is null.
             var md5 = data.Md5;
+            var entryName = new EntryName(index, file.DirectoryIndex, directoryName, name);
+            bool SameFile(Member existing) => existing.Md5 is not null && md5 is not null &&
+                existing.Entry.Size == data.ExpandedSize && existing.Md5.AsSpan().SequenceEqual(md5);
             if (members.TryGetValue(path, out var existing))
             {
                 if (existing.DataIndex == dataIndex)
                 {
-                    skipped.Add(new(index, path,
+                    skipped.Add(new(index, path, InstallShieldSkippedFileKind.SharesListedData,
                         $"The file shares the data of file {existing.Index} at '{existing.Entry.Path}', which is listed."));
-                    existing.SharedBy.Add(new(index, file.DirectoryIndex, directoryName, name));
+                    existing.SharedBy.Add(entryName);
                     continue;
                 }
                 // Version 6 records each file's MD5, so two copies stored apart can be told to be the
                 // same file. The copy listed is the one checked when read; the other is not read, and
                 // neither are its volumes, so a duplicate in a missing or damaged volume is still skipped.
-                if (existing.Md5 is not null && md5 is not null && existing.Entry.Size == data.ExpandedSize &&
-                    existing.Md5.AsSpan().SequenceEqual(md5))
+                if (SameFile(existing))
                 {
-                    skipped.Add(new(index, path,
+                    skipped.Add(new(index, path, InstallShieldSkippedFileKind.DuplicatesListedMember,
                         $"The file duplicates file {existing.Index} at '{existing.Entry.Path}': same expanded size and MD5."));
-                    existing.SharedBy.Add(new(index, file.DirectoryIndex, directoryName, name));
+                    existing.SharedBy.Add(entryName);
                     continue;
                 }
-                throw new InvalidDataException(
-                    $"InstallShield cabinet holds two different files at '{path}' (file {existing.DataIndex} and file {dataIndex}).");
+                throw TwoFiles(path, existing.DataIndex, dataIndex);
             }
-            members.Add(path, new Member(
+            Member? outsideCopy = null;
+            if (outside.TryGetValue(path, out var stored))
+            {
+                if (stored.DataIndex == dataIndex)
+                {
+                    skipped.Add(new(index, path, InstallShieldSkippedFileKind.StoredOutsideCabinet,
+                        $"The file shares the data of file {stored.Index} at '{stored.Entry.Path}', which is stored outside the cabinet."));
+                    continue;
+                }
+                // A version 6 copy of a file stored outside is listed when its own data is inside.
+                if (!SameFile(stored)) throw TwoFiles(path, stored.DataIndex, dataIndex);
+                outsideCopy = stored;
+            }
+
+            var segments = Segments(dataIndex, data, descriptors.Length, out var outsideVolume);
+            var member = new Member(
                 new ContentSourceEntry(path, data.ExpandedSize), index, dataIndex, (data.Flags & CompressedFlag) != 0,
-                (data.Flags & ObfuscatedFlag) != 0, md5, Segments(dataIndex, data, descriptors.Length),
-                new(index, file.DirectoryIndex, directoryName, name), []));
+                (data.Flags & ObfuscatedFlag) != 0, md5, segments ?? [], entryName, []);
+            if (segments is null)
+            {
+                var evidence = $"its data offset, {data.DataOffset}, is the length of volume {outsideVolume}, which would hold it";
+                skipped.Add(new(index, path, InstallShieldSkippedFileKind.StoredOutsideCabinet,
+                    outsideCopy is not null
+                        ? $"The file duplicates file {outsideCopy.Index} at '{outsideCopy.Entry.Path}' (same expanded size and MD5), and is also stored outside the cabinet: {evidence}."
+                        : dataIndex == index
+                            ? $"The file is stored outside the cabinet: {evidence}."
+                            : $"The file links to file {dataIndex}, which is stored outside the cabinet: {evidence}."));
+                outside.TryAdd(path, member);
+                continue;
+            }
+            members.Add(path, member);
             // Compared this way round, the total cannot overflow even when the limit is near long.MaxValue.
             if (data.ExpandedSize > limits.MaximumExpandedBytes - expandedTotal)
                 throw new InvalidDataException(
@@ -306,13 +417,22 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     public override IReadOnlyList<ContentSourceEntry> Files { get; }
     /// <summary>The InstallShield major version the header's version word gives: 0, 5 or 6.</summary>
     public int MajorVersion { get; }
+
     /// <summary>
-    /// File-table entries that are not listed, in table order: entries the cabinet marks invalid,
+    /// How the set's compressed members are decoded, as the caller chose when opening it. The header
+    /// does not record it.
+    /// </summary>
+    public InstallShieldCompressedFormat CompressedFormat { get; }
+
+    /// <summary>
+    /// File-table entries that are not listed, in table order, each with its
+    /// <see cref="InstallShieldSkippedFile.Kind"/>: entries the cabinet marks invalid,
     /// entries with no name or no data offset (their name and directory are not checked, and the
     /// path is <see langword="null"/> when they do not read), version 6 entries whose link ends at an
     /// entry the cabinet marks invalid or that has no data offset, entries that share a listed member's data
-    /// at the same path, and version 6 entries stored apart from a listed member at the same path
-    /// with the same expanded size and MD5. Each reason names the entry it refers to.
+    /// at the same path, version 6 entries stored apart from a listed member at the same path
+    /// with the same expanded size and MD5, and entries stored outside the cabinet's volumes. Each
+    /// reason names the entry it refers to.
     /// </summary>
     public IReadOnlyList<InstallShieldSkippedFile> SkippedFiles { get; }
 
@@ -380,8 +500,8 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         if (!members.TryGetValue(PortableAssetPath.Relative(relativePath), out var member))
             throw new FileNotFoundException("InstallShield cabinet has no such file.", relativePath);
         return new InstallShieldMemberStream(
-            member.Entry.Path, member.Entry.Size, member.Compressed, member.Obfuscated, member.Md5,
-            member.Segments, openVolume);
+            member.Entry.Path, member.Entry.Size, member.Compressed ? CompressedFormat : null, member.Obfuscated,
+            member.Md5, member.Segments, openVolume);
     }
 
     /// <inheritdoc />
@@ -445,9 +565,17 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         throw new InvalidDataException($"InstallShield file {index} is part of a link cycle.");
     }
 
-    // Where a member's stored bytes lie, following the volume headers as Unshield does.
-    private InstallShieldSegment[] Segments(int index, FileDescriptor file, int fileCount)
+    private static InvalidDataException TwoFiles(string path, int first, int second) =>
+        new($"InstallShield cabinet holds two different files at '{path}' (file {first} and file {second}).");
+
+    // Where a member's stored bytes lie, following the volume headers as Unshield does. Returns null,
+    // with the volume in outsideVolume, when the member is stored outside the cabinet: as Unshield
+    // tells it, a member that is not split and whose data offset is exactly the length of the volume
+    // that would hold it. A member with no stored bytes reads as empty wherever its offset points, so
+    // it is never taken to be outside. Any other extent past the end of a volume is damage.
+    private InstallShieldSegment[]? Segments(int index, FileDescriptor file, int fileCount, out int outsideVolume)
     {
+        outsideVolume = 0;
         var compressed = (file.Flags & CompressedFlag) != 0;
         var remaining = compressed ? file.CompressedSize : file.ExpandedSize;
         var volume = version5Layout ? 1 : file.Volume;
@@ -463,6 +591,12 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
             if (MajorVersion == 5)
                 split |= (index < fileCount - 1 && index == header.LastIndex && header.LastCompressed != file.CompressedSize)
                          || (index > 0 && index == header.FirstIndex && header.FirstCompressed != file.CompressedSize);
+        }
+
+        if (!split && remaining > 0 && file.DataOffset == header.Length)
+        {
+            outsideVolume = volume;
+            return null;
         }
 
         var segments = new List<InstallShieldSegment>();
@@ -668,7 +802,8 @@ internal sealed class InstallShieldHeaderReader : IDisposable
 
 internal static class InstallShieldCabinetOpener
 {
-    public static InstallShieldCabinetSource FromDirectory(string path, InstallShieldCabinetLimits limits)
+    public static InstallShieldCabinetSource FromDirectory(
+        string path, InstallShieldCabinetLimits limits, InstallShieldCompressedFormat compressedFormat)
     {
         var fullPath = Path.GetFullPath(path);
         if (!File.Exists(fullPath)) throw new FileNotFoundException("InstallShield cabinet header does not exist.", fullPath);
@@ -693,10 +828,12 @@ internal static class InstallShieldCabinetOpener
                 };
             }
             return new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
-        }, limits);
+        }, limits, compressedFormat);
     }
 
-    public static InstallShieldCabinetSource FromSource(OriginalContentSource container, string headerPath, InstallShieldCabinetLimits limits)
+    public static InstallShieldCabinetSource FromSource(
+        OriginalContentSource container, string headerPath, InstallShieldCabinetLimits limits,
+        InstallShieldCompressedFormat compressedFormat)
     {
         var relative = PortableAssetPath.Relative(headerPath);
         var separator = relative.LastIndexOf('/');
@@ -712,7 +849,7 @@ internal static class InstallShieldCabinetOpener
             return container.TryGetFile(name, out _)
                 ? container.OpenRead(name)
                 : throw new FileNotFoundException($"InstallShield volume {volume} was not found in the source.", name);
-        }, limits);
+        }, limits, compressedFormat);
     }
 
     // As Unshield does, the volume names keep the header's name up to its first dot or digit:
