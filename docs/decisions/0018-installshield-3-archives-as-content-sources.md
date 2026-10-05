@@ -49,7 +49,9 @@ The archive layout and the compression format are containers. Neither is game co
    bytes are returned, as for cabinets. The documentation says that members are checked by size and
    framing only.
 6. Entries the archive marks invalid are listed in `SkippedFiles`. Their paths are recorded when they
-   are relative and are not otherwise checked, since they are never written out.
+   are relative and are not otherwise checked, since they are never written out. Listed members are
+   also reported with their entry's index, directory and name in the shape a cabinet reports them
+   (ADR 0014 point 6). The format has no file groups, so each membership says there are none.
 7. Tests build archives and compressed data with a writer in the test project. As in ADR 0014, a
    writer and reader from the same reading show only that the two agree, so the tests also decode
    the format description's example and a coded-literal stream that an independent decoder

@@ -57,14 +57,28 @@ The cabinet format is a container. Its layout is not game content, and no open t
    the check a read of the listed member makes, so the copy kept is held to the value both entries
    record. Versions 0 and 5 record no MD5, so a pair in those versions fails the open, as does any
    pair whose size or MD5 differs.
-6. Tests build cabinets with a writer in the test project. The writer and the reader come from the
+6. A member is named by its directory and name, the cabinet's own identity for it, and file groups
+   do not change that name. The cabinet records a group as a name and a range of file-table
+   indexes, and an installer places files by group, so the source reports each listed member's
+   index, directory, name and the groups whose ranges hold it, read from the header the open has
+   already read, and a restoration builds installed paths from that. A group name is data: it is not
+   checked as a path, since installers do not restrict it to one, and a caller checks any path it
+   builds. Membership is reported as read, never chosen: no group, one, several, or undetermined
+   when a malformed group may hold the entry or the group lists did not read whole. Reading groups
+   never fails the open, and their counts are bounded by the header limit and the file limit (at
+   most that many groups and that many (entry, group) pairs). InstallShield 3 archives
+   ([ADR 0018](0018-installshield-3-archives-as-content-sources.md)) have no file groups and report
+   their members in the same shape with no groups.
+7. Tests build cabinets with a writer in the test project. The writer and the reader come from the
    same reading of the layout, so the synthetic tests show only that the two agree. A restoration's
    own set, compared against an independent extractor, is the acceptance check, and a request that
    adopts the reader closes only when that comparison passes.
 
 ## Consequences
 
-A restoration can drop its child-process parser once its own set reads and matches. File groups and
-components are not modelled, so two members at one path that point 5 cannot show to be the same file
-cannot be told apart and the open fails; that case, marker-delimited compressed data and files
-stored outside the cabinet each need a restoration's provenance before they are added.
+A restoration can drop its child-process parser once its own set reads and matches, including one
+that installs by file group. Components are not modelled, and file groups do not take part in a
+member's identity, so two members at one path that point 5 cannot show to be the same file cannot be
+told apart and the open fails, even when they lie in different groups; that case, marker-delimited
+compressed data and files stored outside the cabinet each need a restoration's provenance before they
+are added.
