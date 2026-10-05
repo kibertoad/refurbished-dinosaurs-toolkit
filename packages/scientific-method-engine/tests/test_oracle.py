@@ -39,6 +39,25 @@ class AddressForms(unittest.TestCase):
         check(self, "bb4000 c7073412 c747027856 c41f bb4000 c537 c3", registers=DATA, resolved=("bx", "es", "si", "ds"))
 
 
+class FarTransfers(unittest.TestCase):
+    """Indirect far CALL and JMP through an m16:16 pointer the routine stores first (code at 1000:0000)."""
+    CODE = {"ds": 0x1000}
+
+    def test_call_far_through_memory(self):
+        # The pointer names 1000:0018 (AX=7) and not 1000:0014 (AX=42); the caller adds one after the far return.
+        result = check(self, "c7060002 1800 c7060202 0010 ff1e0002 050100 c3 b82a00cb b80700cb",
+                       registers=self.CODE, resolved=("ax", "sp"))
+        self.assertEqual(result["paths"][0]["registers"]["ax"]["value"], 8)
+
+    def test_call_far_through_a_based_operand_with_a_segment_override(self):
+        check(self, "bb0002 26c7071300 26c747020010 26ff1f 40 c3 b82a00cb",
+              registers={"es": 0x1000, "ds": 0x3000}, resolved=("ax", "sp"))
+
+    def test_jmp_far_through_memory(self):
+        result = check(self, "c7060002 1000 c7060202 0010 ff2e0002 b82a00c3", registers=self.CODE, resolved=("ax",))
+        self.assertEqual(result["paths"][0]["registers"]["ax"]["value"], 42)
+
+
 class Stack(unittest.TestCase):
     def test_push_pop_and_leave(self):
         check(self, "b81100 50 6a22 5b 59 55 89e5 6a33 c9 c3", resolved=("bx", "cx", "sp"))

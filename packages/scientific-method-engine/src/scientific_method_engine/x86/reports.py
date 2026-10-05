@@ -1770,10 +1770,10 @@ def _run_report(image, config, command):
     if command == "returns":
         report = return_flows(report, config)
     if command != "trace":
-        kinds = {"arguments": ("address-formation", "read", "call", "call-return"), "effects": ("address-formation", "write", "call", "call-return", "return", "branch", "string-operation", "hardware-boundary",
+        kinds = {"arguments": ("address-formation", "read", "call", "call-return"), "effects": ("address-formation", "write", "call", "far-jump", "call-return", "return", "branch", "string-operation", "hardware-boundary",
                              "flag-assumption", "flag-write", "flags-save", "flags-restore", "local-iret"),
                  "returns": ("return", "call-return", "compare", "branch", "write"),
-                 "guards": ("compare", "branch", "read", "write", "call", "call-return"),
+                 "guards": ("compare", "branch", "read", "write", "call", "far-jump", "call-return"),
                  "memory": ("read", "write", "address-formation")}[command]
         for path in report["paths"]:
             # Returns keep the transfers, conversions and reads that depend on a declared result.

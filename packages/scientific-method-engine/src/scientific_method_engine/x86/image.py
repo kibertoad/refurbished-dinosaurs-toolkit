@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 import xxhash
 from capstone import Cs, CS_ARCH_X86, CS_MODE_16, CS_MODE_32
+from capstone.x86 import X86_OP_MEM
 from .pe import prepare_pe
 import capstone
 
@@ -157,6 +158,10 @@ class Image:
     def far_target(self, site, ins):
         if self.flat:
             return None, {"reason": "far transfer is outside the PE32 flat model"}
+        if ins.operands and ins.operands[0].type == X86_OP_MEM:
+            # The pointer is read from memory when the instruction runs; only a traced path knows it
+            # (far_pointer_target).
+            return None, {"reason": "computed transfer remains unresolved"}
         # ptr16:16 immediate only. Operand-size-prefixed far calls are unsupported.
         if ins.size != 5 or self.data[site] not in (0x9a, 0xea):
             return None, {"reason": "unsupported far transfer encoding"}
@@ -169,6 +174,44 @@ class Image:
         if "target" in fixup:
             target = integer(fixup["target"], 0, len(self.data) - 1, "canonical target")
         return target, {"rawSegment": raw, "offset": ip, "resolvedSegment": fixup["segment"], "relocation": fixup}
+
+    def far_pointer_target(self, segment, offset):
+        """The code a known ``segment:offset`` far pointer names, as ``(target, admission)``.
+
+        The pointer is admitted only through the exact declared mapping of one region: ``segment``
+        equals the region's segment and ``offset`` lies in its IP range. A region with a
+        ``container`` is an overlay's analysis view, whose segment is not a load address, so a
+        pointer that names it is refused. So is a pointer that reaches declared resident code only
+        through another segment (a canonical alias), because the code would then run under a CS
+        and IP the region's mapping does not describe. A pointer at a source FBOV trampoline
+        (``overlayExports``) continues at that trampoline's overlay entry, as an immediate far
+        transfer through a relocated trampoline does. Returns ``(None, {"reason": ...})`` when the
+        pointer is not admitted.
+        """
+        exact = [r for r in self.regions
+                 if r["segment"] == segment and r["ip"] <= offset < r["ip"] + r["end"] - r["start"]]
+        if not exact:
+            if self.offset(segment, offset) is not None:
+                return None, {"reason": "far pointer names declared resident code only through a segment alias of its mapping"}
+            return None, {"reason": "far pointer names no declared code region"}
+        region = exact[0]
+        if region.get("container") is not None:
+            return None, {"reason": "far pointer names overlay code by its analysis segment, which is not a load address",
+                          "region": region["name"]}
+        site = region["start"] + offset - region["ip"]
+        admission = {"rule": "exact declared region mapping", "region": region["name"], "regionSegment": region["segment"],
+                     "regionIp": region["ip"], "regionStart": region["start"], "regionEvidence": region["evidence"]}
+        exports = [row for row in self.config.get("overlayExports", [])
+                   if isinstance(row, dict) and row.get("trampoline") == site]
+        if not exports:
+            return site, admission
+        if len(exports) > 1 or type(exports[0].get("entry")) is not int:
+            return None, {**admission, "reason": "far pointer names an FBOV trampoline without one overlay entry"}
+        export = exports[0]
+        admission["trampoline"] = {k: export.get(k) for k in ("trampoline", "descriptor", "entry", "evidence")}
+        if self.region(export["entry"]) is None:
+            return None, {**admission, "reason": "the overlay entry the FBOV trampoline names lies outside declared code regions"}
+        return export["entry"], admission
 
     def file_offset(self, va, width=1):
         """Only loaded raw PE bytes; zero-fill and alignment padding are not source extents."""

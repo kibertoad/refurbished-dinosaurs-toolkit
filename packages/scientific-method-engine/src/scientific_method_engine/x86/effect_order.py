@@ -4,7 +4,7 @@ from bisect import bisect_right
 from .memory_scopes import model_scopes, without_scopes
 
 
-KINDS = {"read", "write", "call", "call-return", "return", "branch", "compare", "flag-assumption",
+KINDS = {"read", "write", "call", "far-jump", "call-return", "return", "branch", "compare", "flag-assumption",
          "arithmetic", "value-transfer", "conversion", "flag-write", "flags-save", "flags-restore", "local-iret", "string-operation", "declared-jump-continuation",
          "hardware-boundary"}
 

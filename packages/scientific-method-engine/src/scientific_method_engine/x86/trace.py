@@ -6,7 +6,7 @@ from .image import integer
 from .machine import (State, StopPath, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
                       string_count, string_effect, check_string_form, compare_string, repeated, string_width,
                       FLAT_PORT_REASON)
-from .values import const, unknown, sources, op, Value
+from .values import const, unknown, sources, op, extract, Value
 from .result_flow import validate_contracts, result_contracts
 from .loops import LoopTracker
 from .memory_scopes import validate_scopes, capture_scopes, retain_scopes, scope_history
@@ -20,6 +20,47 @@ def call_target(image, site, ins):
         return image.near_target(site, ins.operands[0].imm), {"encoding": "relative32" if image.flat else "relative16", "loadedTarget": ins.operands[0].imm & image.mask,
                                                              "mapping": "source PE section table" if image.config.get("peMetadata") else "declared region mapping"}
     return None, {"reason": "computed transfer remains unresolved"}
+
+
+def far_pointer_word(read, low, value):
+    """One word of a far pointer read: its value and the producers and writers of its two bytes."""
+    rows = read["byteProducers"][low // 8:low // 8 + 2]
+    return {"value": extract(value, low, 16).number, "producers": sorted({p for row in rows for p in row["producers"]}),
+            "bytes": rows}
+
+
+def far_pointer_transfer(state, image, ins, pointer):
+    """Resolve an indirect far CALL or JMP from the m16:16 ``pointer`` the trace has just read.
+
+    Called right after ``state.get`` read the operand, so the newest event is that read. Returns
+    ``(target, provenance, code_segment)``. ``provenance`` keeps the read's order and address, its
+    effective segment register, and both words with the producers and writers of their bytes. The
+    target is admitted only when both words are known and ``Image.far_pointer_target`` admits the
+    address they form; otherwise ``target`` and ``code_segment`` are None and ``provenance`` names
+    the reason. ``code_segment`` is the value CS takes: the segment word itself, or the overlay
+    entry region's segment when the pointer names an FBOV trampoline.
+    """
+    read = state.events[-1]
+    offset_word, segment_word = far_pointer_word(read, 0, pointer), far_pointer_word(read, 16, pointer)
+    provenance = {"encoding": "m16:16",
+                  "pointerRead": {"order": read["order"], "segment": read["segment"], "offset": read["offset"],
+                                  "segmentRegister": read["effectiveSegmentRegister"]},
+                  "offsetWord": offset_word, "segmentWord": segment_word}
+    unknown_words = [name for name, word in (("offset", offset_word), ("segment", segment_word)) if word["value"] is None]
+    if unknown_words:
+        provenance["reason"] = "far pointer " + " and ".join(unknown_words) + (" words" if len(unknown_words) > 1 else " word") + " unknown"
+        return None, provenance, None
+    provenance["loadedAddress"] = f"{segment_word['value']:04X}:{offset_word['value']:04X}"
+    target, admission = image.far_pointer_target(segment_word["value"], offset_word["value"])
+    admission = dict(admission)
+    reason = admission.pop("reason", None)
+    provenance["admission"] = admission
+    if target is None:
+        provenance["reason"] = reason
+        return None, provenance, None
+    if "trampoline" in admission:
+        return target, provenance, const(image.region(target)["segment"], 16, state.at)
+    return target, provenance, Value(16, ("constant", segment_word["value"]), tuple(segment_word["producers"]))
 
 
 OVERLAP_REASON = "overlapping entry-path instructions; boundary unresolved"
@@ -806,9 +847,11 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                     break
                 if m in ("call", "lcall"):
                     target, provenance = call_target(image, at, ins)
-                    indirect_value = None
+                    indirect_value = code_segment = None
                     if target is None and ins.operands and ins.operands[0].type in (X86_OP_REG, X86_OP_MEM):
                         indirect_value = state.get(ins, ins.operands[0], image)
+                        if m == "lcall":
+                            target, provenance, code_segment = far_pointer_transfer(state, image, ins, indirect_value)
                     guard_checks = []
                     if indirect_value is not None:
                         for g in state.guards:
@@ -874,7 +917,8 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                                          "continuation": following, "returnIP": return_ip, "callSite": at,
                                          "callerCS": state.reg("cs"), "localFlagsFrame": flags_frame})
                     if m == "lcall":
-                        state.setreg("cs", const(target_region["segment"], 16, at), at)
+                        # An indirect far call loads CS from the pointer's segment word (far_pointer_transfer).
+                        state.setreg("cs", const(target_region["segment"], 16, at) if code_segment is None else code_segment, at)
                     state.at = target
                     continue
                 if m in ("iret", "iretd"):
@@ -927,6 +971,15 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                     continue
                 if m in ("jmp", "ljmp"):
                     target, provenance = call_target(image, at, ins)
+                    if target is None and m == "ljmp" and ins.operands[0].type == X86_OP_MEM:
+                        pointer = state.get(ins, ins.operands[0], image)
+                        target, provenance, code_segment = far_pointer_transfer(state, image, ins, pointer)
+                        state.event("far-jump", target=target, provenance=provenance, indirectValue=pointer.report())
+                        if target is None:
+                            raise StopPath("unresolved jump: " + provenance["reason"])
+                        state.setreg("cs", code_segment, at)
+                        state.at = target
+                        continue
                     if target is None:
                         if continue_declared_jumps and at in image.indirect_jumps:
                             deferred.append(deepcopy(state))
