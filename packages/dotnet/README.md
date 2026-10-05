@@ -232,9 +232,11 @@ libraries that cannot read BI_RLE8.
 ## InstallShield cabinets
 
 `OriginalContentSource.OpenInstallShieldCabinet(path)` opens a set from its `dataN.hdr` header, or
-from a `dataN.cab` that holds the header. From a `.cab`, only the header region (up to the end of
-the cabinet descriptor the common header places) is read as the header; a `data1.cab` that holds the
-header is also read as volume 1. `OpenInstallShieldCabinet(container, headerPath)` opens a set
+from a `dataN.cab` that holds the header. A `.cab` is read from its start only as far as the header's
+structures (cabinet descriptor, file table, file descriptors and names) reach, wherever they lie
+before the member data, as Unshield reads them; a `data1.cab` that holds the header is also read as
+volume 1. As in Unshield, the cabinet descriptor size the header declares only has to be nonzero:
+it does not bound what is read, in a `.hdr` or a `.cab`. `OpenInstallShieldCabinet(container, headerPath)` opens a set
 inside another source, such as the ISO 9660 volume of a cue/bin image, and reads the volumes through
 that source whenever a member is read. Volumes are `data1.cab`, `data2.cab` and so on beside the
 header, matched ignoring case.
@@ -246,7 +248,9 @@ header, matched ignoring case.
 Opening reads the header and the volume headers and checks every listed member before any member is
 read: its directory and name joined must pass `PortableAssetPath.Relative`, its data must lie inside the
 volumes, and the set must stay within `InstallShieldCabinetLimits` (100,000 members, 8 GiB expanded,
-a 64 MiB header region and 1,024-byte names by default; the header region is the whole `.hdr` file).
+64 MiB of header and 1,024-byte names by default). A `.hdr` is read whole, so a longer one fails the
+open. In a `.cab`, a header structure that ends past the header limit fails the open with a message
+naming the limit, and one that ends past the end of the file is reported as a truncated header.
 A name is read only up to the name limit, so a listed member whose name is longer fails the open.
 
 The major version comes from the header's version word as Unshield reads it: a top byte of 1 keeps it
