@@ -78,13 +78,15 @@ somewhere to install from even under `--no-index`.
 
 pip accepts a satisfied requirement that pins no single exact version, such as `alpha>=1.0` or
 `alpha==1.*`, so reject those separately. Every line of the requirements file and of each file it
-includes that starts with a letter or digit is one requirement, as lockers such as
-`pip-compile --generate-hashes` write them, and it must have the form `name==version` with no `*`.
-This prints each line that breaks the rule, so the gate fails when it prints anything:
+includes whose first non-blank character is a letter or digit is one requirement, as lockers such
+as `pip-compile --generate-hashes` write them, and it must have the form `name==version` with no
+`*`.
+This prints each line that breaks the rule, so the gate fails when it prints anything. List every
+file that the requirements file includes with `-r` after `requirements-evidence.txt`:
 
 ```sh
-grep -E '^[A-Za-z0-9]' requirements-evidence.txt | grep -vE \
-  '^[A-Za-z0-9][A-Za-z0-9._-]*(\[[^]]*\])? *==[A-Za-z0-9.+!_-]+ *(;[^\#]*)?( +--hash=[^ ]+)* *\? *(#.*)?$'
+grep -hE '^[[:space:]]*[A-Za-z0-9]' requirements-evidence.txt | grep -vE \
+  '^[[:space:]]*[A-Za-z0-9][A-Za-z0-9._-]*(\[[^]]*\])? *==[A-Za-z0-9.+!_-]+ *(;[^\#]*)?( +--hash=[^ ]+)* *\\? *(#.*)?$'
 ```
 
 The dry run reads installed metadata and checks no hashes: an installed distribution passes even
