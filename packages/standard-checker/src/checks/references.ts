@@ -18,7 +18,7 @@ export function checkReferences(ctx: Context, deviations: Map<string, Deviation>
   const parityDir = join(repoDir, "parity");
   const devDir = join(repoDir, "deviations");
   const isDeviationFile = (f: string) => resolve(f).startsWith(devDir + sep);
-  const scan: Array<{ file: string; text: string }> = ctx.codeFiles().filter(({ file }) => !file.endsWith(".fs"));
+  const scan: Array<{ file: string; text: string }> = [...ctx.codeFiles()];
   for (const dir of [parityDir, devDir])
     walk(dir, (f) => {
       if (f.endsWith(".md")) scan.push({ file: f, text: readFileSync(f, "utf8") });

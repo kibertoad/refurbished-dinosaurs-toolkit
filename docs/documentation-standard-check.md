@@ -101,9 +101,9 @@ Most restorations need no inputs. Set one when the defaults do not match the rep
 
 The code and reference directories are scanned for `.cs`, `.ts`, `.mjs`, `.js`, `.ps1`, `.fs`,
 `.md` and `.json` files, skipping `bin`, `obj`, `node_modules`, `.git` and `artifacts`. Every spec
-or deviation ID cited in those files, other than `.fs` files, and in the Markdown files of
-`parity/` and `deviations/` must exist, and a cited spec ID must not be superseded. A deviation file
-may cite the superseded entry it departed from.
+or deviation ID cited in those files and in the Markdown files of `parity/` and `deviations/` must
+exist, and a cited spec ID must not be superseded. A deviation file may cite the superseded entry
+it departed from.
 
 A passing citation check shows only that each cited ID exists and, outside `deviations/`, is not
 superseded. A `BLD-` or `SRC-` alias that names no entry is skipped, because an alias can collide
