@@ -381,6 +381,16 @@ point still does not resolve. A private repository whose checkout sets `persist-
 with the default `fetch-depth` cannot fetch, so its pull request checks start failing: keep the
 default credentials, check out with `fetch-depth: 0`, or set the action's `base` input.
 
+### An experiment's `starting_state` is one of the standard's forms
+
+The checker accepted any `starting_state` and asked only for the save hash, so a typo such as
+`new_game`, or a value the standard does not define, passed once the fixture gave a hash. It now
+fails unless the value is a save or save patch in `saves/` (a file under it, with no `.` or `..`
+segment), `new-game`, `emulated-call` or null.
+Correct each experiment it reports: `new-game` for a run that starts by launching the game without
+a save, with the choices made on the way in given in Setup, and null for a save that cannot be
+committed and is kept with the captures, with its hash in the fixture's `starting_state.xxh3`.
+
 ## Engine upgrades
 
 Engine releases that need a change in a restoration are listed here, newest first.
