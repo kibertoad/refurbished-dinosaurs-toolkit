@@ -30,12 +30,26 @@ public sealed class MsvcRandom : IRandomSource
     /// <summary>How many values have been drawn since seeding.</summary>
     public long ConsumptionCount { get; private set; }
 
+    /// <summary>
+    /// Returns the state that follows <paramref name="state"/>, the step one <c>rand()</c> call takes.
+    /// With <see cref="Value"/> it lets a game keep the 32-bit state in its own save data:
+    /// <c>state = MsvcRandom.NextState(state); int r = MsvcRandom.Value(state);</c> draws the same
+    /// value as <see cref="NextRaw"/>.
+    /// </summary>
+    public static uint NextState(uint state) => unchecked(state * Multiplier + Addend);
+
+    /// <summary>
+    /// Returns the <c>rand()</c> result, <c>0..32767</c>, that a call yields when it leaves the
+    /// generator in <paramref name="state"/>. Pass the state returned by <see cref="NextState"/>.
+    /// </summary>
+    public static int Value(uint state) => (int)((state >> 16) & 0x7fff);
+
     /// <summary>Advances the state and returns the next <c>rand()</c> value, <c>0..32767</c>.</summary>
     public int NextRaw()
     {
-        _state = unchecked(_state * Multiplier + Addend);
+        _state = NextState(_state);
         ConsumptionCount++;
-        return (int)((_state >> 16) & 0x7fff);
+        return Value(_state);
     }
 
     /// <summary>Returns <c>rand() % exclusiveMaximum</c>, as the original code computes it.</summary>

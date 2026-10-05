@@ -151,6 +151,29 @@ public sealed class CoreTests
     }
 
     [Fact]
+    public void MsvcRandomStaticTransitionMatchesInstanceSequence()
+    {
+        var state = 1u;
+        var values = new List<int>();
+        for (var i = 0; i < 3; i++)
+        {
+            state = MsvcRandom.NextState(state);
+            values.Add(MsvcRandom.Value(state));
+        }
+        Assert.Equal([41, 18467, 6334], values);
+
+        var random = new MsvcRandom(unchecked((int)0xdeadbeef));
+        state = 0xdeadbeef;
+        for (var i = 0; i < 1000; i++)
+        {
+            state = MsvcRandom.NextState(state);
+            Assert.Equal(random.NextRaw(), MsvcRandom.Value(state));
+            Assert.Equal(random.State, state);
+        }
+        Assert.Equal(0x235ac6u, MsvcRandom.NextState(0xffffffff));
+    }
+
+    [Fact]
     public void JsonStateDifferProducesStableLabeledPaths()
     {
         using var expected = JsonDocument.Parse("{\"players\":[{\"cash\":10}]}");

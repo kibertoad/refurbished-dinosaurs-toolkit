@@ -41,7 +41,7 @@ on an undocumented public member.
 | `Assets` | `ContentOverlay`, `ContentOverlayManifest` | Apply a patch or fix delivered as files to a staged pack, replacing each file only when it holds the bytes the overlay expects. |
 | `Assets` | `InstalledAssetManifest`, `InstalledAssetVerifier` | Record what an import installed, and check it at startup, with a reason code per problem. |
 | `Assets` | `InstalledContentUninstaller` | Remove only the files a manifest lists. |
-| `Determinism` | `IRandomSource`, `MsvcRandom` | The legacy Microsoft C `rand()` sequence, with saveable state. |
+| `Determinism` | `IRandomSource`, `MsvcRandom` | The legacy Microsoft C `rand()` sequence, with saveable state. The static `MsvcRandom.NextState` and `MsvcRandom.Value` step a state the game keeps in its own save data. |
 | `Diagnostics` | `StartupFailure` | Log a failed start and show the player what to do, without the Windows dialog for an unattended run. |
 | `Discovery` | `KnownDirectorySourceLocator`, `CompositeSourceLocator` | Offer likely install directories of the original. |
 | `IO` | `AtomicFile`, `SafePath`, `PortableAssetPath`, `PortablePathLayout` | Atomic writes, paths from untrusted names that cannot leave their root, legacy asset references resolved the same way on every host, and a set of relative paths given one spelling per directory ignoring case, with paths that clash ignoring case refused. |
