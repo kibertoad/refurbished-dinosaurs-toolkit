@@ -55,8 +55,9 @@ The cabinet format is a container. Its layout is not game content, and no open t
    taken as one file, such as a DLL two components each carry: the first in table order is listed,
    the other goes to `SkippedFiles` as its duplicate, and its stored bytes are not read. The MD5 is
    the check a read of the listed member makes, so the copy kept is held to the value both entries
-   record. Versions 0 and 5 record no MD5, so a pair in those versions fails the open, as does any
-   pair whose size or MD5 differs.
+   record. Versions 0 and 5 record no MD5, so a pair in those versions holds different files, as
+   does any pair whose size or MD5 differs. Such a path is reported and its files read by index, as
+   [ADR 0020](0020-different-files-at-one-installshield-path.md) decides.
 6. A member is named by its directory and name, the cabinet's own identity for it, and file groups
    do not change that name. The cabinet records a group as a name and a range of file-table
    indexes, and an installer places files by group, so the source reports each listed member's
@@ -81,7 +82,7 @@ The cabinet format is a container. Its layout is not game content, and no open t
 A restoration can drop its child-process parser once its own set reads and matches, including one
 that installs by file group. Components are not modelled, and file groups do not take part in a
 member's identity, so two members at one path that point 5 cannot show to be the same file cannot be
-told apart and the open fails, even when they lie in different groups; that case needs a
-restoration's provenance before it is added. Marker-delimited compressed data and members stored
+told apart by path, even when they lie in different groups. [ADR 0020](0020-different-files-at-one-installshield-path.md)
+reports such a path and reads its files by index. Marker-delimited compressed data and members stored
 outside the cabinet are handled as [ADR 0019](0019-installshield-compressed-format-and-outside-storage.md)
 decides.

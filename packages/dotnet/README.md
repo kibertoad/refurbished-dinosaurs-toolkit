@@ -199,6 +199,7 @@ contexts outside per-frame loops.
 | `InstallShieldArchiveSource`, `InstallShieldArchiveLimits` | The members of an InstallShield 3 archive held in one file (such as `_SETUP.1`), from a file, inside another source or from a stream. See [InstallShield 3 archives](#installshield-3-archives). |
 | `InstallShieldCabinetSource`, `InstallShieldCabinetLimits` | The members of an InstallShield cabinet set of major version 0, 5 or 6 (`dataN.hdr` and `dataN.cab`), on disk or inside another source. See [InstallShield cabinets](#installshield-cabinets). |
 | `InstallShieldMember`, `InstallShieldEntryMetadata`, `InstallShieldFileGroup`, `InstallShieldFileGroupMembership`, `InstallShieldFileGroupMembershipKind` | Each listed member's file-table entry (index, directory, name) and the file groups whose ranges hold it, from either InstallShield source's `Members`. See [Member metadata and file groups](#member-metadata-and-file-groups). |
+| `InstallShieldPathConflict` | A path that holds different files, with each file's metadata, from either InstallShield source's `PathConflicts`; `OpenEntry(index)` reads each. See [Different files at one path](#different-files-at-one-path). |
 | `ContentSourceExtractor`, `ContentExtractionOptions` | Copy the files of any `OriginalContentSource`, or a selection of them, into a staging directory and get an `InstalledAsset` record for each. See [Extracting a source into a stage](#extracting-a-source-into-a-stage). |
 | `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
 | `CddaTrackFingerprints`, `CddaTrackVerification` | Record and check the fingerprint of a CD audio track in a cue/bin image, accepting a rip shifted by a drive read offset up to the fingerprint's tolerance. See [CD audio across read offsets](#cd-audio-across-read-offsets). |
@@ -286,15 +287,15 @@ reason names the entry it links to. A link outside the file table or a link cycl
 Unshield does not read the names of entries left out, so a name or directory of theirs that does not
 read, or that does not form a relative path, does not fail the open: the skipped entry's path is
 `null` instead. Each `InstallShieldSkippedFile` has a `Kind` to test (`MarkedInvalid`, `NoName`,
-`NoDataOffset`, `LinksToUnavailableEntry`, `SharesListedData`, `DuplicatesListedMember` or
-`StoredOutsideCabinet`) beside its `Reason`.
+`NoDataOffset`, `LinksToUnavailableEntry`, `SharesListedData`, `DuplicatesListedMember`,
+`StoredOutsideCabinet` or `PathHeldByDifferentFiles`) beside its `Reason`.
 
 Two entries at the same path, ignoring case, are listed once when one links to the other's data; the
 other goes to `SkippedFiles` with a reason naming the listed entry. In a version 6 set, two entries
 stored apart at one path with the same expanded size and header MD5 are taken as one file: the first
 in table order is listed, and the other goes to `SkippedFiles` as its duplicate without its stored
-bytes being read. Any other pair at one path is rejected, and so is every pair in a version 5 set,
-which records no MD5.
+bytes being read. Any other pair at one path holds different files, and so does every pair in a
+version 5 set, which records no MD5 (see [Different files at one path](#different-files-at-one-path)).
 
 Names are read as ISO 8859-1. A malformed or truncated header or volume throws
 `InvalidDataException`; a missing volume throws `FileNotFoundException`.
@@ -341,7 +342,8 @@ length of the volume where its data starts, split or not, as Unshield tells it. 
 goes to `SkippedFiles` with the kind `StoredOutsideCabinet` and a reason giving the offset and the
 volume, and the rest of the set opens. Entries that share its data, and version 6 copies of it that
 are also stored outside, are skipped the same way; a version 6 copy whose own data is inside the
-cabinet is listed. A different file at its path fails the open, as for any two files at one path.
+cabinet is listed. A different file at its path makes the path one that holds different files, and
+`PathConflicts` names the entries stored outside there.
 The reader does not look for or read files outside the cabinet; read such a file from your own
 media and check it there.
 
@@ -350,6 +352,40 @@ inside it and runs past its end. It fails the open with `InvalidDataException` (
 volume N, which is shorter than the header claims"). The offset rule cannot tell a member stored
 outside from a volume cut short exactly where its last member's data starts, so compare the volume
 named in the reason with your source media when the skip is unexpected.
+
+### Different files at one path
+
+A path, ignoring case, can hold two or more files the reader cannot show to be the same, for
+example one per file group. The reader takes two entries to be one file only when one links to the
+other's data, or, in version 6, when their expanded sizes and MD5s match; equal names, sizes or
+bytes in a version 0 or 5 set do not count. The set still opens, and the path lists none of its
+files, so `TryGetFile`, `TryGetMember` and `OpenRead` do not find it, and the reader never picks one:
+
+- `PathConflicts` lists each such path, ordered by path, with `Files`: each file the cabinet holds
+  inside its volumes as an `InstallShieldMember` (`Entry`, `Metadata` with its file groups, and
+  `SharedBy`), in the table order of its first entry. `StoredOutside` gives the metadata of the
+  entries at the path stored outside the cabinet.
+- Every entry at the path is in `SkippedFiles` as `PathHeldByDifferentFiles`, with a reason naming
+  the first entry of each file, except entries stored outside, which stay `StoredOutsideCabinet`.
+- `OpenEntry(index)` reads a file by the file-table index of any of its entries, with the same checks
+  as `OpenRead`. It also reads listed members by index, and throws `FileNotFoundException` for an
+  entry that holds no file the source reads.
+
+The files' paths, extents and sizes are checked when the set opens, and their sizes count toward
+`MaximumExpandedBytes`, as a listed member's do. An adapter that installs by file group handles
+them alongside `Members`:
+
+```csharp
+foreach (var conflict in cabinet.PathConflicts)
+foreach (var file in conflict.Files)
+{
+    // file.Metadata.FileGroups says which groups hold this file; decide which one installs where.
+    await using var stream = cabinet.OpenEntry(file.Metadata.Index);
+}
+```
+
+`InstallShieldArchiveSource` reports a path that two entries name in the same shape: the format has
+no links or checksums, so each entry is its own file, and `StoredOutside` is empty.
 
 ### Format provenance
 
@@ -432,10 +468,12 @@ each name ends with its NUL, and the directory a file entry names is the one the
 file counts place it in. Every listed member's directory and name joined must pass
 `PortableAssetPath.Relative`, its stored bytes must lie inside the archive after the header, a stored
 member's two sizes must agree, a member of a split archive of one part must name part 1 as its first
-and last part, no two listed members may share a path ignoring case, and the archive must stay within
+and last part, and the archive must stay within
 `InstallShieldArchiveLimits` (65,535 entries, 8 GiB expanded and 16 MiB of tables by default). A
 failed check throws `InvalidDataException`. Entries the archive marks invalid are left out and listed
-in `SkippedFiles`; their path is `null` when `PortableAssetPath.Relative` rejects it. Names are read as ISO 8859-1.
+in `SkippedFiles`; their path is `null` when `PortableAssetPath.Relative` rejects it. A path that two
+or more valid entries name, ignoring case, lists none of them; they are reported as
+[different files at one path](#different-files-at-one-path). Names are read as ISO 8859-1.
 `Members` and `TryGetMember` give each listed member's file-table index, directory index, directory and
 name, in the shape of [cabinet member metadata](#member-metadata-and-file-groups); the format has no file
 groups, so every membership is `NoFileGroups`.

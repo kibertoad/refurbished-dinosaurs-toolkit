@@ -3,23 +3,48 @@ using RefurbishedDinosaurs.Core.IO;
 namespace RefurbishedDinosaurs.LegacyFormats;
 
 /// <summary>
-/// One listed member of an <see cref="InstallShieldCabinetSource"/> or an
-/// <see cref="InstallShieldArchiveSource"/>, with the file-table entry it is listed from.
+/// One file of an <see cref="InstallShieldCabinetSource"/> or an <see cref="InstallShieldArchiveSource"/>,
+/// with the file-table entry it is read from: a listed member (the source's <c>Members</c>), or one of
+/// the files at a path that holds different files (<see cref="InstallShieldPathConflict.Files"/>).
 /// </summary>
 /// <param name="Entry">
-/// The member as <see cref="OriginalContentSource.Files"/> lists it. Its path is the entry's directory
-/// and name joined, which is the path <see cref="OriginalContentSource.OpenRead"/> takes.
+/// The file's path and expanded size. Its path is the entry's directory and name joined. For a listed
+/// member it is the entry <see cref="OriginalContentSource.Files"/> lists and the path
+/// <see cref="OriginalContentSource.OpenRead"/> takes; for a file of a path conflict, no file is listed
+/// at the path, and the source's <c>OpenEntry</c> reads it by <see cref="InstallShieldEntryMetadata.Index"/>.
 /// </param>
-/// <param name="Metadata">The file-table entry the member is listed from.</param>
+/// <param name="Metadata">The file-table entry the file is read from.</param>
 /// <param name="SharedBy">
-/// Cabinet entries at the member's path, ignoring case, that are not listed because they hold the same
-/// data: an entry that links to the member's data, and a version 6 copy with the same expanded size and
-/// MD5. Each is also in <see cref="InstallShieldCabinetSource.SkippedFiles"/>. Reading the member gives
-/// their bytes, so an adapter that places entries by file group can place these too. Empty for an
-/// InstallShield 3 archive, which refuses two entries at one path.
+/// Cabinet entries at the file's path, ignoring case, that hold the same data: an entry that links to
+/// the file's data, and a version 6 copy with the same expanded size and MD5. Each is also in
+/// <see cref="InstallShieldCabinetSource.SkippedFiles"/>. Reading the file gives their bytes, so an
+/// adapter that places entries by file group can place these too. Empty for an InstallShield 3
+/// archive, which has no links or checksums.
 /// </param>
 public sealed record InstallShieldMember(
     ContentSourceEntry Entry, InstallShieldEntryMetadata Metadata, IReadOnlyList<InstallShieldEntryMetadata> SharedBy);
+
+/// <summary>
+/// A path, ignoring case, that holds two or more files an <see cref="InstallShieldCabinetSource"/> or an
+/// <see cref="InstallShieldArchiveSource"/> cannot show to be the same. The source lists none of them
+/// at the path and does not choose one: each is read by its entry's index with the source's
+/// <c>OpenEntry</c>, and every entry at the path is in the source's <c>SkippedFiles</c>.
+/// </summary>
+/// <param name="Path">The path as the first entry at it in table order spells it.</param>
+/// <param name="Files">
+/// The files at the path whose data the source reads, in the table order of their first entries. Each
+/// entry's own spelling of the path is in its <see cref="InstallShieldMember.Entry"/>. A cabinet decides
+/// two entries hold the same file only when one links to the other's data, or, in version 6, when
+/// their expanded sizes and MD5s match; equal names or sizes alone never make them one file.
+/// </param>
+/// <param name="StoredOutside">
+/// The entries at the path whose data is stored outside the cabinet, in table order, which
+/// <see cref="InstallShieldCabinetSource.SkippedFiles"/> lists as
+/// <see cref="InstallShieldSkippedFileKind.StoredOutsideCabinet"/>. They are not read. Empty for an
+/// InstallShield 3 archive.
+/// </param>
+public sealed record InstallShieldPathConflict(
+    string Path, IReadOnlyList<InstallShieldMember> Files, IReadOnlyList<InstallShieldEntryMetadata> StoredOutside);
 
 /// <summary>What the header records about one file-table entry, beyond its data.</summary>
 /// <param name="Index">The entry's index in the cabinet's or archive's file table.</param>

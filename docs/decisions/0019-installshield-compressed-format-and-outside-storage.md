@@ -50,7 +50,8 @@ Unshield's reading of both, which is the only description of the format availabl
    a volume (an offset past its length, or data that starts inside and runs past it) still fails the
    open as damage. Entries that share its data, and version 6 copies of it that are also stored
    outside, are skipped with the same kind; a version 6 copy whose own data is inside the cabinet is
-   listed. A different file at its path still fails the open, as ADR 0014 point 5 requires.
+   listed. A different file at its path makes the path one that holds different files, as
+   [ADR 0020](0020-different-files-at-one-installshield-path.md) decides.
 4. Every `InstallShieldSkippedFile` carries an `InstallShieldSkippedFileKind`, so a caller tests the
    reason without matching its text. This changes the record's constructor and deconstruction, so it
    ships as a major release with a migration entry.

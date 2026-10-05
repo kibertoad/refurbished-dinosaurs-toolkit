@@ -34,6 +34,8 @@ The archive layout and the compression format are containers. Neither is game co
    they must agree), every listed path passes `PortableAssetPath.Relative`, every member's stored
    bytes lie inside the archive after the header, a stored member's two sizes agree, no two listed
    members share a path, and the entry count and expanded total are within the caller's limits.
+   Entries that share a path are reported and read by index, as
+   [ADR 0020](0020-different-files-at-one-installshield-path.md) decides.
 4. Only archives that hold all of their data are read: unsplit archives, and split archives of one
    part. The second kind sets a split flag in its header and declares itself part 1 of 1; each of its
    listed entries must name part 1 as its first and last part, or opening throws

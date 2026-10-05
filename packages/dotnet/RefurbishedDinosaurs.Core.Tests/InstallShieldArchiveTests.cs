@@ -391,9 +391,6 @@ public sealed class InstallShieldArchiveTests
         BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(SyntheticInstallShieldArchive.FileEntry(bytes, 0) + 3), 5);
         Assert.Contains("stored uncompressed, but declares 21 stored and 5 expanded bytes",
             Assert.Throws<InvalidDataException>(() => Open(bytes)).Message);
-
-        bytes = SyntheticInstallShieldArchive.Build([new("Data", "same.bin", Text), new("Data", "SAME.BIN", Text)]);
-        Assert.Contains("two files at 'Data/SAME.BIN' (file 0 and file 1)", Assert.Throws<InvalidDataException>(() => Open(bytes)).Message);
     }
 
     [Fact]
