@@ -129,6 +129,14 @@ boundary and continuation limits remain explicit gaps or stops. Partial-table sp
 partial evidence, never complete dispatch or native-reachability claims. See the
 [table contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#evidenced-indirect-jump-tables).
 
+A far call or jump through an `m16:16` pointer is followed when the path stored both words and
+the address names declared code through one region's exact mapping, or names a source FBOV
+trampoline whose overlay entry is declared. The event keeps the pointer read, each word's
+producers and writers, and how the target was admitted. An unknown or partly unknown word, an
+address outside declared code, a segment alias of resident code, an overlay's analysis segment and
+an `m16:32` pointer stop the path with a named reason. See
+[indirect far transfers](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#indirect-far-transfers-through-a-traced-pointer).
+
 A call model may also sit at an `INT n` instruction in the real-mode model. The interrupt is
 still reported as a hardware boundary with its vector, the handler is not executed, and each case
 returns to the next instruction with SP and CS as before the interrupt. Registers, flags and memory

@@ -91,7 +91,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 
 | Command | Reports | Described in |
 |---|---|---|
-| `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; declared-table continuations run on their own `continuationBudget`; checks `relationalControls`; `entryFrame` starts an entry inside its function's frame | this section, [narrower entries](#a-narrower-entry-inside-its-functions-frame), [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
+| `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; follows an indirect far call or jump whose pointer the path produced; declared-table continuations run on their own `continuationBudget`; checks `relationalControls`; `entryFrame` starts an entry inside its function's frame | this section, [narrower entries](#a-narrower-entry-inside-its-functions-frame), [indirect far transfers](#indirect-far-transfers-through-a-traced-pointer), [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
 | `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; a stop inside a called function also continues the inventory at the return site of each call open at the stop, named in `dependsOn` | this section, [hardware boundaries](#hardware-boundaries) |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
@@ -372,9 +372,10 @@ operations: MOV/MOVZX/MOVSX, XCHG, low-result two/three-operand IMUL (flags unre
 one-operand MUL/IMUL/DIV/IDIV, LEA, LDS/LES, PUSH/POP, LEAVE, ADD/SUB, ADC/SBB,
 NEG/NOT, bitwise logic, shifts, ROL/ROR/RCL/RCR with a known count, CLC/STC/CMC,
 INC/DEC and effective-size sign extension. It follows direct near/far
-calls, jumps, common conditional branches, JCXZ, the LOOP family and balanced
-returns. Unsupported instructions, repeat prefixes, 32-bit control transfers,
-indirect targets, interrupts and recursion/loop limits stop the affected path.
+calls, jumps, common conditional branches, JCXZ, the LOOP family, balanced
+returns, and far calls and jumps through an `m16:16` pointer the path produced
+([below](#indirect-far-transfers-through-a-traced-pointer)). Unsupported instructions, repeat prefixes, 32-bit control transfers,
+other indirect targets, interrupts and recursion/loop limits stop the affected path.
 Port accesses continue as [hardware boundaries](#hardware-boundaries). Branch conditions are decided from the flags p-code computed. A decided
 branch event carries `decidedBy: "p-code flags"` and has no `reason`. An undecided
 one carries a `reason`: `flag producer unresolved`, `carry unresolved` for a
@@ -690,6 +691,68 @@ A hardware boundary reports what the instructions did at the port. Device state,
 timing, the value a device returns and rendered output are outside the model, and
 a supplied input value only shows what the code does with that value.
 
+
+## Indirect far transfers through a traced pointer
+
+A far `CALL` or `JMP` through memory (`FF /3` or `FF /5` with a 16-bit operand size, `m16:16`)
+reads a four-byte pointer when it runs. The trace reads it like any other access, so the `read`
+event and its `byteProducers` stay in the path, and then decides the transfer from the value it
+read. Nothing is assumed about the pointer: no entry memory, table or target hypothesis stands in
+for a word the path did not store.
+
+The call event (`call`) or, for a jump, a `far-jump` event carries `target`, `indirectValue` and
+`provenance`:
+
+- `encoding`: `m16:16`.
+- `pointerRead`: the read's event `order`, its `segment` and `offset` values and the effective
+  `segmentRegister` (the default or an override). Every command that keeps the `call` or
+  `far-jump` event also keeps this read, so `effects` reports it too.
+- `offsetWord` and `segmentWord`: each word's `value` (null when unknown), the `producers` of its
+  two bytes, and the two `bytes` rows of the read's `byteProducers`, with each byte's `writeOrder`
+  or its `unwritten` cause.
+- `loadedAddress`: `SSSS:OOOO`, when both words are known.
+- `admission`: how the address was admitted, or as much as was checked before it was refused.
+- `reason`, when the transfer is not followed.
+
+The transfer is followed only when both words are known and the address names declared code
+through the exact mapping of one region: the segment word equals the region's `segment` and the
+offset lies in its IP range. `admission` then gives the `rule` (`exact declared region mapping`),
+the `region` and its `regionSegment`, `regionIp`, `regionStart` and `regionEvidence`. A call
+pushes CS and the return IP and records `returnFrameBytes: 4`; the callee runs with CS equal to
+the segment word, which keeps the word's producers and, when a declared return result was stored
+there, that result in `resultOrigins`, and must end in a far return that restores the
+caller's CS, as for an immediate far call. A jump replaces CS the same way and continues at the
+target. A `callModels` entry at the call site takes precedence: the event still names the target,
+and the model supplies the return.
+
+Every other case stops the path, and the event keeps the provenance read so far:
+
+| Stop | When |
+|---|---|
+| `far pointer offset word unknown`, `... segment word unknown`, `... offset and segment words unknown` | a word has a byte no write on the path stored, or one a possibly aliasing write, a modeled call or a scope dropped; the byte rows give the cause |
+| `far pointer names no declared code region` | the address lies in no declared region |
+| `far pointer names declared resident code only through a segment alias of its mapping` | the linear address lies in a `resident` region, but under another segment; the callee would run with a CS and IP the region's mapping does not describe |
+| `far pointer names overlay code by its analysis segment, which is not a load address` | the address matches an overlay region (one with a `container`), whose segment is an analysis view the researcher chose |
+| `the overlay entry the FBOV trampoline names lies outside declared code regions` | the address is a source FBOV trampoline whose overlay entry is not declared |
+| `far pointer names an FBOV trampoline without one overlay entry` | the trampoline row is malformed or repeated |
+
+Each stop reads `unresolved call: <stop>` or `unresolved jump: <stop>`. A 32-bit operand size
+(`66 FF /3`, `m16:32`) stops before the read with the operand-size override stop, and every far
+transfer stops in the PE32 flat model. `maxDepth`, `maxSteps` and the other budgets apply inside
+the target as anywhere else, so a capped or stopped callee leaves a relational control undecided.
+
+Overlay code is reached only the way an immediate far call reaches it: through a trampoline. When
+the pointer names, through the exact mapping of a resident region, a trampoline that the source
+FBOV tables list (`overlayExports`, which only the reader derives), the transfer continues at that
+trampoline's overlay entry, and `admission.trampoline` gives the `trampoline`, `descriptor`,
+`entry` and `evidence`. Declare the resident range that holds the trampolines as a region for this.
+The callee then runs with CS equal to the overlay region's analysis segment, as after an immediate
+far call through a relocated trampoline. The overlay manager's loading is not modeled in either
+case.
+
+Commands that walk instructions without tracing values (`bounds`, `owner`, `callees` and the
+boundary walks) report an indirect far transfer as `computed transfer remains unresolved`, as they
+do a computed near one.
 
 ## Explicit overlapping entries and local flag-return frames
 
@@ -1164,7 +1227,7 @@ incoming coverage claim is made.
 ## Ordered effect-path summaries
 
 `effects` also returns `effectOrdering.paths`, one summary per traced path. Its
-`timeline` retains read/write, call/return, arithmetic/compare, flag-assumption and
+`timeline` retains read/write, call/return, far-jump, arithmetic/compare, flag-assumption and
 branch provenance with entry, depth and original event order. `writeOrders` indexes all
 writes, including stack and child writes. Each call's `writesBeforeCount` is a
 prefix length of that list, not a claim that the call succeeded. Call statuses

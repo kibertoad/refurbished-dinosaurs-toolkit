@@ -1770,16 +1770,19 @@ def _run_report(image, config, command):
     if command == "returns":
         report = return_flows(report, config)
     if command != "trace":
-        kinds = {"arguments": ("address-formation", "read", "call", "call-return"), "effects": ("address-formation", "write", "call", "call-return", "return", "branch", "string-operation", "hardware-boundary",
+        kinds = {"arguments": ("address-formation", "read", "call", "call-return"), "effects": ("address-formation", "write", "call", "far-jump", "call-return", "return", "branch", "string-operation", "hardware-boundary",
                              "flag-assumption", "flag-write", "flags-save", "flags-restore", "local-iret"),
                  "returns": ("return", "call-return", "compare", "branch", "write"),
-                 "guards": ("compare", "branch", "read", "write", "call", "call-return"),
+                 "guards": ("compare", "branch", "read", "write", "call", "far-jump", "call-return"),
                  "memory": ("read", "write", "address-formation")}[command]
         for path in report["paths"]:
             # Returns keep the transfers, conversions and reads that depend on a declared result.
             consumed = {c["order"] for f in path.get("returnFlows", {}).get("results", ()) for c in f["consumers"]}
             # Arguments keeps the writes its argument-frame slots cite as writers.
             consumed |= {s["writerOrder"] for f in path.get("argumentFrames", ()) for s in f["slots"] if s["writerSite"] is not None}
+            # A kept indirect far CALL or JMP keeps the pointer read its provenance cites.
+            consumed |= {e["provenance"]["pointerRead"]["order"] for e in path["events"] if e["kind"] in kinds
+                         and isinstance(e.get("provenance"), dict) and "pointerRead" in e["provenance"]}
             path["events"] = [e for e in path["events"] if e["kind"] in kinds or e["order"] in consumed or
                               (command == "effects" and e["kind"] == "read" and (e.get("nearPointerAccessCandidates") or e.get("nearPointerArgumentCandidates")))]
     return report

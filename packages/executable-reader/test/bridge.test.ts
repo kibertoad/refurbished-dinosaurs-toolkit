@@ -1325,6 +1325,43 @@ test("trace decides a decrement loop's exit from p-code flags through the source
   assert.equal(path.registers.cx.value, 0);
 });
 
+test("trace follows an indirect far call through a pointer the path stored, with a relocated segment word", (t) => {
+  const { dir, data, config } = fixture(t);
+  // The one MZ relocation covers the immediate of the segment-word store, at load-image offset 10.
+  data.writeUInt16LE(10, 28);
+  // mov word [0200], 0014; mov word [0202], SEG (relocated); call far [0200]; ret; pad; mov ax, 42; retf
+  const store = [0xc7, 6, 0, 2, 0x14, 0, 0xc7, 6, 2, 2, 0, 0];
+  data.set([...store, 0xff, 0x1e, 0, 2, 0xc3, 0, 0, 0, 0xb8, 0x2a, 0, 0xcb], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const regions = [
+    { name: "resident", start: 64, end: 88, ip: 0, segment: 4096, entries: [64], evidence: "synthetic mapped MZ" },
+  ];
+  const query = { ...config, xxh3: sourceXxh3(data), regions, registers: { ds: 4096 } };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const result = run(["trace", join(dir, "config.json")]);
+  const path = result.paths[0];
+  assert.equal(path.returned, true, path.stop);
+  assert.equal(path.registers.ax.value, 42);
+  const call = path.events.find((e: Report) => e.kind === "call");
+  assert.equal(call.target, 84);
+  assert.equal(call.provenance.loadedAddress, "1000:0014");
+  assert.deepEqual(call.provenance.offsetWord.producers, [64]);
+  assert.deepEqual(call.provenance.segmentWord.producers, [70]);
+  assert.equal(call.provenance.pointerRead.segmentRegister, "ds");
+  assert.equal(call.provenance.admission.region, "resident");
+  assert.ok(path.events.some((e: Report) => e.kind === "relocated-immediate" && e.site === 70));
+
+  // Without the segment-word store the pointer is partly unknown and the path stops there.
+  data.set([0x90, 0x90, 0x90, 0x90, 0x90, 0x90], 70);
+  data.writeUInt16LE(0, 6);
+  writeFileSync(join(dir, "source.bin"), data);
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ ...query, xxh3: sourceXxh3(data) }));
+  const stopped = run(["trace", join(dir, "config.json")]);
+  assert.equal(stopped.paths[0].returned, false);
+  assert.equal(stopped.paths[0].stop, "unresolved call: far pointer segment word unknown");
+  assert.equal(stopped.completeWithinModel, false);
+});
+
 test("effects reports port accesses as hardware boundaries apart from RAM writes through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);

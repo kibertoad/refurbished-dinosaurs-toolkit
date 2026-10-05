@@ -385,6 +385,29 @@ default credentials, check out with `fetch-depth: 0`, or set the action's `base`
 
 Engine releases that need a change in a restoration are listed here, newest first.
 
+### Indirect far calls and jumps follow a pointer the path stored
+
+A far `CALL` or `JMP` through an `m16:16` pointer used to stop every path with
+`unresolved call: unsupported far transfer encoding` (a jump: `unresolved jump: ...`), even when
+the path had stored both words. The trace now reads the pointer and follows the transfer when both
+words are known and the address names declared code through one region's exact mapping, or names
+a source FBOV trampoline whose overlay entry is declared. Otherwise the path stops with a reason
+that names why, such as `unresolved call: far pointer segment word unknown` or
+`unresolved call: far pointer names no declared code region`
+([the full list](bounded-evidence-reporters.md#indirect-far-transfers-through-a-traced-pointer)).
+`bounds`, `owner`, `callees` and the other instruction walks now give such a transfer the reason
+`computed transfer remains unresolved` in place of `unsupported far transfer encoding`.
+
+What to change:
+
+- A test or tool that matches the old stop or gap string matches the new reasons.
+- A query whose path stopped at such a call now reads the callee, so its events, steps,
+  `completeWithinModel` and relational-control verdicts can change. An expected stop at that call
+  becomes a `callModels` entry at the site, if the callee should stay unread.
+- An indirect far jump records a `far-jump` event, which `trace`, `guards` and `effects` report.
+  A test that compares a path's events as a whole adds it. `effects` also keeps
+  the pointer read that a kept indirect far call or jump cites in `provenance.pointerRead`.
+
 ### Ghidra instruction windows start only at an instruction
 
 `ReportInstructionWindow` used to start at the next instruction when no instruction started at the
