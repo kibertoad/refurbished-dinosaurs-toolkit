@@ -268,6 +268,27 @@ test("a glossary term that names a superseded entry is reported", (t) => {
   assert.match(output, /add_points cites RULE-SCORE-002, which is superseded/);
 });
 
+test("a Markdown file under --references that cites a superseded entry is reported, and a deviation file is not", (t) => {
+  const root = broken(t, (r) => {
+    copyRule(r, "RULE-SCORE-002", (text) =>
+      text
+        .replace("status: sourced", "status: superseded")
+        .replace("superseded_by: []", "superseded_by: [RULE-SCORE-001]"),
+    );
+    mkdirSync(join(r, "notes"));
+    writeFileSync(join(r, "notes", "handover.md"), "# Handover\n\nNext: implement RULE-SCORE-002.\n");
+    withDeviation(r);
+    replaceIn(r, "deviations/DEV-SCORE-001.md", "Counts two points.", "Counts two points, as RULE-SCORE-002 did.");
+  });
+  const stale = run(root, "--references", "notes");
+  assert.equal(stale.status, 1);
+  assert.match(stale.output, /handover\.md: cites RULE-SCORE-002, which is superseded; cite what replaced it$/m);
+  assert.doesNotMatch(stale.output, /DEV-SCORE-001\.md: cites RULE-SCORE-002/);
+  replaceIn(root, "notes/handover.md", "RULE-SCORE-002", "RULE-SCORE-001");
+  const replaced = run(root, "--references", "notes");
+  assert.equal(replaced.status, 0, replaced.output);
+});
+
 test("? in a files pattern matches one character", (t) => {
   const root = broken(t, (r) =>
     replaceIn(r, "spec/formats/FMT-SCORE-001.md", 'files: ["DATA/SCORES.BIN"]', 'files: ["DATA/SCORES.BI?"]'),
