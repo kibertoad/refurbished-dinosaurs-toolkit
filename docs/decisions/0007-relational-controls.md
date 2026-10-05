@@ -106,11 +106,14 @@ must be able to express "this fill writes inside `[base, base + n)`" for an assu
    multiplication and shifts by constants and extensions. A term is used as an integer only when the
    bounds of its atoms show it cannot wrap; otherwise it is one opaque atom of its width. A relation
    holds when every value the atoms allow satisfies it, is violated when none does, and is undecided
-   otherwise. Atoms are bounded by their width unless the control's `assume` states an unsigned
-   range for an unknown value, with evidence. The assumption is echoed in the result, and an
-   occurrence it cannot apply to (a known value outside the range, a computed value, a missing
-   reference) is undecided. `modulo` reads a value narrower than the modulus as its integer value,
-   since its own width's congruence says nothing about a wider one. Path conditions (the branches a
+   otherwise. Atoms are bounded by their width, narrowed by the bitwise structure of their term
+   (`and`, `or` and `xor`, a shift right, arithmetic only with the sign bit clear, a division or
+   remainder by a constant, a zero extension, an extracted field) and by the control's `assume`,
+   which states an unsigned range for an unknown value, with evidence. Where both bound an atom,
+   the narrower range applies. The assumption is echoed in the result, and an occurrence it cannot
+   apply to (a known value outside the range, a range the term's structure rules out, a computed
+   value, a missing reference) is undecided. `modulo` reads a value narrower than the modulus as its
+   integer value, since its own width's congruence says nothing about a wider one. Path conditions (the branches a
    path took) are not solved, so a relation that holds only for part of the range is undecided,
    never violated. Query inputs that already exist (`registers`, `flags`, `callModels`) are listed
    in each result as `queryAssumptions`.

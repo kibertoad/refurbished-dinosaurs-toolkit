@@ -1459,15 +1459,25 @@ occurrence where an assumption cannot apply (see below).
 Each value's expression becomes a linear form over its unknown subterms, reading additions,
 subtractions, offsets, multiplications and shifts by constants, and zero and sign extensions. A
 value counts as an integer only when the ranges of its unknowns show it cannot wrap its width;
-otherwise the whole value is one unknown of its width. A relation holds when every value the
-unknowns allow satisfies it, is violated when none does, and is undecided otherwise. The branches a
-path took are not solved, so a relation that fails for part of a range is undecided.
+otherwise the whole value is one unknown of its width. Such an unknown ranges over its whole width
+unless its expression bounds it: `and` is at most the smaller operand bound, so a constant mask
+bounds it by the mask; `or` and `xor` stay below the next power of two above both operands, and
+`or` is at least its larger operand; a shift right or a division by a constant divides the
+operand's bounds, an arithmetic shift only when its operand's sign bit is clear; a remainder by a
+constant is below the constant; a zero extension keeps the narrower value's bounds; and an extracted
+field keeps the bounds of the bits it takes when the operand cannot reach the bits above them. These
+are unsigned bounds. A signed reading uses them only when they keep the sign bit the same for every
+value, clear or set. A relation holds when every value the unknowns allow satisfies it, is violated
+when none does, and is undecided otherwise. The branches a path took are not solved, so a relation
+that fails for part of a range is undecided.
 
 `assume`, accepted on `containment` and `relation` controls, lists at most 16 ranges, each `{ "value": reference, "min", "max", "evidence" }`, with an
 unsigned range inside the value's width. The value should be one unknown, such as an entry register
 or a loaded word. Each occurrence resolves it again: a known value inside the range needs no
 assumption, while a known value outside it, a value computed from unknowns or a reference the path
-does not supply leaves that occurrence undecided. An assumption on a sign-extended value is
+does not supply leaves that occurrence undecided. When the value's own expression also bounds it
+(a masked word, say), the narrower of the two ranges applies, and an assumed range the expression
+rules out leaves that occurrence undecided. An assumption on a sign-extended value is
 rejected; assume the value before the extension. Every result repeats the control's `assumptions`
 and the query's own (`queryAssumptions`: `registers`, `flags` and the `callModels` sites). A
 conclusion under an assumption is only as good as the assumption's evidence.

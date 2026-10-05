@@ -1845,6 +1845,39 @@ test("an output count past a modeled call is a lower bound through the source br
   );
 });
 
+test("a constant mask bounds an unknown loaded word through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(20, 28);
+  // mov bx,[0200h]; and bx,3; ret
+  data.set([0x8b, 0x1e, 0x00, 0x02, 0x81, 0xe3, 0x03, 0x00, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const bound = (right: number) => ({
+    name: "bound",
+    kind: "relation",
+    at: { site: 72, event: "checkpoint" },
+    op: "le",
+    left: { field: "registers.bx" },
+    right,
+  });
+  const query = (right: number) => {
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({
+        ...config,
+        xxh3: sourceXxh3(data),
+        registers: { ds: 0x2000, ss: 0x3000, sp: 0xff00 },
+        relationalControls: [bound(right)],
+      }),
+    );
+    return join(dir, "config.json");
+  };
+  const held = run(["trace", query(3)]).relationalControls;
+  assert.equal(held.allHeld, true);
+  assert.deepEqual(held.controls[0].paths[0].occurrences[0].leftMinusRight, { min: -3, max: 0 });
+  // The mask does not exclude 3, so a tighter bound is undecided.
+  assert.equal(run(["trace", query(2)]).relationalControls.controls[0].verdict, "undecided");
+});
+
 test("entryFrame passes through preparation and lets a narrower entry return through its function's frame", (t) => {
   const { dir, data, config } = fixture(t);
   // Keep the MZ relocation away from the code below.
