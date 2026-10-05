@@ -89,6 +89,17 @@ public sealed record InstallShieldSkippedFile(int Index, string? Path, string Re
 /// <see cref="InvalidDataException"/> from the read that would have returned the member's last bytes.
 /// Version 5 members are checked by size only.
 /// </para>
+/// <para>
+/// <see cref="Members"/> gives each listed member's file-table index, directory and name, and the
+/// file groups whose ranges hold it, read from the header the open has already read. A member's path
+/// stays its directory and name joined; an installer that places files by group does so outside the
+/// cabinet, so a caller that needs installed paths builds them from this metadata. A group name is
+/// reported as data and is not checked as a path. The groups never fail the open: a list that does not
+/// read, a malformed group and an entry held by several groups are each reported, with
+/// <see cref="FileGroupProblem"/>, <see cref="InstallShieldFileGroup.Problem"/> and
+/// <see cref="InstallShieldFileGroupMembership.Kind"/>. An I/O error from the stream a header-holding
+/// <c>.cab</c> is read from still fails the open, as it does for the rest of the header.
+/// </para>
 /// </remarks>
 public sealed class InstallShieldCabinetSource : OriginalContentSource
 {
@@ -158,15 +169,22 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 throw new InvalidDataException($"InstallShield file {index} names directory {directory}, which does not exist.");
             return directories[directory] ??= reader.String(table + reader.UInt32(table + 4L * directory), "directory name");
         }
+        // Each directory's name with / separators, checked once, when a path in it is first accepted.
+        var portableDirectories = new string?[directoryCount];
 
-        string EntryPath(int index, FileDescriptor file)
+        // The path, and the directory and name it joins with / separators. When the joined path is
+        // accepted, so is the directory alone, since its characters and components are among the path's.
+        (string Path, string Directory, string Name) EntryPath(int index, FileDescriptor file)
         {
             var name = reader.String(table + file.NameOffset, "file name");
             var directory = DirectoryName(index, file.DirectoryIndex);
             var combined = directory.Length == 0 ? name : $"{directory}\\{name}";
             try
             {
-                return PortableAssetPath.Relative(combined);
+                var path = PortableAssetPath.Relative(combined);
+                var portable = portableDirectories[file.DirectoryIndex] ??=
+                    directory.Length == 0 ? string.Empty : PortableAssetPath.Relative(directory);
+                return (path, portable, name.Replace('\\', '/'));
             }
             catch (InvalidDataException exception)
             {
@@ -199,7 +217,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 {
                     try
                     {
-                        skippedPath = EntryPath(index, file);
+                        skippedPath = EntryPath(index, file).Path;
                     }
                     catch (InvalidDataException)
                     {
@@ -210,7 +228,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
             }
 
             // A listed entry's path has to read and be relative, or the open fails.
-            var path = EntryPath(index, file);
+            var (path, directoryName, name) = EntryPath(index, file);
 
             var dataIndex = ResolveLink(descriptors, index);
             var data = descriptors[dataIndex];
@@ -233,6 +251,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 {
                     skipped.Add(new(index, path,
                         $"The file shares the data of file {existing.Index} at '{existing.Entry.Path}', which is listed."));
+                    existing.SharedBy.Add(new(index, file.DirectoryIndex, directoryName, name));
                     continue;
                 }
                 // Version 6 records each file's MD5, so two copies stored apart can be told to be the
@@ -243,6 +262,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 {
                     skipped.Add(new(index, path,
                         $"The file duplicates file {existing.Index} at '{existing.Entry.Path}': same expanded size and MD5."));
+                    existing.SharedBy.Add(new(index, file.DirectoryIndex, directoryName, name));
                     continue;
                 }
                 throw new InvalidDataException(
@@ -250,7 +270,8 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
             }
             members.Add(path, new Member(
                 new ContentSourceEntry(path, data.ExpandedSize), index, dataIndex, (data.Flags & CompressedFlag) != 0,
-                (data.Flags & ObfuscatedFlag) != 0, md5, Segments(dataIndex, data, descriptors.Length)));
+                (data.Flags & ObfuscatedFlag) != 0, md5, Segments(dataIndex, data, descriptors.Length),
+                new(index, file.DirectoryIndex, directoryName, name), []));
             // Compared this way round, the total cannot overflow even when the limit is near long.MaxValue.
             if (data.ExpandedSize > limits.MaximumExpandedBytes - expandedTotal)
                 throw new InvalidDataException(
@@ -259,8 +280,22 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         }
 
         SkippedFiles = skipped;
-        Files = members.Values.Select(member => member.Entry)
-            .OrderBy(entry => entry.Path, StringComparer.OrdinalIgnoreCase).ToArray();
+        var listed = members.Values.OrderBy(member => member.Entry.Path, StringComparer.OrdinalIgnoreCase).ToArray();
+        Files = listed.Select(member => member.Entry).ToArray();
+
+        // The file groups are read last, from the header already open, so a set that opens without
+        // them opens the same way with them: what does not read is reported, never thrown.
+        var groupTable = InstallShieldFileGroupTable.Read(reader, descriptor, MajorVersion, descriptors.Length, limits);
+        var (memberships, groupProblem) = groupTable.Memberships(listed
+            .SelectMany(member => member.SharedBy.Prepend(member.Listed)).Select(entry => entry.Index)
+            .Order().ToArray());
+        FileGroups = groupTable.Groups;
+        FileGroupProblem = groupProblem;
+        InstallShieldEntryMetadata Metadata(EntryName entry) => new(
+            entry.Index, entry.DirectoryIndex, entry.Directory, entry.Name, memberships[entry.Index]);
+        foreach (var member in listed)
+            member.Metadata = new(member.Entry, Metadata(member.Listed), member.SharedBy.Select(Metadata).ToArray());
+        Members = listed.Select(member => member.Metadata!).ToArray();
     }
 
     /// <inheritdoc />
@@ -280,6 +315,46 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     /// with the same expanded size and MD5. Each reason names the entry it refers to.
     /// </summary>
     public IReadOnlyList<InstallShieldSkippedFile> SkippedFiles { get; }
+
+    /// <summary>
+    /// The listed members with the file-table entries they are listed from, in the order of
+    /// <see cref="Files"/>. Each gives its entry's index, directory, name and file groups, and the
+    /// unlisted entries at its path that hold the same data. File groups do not change
+    /// <see cref="Files"/> or <see cref="OpenRead"/>: a member's path is its directory and name joined.
+    /// </summary>
+    public IReadOnlyList<InstallShieldMember> Members { get; }
+
+    /// <summary>
+    /// The file groups the cabinet descriptor lists, in the order Unshield reads them: its 71 lists in
+    /// turn, each from its head. Empty when the descriptor lists none. A group whose descriptor, name or
+    /// range does not read or lies outside the file table is still listed, with its
+    /// <see cref="InstallShieldFileGroup.Problem"/>.
+    /// </summary>
+    public IReadOnlyList<InstallShieldFileGroup> FileGroups { get; }
+
+    /// <summary>
+    /// Why the file groups were not read whole, or <see langword="null"/> when they were: a list entry
+    /// that does not read, a list that returns to an entry it already read, more groups than
+    /// <see cref="InstallShieldCabinetLimits.MaximumFiles"/>, or ranges that together name more
+    /// (entry, group) pairs than that limit. <see cref="FileGroups"/> then holds the groups read
+    /// before the problem (every group, when only the pairs pass the limit), and every entry's membership is
+    /// <see cref="InstallShieldFileGroupMembershipKind.Undetermined"/>. The open does not fail on it,
+    /// since members are read without their groups.
+    /// </summary>
+    public string? FileGroupProblem { get; }
+
+    /// <summary>Finds a listed member by path, ignoring case, as <see cref="TryGetFile"/> does.</summary>
+    /// <exception cref="InvalidDataException"><paramref name="relativePath"/> is not accepted by <see cref="PortableAssetPath.Relative"/>.</exception>
+    public bool TryGetMember(string relativePath, out InstallShieldMember? member)
+    {
+        if (members.TryGetValue(PortableAssetPath.Relative(relativePath), out var found))
+        {
+            member = found.Metadata;
+            return true;
+        }
+        member = null;
+        return false;
+    }
 
     /// <inheritdoc />
     public override bool TryGetFile(string relativePath, out ContentSourceEntry? entry)
@@ -462,7 +537,12 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
 
     private sealed record Member(
         ContentSourceEntry Entry, int Index, int DataIndex, bool Compressed, bool Obfuscated, byte[]? Md5,
-        InstallShieldSegment[] Segments);
+        InstallShieldSegment[] Segments, EntryName Listed, List<EntryName> SharedBy)
+    {
+        public InstallShieldMember? Metadata { get; set; }
+    }
+
+    private sealed record EntryName(int Index, int DirectoryIndex, string Directory, string Name);
 }
 
 internal sealed record InstallShieldSegment(int Volume, long Offset, long Length);

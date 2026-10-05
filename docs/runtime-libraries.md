@@ -72,7 +72,13 @@ LegacyFormats parts of it:
   share its data, and version 6 copies of a listed member at the same path with the same size and
   MD5. Decode into the staging directory and verify the output there as for
   any other source; [InstallShield cabinets](../packages/dotnet/README.md#installshield-cabinets)
-  lists the supported subset.
+  lists the supported subset. A member's path is its directory and name joined. Where the
+  restoration installs files by file group, `Members` gives each member's file-table index,
+  directory, name and the groups whose ranges hold it, with the cases where that is not one group
+  (none, several, a malformed group, a group list that did not read) reported as such, so an
+  installed-path adapter needs no second header parser. Group names are data: check any path built
+  from one with `PortableAssetPath.Relative`. See
+  [member metadata and file groups](../packages/dotnet/README.md#member-metadata-and-file-groups).
 - `OriginalContentSource.OpenInstallShieldArchive` lists and reads the members of an InstallShield 3
   archive held in one file (such as a disc's `_SETUP.1`) through the same interface, from a file,
   from inside a disc source, or from a stream holding an archive carved out of a self-extractor. Its

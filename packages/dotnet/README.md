@@ -198,6 +198,7 @@ contexts outside per-frame loops.
 | `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image, an InstallShield cabinet set or an InstallShield 3 archive behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path, and from the first bytes for an InstallShield 3 archive; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin`, `OpenInstallShieldCabinet` and `OpenInstallShieldArchive` take it explicitly. ISO 9660 file and directory names read byte for byte as Latin-1 (ISO-8859-1), as the volume label does. `OpenIso9660(stream)` opens an `.iso` image from a readable, seekable stream the caller keeps and the source never disposes; the streams it opens each keep their own position over it. A cue/bin source gives the sheet as `Cue` and the full paths of the files `OpenCueBin` chose as `CuePath` and `BinPath`. It reads the `.cue` once and gives those bytes as `CueSheetBytes`: hash them to record the sheet that was parsed, since the file at `CuePath` may have been replaced after the source opened. An `.iso` or cue/bin source opened from a path records the image's length and last-write time when it opens, and each read of the `.iso` or BIN through the source (`OpenRead`, `OpenVolume`, `OpenBin` and the audio checks) fails with an `IOException` when either has changed; a rewrite that keeps both is not detected. A stream opened from `BinPath` is not checked, so read the image with `OpenBin`. |
 | `InstallShieldArchiveSource`, `InstallShieldArchiveLimits` | The members of an InstallShield 3 archive held in one file (such as `_SETUP.1`), from a file, inside another source or from a stream. See [InstallShield 3 archives](#installshield-3-archives). |
 | `InstallShieldCabinetSource`, `InstallShieldCabinetLimits` | The members of an InstallShield cabinet set of major version 0, 5 or 6 (`dataN.hdr` and `dataN.cab`), on disk or inside another source. See [InstallShield cabinets](#installshield-cabinets). |
+| `InstallShieldMember`, `InstallShieldEntryMetadata`, `InstallShieldFileGroup`, `InstallShieldFileGroupMembership`, `InstallShieldFileGroupMembershipKind` | Each listed member's file-table entry (index, directory, name) and the file groups whose ranges hold it, from either InstallShield source's `Members`. See [Member metadata and file groups](#member-metadata-and-file-groups). |
 | `ContentSourceExtractor`, `ContentExtractionOptions` | Copy the files of any `OriginalContentSource`, or a selection of them, into a staging directory and get an `InstalledAsset` record for each. See [Extracting a source into a stage](#extracting-a-source-into-a-stage). |
 | `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
 | `CddaTrackFingerprints`, `CddaTrackVerification` | Record and check the fingerprint of a CD audio track in a cue/bin image, accepting a rip shifted by a drive read offset up to the fingerprint's tolerance. See [CD audio across read offsets](#cd-audio-across-read-offsets). |
@@ -263,7 +264,7 @@ header, matched ignoring case.
 
 | Supported | Not supported |
 |---|---|
-| Major versions 0, 5 and 6, as the header's version word gives them under Unshield's rule. Stored and compressed members, obfuscated members, members split across volumes, and version 6 members that link to another member's data. | Every other major version, and a version word in neither encoding Unshield reads, which throw `NotSupportedException` naming the word. Compressed data delimited by `00 00 FF FF` markers with no chunk lengths (what Unshield reads with `-O`). Members stored outside the cabinet. File groups and components: members are listed by directory and name only. |
+| Major versions 0, 5 and 6, as the header's version word gives them under Unshield's rule. Stored and compressed members, obfuscated members, members split across volumes, and version 6 members that link to another member's data. | Every other major version, and a version word in neither encoding Unshield reads, which throw `NotSupportedException` naming the word. Compressed data delimited by `00 00 FF FF` markers with no chunk lengths (what Unshield reads with `-O`). Members stored outside the cabinet. Components, and an installer's placement of files: members are listed by directory and name, and file groups are reported as metadata (see [Member metadata and file groups](#member-metadata-and-file-groups)). |
 
 Opening reads the header and the volume headers and checks every listed member before any member is
 read: its directory and name joined must pass `PortableAssetPath.Relative`, its data must lie inside the
@@ -308,6 +309,54 @@ reading of the layout follows [Unshield](https://github.com/twogood/unshield) (M
 the format, so the tests build their cabinets with a writer in the test project that follows the same
 layout; a restoration's own set, compared against another extractor, is the check against real media.
 
+### Member metadata and file groups
+
+`Files` and `OpenRead` name a member by its directory and name joined, which is how the cabinet
+stores it. An installer places files by file group, which the cabinet records only as ranges of
+file-table indexes, so a restoration that needs installed paths builds them from `Members`, read
+from the header the open already read:
+
+- `Members` lists an `InstallShieldMember` for each entry of `Files`, in the same order, and
+  `TryGetMember(path)` finds one by path as `TryGetFile` does. Its `Metadata` gives the file-table
+  `Index`, `DirectoryIndex`, `Directory` (with `/` separators, empty for the root) and `Name`, so
+  `Entry.Path` is `Directory` and `Name` joined with `/`. `SharedBy` gives the entries at the same path
+  that are in `SkippedFiles` because they hold the same data (a link, or a version 6 copy with the same
+  size and MD5), each with its own index, names and groups; reading the member gives their bytes.
+- `FileGroups` lists the groups the cabinet descriptor lists, in Unshield's order, each once: `Index`,
+  `Name` (ISO 8859-1), `FirstFile` and `LastFile` (inclusive, the header's unsigned values), and a
+  `Problem` when the group's descriptor, name or range does not read or lies outside the file table.
+- Each entry's `FileGroups` membership has a `Kind`: `NoFileGroups` (the descriptor lists none),
+  `None`, `One`, `Several` (the indexes of every group that holds it, none chosen) or `Undetermined`.
+  An entry is `Undetermined` when a group whose range is malformed may hold it (`MalformedGroups`):
+  a range that reaches past the table may hold the entries from its first file on, and a range that did
+  not read or is reversed may hold any. Every entry is `Undetermined` when the
+  group lists did not read whole: `FileGroupProblem` then says why (a list entry that does not read, a
+  list that returns to an entry it already read, a structure past the header limit, or more groups, or
+  more (entry, group) pairs, than `MaximumFiles`).
+
+Malformed groups never fail the open and never change `Files`, `SkippedFiles` or what a member reads.
+An I/O error from the stream a `.cab` that holds the header is read from still fails the open, as it
+does for any other header structure. A group
+name is data: the reader does not check it with `PortableAssetPath.Relative`, since an installer's group
+name need not be a file name. A caller that builds a path from it checks the path it builds. An adapter that
+installs each group below its own name reads:
+
+```csharp
+foreach (var member in cabinet.Members)
+foreach (var entry in member.SharedBy.Prepend(member.Metadata))
+{
+    if (entry.FileGroups.Kind != InstallShieldFileGroupMembershipKind.One) continue; // decide these yourself
+    var group = cabinet.FileGroups[entry.FileGroups.Groups[0]].Name;
+    if (string.IsNullOrEmpty(group)) continue; // a name that did not read, or is empty: decide these too
+    var installed = PortableAssetPath.Relative(string.Join('/',
+        new[] { group, entry.Directory, entry.Name }.Where(part => part.Length > 0)));
+    // copy cabinet.OpenRead(member.Entry.Path) to installed
+}
+```
+
+`InstallShieldArchiveSource` gives `Members` and `TryGetMember` in the same shape. An InstallShield 3
+archive has no file groups, so every membership is `NoFileGroups`, and `SharedBy` is empty.
+
 ## InstallShield 3 archives
 
 InstallShield 3 keeps a whole installation in one archive file, often `_SETUP.1` on the disc or a
@@ -338,6 +387,9 @@ and last part, no two listed members may share a path ignoring case, and the arc
 `InstallShieldArchiveLimits` (65,535 entries, 8 GiB expanded and 16 MiB of tables by default). A
 failed check throws `InvalidDataException`. Entries the archive marks invalid are left out and listed
 in `SkippedFiles`; their path is `null` when `PortableAssetPath.Relative` rejects it. Names are read as ISO 8859-1.
+`Members` and `TryGetMember` give each listed member's file-table index, directory index, directory and
+name, in the shape of [cabinet member metadata](#member-metadata-and-file-groups); the format has no file
+groups, so every membership is `NoFileGroups`.
 
 `OpenRead` decodes a member while it is read, and seeks as a cabinet member stream does. The archive
 records no checksum, so a member is checked by size and framing only: reading a compressed member to

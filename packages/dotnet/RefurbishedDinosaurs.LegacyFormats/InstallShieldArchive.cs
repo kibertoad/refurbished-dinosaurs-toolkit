@@ -150,6 +150,8 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
         offset = 0;
         var directory = 0;
         var directoryFilesLeft = directories.Length > 0 ? directories[0].Files : 0;
+        // Each directory's name with / separators, checked once, when a listed path in it is accepted.
+        var portableDirectories = new string?[directories.Length];
         table = new TableReader(fileTable, "file table");
         for (var index = 0; index < fileCount; index++)
         {
@@ -212,7 +214,14 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
             if (members.TryGetValue(path!, out var existing))
                 throw new InvalidDataException(
                     $"InstallShield 3 archive holds two files at '{path}' (file {existing.Index} and file {index}).");
-            members.Add(path!, new Member(new ContentSourceEntry(path!, expandedSize), index, stored, dataOffset, storedSize));
+            // The joined path is accepted, so the directory alone is too: its characters and
+            // components are among the path's.
+            var directoryName = directories[directory].Name;
+            var entry = new ContentSourceEntry(path!, expandedSize);
+            var metadata = new InstallShieldEntryMetadata(index, directory,
+                portableDirectories[directory] ??= directoryName.Length == 0 ? string.Empty : PortableAssetPath.Relative(directoryName),
+                name.Replace('\\', '/'), InstallShieldFileGroupMembership.NoFileGroups);
+            members.Add(path!, new Member(entry, index, stored, dataOffset, storedSize, new(entry, metadata, [])));
             if (expandedSize > limits.MaximumExpandedBytes - expandedTotal)
                 throw new InvalidDataException(
                     $"InstallShield 3 archive expands to more than the limit of {limits.MaximumExpandedBytes} bytes.");
@@ -223,8 +232,9 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
                 $"InstallShield 3 file table holds {offset} bytes of entries, but the header declares {fileTable.Length}.");
 
         SkippedFiles = skipped;
-        Files = members.Values.Select(member => member.Entry)
-            .OrderBy(entry => entry.Path, StringComparer.OrdinalIgnoreCase).ToArray();
+        var listed = members.Values.OrderBy(member => member.Entry.Path, StringComparer.OrdinalIgnoreCase).ToArray();
+        Files = listed.Select(member => member.Entry).ToArray();
+        Members = listed.Select(member => member.Metadata).ToArray();
     }
 
     /// <inheritdoc />
@@ -235,6 +245,28 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
     public override IReadOnlyList<ContentSourceEntry> Files { get; }
     /// <summary>File-table entries the archive marks invalid, in table order. They are not listed.</summary>
     public IReadOnlyList<InstallShieldSkippedFile> SkippedFiles { get; }
+
+    /// <summary>
+    /// The listed members with the file-table entries they are listed from, in the order of
+    /// <see cref="Files"/>, in the shape <see cref="InstallShieldCabinetSource.Members"/> gives: each
+    /// entry's index, directory index, directory and name. The archive format has no file groups, so
+    /// every membership is <see cref="InstallShieldFileGroupMembershipKind.NoFileGroups"/>, and
+    /// <see cref="InstallShieldMember.SharedBy"/> is empty, since two entries at one path fail the open.
+    /// </summary>
+    public IReadOnlyList<InstallShieldMember> Members { get; }
+
+    /// <summary>Finds a listed member by path, ignoring case, as <see cref="TryGetFile"/> does.</summary>
+    /// <exception cref="InvalidDataException"><paramref name="relativePath"/> is not accepted by <see cref="PortableAssetPath.Relative"/>.</exception>
+    public bool TryGetMember(string relativePath, out InstallShieldMember? member)
+    {
+        if (members.TryGetValue(PortableAssetPath.Relative(relativePath), out var found))
+        {
+            member = found.Metadata;
+            return true;
+        }
+        member = null;
+        return false;
+    }
 
     /// <inheritdoc />
     public override bool TryGetFile(string relativePath, out ContentSourceEntry? entry)
@@ -276,7 +308,8 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
         return bytes;
     }
 
-    private sealed record Member(ContentSourceEntry Entry, int Index, bool Stored, long DataOffset, long StoredSize);
+    private sealed record Member(
+        ContentSourceEntry Entry, int Index, bool Stored, long DataOffset, long StoredSize, InstallShieldMember Metadata);
 
     private readonly struct TableReader(byte[] data, string table)
     {
