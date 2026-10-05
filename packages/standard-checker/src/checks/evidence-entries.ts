@@ -137,17 +137,23 @@ export function checkExperiment(ctx: Context, id: string, e: Entry, isSup: boole
     try {
       const fx = JSON.parse(readFileSync(fixture, "utf8"));
       if (fx.experiment !== id) problem(fixture, `experiment must be ${id}`);
-      if (
-        !["new-game", "emulated-call"].includes(meta.starting_state) &&
-        !(fx.starting_state && fx.starting_state.xxh3)
-      )
-        problem(fixture, "gives the hash of the save its runs started from");
-      if (
-        typeof meta.starting_state === "string" &&
-        meta.starting_state.endsWith(".patch.json") &&
-        !fx.starting_state?.base_xxh3
-      )
+      // Only a new game and an emulated call start without a save. starting_state null still has
+      // one: a save that cannot be committed, kept with the captures and found by its hash.
+      const save = fx.starting_state;
+      if (!["new-game", "emulated-call"].includes(meta.starting_state) && !save?.xxh3) {
+        const where = "gives the hash of the save its runs started from in starting_state.xxh3";
+        problem(
+          fixture,
+          meta.starting_state === null
+            ? `${where}; starting_state null names a save kept with the captures, and an experiment that starts without a save has starting_state new-game or emulated-call`
+            : where,
+        );
+      }
+      if (typeof meta.starting_state === "string" && meta.starting_state.endsWith(".patch.json") && !save?.base_xxh3)
         problem(fixture, "a patch fixture gives the base save's hash as well");
+      for (const key of ["xxh3", "base_xxh3"])
+        if (save?.[key] && !/^[0-9a-f]{32}$/.test(String(save[key])))
+          problem(fixture, `starting_state.${key} must be 32 lower-case hex digits`);
       for (const run of asList(fx.runs)) {
         for (const ev of asList(run?.events))
           if (!glossary.has(ev?.event)) problem(fixture, `event ${ev?.event} has no glossary entry`);

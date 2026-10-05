@@ -1,7 +1,7 @@
 // What the phases of a run share: the options, the problem collector and the spec as loaded.
 
 import type { Config } from "./options.ts";
-import type { Problem } from "./problems.ts";
+import type { Problem, Skip } from "./problems.ts";
 import type { CodeFile, CodeRange, Entry, Meta } from "./types.ts";
 
 /** The spec as the load phase read it. Later phases add to entries (Entry.code, Entry.valueTables). */
@@ -32,6 +32,8 @@ export interface LoadContext {
 
 /** What every phase after the load needs. */
 export interface Context extends LoadContext {
+  /** Records a step of the check that did not run. */
+  skip: Skip;
   /** The spec as loaded. */
   spec: Spec;
   /** The files of the --code and --references directories, read on first use. */

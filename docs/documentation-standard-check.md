@@ -138,9 +138,10 @@ Take the image's base and size from the finding that records them, for example a
 When a comment fails, cite the finding that records the address. When no finding does, write
 one in the same change.
 
-With `kaitai-version: ""` and no compiler on the runner, the `.ksy` definitions are not compiled
-and the check only prints a warning, so leave the install on unless the restoration has no binary
-formats yet.
+When the action installs the compiler, it runs the check with `--require-ksc`, so a compiler that
+cannot be found fails the check. With `kaitai-version: ""` and no compiler on the runner, the
+`.ksy` definitions are not compiled and the check passes with its result line naming the skipped
+Kaitai compilation, so leave the install on unless the restoration has no binary formats yet.
 
 For example, Chaos Overlords keeps a TypeScript multiplayer workspace whose placeholders are not
 parity work:
@@ -219,6 +220,13 @@ Run it from the restoration's root or pass `--root`. The command-line options ma
 inputs: `--code`, `--references`, `--images`, `--max-range`, `--data-dirs` and `--base`, plus `--no-ksy` to skip compiling
 and `--glossary <path>` to accept the terms of a draft term file or a directory of them. Set `KSC` to the compiler's
 launcher, or put `kaitai-struct-compiler` on `PATH`, to compile the `.ksy` definitions.
+
+A run that compiled every definition, or had none to compile, ends with `spec check passed:` and
+the counts. A run that did not compile them, because of `--no-ksy` or because it found no
+compiler, ends with `spec check passed with skipped steps:`, the counts, and a `Skipped:` part
+naming the Kaitai compilation and the reason; both exit with 0. Pass `--require-ksc` where the
+compilation must run, such as in CI: a missing compiler then fails the check with exit code 1.
+`--require-ksc` cannot be combined with `--no-ksy`.
 
 Each problem is one line that starts with the path it concerns, or `spec` for a problem with the
 spec as a whole, such as a deleted ID. When the problem breaks a numbered rule of the standard, the

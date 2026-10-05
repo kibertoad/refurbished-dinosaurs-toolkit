@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,7 +37,10 @@ function replaceIn(root: string, path: string, from: string, to: string) {
 test("the fixture passes with fresh indexes", () => {
   const { status, output } = run(fixture, "--check");
   assert.equal(status, 0, output);
-  assert.match(output, /spec check passed: 4 entries, 2 parity rows, 0 deviations/);
+  assert.match(
+    output,
+    /spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\. Skipped: Kaitai compilation of 1 definition \(--no-ksy\)\./,
+  );
 });
 
 test("a stale index fails --check", (t) => {
@@ -495,6 +498,111 @@ test(
   },
 );
 
+// Runs the checker without --no-ksy, with KSC set to ksc or unset, and with a PATH that holds only
+// an empty directory, so that no compiler is found on it.
+function runKaitai(t: TestContext, root: string, ksc: string | null, ...args: string[]) {
+  const emptyPath = mkdtempSync(join(tmpdir(), "no-ksc-"));
+  t.after(() => rmSync(emptyPath, { recursive: true, force: true }));
+  // Windows reads environment names without regard to case, so drop every spelling of PATH.
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(process.env))
+    if (value !== undefined && !/^(path|ksc)$/i.test(name)) env[name] = value;
+  env.PATH = emptyPath;
+  if (ksc) env.KSC = ksc;
+  const result = spawnSync(process.execPath, [script, "--root", root, "--check", ...args], { encoding: "utf8", env });
+  return { status: result.status, output: result.stdout + result.stderr };
+}
+
+// A stand-in compiler that accepts any arguments.
+function workingCompiler(t: TestContext) {
+  const dir = mkdtempSync(join(tmpdir(), "ksc-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  if (process.platform === "win32") {
+    const ksc = join(dir, "ksc.bat");
+    writeFileSync(ksc, "@echo off\r\nexit /b 0\r\n");
+    return ksc;
+  }
+  const ksc = join(dir, "ksc");
+  writeFileSync(ksc, "#!/bin/sh\nexit 0\n");
+  chmodSync(ksc, 0o755);
+  return ksc;
+}
+
+test("a missing compiler passes with the Kaitai compilation named as skipped", (t) => {
+  const { status, output } = runKaitai(t, fixture, null);
+  assert.equal(status, 0, output);
+  assert.match(
+    output,
+    /spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\. Skipped: Kaitai compilation of 1 definition \(no Kaitai Struct compiler found, set KSC or install kaitai-struct-compiler\)\./,
+  );
+  assert.doesNotMatch(output, /spec check passed:/);
+});
+
+test("--require-ksc fails when no compiler is found", (t) => {
+  const { status, output } = runKaitai(t, fixture, null, "--require-ksc");
+  assert.equal(status, 1, output);
+  assert.match(
+    output,
+    /^spec: no Kaitai Struct compiler found, set KSC or install kaitai-struct-compiler\. --require-ksc requires compiling the 1 definition in spec\/formats\/$/m,
+  );
+  assert.doesNotMatch(output, /spec check passed/);
+});
+
+test("a compiler that runs gives a full pass, with or without --require-ksc", (t) => {
+  const ksc = workingCompiler(t);
+  for (const args of [[], ["--require-ksc"]]) {
+    const { status, output } = runKaitai(t, fixture, ksc, ...args);
+    assert.equal(status, 0, output);
+    assert.match(output, /spec check passed: 4 entries, 2 parity rows, 0 deviations\.$/m);
+    assert.doesNotMatch(output, /Skipped/);
+  }
+});
+
+test("a KSC that cannot be started fails with the reason", (t) => {
+  const missing = join(mkdtempSync(join(tmpdir(), "no-ksc-")), "ksc-missing");
+  t.after(() => rmSync(dirname(missing), { recursive: true, force: true }));
+  const { status, output } = runKaitai(t, fixture, missing, "--require-ksc");
+  assert.equal(status, 1, output);
+  assert.match(output, /^spec: Kaitai definitions do not compile:\n\S/m);
+});
+
+test("a spec with no Kaitai definitions skips nothing when no compiler is found", (t) => {
+  const root = broken(t, (r) => {
+    replaceIn(
+      r,
+      "spec/formats/FMT-SCORE-001.md",
+      "byte_order: little\nsize: 2\ntext: false\ndefinition: fmt_score_001.ksy\n",
+      "byte_order: null\nsize: null\ntext: true\ndefinition: null\n",
+    );
+    replaceIn(
+      r,
+      "spec/formats/FMT-SCORE-001.md",
+      "| Offset | Size | Type | Name | Meaning | Status | Evidence |\n|---|---|---|---|---|---|---|\n| `0x00` | 2 | `UINT16LE` | `best` | The best score. | sourced | SRC-MANUAL |\n| `0x02` | | | | Total size 2 | | |\n",
+      "| Key | Type | Name | Meaning | Status | Evidence |\n|---|---|---|---|---|---|\n| `best` | integer | `best` | The best score. | sourced | SRC-MANUAL |\n",
+    );
+    rmSync(join(r, "spec", "formats", "fmt_score_001.ksy"));
+  });
+  const { status, output } = runKaitai(t, root, null, "--require-ksc");
+  assert.equal(status, 0, output);
+  assert.match(output, /spec check passed: 4 entries, 2 parity rows, 0 deviations\.$/m);
+});
+
+test("--no-ksy still reports a definition that belongs to no format entry, and names the skip", (t) => {
+  const root = broken(t, (r) =>
+    writeFileSync(join(r, "spec", "formats", "fmt_other_001.ksy"), "meta:\n  id: fmt_other_001\n"),
+  );
+  const { status, output } = run(root, "--check");
+  assert.equal(status, 1, output);
+  assert.match(output, /^spec\/formats\/fmt_other_001\.ksy: belongs to no format entry \(FMT-OTHER-001\)$/m);
+  assert.match(output, /^Skipped: Kaitai compilation of 2 definitions \(--no-ksy\)\.$/m);
+});
+
+test("--require-ksc cannot be combined with --no-ksy", () => {
+  const { status, output } = run(fixture, "--require-ksc");
+  assert.equal(status, 2);
+  assert.match(output, /--require-ksc requires the Kaitai compilation that --no-ksy skips/);
+});
+
 test("a data path with a space is read whole", (t) => {
   const root = broken(t, (r) => {
     replaceIn(
@@ -930,6 +1038,119 @@ test("an emulated call establishes a rule and needs no save hash", (t) => {
   const root = broken(t, (r) => establishByEmulatedCall(r));
   const { status, output } = run(root);
   assert.equal(status, 0, output);
+});
+
+// The emulated call's experiment run from another starting state, with the fixture's starting_state
+// object, or none when it is undefined.
+function withStartingState(root: string, startingState: string, fixtureState?: Record<string, string>) {
+  establishByEmulatedCall(root);
+  replaceIn(
+    root,
+    "spec/experiments/EXP-SCORE-001.md",
+    "starting_state: emulated-call",
+    `starting_state: ${startingState}`,
+  );
+  writeFileSync(
+    join(root, "spec", "experiments", "EXP-SCORE-001.json"),
+    JSON.stringify({ experiment: "EXP-SCORE-001", starting_state: fixtureState, runs: [{ end_state: [] }] }),
+  );
+}
+
+test("a new game needs no save hash", (t) => {
+  const root = broken(t, (r) => withStartingState(r, "new-game"));
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+});
+
+test("starting_state null names a save kept with the captures, so it needs the save's hash", (t) => {
+  const missing = run(broken(t, (r) => withStartingState(r, "null")));
+  assert.equal(missing.status, 1, missing.output);
+  assert.match(
+    missing.output,
+    /EXP-SCORE-001\.json: gives the hash of the save its runs started from in starting_state\.xxh3; starting_state null names a save kept with the captures, and an experiment that starts without a save has starting_state new-game or emulated-call$/m,
+  );
+
+  const given = run(broken(t, (r) => withStartingState(r, "null", { xxh3: "e7b24d91c06f3a58b1d2c4e6f8091a3b" })));
+  assert.equal(given.status, 0, given.output);
+});
+
+test("a save patch needs the patched and the base save's hashes", (t) => {
+  const patch = (r: string) => {
+    mkdirSync(join(r, "spec", "experiments", "saves"));
+    writeFileSync(join(r, "spec", "experiments", "saves", "EXP-SCORE-001.patch.json"), "{}\n");
+  };
+  const state = "saves/EXP-SCORE-001.patch.json";
+
+  const neither = run(
+    broken(t, (r) => {
+      withStartingState(r, state, { patch: state });
+      patch(r);
+    }),
+  );
+  assert.equal(neither.status, 1, neither.output);
+  assert.match(neither.output, /gives the hash of the save its runs started from in starting_state\.xxh3$/m);
+  assert.match(neither.output, /a patch fixture gives the base save's hash as well/);
+
+  const both = run(
+    broken(t, (r) => {
+      withStartingState(r, state, {
+        patch: state,
+        base_xxh3: "3c1f0e5a9b7d42e68a0c5d1f2b4e6a80",
+        xxh3: "e7b24d91c06f3a58b1d2c4e6f8091a3b",
+      });
+      patch(r);
+    }),
+  );
+  assert.equal(both.status, 0, both.output);
+
+  const patchedOnly = run(
+    broken(t, (r) => {
+      withStartingState(r, state, { patch: state, xxh3: "e7b24d91c06f3a58b1d2c4e6f8091a3b" });
+      patch(r);
+    }),
+  );
+  assert.equal(patchedOnly.status, 1, patchedOnly.output);
+  assert.doesNotMatch(patchedOnly.output, /gives the hash of the save its runs started from/);
+  assert.match(patchedOnly.output, /a patch fixture gives the base save's hash as well/);
+});
+
+test("a committed save needs its hash", (t) => {
+  const save = (r: string) => {
+    mkdirSync(join(r, "spec", "experiments", "saves"));
+    writeFileSync(join(r, "spec", "experiments", "saves", "EXP-SCORE-001.sav"), "synthetic save\n");
+    writeFileSync(
+      join(r, "spec", "LICENSE"),
+      `${readFileSync(join(r, "spec", "LICENSE"), "utf8")}\nexperiments/saves/EXP-SCORE-001.sav\n`,
+    );
+  };
+  const state = "saves/EXP-SCORE-001.sav";
+
+  const missing = run(
+    broken(t, (r) => {
+      withStartingState(r, state);
+      save(r);
+    }),
+  );
+  assert.equal(missing.status, 1, missing.output);
+  assert.match(
+    missing.output,
+    /EXP-SCORE-001\.json: gives the hash of the save its runs started from in starting_state\.xxh3$/m,
+  );
+
+  const given = run(
+    broken(t, (r) => {
+      withStartingState(r, state, { xxh3: "e7b24d91c06f3a58b1d2c4e6f8091a3b" });
+      save(r);
+    }),
+  );
+  assert.equal(given.status, 0, given.output);
+});
+
+test("a save hash is 32 lower-case hex digits", (t) => {
+  const { status, output } = run(broken(t, (r) => withStartingState(r, "null", { xxh3: "E7B24D91C06F3A58" })));
+  assert.equal(status, 1, output);
+  assert.match(output, /EXP-SCORE-001\.json: starting_state\.xxh3 must be 32 lower-case hex digits$/m);
+  assert.doesNotMatch(output, /gives the hash of the save its runs started from/);
 });
 
 // The emulated call's fixture with its run's draws replaced.
