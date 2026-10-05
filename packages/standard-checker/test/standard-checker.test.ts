@@ -4,7 +4,7 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,7 +37,10 @@ function replaceIn(root: string, path: string, from: string, to: string) {
 test("the fixture passes with fresh indexes", () => {
   const { status, output } = run(fixture, "--check");
   assert.equal(status, 0, output);
-  assert.match(output, /spec check passed: 4 entries, 2 parity rows, 0 deviations/);
+  assert.match(
+    output,
+    /spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\. Skipped: Kaitai compilation of 1 definition \(--no-ksy\)\./,
+  );
 });
 
 test("a stale index fails --check", (t) => {
@@ -356,6 +359,103 @@ test(
     assert.equal(calls.join(" ").match(/fmt_score_\d{3}\.ksy/g)!.length, count);
   },
 );
+
+// Runs the checker without --no-ksy, with KSC set to ksc or unset, and with a PATH that holds only
+// an empty directory, so that no compiler is found on it.
+function runKaitai(t: TestContext, root: string, ksc: string | null, ...args: string[]) {
+  const emptyPath = mkdtempSync(join(tmpdir(), "no-ksc-"));
+  t.after(() => rmSync(emptyPath, { recursive: true, force: true }));
+  // Windows reads environment names without regard to case, so drop every spelling of PATH.
+  const env: Record<string, string> = {};
+  for (const [name, value] of Object.entries(process.env))
+    if (value !== undefined && !/^(path|ksc)$/i.test(name)) env[name] = value;
+  env.PATH = emptyPath;
+  if (ksc) env.KSC = ksc;
+  const result = spawnSync(process.execPath, [script, "--root", root, "--check", ...args], { encoding: "utf8", env });
+  return { status: result.status, output: result.stdout + result.stderr };
+}
+
+// A stand-in compiler that accepts any arguments.
+function workingCompiler(t: TestContext) {
+  const dir = mkdtempSync(join(tmpdir(), "ksc-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  if (process.platform === "win32") {
+    const ksc = join(dir, "ksc.bat");
+    writeFileSync(ksc, "@echo off\r\nexit /b 0\r\n");
+    return ksc;
+  }
+  const ksc = join(dir, "ksc");
+  writeFileSync(ksc, "#!/bin/sh\nexit 0\n");
+  chmodSync(ksc, 0o755);
+  return ksc;
+}
+
+test("a missing compiler passes with the Kaitai compilation named as skipped", (t) => {
+  const { status, output } = runKaitai(t, fixture, null);
+  assert.equal(status, 0, output);
+  assert.match(
+    output,
+    /spec check passed with skipped steps: 4 entries, 2 parity rows, 0 deviations\. Skipped: Kaitai compilation of 1 definition \(no Kaitai Struct compiler found; set KSC or install kaitai-struct-compiler\)\./,
+  );
+  assert.doesNotMatch(output, /spec check passed:/);
+});
+
+test("--require-ksc fails when no compiler is found", (t) => {
+  const { status, output } = runKaitai(t, fixture, null, "--require-ksc");
+  assert.equal(status, 1, output);
+  assert.match(
+    output,
+    /^spec: no Kaitai Struct compiler found; set KSC or install kaitai-struct-compiler\. --require-ksc requires compiling the 1 definition in spec\/formats\/$/m,
+  );
+  assert.doesNotMatch(output, /spec check passed/);
+});
+
+test("a compiler that runs gives a full pass, with or without --require-ksc", (t) => {
+  const ksc = workingCompiler(t);
+  for (const args of [[], ["--require-ksc"]]) {
+    const { status, output } = runKaitai(t, fixture, ksc, ...args);
+    assert.equal(status, 0, output);
+    assert.match(output, /spec check passed: 4 entries, 2 parity rows, 0 deviations\.$/m);
+    assert.doesNotMatch(output, /Skipped/);
+  }
+});
+
+test("a spec with no Kaitai definitions skips nothing when no compiler is found", (t) => {
+  const root = broken(t, (r) => {
+    replaceIn(
+      r,
+      "spec/formats/FMT-SCORE-001.md",
+      "byte_order: little\nsize: 2\ntext: false\ndefinition: fmt_score_001.ksy\n",
+      "byte_order: null\nsize: null\ntext: true\ndefinition: null\n",
+    );
+    replaceIn(
+      r,
+      "spec/formats/FMT-SCORE-001.md",
+      "| Offset | Size | Type | Name | Meaning | Status | Evidence |\n|---|---|---|---|---|---|---|\n| `0x00` | 2 | `UINT16LE` | `best` | The best score. | sourced | SRC-MANUAL |\n| `0x02` | | | | Total size 2 | | |\n",
+      "| Key | Type | Name | Meaning | Status | Evidence |\n|---|---|---|---|---|---|\n| `best` | integer | `best` | The best score. | sourced | SRC-MANUAL |\n",
+    );
+    rmSync(join(r, "spec", "formats", "fmt_score_001.ksy"));
+  });
+  const { status, output } = runKaitai(t, root, null, "--require-ksc");
+  assert.equal(status, 0, output);
+  assert.match(output, /spec check passed: 4 entries, 2 parity rows, 0 deviations\.$/m);
+});
+
+test("--no-ksy still reports a definition that belongs to no format entry, and names the skip", (t) => {
+  const root = broken(t, (r) =>
+    writeFileSync(join(r, "spec", "formats", "fmt_other_001.ksy"), "meta:\n  id: fmt_other_001\n"),
+  );
+  const { status, output } = run(root, "--check");
+  assert.equal(status, 1, output);
+  assert.match(output, /^spec\/formats\/fmt_other_001\.ksy: belongs to no format entry \(FMT-OTHER-001\)$/m);
+  assert.match(output, /^Skipped: Kaitai compilation of 2 definitions \(--no-ksy\)\.$/m);
+});
+
+test("--require-ksc cannot be combined with --no-ksy", () => {
+  const { status, output } = run(fixture, "--require-ksc");
+  assert.equal(status, 2);
+  assert.match(output, /--require-ksc requires the Kaitai compilation that --no-ksy skips/);
+});
 
 test("a data path with a space is read whole", (t) => {
   const root = broken(t, (r) => {
