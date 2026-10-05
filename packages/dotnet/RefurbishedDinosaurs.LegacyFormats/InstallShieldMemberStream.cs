@@ -1,6 +1,5 @@
 using System.Buffers.Binary;
 using System.IO.Compression;
-using System.Runtime.ExceptionServices;
 using System.Security.Cryptography;
 
 namespace RefurbishedDinosaurs.LegacyFormats;
@@ -8,7 +7,7 @@ namespace RefurbishedDinosaurs.LegacyFormats;
 // Decodes one InstallShield cabinet member while it is read. Stored bytes may be obfuscated; compressed
 // members are a run of chunks, each a 16-bit little-endian length and raw deflate data that expands
 // to at most 64 KiB on its own.
-internal sealed class InstallShieldMemberStream : Stream
+internal sealed class InstallShieldMemberStream : DecodingMemberStream
 {
     private const int ChunkLimit = 64 * 1024;
 
@@ -34,13 +33,11 @@ internal sealed class InstallShieldMemberStream : Stream
     private long bufferStart;
     private int bufferCount;
     private bool verified;
-    private long position;
-    // The failure of an earlier read, rethrown by every later read until a seek decodes again from the start.
-    private ExceptionDispatchInfo? failure;
 
     public InstallShieldMemberStream(
         string path, long length, bool compressed, bool obfuscated, byte[]? md5,
         InstallShieldSegment[] segments, Func<int, Stream> openVolume)
+        : base(length, "InstallShield cabinet member")
     {
         this.path = path;
         this.length = length;
@@ -54,80 +51,26 @@ internal sealed class InstallShieldMemberStream : Stream
         Restart();
     }
 
-    public override bool CanRead => true;
-    public override bool CanSeek => true;
-    public override bool CanWrite => false;
-    public override long Length => length;
-    public override long Position
+    protected override int ReadAt(long position, Span<byte> destination)
     {
-        get => position;
-        set => Seek(value, SeekOrigin.Begin);
-    }
-
-    public override int Read(byte[] buffer, int offset, int count)
-    {
-        ValidateBufferArguments(buffer, offset, count);
-        return Read(buffer.AsSpan(offset, count));
-    }
-
-    public override int Read(Span<byte> destination)
-    {
-        if (destination.IsEmpty) return 0;
-        failure?.Throw();
-        try
+        if (position >= length)
         {
-            if (position >= length)
-            {
-                // A seek to the end skips decoding; the member is still checked before reporting its end.
-                if (produced == length && !verified) Finish();
-                while (!verified) DecodeNext();
-                return 0;
-            }
-            while (position >= bufferStart + bufferCount) DecodeNext();
+            // A seek to the end skips decoding; the member is still checked before reporting its end.
+            if (produced == length && !verified) Finish();
+            while (!verified) DecodeNext();
+            return 0;
         }
-        catch (Exception exception)
-        {
-            // A failed check or read leaves the decoder part way through a chunk. Without this, a caller
-            // that retries would be handed the bytes of the chunk that failed, or bytes out of place.
-            failure = ExceptionDispatchInfo.Capture(exception);
-            throw;
-        }
+        while (position >= bufferStart + bufferCount) DecodeNext();
         var available = (int)(bufferStart + bufferCount - position);
         var count = Math.Min(available, destination.Length);
         buffer.AsSpan((int)(position - bufferStart), count).CopyTo(destination);
-        position += count;
         return count;
     }
 
-    public override ValueTask<int> ReadAsync(Memory<byte> destination, CancellationToken cancellationToken = default)
+    protected override void Moved(long next, bool failed)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        return ValueTask.FromResult(Read(destination.Span));
+        if (next < bufferStart || failed) Restart();
     }
-
-    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-    {
-        ValidateBufferArguments(buffer, offset, count);
-        return ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
-    }
-
-    public override long Seek(long offset, SeekOrigin origin)
-    {
-        var next = origin switch
-        {
-            SeekOrigin.Begin => offset,
-            SeekOrigin.Current => checked(position + offset),
-            SeekOrigin.End => checked(length + offset),
-            _ => throw new ArgumentOutOfRangeException(nameof(origin))
-        };
-        if (next < 0 || next > length) throw new IOException("Seek lies outside the InstallShield cabinet member.");
-        if (next < bufferStart || failure is not null) Restart();
-        return position = next;
-    }
-
-    public override void Flush() { }
-    public override void SetLength(long value) => throw new NotSupportedException();
-    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
     protected override void Dispose(bool disposing)
     {
@@ -154,7 +97,6 @@ internal sealed class InstallShieldMemberStream : Stream
         bufferStart = 0;
         bufferCount = 0;
         verified = false;
-        failure = null;
     }
 
     // Decodes the next chunk (or the next block of stored bytes) into the buffer.

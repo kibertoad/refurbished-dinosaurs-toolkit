@@ -49,6 +49,9 @@ internal sealed class PkwareDclExploder
     // Whether the end code has been read.
     public bool Ended { get; private set; }
 
+    // The number of bytes expanded so far.
+    public long Produced => produced;
+
     // The code tables as they are built from the run lengths above: the number of codes of each
     // length, and whether the lengths describe a complete code. The tests check the tables with them.
     internal static IEnumerable<(int[] Counts, bool Complete)> Tables() =>

@@ -337,6 +337,45 @@ public sealed class InstallShieldArchiveTests
     }
 
     [Fact]
+    public async Task ReportsHowFarAMemberDecodedBeforeItsDataRanOut()
+    {
+        // The stored size is cut to half, so the data runs out partway through the one read that
+        // asks for the whole member.
+        var bytes = SyntheticInstallShieldArchive.Build([new("", "a.bin", Prose)]);
+        var stored = SyntheticInstallShieldArchive.FileEntry(bytes, 0) + 7;
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(stored), BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(stored)) / 2);
+        using var source = Open(bytes);
+        using var stream = source.OpenRead("a.bin");
+        var message = Assert.Throws<InvalidDataException>(() => stream.Read(new byte[Prose.Length])).Message;
+        var match = System.Text.RegularExpressions.Regex.Match(message, @"does not decode after (\d+) bytes: PKWARE DCL data ends before its end code");
+        Assert.True(match.Success, message);
+        Assert.InRange(long.Parse(match.Groups[1].Value), 1, Prose.Length - 1);
+    }
+
+    [Fact]
+    public void PassesOnAFailureOfTheArchiveStreamUnwrapped()
+    {
+        var bytes = SyntheticInstallShieldArchive.Build([new("", "a.bin", Prose)]);
+        using var archive = new FailingStream(bytes);
+        using var source = OriginalContentSource.OpenInstallShieldArchive(archive);
+        using var stream = source.OpenRead("a.bin");
+        archive.Fail = true;
+        Assert.Equal("the container failed", Assert.Throws<InvalidDataException>(() => stream.ReadByte()).Message);
+    }
+
+    [Fact]
+    public void RefusesToReadOrSeekAMemberStreamOnceDisposed()
+    {
+        using var source = Open(SyntheticInstallShieldArchive.Build([new("", "a.bin", Prose)]));
+        var stream = source.OpenRead("a.bin");
+        Assert.Equal(Prose[0], stream.ReadByte());
+        stream.Dispose();
+        Assert.False(stream.CanRead);
+        Assert.Throws<ObjectDisposedException>(() => stream.ReadByte());
+        Assert.Throws<ObjectDisposedException>(() => stream.Seek(0, SeekOrigin.Begin));
+    }
+
+    [Fact]
     public async Task ReportsAnArchiveThatShrankAfterItWasOpened()
     {
         var root = TemporaryDirectory();
@@ -415,6 +454,16 @@ public sealed class InstallShieldArchiveTests
         var bytes = new byte[length];
         new Random(seed).NextBytes(bytes);
         return bytes;
+    }
+
+    // A stream over an archive that throws InvalidDataException from every read once Fail is set, as
+    // a container's stream does when its own check fails.
+    private sealed class FailingStream(byte[] bytes) : MemoryStream(bytes)
+    {
+        public bool Fail { get; set; }
+
+        public override int Read(Span<byte> buffer) =>
+            Fail ? throw new InvalidDataException("the container failed") : base.Read(buffer);
     }
 
     private static string TemporaryDirectory()

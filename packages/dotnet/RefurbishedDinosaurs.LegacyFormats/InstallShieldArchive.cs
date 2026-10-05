@@ -115,9 +115,9 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
         var directories = new (string Name, int Files)[directoryCount];
         var offset = 0;
         var declaredFiles = 0;
+        var table = new TableReader(directoryTable, "directory table");
         for (var index = 0; index < directories.Length; index++)
         {
-            var table = new TableReader(directoryTable, "directory table");
             var files = table.UInt16(offset);
             var entrySize = table.UInt16(offset + 2);
             var nameSize = table.UInt16(offset + 4);
@@ -139,12 +139,12 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
         offset = 0;
         var directory = 0;
         var directoryFilesLeft = directories.Length > 0 ? directories[0].Files : 0;
+        table = new TableReader(fileTable, "file table");
         for (var index = 0; index < fileCount; index++)
         {
             while (directoryFilesLeft == 0) directoryFilesLeft = directories[++directory].Files;
             directoryFilesLeft--;
 
-            var table = new TableReader(fileTable, "file table");
             var directoryIndex = table.UInt16(offset + 1);
             long expandedSize = table.UInt32(offset + 3);
             long storedSize = table.UInt32(offset + 7);
