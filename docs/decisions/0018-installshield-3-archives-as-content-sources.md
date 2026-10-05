@@ -6,7 +6,7 @@ Status: accepted
 
 Games installed by InstallShield 3 ship their files in a single archive, often `_SETUP.1` on the
 disc or a `.Z` file inside a self-extracting patch. The container shares nothing with the
-InstallShield 5 and 6 cabinets of [ADR 0014](0014-installshield-cabinets-as-content-sources.md): its
+InstallShield cabinets of [ADR 0014](0014-installshield-cabinets-as-content-sources.md): its
 own signature, a directory table and a file table at the end of the file, and members compressed
 with the PKWARE Data Compression Library ("implode"). Unshield does not read it. A restoration that
 needed one of these archives ran a GPL extractor in a child process and checked its output itself,

@@ -19,7 +19,7 @@ public static class ContentSourceKinds
     /// <summary>A <c>.cue</c> sheet and the raw <c>.bin</c> image with 2352-byte sectors it describes.</summary>
     public const string CueBin = "cue-bin";
     /// <summary>
-    /// An InstallShield 5 or 6 cabinet set, opened from its <c>dataN.hdr</c> header (or a
+    /// An InstallShield cabinet set of major version 0, 5 or 6, opened from its <c>dataN.hdr</c> header (or a
     /// <c>dataN.cab</c> that holds the header) with its <c>dataN.cab</c> volumes beside it.
     /// </summary>
     public const string InstallShieldCabinet = "installshield-cabinet";
@@ -128,8 +128,8 @@ public abstract class OriginalContentSource : IDisposable
     /// <see cref="OpenIso9660(string)"/>) otherwise.
     /// </summary>
     /// <exception cref="NotSupportedException">
-    /// The cabinet set's InstallShield version is not 5 or 6, or the InstallShield 3 archive is split
-    /// into parts.
+    /// The cabinet set's InstallShield major version is not 0, 5 or 6, or the InstallShield 3 archive
+    /// is split into parts.
     /// </exception>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="InvalidDataException">The image is not a valid volume of its kind.</exception>
@@ -154,8 +154,8 @@ public abstract class OriginalContentSource : IDisposable
     /// <exception cref="InvalidDataException"><paramref name="kind"/> is unsupported, or the image is not a valid volume of that kind.</exception>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="NotSupportedException">
-    /// The cabinet set's InstallShield version is not 5 or 6, or the InstallShield 3 archive is split
-    /// into parts.
+    /// The cabinet set's InstallShield major version is not 0, 5 or 6, or the InstallShield 3 archive
+    /// is split into parts.
     /// </exception>
     public static OriginalContentSource Open(string path, string kind) => kind switch
     {
@@ -259,7 +259,7 @@ public abstract class OriginalContentSource : IDisposable
     }
 
     /// <summary>
-    /// Opens an InstallShield 5 or 6 cabinet set from a file. <paramref name="path"/> is the
+    /// Opens an InstallShield cabinet set of major version 0, 5 or 6 from a file. <paramref name="path"/> is the
     /// <c>dataN.hdr</c> header, or a <c>dataN.cab</c> that holds the header. Of a <c>.cab</c>, only the
     /// bytes up to the end of the cabinet descriptor are read as the header. The volumes are the files
     /// in the same directory named like the header up to its first dot or digit, then the volume
@@ -274,7 +274,7 @@ public abstract class OriginalContentSource : IDisposable
     /// The header or a volume is truncated or malformed, a member's path is not relative, two different
     /// members share a path, or the set exceeds <paramref name="limits"/>.
     /// </exception>
-    /// <exception cref="NotSupportedException">The header's InstallShield version is not 5 or 6.</exception>
+    /// <exception cref="NotSupportedException">The header's InstallShield major version is not 0, 5 or 6.</exception>
     public static InstallShieldCabinetSource OpenInstallShieldCabinet(string path, InstallShieldCabinetLimits? limits = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -284,7 +284,7 @@ public abstract class OriginalContentSource : IDisposable
     }
 
     /// <summary>
-    /// Opens an InstallShield 5 or 6 cabinet set held in another source, such as the ISO 9660 volume of
+    /// Opens an InstallShield cabinet set of major version 0, 5 or 6 held in another source, such as the ISO 9660 volume of
     /// a disc image. Volumes are looked up in <paramref name="container"/> as
     /// <see cref="OpenInstallShieldCabinet(string, InstallShieldCabinetLimits?)"/> describes, and are
     /// opened through it whenever a member is read, so keep <paramref name="container"/> usable while
@@ -299,7 +299,7 @@ public abstract class OriginalContentSource : IDisposable
     /// header or a volume is truncated or malformed, a member's path is not relative, two different
     /// members share a path, or the set exceeds <paramref name="limits"/>.
     /// </exception>
-    /// <exception cref="NotSupportedException">The header's InstallShield version is not 5 or 6.</exception>
+    /// <exception cref="NotSupportedException">The header's InstallShield major version is not 0, 5 or 6.</exception>
     public static InstallShieldCabinetSource OpenInstallShieldCabinet(
         OriginalContentSource container, string headerPath, InstallShieldCabinetLimits? limits = null)
     {

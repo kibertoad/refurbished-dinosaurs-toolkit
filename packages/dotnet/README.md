@@ -177,7 +177,7 @@ contexts outside per-frame loops.
 | `AssetVerifier` | Check the player's original against an `AssetManifest` through any `OriginalContentSource`, and `IdentifyAsync` the supported edition it is, or that several editions match. |
 | `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image, an InstallShield cabinet set or an InstallShield 3 archive behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path, and from the first bytes for an InstallShield 3 archive; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin`, `OpenInstallShieldCabinet` and `OpenInstallShieldArchive` take it explicitly. `OpenIso9660(stream)` opens an `.iso` image from a readable, seekable stream the caller keeps and the source never disposes; the streams it opens each keep their own position over it. A cue/bin source gives the sheet as `Cue` and the full paths of the files `OpenCueBin` chose as `CuePath` and `BinPath`. It reads the `.cue` once and gives those bytes as `CueSheetBytes`: hash them to record the sheet that was parsed, since the file at `CuePath` may have been replaced after the source opened. An `.iso` or cue/bin source opened from a path records the image's length and last-write time when it opens, and each read of the `.iso` or BIN through the source (`OpenRead`, `OpenVolume`, `OpenBin` and the audio checks) fails with an `IOException` when either has changed; a rewrite that keeps both is not detected. A stream opened from `BinPath` is not checked, so read the image with `OpenBin`. |
 | `InstallShieldArchiveSource`, `InstallShieldArchiveLimits` | The members of an unsplit InstallShield 3 archive (such as `_SETUP.1`), from a file, inside another source or from a stream. See [InstallShield 3 archives](#installshield-3-archives). |
-| `InstallShieldCabinetSource`, `InstallShieldCabinetLimits` | The members of an InstallShield 5 or 6 cabinet set (`dataN.hdr` and `dataN.cab`), on disk or inside another source. See [InstallShield cabinets](#installshield-cabinets). |
+| `InstallShieldCabinetSource`, `InstallShieldCabinetLimits` | The members of an InstallShield cabinet set of major version 0, 5 or 6 (`dataN.hdr` and `dataN.cab`), on disk or inside another source. See [InstallShield cabinets](#installshield-cabinets). |
 | `ContentSourceExtractor`, `ContentExtractionOptions` | Copy the files of any `OriginalContentSource`, or a selection of them, into a staging directory and get an `InstalledAsset` record for each. See [Extracting a source into a stage](#extracting-a-source-into-a-stage). |
 | `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
 | `CddaTrackFingerprints`, `CddaTrackVerification` | Record and check the fingerprint of a CD audio track in a cue/bin image, accepting a rip shifted by a drive read offset up to the fingerprint's tolerance. See [CD audio across read offsets](#cd-audio-across-read-offsets). |
@@ -241,16 +241,26 @@ header, matched ignoring case.
 
 | Supported | Not supported |
 |---|---|
-| Major versions 5 and 6, as the header's version word gives them. Stored and compressed members, obfuscated members, members split across volumes, and version 6 members that link to another member's data. | Every other version, which throws `NotSupportedException`. Compressed data delimited by `00 00 FF FF` markers with no chunk lengths (what Unshield reads with `-O`). Members stored outside the cabinet. File groups and components: members are listed by directory and name only. |
+| Major versions 0, 5 and 6, as the header's version word gives them under Unshield's rule. Stored and compressed members, obfuscated members, members split across volumes, and version 6 members that link to another member's data. | Every other major version, and a version word in neither encoding Unshield reads, which throw `NotSupportedException` naming the word. Compressed data delimited by `00 00 FF FF` markers with no chunk lengths (what Unshield reads with `-O`). Members stored outside the cabinet. File groups and components: members are listed by directory and name only. |
 
 Opening reads the header and the volume headers and checks every listed member before any member is
 read: its directory and name joined must pass `PortableAssetPath.Relative`, its data must lie inside the
-volumes, and the set must stay within `InstallShieldCabinetLimits` (100,000 members, 8 GiB expanded
-and a 64 MiB header region by default; the header region is the whole `.hdr` file).
+volumes, and the set must stay within `InstallShieldCabinetLimits` (100,000 members, 8 GiB expanded,
+a 64 MiB header region and 1,024-byte names by default; the header region is the whole `.hdr` file).
+A name is read only up to the name limit, so a listed member whose name is longer fails the open.
+
+The major version comes from the header's version word as Unshield reads it: a top byte of 1 keeps it
+in bits 12 to 15, and a top byte of 2 or 4 keeps a hundredfold version in the low word. Major version 0
+(for example the word `0x01000004`) has the version 5 file descriptor and volume header layout, with
+two differences: its descriptors end after the data offset, and a member is split across volumes only
+when its descriptor's split flag is set. Everything below that says version 5 holds for version 0 too.
 
 Entries the cabinet marks invalid, or that have no name or no data offset, are left out and listed in
 `SkippedFiles` with the reason. So is a version 6 entry whose link chain ends at such an entry; its
 reason names the entry it links to. A link outside the file table or a link cycle fails the open.
+Unshield does not read the names of entries left out, so a name or directory of theirs that does not
+read, or that does not form a relative path, does not fail the open: the skipped entry's path is
+`null` instead.
 
 Two entries at the same path, ignoring case, are listed once when one links to the other's data; the
 other goes to `SkippedFiles` with a reason naming the listed entry. In a version 6 set, two entries
