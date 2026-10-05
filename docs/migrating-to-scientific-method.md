@@ -320,6 +320,36 @@ the requested address.
 so run them with the package's script directory as `-scriptPath`, or copy the `scientificmethod/`
 directory along with them.
 
+### Engine 8.1.1: an output count past a modeled call is a lower bound
+
+An `occurrences` operand counts the events a path read at its site. When the path passed a modeled
+call before the anchor, the callee may have run the counted site more times, so the operand is now
+the read count plus an unknown of zero or more. A relation the read count already decides keeps its
+verdict: a read count over an `le` capacity is violated, and one that meets a `ge` minimum holds.
+Any other such relation is undecided, and so is such a count in a containment `start` or a `modulo`
+relation. Before 8.1.1, an `le` capacity control past a modeled call could hold while the program
+appended more than the capacity. An anchor on a modeled call's own `call-return` now counts that
+callee as having run.
+
+A capacity control that held past a modeled call and now reports undecided did not establish the
+capacity. To decide it, read the call's callee instead of modeling it, or anchor the control before
+the modeled call. A control expected to be violated still is when the read count alone exceeds the
+capacity. A count at a narrower entry leaves out the events read before that entry.
+
+### Engine 8.1.0: a memory scope may not cover the return frame of its own call
+
+A `preservesMemory` scope that shares a byte with the return frame the processor writes below SS:SP
+at the modeled site, on the same segment and base value, now stops the path with
+`preservesMemory scope covers the return frame the processor writes below SP`. The frame is the
+return address of a near call (2 bytes for MZ, 4 for PE32) or a far call (4 bytes), or the FLAGS, CS
+and IP of an interrupt (6 bytes). After the return those bytes hold the frame, so an engine before
+8.1.0 that kept their pre-call values claimed memory the program never kept.
+
+The usual case is a frame scope whose interval reaches below SP at the call, such as one on `sp`
+with a negative `displacement`. Start the scope at SP at the call and cover the caller's stack upward (saved registers, the caller's
+own return address and its arguments), leaving the bytes below SP out. A scope on another base value
+that only may alias the frame stays the query's hypothesis and does not stop the path.
+
 ### The Ghidra cross-check rows carry the engine's side
 
 Each `callees` `ghidraCrossCheck` row that carries `ghidraFallsThrough` now also carries
