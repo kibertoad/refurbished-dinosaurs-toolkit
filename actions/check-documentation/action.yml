@@ -46,7 +46,10 @@ runs:
       env:
         DOC_ROOT: ${{ inputs.root }}
       run: |
-        if compgen -G "$DOC_ROOT/spec/formats/*.ksy" > /dev/null; then echo "found=true" >> "$GITHUB_OUTPUT"; fi
+        # find, unlike a glob, also matches names that start with a dot, as the checker does.
+        if [ -n "$(find "$DOC_ROOT/spec/formats" -maxdepth 1 -name '*.ksy' 2> /dev/null | head -n 1)" ]; then
+          echo "found=true" >> "$GITHUB_OUTPUT"
+        fi
     - name: Set up Java
       if: inputs.kaitai-version != '' && inputs.java-version != '' && steps.ksy.outputs.found == 'true'
       uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -89,9 +92,14 @@ runs:
         DOC_MAX_RANGE: ${{ inputs.max-range }}
         DOC_DATA_DIRS: ${{ inputs.data-dirs }}
         DOC_BASE: ${{ inputs.base }}
+        # The compiler was installed above, so a compiler the check cannot find is a failure. The
+        # install exports KSC, which the check takes without running it, so today this guards
+        # against an install that stops setting KSC; a KSC that does not run fails as a compile error.
+        DOC_REQUIRE_KSC: ${{ inputs.kaitai-version != '' && steps.ksy.outputs.found == 'true' }}
       run: |
         set -euo pipefail
         args=(--root "$DOC_ROOT" --check --code "$DOC_CODE" --references "$DOC_REFERENCES")
+        if [ "$DOC_REQUIRE_KSC" = "true" ]; then args+=(--require-ksc); fi
         if [ -n "$DOC_IMAGES" ]; then args+=(--images "$DOC_IMAGES"); fi
         if [ -n "$DOC_MAX_RANGE" ]; then args+=(--max-range "$DOC_MAX_RANGE"); fi
         if [ -n "$DOC_DATA_DIRS" ]; then args+=(--data-dirs "$DOC_DATA_DIRS"); fi

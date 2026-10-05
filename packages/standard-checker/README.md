@@ -13,7 +13,14 @@ pnpm exec standard-checker --check    # check, and fail on a stale index or PARI
 
 It exits with 0 when the repository passes, 1 when it reports problems (one line per problem,
 starting with the file's path), and 2 when the options are invalid or `--record-validation` cannot
-write the record. `--record-validation` cannot be combined with `--check`.
+write the record. `--record-validation` cannot be combined with `--check`, nor `--require-ksc` with
+`--no-ksy`.
+
+A pass ends with `spec check passed:` and the counts of entries, parity rows and deviations. When a
+step of the check did not run, it ends with `spec check passed with skipped steps:`, the counts, and
+`Skipped:` followed by each step and why, such as
+`Skipped: Kaitai compilation of 2 definitions (--no-ksy).` A failing run lists the skipped steps
+after its problems.
 
 A problem that breaks a numbered rule of the standard ends with the rule's label in brackets, such
 as `[STATUS-14]`. The standard opens that rule with the heading `###### STATUS-14`, anchored at
@@ -28,7 +35,8 @@ problems under other sections carry no label yet.
 | `--root <dir>` | The repository to check. | the current directory |
 | `--check` | Fail when an index or `PARITY.md` is stale, instead of rewriting it. | rewrite |
 | `--base <ref>` | Also fail when a spec ID, area or deviation that exists at `<ref>` is gone. | where HEAD forked from `origin/$GITHUB_BASE_REF` or `origin/main`, when that resolves |
-| `--no-ksy` | Skip compiling the Kaitai definitions in `spec/formats/`. | compile |
+| `--no-ksy` | Skip compiling the Kaitai definitions in `spec/formats/`. The result line names the skipped compilation. | compile |
+| `--require-ksc` | Fail when `spec/formats/` holds Kaitai definitions and no compiler is found, instead of passing with the compilation skipped. | pass with the compilation skipped |
 | `--glossary <path>` | Also accept the terms of a draft glossary file, or of a directory of them. | none |
 | `--code <dirs>` | Comma-separated directories whose files may cite spec and deviation IDs and hold `PLACEHOLDER` comments. | `src,tests,tools` |
 | `--references <dirs>` | Comma-separated directories whose files may cite IDs but whose `PLACEHOLDER` comments do not count against parity. | none |
@@ -39,12 +47,14 @@ problems under other sections carry no label yet.
 | `--help` | Print the options. | |
 
 The `KSC` environment variable names the Kaitai Struct compiler. Without it, the checker looks for
-`kaitai-struct-compiler` or `ksc` on `PATH`, and warns when it finds neither.
+`kaitai-struct-compiler` or `ksc` on `PATH`. When it finds neither, it skips the compilation and
+names it in the result line, or with `--require-ksc` reports the missing compiler as a problem.
 
 ## In GitHub Actions
 
 The toolkit's `actions/check-documentation` composite action runs this checker with `--check`,
-installs a pinned Kaitai compiler when the repository has `.ksy` files, and exposes every option
+installs a pinned Kaitai compiler when the repository has `.ksy` files (and then passes
+`--require-ksc`), and exposes every option
 above as an input. Pin the action to the toolkit commit whose `packages/standard-checker` matches
 the version installed here, so CI and local runs apply the same checks.
 

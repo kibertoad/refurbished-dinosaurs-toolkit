@@ -10,7 +10,9 @@
 //   --check             fail when an index or PARITY.md is stale instead of rewriting it
 //   --base <ref>        also fail when an ID or area that exists at <ref> is gone (default: where
 //                       HEAD forked from origin/$GITHUB_BASE_REF or origin/main, when it resolves)
-//   --no-ksy            skip compiling the Kaitai definitions
+//   --no-ksy            skip compiling the Kaitai definitions; the result line names the skip
+//   --require-ksc       fail when spec/formats/ holds Kaitai definitions and no compiler is found,
+//                       instead of passing with the compilation skipped
 //   --glossary <path>   also accept the terms of a draft glossary file, or of a directory of them
 //   --code <dirs>       comma-separated directories whose files may cite spec and deviation IDs
 //                       and hold PLACEHOLDER comments (default: src,tests,tools)
@@ -38,16 +40,22 @@
 // [STATUS-4] for the rule whose heading is anchored at #status-4.
 //
 // The KSC environment variable names the Kaitai Struct compiler. Without it, the check looks for
-// kaitai-struct-compiler or ksc on PATH, and warns when it finds neither.
+// kaitai-struct-compiler or ksc on PATH. When it finds neither, the run skips the compilation and
+// says so in its result line, or fails with --require-ksc.
+//
+// It exits with 0 when the spec passes, 1 when it reports problems, and 2 when the options are
+// invalid. A pass prints "spec check passed: " and the counts, or, when a step did not run,
+// "spec check passed with skipped steps: " and the counts followed by "Skipped: " and each step
+// with its reason.
 //
 // No dependencies. The YAML reader understands the subset the standard's front matter uses:
 // scalars, flow lists, and block lists of flat maps.
 //
 // This file reads the options and runs the phases in order: load the spec, check the entries, the
-// rules and what crosses entries, compile the Kaitai definitions, check the deviations, parity,
-// VALIDATION.md, the code's references and comments and the base ref, then write or check the
-// generated files. Every phase reports into one collector, which prints the problems at the end in
-// the order they were found.
+// rules, the field names in their procedures and what crosses entries, compile the Kaitai
+// definitions, check the deviations, parity, VALIDATION.md, the code's references and comments and
+// the base ref, then write or check the generated files. Every phase reports into one collector,
+// which prints the problems at the end in the order they were found.
 
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -57,6 +65,7 @@ import { checkCommentAddresses } from "./checks/comment-addresses.ts";
 import { checkAcrossEntries } from "./checks/cross-entry.ts";
 import { checkDeviations } from "./checks/deviations.ts";
 import { checkEntries } from "./checks/entries.ts";
+import { checkFieldNames } from "./checks/fields.ts";
 import { compileKaitai } from "./checks/kaitai.ts";
 import { checkParity } from "./checks/parity.ts";
 import { checkReferences } from "./checks/references.ts";
@@ -84,14 +93,15 @@ if (argv.includes("--help") || argv.includes("-h")) {
   process.exit(0);
 }
 const config = parseOptions(argv);
-const { problem, report } = createProblems(config.repoDir);
+const { problem, skip, report } = createProblems(config.repoDir);
 const spec = loadSpec({ config, problem });
 // The checker's modules all sit in this file's directory, which holds nothing else, so the code
 // checks leave the whole directory out.
-const ctx: Context = { config, problem, spec, codeFiles: createCodeFiles(config, dirname(selfPath)) };
+const ctx: Context = { config, problem, skip, spec, codeFiles: createCodeFiles(config, dirname(selfPath)) };
 
 const formatNames = checkEntries(ctx);
 checkRules(ctx, formatNames);
+checkFieldNames(ctx, formatNames);
 checkAcrossEntries(ctx, formatNames);
 compileKaitai(ctx);
 const deviations = checkDeviations(ctx);
@@ -105,7 +115,4 @@ generateParity(ctx, parity, generated);
 writeGenerated(ctx, generated);
 checkLineLimits(ctx);
 
-report(spec.entries.size);
-console.log(
-  `spec check passed: ${spec.entries.size} entries, ${parity.rows.size} parity rows, ${deviations.size} deviations.`,
-);
+report({ entries: spec.entries.size, parityRows: parity.rows.size, deviations: deviations.size });

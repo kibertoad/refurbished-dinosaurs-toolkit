@@ -9,45 +9,51 @@ import type { Context } from "../context.ts";
 
 /**
  * Checks that each .ksy file in spec/formats/ belongs to a format entry, and compiles them all with
- * the Kaitai Struct compiler, warning when there is none. Does nothing with --no-ksy.
+ * the Kaitai Struct compiler. With --no-ksy, or with no compiler found, the compilation is recorded
+ * as a skipped step; with --require-ksc, a missing compiler is a problem instead.
  */
 export function compileKaitai(ctx: Context) {
-  const { problem } = ctx;
+  const { problem, skip } = ctx;
   const { entries } = ctx.spec;
-  const { specDir, skipKsy } = ctx.config;
-  if (!skipKsy) {
-    const ksys: string[] = [];
-    const fd = join(specDir, "formats");
-    if (existsSync(fd)) for (const f of readdirSync(fd)) if (f.endsWith(".ksy")) ksys.push(join(fd, f));
-    for (const k of ksys) {
-      const id = basename(k, ".ksy")
-        .toUpperCase()
-        .replace(/^FMT_([A-Z0-9]+)_(\d+)$/, "FMT-$1-$2");
-      if (!entries.has(id)) problem(k, `belongs to no format entry (${id})`);
-    }
-    const compiler = findKaitai();
-    if (compiler && ksys.length) {
-      const out = mkdtempSync(join(tmpdir(), "ksy-check-"));
-      const fixed = [...compiler.args, "--target", "python", "--outdir", out, "--import-path", fd];
+  const { specDir, skipKsy, requireKsc } = ctx.config;
+  const ksys: string[] = [];
+  const fd = join(specDir, "formats");
+  if (existsSync(fd)) for (const f of readdirSync(fd)) if (f.endsWith(".ksy")) ksys.push(join(fd, f));
+  for (const k of ksys) {
+    const id = basename(k, ".ksy")
+      .toUpperCase()
+      .replace(/^FMT_([A-Z0-9]+)_(\d+)$/, "FMT-$1-$2");
+    if (!entries.has(id)) problem(k, `belongs to no format entry (${id})`);
+  }
+  if (!ksys.length) return;
+  const definitions = `${ksys.length} definition${ksys.length === 1 ? "" : "s"}`;
+  if (skipKsy) {
+    skip(`Kaitai compilation of ${definitions} (--no-ksy)`);
+    return;
+  }
+  const compiler = findKaitai();
+  if (!compiler) {
+    const missing = "no Kaitai Struct compiler found, set KSC or install kaitai-struct-compiler";
+    if (requireKsc) problem(null, `${missing}. --require-ksc requires compiling the ${definitions} in spec/formats/`);
+    else skip(`Kaitai compilation of ${definitions} (${missing})`);
+    return;
+  }
+  const out = mkdtempSync(join(tmpdir(), "ksy-check-"));
+  const fixed = [...compiler.args, "--target", "python", "--outdir", out, "--import-path", fd];
+  try {
+    for (const batch of kaitaiBatches([compiler.cmd, ...fixed], ksys)) {
       try {
-        for (const batch of kaitaiBatches([compiler.cmd, ...fixed], ksys)) {
-          try {
-            runTool(compiler.cmd, [...fixed, ...batch]);
-          } catch (err) {
-            const failure = err as { stdout?: unknown; stderr?: unknown };
-            problem(
-              null,
-              `Kaitai definitions do not compile:\n${String(failure.stdout ?? "")}${String(failure.stderr ?? "")}`,
-            );
-          }
-        }
-      } finally {
-        rmSync(out, { recursive: true, force: true });
+        runTool(compiler.cmd, [...fixed, ...batch]);
+      } catch (err) {
+        // A compiler that cannot be started, such as a KSC naming a missing file, prints nothing,
+        // so its error message is the only account of the failure.
+        const failure = err as { stdout?: unknown; stderr?: unknown; message?: string };
+        const output = `${String(failure.stdout ?? "")}${String(failure.stderr ?? "")}`;
+        problem(null, `Kaitai definitions do not compile:\n${output || (failure.message ?? String(err))}`);
       }
-    } else if (ksys.length)
-      console.warn(
-        "warning: no Kaitai Struct compiler found (set KSC or install kaitai-struct-compiler); definitions were not compiled.",
-      );
+    }
+  } finally {
+    rmSync(out, { recursive: true, force: true });
   }
 }
 

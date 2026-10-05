@@ -10,6 +10,16 @@ import { readCsv } from "../markdown.ts";
 import { KINDS, LIST_LIMIT } from "../standard.ts";
 import type { FormatNames } from "./formats.ts";
 
+/**
+ * A procedure with each string literal emptied and its comments dropped. Strings go first, so a `#`
+ * inside one does not start a comment, and a string ends on the line it starts on.
+ */
+export const withoutCommentsAndStrings = (code: string) => code.replace(/"[^"\n]*"/g, '""').replace(/#.*$/gm, "");
+
+/** The names a rule's Parameters section declares: each lower-case name that opens a code span, as `n` or `n: type`. */
+export const parameterNames = (params: string) =>
+  [...params.matchAll(/`([a-z_][a-z0-9_]*)(?=`|\s*:)/g)].map((m) => m[1]);
+
 const BUILTINS = new Set([
   "min",
   "max",
@@ -107,17 +117,14 @@ export function checkRules(ctx: Context, { enumNames }: FormatNames) {
     // Types in a define's signature (`define roll(n: UINT16) -> char[]:`) are not names the
     // procedure reads, so they are dropped before the name checks.
     const TYPE = String.raw`(?:[A-Za-z][A-Za-z0-9]*|FMT-[A-Z0-9]+-\d+)(?:\[[^\]]*\])?`;
-    const code = e
-      .code!.replace(/#.*$/gm, "")
-      .replace(/"[^"]*"/g, '""')
-      .replace(
-        new RegExp(String.raw`(\bdefine\s+[a-z_][a-z0-9_]*\s*\()([^)]*)\)(\s*->\s*${TYPE})?`, "g"),
-        (_: string, head: string, params: string) =>
-          `${head}${params
-            .split(",")
-            .map((p) => p.split(":")[0].trim())
-            .join(", ")})`,
-      );
+    const code = withoutCommentsAndStrings(e.code!).replace(
+      new RegExp(String.raw`(\bdefine\s+[a-z_][a-z0-9_]*\s*\()([^)]*)\)(\s*->\s*${TYPE})?`, "g"),
+      (_: string, head: string, params: string) =>
+        `${head}${params
+          .split(",")
+          .map((p) => p.split(":")[0].trim())
+          .join(", ")})`,
+    );
     const related = asList(meta.related);
     const openQuestions = e.sections.find((s) => s.title === "Open questions")?.text ?? "";
     // Names are letters, digits and underscores, so best_score does not count as listing score.
@@ -201,7 +208,7 @@ export function checkRules(ctx: Context, { enumNames }: FormatNames) {
     for (const m of code.matchAll(/\bdefine\s+[a-z_][a-z0-9_]*\s*\(([^)]*)\)/g))
       for (const p of m[1].split(",")) locals.add(p.split(":")[0].trim());
     const params = e.sections.find((s) => s.title === "Parameters")?.text ?? "";
-    for (const m of params.matchAll(/`([a-z_][a-z0-9_]*)`/g)) locals.add(m[1]);
+    for (const name of parameterNames(params)) locals.add(name);
     for (const m of code.matchAll(/(?<![.\w])([a-z_][a-z0-9_]*)\s*\(/g)) {
       const name = m[1];
       if (BUILTINS.has(name) || KEYWORDS.has(name) || locals.has(name)) continue;
