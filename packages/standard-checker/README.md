@@ -12,8 +12,8 @@ pnpm exec standard-checker --check    # check, and fail on a stale index or PARI
 ```
 
 It exits with 0 when the repository passes, 1 when it reports problems (one line per problem,
-starting with the file's path), and 2 when the options are invalid. `--record-validation` cannot be
-combined with `--check`.
+starting with the file's path), and 2 when the options are invalid or `--record-validation` cannot
+write the record. `--record-validation` cannot be combined with `--check`.
 
 A problem that breaks a numbered rule of the standard ends with the rule's label in brackets, such
 as `[STATUS-14]`. The standard opens that rule with the heading `###### STATUS-14`, anchored at
@@ -35,7 +35,7 @@ problems under other sections carry no label yet.
 | `--images <ranges>` | Comma-separated half-open address ranges of the original's flat 32-bit images, such as `0x00400000..0x004C9000`. A `0x` value inside one that a code comment gives must be recorded in an entry the comment cites. | none, so only `fn_` and `g_` names are checked |
 | `--max-range <bytes>` | The largest address range an entry can record an address by. A larger one, such as a whole section, records only its two ends. | `0x10000` |
 | `--data-dirs <dirs>` | Comma-separated top-level directories of the original's data. A path into one must name a file of some build, with its exact case. | the top-level directories of the files the build entries list |
-| `--record-validation <builds>` | Write `VALIDATION.md` for the marked test files of validated parity rows, naming the comma-separated build IDs the run used. Run it only after every test in those files passed with none skipped. | not written |
+| `--record-validation <builds>` | Write `VALIDATION.md` for the marked test files of validated parity rows, naming the comma-separated build IDs the run used and HEAD as the commit the run tested. Run it only after every test in those files passed with none skipped, against HEAD as committed: it refuses, with exit code 2, when the working tree differs from HEAD in anything other than `VALIDATION.md`, counting untracked files that git does not ignore. | not written |
 | `--help` | Print the options. | |
 
 The `KSC` environment variable names the Kaitai Struct compiler. Without it, the checker looks for

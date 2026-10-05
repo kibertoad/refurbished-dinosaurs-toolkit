@@ -43,6 +43,34 @@ export function checkValidation(ctx: Context, { validatedTests }: Parity) {
       console.error("--record-validation: git rev-parse HEAD failed");
       process.exit(2);
     }
+    // Commit is the commit the run tested, so the run must have tested HEAD as committed. Any change
+    // to a tracked file, or an untracked file that git does not ignore, anywhere in the repository
+    // means it tested something else. Only an earlier VALIDATION.md may differ, since this run
+    // replaces it.
+    const changed: string[] = [];
+    try {
+      const entries = execFileSync(
+        "git",
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ":/", ":(exclude)VALIDATION.md"],
+        { cwd: repoDir, encoding: "utf8" },
+      ).split("\0");
+      for (let i = 0; i < entries.length; i++) {
+        if (!entries[i]) continue;
+        changed.push(entries[i].slice(3));
+        // A rename or copy is followed by its source path.
+        if (/[RC]/.test(entries[i].slice(0, 2))) i++;
+      }
+    } catch {
+      console.error("--record-validation: git status failed");
+      process.exit(2);
+    }
+    if (changed.length) {
+      const shown = changed.slice(0, 5).join(", ") + (changed.length > 5 ? `, and ${changed.length - 5} more` : "");
+      console.error(
+        `--record-validation: the working tree differs from HEAD (${shown}), so HEAD is not the commit the run tested. Commit the change, run the marked tests against that commit, then record`,
+      );
+      process.exit(2);
+    }
     const files = [...validatedTests.keys()].sort();
     if (!files.length) {
       console.error(

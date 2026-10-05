@@ -290,6 +290,21 @@ A tool that parses the output sees these changes. Existing line prefixes are kep
 - `ExportFunctionFingerprints` writes its rows to a temporary file and replaces the output only when
   the export completes.
 
+## Standard checker upgrades
+
+### `--record-validation` records only a run of HEAD as committed
+
+`--record-validation` wrote `git rev-parse HEAD` as the record's Commit while hashing the marked test
+files in the working tree, so a record made before committing a change named the parent of the
+tree the run tested. It now exits with 2 and lists the paths when the working tree differs from
+HEAD in anything other than `VALIDATION.md`, untracked files that git does not ignore included.
+
+A script or hook that recorded a run before committing the change it tested now commits the change
+first, runs the marked tests against that commit, records, and commits `VALIDATION.md` on the same
+branch. The commit before the record fails the check for each validated row whose marked test file
+changed, so a hook that requires the check to pass on every commit lets that commit through or runs
+on push instead. Records already committed stay valid: the check compares only the hashes.
+
 ## Engine upgrades
 
 Engine releases that need a change in a restoration are listed here, newest first.
