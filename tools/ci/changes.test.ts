@@ -17,6 +17,24 @@ test("an engine change runs the engine tests and the TypeScript job, whose bridg
   ]);
 });
 
+test("a Ghidra script or helper class change compiles the scripts and runs the engine's jobs, whose package ships them", () => {
+  const ghidra = "packages/scientific-method-engine/src/scientific_method_engine/ghidra/";
+  assert.deepEqual(on([`${ghidra}ExportCallEdges.java`]), ["engine", "ghidraScripts", "typescript"]);
+  assert.deepEqual(on([`${ghidra}scientificmethod/FirstArgumentLookBack.java`]), [
+    "engine",
+    "ghidraScripts",
+    "typescript",
+  ]);
+});
+
+test("an engine change outside the Ghidra scripts does not compile them", () => {
+  assert.equal(
+    changedAreas(["packages/scientific-method-engine/src/scientific_method_engine/cli.py"]).ghidraScripts,
+    false,
+  );
+  assert.equal(changedAreas(["packages/scientific-method-engine/README.md"]).ghidraScripts, false);
+});
+
 test("a reader change runs the engine tests, one of which runs the reader", () => {
   assert.deepEqual(on(["packages/executable-reader/src/report.ts"]), ["engine", "typescript"]);
 });

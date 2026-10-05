@@ -18,6 +18,7 @@ jobs:
       dotnet: ${{ steps.areas.outputs.dotnet }}
       documentation-action: ${{ steps.areas.outputs.documentationAction }}
       software-opengl: ${{ steps.areas.outputs.softwareOpenGl }}
+      ghidra-scripts: ${{ steps.areas.outputs.ghidraScripts }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -149,6 +150,56 @@ jobs:
           name: disc-archiver-${{ matrix.os }}
           path: ${{ runner.temp }}/bundle/*.zip
           retention-days: 7
+  # Compiles the Ghidra scripts and their helper classes against the jars of a pinned Ghidra
+  # release. Running them headless on real programs stays local.
+  ghidra-scripts:
+    name: Ghidra scripts
+    needs: changes
+    if: needs.changes.outputs.ghidra-scripts == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GHIDRA_VERSION: 12.1.3
+      GHIDRA_ZIP: ghidra_12.1.3_PUBLIC_20260817.zip
+      GHIDRA_SHA256: 93a5d11a9ad510622acaaf908c556a7b9b764d338e78a7567f3689bf5081fd54
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          distribution: temurin
+          java-version: '21'
+      # Holds only the jars the compile reads, so a later run skips downloading the release.
+      - name: Cache the Ghidra jars
+        id: ghidra-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/ghidra-lib
+          key: ghidra-lib-${{ env.GHIDRA_VERSION }}
+      - name: Download the Ghidra jars
+        if: steps.ghidra-cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          GHIDRA_LIB: ${{ runner.temp }}/ghidra-lib
+        run: |
+          zip="$RUNNER_TEMP/$GHIDRA_ZIP"
+          curl -fsSL --retry 3 -o "$zip" "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/$GHIDRA_ZIP"
+          echo "$GHIDRA_SHA256  $zip" | sha256sum -c -
+          # Names the jars instead of passing a wildcard, since unzip builds differ on whether "*"
+          # matches "/".
+          unzip -Z1 "$zip" | grep -E "^ghidra_${GHIDRA_VERSION}_PUBLIC/Ghidra/.+/lib/[^/]+\.jar$" |
+            xargs unzip -q "$zip" -d "$GHIDRA_LIB"
+          rm "$zip"
+      - name: Compile the Ghidra scripts
+        shell: bash
+        env:
+          GHIDRA_LIB: ${{ runner.temp }}/ghidra-lib
+          SCRIPTS: packages/scientific-method-engine/src/scientific_method_engine/ghidra
+        run: |
+          classpath="$(find "$GHIDRA_LIB" -path '*/lib/*.jar' | paste -sd ':')"
+          if [ -z "$classpath" ]; then echo "No Ghidra jars under $GHIDRA_LIB." >&2; exit 1; fi
+          javac -proc:none -nowarn -d "$RUNNER_TEMP/ghidra-classes" -cp "$classpath" "$SCRIPTS"/*.java "$SCRIPTS"/*/*.java
   # Runs the check-documentation action as a restoration would, against the test fixture, so the
   # Kaitai Struct compiler install and the .ksy compilation run on both runner platforms.
   documentation-action:
