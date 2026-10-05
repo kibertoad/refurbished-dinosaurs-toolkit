@@ -63,14 +63,14 @@ LegacyFormats parts of it:
   `OpenIso9660(Stream)` opens an `.iso` image held in a seekable stream, such as a modified copy
   built in memory for a negative control, and reads the same files and volume as the image on disk.
 - `OriginalContentSource.OpenInstallShieldCabinet` lists and reads the members of an InstallShield
-  cabinet set of major version 0, 5 or 6, on disk or inside a disc source, through the same interface. It opens from a
-  `dataN.hdr`, or from a `dataN.cab` that holds the header, reading only that file's header region.
-  It checks every member's path, extent and the set's limits when it opens, and each member's size
-  (and MD5 for version 6) when it is read to the end. Entries it does not list are in `SkippedFiles`
-  with a reason: entries marked invalid or without a name or data (whose names need not read),
-  version 6 links to them, entries at a
-  listed member's path that share its data, and version 6 copies of a listed member at the same path
-  with the same size and MD5. Decode into the staging directory and verify the output there as for
+  cabinet set of major version 0, 5 or 6, on disk or inside a disc source, through the same
+  interface. It opens from a `dataN.hdr`, or from a `dataN.cab` that holds the header, reading only
+  that file's header region. It checks every member's path, extent and the set's limits when it
+  opens, and each member's size (and MD5 for version 6) when it is read to the end. Entries it does
+  not list are in `SkippedFiles` with a reason: entries marked invalid or without a name or data
+  (whose names need not read), version 6 links to them, entries at a listed member's path that
+  share its data, and version 6 copies of a listed member at the same path with the same size and
+  MD5. Decode into the staging directory and verify the output there as for
   any other source; [InstallShield cabinets](../packages/dotnet/README.md#installshield-cabinets)
   lists the supported subset.
 - `ContentSourceExtractor.ExtractAsync` copies the files of any source, or a selection, into the

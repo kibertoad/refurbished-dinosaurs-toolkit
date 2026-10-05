@@ -18,10 +18,17 @@ namespace RefurbishedDinosaurs.LegacyFormats;
 /// truncated. The volumes are found by name, so a <c>data1.cab</c> that holds the header is also
 /// read as volume 1.
 /// </param>
+/// <param name="MaximumNameBytes">
+/// The longest file or directory name, in bytes before its NUL terminator, that is read from the
+/// header. A listed member whose name is longer fails the open; an entry left out with such a name
+/// is skipped with a <see langword="null"/> path. The bound keeps the work spent on each name small,
+/// so a header whose entries all point into one long unterminated run cannot make every entry scan it.
+/// </param>
 public sealed record InstallShieldCabinetLimits(
     int MaximumFiles = 100_000,
     long MaximumExpandedBytes = 8L * 1024 * 1024 * 1024,
-    int MaximumHeaderBytes = 64 * 1024 * 1024)
+    int MaximumHeaderBytes = 64 * 1024 * 1024,
+    int MaximumNameBytes = 1024)
 {
     /// <summary>The default limits.</summary>
     public static InstallShieldCabinetLimits Default { get; } = new();
@@ -31,6 +38,7 @@ public sealed record InstallShieldCabinetLimits(
         ArgumentOutOfRangeException.ThrowIfNegative(MaximumFiles);
         ArgumentOutOfRangeException.ThrowIfNegative(MaximumExpandedBytes);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumHeaderBytes);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(MaximumNameBytes);
     }
 }
 
@@ -106,7 +114,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     internal InstallShieldCabinetSource(byte[] header, Func<int, Stream> openVolume, InstallShieldCabinetLimits limits)
     {
         this.openVolume = openVolume;
-        var reader = new HeaderReader(header);
+        var reader = new HeaderReader(header, limits.MaximumNameBytes);
         var signature = reader.UInt32(0);
         if (signature == MicrosoftCabinetSignature)
             throw new InvalidDataException("File is a Microsoft cabinet, not an InstallShield cabinet.");
@@ -210,7 +218,8 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
 
             if (data.ExpandedSize < 0 || data.CompressedSize < 0)
                 throw new InvalidDataException($"InstallShield file {index} declares a size beyond 2^63 bytes.");
-            var md5 = version5Layout ? null : data.Md5;
+            // Version 0 and 5 descriptors carry no MD5 the reader checks, so theirs is null.
+            var md5 = data.Md5;
             if (members.TryGetValue(path, out var existing))
             {
                 if (existing.DataIndex == dataIndex)
@@ -448,7 +457,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         ContentSourceEntry Entry, int Index, int DataIndex, bool Compressed, bool Obfuscated, byte[]? Md5,
         InstallShieldSegment[] Segments);
 
-    private sealed class HeaderReader(byte[] data)
+    private sealed class HeaderReader(byte[] data, int maximumNameBytes)
     {
         public void Require(long offset, long length, string what)
         {
@@ -487,13 +496,18 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
             return data.AsSpan((int)offset, length).ToArray();
         }
 
-        // Names are NUL-terminated single-byte strings, read as ISO 8859-1.
+        // Names are NUL-terminated single-byte strings, read as ISO 8859-1. The terminator is looked
+        // for only within the name limit, so no name costs more than that to read.
         public string String(long offset, string what)
         {
             Require(offset, 1, what);
-            var end = Array.IndexOf(data, (byte)0, (int)offset);
-            if (end < 0) throw new InvalidDataException($"InstallShield header is truncated: a {what} has no terminator.");
-            return Encoding.Latin1.GetString(data, (int)offset, end - (int)offset);
+            var window = (int)Math.Min((long)maximumNameBytes + 1, data.Length - offset);
+            var end = Array.IndexOf(data, (byte)0, (int)offset, window);
+            if (end >= 0) return Encoding.Latin1.GetString(data, (int)offset, end - (int)offset);
+            if (window <= maximumNameBytes)
+                throw new InvalidDataException($"InstallShield header is truncated: a {what} has no terminator.");
+            throw new InvalidDataException(
+                $"InstallShield header has a {what} longer than the limit of {maximumNameBytes} bytes.");
         }
     }
 }

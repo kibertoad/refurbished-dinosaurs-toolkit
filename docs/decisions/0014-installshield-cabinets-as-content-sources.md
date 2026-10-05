@@ -29,29 +29,30 @@ The cabinet format is a container. Its layout is not game content, and no open t
    second copy of that loop.
 3. Opening checks everything the header declares before any member is read: every member path passes
    `PortableAssetPath.Relative`, every member's data lies inside its volumes, no two different
-   members share a path, and the member count, expanded total and header region are within caller
-   limits. The header region is the whole `.hdr` file. A set with no `.hdr` keeps its header at the
+   members share a path, and the member count, expanded total, header region and name length are
+   within caller limits. A name is searched for its terminator only up to the name limit, so the work
+   spent on each entry's name is bounded however the header is laid out. The header region is the whole `.hdr` file. A set with no `.hdr` keeps its header at the
    start of a `dataN.cab`; only the bytes up to the end of the cabinet descriptor are read as the
    header, so a cabinet of any size opens. The descriptor's size is taken to cover the file table,
    and header data past the region is reported as a truncated header with the region's size. Volumes
    are found by name, so a `data1.cab` that holds the header is also read as volume 1. Reading a
    member to its end checks its expanded size and, for version 6, the MD5 the header records. A
-   failed check throws before the member's last bytes are returned. Version 5 is checked by size
-   only, and the documentation says so.
+   failed check throws before the member's last bytes are returned. Versions 0 and 5 are checked by
+   size only, and the documentation says so.
 4. Entries the cabinet marks invalid, or that have no name or no data offset, are listed in
-   `SkippedFiles` instead of disappearing. Unshield does not read their names, so their name and
-   directory are not checked; a skipped entry's path is recorded only when it reads and is relative. So is a version 6 entry whose link chain ends at such an
+   `SkippedFiles` instead of disappearing. So is a version 6 entry whose link chain ends at such an
    entry, with a reason naming the entry it links to: one stale link leaves the rest of the set
    readable. A link outside the file table or a link cycle means the header is damaged, and the open
-   fails.
+   fails. Unshield does not read the names of entries left out, so a name or directory of theirs that
+   does not read or is not relative does not fail the open; the skipped entry's path is then null.
 5. Two entries at one path that share data through a link are listed once; the other entry goes to
    `SkippedFiles` with a reason naming the listed one, so no entry disappears. In a version 6 set,
    two entries stored apart at one path with the same expanded size and the same header MD5 are
    taken as one file, such as a DLL two components each carry: the first in table order is listed,
    the other goes to `SkippedFiles` as its duplicate, and its stored bytes are not read. The MD5 is
    the check a read of the listed member makes, so the copy kept is held to the value both entries
-   record. Version 5 records no MD5, so a version 5 pair fails the open, as does any pair whose size
-   or MD5 differs.
+   record. Versions 0 and 5 record no MD5, so a pair in those versions fails the open, as does any
+   pair whose size or MD5 differs.
 6. Tests build cabinets with a writer in the test project. The writer and the reader come from the
    same reading of the layout, so the synthetic tests show only that the two agree. A restoration's
    own set, compared against an independent extractor, is the acceptance check, and a request that

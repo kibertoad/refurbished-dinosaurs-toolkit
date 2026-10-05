@@ -170,9 +170,46 @@ public sealed class InstallShieldCabinetTests
             // A .hdr header is read whole, so its header region is the file.
             Assert.Contains($"header is {new FileInfo(header).Length} bytes, more than the limit", Assert.Throws<InvalidDataException>(
                 () => OriginalContentSource.OpenInstallShieldCabinet(header, new InstallShieldCabinetLimits(MaximumHeaderBytes: 64))).Message);
-            using var exact = OriginalContentSource.OpenInstallShieldCabinet(
-                header, new InstallShieldCabinetLimits(MaximumFiles: 2, MaximumExpandedBytes: Noise.Length + Text.Length));
+            // "a.bin" and "b.bin" are 5 bytes long.
+            Assert.Contains("file name longer than the limit of 4 bytes", Assert.Throws<InvalidDataException>(
+                () => OriginalContentSource.OpenInstallShieldCabinet(header, new InstallShieldCabinetLimits(MaximumNameBytes: 4))).Message);
+            using var exact = OriginalContentSource.OpenInstallShieldCabinet(header, new InstallShieldCabinetLimits(
+                MaximumFiles: 2, MaximumExpandedBytes: Noise.Length + Text.Length, MaximumNameBytes: 5));
             Assert.Equal(2, exact.Files.Count);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+
+        // A name that runs to the end of the header, shorter than the limit, has no terminator.
+        root = TemporaryDirectory();
+        try
+        {
+            var set = SyntheticInstallShieldCabinet.Build(major, [new("", "a.bin", Text)]);
+            var header = set["data1.hdr"].Append((byte)'a').ToArray();
+            var name = major == 6 ? 0x3a : 0;
+            BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(FileDescriptor(header, major, 0) + name), (uint)(header.Length - 1 - Table(header)));
+            set["data1.hdr"] = header;
+            SyntheticInstallShieldCabinet.WriteTo(root, set);
+            Assert.Contains("file name has no terminator", Assert.Throws<InvalidDataException>(
+                () => OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"))).Message);
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+
+        // An entry left out whose name is over the limit is skipped with a null path.
+        root = TemporaryDirectory();
+        try
+        {
+            SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(major,
+                [new("", "a.bin", Text), new("", "long-name.bin", Text, Invalid: true)]));
+            using var source = OriginalContentSource.OpenInstallShieldCabinet(
+                Path.Combine(root, "data1.hdr"), new InstallShieldCabinetLimits(MaximumNameBytes: 5));
+            Assert.Equal(["a.bin"], source.Files.Select(entry => entry.Path));
+            Assert.Equal([(1, (string?)null)], source.SkippedFiles.Select(file => (file.Index, file.Path)));
         }
         finally
         {
@@ -594,13 +631,14 @@ public sealed class InstallShieldCabinetTests
         try
         {
             var set = SyntheticInstallShieldCabinet.Build(major,
-                [new("Data", "kept.bin", Text), new("Gone", "gone.bin", Text, Invalid: true), new("Data", "no-directory.bin", Text, Invalid: true)]);
+                [new("Data", "kept.bin", Text), new("Gone", "gone.bin", Text, Invalid: true), new("Data", "no-directory.bin", Text, Invalid: true),
+                 new("", @"..\escape.bin", Text, Invalid: true)]);
             var header = set["data1.hdr"];
             var (name, directory) = major == 6 ? (0x3a, 0x3e) : (0, 4);
             // The first invalid entry's name lies past the header, and so does the directory only it uses.
             BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(FileDescriptor(header, major, 1) + name), 0x7fff_0000);
             BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(Table(header) + 4), 0x7fff_0000);
-            // The second names a directory that does not exist.
+            // The second names a directory that does not exist, and the third's path is not relative.
             BinaryPrimitives.WriteUInt16LittleEndian(header.AsSpan(FileDescriptor(header, major, 2) + directory), 99);
             var path = Path.Combine(root, "data1.hdr");
             SyntheticInstallShieldCabinet.WriteTo(root, set);
@@ -608,7 +646,7 @@ public sealed class InstallShieldCabinetTests
             using (var source = OriginalContentSource.OpenInstallShieldCabinet(path))
             {
                 Assert.Equal(["Data/kept.bin"], source.Files.Select(entry => entry.Path));
-                Assert.Equal([(1, (string?)null), (2, null)], source.SkippedFiles.Select(file => (file.Index, file.Path)));
+                Assert.Equal([(1, (string?)null), (2, null), (3, null)], source.SkippedFiles.Select(file => (file.Index, file.Path)));
                 Assert.All(source.SkippedFiles, file => Assert.Equal("The cabinet marks the file invalid.", file.Reason));
             }
 

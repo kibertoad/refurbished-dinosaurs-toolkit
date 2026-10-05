@@ -226,8 +226,9 @@ header, matched ignoring case.
 
 Opening reads the header and the volume headers and checks every listed member before any member is
 read: its directory and name joined must pass `PortableAssetPath.Relative`, its data must lie inside the
-volumes, and the set must stay within `InstallShieldCabinetLimits` (100,000 members, 8 GiB expanded
-and a 64 MiB header region by default; the header region is the whole `.hdr` file).
+volumes, and the set must stay within `InstallShieldCabinetLimits` (100,000 members, 8 GiB expanded,
+a 64 MiB header region and 1,024-byte names by default; the header region is the whole `.hdr` file).
+A name is read only up to the name limit, so a listed member whose name is longer fails the open.
 
 The major version comes from the header's version word as Unshield reads it: a top byte of 1 keeps it
 in bits 12 to 15, and a top byte of 2 or 4 keeps a hundredfold version in the low word. Major version 0
@@ -236,9 +237,11 @@ two differences: its descriptors end after the data offset, and a member is spli
 when its descriptor's split flag is set. Everything below that says version 5 holds for version 0 too.
 
 Entries the cabinet marks invalid, or that have no name or no data offset, are left out and listed in
-`SkippedFiles` with the reason. Their name and directory are not checked, as Unshield does not read
-them; the skipped entry's path is `null` when they do not read or do not form a relative path. So is a version 6 entry whose link chain ends at such an entry; its
+`SkippedFiles` with the reason. So is a version 6 entry whose link chain ends at such an entry; its
 reason names the entry it links to. A link outside the file table or a link cycle fails the open.
+Unshield does not read the names of entries left out, so a name or directory of theirs that does not
+read, or that does not form a relative path, does not fail the open: the skipped entry's path is
+`null` instead.
 
 Two entries at the same path, ignoring case, are listed once when one links to the other's data; the
 other goes to `SkippedFiles` with a reason naming the listed entry. In a version 6 set, two entries
