@@ -99,17 +99,25 @@ Most restorations need no inputs. Set one when the defaults do not match the rep
 | `kaitai-version` | `0.11` | Compiler release to install, or empty to skip the install. With no `.ksy` file the install is skipped anyway. |
 | `java-version` | empty | Java to install with `actions/setup-java` before the compiler. |
 
-The code directories are scanned for `.cs`, `.ts`, `.mjs`, `.js`, `.ps1`, `.fs`, `.md` and `.json`
-files, skipping `bin`, `obj`, `node_modules`, `.git` and `artifacts`. Every spec or deviation ID
-they cite must exist and not be superseded.
+The code and reference directories are scanned for `.cs`, `.ts`, `.mjs`, `.js`, `.ps1`, `.fs`,
+`.md` and `.json` files, skipping `bin`, `obj`, `node_modules`, `.git` and `artifacts`. Every spec
+or deviation ID cited in those files, other than `.fs` files, and in the Markdown files of
+`parity/` and `deviations/` must exist, and a cited spec ID must not be superseded. A deviation file
+may cite the superseded entry it departed from.
 
-A passing citation check shows only that each cited ID resolves to a live entry. The check does
-not read the words around a citation, so a note that calls a bitmap entry a configuration entry
-passes as long as the ID exists. When prose describes what an entry is, take the description from
-the entry: `spec/index/by-kind.md` and `spec/index/by-area.md` list every ID with its title and
-status, and the entry itself has its files and evidence. Reviewing that agreement is part of the
-restoration's own review of its notes and plans; the checker does not compare prose with titles,
-because a paraphrase is a legitimate way to cite an entry.
+A passing citation check shows only that each cited ID exists and, outside `deviations/`, is not
+superseded. A `BLD-` or `SRC-` alias that names no entry is skipped, because an alias can collide
+with an ordinary word. Notes, plans and handovers outside the scanned directories are not read at
+all. In the files it reads, the check does not compare the words around a citation with the entry
+the citation names, so a note that calls a bitmap entry a configuration entry passes as long as the
+ID exists. When prose describes what an entry is, take the description from the entry:
+`spec/index/by-kind.md` lists every spec ID with its title and status (builds and sources have no
+status and record a replacement in `superseded_by`), `deviations/` holds the deviations, and the
+entry itself has its evidence and, for a format, the files it describes. An index that would pass
+the line limit is a directory of the same name, such as `spec/index/by-kind/`, split by area, then
+by kind. Reviewing that agreement is part of the restoration's own review of its notes and plans;
+the checker does not compare prose with titles, because a paraphrase is a legitimate way to cite an
+entry.
 
 ### Addresses in code comments
 
