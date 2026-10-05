@@ -96,8 +96,8 @@ public enum InstallShieldSkippedFileKind
     DuplicatesListedMember,
 
     /// <summary>
-    /// The entry's data is stored outside the cabinet's volumes: the entry is not split, has stored
-    /// bytes, and its data offset is the exact length of the volume that would hold it, which is how
+    /// The entry's data is stored outside the cabinet's volumes: the entry has stored bytes and its data
+    /// offset is the exact length of the volume where its data starts, split or not, which is how
     /// Unshield recognizes such a file. The reader does not read files outside the cabinet. Entries
     /// that link to its data, and version 6 copies of it at its path that are also stored outside,
     /// have this kind too. A volume cut short exactly where its last member's data starts reads the
@@ -149,8 +149,8 @@ public sealed record InstallShieldSkippedFile(int Index, string? Path, InstallSh
 /// <para>
 /// An entry whose data lies outside the cabinet's volumes is not listed: it goes to
 /// <see cref="SkippedFiles"/> as <see cref="InstallShieldSkippedFileKind.StoredOutsideCabinet"/>,
-/// and the rest of the set opens. As Unshield tells it, such an entry is not split and its data
-/// offset is exactly the length of the volume that would hold it. An extent that starts past that
+/// and the rest of the set opens. As Unshield tells it, such an entry's data offset is exactly the
+/// length of the volume where its data starts, whether or not the entry is split. An extent that starts past that
 /// length, or that starts inside the volume and runs past its end, is damage and fails the open.
 /// Files stored outside the cabinet are not looked for or read.
 /// </para>
@@ -165,7 +165,7 @@ public sealed record InstallShieldSkippedFile(int Index, string? Path, InstallSh
 /// <see cref="InvalidDataException"/> from the read that would have returned the member's last bytes.
 /// Version 5 members are checked by size only. A member read as
 /// <see cref="InstallShieldCompressedFormat.MarkerDelimitedChunks"/> is also checked to end with the
-/// <c>00 00 FF FF</c> marker, with the decoder reaching the end of its stored bytes.
+/// <c>00 00 FF FF</c> marker, with the decoder reaching the end of its stored bytes and no block final.
 /// </para>
 /// <para>
 /// <see cref="Members"/> gives each listed member's file-table index, directory and name, and the
@@ -361,6 +361,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 {
                     skipped.Add(new(index, path, InstallShieldSkippedFileKind.StoredOutsideCabinet,
                         $"The file shares the data of file {stored.Index} at '{stored.Entry.Path}', which is stored outside the cabinet."));
+                    stored.SharedBy.Add(entryName);
                     continue;
                 }
                 // A version 6 copy of a file stored outside is listed when its own data is inside.
@@ -381,9 +382,13 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                         : dataIndex == index
                             ? $"The file is stored outside the cabinet: {evidence}."
                             : $"The file links to file {dataIndex}, which is stored outside the cabinet: {evidence}."));
-                outside.TryAdd(path, member);
+                if (outsideCopy is not null) outsideCopy.SharedBy.Add(entryName);
+                else outside.Add(path, member);
                 continue;
             }
+            // The entries stored outside at this path hold the same file, so the member listed here
+            // shares them, as it would had they come after it in the table.
+            if (outsideCopy is not null) member.SharedBy.AddRange(outsideCopy.SharedBy.Prepend(outsideCopy.Listed));
             members.Add(path, member);
             // Compared this way round, the total cannot overflow even when the limit is near long.MaxValue.
             if (data.ExpandedSize > limits.MaximumExpandedBytes - expandedTotal)
@@ -572,8 +577,8 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
 
     // Where a member's stored bytes lie, following the volume headers as Unshield does. Returns null,
     // with the volume in outsideVolume, when the member is stored outside the cabinet: as Unshield
-    // tells it, a member that is not split and whose data offset is exactly the length of the volume
-    // that would hold it. A member with no stored bytes reads as empty wherever its offset points, so
+    // tells it, a member whose data offset is exactly the length of the volume where its data starts,
+    // split or not. A member with no stored bytes reads as empty wherever its offset points, so
     // it is never taken to be outside. Any other extent past the end of a volume is damage.
     private InstallShieldSegment[]? Segments(int index, FileDescriptor file, int fileCount, out int outsideVolume)
     {
@@ -595,7 +600,9 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                          || (index > 0 && index == header.FirstIndex && header.FirstCompressed != file.CompressedSize);
         }
 
-        if (!split && remaining > 0 && file.DataOffset == header.Length)
+        // Unshield compares the descriptor's offset with the length of the volume it opens for the
+        // member before it reads a split member's parts, so the split flag, set or inferred, plays no part.
+        if (remaining > 0 && file.DataOffset == header.Length)
         {
             outsideVolume = volume;
             return null;

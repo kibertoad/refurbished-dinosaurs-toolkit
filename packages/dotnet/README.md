@@ -331,13 +331,13 @@ that reads under `unshield -O` and fails here is a sign to open it with that val
 Marker-delimited data is decoded as one deflate stream, so the reader does not search for the
 markers: four marker bytes inside a chunk's data are read as data, and a chunk may expand to more
 than 64 KiB. Reading such a member to its end checks that it expands to exactly its declared size,
-that the decoder reaches the end of its stored bytes, and that they end with `00 00 FF FF`; the
-version 6 MD5 check applies as for the default form.
+that the decoder reaches the end of its stored bytes with no final block, and that they end with
+`00 00 FF FF`; the version 6 MD5 check applies as for the default form.
 
 ### Members stored outside the cabinet
 
-A member is stored outside the cabinet when it is not split, has stored bytes, and its data offset
-is exactly the length of the volume that would hold it, as Unshield tells it. It is not listed: it
+A member is stored outside the cabinet when it has stored bytes and its data offset is exactly the
+length of the volume where its data starts, split or not, as Unshield tells it. It is not listed: it
 goes to `SkippedFiles` with the kind `StoredOutsideCabinet` and a reason giving the offset and the
 volume, and the rest of the set opens. Entries that share its data, and version 6 copies of it that
 are also stored outside, are skipped the same way; a version 6 copy whose own data is inside the

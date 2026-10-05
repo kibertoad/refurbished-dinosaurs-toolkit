@@ -410,8 +410,8 @@ themselves before calling `Relative` can drop the check.
 builds one, adds the kind; code that matched `Reason` text to tell skip reasons apart can test
 `Kind` instead. The reason texts are unchanged.
 
-An InstallShield cabinet set that lists a member stored outside its volumes (an unsplit member whose
-data offset is exactly the length of the volume that would hold it, as Unshield tells it) now opens.
+An InstallShield cabinet set that lists a member stored outside its volumes (a member whose data
+offset is exactly the length of the volume where its data starts, as Unshield tells it) now opens.
 The member goes to `SkippedFiles` with the kind `StoredOutsideCabinet`, and the set's other members
 read. It used to fail the open with `InvalidDataException`: "InstallShield file N lies past the end
 of volume V, which is shorter than the header claims". Code that took that failure to mean the set

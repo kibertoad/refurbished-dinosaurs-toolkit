@@ -173,6 +173,10 @@ public sealed class InstallShieldMarkerDelimitedTests
             ([0x07, .. chunks[1..]], "does not inflate"),
             // A final block ends the stream before the declared size.
             (FinalBlock(Noise[..1000]), "ends after"),
+            // A final block at the declared size, with or without bytes after it that the decoder takes
+            // in but never decodes, still ending with the marker.
+            ([.. chunks, 0x01, 0, 0, 0xff, 0xff], "ends with a final deflate block"),
+            ([.. chunks, 0x01, 0, 0, 0xff, 0xff, 0xab, 0xab, 0, 0, 0xff, 0xff], "ends with a final deflate block"),
             // Length-prefixed chunks hold no marker.
             (SyntheticInstallShieldCabinet.Chunks(Noise), "")
         ];

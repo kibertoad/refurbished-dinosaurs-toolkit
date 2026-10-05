@@ -37,11 +37,14 @@ Unshield's reading of both, which is the only description of the format availabl
    deflate block, and the next block starts on the byte after it, so the stream reads through the
    chunk ends without searching for them, and four marker bytes inside a chunk's data are read as
    data. Reading a member to its end checks that it expands to exactly its declared size, that the
-   decoder reaches the end of the stored bytes, and that they end with `00 00 FF FF`. The version 6
+   decoder reaches the end of the stored bytes with no final block, and that they end with
+   `00 00 FF FF`. A final block would stop the decoder with bytes after it unread. The version 6
    MD5 check applies as for the default form. The stored bytes bound the work: the decoder is only
    asked for the declared size and one byte more.
-3. A member is stored outside the cabinet when it is not split, it has stored bytes, and its data
-   offset is exactly the length of the volume that would hold it, as Unshield tells it. Such a
+3. A member is stored outside the cabinet when it has stored bytes and its data offset is exactly
+   the length of the volume where its data starts, as Unshield tells it. Unshield makes that
+   comparison without looking at the split flag, so a member that is split, by its flag or by the
+   version 5 inference from the volume header, is stored outside by the same rule. Such a
    member is not listed: it goes to `SkippedFiles` with the kind `StoredOutsideCabinet` and a reason
    giving the offset and the volume, and the rest of the set opens. Any other extent past the end of
    a volume (an offset past its length, or data that starts inside and runs past it) still fails the

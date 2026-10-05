@@ -41,6 +41,8 @@ internal sealed class InstallShieldMemberStream : DecodingMemberStream
     private long segmentLeft;
     private long rawRead;
     private uint lastFour;
+    // Set when a marker-delimited member's decoder asks for stored bytes past the last one.
+    private bool rawExhausted;
     private uint seed;
     private IncrementalHash? hash;
     private DeflateStream? inflater;
@@ -102,9 +104,7 @@ internal sealed class InstallShieldMemberStream : DecodingMemberStream
     private void Restart()
     {
         inflater?.Dispose();
-        inflater = format == InstallShieldCompressedFormat.MarkerDelimitedChunks
-            ? new DeflateStream(new RawReader(this), CompressionMode.Decompress)
-            : null;
+        inflater = null;
         volume?.Dispose();
         volume = null;
         openVolumeNumber = 0;
@@ -112,6 +112,7 @@ internal sealed class InstallShieldMemberStream : DecodingMemberStream
         segmentLeft = 0;
         rawRead = 0;
         lastFour = 0;
+        rawExhausted = false;
         seed = 0;
         hash?.Dispose();
         hash = md5 is null ? null : IncrementalHash.CreateHash(HashAlgorithmName.MD5);
@@ -148,7 +149,7 @@ internal sealed class InstallShieldMemberStream : DecodingMemberStream
         if (produced > length) throw Invalid($"expands past its declared size of {length} bytes");
         hash?.AppendData(buffer, 0, count);
         if (produced == length) Finish();
-        else if (rawRead == rawLength && inflater is null) throw Invalid($"ends after {produced} of its {length} bytes");
+        else if (rawRead == rawLength && format != InstallShieldCompressedFormat.MarkerDelimitedChunks) throw Invalid($"ends after {produced} of its {length} bytes");
     }
 
     // Reads the next length-prefixed chunk and inflates it into the buffer.
@@ -191,10 +192,11 @@ internal sealed class InstallShieldMemberStream : DecodingMemberStream
     private int Inflate(int count)
     {
         var filled = 0;
+        inflater ??= new DeflateStream(new RawReader(this), CompressionMode.Decompress);
         try
         {
             int read;
-            while (filled < count && (read = inflater!.Read(buffer, filled, count - filled)) > 0) filled += read;
+            while (filled < count && (read = inflater.Read(buffer, filled, count - filled)) > 0) filled += read;
         }
         catch (StoredBytesException exception)
         {
@@ -224,6 +226,11 @@ internal sealed class InstallShieldMemberStream : DecodingMemberStream
         else if (format == InstallShieldCompressedFormat.MarkerDelimitedChunks)
         {
             if (Inflate(1) != 0) throw Invalid($"expands past its declared size of {length} bytes");
+            // The form has no final block, so a decoder that read the whole stream asked for bytes past
+            // the last one. One that stopped on a final block never did, and the bytes after that block
+            // were not decoded, however many of them it had already taken in.
+            if (!rawExhausted)
+                throw Invalid("has marker-delimited compressed data that ends with a final deflate block, which the form does not use");
         }
         if (rawRead != rawLength) throw Invalid($"has data left after its declared size of {length} bytes");
         if (format == InstallShieldCompressedFormat.MarkerDelimitedChunks && rawLength > 0 && (rawLength < 4 || lastFour != Marker))
@@ -268,7 +275,8 @@ internal sealed class InstallShieldMemberStream : DecodingMemberStream
                 destination[index] = (byte)(value - seed % 0x47);
             }
         }
-        foreach (var value in destination) lastFour = (lastFour << 8) | value;
+        if (format == InstallShieldCompressedFormat.MarkerDelimitedChunks)
+            foreach (var value in destination[Math.Max(0, destination.Length - 4)..]) lastFour = (lastFour << 8) | value;
     }
 
     private InvalidDataException Invalid(string problem) =>
@@ -288,6 +296,7 @@ internal sealed class InstallShieldMemberStream : DecodingMemberStream
         public override int Read(Span<byte> destination)
         {
             var count = (int)Math.Min(destination.Length, member.rawLength - member.rawRead);
+            if (count == 0) member.rawExhausted = true;
             try
             {
                 if (count > 0) member.ReadRaw(destination[..count]);

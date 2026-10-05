@@ -4,8 +4,8 @@ using Xunit;
 
 namespace RefurbishedDinosaurs.Core.Tests;
 
-// Members stored outside the cabinet: as Unshield tells them, an unsplit member whose data offset is
-// exactly the length of the volume that would hold it. They are skipped with their own kind, and an
+// Members stored outside the cabinet: as Unshield tells them, a member whose data offset is exactly
+// the length of the volume where its data starts, split or not. They are skipped with their own kind, and an
 // extent that runs past a volume any other way is still reported as damage.
 public sealed class InstallShieldOutsideStorageTests
 {
@@ -85,6 +85,40 @@ public sealed class InstallShieldOutsideStorageTests
                 Assert.Contains("lies past the end of volume 1, which is shorter than the header claims",
                     Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"))).Message);
             }
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task SkipsAVersion5MemberStoredOutsideThatTheVolumeHeaderMakesSplit()
+    {
+        var root = TemporaryDirectory();
+        try
+        {
+            // The outside member is the last one volume 1 records, and the volume's record of its
+            // compressed size differs from the descriptor's, so the version 5 rule infers it split.
+            // Unshield compares the data offset with the volume's length all the same.
+            var first = Bytes(3000, 4);
+            var set = SyntheticInstallShieldCabinet.Build(5,
+                [new("", "first.bin", first, Compressed: false), new("", "outside.bin", Bytes(4000, 1), Outside: true),
+                 new("", "next.bin", Noise)],
+                volumeCapacity: first.Length);
+            var volume = set["data1.cab"];
+            // The last file's compressed size in a version 5 volume header.
+            var lastCompressed = BinaryPrimitives.ReadUInt32LittleEndian(volume.AsSpan(56));
+            BinaryPrimitives.WriteUInt32LittleEndian(volume.AsSpan(56), lastCompressed - 1);
+            SyntheticInstallShieldCabinet.WriteTo(root, set);
+
+            using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
+            var skipped = Assert.Single(source.SkippedFiles);
+            Assert.Equal((1, InstallShieldSkippedFileKind.StoredOutsideCabinet), (skipped.Index, skipped.Kind));
+            Assert.Contains($"its data offset, {volume.Length}, is the length of volume 1", skipped.Reason);
+            Assert.Equal(["first.bin", "next.bin"], source.Files.Select(entry => entry.Path));
+            await using var stream = source.OpenRead("next.bin");
+            Assert.Equal(Noise, await ReadAll(stream));
         }
         finally
         {
@@ -193,6 +227,8 @@ public sealed class InstallShieldOutsideStorageTests
             using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
             var member = Assert.Single(source.Members);
             Assert.Equal(1, member.Metadata.Index);
+            // Both copies stored outside hold the listed member's bytes, whichever side of it they lie.
+            Assert.Equal([0, 2], member.SharedBy.Select(entry => entry.Index));
             Assert.Equal([0, 2], source.SkippedFiles.Select(skipped => skipped.Index));
             Assert.Equal(InstallShieldSkippedFileKind.StoredOutsideCabinet, source.SkippedFiles[0].Kind);
             // The later copy is a duplicate of the listed one, which is checked when read.
