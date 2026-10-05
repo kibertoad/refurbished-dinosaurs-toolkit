@@ -55,9 +55,24 @@ on an undocumented public member.
 
 ## Portable asset references
 
-`PortableAssetPath.Relative` accepts either separator and rejects drive-relative, rooted and
-traversal references on every host, along with components Windows reads differently (a trailing dot
-or space, or a reserved device name such as `CON` or `nul.dat`). `WithoutDriveRoot` explicitly
+`PortableAssetPath.Relative` accepts either separator and returns the reference with `/`. It rejects
+the same references on every host, before anything touches the file system:
+
+| Rejected | Why |
+|---|---|
+| A rooted reference (UNC names included), an empty component, `.` and `..` | It is not relative, or leaves its root. |
+| C0 control characters (U+0000 to U+001F) and `< > : " \| ? *` | Windows refuses them in a file name. `:` also rejects drive-relative names such as `C:x.dat`. |
+| DEL (U+007F) and a UTF-16 surrogate without its pair | DEL is a control character no legacy code page uses for a letter. Linux and macOS cannot store an unpaired surrogate under the same name. |
+| A component that ends in a dot or a space, or a reserved device name such as `CON` or `nul.dat` | Windows reads it as another name or as a device. |
+
+Everything else is accepted, including spaces, `~ # & + ! ' ( ) [ ] { } @ = , ; % $`, Latin-1 and other
+non-ASCII letters, and C1 control characters (U+0080 to U+009F). The readers that decode legacy names
+byte for byte as Latin-1 give C1 characters for bytes 0x80 to 0x9F, which hold letters in DOS code
+pages and lead bytes in Shift-JIS, and every host stores them. The `InvalidDataException` message gives
+the reference as a JSON string, with control characters and unpaired surrogates as `\u` escapes, and
+names the rule it breaks.
+
+`WithoutDriveRoot` explicitly
 discards an ASCII Windows drive root when a game stores installation paths. `ResolveFile` matches
 every component ignoring ordinal case, rejects a missing root, ambiguous matches and links, and
 returns the actual relative spelling. A component with two matches is ambiguous even when one of
@@ -67,8 +82,13 @@ directory, for a game that names a directory and then opens files in it by name,
 last component is a file. Both resolvers are for trusted, stable content directories; concurrent
 filesystem replacement needs host controls.
 
-`AssetManifest`, `AssetVerifier`, `OriginalContentSource` lookups and the cue sheet `FILE` check
-use the same rules. A null or blank reference from data, a blank manifest game or edition and a
+`AssetManifest`, `AssetVerifier`, `InstalledAssetVerifier`, content overlays and
+`ContentOverlayResult.UpdateInstalledFiles`, `ContentSourceExtractor`, `OriginalContentSource`
+lookups and the cue sheet `FILE` check use the same rules. Every `OriginalContentSource` this package
+opens, and `Iso9660`, list only paths `Relative` accepts: a directory file, ISO 9660 name or InstallShield member
+whose path it rejects fails the open with a message naming the entry and the rule, since listing the
+entry would claim a file the source cannot hand out under a portable name, and leaving it out would
+claim the source holds less than it does. A null or blank reference from data, a blank manifest game or edition and a
 missing file list throw `InvalidDataException`, like every other rejected reference; a blank root
 or source path passed by the caller still throws `ArgumentException`.
 
@@ -175,13 +195,13 @@ contexts outside per-frame loops.
 | Types | Reads |
 |---|---|
 | `AssetVerifier` | Check the player's original against an `AssetManifest` through any `OriginalContentSource`, and `IdentifyAsync` the supported edition it is, or that several editions match. |
-| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image, an InstallShield cabinet set or an InstallShield 3 archive behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path, and from the first bytes for an InstallShield 3 archive; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin`, `OpenInstallShieldCabinet` and `OpenInstallShieldArchive` take it explicitly. `OpenIso9660(stream)` opens an `.iso` image from a readable, seekable stream the caller keeps and the source never disposes; the streams it opens each keep their own position over it. A cue/bin source gives the sheet as `Cue` and the full paths of the files `OpenCueBin` chose as `CuePath` and `BinPath`. It reads the `.cue` once and gives those bytes as `CueSheetBytes`: hash them to record the sheet that was parsed, since the file at `CuePath` may have been replaced after the source opened. An `.iso` or cue/bin source opened from a path records the image's length and last-write time when it opens, and each read of the `.iso` or BIN through the source (`OpenRead`, `OpenVolume`, `OpenBin` and the audio checks) fails with an `IOException` when either has changed; a rewrite that keeps both is not detected. A stream opened from `BinPath` is not checked, so read the image with `OpenBin`. |
+| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image, an InstallShield cabinet set or an InstallShield 3 archive behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path, and from the first bytes for an InstallShield 3 archive; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin`, `OpenInstallShieldCabinet` and `OpenInstallShieldArchive` take it explicitly. ISO 9660 file and directory names read byte for byte as Latin-1 (ISO-8859-1), as the volume label does. `OpenIso9660(stream)` opens an `.iso` image from a readable, seekable stream the caller keeps and the source never disposes; the streams it opens each keep their own position over it. A cue/bin source gives the sheet as `Cue` and the full paths of the files `OpenCueBin` chose as `CuePath` and `BinPath`. It reads the `.cue` once and gives those bytes as `CueSheetBytes`: hash them to record the sheet that was parsed, since the file at `CuePath` may have been replaced after the source opened. An `.iso` or cue/bin source opened from a path records the image's length and last-write time when it opens, and each read of the `.iso` or BIN through the source (`OpenRead`, `OpenVolume`, `OpenBin` and the audio checks) fails with an `IOException` when either has changed; a rewrite that keeps both is not detected. A stream opened from `BinPath` is not checked, so read the image with `OpenBin`. |
 | `InstallShieldArchiveSource`, `InstallShieldArchiveLimits` | The members of an InstallShield 3 archive held in one file (such as `_SETUP.1`), from a file, inside another source or from a stream. See [InstallShield 3 archives](#installshield-3-archives). |
 | `InstallShieldCabinetSource`, `InstallShieldCabinetLimits` | The members of an InstallShield cabinet set of major version 0, 5 or 6 (`dataN.hdr` and `dataN.cab`), on disk or inside another source. See [InstallShield cabinets](#installshield-cabinets). |
 | `ContentSourceExtractor`, `ContentExtractionOptions` | Copy the files of any `OriginalContentSource`, or a selection of them, into a staging directory and get an `InstalledAsset` record for each. See [Extracting a source into a stage](#extracting-a-source-into-a-stage). |
 | `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
 | `CddaTrackFingerprints`, `CddaTrackVerification` | Record and check the fingerprint of a CD audio track in a cue/bin image, accepting a rip shifted by a drive read offset up to the fingerprint's tolerance. See [CD audio across read offsets](#cd-audio-across-read-offsets). |
-| `CueSheet`, `RawMode1Image`, `Iso9660` | Cue/bin raw disc images and the ISO 9660 file system on their data track. |
+| `CueSheet`, `RawMode1Image`, `Iso9660` | Cue/bin raw disc images and the ISO 9660 file system on their data track. `Iso9660` reads the volume with the reader behind `OpenIso9660`, so it applies the same checks, reads names as Latin-1, and fails on a name `PortableAssetPath.Relative` rejects. Like `OpenCueBin`, it checks each raw sector it reads for the MODE1/2352 sync pattern and mode byte. |
 | `CddaWave` | A CD audio track of a raw image, written out as WAVE, synchronously or with `WriteAsync`. See [Writing a CD audio track as WAVE](#writing-a-cd-audio-track-as-wave). |
 | `WavePcm16Reader` | 16-bit mono or stereo PCM WAVE files. |
 | `WavePcm16Stream` | 16-bit mono or stereo PCM WAVE files, indexed and read in frame-aligned buffers without loading the track. |
@@ -317,7 +337,7 @@ member's two sizes must agree, a member of a split archive of one part must name
 and last part, no two listed members may share a path ignoring case, and the archive must stay within
 `InstallShieldArchiveLimits` (65,535 entries, 8 GiB expanded and 16 MiB of tables by default). A
 failed check throws `InvalidDataException`. Entries the archive marks invalid are left out and listed
-in `SkippedFiles`; their path is `null` when it is not relative. Names are read as ISO 8859-1.
+in `SkippedFiles`; their path is `null` when `PortableAssetPath.Relative` rejects it. Names are read as ISO 8859-1.
 
 `OpenRead` decodes a member while it is read, and seeks as a cabinet member stream does. The archive
 records no checksum, so a member is checked by size and framing only: reading a compressed member to

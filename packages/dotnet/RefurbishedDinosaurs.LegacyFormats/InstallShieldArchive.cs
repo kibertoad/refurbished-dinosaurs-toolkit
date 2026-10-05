@@ -183,9 +183,9 @@ public sealed class InstallShieldArchiveSource : OriginalContentSource
             }
             catch (InvalidDataException exception)
             {
-                // An entry that is not listed is never written out, so its path need not be relative.
+                // An entry that is not listed is never written out, so its path need not be portable.
                 if ((flags & InvalidFlag) == 0)
-                    throw new InvalidDataException($"InstallShield 3 file {index} has a path that is not relative: '{combined}'.", exception);
+                    throw new InvalidDataException($"InstallShield 3 file {index} has a path that is not portable. {exception.Message}", exception);
                 path = null;
             }
 

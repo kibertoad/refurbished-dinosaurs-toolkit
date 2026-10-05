@@ -354,6 +354,33 @@ public sealed class AssetFingerprintTests
     }
 
     [Fact]
+    public async Task InstalledVerifierReportsARecordWithAReservedCharacterAndWhy()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var hash = FileFingerprint.Xxh3("abc"u8);
+            var manifest = new InstalledAssetManifest(1, "game", "retail", new string('0', 64), DateTimeOffset.UtcNow,
+                [new("data/a?.bin", 3, hash, "A"), new("data/b\u0002.bin", 3, hash, "B")], "1.0.0");
+            var result = await InstalledAssetVerifier.VerifyAsync(root, manifest, Expectations(rejectUnlisted: false),
+                TestContext.Current.CancellationToken);
+            // The manifest's all-zero source fingerprint adds an issue of its own; only the paths matter here.
+            Assert.Collection(result.Issues.Where(issue => issue.Problem != InstalledAssetProblem.SourceFingerprintInvalid),
+                issue =>
+                {
+                    Assert.Equal((InstalledAssetProblem.UnsafePath, "data/a?.bin"), (issue.Problem, issue.Path));
+                    Assert.Contains("it contains '?', which Windows does not allow in a file name", issue.Detail);
+                },
+                issue =>
+                {
+                    Assert.Equal((InstalledAssetProblem.UnsafePath, "data/b\u0002.bin"), (issue.Problem, issue.Path));
+                    Assert.Contains("\"data/b\\u0002.bin\"", issue.Detail);
+                });
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task InstalledVerifierReportsAMissingOrUnreadableManifest()
     {
         var root = CreateTemporaryDirectory();

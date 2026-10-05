@@ -50,7 +50,7 @@ public sealed record InstallShieldCabinetLimits(
 /// </summary>
 /// <param name="Index">The entry's index in the cabinet's or archive's file table.</param>
 /// <param name="Path">
-/// The entry's path, when it has a name that reads and is relative; otherwise <see langword="null"/>.
+/// The entry's path, when it has a name that reads and <see cref="PortableAssetPath.Relative"/> accepts; otherwise <see langword="null"/>.
 /// </param>
 /// <param name="Reason">Why the entry is not listed.</param>
 public sealed record InstallShieldSkippedFile(int Index, string? Path, string Reason);
@@ -170,7 +170,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
             }
             catch (InvalidDataException exception)
             {
-                throw new InvalidDataException($"InstallShield file {index} has a path that is not relative: '{combined}'.", exception);
+                throw new InvalidDataException($"InstallShield file {index} has a path that is not portable. {exception.Message}", exception);
             }
         }
 

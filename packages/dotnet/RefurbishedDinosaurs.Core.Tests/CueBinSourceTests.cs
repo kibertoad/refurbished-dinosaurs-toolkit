@@ -155,6 +155,11 @@ public sealed class CueBinSourceTests
         Assert.Throws<InvalidDataException>(() => CueBinSheet.Parse(text));
 
     [Fact]
+    public void CueParserNamesTheRuleAFileReferenceBreaks() =>
+        Assert.Contains("'?'", Assert.Throws<InvalidDataException>(() =>
+            CueBinSheet.Parse("FILE \"a?.bin\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n")).Message);
+
+    [Fact]
     public void CueParserKeepsEveryIndex()
     {
         var sheet = CueBinSheet.Parse(

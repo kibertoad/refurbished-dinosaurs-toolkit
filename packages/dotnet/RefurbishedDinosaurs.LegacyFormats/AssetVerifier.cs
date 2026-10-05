@@ -250,15 +250,20 @@ public static class AssetVerifier
         }
     }
 
-    // Writes an identifier as a JSON string, so a control character in a label (C0, DEL or C1)
-    // stays on one line of the report and the value can be copied into a manifest as it stands.
-    private static string JsonString(string value)
+    // Writes an identifier or a name as a JSON string, so a control character (C0, DEL or C1) or an
+    // unpaired surrogate stays visible on one line of the report and the value can be copied into a
+    // manifest as it stands. It escapes as PortableAssetPath does in Core's messages; the two stay
+    // separate because Core and LegacyFormats ship as separately versioned packages.
+    internal static string JsonString(string value)
     {
         var text = new System.Text.StringBuilder("\"", value.Length + 2);
-        foreach (var c in value)
+        for (var index = 0; index < value.Length; index++)
         {
+            var c = value[index];
             if (c is '"' or '\\') text.Append('\\').Append(c);
-            else if (char.IsControl(c)) text.Append($"\\u{(int)c:X4}");
+            else if (char.IsHighSurrogate(c) && index + 1 < value.Length && char.IsLowSurrogate(value[index + 1]))
+                text.Append(c).Append(value[++index]);
+            else if (char.IsControl(c) || char.IsSurrogate(c)) text.Append($"\\u{(int)c:X4}");
             else text.Append(c);
         }
         return text.Append('"').ToString();

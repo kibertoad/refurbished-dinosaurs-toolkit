@@ -344,3 +344,52 @@ or the character itself, and `"\u0085"` for a control byte), reading the value f
 reference copy or from the `WrongVolumeIdentifier` detail. Changing the pin changes the manifest's
 `Fingerprint()`, so copies installed with the old manifest are imported again. Code that compares
 `Label` with a string holding `?` for those bytes changes the same way.
+
+### Characters a portable path rejects
+
+`PortableAssetPath.Relative` now rejects every C0 control character (U+0000 to U+001F), DEL
+(U+007F), each of `< > " | ? *`, and a UTF-16 surrogate without its pair, on every host. It rejected
+only NUL and `:` among these before, so a name such as `bad<name.dat` passed validation and then
+failed when Windows created the file, while Linux and macOS wrote a name Windows cannot open. C1
+control characters (U+0080 to U+009F) are still accepted, since the Latin-1 readers give them for
+bytes that hold letters in DOS and Shift-JIS names. Spaces, `~ # & + ! ' ( ) [ ] @` and non-ASCII
+letters are accepted as before.
+
+Everything that calls `Relative` rejects these names too: `ResolveFile`, `ResolveDirectory`,
+`PortablePathLayout`, `AssetManifest.Validate`, `AssetVerifier`, content overlay manifests,
+`ContentOverlayResult.UpdateInstalledFiles`, `ContentSourceExtractor`, `CueBinSheet.Parse`, and
+`OriginalContentSource.TryGetFile` and `OpenRead`. `InstalledAssetVerifier` reports such a record as
+`UnsafePath`, and its detail now gives the reason after `Unsafe path.`.
+
+Opening a source now fails on such a name where it used to list it:
+
+- An InstallShield cabinet or InstallShield 3 archive member, as for a traversal path before. A
+  member the archive marks invalid is still skipped, with a `null` path in `SkippedFiles`.
+- A file in a directory source. `OpenDirectory` now checks every file's path when it opens, so a
+  directory on Linux or macOS holding a name such as `Icon\r` or `a?b.dat`, a reserved device name,
+  a name ending in a dot or a space, or a name with `\` in it throws `InvalidDataException` naming
+  the file. Such files were listed before, and `OpenRead` or the extractor then refused them.
+- An ISO 9660 file or directory name. Names now read byte for byte as Latin-1, as `Label` does,
+  where ASCII turned every byte above 0x7F into `?`. A disc whose names hold such bytes now lists
+  them under their Latin-1 spelling (byte 0xC9 gives `É`), and a manifest or lookup that wrote `?`
+  for them changes the same way as a volume identifier pin (see above).
+- A file or directory name read by the `Iso9660` class on a `RawMode1Image`. It now reads the volume
+  with the same reader as `OpenIso9660`, so its names are Latin-1 and checked as above, and it also
+  applies that reader's other checks, which it skipped before: both-endian fields agreeing, the
+  declared volume inside the data track, every extent inside the volume, no multi-extent entries, no
+  two files sharing a path ignoring case, and the limits on directory depth, size and entry count.
+  A volume that fails one throws `InvalidDataException` with the `OpenIso9660` message. `Files`
+  keeps its depth-first directory order. The constructor and `ReadFile` also check each raw sector
+  they read for the MODE1/2352 sync pattern and mode byte, as `OpenCueBin` does, so an image that is
+  really MODE2 or does not match its cue sheet throws `InvalidDataException` naming the sector, and
+  a BIN shorter than the data track fails with the `OpenIso9660` message for a volume that exceeds
+  the image. `ReadFile` throws `ArgumentNullException` for a null file.
+
+The rejection messages changed. `Relative` throws `Asset reference "<reference>" is not a portable
+relative path: <rule>.`, with the reference as a JSON string, and the readers' messages say
+`has a path that is not portable` followed by that message. Code that matched the old text
+`must contain only relative path components` or `has a path that is not relative` matches the new
+text or catches `InvalidDataException` alone.
+
+Rename such entries in manifests, overlays and lookups. Restorations that checked these characters
+themselves before calling `Relative` can drop the check.

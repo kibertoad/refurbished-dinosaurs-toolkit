@@ -290,15 +290,35 @@ public sealed class ContentSourceExtractorTests : IDisposable
         Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(root, "CD")));
     }
 
-    [Fact]
-    public async Task AnUnsafeSourcePathIsRejectedBeforeWriting()
+    [Theory]
+    [InlineData("bad./x.bin")]
+    [InlineData("bad<x.bin")]
+    [InlineData("data/bad?x.bin")]
+    [InlineData("bad\u0001x.bin")]
+    public async Task AnUnsafeSourcePathIsRejectedBeforeWriting(string unsafePath)
     {
-        using var source = new ListedSource(new() { ["ok.bin"] = [1], ["bad./x.bin"] = [2] });
+        // The source sorts its listing, so the unsafe path is planned after "a.bin" on every host.
+        using var source = new ListedSource(new() { ["a.bin"] = [1], [unsafePath] = [2] });
         var root = Directory.CreateDirectory(Path.Combine(_work, "root")).FullName;
 
-        await Assert.ThrowsAsync<InvalidDataException>(() => ContentSourceExtractor.ExtractAsync(source, root, null, Token));
+        var exception = await Assert.ThrowsAsync<InvalidDataException>(
+            () => ContentSourceExtractor.ExtractAsync(source, root, null, Token));
 
+        Assert.Contains("is not a portable relative path", exception.Message);
         Assert.Empty(Directory.EnumerateFileSystemEntries(root));
+    }
+
+    [Fact]
+    public async Task OrdinaryLegacyNamesAreCopiedUnderTheirSourceSpelling()
+    {
+        string[] names = ["My Data~1/#1 & 2+!'(x)[y]@z.bin", "Données/ÉCRAN\u0082.PCX"];
+        using var source = new ListedSource(names.ToDictionary(name => name, _ => new byte[] { 7 }));
+        var root = Directory.CreateDirectory(Path.Combine(_work, "root")).FullName;
+
+        var records = await ContentSourceExtractor.ExtractAsync(source, root, null, Token);
+
+        Assert.Equal(names.OrderBy(name => name, StringComparer.OrdinalIgnoreCase), records.Select(record => record.Path));
+        Assert.All(names, name => Assert.True(File.Exists(Path.Combine(root, name))));
     }
 
     // Builds an ISO 9660 image of the files, one directory sector per directory, files after them.

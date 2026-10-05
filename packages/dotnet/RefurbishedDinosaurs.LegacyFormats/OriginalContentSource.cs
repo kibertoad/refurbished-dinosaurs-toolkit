@@ -90,7 +90,11 @@ public abstract class OriginalContentSource : IDisposable
     /// </exception>
     public virtual Stream OpenBin() =>
         throw new NotSupportedException($"A {Kind} source has no BIN image.");
-    /// <summary>Every file, sorted by path ignoring case.</summary>
+    /// <summary>
+    /// Every file, sorted by path ignoring case. The sources this class opens list only paths
+    /// <see cref="PortableAssetPath.Relative"/> accepts: a file whose path it rejects makes opening
+    /// the source throw <see cref="InvalidDataException"/> naming the file and the rule its path breaks.
+    /// </summary>
     public abstract IReadOnlyList<ContentSourceEntry> Files { get; }
     /// <summary>Looks up a file.</summary>
     /// <exception cref="InvalidDataException"><paramref name="relativePath"/> is not accepted by <see cref="PortableAssetPath.Relative"/>.</exception>
@@ -167,8 +171,17 @@ public abstract class OriginalContentSource : IDisposable
         _ => throw new InvalidDataException($"Unsupported original-content source kind '{kind}'.")
     };
 
-    /// <summary>Opens an installed directory. Reparse points are skipped.</summary>
+    /// <summary>
+    /// Opens an installed directory. Reparse points are skipped. Every file's path below the directory
+    /// must pass <see cref="PortableAssetPath.Relative"/>, so the source lists only files it can open
+    /// by the listed path and that copy out under the same name on every host. A file whose name
+    /// holds a <c>\</c>, which Linux and macOS allow, is rejected too, since <c>\</c> reads as a
+    /// separator in a source path.
+    /// </summary>
     /// <exception cref="FileNotFoundException">The directory does not exist.</exception>
+    /// <exception cref="InvalidDataException">
+    /// A file's path is not portable. The message names the file and the rule its path breaks.
+    /// </exception>
     public static OriginalContentSource OpenDirectory(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -179,7 +192,9 @@ public abstract class OriginalContentSource : IDisposable
     /// <summary>
     /// Opens an ISO 9660 image with 2048-byte sectors. It is checked when opened: block size, volume size
     /// against the file, both-endian fields agreeing, and every directory and file extent inside the
-    /// volume. The source records the image's length and last-write time here, and every later read
+    /// volume. Each directory and file name reads byte for byte as Latin-1 (ISO-8859-1), and without
+    /// its <c>;</c> version suffix and trailing dots must pass <see cref="PortableAssetPath.Relative"/>
+    /// as one component, or opening throws <see cref="InvalidDataException"/> naming it. The source records the image's length and last-write time here, and every later read
     /// of the image through it (<see cref="OpenRead"/> and <see cref="OpenVolume"/>) compares them with
     /// the file when it opens it and fails with an <see cref="IOException"/> when either has changed.
     /// A rewrite that keeps both the length and the last-write time is not detected.
@@ -272,7 +287,7 @@ public abstract class OriginalContentSource : IDisposable
     /// <param name="limits">The bounds to apply, or <see langword="null"/> for <see cref="InstallShieldCabinetLimits.Default"/>.</param>
     /// <exception cref="FileNotFoundException">The header or a volume a member needs does not exist.</exception>
     /// <exception cref="InvalidDataException">
-    /// The header or a volume is truncated or malformed, a member's path is not relative, two different
+    /// The header or a volume is truncated or malformed, a member's path is not accepted by <see cref="PortableAssetPath.Relative"/>, two different
     /// members share a path, or the set exceeds <paramref name="limits"/>.
     /// </exception>
     /// <exception cref="NotSupportedException">The header's InstallShield major version is not 0, 5 or 6.</exception>
@@ -297,7 +312,7 @@ public abstract class OriginalContentSource : IDisposable
     /// <exception cref="FileNotFoundException">The header or a volume a member needs is not in <paramref name="container"/>.</exception>
     /// <exception cref="InvalidDataException">
     /// <paramref name="headerPath"/> is not accepted by <see cref="PortableAssetPath.Relative"/>, the
-    /// header or a volume is truncated or malformed, a member's path is not relative, two different
+    /// header or a volume is truncated or malformed, a member's path is not accepted by <see cref="PortableAssetPath.Relative"/>, two different
     /// members share a path, or the set exceeds <paramref name="limits"/>.
     /// </exception>
     /// <exception cref="NotSupportedException">The header's InstallShield major version is not 0, 5 or 6.</exception>
@@ -320,7 +335,7 @@ public abstract class OriginalContentSource : IDisposable
     /// <exception cref="FileNotFoundException">The archive does not exist.</exception>
     /// <exception cref="InvalidDataException">
     /// The file is not an InstallShield 3 archive, its header or tables are truncated or malformed, a
-    /// member's path is not relative or its data lies outside the archive, a member of a split archive
+    /// member's path is not accepted by <see cref="PortableAssetPath.Relative"/> or its data lies outside the archive, a member of a split archive
     /// of one part names another part, two members share a path, or the archive exceeds
     /// <paramref name="limits"/>.
     /// </exception>
@@ -413,7 +428,19 @@ internal sealed class DirectoryContentSource : OriginalContentSource
         };
         foreach (var fullPath in Directory.EnumerateFiles(root, "*", options))
         {
-            var relative = Path.GetRelativePath(root, fullPath).Replace('\\', '/');
+            var relative = Path.GetRelativePath(root, fullPath);
+            // On Linux and macOS a '\' is part of a name, and would read as a separator below.
+            if (Path.DirectorySeparatorChar == '/' && relative.Contains('\\'))
+                throw new InvalidDataException(
+                    $"Source file {AssetVerifier.JsonString(relative)} has a name that holds '\\', which Windows does not allow in a file name.");
+            try
+            {
+                relative = PortableAssetPath.Relative(relative);
+            }
+            catch (InvalidDataException exception)
+            {
+                throw new InvalidDataException($"Source file has a path that is not portable. {exception.Message}", exception);
+            }
             var entry = new ContentSourceEntry(relative, new FileInfo(fullPath).Length);
             if (!files.TryAdd(relative, (entry, fullPath)))
                 throw new InvalidDataException($"Source contains duplicate path '{relative}'.");
@@ -459,14 +486,18 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     private readonly CueBinFiles? cueBin;
     private readonly long volumeLength;
     private readonly Dictionary<string, IsoEntry> files = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<IsoFile>? listing;
 
     // openImage returns a new seekable stream of 2048-byte sectors each time. A cue/bin source passes
-    // the files it chose; its audio tracks are read from the BIN.
-    public Iso9660ContentSource(Func<Stream> openImage, string kind, CueBinFiles? cueBin)
+    // the files it chose; its audio tracks are read from the BIN. When listing is given, every file
+    // is added to it in directory order, depth first, as Iso9660 lists them.
+    public Iso9660ContentSource(
+        Func<Stream> openImage, string kind, CueBinFiles? cueBin, List<IsoFile>? listing = null)
     {
         this.openImage = openImage;
         Kind = kind;
         this.cueBin = cueBin;
+        this.listing = listing;
         using var stream = openImage();
         var imageLength = stream.Length;
         if (imageLength < 18L * SectorSize)
@@ -579,6 +610,7 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
             var entry = new ContentSourceEntry(relative, record.DataLength);
             if (!files.TryAdd(relative, new IsoEntry(entry, record.Extent)))
                 throw new InvalidDataException($"ISO9660 image contains duplicate path '{relative}'.");
+            listing?.Add(new IsoFile(relative, record.Extent, record.DataLength));
             if (files.Count > MaximumEntries)
                 throw new InvalidDataException("ISO9660 entry count exceeds the safety limit.");
         }
@@ -601,7 +633,9 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
             throw new InvalidDataException("ISO9660 directory identifier is truncated.");
         var extent = ReadBothEndianUInt32(data, offset + 2, "extent");
         var length = ReadBothEndianUInt32(data, offset + 10, "data length");
-        var identifier = Encoding.ASCII.GetString(data, offset + 33, identifierLength);
+        // Latin-1 keeps each byte as the character of the same value. ASCII would turn every byte
+        // above 0x7F into '?', a name the disc does not hold.
+        var identifier = Encoding.Latin1.GetString(data, offset + 33, identifierLength);
         var flags = data[offset + 25];
         return new(extent, length, identifier, (flags & 0x02) != 0, (flags & 0x80) != 0);
     }
@@ -627,11 +661,20 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
         var separator = identifier.LastIndexOf(';');
         var name = separator >= 0 ? identifier[..separator] : identifier;
         name = name.TrimEnd('.');
-        // ':' would name an alternate data stream on Windows once a caller writes the file out.
-        if (string.IsNullOrWhiteSpace(name) || name.Contains('/') || name.Contains('\\') || name.Contains(':') ||
-            name.Any(char.IsControl))
-            throw new InvalidDataException($"Invalid ISO9660 identifier '{identifier}'.");
-        return name;
+        // A separator inside one identifier would read as two components.
+        if (name.Contains('/') || name.Contains('\\'))
+            throw new InvalidDataException(
+                $"ISO9660 identifier {AssetVerifier.JsonString(identifier)} holds a path separator.");
+        try
+        {
+            return PortableAssetPath.Relative(name);
+        }
+        catch (InvalidDataException exception)
+        {
+            throw new InvalidDataException(
+                $"ISO9660 identifier {AssetVerifier.JsonString(identifier)} is not a portable name. {exception.Message}",
+                exception);
+        }
     }
 
     // Latin-1 maps each byte to the character of the same value, so the label keeps every byte.
