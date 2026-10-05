@@ -1,5 +1,11 @@
 # @scientific-method/standard-checker
 
+## 1.0.0
+
+### Major Changes
+
+- 024b6cf: The citation check reads `.fs` files under `--code` and `--references` like the other code files, so an F# file that cites a spec ID that does not exist or is superseded, or a deviation ID missing from `deviations/`, now fails the check.
+
 ## 0.6.0
 
 ### Minor Changes
