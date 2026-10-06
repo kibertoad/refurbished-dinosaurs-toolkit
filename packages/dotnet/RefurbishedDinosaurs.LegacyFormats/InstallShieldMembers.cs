@@ -4,14 +4,16 @@ namespace RefurbishedDinosaurs.LegacyFormats;
 
 /// <summary>
 /// One file of an <see cref="InstallShieldCabinetSource"/> or an <see cref="InstallShieldArchiveSource"/>,
-/// with the file-table entry it is read from: a listed member (the source's <c>Members</c>), or one of
-/// the files at a path that holds different files (<see cref="InstallShieldPathConflict.Files"/>).
+/// with the file-table entry it is read from: a listed member (the source's <c>Members</c>), one of
+/// the files at a path that holds different files (<see cref="InstallShieldPathConflict.Files"/>), or a
+/// cabinet's file stored outside its volumes (<see cref="InstallShieldOutsideFile.Member"/>).
 /// </summary>
 /// <param name="Entry">
 /// The file's path and expanded size. Its path is the entry's directory and name joined. For a listed
 /// member it is the entry <see cref="OriginalContentSource.Files"/> lists and the path
-/// <see cref="OriginalContentSource.OpenRead"/> takes; for a file of a path conflict, no file is listed
-/// at the path, and the source's <c>OpenEntry</c> reads it by <see cref="InstallShieldEntryMetadata.Index"/>.
+/// <see cref="OriginalContentSource.OpenRead"/> takes; for a file of a path conflict or a file stored
+/// outside, no file is listed at the path, and the source's <c>OpenEntry</c> reads it by
+/// <see cref="InstallShieldEntryMetadata.Index"/> when the source reads it.
 /// </param>
 /// <param name="Metadata">The file-table entry the file is read from.</param>
 /// <param name="SharedBy">
@@ -40,8 +42,9 @@ public sealed record InstallShieldMember(
 /// <param name="StoredOutside">
 /// The entries at the path whose data is stored outside the cabinet and whose file the cabinet does
 /// not also hold inside, in table order, which <see cref="InstallShieldCabinetSource.SkippedFiles"/>
-/// lists as <see cref="InstallShieldSkippedFileKind.StoredOutsideCabinet"/>. They are not read. An
-/// entry stored outside that a version 6 copy inside the cabinet matches in expanded size and MD5 is
+/// lists as <see cref="InstallShieldSkippedFileKind.StoredOutsideCabinet"/>. They are not read, since
+/// a file found beside the header at the path cannot be told to be any one of the path's files
+/// (<see cref="InstallShieldOutsideFileStatus.PathHeldByDifferentFiles"/>). An entry stored outside that a version 6 copy inside the cabinet matches in expanded size and MD5 is
 /// in that copy's <see cref="InstallShieldMember.SharedBy"/> in <paramref name="Files"/> instead, and
 /// reads that copy's bytes. Empty for an InstallShield 3 archive.
 /// </param>
@@ -56,6 +59,75 @@ public sealed record InstallShieldPathConflict(
         return $"The path holds different files: files {string.Join(", ", all[..^1])} and {all[^1]}, so none is listed at it.";
     }
 }
+
+/// <summary>
+/// What an <see cref="InstallShieldCabinetSource"/> found where it looked for a file stored outside the
+/// cabinet: beside the header, at <see cref="InstallShieldOutsideFile.LookupPath"/>, matched ignoring case.
+/// </summary>
+public enum InstallShieldOutsideFileStatus
+{
+    /// <summary>
+    /// Exactly one file is at the path, its length is exactly the entry's stored size, and the path
+    /// holds no other file of the cabinet. The source's <c>OpenEntry</c> reads it.
+    /// </summary>
+    Available,
+
+    /// <summary>No file is at the path.</summary>
+    Missing,
+
+    /// <summary>
+    /// One file is at the path, and its length (<see cref="InstallShieldOutsideFile.FoundLength"/>)
+    /// is not the entry's stored size. It is not read: the reader does not know how such a file
+    /// relates to the entry's data.
+    /// </summary>
+    LengthDiffers,
+
+    /// <summary>
+    /// More than one file matches the path ignoring case, which a case-sensitive file system can hold.
+    /// None of them is read.
+    /// </summary>
+    SeveralMatches,
+
+    /// <summary>
+    /// The path, ignoring case, holds other files of the cabinet too
+    /// (<see cref="InstallShieldCabinetSource.PathConflicts"/>), so a file there cannot be told to be
+    /// this one. It is not read. <see cref="InstallShieldOutsideFile.FoundLength"/> still gives the
+    /// length of a file found there.
+    /// </summary>
+    PathHeldByDifferentFiles,
+
+    /// <summary>
+    /// The entry holding the file's data is a version 6 link target with no name, or with a path
+    /// <see cref="PortableAssetPath.Relative"/> does not accept, so there is no path to look up.
+    /// </summary>
+    NoUsablePath,
+}
+
+/// <summary>
+/// One file an <see cref="InstallShieldCabinetSource"/> holds outside its volumes: an entry whose data
+/// offset is the length of the volume that would hold it, with the entries that share its data.
+/// </summary>
+/// <param name="Member">
+/// The file's path and expanded size, the entry it was first found at, and the entries at its path that
+/// share its data, with their file groups.
+/// </param>
+/// <param name="LookupPath">
+/// Where the file was looked for, relative to the folder that holds the header: the directory and name
+/// of the entry that holds its data, which for a version 6 link is the entry the link ends at. It is
+/// <see langword="null"/> with <see cref="InstallShieldOutsideFileStatus.NoUsablePath"/>.
+/// </param>
+/// <param name="StoredSize">
+/// The bytes the header says the cabinet stores for the file: its compressed size when
+/// <paramref name="Compressed"/>, its expanded size otherwise. A file found must have exactly this length to be read.
+/// </param>
+/// <param name="Compressed">Whether the entry is compressed, so the file found is read as compressed data.</param>
+/// <param name="Status">What was found at <paramref name="LookupPath"/>.</param>
+/// <param name="FoundLength">
+/// The length of the file found when exactly one matched, otherwise <see langword="null"/>.
+/// </param>
+public sealed record InstallShieldOutsideFile(
+    InstallShieldMember Member, string? LookupPath, long StoredSize, bool Compressed,
+    InstallShieldOutsideFileStatus Status, long? FoundLength);
 
 /// <summary>What the header records about one file-table entry, beyond its data.</summary>
 /// <param name="Index">The entry's index in the cabinet's or archive's file table.</param>

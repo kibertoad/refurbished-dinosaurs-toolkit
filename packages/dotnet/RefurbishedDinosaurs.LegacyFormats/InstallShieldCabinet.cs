@@ -1,6 +1,4 @@
 using System.Buffers.Binary;
-using System.Collections.Concurrent;
-using System.Text;
 using RefurbishedDinosaurs.Core.IO;
 
 namespace RefurbishedDinosaurs.LegacyFormats;
@@ -98,7 +96,8 @@ public enum InstallShieldSkippedFileKind
     /// <summary>
     /// The entry's data is stored outside the cabinet's volumes: the entry has stored bytes and its data
     /// offset is the exact length of the volume where its data starts, split or not, which is how
-    /// Unshield recognizes such a file. The reader does not read files outside the cabinet. Entries
+    /// Unshield recognizes such a file. The cabinet source looks for the file beside the header and
+    /// reports what it found in its <c>OutsideFiles</c>; the entry stays unlisted either way. Entries
     /// that link to its data, and version 6 copies of it at its path that are also stored outside,
     /// have this kind too. A volume cut short exactly where its last member's data starts reads the
     /// same way, so the reason gives the offset and the volume.
@@ -165,7 +164,14 @@ public sealed record InstallShieldSkippedFile(int Index, string? Path, InstallSh
 /// and the rest of the set opens. As Unshield tells it, such an entry's data offset is exactly the
 /// length of the volume where its data starts, whether or not the entry is split. An extent that starts past that
 /// length, or that starts inside the volume and runs past its end, is damage and fails the open.
-/// Files stored outside the cabinet are not looked for or read.
+/// </para>
+/// <para>
+/// Each file stored outside the cabinet is looked for where Unshield's <c>-O</c> looks: beside the
+/// header, at the directory and name of the entry that holds its data, matched ignoring case. The
+/// source reports what it found in <see cref="OutsideFiles"/>. Only a file found exactly once, with
+/// exactly the entry's stored length, at a path that holds no other file, is read, by
+/// <see cref="OpenEntry"/>. Nothing else is searched for, and <see cref="Files"/> never lists a file
+/// stored outside.
 /// </para>
 /// <para>
 /// Compressed members are decoded in the <see cref="InstallShieldCompressedFormat"/> chosen when the
@@ -213,6 +219,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     private const byte LinkPreviousFlag = 1;
 
     private readonly Func<int, Stream> openVolume;
+    private readonly InstallShieldOutsideStore outside;
     private readonly Dictionary<string, Member> members = new(StringComparer.OrdinalIgnoreCase);
     // The file each entry's index reads: a listed member's entries and a contested path's files inside the cabinet.
     private readonly Dictionary<int, Member> readable = [];
@@ -223,10 +230,11 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
 
     // limits and compressedFormat have been validated by the caller.
     internal InstallShieldCabinetSource(
-        InstallShieldHeaderReader reader, Func<int, Stream> openVolume, InstallShieldCabinetLimits limits,
-        InstallShieldCompressedFormat compressedFormat)
+        InstallShieldHeaderReader reader, Func<int, Stream> openVolume, InstallShieldOutsideStore outside,
+        InstallShieldCabinetLimits limits, InstallShieldCompressedFormat compressedFormat)
     {
         this.openVolume = openVolume;
+        this.outside = outside;
         CompressedFormat = compressedFormat;
         var signature = reader.UInt32(0);
         if (signature == MicrosoftCabinetSignature)
@@ -295,6 +303,19 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 ? ReadVersion5Descriptor(reader, table + reader.UInt32(table + 4L * (directoryCount + index)),
                     MajorVersion == 0 ? Version0DescriptorSize : Version5DescriptorSize)
                 : ReadVersion6Descriptor(reader, table + descriptorsOffset + (long)index * Version6DescriptorSize);
+
+        string? LinkedPath(int index, FileDescriptor file)
+        {
+            if (file.NameOffset == 0) return null;
+            try
+            {
+                return EntryPath(index, file).Path;
+            }
+            catch (InvalidDataException)
+            {
+                return null;
+            }
+        }
 
         var skipped = new List<InstallShieldSkippedFile>();
         // The different files at each path, in the order their first entries come in the table. A
@@ -378,9 +399,15 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
             var segments = Segments(dataIndex, data, descriptors.Length, out var outsideVolume);
             var member = new Member(
                 new ContentSourceEntry(path, data.ExpandedSize), index, dataIndex, (data.Flags & CompressedFlag) != 0,
-                (data.Flags & ObfuscatedFlag) != 0, md5, segments, entryName);
+                (data.Flags & ObfuscatedFlag) != 0, md5, segments, entryName)
+            {
+                StoredSize = (data.Flags & CompressedFlag) != 0 ? data.CompressedSize : data.ExpandedSize
+            };
             if (segments is null)
             {
+                // Unshield looks for a file stored outside by the directory and name of the entry that
+                // holds its data, which for a link is the entry the link ends at.
+                member.LookupPath = dataIndex == index ? path : LinkedPath(dataIndex, data);
                 var evidence = $"its data offset, {data.DataOffset}, is the length of volume {outsideVolume}, which would hold it";
                 var record = new InstallShieldSkippedFile(index, path, InstallShieldSkippedFileKind.StoredOutsideCabinet,
                     same is not null
@@ -440,10 +467,38 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         Files = listed.Select(member => member.Entry).ToArray();
         conflicts.Sort((left, right) => StringComparer.OrdinalIgnoreCase.Compare(left.Path, right.Path));
 
+        // Each file stored outside is looked up beside the header, at the path of the entry that holds
+        // its data. Only one found there with exactly its stored length is read. At a path that holds
+        // other files too, the file found cannot be told to be this one, so it is not read.
+        var storedOutside = byPath.Values
+            .SelectMany(files => files.Where(file => file.Segments is null).Select(file => (File: file, Contested: files.Count > 1)))
+            .OrderBy(item => item.File.Index).ToArray();
+        foreach (var (file, isContested) in storedOutside)
+        {
+            if (file.LookupPath is null)
+            {
+                file.OutsideStatus = InstallShieldOutsideFileStatus.NoUsablePath;
+                continue;
+            }
+            var (matches, length) = outside.Find(file.LookupPath);
+            file.FoundLength = matches == 1 ? length : null;
+            file.OutsideStatus = isContested ? InstallShieldOutsideFileStatus.PathHeldByDifferentFiles
+                : matches == 0 ? InstallShieldOutsideFileStatus.Missing
+                : matches > 1 ? InstallShieldOutsideFileStatus.SeveralMatches
+                : length != file.StoredSize ? InstallShieldOutsideFileStatus.LengthDiffers
+                : InstallShieldOutsideFileStatus.Available;
+            if (file.OutsideStatus != InstallShieldOutsideFileStatus.Available) continue;
+            if (file.Entry.Size > limits.MaximumExpandedBytes - expandedTotal)
+                throw new InvalidDataException(
+                    $"InstallShield cabinet expands to more than the limit of {limits.MaximumExpandedBytes} bytes.");
+            expandedTotal += file.Entry.Size;
+        }
+
         // The file groups are read last, from the header already open, so a set that opens without
         // them opens the same way with them: what does not read is reported, never thrown. They are
-        // read for every entry of a listed member and of a contested path.
-        var described = listed.Concat(conflicts.SelectMany(conflict => conflict.Files)).ToArray();
+        // read for every entry of a listed member, of a contested path and of a file stored outside.
+        var described = listed.Concat(conflicts.SelectMany(conflict => conflict.Files))
+            .Concat(storedOutside.Where(item => !item.Contested).Select(item => item.File)).ToArray();
         var groupTable = InstallShieldFileGroupTable.Read(reader, descriptor, MajorVersion, descriptors.Length, limits);
         var (memberships, groupProblem) = groupTable.Memberships(described
             .SelectMany(member => member.SharedBy.Prepend(member.Listed)).Select(entry => entry.Index)
@@ -455,10 +510,13 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         foreach (var member in described)
         {
             member.Metadata = new(member.Entry, Metadata(member.Listed), member.SharedBy.Select(Metadata).ToArray());
-            if (member.Segments is null) continue;
+            if (member.Segments is null && member.OutsideStatus != InstallShieldOutsideFileStatus.Available) continue;
             foreach (var entry in member.SharedBy.Prepend(member.Listed)) readable.Add(entry.Index, member);
         }
         Members = listed.Select(member => member.Metadata!).ToArray();
+        OutsideFiles = storedOutside.Select(item => new InstallShieldOutsideFile(
+            item.File.Metadata!, item.File.LookupPath, item.File.StoredSize, item.File.Compressed,
+            item.File.OutsideStatus, item.File.FoundLength)).ToArray();
         PathConflicts = conflicts.Select(conflict => new InstallShieldPathConflict(
             conflict.Path,
             conflict.Files.Where(file => file.Segments is not null).Select(file => file.Metadata!).ToArray(),
@@ -514,6 +572,18 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     /// Empty when every path holds one file.
     /// </summary>
     public IReadOnlyList<InstallShieldPathConflict> PathConflicts { get; }
+
+    /// <summary>
+    /// Each file whose data is stored outside the cabinet's volumes, in the table order of its first
+    /// entry, with where the source looked for it and what it found there
+    /// (<see cref="InstallShieldOutsideFile.Status"/>). Its entries are in <see cref="SkippedFiles"/> as
+    /// <see cref="InstallShieldSkippedFileKind.StoredOutsideCabinet"/>, and <see cref="Files"/> does not
+    /// list it. <see cref="OpenEntry"/> reads one whose status is
+    /// <see cref="InstallShieldOutsideFileStatus.Available"/>, whose expanded size counts toward
+    /// <see cref="InstallShieldCabinetLimits.MaximumExpandedBytes"/>. Empty when every entry's data lies
+    /// inside the volumes.
+    /// </summary>
+    public IReadOnlyList<InstallShieldOutsideFile> OutsideFiles { get; }
 
     /// <summary>
     /// The file groups the cabinet descriptor lists, in the order Unshield reads them: its 71 lists in
@@ -579,15 +649,21 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     /// <summary>
     /// Opens the file a file-table entry holds, by the entry's index, as <see cref="OpenRead"/> opens a
     /// member. The entry is one of a listed member (<see cref="InstallShieldMember.Metadata"/> or
-    /// <see cref="InstallShieldMember.SharedBy"/> in <see cref="Members"/>), or of a file of a path that
-    /// holds different files (<see cref="InstallShieldPathConflict.Files"/>). An entry in
-    /// <see cref="InstallShieldMember.SharedBy"/> reads the bytes of the member it belongs to.
+    /// <see cref="InstallShieldMember.SharedBy"/> in <see cref="Members"/>), of a file of a path that
+    /// holds different files (<see cref="InstallShieldPathConflict.Files"/>), or of a file stored outside
+    /// the cabinet that was found beside the header (<see cref="OutsideFiles"/> with the status
+    /// <see cref="InstallShieldOutsideFileStatus.Available"/>). An entry in
+    /// <see cref="InstallShieldMember.SharedBy"/> reads the bytes of the member it belongs to. A file
+    /// stored outside is read from the file found beside the header as the file's stored bytes, in
+    /// <see cref="CompressedFormat"/> when the entry is compressed and deobfuscated when it is
+    /// obfuscated, and checked as a member inside the cabinet is.
     /// </summary>
     /// <exception cref="FileNotFoundException">
     /// No such entry holds a file the source reads: the index is outside the file table; the entry is
     /// marked invalid, has no name or data offset, or links to an entry that cannot be read; or it is
-    /// stored outside the cabinet and no version 6 copy inside matches it. A volume being gone also
-    /// throws.
+    /// stored outside the cabinet, no version 6 copy inside matches it, and its file was not found
+    /// beside the header with exactly its stored length. A volume, or a file stored outside, being
+    /// gone also throws.
     /// </exception>
     public Stream OpenEntry(int index)
     {
@@ -596,9 +672,12 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         return Open(member);
     }
 
+    // A file stored outside is read from the file found beside the header, as one segment of its stored
+    // bytes, decoded and checked as a member inside the cabinet is.
     private InstallShieldMemberStream Open(Member member) => new(
         member.Entry.Path, member.Entry.Size, member.Compressed ? CompressedFormat : null, member.Obfuscated,
-        member.Md5, member.Segments!, openVolume);
+        member.Md5, member.Segments ?? [new(0, 0, member.StoredSize)],
+        member.Segments is null ? _ => outside.Open(member.LookupPath!) : openVolume);
 
     /// <inheritdoc />
     public override void Dispose() { }
@@ -775,6 +854,13 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         public List<EntryName> SharedBy { get; } = [];
         public List<SkippedEntry> Skipped { get; } = [];
         public InstallShieldMember? Metadata { get; set; }
+        // The bytes the cabinet stores for the file: its compressed size, or its expanded size when it
+        // is not compressed.
+        public long StoredSize { get; init; }
+        // For a file stored outside: where it is looked up, what was found there and whether it is read.
+        public string? LookupPath { get; set; }
+        public long? FoundLength { get; set; }
+        public InstallShieldOutsideFileStatus OutsideStatus { get; set; }
     }
 
     private sealed record SkippedEntry(InstallShieldSkippedFile Record, string? Contested);
@@ -783,212 +869,3 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
 }
 
 internal sealed record InstallShieldSegment(int Volume, long Offset, long Length);
-
-// The header bytes a source is opened from. A .hdr is read whole. A .cab that holds the header is
-// also volume 1, and its header structures (cabinet descriptor, file table, file descriptors, names)
-// can lie anywhere before its member data: Unshield reads the whole file and does not bound them by
-// the cabinet descriptor's size. So a .cab is read forward from its start only as far as the
-// structures the source asks for reach, and never past the header limit.
-internal sealed class InstallShieldHeaderReader : IDisposable
-{
-    private const int MinimumRead = 4096;
-    private readonly Stream? stream;
-    private readonly long length;
-    private readonly int limit;
-    private readonly int maximumNameBytes;
-    private readonly string description;
-    private byte[] data;
-    private int filled;
-
-    private InstallShieldHeaderReader(
-        Stream? stream, byte[] data, long length, int limit, int maximumNameBytes, string description)
-    {
-        this.stream = stream;
-        this.data = data;
-        filled = stream is null ? data.Length : 0;
-        this.length = length;
-        this.limit = limit;
-        this.maximumNameBytes = maximumNameBytes;
-        this.description = description;
-    }
-
-    // A .hdr file, read whole by the caller.
-    public static InstallShieldHeaderReader Whole(byte[] data, string fileName, int maximumNameBytes) =>
-        new(null, data, data.Length, data.Length, maximumNameBytes, $"header file '{fileName}'");
-
-    // A .cab that holds the header. The reader owns the stream and reads it forward on demand.
-    public static InstallShieldHeaderReader Forward(Stream stream, string fileName, InstallShieldCabinetLimits limits) =>
-        new(stream, [], stream.Length, limits.MaximumHeaderBytes, limits.MaximumNameBytes, $"cabinet '{fileName}'");
-
-    public void Dispose() => stream?.Dispose();
-
-    public void Require(long offset, long count, string what)
-    {
-        if (offset < 0 || count < 0 || offset > length - count)
-            throw new InvalidDataException(
-                $"InstallShield header is truncated: its {what} lies past the end of the {length}-byte {description}.");
-        var end = offset + count;
-        if (end > limit)
-            throw new InvalidDataException(
-                $"InstallShield header's {what} ends {end} bytes into {description}, past the header limit of {limit} bytes.");
-        Load(end);
-    }
-
-    public byte Byte(long offset)
-    {
-        Require(offset, 1, "data");
-        return data[offset];
-    }
-
-    public ushort UInt16(long offset)
-    {
-        Require(offset, 2, "data");
-        return BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan((int)offset));
-    }
-
-    public uint UInt32(long offset)
-    {
-        Require(offset, 4, "data");
-        return BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan((int)offset));
-    }
-
-    public ulong UInt64(long offset)
-    {
-        Require(offset, 8, "data");
-        return BinaryPrimitives.ReadUInt64LittleEndian(data.AsSpan((int)offset));
-    }
-
-    public byte[] Bytes(long offset, int count)
-    {
-        Require(offset, count, "data");
-        return data.AsSpan((int)offset, count).ToArray();
-    }
-
-    // Names are NUL-terminated single-byte strings, read as ISO 8859-1. The terminator is looked
-    // for only within the name limit, so no name costs more than that to read.
-    public string String(long offset, string what)
-    {
-        Require(offset, 1, what);
-        var window = (int)Math.Min((long)maximumNameBytes + 1, length - offset);
-        // Within the header limit; a name that would need bytes past it fails on the limit below.
-        var searched = (int)Math.Min(window, limit - offset);
-        Load(offset + searched);
-        var end = Array.IndexOf(data, (byte)0, (int)offset, searched);
-        if (end >= 0) return Encoding.Latin1.GetString(data, (int)offset, end - (int)offset);
-        if (searched < window) Require(offset, window, what);
-        if (window <= maximumNameBytes)
-            throw new InvalidDataException($"InstallShield header is truncated: a {what} has no terminator.");
-        throw new InvalidDataException(
-            $"InstallShield header has a {what} longer than the limit of {maximumNameBytes} bytes.");
-    }
-
-    // end is at most the smaller of the file's length and the header limit, so it fits an int. The
-    // buffer grows by doubling, but each read stops MinimumRead bytes past end at most, so little of
-    // the member data after the header is read.
-    private void Load(long end)
-    {
-        if (end <= filled) return;
-        var available = Math.Min(length, limit);
-        var size = (int)Math.Min(Math.Max(end, (long)filled + MinimumRead), available);
-        if (size > data.Length) Array.Resize(ref data, (int)Math.Min(Math.Max(size, 2L * data.Length), available));
-        try
-        {
-            stream!.ReadExactly(data.AsSpan(filled, size - filled));
-        }
-        catch (EndOfStreamException exception)
-        {
-            throw new InvalidDataException($"InstallShield {description} ended before its declared length.", exception);
-        }
-        filled = size;
-    }
-}
-
-internal static class InstallShieldCabinetOpener
-{
-    public static InstallShieldCabinetSource FromDirectory(
-        string path, InstallShieldCabinetLimits limits, InstallShieldCompressedFormat compressedFormat)
-    {
-        var fullPath = Path.GetFullPath(path);
-        if (!File.Exists(fullPath)) throw new FileNotFoundException("InstallShield cabinet header does not exist.", fullPath);
-        var directory = Path.GetDirectoryName(fullPath)!;
-        var fileName = Path.GetFileName(fullPath);
-        var prefix = VolumePrefix(fileName);
-        using var header = OpenHeader(new FileStream(fullPath, FileMode.Open, FileAccess.Read, FileShare.Read), fileName, limits);
-        // Each volume's file is looked up once, not on every member read.
-        var found = new ConcurrentDictionary<int, string>();
-        return new InstallShieldCabinetSource(header, volume =>
-        {
-            if (!found.TryGetValue(volume, out var file))
-            {
-                var name = $"{prefix}{volume}.cab";
-                var matches = Directory.EnumerateFiles(directory)
-                    .Where(candidate => Path.GetFileName(candidate).Equals(name, StringComparison.OrdinalIgnoreCase)).ToArray();
-                file = matches.Length switch
-                {
-                    1 => found.GetOrAdd(volume, matches[0]),
-                    0 => throw new FileNotFoundException($"InstallShield volume {volume} was not found.", Path.Combine(directory, name)),
-                    _ => throw new InvalidDataException($"Several files match InstallShield volume name '{name}'.")
-                };
-            }
-            return new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
-        }, limits, compressedFormat);
-    }
-
-    public static InstallShieldCabinetSource FromSource(
-        OriginalContentSource container, string headerPath, InstallShieldCabinetLimits limits,
-        InstallShieldCompressedFormat compressedFormat)
-    {
-        var relative = PortableAssetPath.Relative(headerPath);
-        var separator = relative.LastIndexOf('/');
-        var directory = separator < 0 ? string.Empty : relative[..(separator + 1)];
-        var fileName = relative[(separator + 1)..];
-        var prefix = VolumePrefix(fileName);
-        if (!container.TryGetFile(relative, out _))
-            throw new FileNotFoundException("InstallShield cabinet header was not found in the source.", relative);
-        using var header = OpenHeader(container.OpenRead(relative), fileName, limits);
-        return new InstallShieldCabinetSource(header, volume =>
-        {
-            var name = $"{directory}{prefix}{volume}.cab";
-            return container.TryGetFile(name, out _)
-                ? container.OpenRead(name)
-                : throw new FileNotFoundException($"InstallShield volume {volume} was not found in the source.", name);
-        }, limits, compressedFormat);
-    }
-
-    // As Unshield does, the volume names keep the header's name up to its first dot or digit:
-    // data1.hdr gives data1.cab, data2.cab and so on.
-    private static string VolumePrefix(string fileName)
-    {
-        var end = fileName.IndexOfAny(['.', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9']);
-        var prefix = end < 0 ? fileName : fileName[..end];
-        return prefix.Length > 0 ? prefix : throw new InvalidDataException($"InstallShield header name '{fileName}' has no volume prefix.");
-    }
-
-    // A .hdr file is read whole. A .cab that holds the header is also volume 1, so it is read forward
-    // only as far as the header's structures reach (see InstallShieldHeaderReader).
-    private static InstallShieldHeaderReader OpenHeader(Stream stream, string fileName, InstallShieldCabinetLimits limits)
-    {
-        if (Path.GetExtension(fileName).Equals(".cab", StringComparison.OrdinalIgnoreCase))
-        {
-            try
-            {
-                return InstallShieldHeaderReader.Forward(stream, fileName, limits);
-            }
-            catch
-            {
-                stream.Dispose();
-                throw;
-            }
-        }
-        using (stream)
-        {
-            var length = stream.Length;
-            if (length > limits.MaximumHeaderBytes)
-                throw new InvalidDataException(
-                    $"InstallShield header is {length} bytes, more than the limit of {limits.MaximumHeaderBytes}.");
-            var bytes = new byte[length];
-            stream.ReadExactly(bytes);
-            return InstallShieldHeaderReader.Whole(bytes, fileName, limits.MaximumNameBytes);
-        }
-    }
-}

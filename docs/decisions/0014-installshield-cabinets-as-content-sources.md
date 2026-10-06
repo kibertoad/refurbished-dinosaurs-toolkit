@@ -85,4 +85,4 @@ member's identity, so two members at one path that point 5 cannot show to be the
 told apart by path, even when they lie in different groups. [ADR 0020](0020-different-files-at-one-installshield-path.md)
 reports such a path and reads its files by index. Marker-delimited compressed data and members stored
 outside the cabinet are handled as [ADR 0019](0019-installshield-compressed-format-and-outside-storage.md)
-decides.
+and [ADR 0021](0021-installshield-files-stored-outside-are-looked-up-beside-the-header.md) decide.
