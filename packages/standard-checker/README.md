@@ -21,7 +21,8 @@ step of the check did not run, it ends with `spec check passed with skipped step
 `Skipped:` followed by each step and why, such as
 `Skipped: Kaitai compilation of 2 definitions (--no-ksy).` A failing run lists the skipped steps
 after its problems. A `call` or `emit` whose arguments cannot be counted, because the Parameters
-section it is counted against is not `None.` or a list of parameters, is a skipped step as well.
+section it is counted against is missing or is not `None.` or a list of parameters, or because its
+argument list is never closed, is a skipped step as well.
 
 Without `--base`, the checker compares the spec with where HEAD forked from `origin/$GITHUB_BASE_REF`,
 or from `origin/main` when that variable is unset. Outside a git repository, in a shallow clone, or

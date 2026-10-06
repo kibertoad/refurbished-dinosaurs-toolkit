@@ -3062,7 +3062,14 @@ for (const [line, message] of [
     assert.ok(output.split(/\r?\n/).includes(`spec/rules/RULE-SCORE-001.md: ${message}`), output);
   });
 
-for (const params of ["The score before the kill, `n`.", "`n`, the score before the kill.", "None known."])
+for (const params of [
+  "The score before the kill, `n`.",
+  "`n`, the score before the kill.",
+  "None known.",
+  "- `n`, `bonus`: the score and the points on top.",
+  "- `n` the score before the kill.",
+  "- `n` (UINT16): the score before the kill.",
+])
   test(`calls and emits against a Parameters section in another form are skipped: ${params}`, (t) => {
     const root = broken(t, (r) => {
       withCallee(r, params, "return 1");
@@ -3095,7 +3102,7 @@ test("every emit of one event passes the same number of arguments, with or witho
   assert.equal(status, 1);
   assert.match(
     output,
-    /RULE-SCORE-002\.md: emits ScoreChanged with 1 argument, but RULE-SCORE-001 emits it with 2 arguments$/m,
+    /RULE-SCORE-002\.md: emits ScoreChanged with 1 argument, but RULE-SCORE-001, which shares a build with it, emits it with 2 arguments$/m,
   );
   assert.doesNotMatch(output, /its handler/);
 });
@@ -3143,4 +3150,103 @@ test("a function call is counted against the define of the split entries that li
     output,
     /RULE-SCORE-002\.md: calls add_points\(\) with 2 arguments, but its define in RULE-SCORE-003/,
   );
+});
+
+for (const line of ["call RULE-SCORE-002(n", "let more = add_points(n", "emit ScoreChanged(n"])
+  test(`an argument list that is not closed is named as a skipped step: ${line}`, (t) => {
+    const root = broken(t, (r) => {
+      withCallee(r, "- `n`: the score before the kill.");
+      procedure(r, [line]);
+    });
+    const { output } = run(root);
+    assert.match(
+      output,
+      /Skipped: .*the argument count of the (?:call|emit) of .* in RULE-SCORE-001, whose argument list is not closed/,
+    );
+  });
+
+test("a Parameters list with + bullets is counted", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "+ `n`: the score before the kill.");
+    procedure(r, ["call RULE-SCORE-002(n, n)"]);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /RULE-SCORE-001\.md: calls RULE-SCORE-002 with 2 arguments, but its Parameters section lists 1 parameter$/m,
+  );
+});
+
+test("calls and emits against a rule with no Parameters section say the section is missing", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.");
+    replaceIn(r, "spec/rules/RULE-SCORE-002.md", "## Parameters\n\n- `n`: the score before the kill.\n\n", "");
+    procedure(r, ["call RULE-SCORE-002(n)"]);
+  });
+  const { output } = run(root);
+  assert.match(
+    output,
+    /argument counts against RULE-SCORE-002, which has no Parameters section \(call in RULE-SCORE-001\)/,
+  );
+});
+
+test("a call to a name the procedure declares itself is not counted against another rule's define", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `add_points`: the function that scores a kill.", "return add_points(1, 2)", "");
+  });
+  const { output } = run(root);
+  assert.doesNotMatch(output, /calls add_points\(\)/);
+});
+
+test("a function call from a rule that shares no build with its defines fails only if it fits none", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.", "return add_points(n, n)");
+    replaceIn(r, "spec/rules/RULE-SCORE-002.md", "builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.2]");
+    const original = readFileSync(join(r, "spec", "rules", "RULE-SCORE-001.md"), "utf8");
+    writeFileSync(
+      join(r, "spec", "rules", "RULE-SCORE-003.md"),
+      original
+        .replace("id: RULE-SCORE-001", "id: RULE-SCORE-003")
+        .replace("builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.1]")
+        .replace("split_with: []", "split_with: [RULE-SCORE-001]")
+        .replace("define add_points(n: UINT16):", "define add_points(n: UINT16, bonus):"),
+    );
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "split_with: []", "split_with: [RULE-SCORE-003]");
+  });
+  assert.doesNotMatch(run(root).output, /calls add_points\(\)/);
+  replaceIn(root, "spec/rules/RULE-SCORE-002.md", "return add_points(n, n)", "return add_points(n, n, n)");
+  assert.match(
+    run(root).output,
+    /RULE-SCORE-002\.md: calls add_points\(\) with 3 arguments, but none of its defines takes that many \(1 parameter in RULE-SCORE-001, 2 parameters in RULE-SCORE-003\)$/m,
+  );
+});
+
+test("emits of one event in rules that share no build may pass different numbers of arguments", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.", "emit ScoreChanged(n)\nreturn n + 1", "");
+    replaceIn(r, "spec/rules/RULE-SCORE-002.md", "builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.1]");
+    procedure(r, ["emit ScoreChanged(n, 1)"]);
+  });
+  assert.doesNotMatch(run(root).output, /emits ScoreChanged/);
+});
+
+test("an emit handled by a split rule is counted against the entries that list the emitter's builds", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.", "return n + 1", "RULE-SCORE-003");
+    replaceIn(r, "spec/rules/RULE-SCORE-002.md", "split_with: []", "split_with: [RULE-SCORE-003]");
+    copyRule(r, "RULE-SCORE-003", (text) =>
+      text
+        .replace("builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.1]")
+        .replace("split_with: []", "split_with: [RULE-SCORE-002]")
+        .replace("- `n`: the score before the kill.", "- `n`: the score before the kill.\n- `bonus`: points on top."),
+    );
+    procedure(r, ["emit ScoreChanged(n, n)"]);
+  });
+  const { output } = run(root);
+  assert.match(
+    output,
+    /RULE-SCORE-001\.md: emits ScoreChanged with 2 arguments, but the Parameters section of RULE-SCORE-002, the entry of the split of its handler RULE-SCORE-003 that lists a build of this rule, lists 1 parameter$/m,
+  );
+  assert.doesNotMatch(output, /its handler RULE-SCORE-003 lists/);
 });

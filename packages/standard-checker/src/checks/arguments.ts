@@ -1,24 +1,27 @@
 // Argument counts: every `call` passes one argument for each item of the called rule's Parameters
 // list, every function call one for each parameter of its `define`, and every `emit` one for each
-// item of the Parameters list of each handler its glossary entry names. Every `emit` of one event
-// passes the same number of arguments.
+// item of the Parameters list of each handler its glossary entry names. Two `emit`s of one event in
+// rules that share a build pass the same number of arguments.
 //
-// A call to a split rule is counted against each entry of the split that lists one of the calling
-// rule's builds, and a call to a function that a split rule defines against the `define` of each
-// such entry. A Parameters section in any other form than `None.` or the list gives no count, so
-// the calls and emits that depend on it are named as a skipped step and do not fail the check.
+// A call to a split rule, or an emit handled by one, is counted against each entry of the split that
+// lists one of the calling rule's builds, and a call to a function that a split rule defines against
+// the `define` of each such entry. A Parameters section in any other form than `None.` or the list
+// gives no count, so the calls and emits that depend on it are named as a skipped step and do not
+// fail the check. A call or emit whose argument list is never closed is named as a skipped step too.
 // Only live rules are checked, and only live rules' `define`s are counted against.
 
 import type { Context } from "../context.ts";
 import { asList, idsIn, kindOf } from "../ids.ts";
 import type { Entry } from "../types.ts";
-import { withoutCommentsAndStrings } from "./rules.ts";
+import { BUILTINS, defines, procedureLocals, withoutCommentsAndStrings } from "./rules.ts";
 
 /**
  * The number of parameters a rule's Parameters section lists: 0 for `None.`, otherwise the number
  * of items of a Markdown list whose items each open with a code span holding a name, or a name, a
- * colon and a type (`` `gang: FMT-DATA-005` ``). An item may continue on indented lines. Null when
- * the section holds anything else, `None known.` included, so its parameters cannot be counted.
+ * colon and a type (`` `gang: FMT-DATA-005` ``), followed directly by a colon. An item may continue
+ * on indented lines. Null when the section holds anything else, `None known.`, an item that names
+ * two parameters and an item with text between the code span and the colon included, so its
+ * parameters cannot be counted.
  */
 export function parameterCount(section: string): number | null {
   const text = section.trim();
@@ -26,8 +29,8 @@ export function parameterCount(section: string): number | null {
   let count = 0;
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
-    if (/^[-*]\s/.test(line)) {
-      if (!/^[-*]\s+`[a-z_][a-z0-9_]*(?:\s*:\s*[^`\s][^`]*)?`/.test(line)) return null;
+    if (/^[-*+]\s/.test(line)) {
+      if (!/^[-*+]\s+`[a-z_][a-z0-9_]*(?:\s*:\s*[^`\s][^`]*)?`:/.test(line)) return null;
       count++;
     } else if (!(count > 0 && /^\s/.test(line))) return null;
   }
@@ -56,8 +59,9 @@ export function argumentCount(code: string, open: number): number | null {
 
 // The argument count of a call or emit whose name ends at end: 0 when no list follows the name.
 const countAfter = (code: string, end: number) => {
-  const open = /^[ \t]*\(/.exec(code.slice(end));
-  return open ? argumentCount(code, end + open[0].length - 1) : 0;
+  const opening = /[ \t]*\(/y;
+  opening.lastIndex = end;
+  return opening.test(code) ? argumentCount(code, opening.lastIndex - 1) : 0;
 };
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -69,11 +73,18 @@ export function checkArgumentCounts(ctx: Context) {
   const live = [...entries].filter(([, e]) => e.kind === "RULE" && e.meta.status !== "superseded");
   const builds = (e: Entry) => asList(e.meta.builds);
   const sharesBuild = (a: Entry, b: Entry) => builds(a).some((x) => builds(b).includes(x));
+  const parametersOf = (id: string) => entries.get(id)!.sections.find((s) => s.title === "Parameters")?.text;
   const counts = new Map<string, number | null>();
   const countOf = (id: string) => {
-    if (!counts.has(id))
-      counts.set(id, parameterCount(entries.get(id)!.sections.find((s) => s.title === "Parameters")?.text ?? ""));
+    if (!counts.has(id)) counts.set(id, parameterCount(parametersOf(id) ?? ""));
     return counts.get(id)!;
+  };
+  // The entries whose Parameters section a call to rule from caller is counted against: each entry
+  // of rule's split that lists one of the caller's builds, or rule itself when none does.
+  const targetsOf = (rule: string, caller: Entry) => {
+    const group = [rule, ...asList(entries.get(rule)!.meta.split_with)].filter((x) => entries.get(x)?.kind === "RULE");
+    const sharing = [...new Set(group)].filter((x) => sharesBuild(entries.get(x)!, caller));
+    return sharing.length ? sharing : [rule];
   };
   // Rule ID -> what could not be counted against its Parameters section -> how many times.
   const uncounted = new Map<string, Map<string, number>>();
@@ -82,17 +93,19 @@ export function checkArgumentCounts(ctx: Context) {
     const m = uncounted.get(target)!;
     m.set(what, (m.get(what) ?? 0) + 1);
   };
+  // What could not be counted because its argument list is never closed.
+  const unclosed: string[] = [];
 
   // Function name -> the rules that define it, with the parameter count of each define.
-  const defines = new Map<string, { id: string; count: number }[]>();
+  const defined = new Map<string, { id: string; count: number }[]>();
   for (const [id, e] of live)
-    for (const m of withoutCommentsAndStrings(e.code ?? "").matchAll(/\bdefine\s+([a-z_][a-z0-9_]*)\s*\(([^)]*)\)/g)) {
-      if (!defines.has(m[1])) defines.set(m[1], []);
-      defines.get(m[1])!.push({ id, count: m[2].split(",").filter((p) => p.trim() !== "").length });
+    for (const { name, params } of defines(withoutCommentsAndStrings(e.code ?? ""))) {
+      if (!defined.has(name)) defined.set(name, []);
+      defined.get(name)!.push({ id, count: params.length });
     }
 
-  // Event name -> the first emit seen, to compare every other emit of it with.
-  const firstEmit = new Map<string, { id: string; count: number }>();
+  // Event name -> the argument counts its emits pass, with the rule each comes from.
+  const emitted = new Map<string, { id: string; entry: Entry; count: number }[]>();
 
   for (const [id, e] of live) {
     const { file } = e;
@@ -100,12 +113,13 @@ export function checkArgumentCounts(ctx: Context) {
 
     for (const m of code.matchAll(/\bcall\s+(RULE-[A-Z0-9]+-\d+)/g)) {
       const called = entries.get(m[1]);
+      if (!called || called.kind !== "RULE") continue;
       const n = countAfter(code, m.index + m[0].length);
-      if (!called || called.kind !== "RULE" || n === null) continue;
-      // A split rule runs the entry that lists the build being described.
-      const group = [m[1], ...asList(called.meta.split_with)].filter((x) => entries.get(x)?.kind === "RULE");
-      const sharing = [...new Set(group)].filter((x) => sharesBuild(entries.get(x)!, e));
-      for (const target of sharing.length ? sharing : [m[1]]) {
+      if (n === null) {
+        unclosed.push(`call of ${m[1]} in ${id}`);
+        continue;
+      }
+      for (const target of targetsOf(m[1], e)) {
         const want = countOf(target);
         if (want === null) cannotCount(target, `call in ${id}`);
         else if (want !== n)
@@ -118,46 +132,76 @@ export function checkArgumentCounts(ctx: Context) {
       }
     }
 
+    // A name the procedure declares itself, or a built-in, is not a function another rule defines.
+    const locals = procedureLocals(code, parametersOf(id) ?? "");
     for (const m of code.matchAll(/(?<![.\w])(?<!\b(?:define|emit)\s+)([a-z_][a-z0-9_]*)\s*\(/g)) {
-      const owners = defines.get(m[1]);
-      if (!owners) continue;
+      const owners = defined.get(m[1]);
+      if (!owners || locals.has(m[1]) || BUILTINS.has(m[1])) continue;
       const n = argumentCount(code, m.index + m[0].length - 1);
-      if (n === null) continue;
+      if (n === null) {
+        unclosed.push(`call of ${m[1]}() in ${id}`);
+        continue;
+      }
       const near = owners.filter((o) => o.id === id || sharesBuild(entries.get(o.id)!, e));
-      for (const { id: owner, count } of near.length ? near : owners)
-        if (count !== n)
-          problem(
-            file,
-            `calls ${m[1]}() with ${plural(n, "argument")}, but its define in ${owner} takes ${plural(count, "parameter")}`,
-          );
+      if (near.length) {
+        for (const { id: owner, count } of near)
+          if (count !== n)
+            problem(
+              file,
+              `calls ${m[1]}() with ${plural(n, "argument")}, but its define in ${owner} takes ${plural(count, "parameter")}`,
+            );
+      } else if (owners.every((o) => o.count !== n))
+        // No define lists one of this rule's builds, so the call is wrong only if it fits none of them.
+        problem(
+          file,
+          owners.length === 1
+            ? `calls ${m[1]}() with ${plural(n, "argument")}, but its define in ${owners[0].id} takes ${plural(owners[0].count, "parameter")}`
+            : `calls ${m[1]}() with ${plural(n, "argument")}, but none of its defines takes that many (${owners.map((o) => `${plural(o.count, "parameter")} in ${o.id}`).join(", ")})`,
+        );
     }
 
     for (const m of code.matchAll(/\bemit\s+([A-Za-z_][A-Za-z0-9_]*)/g)) {
       const event = m[1];
       const n = countAfter(code, m.index + m[0].length);
-      if (n === null) continue;
-      const first = firstEmit.get(event);
-      if (!first) firstEmit.set(event, { id, count: n });
-      else if (first.count !== n)
+      if (n === null) {
+        unclosed.push(`emit of ${event} in ${id}`);
+        continue;
+      }
+      if (!emitted.has(event)) emitted.set(event, []);
+      const others = emitted.get(event)!;
+      const other = others.find((o) => o.count !== n && (o.id === id || sharesBuild(o.entry, e)));
+      if (other)
         problem(
           file,
-          `emits ${event} with ${plural(n, "argument")}, but ${first.id} emits it with ${plural(first.count, "argument")}`,
+          other.id === id
+            ? `emits ${event} with ${plural(n, "argument")}, but also emits it with ${plural(other.count, "argument")}`
+            : `emits ${event} with ${plural(n, "argument")}, but ${other.id}, which shares a build with it, emits it with ${plural(other.count, "argument")}`,
         );
-      for (const handler of idsIn(glossary.get(event))) {
+      if (!others.some((o) => o.id === id && o.count === n)) others.push({ id, entry: e, count: n });
+      for (const handler of new Set(idsIn(glossary.get(event)))) {
         if (kindOf(handler) !== "RULE" || entries.get(handler)?.kind !== "RULE") continue;
-        const want = countOf(handler);
-        if (want === null) cannotCount(handler, `emit of ${event} in ${id}`);
-        else if (want !== n)
-          problem(
-            file,
-            `emits ${event} with ${plural(n, "argument")}, but the Parameters section of its handler ${handler} lists ${plural(want, "parameter")}`,
-          );
+        for (const target of targetsOf(handler, e)) {
+          const want = countOf(target);
+          if (want === null) cannotCount(target, `emit of ${event} in ${id}`);
+          else if (want !== n)
+            problem(
+              file,
+              target === handler
+                ? `emits ${event} with ${plural(n, "argument")}, but the Parameters section of its handler ${handler} lists ${plural(want, "parameter")}`
+                : `emits ${event} with ${plural(n, "argument")}, but the Parameters section of ${target}, the entry of the split of its handler ${handler} that lists a build of this rule, lists ${plural(want, "parameter")}`,
+            );
+        }
       }
     }
   }
 
   for (const [target, whats] of uncounted) {
     const list = [...whats].map(([what, times]) => (times > 1 ? `${what} (${times} times)` : what)).join(", ");
-    skip(`argument counts against ${target}, whose Parameters section is not None. or a list of parameters (${list})`);
+    const why =
+      parametersOf(target) === undefined
+        ? "which has no Parameters section"
+        : "whose Parameters section is not None. or a list of parameters";
+    skip(`argument counts against ${target}, ${why} (${list})`);
   }
+  for (const what of new Set(unclosed)) skip(`the argument count of the ${what}, whose argument list is not closed`);
 }
