@@ -81,6 +81,11 @@ this way in two fields,
 both present on every write and 0 when it dropped none. `uncertainAliasesInvalidated` counts bytes
 that held a modeled value. `uncertainScopeBytesInvalidated` counts bytes a `preservesMemory` scope
 kept without a value: they lost no value, but the scope no longer holds them after the write.
+A byte the model holds no value for reads as an unknown term, and later reads of it on the path
+read the same term until a write that may store it or a modeled call. A write keeps that term when
+it lies in the byte's own segment/base group at other offsets, or when both have concrete,
+disjoint address domains. A write that overlaps the byte, or whose segment or address may alias
+it, gives the next read a fresh term, so a reload is not shown equal to the earlier read.
 All assumptions remain conditional, and matching numeric offsets alone never establish storage
 identity.
 

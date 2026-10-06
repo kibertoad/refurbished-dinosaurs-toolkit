@@ -138,6 +138,12 @@ class State:
         # Bytes a preservesMemory scope kept without a value (ADR 0009): key -> the unknown term
         # name they had before the modeled call. They stay unread: no value, no producer.
         self.unread_memory = {}
+        # Bytes with no modeled value that the path has read: key -> the unknown term it read,
+        # grouped by (segment, base) like memory_groups. A later read of the byte reads the same
+        # term until a write that may store it, or a modeled call, drops it. memory_epoch names the
+        # terms of bytes read for the first time, so a dropped byte reads a fresh term.
+        self.observed_memory = {}
+        self.observed_groups = {}
         self.events = []
         # Bytes above each traced call's return frame that the call event records (argument_slots); 0 records none.
         self.argument_window = 0
@@ -257,6 +263,8 @@ class State:
         self.memory.clear()
         self.memory_groups.clear()
         self.unread_memory.clear()
+        self.observed_memory.clear()
+        self.observed_groups.clear()
         self.memory_writers.clear()
         self.lost_memory.clear()
         self.writes.clear()
@@ -265,12 +273,40 @@ class State:
         self.memory_epoch += 1
 
     def unread_term(self, key):
-        """Name the unknown term of a byte with no modeled value: a kept scope term or the epoch's."""
-        return self.unread_memory.get(key, f"memory:{self.memory_epoch}:{key}")
+        """Name the unknown term of a byte with no modeled value: a kept scope term, the term an
+        earlier read of it got, or the epoch's."""
+        if key in self.unread_memory:
+            return self.unread_memory[key]
+        return self.observed_memory.get(key, f"memory:{self.memory_epoch}:{key}")
 
     def byte(self, key):
-        """The modeled value of one memory byte, or an unknown term produced by the current site."""
-        return self.memory[key] if key in self.memory else unknown(self.unread_term(key), 8, self.at)
+        """The modeled value of one memory byte, or an unknown term produced by the current site.
+
+        A byte with neither a value nor a kept scope term keeps the term it gets here, so a later
+        read reads the same term unless a write that may store the byte drops it first.
+        """
+        if key in self.memory:
+            return self.memory[key]
+        term = self.unread_term(key)
+        if key not in self.unread_memory and key not in self.observed_memory:
+            self.observed_memory[key] = term
+            self.observed_groups.setdefault(key[:2], set()).add(key)
+        return unknown(term, 8, self.at)
+
+    def forget_observed(self, seg, base, written, keys):
+        """Drop the read terms of bytes a write may store: its own keys, and every byte of another
+        (segment, base) group whose domain may overlap the written one. Bytes of the write's own
+        group at other offsets are distinct bytes and keep their terms."""
+        for key in keys:
+            if self.observed_memory.pop(key, None) is not None:
+                self.observed_groups[key[:2]].discard(key)
+        for group, members in list(self.observed_groups.items()):
+            if group != (seg, base):
+                for key in [k for k in members if may_alias(k, written, self.bits, self.flat)]:
+                    del self.observed_memory[key]
+                    members.discard(key)
+            if not members:
+                del self.observed_groups[group]
 
     def latest_aliasing_write(self, group, domain):
         """The order of the newest write outside `group` that may have stored a byte of `domain`, or None."""
@@ -396,6 +432,7 @@ class State:
 
             written = written_domain(seg, base, delta, width, self.bits, self.flat)
             self.writes.setdefault((seg, base), {})[written] = len(self.events)
+            self.forget_observed(seg, base, written, keys)
             for group, members in list(self.memory_groups.items()):
                 if group == (seg, base):
                     continue

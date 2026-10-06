@@ -1878,6 +1878,39 @@ test("a constant mask bounds an unknown loaded word through the source bridge", 
   assert.equal(run(["trace", query(2)]).relationalControls.controls[0].verdict, "undecided");
 });
 
+test("a reloaded word keeps the tested value across a store that cannot reach it through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(20, 28);
+  const query = (store: number) => {
+    // mov ax,[0100h]; test ax,ax; jz out; mov word [store],1; mov bx,[0100h]; out: ret
+    data.set([0xa1, 0x00, 0x01, 0x85, 0xc0, 0x74, 0x0a, 0xc7, 0x06, store & 0xff, store >> 8, 0x01, 0x00], 64);
+    data.set([0x8b, 0x1e, 0x00, 0x01, 0xc3], 77);
+    writeFileSync(join(dir, "source.bin"), data);
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({
+        ...config,
+        xxh3: sourceXxh3(data),
+        registers: { ds: 0x2000, ss: 0x3000, sp: 0xff00 },
+        relationalControls: [
+          {
+            name: "reload",
+            kind: "order",
+            before: { site: 69, event: "branch" },
+            branch: { taken: false },
+            sameValue: { before: "left", at: "value" },
+            at: { site: 77, event: "read" },
+          },
+        ],
+      }),
+    );
+    return join(dir, "config.json");
+  };
+  assert.equal(run(["trace", query(0x0200)]).relationalControls.allHeld, true);
+  // A store over the tested word leaves the reload unproven.
+  assert.equal(run(["trace", query(0x0100)]).relationalControls.controls[0].verdict, "undecided");
+});
+
 test("entryFrame passes through preparation and lets a narrower entry return through its function's frame", (t) => {
   const { dir, data, config } = fixture(t);
   // Keep the MZ relocation away from the code below.
