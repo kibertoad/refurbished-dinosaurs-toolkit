@@ -2689,7 +2689,7 @@ class ReporterTests(unittest.TestCase):
         code = Code().emit("0e").branch("e8", "callee").emit("c3").label("callee").emit("c3")
         result = report(code)
         self.assertFalse(result["completeWithinModel"])
-        self.assertIn("return frame", result["paths"][0]["stop"])
+        self.assertEqual(result["paths"][0]["stop"], "return width differs from the call frame")
 
     def test_xchg_captures_memory_address_before_register_update(self):
         result = report("bb 20 02 b8 78 56 89 07 bb 20 02 87 1f c3", registers={"ds": 0x1234})

@@ -140,6 +140,23 @@ that width and leave SP where it was on entry; otherwise the path stops and the
 report is not complete within the model. A query that starts inside a function body names
 the function in `entryFrame` ([below](#a-narrower-entry-inside-its-functions-frame)).
 
+Every `return` event carries `returnCheck`, the checks that return made against its frame:
+
+| Field | Meaning |
+|---|---|
+| `frame` | `entry` for the root frame, `call` for a traced call's frame |
+| `frameSource` | for a traced call, how the frame was built: `call`, `lcall`, or the push-CS/near-call frame |
+| `frameBytes`, `instructionBytes`, `widthMatches` | the frame's return width (`returnBytes` for the root), the width the return instruction pops, and whether they agree |
+| `spOffset`, `stackBalanced` | SP at the return as a signed offset from the frame's entry SP (`null` when SP is at no known offset from it), and whether SP is that entry SP |
+| `target`, `segment` | whether the return offset word (and, for a far return, the segment word) was read and compared with the call: `matches the call`, `does not match the call` (both values known), or a `not read: ...` / `not compared: ...` reason, including `not compared: the word read and the call's word are not both known values` |
+
+A failed check stops the path with `return width differs from the call frame`,
+`stack balance differs from the call`, or `return width and stack balance differ from the call
+frame` when both fail. The return words are read only for a traced call and only after both
+checks pass. The root frame's are never read (`not read: the entry frame has no traced caller`),
+so a root path with `returned: true` passed the width and balance checks and says nothing about
+the bytes of its own return frame.
+
 `arguments` also maps each traced call's stack slots onto the widths its callee read. Each path
 gets `argumentFrames`, one per traced call (modeled calls have none). Offsets count from the
 first byte above the return frame (`returnFrameBytes`, 2 or 4, also on the traced `call` event). A

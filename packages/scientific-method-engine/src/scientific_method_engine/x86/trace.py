@@ -398,6 +398,47 @@ def snapshot(state):
     return {name: state.reg(name).report() for name in ALIASES}
 
 
+# The stop for each failed combination of (widthMatches, stackBalanced) at a return.
+RETURN_CHECK_STOPS = {(False, True): "return width differs from the call frame",
+                      (True, False): "stack balance differs from the call",
+                      (False, False): "return width and stack balance differ from the call frame"}
+ENTRY_TARGET_UNREAD = "not read: the entry frame has no traced caller"
+CHECK_FAILED_UNREAD = "not read: the width or stack balance check failed"
+WORD_READ_STOPPED = "not compared: reading the return words stopped the path"
+TARGET_CHECK_FAILED_UNREAD = "not read: the return target check failed"
+WORD_VALUE_UNKNOWN = "not compared: the word read and the call's word are not both known values"
+
+
+def return_word_check(matches, known):
+    """The ``target`` or ``segment`` entry for a return word read from the stack. A word that is not
+    the call's is reported as different only when both values are known; otherwise neither a match
+    nor a difference was shown."""
+    return "matches the call" if matches else "does not match the call" if known else WORD_VALUE_UNKNOWN
+
+
+def return_check(state, frame, instruction_bytes, far):
+    """The checks a return makes against its frame, before any return word is read.
+
+    ``target`` (and ``segment`` for a far return) records whether the return words were read and
+    compared with the call. An entry frame's are never read, so a returned root path says nothing
+    about what its return words hold.
+    """
+    sp, entry_sp = state.reg(state.sp), frame["sp"]
+    offset = state.frame_offset(sp, absolute=True)
+    check = {"frame": "entry" if len(state.frames) == 1 else "call",
+             "frameBytes": frame["returnBytes"], "instructionBytes": instruction_bytes,
+             "widthMatches": frame["returnBytes"] == instruction_bytes,
+             "spOffset": offset, "stackBalanced": sp.term == entry_sp.term}
+    if "frameSource" in frame:
+        check["frameSource"] = frame["frameSource"]
+    unread = (ENTRY_TARGET_UNREAD if len(state.frames) == 1 else
+              WORD_READ_STOPPED if check["widthMatches"] and check["stackBalanced"] else CHECK_FAILED_UNREAD)
+    check["target"] = unread
+    if far:
+        check["segment"] = unread
+    return check
+
+
 STRING_BUDGET_STOP = "String iteration budget exhausted"
 # The accepted range and default of each ordinary path budget input. continuationBudget takes the
 # same ranges under the names in CONTINUATION_BUDGET_FIELDS, except that its paths may be 0.
@@ -961,21 +1002,27 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                         raise StopPath("Far return is outside the PE32 flat model")
                     frame = state.frames[-1]
                     roles = result_contracts(state, contracts, frame["entry"])
+                    # The entry frame gets the same width and balance checks as a traced call. The return
+                    # words are read only for a traced call, after both checks pass.
+                    check = return_check(state, frame, 4 if m == "retf" else image.bits // 8, m == "retf")
                     state.event("return", registers=snapshot(state), cleanupBytes=ins.operands[0].imm if ins.operands else 0,
                                 resultContracts=roles, callSite=frame.get("callSite"),
-                                callerEntry=state.frames[-2]["entry"] if len(state.frames) > 1 else None)
-                    # The entry frame gets the same width and balance checks as a traced call.
-                    expected = 4 if m == "retf" else image.bits // 8
-                    if expected != frame["returnBytes"] or state.reg(state.sp).term != frame["sp"].term:
-                        raise StopPath("return frame or stack balance differs from the call")
+                                callerEntry=state.frames[-2]["entry"] if len(state.frames) > 1 else None, returnCheck=check)
+                    if not check["widthMatches"] or not check["stackBalanced"]:
+                        raise StopPath(RETURN_CHECK_STOPS[check["widthMatches"], check["stackBalanced"]])
                     if len(state.frames) == 1:
                         finish(state, returned=True)
                         break
                     actual_ip = state.pop(image.bits // 8)
+                    check["target"] = return_word_check(actual_ip.number == frame["returnIP"], actual_ip.number is not None)
                     if actual_ip.number != frame["returnIP"]:
+                        if m == "retf":
+                            check["segment"] = TARGET_CHECK_FAILED_UNREAD
                         raise StopPath("return target was overwritten or has unknown provenance")
                     if m == "retf":
                         actual_cs = state.pop(2)
+                        check["segment"] = return_word_check(actual_cs.term == frame["callerCS"].term,
+                                                             actual_cs.number is not None and frame["callerCS"].number is not None)
                         if actual_cs.term != frame["callerCS"].term:
                             raise StopPath("far return segment changed")
                         state.setreg("cs", actual_cs, at)

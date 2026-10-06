@@ -395,6 +395,24 @@ committed and is kept with the captures, with its hash in the fixture's `startin
 
 Engine releases that need a change in a restoration are listed here, newest first.
 
+### A failed return check names which check failed
+
+A return whose width differs from its frame, or whose SP is not the frame's entry SP, used to stop
+with `return frame or stack balance differs from the call` in both cases. The stop now names the
+check that failed: `return width differs from the call frame`, `stack balance differs from the
+call`, or `return width and stack balance differ from the call frame`. Each `return` event also
+carries `returnCheck` with both widths, SP's offset from the frame's entry SP, and whether the
+return words were read and compared with the call
+([fields](bounded-evidence-reporters.md#commands)).
+
+What to change:
+
+- A test or tool that matches the old stop string matches the new reasons.
+- A test that compares a `return` event as a whole adds `returnCheck`.
+- A conclusion drawn from a root path's `returned: true` about the root frame's return words has
+  no support: `returnCheck.target` on a root return is `not read: the entry frame has no traced
+  caller`.
+
 ### Indirect far calls and jumps follow a pointer the path stored
 
 A far `CALL` or `JMP` through an `m16:16` pointer used to stop every path with

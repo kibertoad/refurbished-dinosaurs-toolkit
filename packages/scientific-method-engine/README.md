@@ -172,3 +172,9 @@ so the function's return balances and its paths can be read to the end. The repo
 gives the offsets, or the reasons the frame is not established, in which case the query runs as
 it would without the input. See the
 [narrower entry contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#a-narrower-entry-inside-its-functions-frame).
+
+Each `return` event carries `returnCheck`: the frame's and the instruction's return widths, SP's
+offset from the frame's entry SP, and whether the return words were read and compared with the
+call. A width mismatch and an unbalanced stack stop the path with separate reasons. A root return
+never reads its return words, so `returned: true` on a root path says nothing about them. See the
+[command overview](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#commands).
