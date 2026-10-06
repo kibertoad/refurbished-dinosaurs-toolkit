@@ -1325,6 +1325,32 @@ test("trace decides a decrement loop's exit from p-code flags through the source
   assert.equal(path.registers.cx.value, 0);
 });
 
+test("trace names the failed root return check and the unread root return words through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(200, 28);
+  // retf at the entry, then push ax; ret
+  data.set([0xcb, 0x50, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const trace = (extra: Record<string, unknown>) => {
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ ...config, xxh3: sourceXxh3(data), ...extra }));
+    const result = run(["trace", join(dir, "config.json")]);
+    const path = result.paths[0];
+    return { path, check: path.events.find((e: Report) => e.kind === "return").returnCheck };
+  };
+  const near = trace({});
+  assert.equal(near.path.stop, "return width differs from the call frame");
+  assert.deepEqual(
+    [near.check.frameBytes, near.check.instructionBytes, near.check.widthMatches, near.check.stackBalanced],
+    [2, 4, false, true],
+  );
+  const far = trace({ returnBytes: 4 });
+  assert.equal(far.path.returned, true);
+  assert.equal(far.check.target, "not read: the entry frame has no traced caller");
+  const pushed = trace({ entry: 65, regions: [{ ...config.regions[0], entries: [64, 65] }] });
+  assert.equal(pushed.path.stop, "stack balance differs from the call");
+  assert.equal(pushed.check.spOffset, -2);
+});
+
 test("trace follows an indirect far call through a pointer the path stored, with a relocated segment word", (t) => {
   const { dir, data, config } = fixture(t);
   // The one MZ relocation covers the immediate of the segment-word store, at load-image offset 10.

@@ -36,7 +36,7 @@ class EntryFrameTests(unittest.TestCase):
         c = cleanup()
         r = run(c, relationalControls=slot(c, "entryState"))
         self.assertNotIn("entryFrame", r)
-        self.assertEqual({p["stop"] for p in r["paths"]}, {"return frame or stack balance differs from the call"})
+        self.assertEqual({p["stop"] for p in r["paths"]}, {"stack balance differs from the call"})
         self.assertEqual(verdict(r)["verdict"], "undecided")
 
     def test_the_observed_frame_lets_the_function_return_and_the_control_hold(self):
@@ -75,7 +75,7 @@ class EntryFrameTests(unittest.TestCase):
         self.assertFalse(frame["established"])
         self.assertEqual((frame["sp"], frame["arrivals"]), (None, 2))
         self.assertIn("different offsets: -4, -2", " ".join(frame["reasons"]))
-        self.assertEqual({p["stop"] for p in r["paths"]}, {"return frame or stack balance differs from the call"})
+        self.assertEqual({p["stop"] for p in r["paths"]}, {"stack balance differs from the call"})
         result = verdict(r)
         self.assertEqual(result["verdict"], "undecided")
         self.assertIn("entryFrame was not established", " ".join(result["reasons"]))
