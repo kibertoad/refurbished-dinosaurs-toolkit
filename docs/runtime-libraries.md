@@ -155,6 +155,11 @@ The persistence types make writes recoverable; the game still owns its formats.
   and `Read`. Admit only the exceptions your format raises, and exclude incompatible versions from
   fallback, so an older generation is never loaded as if it were current.
 - A custom backup suffix must be passed to both `Write` and `Read`.
+- Load for play with `ReadAndRepair`, which restores a damaged primary from the backup and keeps
+  the rejected file as `.corrupt`; browse with `Read`, which changes nothing on disk. When neither
+  generation loads, classify `FileGenerationsUnreadableException.PrimaryFailure`.
+- Open readers of a save with `FileShare.Delete` where they may overlap a write, or the write's
+  promotion fails on Windows.
 - Serialize writers with `FileWriteLock`. The files are not a journal.
 - Set `JsonSettingsStore.MaximumBytes` to a limit that suits the application; the default admits
   any size. Use `LoadResult` to tell the player whether settings came from the backup or defaults.

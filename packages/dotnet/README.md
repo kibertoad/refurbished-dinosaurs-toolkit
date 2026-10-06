@@ -642,7 +642,20 @@ or drive decoding on a worker when that cost is unacceptable.
 primary as `.bak` and promotes the staged generation. Rejected primaries preserve existing backups.
 Supply exception admission explicitly for your format and preserve incompatible generations when
 appropriate. `Read` reports generation and primary failure and never repairs files during browsing.
-`ReadBounded` checks file size before allocation. Serialize writers; these operations are not a journal.
+When the primary fails with an admitted error and the backup is missing or fails too, it throws
+`FileGenerationsUnreadableException`, an `AggregateException` whose `PrimaryFailure` and
+`BackupFailure` hold the two errors; classify or rethrow `PrimaryFailure`, the file that was asked
+for. `ReadAndRepair` reads the same way for play and, after a backup load, restores the primary from
+the backup with `Restore`, which validates a durable copy, promotes it and keeps the rejected
+primary as `.corrupt`. A repair that fails is reported in `RepairFailure` and still returns the
+backup's value. `ReadBounded` checks file size before allocation. Serialize writers; these
+operations are not a journal.
+
+Promotion over an existing primary uses `File.Replace`, which renames the kept primary to the
+backup (or the rejected file) in the same call, so the primary path always names a whole
+generation and the previous generation is never copied. On Windows it fails while another handle
+holds the primary or the kept file without `FileShare.Delete`; readers that share delete keep their
+generation open and do not block it.
 
 `JsonSettingsStore<T>.MaximumBytes` bounds reads and writes (set a small application limit; the compatibility default is Int32.MaxValue), and `LoadResult`
 reports primary, backup or defaults. Whole-document validation and migration remain caller callbacks.
