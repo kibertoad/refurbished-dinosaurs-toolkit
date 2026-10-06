@@ -37,8 +37,12 @@ Two remedies were rejected:
    that condition as `endsAtFrameEnd` on every return.
 2. The words are then read as for a matching return. The offset word must be the call's return IP.
    A far return's segment word must be the call's CS. A near return keeps CS, and CS must be the
-   call's CS. Any mismatch, or a word with no known value, stops the path with the existing target
-   or segment stop, or for the near case with its own stop.
+   call's CS. An offset word that is not the call's known return IP stops the path with the
+   existing target stop. A segment matches when it is the same value as the call's CS: an equal
+   known value, or the very unknown value the call saw, which a `push cs` or an unchanged CS
+   carries. Any other segment stops the path. The stop names a different known segment as
+   changed, and a segment with no known value as not known to be the call's, for far and near
+   returns alike, so a segment with no known value is never reported as a different one.
 3. A conversion that leaves SP at another offset, or at no known offset, keeps the width and balance
    stops. The words in between are not reinterpreted.
 4. The root frame is not followed. It has no traced caller whose words a conversion could be
@@ -50,8 +54,12 @@ Two remedies were rejected:
 
 - A query through a callee that converts its frame reads past the callee, and its paths can return.
 - A converted return claims what was compared: the return IP and the caller's segment. A segment
-  that differs, or is unknown, stops the path even though the stack balances.
+  that differs, or that has no known value and is not the call's own, stops the path even though
+  the stack balances.
 - The push-CS/near-call frame no longer requires a far return, so its `frameSource` drops the
-  wording that said it did. This is a breaking report change, released as a major version.
+  wording that said it did. A far return whose segment word has no known value used to stop with
+  `far return segment changed`, which claimed a difference nobody showed; it now stops with
+  `far return segment is not known to be the call's`. Both are breaking report changes, released
+  as a major version.
 - Argument reads count from the call's frame by address, so they need no change for a converted
   frame.

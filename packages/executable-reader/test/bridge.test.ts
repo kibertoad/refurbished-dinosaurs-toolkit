@@ -1410,6 +1410,13 @@ test("trace follows a near call frame its callee converts to a far one through t
   const wrongSegment = trace([0x58, 0x6a, 0, 0x50, 0xcb]);
   assert.equal(wrongSegment.path.stop, "far return segment changed");
   assert.equal(wrongSegment.check.segment, "does not match the call");
+  // pop ax; push dx; push ax; retf: DX holds no known value, so the segment is not called changed.
+  const unknownSegment = trace([0x58, 0x52, 0x50, 0xcb]);
+  assert.equal(unknownSegment.path.stop, "far return segment is not known to be the call's");
+  assert.equal(
+    unknownSegment.check.segment,
+    "not compared: the word read and the call's word are not both known values",
+  );
 });
 
 test("trace follows an indirect far call through a pointer the path stored, with a relocated segment word", (t) => {

@@ -407,8 +407,12 @@ CHECK_FAILED_UNREAD = "not read: the width or stack balance check failed"
 WORD_READ_STOPPED = "not compared: reading the return words stopped the path"
 TARGET_CHECK_FAILED_UNREAD = "not read: the return target check failed"
 WORD_VALUE_UNKNOWN = "not compared: the word read and the call's word are not both known values"
+# The stop for a segment that is not the call's CS, by return kind and by whether both values are known.
 # A near return over a far call frame the callee converted leaves CS as it is; it must be the call's.
-CONVERTED_SEGMENT_STOP = "CS after a near return over a far call frame is not the call's segment"
+SEGMENT_STOPS = {("retf", True): "far return segment changed",
+                 ("retf", False): "far return segment is not known to be the call's",
+                 ("ret", True): "CS after a near return over a far call frame is not the call's segment",
+                 ("ret", False): "CS after a near return over a far call frame is not known to be the call's segment"}
 
 
 def return_word_check(matches, known):
@@ -418,9 +422,12 @@ def return_word_check(matches, known):
     return "matches the call" if matches else "does not match the call" if known else WORD_VALUE_UNKNOWN
 
 
-def converted(check):
-    """Whether a return's check shows a traced call frame its callee converted to the other width."""
-    return check["frame"] == "call" and not check["widthMatches"] and check["endsAtFrameEnd"]
+def return_followed(check):
+    """Whether a return passed its frame checks: the width and balance match, or the frame is a traced
+    call frame its callee converted to the other width so that the popped words end at its end."""
+    if check["widthMatches"]:
+        return check["stackBalanced"]
+    return check["frame"] == "call" and check["endsAtFrameEnd"]
 
 
 def return_check(state, frame, instruction_bytes, far):
@@ -449,9 +456,11 @@ def return_check(state, frame, instruction_bytes, far):
              "endsAtFrameEnd": ends}
     if "frameSource" in frame:
         check["frameSource"] = frame["frameSource"]
-    passed = (width_matches and balanced) or converted(check)
-    check["target"] = ENTRY_TARGET_UNREAD if root else WORD_READ_STOPPED if passed else CHECK_FAILED_UNREAD
-    if far or (not root and frame["returnBytes"] == 4):
+    check["target"] = (ENTRY_TARGET_UNREAD if root else WORD_READ_STOPPED if return_followed(check)
+                       else CHECK_FAILED_UNREAD)
+    # A near return narrower than a traced call's frame is one over a far frame, whose CS it compares.
+    # A near return over a frame of its own width (a PE32 near call's four bytes) has no segment.
+    if far or not (root or width_matches):
         check["segment"] = check["target"]
     return check
 
@@ -1020,12 +1029,12 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                     frame = state.frames[-1]
                     roles = result_contracts(state, contracts, frame["entry"])
                     # The entry frame gets the same width and balance checks as a traced call. The return
-                    # words are read only for a traced call, after both checks pass.
+                    # words are read only for a traced call, after both checks pass or over a converted frame.
                     check = return_check(state, frame, 4 if m == "retf" else image.bits // 8, m == "retf")
                     state.event("return", registers=snapshot(state), cleanupBytes=ins.operands[0].imm if ins.operands else 0,
                                 resultContracts=roles, callSite=frame.get("callSite"),
                                 callerEntry=state.frames[-2]["entry"] if len(state.frames) > 1 else None, returnCheck=check)
-                    if not converted(check) and (not check["widthMatches"] or not check["stackBalanced"]):
+                    if not return_followed(check):
                         raise StopPath(RETURN_CHECK_STOPS[check["widthMatches"], check["stackBalanced"]])
                     if len(state.frames) == 1:
                         finish(state, returned=True)
@@ -1039,10 +1048,12 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                     # A far return reads the segment word; a near return over a converted far frame keeps CS.
                     actual_cs = state.pop(2) if m == "retf" else state.reg("cs") if "segment" in check else None
                     if actual_cs is not None:
-                        check["segment"] = return_word_check(actual_cs.term == frame["callerCS"].term,
-                                                             actual_cs.number is not None and frame["callerCS"].number is not None)
+                        # The same term is the same value, known or not. A different term is a different
+                        # segment only when both values are known.
+                        known = actual_cs.number is not None and frame["callerCS"].number is not None
+                        check["segment"] = return_word_check(actual_cs.term == frame["callerCS"].term, known)
                         if actual_cs.term != frame["callerCS"].term:
-                            raise StopPath("far return segment changed" if m == "retf" else CONVERTED_SEGMENT_STOP)
+                            raise StopPath(SEGMENT_STOPS["retf" if m == "retf" else "ret", known])
                     if m == "retf":
                         state.setreg("cs", actual_cs, at)
                     if ins.operands:

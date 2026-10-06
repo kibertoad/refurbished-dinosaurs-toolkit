@@ -150,7 +150,7 @@ Every `return` event carries `returnCheck`, the checks that return made against 
 | `frameBytes`, `instructionBytes`, `widthMatches` | the frame's return width (`returnBytes` for the root), the width the return instruction pops, and whether they agree |
 | `spOffset`, `stackBalanced` | SP at the return as a signed offset from the frame's entry SP (`null` when SP is at no known offset from it), and whether SP is that entry SP |
 | `endsAtFrameEnd` | whether the words the return instruction pops end where the frame's return words end: SP plus `instructionBytes` is the entry SP plus `frameBytes`. With equal widths it is `stackBalanced`; with different widths it is `false` when `spOffset` is `null` |
-| `target`, `segment` | whether the return offset word was read and compared with the call, and, for a far return, the segment word; for a near return over a traced four-byte frame, `segment` compares CS with the call's CS. Each is `matches the call`, `does not match the call` (both values known), or a `not read: ...` / `not compared: ...` reason, including `not compared: the word read and the call's word are not both known values` |
+| `target`, `segment` | whether the return offset word was read and compared with the call, and, for a far return, the segment word; for a near return over a traced far call frame (`lcall` or push-CS/near-call), `segment` compares CS with the call's CS. Each is `matches the call`, `does not match the call` (both values known), or a `not read: ...` / `not compared: ...` reason, including `not compared: the word read and the call's word are not both known values` |
 
 A failed check stops the path with `return width differs from the call frame`,
 `stack balance differs from the call`, or `return width and stack balance differ from the call
@@ -171,11 +171,18 @@ the words as for a matching return:
 
 - The offset word must be the call's return IP, or the path stops with `return target was
   overwritten or has unknown provenance`.
-- A far return's segment word must be the call's CS, or the path stops with `far return segment
-  changed`. A wrong segment stops even though the stack balances.
-- A near return leaves CS as it is, and CS must be the call's CS, or the path stops with `CS after
-  a near return over a far call frame is not the call's segment`. A far call into another
-  segment therefore never returns near.
+- A far return's segment word must be the call's CS. A different known segment stops the path
+  with `far return segment changed`, and a segment word with no known value that is not the
+  call's own CS value stops it with `far return segment is not known to be the call's`. A wrong
+  segment stops even though the stack balances.
+- A near return leaves CS as it is, and CS must be the call's CS. A different known CS stops the
+  path with `CS after a near return over a far call frame is not the call's segment`, and an
+  unknown one with `CS after a near return over a far call frame is not known to be the call's
+  segment`. A far call into another segment therefore never returns near.
+
+A segment matches when it is the same value as the call's CS: an equal known value, or the very
+value the call saw when CS was not known (a `push cs` the callee made, or a CS it kept). The same
+two stops apply to a far return over a frame of its own width.
 
 A conversion that leaves SP anywhere else keeps the width and balance stops: one that pushed too
 few or too many words, or one whose SP is at no known offset. The root frame has no traced caller

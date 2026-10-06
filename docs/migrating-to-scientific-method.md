@@ -402,13 +402,19 @@ a near one before a `RET`) used to stop with `return width and stack balance dif
 frame`. The engine now follows that return when its words end where the call's frame ended, the
 offset word is the call's return IP and the segment is the call's CS
 ([converted call frames](bounded-evidence-reporters.md#converted-call-frames)). Every
-`returnCheck` gains `endsAtFrameEnd`, and a near return over a traced four-byte frame gains
-`segment`. The push-CS/near-call frame's `frameSource` is now `push-CS/near-call`; it was
-`push-CS/near-call; matching far return required`.
+`returnCheck` gains `endsAtFrameEnd`, and a near return over a traced far call frame (`lcall` or
+push-CS/near-call) gains `segment`. The push-CS/near-call frame's `frameSource` is now
+`push-CS/near-call`; it was `push-CS/near-call; matching far return required`. A far return whose
+segment word has no known value, and is not the call's own CS value, now stops with `far return
+segment is not known to be the call's`; it used to stop with `far return segment changed`, which
+is now kept for a segment known to differ.
 
 What to change:
 
 - A test or tool that matches the old `frameSource` string matches `push-CS/near-call`.
+- A test or tool that matches `far return segment changed` also matches `far return segment is
+  not known to be the call's`, where it meant any rejected segment. A finding that read the old
+  stop as a proven segment change is checked against `returnCheck.segment`.
 - A test that compares `returnCheck` as a whole adds `endsAtFrameEnd`.
 - A query that expected such a callee to stop now reads past it. A finding that rested on the stop
   (an unread callee, a gap at its return) is rerun.

@@ -120,7 +120,7 @@ class TracedCallReturnChecks(unittest.TestCase):
     def test_an_unknown_nested_segment_is_not_reported_as_different(self):
         # pop ax; pop bx; push dx; push ax; retf
         r = report("0e e8 01 00 cb 58 5b 52 50 cb", returnBytes=4)
-        self.assertEqual(stops(r), {"far return segment changed"})
+        self.assertEqual(stops(r), {"far return segment is not known to be the call's"})
         check = only(r, depth=1)["returnCheck"]
         self.assertEqual((check["target"], check["segment"]), ("matches the call", UNKNOWN_WORD))
 
@@ -178,7 +178,7 @@ class ConvertedCallFrames(unittest.TestCase):
     def test_an_unknown_segment_word_is_not_compared(self):
         # pop ax; push dx; push ax; retf
         r = report(NEAR_CALL_ROOT + "58 52 50 cb", returnBytes=4)
-        self.assertEqual(stops(r), {"far return segment changed"})
+        self.assertEqual(stops(r), {"far return segment is not known to be the call's"})
         self.assertEqual(only(r, depth=1)["returnCheck"]["segment"], UNKNOWN_WORD)
 
     def test_an_overwritten_or_unknown_offset_word_stays_rejected(self):
