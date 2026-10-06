@@ -405,7 +405,15 @@ RETURN_CHECK_STOPS = {(False, True): "return width differs from the call frame",
 ENTRY_TARGET_UNREAD = "not read: the entry frame has no traced caller"
 CHECK_FAILED_UNREAD = "not read: the width or stack balance check failed"
 WORD_READ_STOPPED = "not compared: reading the return words stopped the path"
-TARGET_DIFFERS_UNREAD = "not read: the return target does not match the call"
+TARGET_CHECK_FAILED_UNREAD = "not read: the return target check failed"
+WORD_VALUE_UNKNOWN = "not compared: the word read and the call's word are not both known values"
+
+
+def return_word_check(matches, known):
+    """The ``target`` or ``segment`` entry for a return word read from the stack. A word that is not
+    the call's is reported as different only when both values are known; otherwise neither a match
+    nor a difference was shown."""
+    return "matches the call" if matches else "does not match the call" if known else WORD_VALUE_UNKNOWN
 
 
 def return_check(state, frame, instruction_bytes, far):
@@ -416,10 +424,7 @@ def return_check(state, frame, instruction_bytes, far):
     about what its return words hold.
     """
     sp, entry_sp = state.reg(state.sp), frame["sp"]
-    offset = state.frame_offset(sp)
-    if offset is None and sp.number is not None and entry_sp.number is not None:
-        offset = (sp.number - entry_sp.number) % (1 << state.bits)
-        offset -= (1 << state.bits) if offset >> (state.bits - 1) else 0
+    offset = state.frame_offset(sp, absolute=True)
     check = {"frame": "entry" if len(state.frames) == 1 else "call",
              "frameBytes": frame["returnBytes"], "instructionBytes": instruction_bytes,
              "widthMatches": frame["returnBytes"] == instruction_bytes,
@@ -1009,15 +1014,15 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                         finish(state, returned=True)
                         break
                     actual_ip = state.pop(image.bits // 8)
+                    check["target"] = return_word_check(actual_ip.number == frame["returnIP"], actual_ip.number is not None)
                     if actual_ip.number != frame["returnIP"]:
-                        check["target"] = "does not match the call"
                         if m == "retf":
-                            check["segment"] = TARGET_DIFFERS_UNREAD
+                            check["segment"] = TARGET_CHECK_FAILED_UNREAD
                         raise StopPath("return target was overwritten or has unknown provenance")
-                    check["target"] = "matches the call"
                     if m == "retf":
                         actual_cs = state.pop(2)
-                        check["segment"] = "matches the call" if actual_cs.term == frame["callerCS"].term else "does not match the call"
+                        check["segment"] = return_word_check(actual_cs.term == frame["callerCS"].term,
+                                                             actual_cs.number is not None and frame["callerCS"].number is not None)
                         if actual_cs.term != frame["callerCS"].term:
                             raise StopPath("far return segment changed")
                         state.setreg("cs", actual_cs, at)

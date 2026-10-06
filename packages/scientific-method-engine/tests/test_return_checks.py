@@ -4,6 +4,7 @@ from test_x86 import events, report
 
 ENTRY_UNREAD = "not read: the entry frame has no traced caller"
 CHECK_FAILED = "not read: the width or stack balance check failed"
+UNKNOWN_WORD = "not compared: the word read and the call's word are not both known values"
 
 
 def only(result, kind="return", depth=None):
@@ -93,6 +94,25 @@ class TracedCallReturnChecks(unittest.TestCase):
         self.assertEqual(stops(r), {"far return segment changed"})
         check = only(r, depth=1)["returnCheck"]
         self.assertEqual((check["target"], check["segment"]), ("matches the call", "does not match the call"))
+
+    def test_an_unknown_nested_target_is_not_reported_as_different(self):
+        # pop ax; push bx; ret: BX holds no known value, so the word is neither a match nor a difference.
+        r = report("e8 01 00 c3 58 53 c3")
+        self.assertEqual(stops(r), {"return target was overwritten or has unknown provenance"})
+        self.assertEqual(only(r, depth=1)["returnCheck"]["target"], UNKNOWN_WORD)
+
+    def test_an_unknown_far_target_leaves_the_segment_unread(self):
+        # pop ax; push bx; retf
+        r = report("0e e8 01 00 cb 58 53 cb", returnBytes=4)
+        check = only(r, depth=1)["returnCheck"]
+        self.assertEqual((check["target"], check["segment"]), (UNKNOWN_WORD, "not read: the return target check failed"))
+
+    def test_an_unknown_nested_segment_is_not_reported_as_different(self):
+        # pop ax; pop bx; push dx; push ax; retf
+        r = report("0e e8 01 00 cb 58 5b 52 50 cb", returnBytes=4)
+        self.assertEqual(stops(r), {"far return segment changed"})
+        check = only(r, depth=1)["returnCheck"]
+        self.assertEqual((check["target"], check["segment"]), ("matches the call", UNKNOWN_WORD))
 
     def test_a_far_return_over_a_near_call_frame_stays_rejected_with_both_failures(self):
         # The callee rebuilds its near frame as a far one (pop ax; push cs; push ax; retf). Width and

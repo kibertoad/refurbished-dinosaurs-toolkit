@@ -190,11 +190,14 @@ class State:
         if frame["bp"] is not None:
             self.setreg(self.bp, op("add", base, const(frame["bp"], self.bits)), None)
 
-    def frame_offset(self, value):
-        """A register value as a signed offset from the current frame's entry SP, or None when it is not one."""
+    def frame_offset(self, value, absolute=False):
+        """A register value as a signed offset from the current frame's entry SP, or None when it is not one.
+
+        Two concrete values count as an offset from each other only with ``absolute``.
+        """
         base, delta = address_parts(self.frames[-1]["sp"])
         other, other_delta = address_parts(value)
-        if other != base or base == ("absolute",):
+        if other != base or (base == ("absolute",) and not absolute):
             return None
         offset = (other_delta - delta) % (1 << self.bits)
         return offset - (1 << self.bits) if offset >> (self.bits - 1) else offset
