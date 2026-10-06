@@ -614,6 +614,20 @@ def leave(state, ins, image):
     run_plain(state, ins, image)
 
 
+def enter(state, ins, image):
+    # SLEIGH lifts an operand-size override on ENTER with the default-size push, so p-code and the
+    # CPU would disagree on the saved frame pointer's width.
+    if 0x66 in ins.prefix:
+        raise StopPath("Operand-size override on ENTER is unsupported")
+    # Nesting levels 0 and 1 lift to straight-line pushes and register writes, which run as p-code.
+    # Higher levels copy frame pointers from the caller's frame chain in a p-code loop.
+    ops, _ = LIFTER.ops(state.flat, bytes(ins.bytes), state.at)
+    if any(o.code == "CBRANCH" for o in ops):
+        raise StopPath(f"ENTER nesting level {ins.operands[1].imm & 0xFF} copies the caller's frame chain, "
+                       "which is not modeled")
+    run_plain(state, ins, image)
+
+
 def flags_frame(state, ins, image):
     # PUSHF/POPF keep the evidence layer's opaque flags snapshot; p-code supplies the width.
     ops, _ = LIFTER.ops(state.flat, ins.bytes, state.at)
@@ -970,7 +984,7 @@ def interrupt(state, ins, image):
 HANDLERS = {}
 for names, handler in ((("mov", "movzx", "movsx", "xchg"), move), (("nop",), nop), (("lea",), lea),
                        (("lds", "les"), far_pointer), (("push",), push), (("pop",), pop), (("leave",), leave),
-                       (("pushf", "pushfd", "popf", "popfd"), flags_frame), (("cmp", "test"), compare),
+                       (("enter",), enter), (("pushf", "pushfd", "popf", "popfd"), flags_frame), (("cmp", "test"), compare),
                        (("add", "sub", "and", "or", "xor"), arithmetic), (("inc", "dec"), step), (("not",), invert),
                        (("neg",), negate), (("adc", "sbb"), carry_arithmetic), (("clc", "stc", "cmc"), carry_flag),
                        (("shl", "sal", "shr", "sar"), shift), (("rol", "ror", "rcl", "rcr"), rotate),

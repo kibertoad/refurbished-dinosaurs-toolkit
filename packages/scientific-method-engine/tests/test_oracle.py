@@ -62,6 +62,13 @@ class Stack(unittest.TestCase):
     def test_push_pop_and_leave(self):
         check(self, "b81100 50 6a22 5b 59 55 89e5 6a33 c9 c3", resolved=("bx", "cx", "sp"))
 
+    def test_enter_frames(self):
+        # mov bp, 1111h; ENTER size,level; mov ax, bp; mov cx, sp; [mov bx,[bp-2]]; mov dx,[bp]; leave; ret
+        for enter in ("c8040000", "c8000000", "c8ffff00", "c8040020"):
+            check(self, "bd1111 " + enter + " 89e8 89e1 8b5600 c9 c3", resolved=("ax", "cx", "dx", "bp", "sp"))
+        for enter in ("c8040001", "c8040021"):
+            check(self, "bd1111 " + enter + " 89e8 89e1 8b5efe 8b5600 c9 c3", resolved=("ax", "bx", "cx", "dx", "bp", "sp"))
+
     def test_memory_operands(self):
         check(self, "bb1000 c7076655 ff37 8f4702 8b4702 c3", registers=DATA, resolved=("ax",))
 
