@@ -24,12 +24,20 @@ function findBash() {
 const bash = findBash();
 const skip = bash === null && "no Git for Windows bash found";
 
+// A fetch can start `git maintenance run --auto` (or `git gc --auto`) in the background, which
+// keeps writing into the clone after the test ends, so the cleanup's rmSync failed with ENOTEMPTY.
+// Both are turned off for every git the tests and the scripts run.
 const GIT_ENV = {
   GIT_AUTHOR_NAME: "test",
   GIT_AUTHOR_EMAIL: "test@example.com",
   GIT_COMMITTER_NAME: "test",
   GIT_COMMITTER_EMAIL: "test@example.com",
   GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_COUNT: "2",
+  GIT_CONFIG_KEY_0: "gc.auto",
+  GIT_CONFIG_VALUE_0: "0",
+  GIT_CONFIG_KEY_1: "maintenance.auto",
+  GIT_CONFIG_VALUE_1: "false",
 };
 
 function git(dir: string, ...args: string[]) {

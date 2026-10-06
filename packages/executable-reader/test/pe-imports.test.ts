@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run, sourceXxh3 } from "../src/report.ts";
+import { importReport } from "../src/pe-imports.ts";
 import type { ImportControl, ImportSlot } from "../src/pe-imports.ts";
 
 type Thunk = { name: string; hint: number } | { ordinal: number };
@@ -36,9 +37,9 @@ const DLLS: Dll[] = [
 ];
 
 /**
- * A synthetic PE32 or PE32+ image: `.text` at RVA 0x1000 (raw 0x200) and `.idata` at RVA 0x2000
- * (raw 0x400), whose import directory holds {@link DLLS}. Unbound, so each address table entry is
- * a copy of its lookup table entry.
+ * A synthetic PE32 or PE32+ image: `.text` at RVA 0x1000 (raw 0x200..0x400) and `.idata` at RVA
+ * 0x2000 (raw 0x400..0x800), whose import directory holds {@link DLLS}. Unbound, so each address
+ * table entry is a copy of its lookup table entry.
  */
 function buildPe(wide: boolean, delayImports = false) {
   const data = Buffer.alloc(0x800),
@@ -71,15 +72,15 @@ function buildPe(wide: boolean, delayImports = false) {
     d(directories + 13 * 8 + 4, 64);
   }
   const table = optional + optionalSize;
-  for (const [i, name, rva, raw, flags] of [
-    [0, ".text", 0x1000, 0x200, 0x60000020],
-    [1, ".idata", 0x2000, 0x400, 0xc0000040],
+  for (const [i, name, rva, raw, rawSize, flags] of [
+    [0, ".text", 0x1000, 0x200, 0x200, 0x60000020],
+    [1, ".idata", 0x2000, 0x400, 0x400, 0xc0000040],
   ] as const) {
     const at = table + i * 40;
     data.write(name, at, "latin1");
     d(at + 8, 0x400);
     d(at + 12, rva);
-    d(at + 16, 0x400);
+    d(at + 16, rawSize);
     d(at + 20, raw);
     d(at + 36, flags);
   }
@@ -251,5 +252,44 @@ test("import report refuses a lookup entry that is neither an ordinal nor a hint
   assert.throws(
     () => report([{ slot: slot(0, 0), dll: "KERNEL32.dll", name: "CreateFileA" }], data),
     /lookup table entry 1 of KERNEL32\.dll is neither an ordinal nor a hint\/name/,
+  );
+});
+
+test("import report fails on tables it cannot map to one slot or one loaded byte", () => {
+  const control = [{ slot: 0x400000 + DLLS[0]!.address, dll: "KERNEL32.dll", name: "CreateFileA" }];
+  const read = (change: (pe: ReturnType<typeof buildPe>) => void, extra: Record<string, unknown> = {}) => {
+    const pe = buildPe(false);
+    change(pe);
+    return () => importReport(pe.data, { sourceKind: "pe32", controls: control, ...extra });
+  };
+  const descriptor = (i: number) => 0x400 + i * 20;
+  // .idata's section header claims the RVA range of .text.
+  assert.throws(
+    read((pe) => pe.data.writeUInt32LE(0x1000, 0x178 + 40 + 12)),
+    /Ambiguous PE virtual section mapping/,
+  );
+  // Slot addresses at this image base would pass 4 GiB.
+  assert.throws(
+    read((pe) => pe.data.writeUInt32LE(0xfffff000, 0x98 + 28)),
+    /exceed the reportable address range/,
+  );
+  // KERNEL32's address table holds a null entry where its lookup table still names an import.
+  assert.throws(
+    read((pe) => pe.thunk(DLLS[0]!.address + pe.width, 0n)),
+    /Import address table of KERNEL32\.dll ends before its lookup table/,
+  );
+  // USER32's descriptor names KERNEL32's address table as its own.
+  assert.throws(
+    read((pe) => pe.data.writeUInt32LE(DLLS[0]!.address, descriptor(1) + 16)),
+    /Import address tables overlap at RVA 0x21c0/,
+  );
+  // KERNEL32's lookup table lies past every section.
+  assert.throws(
+    read((pe) => pe.data.writeUInt32LE(0x5000, descriptor(0))),
+    /Import lookup table entry of KERNEL32\.dll at RVA 0x5000 is not in the file's loaded bytes/,
+  );
+  assert.throws(
+    read(() => {}, { formatControls: [] }),
+    /formatControls apply only to mz sources/,
   );
 });

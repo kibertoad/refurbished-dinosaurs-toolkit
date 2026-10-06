@@ -60,13 +60,18 @@ interface Section {
   rva: number;
   extent: number;
   rawStart: number;
+  rawSize: number;
   loaded: number;
 }
 
 const hexEntry = (value: bigint, width: number) => `0x${value.toString(16).padStart(width * 2, "0")}`;
 const hex = (n: number) => `0x${n.toString(16)}`;
-const describe = (dll: string, entry: SlotImport | null) =>
-  entry === null ? `${dll} with no import` : "name" in entry ? `${dll}!${entry.name}` : `${dll}!#${entry.ordinal}`;
+const describe = (dll: string, entry: { name?: string; ordinal?: number } | null) =>
+  entry === null
+    ? `${dll} with no import`
+    : entry.name !== undefined
+      ? `${dll}!${entry.name}`
+      : `${dll}!#${entry.ordinal}`;
 
 function checkControls(controls: unknown): ImportControl[] {
   if (!Array.isArray(controls) || controls.length < 1 || controls.length > MAX_CONTROLS)
@@ -103,12 +108,16 @@ function checkControls(controls: unknown): ImportControl[] {
  *
  * Slots are listed by address. Listing order of any other tool is never used. Every control in
  * `config.controls` must name the import the tables put in its slot, or the report throws.
- * Throws as well for a malformed header, a table outside the file, a lookup entry with reserved
- * bits set, a non-ASCII name, overlapping import address tables or an exceeded limit.
+ * Throws as well for a malformed header, sections that overlap each other or the headers, an image
+ * whose addresses leave the reportable range, a table outside the file, a lookup entry with reserved
+ * bits set, a non-ASCII name, overlapping import address tables, supplied `formatControls` or an
+ * exceeded limit.
  */
 export function importReport(bytes: Buffer, config: ImportConfig) {
   const kind = config.sourceKind;
   if (kind !== "pe32" && kind !== "pe32+") throw new Error("The import report requires sourceKind pe32 or pe32+");
+  // A control the report does not check would read as a passed one.
+  if (config.formatControls !== undefined) throw new Error("formatControls apply only to mz sources");
   const controls = checkControls(config.controls);
   const span = (at: number, size: number) => {
     if (at < 0 || size < 0 || at + size > bytes.length) throw new Error("PE source range is truncated");
@@ -135,9 +144,11 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
   if (count < 1 || count > 96 || optionalSize < directoriesAt)
     throw new Error("Invalid PE section count or optional header");
   const baseBig = wide ? (span(optional + 24, 8), bytes.readBigUInt64LE(optional + 24)) : BigInt(dword(optional + 28));
-  if (baseBig > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("PE image base exceeds the reportable range");
+  const sizeOfImage = dword(optional + 56);
+  // Every slot address must stay exact: below 4 GiB in PE32, and a safe integer in PE32+.
+  if (baseBig + BigInt(sizeOfImage) > (wide ? BigInt(Number.MAX_SAFE_INTEGER) : 1n << 32n))
+    throw new Error("PE image base and size exceed the reportable address range");
   const imageBase = Number(baseBig),
-    sizeOfImage = dword(optional + 56),
     sizeOfHeaders = dword(optional + 60),
     directoryCount = dword(optional + directoriesAt - 4);
   if (directoryCount > 16 || directoriesAt + directoryCount * 8 > optionalSize)
@@ -148,7 +159,9 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
       : { rva: 0, size: 0 };
   const table = optional + optionalSize;
   span(table, count * 40);
-  if (sizeOfHeaders > bytes.length || sizeOfHeaders > sizeOfImage) throw new Error("Invalid PE image/header extent");
+  if (!sizeOfImage || sizeOfHeaders < table + count * 40 || sizeOfHeaders > bytes.length || sizeOfHeaders > sizeOfImage)
+    throw new Error("Invalid PE image/header extent");
+  // The same section checks as the engine's PE32 loader, so that every RVA maps to one section.
   const sections: Section[] = [];
   for (let i = 0; i < count; i++) {
     const at = table + i * 40;
@@ -156,20 +169,36 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
       rva = dword(at + 12),
       rawSize = dword(at + 16),
       rawStart = dword(at + 20);
-    if (rawSize) span(rawStart, rawSize);
+    const extent = Math.max(virtualSize, rawSize);
+    if (!extent || rva < sizeOfHeaders || rva + extent > sizeOfImage)
+      throw new Error("PE section escapes image or overlaps headers");
+    if (rawSize) {
+      span(rawStart, rawSize);
+      if (rawStart < sizeOfHeaders) throw new Error("PE section raw bytes overlap headers");
+    }
+    for (const prior of sections) {
+      if (Math.max(rva, prior.rva) < Math.min(rva + extent, prior.rva + prior.extent))
+        throw new Error("Ambiguous PE virtual section mapping");
+      if (
+        rawSize &&
+        prior.rawSize &&
+        Math.max(rawStart, prior.rawStart) < Math.min(rawStart + rawSize, prior.rawStart + prior.rawSize)
+      )
+        throw new Error("Overlapping PE raw sections");
+    }
     // Raw bytes past VirtualSize are file-alignment padding, which the loader does not map.
-    sections.push({
-      rva,
-      extent: Math.max(virtualSize, rawSize),
-      rawStart,
-      loaded: virtualSize ? Math.min(rawSize, virtualSize) : rawSize,
-    });
+    sections.push({ rva, extent, rawStart, rawSize, loaded: virtualSize ? Math.min(rawSize, virtualSize) : rawSize });
   }
+  // File offset of `rva` and how many bytes from there on are loaded from the file, or null for none.
+  const loadedRun = (rva: number): { at: number; length: number } | null => {
+    if (rva < sizeOfHeaders) return { at: rva, length: sizeOfHeaders - rva };
+    const s = sections.find((s) => rva >= s.rva && rva < s.rva + s.extent);
+    return s && rva - s.rva < s.loaded ? { at: s.rawStart + rva - s.rva, length: s.loaded - (rva - s.rva) } : null;
+  };
   // File offset of `size` bytes at `rva`, or null when they are not all loaded from the file.
   const offset = (rva: number, size: number): number | null => {
-    if (rva + size <= sizeOfHeaders) return rva;
-    const s = sections.find((s) => rva >= s.rva && rva < s.rva + s.extent);
-    return s && rva - s.rva + size <= s.loaded ? s.rawStart + rva - s.rva : null;
+    const run = loadedRun(rva);
+    return run && size <= run.length ? run.at : null;
   };
   const at = (rva: number, size: number, label: string) => {
     const found = offset(rva, size);
@@ -178,14 +207,13 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
   };
   // A NUL-terminated printable ASCII name at `rva`, or null when there is none.
   const ascii = (rva: number): string | null => {
-    let name = "";
-    for (let n = 0; n < MAX_NAME; n++) {
-      const o = offset(rva + n, 1);
-      if (o === null) return null;
+    const run = loadedRun(rva);
+    if (run === null) return null;
+    const end = run.at + Math.min(run.length, MAX_NAME);
+    for (let o = run.at; o < end; o++) {
       const b = bytes[o]!;
-      if (b === 0) return name || null;
+      if (b === 0) return o > run.at ? bytes.toString("latin1", run.at, o) : null;
       if (b < 0x20 || b > 0x7e) return null;
-      name += String.fromCharCode(b);
     }
     return null;
   };
@@ -276,9 +304,8 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
       throw new Error(`Import address tables overlap at RVA ${hex(slots[i]!.rva)}`);
   const bySlot = new Map(slots.map((s) => [s.slot, s]));
   const checked = controls.map((c) => {
-    const expected: SlotImport = c.name !== undefined ? { name: c.name, hint: 0 } : { ordinal: c.ordinal! };
     const found = bySlot.get(c.slot);
-    const want = describe(c.dll, expected);
+    const want = describe(c.dll, c);
     if (!found)
       throw new Error(`Import positive control at ${hex(c.slot)} (${want}) is not an import address table slot`);
     const got = found.import,

@@ -1211,7 +1211,8 @@ not bound, and its `namesFrom` says so. A slot of a bound descriptor with no loo
 of an unbound descriptor that is neither a well-formed ordinal nor a hint and name in the file gets
 no import either. A lookup table entry of that kind, a table outside the file's loaded bytes,
 an address table that ends before its lookup table, a non-ASCII name and overlapping address tables
-fail the report.
+fail the report, as do sections that overlap each other or the headers, slot addresses that would
+leave 4 GiB in PE32, and `formatControls`, which apply only to `mz` sources.
 
 `controls` is required: 1..256 positive controls, each a slot whose import other evidence shows,
 as `{ slot, dll, name }` or `{ slot, dll, ordinal }`. `slot` is the virtual address, `dll` is

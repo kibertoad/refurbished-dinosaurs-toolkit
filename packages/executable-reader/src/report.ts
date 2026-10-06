@@ -44,7 +44,7 @@ export interface ReportConfig {
   [key: string]: unknown;
 }
 /**
- * A bounded-x86-v1 or pointer-inventory report. Its fields are documented in
+ * A bounded-x86-v1, pointer-inventory or import report. Its fields are documented in
  * docs/bounded-evidence-reporters.md; this package passes them through without a typed model.
  */
 export type Report = Record<string, any>;
