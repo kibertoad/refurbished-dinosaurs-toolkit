@@ -32,9 +32,11 @@ or `synthetic-raw` for test data. The report is printed as JSON. On failure the 
 
 Commands: `trace`, `arguments`, `effects`, `returns`, `memory`, `guards`, `uses`, `incoming`,
 `call-order`, `dispatch`, `allocation`, `operand`, `operand-candidates`, `target`, `bounds`,
-`owner`, `callees` and `pointers`. Their inputs, outputs and limits are in
+`owner`, `callees`, `pointers` and `table`. Their inputs, outputs and limits are in
 [the bounded evidence reporter guide](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md).
-`pointers` runs entirely in Node; every other command runs in the engine.
+`pointers` and `table` run entirely in Node; every other command runs in the engine. `table` reads
+the entries of one pointer table from the bytes of an `mz` or `pe32` source and compares an
+analyzer's listing of the table with them.
 
 For `mz` sources the reader also:
 
@@ -54,6 +56,7 @@ The package is ESM with type declarations.
 import { run, prepare, PREPARED_PROTOCOL } from "@scientific-method/executable-reader";
 import { readMz, incomingCalls } from "@scientific-method/executable-reader/legacy-image";
 import { pointerInventory } from "@scientific-method/executable-reader/pointer-inventory";
+import { tableContents } from "@scientific-method/executable-reader/table-contents";
 ```
 
 | Export | Module | Purpose |
@@ -76,6 +79,8 @@ import { pointerInventory } from "@scientific-method/executable-reader/pointer-i
 | `Descriptor`, `Trampoline`, `Overlay`, `SourceRange`, `ResolvedOperand`, `FormatCounts`, `TargetSelector` | `legacy-image` | Types of the parsed tables. |
 | `pointerInventory(bytes, config)` | `pointer-inventory` | The `pointers` report over an already hash-checked buffer. |
 | `PointerConfig` | `pointer-inventory` | Type of the `pointers` query. |
+| `tableContents(bytes, config)` | `table-contents` | The `table` report over an already hash-checked buffer. |
+| `TableConfig`, `TableLayout`, `TableCodeSource`, `TableControl`, `TableListingRow`, `TablePointerKind`, `TableEntryResult` | `table-contents` | Types of the `table` query and its results. |
 
 Each export carries a doc comment with its exact checks and errors.
 
