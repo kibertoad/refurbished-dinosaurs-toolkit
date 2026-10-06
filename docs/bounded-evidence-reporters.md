@@ -115,12 +115,13 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
 | `callees` | the bounded call graph below an entry, with recursion and shared callees, optionally compared with Ghidra's edges | [function bounds](#function-bounds-and-site-ownership) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
+| `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables and checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots) |
 
 The engine also has `scientific-method-engine ghidra-scripts`, which prints the directory of the
 packaged Ghidra scripts (see the engine's README for the list).
 
 All engine commands return JSON with the input fingerprint and schema `bounded-x86-v1`;
-`pointers` returns its own inventory object, described in its section.
+`pointers` and `imports` return their own objects, described in their sections.
 `target` is described under [Call-target provenance](#call-target-provenance), and `bounds`
 and `owner` under [Function bounds and site ownership](#function-bounds-and-site-ownership).
 `trace` follows direct calls and local branches, records ordered effects and keeps
@@ -642,7 +643,8 @@ reached only through a rejected start, including a call's return site, is
 including later callers; reached prefixed and indirect calls are also reported.
 Unknown calls have explicit gaps and fallthrough assumes they return. Narrower
 regions and exhausted budgets are partial scope, even with zero hits. There is
-no universal call-completeness or native-reachability claim. PE indirect imports,
+no universal call-completeness or native-reachability claim. Which import a
+slot holds comes from the reader's [`imports` report](#pe-import-slots). PE indirect imports,
 IAT trampolines, stored callables, exception dispatch and computed targets remain
 unresolved rather than guessed. This initial model implements bounded reports,
 not a solver, loader emulator or whole-program analysis.
@@ -1217,6 +1219,48 @@ the most recent formations on each path and evicting the oldest; evicted
 formations remain explicit per path/event and refuse storage merging. Candidate
 lists are present only when non-empty. A complete
 or stopped trace never promotes a modeled association to runtime state evidence.
+
+## PE import slots
+
+`scientific-method imports <config.json>` says which import the file's own import tables put in
+each slot of a PE file's import address table. It runs in the reader without the engine, and it is
+the only command that reads PE32+: select `sourceKind: "pe32"` or `"pe32+"`, which must match the
+optional header. Regions are not used.
+
+For each descriptor in the import directory the report reads the DLL name, the import lookup table
+and the import address table, walked in step one entry at a time at the thunk width (4 bytes in
+PE32, 8 in PE32+) up to the lookup table's null entry. An entry with the top bit set is an ordinal
+with no name; any other entry points at a hint and name. `slots` lists every slot by its virtual
+address at the preferred image base, sorted by address, with `rva`, `fileOffset`, the descriptor
+and the slot's index in it, `dll`, `storedEntry` (the address table entry as stored),
+`lookupEntry`, `namesFrom` and `import` (`{ name, hint }` or `{ ordinal }`). `descriptors` gives
+each descriptor's tables, time stamp and `namesFrom`.
+
+A descriptor whose time stamp is not zero was bound, so its import address table as stored holds
+addresses in the DLLs, and such an address can have its top bit set, as every address in
+`KERNEL32.DLL` did under Windows 95. A descriptor with no lookup table, which some linkers of the
+period wrote, has its names read from the import address table as stored in the file when it was
+not bound, and its `namesFrom` says so. A slot of a bound descriptor with no lookup table gets
+`import: null` with a `reason`, and its stored entry is never decoded as an ordinal. A stored entry
+of an unbound descriptor that is neither a well-formed ordinal nor a hint and name in the file gets
+no import either. A lookup table entry of that kind, a table outside the file's loaded bytes,
+an address table that ends before its lookup table, a non-ASCII name and overlapping address tables
+fail the report, as do sections that overlap each other or the headers, slot addresses that would
+leave 4 GiB in PE32, and `formatControls`, which apply only to `mz` sources.
+
+`controls` is required: 1..256 positive controls, each a slot whose import other evidence shows,
+as `{ slot, dll, name }` or `{ slot, dll, ordinal }`. `slot` is the virtual address, `dll` is
+compared without regard to case and `name` exactly. A control whose slot holds anything else, holds
+no import, or is not a slot at all rejects the report. Line counts of a listing such as
+`dumpbin /imports` never identify a slot: such a listing gives the descriptors in directory order,
+which need not be the order their address tables sit in, and leaves out the null entry that ends
+each descriptor's slots. The arguments a call site passes can confirm a mapped import or show that something is
+wrong, but they do not name it.
+
+The import directory holds only what the loader resolves when it loads the file. Delay-loaded
+imports and functions found through `GetProcAddress` are named in `exclusions`;
+`delayImportDirectory` gives the delay-load directory when the file has one, unread. The report
+never shows that the code calls nothing else, and it does not read which code calls through a slot.
 
 ## Return widths, declared encodings and caller dependencies
 
