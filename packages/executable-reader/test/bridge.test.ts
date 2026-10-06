@@ -754,6 +754,39 @@ test("argument frames map pushed words onto the callee's read widths through the
   assert.equal(r.argumentFrameSites[0].widthsConsistent, true);
 });
 
+test("argument frames reach a callee through its ENTER frame, and a frame-chain level stops by name", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // push 7; push 9; call 75; add sp,4; ret; at 75: enter 2,0; les bx,[bp+4]; leave; ret
+  data.set([0x6a, 7, 0x6a, 9, 0xe8, 4, 0, 0x83, 0xc4, 4, 0xc3, 0xc8, 2, 0, 0, 0xc4, 0x5e, 4, 0xc9, 0xc3], 64);
+  const query = () => {
+    writeFileSync(join(dir, "source.bin"), data);
+    const cfg = {
+      ...config,
+      xxh3: sourceXxh3(data),
+      regions: [{ ...config.regions[0]!, entries: [64, 75] }],
+    };
+    writeFileSync(join(dir, "config.json"), JSON.stringify(cfg));
+    return join(dir, "config.json");
+  };
+  const r = run(["arguments", query()]);
+  assert.equal(r.completeWithinModel, true);
+  const frame = r.paths[0].argumentFrames[0];
+  assert.deepEqual(
+    frame.slots.map((s: Report) => [s.offset, s.width, s.writerSite]),
+    [
+      [0, 2, 66],
+      [2, 2, 64],
+    ],
+  );
+  assert.equal(r.argumentFrameSites[0].agreed, true);
+  // Nesting level 2 copies frame pointers from the caller's frame chain.
+  data[78] = 2;
+  const stopped = run(["trace", query()]);
+  assert.equal(stopped.completeWithinModel, false);
+  assert.equal(stopped.paths[0].stop, "ENTER nesting level 2 copies the caller's frame chain, which is not modeled");
+});
+
 test("a callee that skips a read leaves the site consistent but not agreed through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);

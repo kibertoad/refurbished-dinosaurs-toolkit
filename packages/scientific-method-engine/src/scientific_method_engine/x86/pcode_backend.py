@@ -611,7 +611,30 @@ def pop(state, ins, image):
 def leave(state, ins, image):
     if 0x66 in ins.prefix:
         raise StopPath("Operand-size override on LEAVE is unsupported")
+    # The CPU takes LEAVE's stack address size from SS, but SLEIGH lifts an address-size override
+    # with the other stack pointer width (ESP in real mode, SP in flat mode).
+    if 0x67 in ins.prefix:
+        raise StopPath("Address-size override on LEAVE is unsupported")
     run_plain(state, ins, image)
+
+
+def enter(state, ins, image):
+    # SLEIGH lifts an operand-size override on ENTER with the default-size push, so p-code and the
+    # CPU would disagree on the saved frame pointer's width.
+    if 0x66 in ins.prefix:
+        raise StopPath("Operand-size override on ENTER is unsupported")
+    # The CPU takes ENTER's stack address size from SS, but SLEIGH lifts an address-size override
+    # with the other stack pointer width (ESP in real mode, SP in flat mode).
+    if 0x67 in ins.prefix:
+        raise StopPath("Address-size override on ENTER is unsupported")
+    # Nesting levels 0 and 1 lift to straight-line pushes and register writes, which run as p-code.
+    # Higher levels copy frame pointers from the caller's frame chain in a p-code loop. The CPU
+    # uses the level byte modulo 32, so the stop names that level.
+    f = Frame(state, ins, image)
+    if any(o.code == "CBRANCH" for o in f.ops):
+        raise StopPath(f"ENTER nesting level {ins.operands[1].imm & 0x1F} copies the caller's frame chain, "
+                       "which is not modeled")
+    f.execute()
 
 
 def flags_frame(state, ins, image):
@@ -970,7 +993,7 @@ def interrupt(state, ins, image):
 HANDLERS = {}
 for names, handler in ((("mov", "movzx", "movsx", "xchg"), move), (("nop",), nop), (("lea",), lea),
                        (("lds", "les"), far_pointer), (("push",), push), (("pop",), pop), (("leave",), leave),
-                       (("pushf", "pushfd", "popf", "popfd"), flags_frame), (("cmp", "test"), compare),
+                       (("enter",), enter), (("pushf", "pushfd", "popf", "popfd"), flags_frame), (("cmp", "test"), compare),
                        (("add", "sub", "and", "or", "xor"), arithmetic), (("inc", "dec"), step), (("not",), invert),
                        (("neg",), negate), (("adc", "sbb"), carry_arithmetic), (("clc", "stc", "cmc"), carry_flag),
                        (("shl", "sal", "shr", "sar"), shift), (("rol", "ror", "rcl", "rcr"), rotate),

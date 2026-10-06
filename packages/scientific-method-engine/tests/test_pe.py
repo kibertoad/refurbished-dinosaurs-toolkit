@@ -392,6 +392,18 @@ class PEReporterTests(unittest.TestCase):
         self.assertEqual(arg['argument']['offsetFromEntrySP'], 4)
         self.assertEqual(arg['width'], 4)
 
+    def test_arguments_follow_an_enter_frame(self):
+        c = Code().emit('68 78 56 34 12').branch('e8', 'callee').emit('83 c4 04 c3')
+        c.label('callee').emit('c8 08 00 00 8b 45 08 c9 c3')
+        r = report(c, 'trace')
+        self.assertTrue(r['completeWithinModel'], r)
+        saved = next(e for e in events(r, 'write') if e['site'] == CODE_RAW + c.labels['callee'])
+        self.assertEqual((saved['role'], saved['width']), ('push', 4))
+        arg = next(e for e in events(r, 'read') if e.get('argument'))
+        self.assertEqual(arg['value']['value'], 0x12345678)
+        self.assertEqual(arg['argument']['offsetFromEntrySP'], 4)
+        self.assertEqual(arg['argument']['pushProducers'], [CODE_RAW])
+
     def test_callee_cleanup_and_pointer_plus_independent_word(self):
         c = Code().emit('68 00 20 40 00 66 68 07 00').branch('e8', 'callee').emit('c3')
         c.label('callee').emit('55 89 e5 66 8b 45 08 8b 55 0a c9 c2 06 00')
