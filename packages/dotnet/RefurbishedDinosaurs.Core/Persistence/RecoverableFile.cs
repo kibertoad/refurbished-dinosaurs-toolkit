@@ -45,7 +45,8 @@ public sealed record RecoverableFileResult<T>(T Value, FileGeneration Generation
 /// the kept file open without <see cref="FileShare.Delete"/>, and succeeds when the handles share
 /// delete, where a rename with <see cref="File.Move(string, string, bool)"/> over the open primary is
 /// refused; a reader that shared delete keeps reading the old generation, under its new name when it
-/// was kept. On other systems .NET removes the old kept file, hard-links the primary to the kept name
+/// was kept. The new primary takes the replaced file's creation time and attributes on Windows and
+/// keeps its own last write time. On other systems .NET removes the old kept file, hard-links the primary to the kept name
 /// (copying it where links are unsupported) and renames the new file over the primary.
 /// </remarks>
 public static class RecoverableFile
