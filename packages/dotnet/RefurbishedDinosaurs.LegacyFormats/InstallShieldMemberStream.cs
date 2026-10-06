@@ -261,7 +261,7 @@ internal sealed class InstallShieldMemberStream : DecodingMemberStream
             }
             var want = (int)Math.Min(destination.Length - filled, segmentLeft);
             var read = volume!.Read(destination.Slice(filled, want));
-            if (read == 0) throw Invalid("ends early: its cabinet volume is shorter than when it was opened");
+            if (read == 0) throw Invalid("ends early: the file holding its stored bytes is shorter than when the set was opened");
             filled += read;
             segmentLeft -= read;
         }

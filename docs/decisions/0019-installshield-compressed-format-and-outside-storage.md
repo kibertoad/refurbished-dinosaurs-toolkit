@@ -1,6 +1,7 @@
 # ADR 0019: The caller chooses an InstallShield set's compressed format, and members stored outside are skipped
 
-Status: accepted
+Status: accepted. Point 5 is superseded by
+[ADR 0021](0021-installshield-files-stored-outside-are-looked-up-beside-the-header.md).
 
 ## Context
 

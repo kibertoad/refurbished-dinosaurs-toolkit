@@ -136,6 +136,13 @@ internal static class SyntheticInstallShieldCabinet
         return output.ToArray();
     }
 
+    /// <summary>
+    /// The bytes the set stores for <paramref name="file"/>: compressed in the form
+    /// <paramref name="markerDelimited"/> chooses, and obfuscated, as a volume would hold them. A test
+    /// writes them beside the header as the file of a member stored outside the cabinet.
+    /// </summary>
+    public static byte[] StoredBytes(CabinetFile file, bool markerDelimited = false) => Raw(file, markerDelimited);
+
     private static byte[] Raw(CabinetFile file, bool markerDelimited)
     {
         var raw = file.Stored?.ToArray()

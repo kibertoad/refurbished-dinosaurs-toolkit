@@ -72,7 +72,10 @@ LegacyFormats parts of it:
   share its data, version 6 copies of a listed member at the same path with the same size and
   MD5, entries stored outside the cabinet's volumes, and the entries at a path that holds
   different files, each with a `Kind` to test. Such a path lists none of its files: `PathConflicts`
-  gives each with its metadata, and `OpenEntry` reads it by its file-table index. The header
+  gives each with its metadata, and `OpenEntry` reads it by its file-table index. A file stored
+  outside is looked for beside the header at its directory and name, where Unshield's `-O` looks;
+  `OutsideFiles` gives what was found there, and `OpenEntry` reads one found with exactly its stored
+  length at a path that holds no other file. The header
   does not say whether compressed data is in length-prefixed chunks or delimited by `00 00 FF FF`
   markers (Unshield's `-O`), so the caller passes an `InstallShieldCompressedFormat`; the reader
   never switches forms on its own. Decode into the staging directory and verify the output there as for
@@ -446,3 +449,21 @@ Code that took the open's failure to mean the set could not be used checks `Path
 instead. Code that extracts `Files` and expects one of these paths finds it missing, and picks the
 file to install from `PathConflicts`, for example by file group. Code with an exhaustive `switch`
 over `InstallShieldSkippedFileKind` adds the new value.
+
+### InstallShield files stored outside the cabinet
+
+An InstallShield cabinet source now looks for each file stored outside its volumes beside the
+header, at the entry's directory and name, and reports what it found in the new `OutsideFiles`
+(`InstallShieldOutsideFile` with an `InstallShieldOutsideFileStatus`). `OpenEntry(index)` reads a
+file whose status is `Available`, where it used to throw `FileNotFoundException` for every entry
+stored outside. Code that relied on that exception checks `OutsideFiles` for the entry's status
+instead.
+
+The expanded size of an `Available` file now counts toward `MaximumExpandedBytes`, so a set near
+the limit whose outside files are present beside the header can fail the open where it used to
+open; raise the limit if those files are expected. `Files`, `OpenRead` and `SkippedFiles` are
+unchanged: entries stored outside stay unlisted with the kind `StoredOutsideCabinet`. The message
+for stored bytes that end early now reads "the file holding its stored bytes is shorter than when
+the set was opened" for a volume and for a file found beside the header alike. Code with an
+exhaustive `switch` over `InstallShieldOutsideFileStatus` handles `LookupFailed`, which a lookup
+that could not list a folder or read a length reports.

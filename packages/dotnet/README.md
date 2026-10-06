@@ -200,6 +200,7 @@ contexts outside per-frame loops.
 | `InstallShieldCabinetSource`, `InstallShieldCabinetLimits` | The members of an InstallShield cabinet set of major version 0, 5 or 6 (`dataN.hdr` and `dataN.cab`), on disk or inside another source. See [InstallShield cabinets](#installshield-cabinets). |
 | `InstallShieldMember`, `InstallShieldEntryMetadata`, `InstallShieldFileGroup`, `InstallShieldFileGroupMembership`, `InstallShieldFileGroupMembershipKind` | Each listed member's file-table entry (index, directory, name) and the file groups whose ranges hold it, from either InstallShield source's `Members`. See [Member metadata and file groups](#member-metadata-and-file-groups). |
 | `InstallShieldPathConflict` | A path that holds different files, with each file's metadata, from either InstallShield source's `PathConflicts`; `OpenEntry(index)` reads each. See [Different files at one path](#different-files-at-one-path). |
+| `InstallShieldOutsideFile`, `InstallShieldOutsideFileStatus` | A cabinet file stored outside its volumes, from `InstallShieldCabinetSource.OutsideFiles`, with where it was looked for beside the header and what was found there; `OpenEntry(index)` reads an `Available` one. See [Members stored outside the cabinet](#members-stored-outside-the-cabinet). |
 | `ContentSourceExtractor`, `ContentExtractionOptions` | Copy the files of any `OriginalContentSource`, or a selection of them, into a staging directory and get an `InstalledAsset` record for each. See [Extracting a source into a stage](#extracting-a-source-into-a-stage). |
 | `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
 | `CddaTrackFingerprints`, `CddaTrackVerification` | Record and check the fingerprint of a CD audio track in a cue/bin image, accepting a rip shifted by a drive read offset up to the fingerprint's tolerance. See [CD audio across read offsets](#cd-audio-across-read-offsets). |
@@ -265,7 +266,7 @@ header, matched ignoring case.
 
 | Supported | Not supported |
 |---|---|
-| Major versions 0, 5 and 6, as the header's version word gives them under Unshield's rule. Stored and compressed members, obfuscated members, members split across volumes, and version 6 members that link to another member's data. Compressed data in length-prefixed chunks (Unshield's default) or delimited by `00 00 FF FF` markers with no chunk lengths (what Unshield reads with `-O`), as the caller selects (see [Compressed formats](#compressed-formats)). | Every other major version, and a version word in neither encoding Unshield reads, which throw `NotSupportedException` naming the word. Reading members stored outside the cabinet: they are listed in `SkippedFiles` (see [Members stored outside the cabinet](#members-stored-outside-the-cabinet)). Components, and an installer's placement of files: members are listed by directory and name, and file groups are reported as metadata (see [Member metadata and file groups](#member-metadata-and-file-groups)). |
+| Major versions 0, 5 and 6, as the header's version word gives them under Unshield's rule. Stored and compressed members, obfuscated members, members split across volumes, and version 6 members that link to another member's data. Compressed data in length-prefixed chunks (Unshield's default) or delimited by `00 00 FF FF` markers with no chunk lengths (what Unshield reads with `-O`), as the caller selects (see [Compressed formats](#compressed-formats)). | Every other major version, and a version word in neither encoding Unshield reads, which throw `NotSupportedException` naming the word. Members stored outside the cabinet are not listed: they are in `SkippedFiles`, and only one found beside the header with exactly its stored length is read, by index (see [Members stored outside the cabinet](#members-stored-outside-the-cabinet)). Components, and an installer's placement of files: members are listed by directory and name, and file groups are reported as metadata (see [Member metadata and file groups](#member-metadata-and-file-groups)). |
 
 Opening reads the header and the volume headers and checks every listed member before any member is
 read: its directory and name joined must pass `PortableAssetPath.Relative`, its data must lie inside the
@@ -344,8 +345,40 @@ volume, and the rest of the set opens. Entries that share its data, and version 
 are also stored outside, are skipped the same way; a version 6 copy whose own data is inside the
 cabinet is listed. A different file at its path makes the path one that holds different files, and
 `PathConflicts` names the entries stored outside there.
-The reader does not look for or read files outside the cabinet; read such a file from your own
-media and check it there.
+
+Each file stored outside is looked for where Unshield's `-O` looks for it: beside the header, at the
+directory and name of the entry that holds its data (for a version 6 link, the entry the link ends
+at), matching each component ignoring case. Nothing else is searched for. `OutsideFiles` lists each
+such file in the table order of its first entry, as an `InstallShieldOutsideFile`: its `Member`
+(entry, metadata with file groups, `SharedBy`), the `LookupPath`, its `StoredSize` (the compressed
+size when `Compressed`, the expanded size otherwise), the `FoundLength` when exactly one file
+matched, and a `Status`:
+
+| Status | What was found | Read |
+|---|---|---|
+| `Available` | One file, exactly `StoredSize` bytes long, at a path that holds no other file of the set. | Yes, by `OpenEntry(index)`. |
+| `Missing` | No file. | No. |
+| `LengthDiffers` | One file of another length. | No: how such a file relates to the entry's data is not established. |
+| `SeveralMatches` | More than one file matching ignoring case, which a case-sensitive file system can hold. | No. |
+| `PathHeldByDifferentFiles` | The entry's path or the `LookupPath` holds other files of the set too (`PathConflicts`), so a file found cannot be told to be this one. `FoundLength` still gives its length. | No. |
+| `NoUsablePath` | The entry holding the data is a version 6 link target with no name. | No. |
+| `LookupFailed` | Nothing known: a folder on the way could not be listed, or the length of the file found could not be read (access denied, or the file went away during the open). The set still opens. | No. |
+
+`OpenEntry` reads an `Available` file as the entry's stored bytes, as Unshield `-O` reads it: decoded
+in the set's `CompressedFormat` when the entry is compressed, deobfuscated when it is obfuscated, and
+checked to its end as a member inside the cabinet is (size, the marker-delimited checks, and the MD5
+in version 6). A file that does not decode fails its read, and so does one that is shorter or longer
+than when the set was opened. An `Available` file's expanded size counts
+toward `MaximumExpandedBytes`. `Files` never lists a file stored outside, found or not, and its
+entries stay in `SkippedFiles` as `StoredOutsideCabinet`.
+
+```csharp
+foreach (var outside in cabinet.OutsideFiles)
+{
+    if (outside.Status != InstallShieldOutsideFileStatus.Available) continue; // report the status instead
+    await using var stream = cabinet.OpenEntry(outside.Member.Metadata.Index);
+}
+```
 
 Any other extent past the end of a volume is damage: an offset past its length, or data that starts
 inside it and runs past its end. It fails the open with `InvalidDataException` ("lies past the end of

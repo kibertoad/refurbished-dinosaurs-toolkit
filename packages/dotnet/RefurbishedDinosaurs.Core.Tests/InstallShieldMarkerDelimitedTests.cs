@@ -240,7 +240,7 @@ public sealed class InstallShieldMarkerDelimitedTests
             {
                 File.WriteAllBytes(Path.Combine(root, "data1.cab"), set["data1.cab"][..^5000]);
                 await using var stream = source.OpenRead("packed.bin");
-                Assert.Contains("shorter than when it was opened",
+                Assert.Contains("is shorter than when the set was opened",
                     (await Assert.ThrowsAsync<InvalidDataException>(() => ReadAll(stream))).Message);
             }
         }
