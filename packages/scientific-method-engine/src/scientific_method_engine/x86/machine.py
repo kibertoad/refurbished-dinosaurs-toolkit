@@ -123,7 +123,6 @@ class State:
         self.memory = {}
         # Keys grouped by (segment, base) so a write scans only groups that can alias it.
         self.memory_groups = {}
-        self.memory_epoch = 0
         # The order of the write event that stored each modeled byte. lost_memory holds the
         # byteProducers "unwritten" row of bytes with no value that an ordinary write explains (a
         # possibly aliasing write dropped them) or that a preservesMemory scope kept without a
@@ -136,14 +135,9 @@ class State:
         self.memory_cleared = None
         self.writes = {}
         # Bytes a preservesMemory scope kept without a value (ADR 0009): key -> the unknown term
-        # name they had before the modeled call. They stay unread: no value, no producer.
+        # name they had before the modeled call. They stay unread: no value, no producer. Every other
+        # byte with no value reads a term named by the event its "unwritten" row names (unread_term).
         self.unread_memory = {}
-        # Bytes with no modeled value that the path has read: key -> the unknown term it read,
-        # grouped by (segment, base) like memory_groups. A later read of the byte reads the same
-        # term until a write that may store it, or a modeled call, drops it. memory_epoch names the
-        # terms of bytes read for the first time, so a dropped byte reads a fresh term.
-        self.observed_memory = {}
-        self.observed_groups = {}
         self.events = []
         # Bytes above each traced call's return frame that the call event records (argument_slots); 0 records none.
         self.argument_window = 0
@@ -263,50 +257,30 @@ class State:
         self.memory.clear()
         self.memory_groups.clear()
         self.unread_memory.clear()
-        self.observed_memory.clear()
-        self.observed_groups.clear()
         self.memory_writers.clear()
         self.lost_memory.clear()
         self.writes.clear()
         # The caller records the event that explains the loss right after clearing.
         self.memory_cleared = len(self.events)
-        self.memory_epoch += 1
 
-    def unread_term(self, key):
-        """Name the unknown term of a byte with no modeled value: a kept scope term, the term an
-        earlier read of it got, or the epoch's."""
+    def unread_term(self, key, unwritten=None):
+        """Name the unknown term of a byte with no modeled value: a kept scope term, or one named by
+        the newest event that may have stored the byte.
+
+        That event is the one the byte's ``unwritten`` row names (pass the row when it is already
+        built): the newest write that may alias it, the write that dropped its value, the modeled
+        call that cleared memory, or none. Reads of the byte name the same term until such an event
+        happens, so a reload across writes that cannot store the byte reads the earlier term, and the
+        term changes exactly when the reported cause does.
+        """
         if key in self.unread_memory:
             return self.unread_memory[key]
-        return self.observed_memory.get(key, f"memory:{self.memory_epoch}:{key}")
+        order = (unwritten or self.unwritten(key))["order"]
+        return f"memory:{'entry' if order is None else order}:{key}"
 
-    def byte(self, key):
-        """The modeled value of one memory byte, or an unknown term produced by the current site.
-
-        A byte with neither a value nor a kept scope term keeps the term it gets here, so a later
-        read reads the same term unless a write that may store the byte drops it first.
-        """
-        if key in self.memory:
-            return self.memory[key]
-        term = self.unread_term(key)
-        if key not in self.unread_memory and key not in self.observed_memory:
-            self.observed_memory[key] = term
-            self.observed_groups.setdefault(key[:2], set()).add(key)
-        return unknown(term, 8, self.at)
-
-    def forget_observed(self, seg, base, written, keys):
-        """Drop the read terms of bytes a write may store: its own keys, and every byte of another
-        (segment, base) group whose domain may overlap the written one. Bytes of the write's own
-        group at other offsets are distinct bytes and keep their terms."""
-        for key in keys:
-            if self.observed_memory.pop(key, None) is not None:
-                self.observed_groups[key[:2]].discard(key)
-        for group, members in list(self.observed_groups.items()):
-            if group != (seg, base):
-                for key in [k for k in members if may_alias(k, written, self.bits, self.flat)]:
-                    del self.observed_memory[key]
-                    members.discard(key)
-            if not members:
-                del self.observed_groups[group]
+    def byte(self, key, unwritten=None):
+        """The modeled value of one memory byte, or an unknown term produced by the current site."""
+        return self.memory[key] if key in self.memory else unknown(self.unread_term(key, unwritten), 8, self.at)
 
     def latest_aliasing_write(self, group, domain):
         """The order of the newest write outside `group` that may have stored a byte of `domain`, or None."""
@@ -428,11 +402,8 @@ class State:
         dropped_values = dropped_unread = 0
         if write is not None:
             write = Value(write.bits, write.term, sources(write, site=self.at))
-            self.memory_epoch += 1
-
             written = written_domain(seg, base, delta, width, self.bits, self.flat)
             self.writes.setdefault((seg, base), {})[written] = len(self.events)
-            self.forget_observed(seg, base, written, keys)
             for group, members in list(self.memory_groups.items()):
                 if group == (seg, base):
                     continue
@@ -463,9 +434,12 @@ class State:
             self.memory_groups.setdefault((seg, base), set()).update(keys)
             value = write
             missing = []
+            rows = [self.byte_writer(i, key) for i, key in enumerate(keys)]
         else:
             missing = [i for i, key in enumerate(keys) if key not in self.memory]
-            value = join([self.byte(key) for key in keys])
+            # Each row's "unwritten" cause names the term of a byte with no value, so it is built once.
+            rows = [self.byte_writer(i, key) for i, key in enumerate(keys)]
+            value = join([self.byte(key, row.get("unwritten")) for key, row in zip(keys, rows)])
         relevant = []
         for g in self.guards:
             left = g.get("left", {}).get("expression")
@@ -478,7 +452,7 @@ class State:
         event = self.event("write" if write is not None else "read", segment=segment.report(), offset=offset.report(),
                            width=width, effectiveSegmentRegister=addressing_register, segmentInterpretation="base" if self.flat else "selector-paragraph", interval={"segment": seg, "base": base, "start": delta, "end": delta + width},
                            value=value.report(), missingByteProducers=missing,
-                           byteProducers=[self.byte_writer(i, key) for i, key in enumerate(keys)],
+                           byteProducers=rows,
                            guards=deepcopy(relevant), role=role,
                            uncertainAliasesInvalidated=dropped_values, uncertainScopeBytesInvalidated=dropped_unread)
         f = self.frames[-1]

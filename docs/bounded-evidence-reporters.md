@@ -81,11 +81,16 @@ this way in two fields,
 both present on every write and 0 when it dropped none. `uncertainAliasesInvalidated` counts bytes
 that held a modeled value. `uncertainScopeBytesInvalidated` counts bytes a `preservesMemory` scope
 kept without a value: they lost no value, but the scope no longer holds them after the write.
-A byte the model holds no value for reads as an unknown term, and later reads of it on the path
-read the same term until a write that may store it or a modeled call. A write keeps that term when
-it lies in the byte's own segment/base group at other offsets, or when both have concrete,
-disjoint address domains. A write that overlaps the byte, or whose segment or address may alias
-it, gives the next read a fresh term, so a reload is not shown equal to the earlier read.
+A byte the model holds no value for reads as an unknown term named by the event its `unwritten`
+row names, so later reads of it on the path read the same term until a write that may store it or a
+modeled call. A modeled call keeps the term of a byte its `preservesMemory` scope covers. A write
+keeps that term when it lies in the byte's own segment/base group at other offsets, or when both
+have concrete, disjoint address domains. A write that overlaps the byte, or whose segment or address
+may alias it, gives the next read a fresh term, so a reload is not shown equal to the earlier read.
+This identity assumes that only the path's own writes and modeled calls change memory: a byte that
+hardware, DMA or an interrupt handler updates between two reads (a timer counter, a polled status
+word) reads as one term across them, and a control that a reload of such a byte holds is
+conditional on that assumption.
 All assumptions remain conditional, and matching numeric offsets alone never establish storage
 identity.
 

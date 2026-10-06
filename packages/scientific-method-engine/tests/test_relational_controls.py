@@ -110,14 +110,19 @@ class OrderTests(unittest.TestCase):
         self.assertIn("not shown equal", occurrence["reason"])
         self.assertEqual(result["queryAssumptions"]["callModels"], [self.c.labels["service"]])
 
-    def reload(self, store, **registers):
-        # Load a word, test it, run `store` on the nonzero branch, then reload the same word.
-        self.c = (Code().emit("a1 00 01 85 c0").label("test").branch("74", "out").emit(store)
-                  .label("use").emit("8b 1e 00 01").label("out").emit("c3"))
+    def reload(self, store, registers=FRAME, scopes=None):
+        # Load a word, test it, run `store` on the nonzero branch, then reload the same word. With
+        # `scopes`, a modeled service with those preservesMemory scopes follows the store.
+        self.c = Code().emit("a1 00 01 85 c0").label("test").branch("74", "out").emit(store)
+        if scopes is not None:
+            self.c.label("service").branch("e8", "external")
+        self.c.label("use").emit("8b 1e 00 01").label("out").emit("c3").label("external").emit("c3")
         rule = control("reload", "order", before={"site": self.c.labels["test"], "event": "branch"},
                        branch={"taken": False}, sameValue={"before": "left", "at": "value"},
                        at={"site": self.c.labels["use"], "event": "read"})
-        return verdict(run(self.c, [rule], registers={**FRAME, **registers}), "reload")
+        models = [] if scopes is None else [{"site": self.c.labels["service"], "evidence": "synthetic unread service",
+                                             "preserves": ["ds"], "preservesMemory": scopes, "cases": [{}]}]
+        return verdict(run(self.c, [rule], registers=registers, callModels=models), "reload")
 
     def test_a_reload_keeps_the_tested_word_across_writes_that_cannot_store_it(self):
         for name, store, registers in (
@@ -127,7 +132,7 @@ class OrderTests(unittest.TestCase):
                 ("another segment register with the same value", "26 c7 06 00 02 01 00", {"es": FRAME["ds"]}),
                 ("another segment whose bytes lie elsewhere", "26 c7 06 00 01 01 00", {"es": 0x5000})):
             with self.subTest(name):
-                self.assertEqual(self.reload(store, **registers)["verdict"], "held")
+                self.assertEqual(self.reload(store, {**FRAME, **registers})["verdict"], "held")
 
     def test_a_reload_after_a_write_that_may_store_the_word_is_undecided(self):
         for name, store, registers in (
@@ -137,7 +142,7 @@ class OrderTests(unittest.TestCase):
                 ("unknown segment", "26 c7 06 00 02 01 00", {}),
                 ("another segment register naming the same bytes", "26 c7 06 00 01 01 00", {"es": FRAME["ds"]})):
             with self.subTest(name):
-                result = self.reload(store, **registers)
+                result = self.reload(store, {**FRAME, **registers})
                 self.assertEqual(result["verdict"], "undecided")
                 occurrence = next(o for p in result["paths"] for o in p["occurrences"])
                 self.assertIn("not shown equal", occurrence["reason"])
@@ -146,22 +151,18 @@ class OrderTests(unittest.TestCase):
         # DS is unknown: both accesses use its one value, so the offsets alone keep them apart.
         for store, expected in (("c7 06 00 02 01 00", "held"), ("c6 06 00 01 05", "undecided")):
             with self.subTest(store):
-                self.c = (Code().emit("a1 00 01 85 c0").label("test").branch("74", "out").emit(store)
-                          .label("use").emit("8b 1e 00 01").label("out").emit("c3"))
-                rule = control("reload", "order", before={"site": self.c.labels["test"], "event": "branch"},
-                               branch={"taken": False}, sameValue={"before": "left", "at": "value"},
-                               at={"site": self.c.labels["use"], "event": "read"})
-                self.assertEqual(verdict(run(self.c, [rule], registers={"ss": 0x3000, "sp": 0xff00}), "reload")["verdict"], expected)
+                self.assertEqual(self.reload(store, {"ss": 0x3000, "sp": 0xff00})["verdict"], expected)
 
-    def test_a_reload_after_a_modeled_service_is_undecided_even_without_a_write(self):
-        self.c = (Code().emit("a1 00 01 85 c0").label("test").branch("74", "out").label("service").branch("e8", "external")
-                  .label("use").emit("8b 1e 00 01").label("out").emit("c3").label("external").emit("c3"))
-        rule = control("reload", "order", before={"site": self.c.labels["test"], "event": "branch"},
-                       branch={"taken": False}, sameValue={"before": "left", "at": "value"},
-                       at={"site": self.c.labels["use"], "event": "read"})
-        r = run(self.c, [rule], registers=FRAME,
-                callModels=[{"site": self.c.labels["service"], "evidence": "synthetic unread service", "cases": [{}]}])
-        self.assertEqual(verdict(r, "reload")["verdict"], "undecided")
+    def test_a_reload_after_a_modeled_service_is_undecided_unless_a_scope_keeps_the_word(self):
+        # Without a scope the service may store the word. A preservesMemory scope over it keeps the
+        # term the first load read, across a disjoint write before the call too.
+        word = {"segment": "ds", "base": "bx", "displacement": 0x100, "bytes": 2, "evidence": "synthetic kept word"}
+        for name, store, scopes, expected in (
+                ("no scope", "", [], "undecided"),
+                ("scope over the word", "", [word], "held"),
+                ("scope after a disjoint write", "c7 06 00 02 01 00", [word], "held")):
+            with self.subTest(name):
+                self.assertEqual(self.reload(store, {**FRAME, "bx": 0}, scopes)["verdict"], expected)
 
     def test_a_wrong_direction_before_an_unread_call_is_undecided(self):
         # The helper's test runs once traced, then again inside a modeled call before the access.
