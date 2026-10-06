@@ -178,3 +178,10 @@ offset from the frame's entry SP, and whether the return words were read and com
 call. A width mismatch and an unbalanced stack stop the path with separate reasons. A root return
 never reads its return words, so `returned: true` on a root path says nothing about them. See the
 [command overview](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#commands).
+
+A traced callee that rebuilds its return frame at the other width (`pop ax; push cs; push ax;
+retf` over a near call, or a near return over a far frame it shortened) returns to its caller when
+the return's words end where the call's frame ended (`returnCheck.endsAtFrameEnd`), the offset word
+is the call's return IP, and the segment, popped or kept in CS, is the call's CS. Any other
+conversion stops with the reason of the check it failed. See
+[converted call frames](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#converted-call-frames).

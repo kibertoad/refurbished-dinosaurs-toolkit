@@ -131,7 +131,8 @@ the complete traversal, so gaps in a projection are expected.
 Arguments are recognized by consumed stack offsets and widths relative to each
 call frame. Near returns occupy two bytes and far returns four; an immediately executed
 `push cs` followed by a near call supplies a four-byte frame that must end in
-a matching far return with unchanged stack/segment provenance; saved BP is
+a far return with unchanged stack/segment provenance, or in a near return over a frame
+the callee converted ([below](#converted-call-frames)); saved BP is
 accounted for by actual pushes. LDS/LES consuming four bytes establishes a far
 pointer grouping. Adjacent pushes alone do not. Register widening, frame cleanup,
 stack overwrites and unknown return addresses remain visible. A root query may
@@ -145,17 +146,50 @@ Every `return` event carries `returnCheck`, the checks that return made against 
 | Field | Meaning |
 |---|---|
 | `frame` | `entry` for the root frame, `call` for a traced call's frame |
-| `frameSource` | for a traced call, how the frame was built: `call`, `lcall`, or the push-CS/near-call frame |
+| `frameSource` | for a traced call, how the frame was built: `call`, `lcall`, or `push-CS/near-call` |
 | `frameBytes`, `instructionBytes`, `widthMatches` | the frame's return width (`returnBytes` for the root), the width the return instruction pops, and whether they agree |
 | `spOffset`, `stackBalanced` | SP at the return as a signed offset from the frame's entry SP (`null` when SP is at no known offset from it), and whether SP is that entry SP |
-| `target`, `segment` | whether the return offset word (and, for a far return, the segment word) was read and compared with the call: `matches the call`, `does not match the call` (both values known), or a `not read: ...` / `not compared: ...` reason, including `not compared: the word read and the call's word are not both known values` |
+| `endsAtFrameEnd` | whether the words the return instruction pops end where the frame's return words end: SP plus `instructionBytes` is the entry SP plus `frameBytes`. With equal widths it is `stackBalanced`; with different widths it is `false` when `spOffset` is `null` |
+| `target`, `segment` | whether the return offset word was read and compared with the call, and, for a far return, the segment word; for a near return over a traced far call frame (`lcall` or push-CS/near-call), `segment` compares CS with the call's CS. Each is `matches the call`, `does not match the call` (both values known), or a `not read: ...` / `not compared: ...` reason, including `not compared: the word read and the call's word are not both known values` |
 
 A failed check stops the path with `return width differs from the call frame`,
 `stack balance differs from the call`, or `return width and stack balance differ from the call
-frame` when both fail. The return words are read only for a traced call and only after both
-checks pass. The root frame's are never read (`not read: the entry frame has no traced caller`),
-so a root path with `returned: true` passed the width and balance checks and says nothing about
-the bytes of its own return frame.
+frame` when both fail, unless the frame is a converted call frame (below). The return words are
+read only for a traced call, after both checks pass or the frame is converted. The root frame's
+are never read (`not read: the entry frame has no traced caller`), so a root path with
+`returned: true` passed the width and balance checks and says nothing about the bytes of its own
+return frame.
+
+### Converted call frames
+
+A traced callee may rebuild its return frame at the other width before it returns, for example
+`pop ax; push cs; push ax; retf` over a near call, or `pop ax; pop dx; push ax; ret` over a far
+call or a push-CS/near-call frame. The engine follows such a return when the frame is a traced
+call's, the widths differ and `endsAtFrameEnd` is `true`, so the return leaves SP where the call's
+own return would have left it ([ADR 0022](decisions/0022-converted-call-frames.md)). It then reads
+the words as for a matching return:
+
+- The offset word must be the call's return IP, or the path stops with `return target was
+  overwritten or has unknown provenance`.
+- A far return's segment word must be the call's CS. A different known segment stops the path
+  with `far return segment changed`, and a segment word with no known value that is not the
+  call's own CS value stops it with `far return segment is not known to be the call's`. A wrong
+  segment stops even though the stack balances.
+- A near return leaves CS as it is, and CS must be the call's CS. A different known CS stops the
+  path with `CS after a near return over a far call frame is not the call's segment`, and an
+  unknown one with `CS after a near return over a far call frame is not known to be the call's
+  segment`. A far call into another segment therefore never returns near.
+
+A segment matches when it is the same value as the call's CS: an equal known value, or the very
+value the call saw when CS was not known (a `push cs` the callee made, or a CS it kept). The same
+two stops apply to a far return over a frame of its own width.
+
+A conversion that leaves SP anywhere else keeps the width and balance stops: one that pushed too
+few or too many words, or one whose SP is at no known offset. The root frame has no traced caller
+whose words could be compared, so a root return at the other width stops with the width check
+even when `endsAtFrameEnd` is `true`; trace from a caller to follow such a function. Argument
+reads count from the call's own frame, by address, so a read through the converted frame keeps
+its offset, and a cleanup immediate on the converted return releases arguments as on any return.
 
 `arguments` also maps each traced call's stack slots onto the widths its callee read. Each path
 gets `argumentFrames`, one per traced call (modeled calls have none). Offsets count from the

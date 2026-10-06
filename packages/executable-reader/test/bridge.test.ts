@@ -1384,6 +1384,41 @@ test("trace names the failed root return check and the unread root return words 
   assert.equal(pushed.check.spOffset, -2);
 });
 
+test("trace follows a near call frame its callee converts to a far one through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(200, 28);
+  const trace = (callee: number[]) => {
+    // call near 68; retf | callee
+    data.fill(0, 64, 84);
+    data.set([0xe8, 1, 0, 0xcb, ...callee], 64);
+    writeFileSync(join(dir, "source.bin"), data);
+    writeFileSync(join(dir, "config.json"), JSON.stringify({ ...config, xxh3: sourceXxh3(data), returnBytes: 4 }));
+    const result = run(["trace", join(dir, "config.json")]);
+    const path = result.paths[0];
+    const returns = path.events.filter((e: Report) => e.kind === "return");
+    return { path, check: returns.find((e: Report) => e.depth === 1).returnCheck };
+  };
+  // pop ax; push cs; push ax; retf
+  const converted = trace([0x58, 0x0e, 0x50, 0xcb]);
+  assert.equal(converted.path.returned, true, converted.path.stop);
+  assert.equal(converted.path.registers.ax.value, 3);
+  assert.deepEqual(
+    [converted.check.widthMatches, converted.check.endsAtFrameEnd, converted.check.target, converted.check.segment],
+    [false, true, "matches the call", "matches the call"],
+  );
+  // pop ax; push 0; push ax; retf
+  const wrongSegment = trace([0x58, 0x6a, 0, 0x50, 0xcb]);
+  assert.equal(wrongSegment.path.stop, "far return segment changed");
+  assert.equal(wrongSegment.check.segment, "does not match the call");
+  // pop ax; push dx; push ax; retf: DX holds no known value, so the segment is not called changed.
+  const unknownSegment = trace([0x58, 0x52, 0x50, 0xcb]);
+  assert.equal(unknownSegment.path.stop, "far return segment is not known to be the call's");
+  assert.equal(
+    unknownSegment.check.segment,
+    "not compared: the word read and the call's word are not both known values",
+  );
+});
+
 test("trace follows an indirect far call through a pointer the path stored, with a relocated segment word", (t) => {
   const { dir, data, config } = fixture(t);
   // The one MZ relocation covers the immediate of the segment-word store, at load-image offset 10.
