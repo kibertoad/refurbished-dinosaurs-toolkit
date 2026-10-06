@@ -360,13 +360,15 @@ matched, and a `Status`:
 | `Missing` | No file. | No. |
 | `LengthDiffers` | One file of another length. | No: how such a file relates to the entry's data is not established. |
 | `SeveralMatches` | More than one file matching ignoring case, which a case-sensitive file system can hold. | No. |
-| `PathHeldByDifferentFiles` | The path holds other files of the set too (`PathConflicts`), so a file there cannot be told to be this one. `FoundLength` still gives its length. | No. |
-| `NoUsablePath` | The entry holding the data is a version 6 link target with no usable name. | No. |
+| `PathHeldByDifferentFiles` | The entry's path or the `LookupPath` holds other files of the set too (`PathConflicts`), so a file found cannot be told to be this one. `FoundLength` still gives its length. | No. |
+| `NoUsablePath` | The entry holding the data is a version 6 link target with no name. | No. |
+| `LookupFailed` | Nothing known: a folder on the way could not be listed, or the length of the file found could not be read (access denied, or the file went away during the open). The set still opens. | No. |
 
 `OpenEntry` reads an `Available` file as the entry's stored bytes, as Unshield `-O` reads it: decoded
 in the set's `CompressedFormat` when the entry is compressed, deobfuscated when it is obfuscated, and
 checked to its end as a member inside the cabinet is (size, the marker-delimited checks, and the MD5
-in version 6). A file that does not decode fails its read. An `Available` file's expanded size counts
+in version 6). A file that does not decode fails its read, and so does one that is shorter or longer
+than when the set was opened. An `Available` file's expanded size counts
 toward `MaximumExpandedBytes`. `Files` never lists a file stored outside, found or not, and its
 entries stay in `SkippedFiles` as `StoredOutsideCabinet`.
 

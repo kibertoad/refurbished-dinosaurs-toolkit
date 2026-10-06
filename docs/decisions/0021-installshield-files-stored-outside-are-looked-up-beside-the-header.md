@@ -27,12 +27,16 @@ does not compare the file's length with the header otherwise.
    searched for, so the work is one lookup per file and bounded by `MaximumFiles`.
 2. `OutsideFiles` reports each such file with the path looked up, its stored size, whether it is
    compressed, the length of a file found, and a status: `Available`, `Missing`, `LengthDiffers`,
-   `SeveralMatches`, `PathHeldByDifferentFiles` or `NoUsablePath`.
+   `SeveralMatches`, `PathHeldByDifferentFiles`, `NoUsablePath` or `LookupFailed`. A lookup that
+   fails (a folder that cannot be listed, a length that cannot be read) is reported as
+   `LookupFailed`, never as `Missing`, and does not fail the open of a set that opened without it.
 3. A file is `Available`, and only then read, when exactly one file matches, its length is exactly
-   the entry's stored size, and the entry's path holds no other file of the set. `OpenEntry(index)`
-   reads it as the entry's stored bytes in the set's `CompressedFormat`, with the checks a member
-   inside the cabinet gets: expanded size, the marker-delimited checks, and the MD5 in version 6.
-   Its expanded size counts toward `MaximumExpandedBytes`.
+   the entry's stored size, and neither the entry's path nor the path looked up (which differs for a
+   version 6 link) holds another file of the set. `OpenEntry(index)` reads it as the entry's stored
+   bytes in the set's `CompressedFormat`, with the checks a member inside the cabinet gets: expanded
+   size, the marker-delimited checks, and the MD5 in version 6. A file that is longer or shorter
+   when it is read than when the set was opened fails the read. Its expanded size counts toward
+   `MaximumExpandedBytes`.
 4. A file of another length is reported with its length and not read. Unshield's tail repair, and
    any reading of a file that holds something other than the stored bytes (an installed copy, for
    example), would be a guess the source cannot check against the header.

@@ -89,18 +89,26 @@ public enum InstallShieldOutsideFileStatus
     SeveralMatches,
 
     /// <summary>
-    /// The path, ignoring case, holds other files of the cabinet too
-    /// (<see cref="InstallShieldCabinetSource.PathConflicts"/>), so a file there cannot be told to be
-    /// this one. It is not read. <see cref="InstallShieldOutsideFile.FoundLength"/> still gives the
+    /// The entry's path or <see cref="InstallShieldOutsideFile.LookupPath"/>, ignoring case, holds
+    /// other files of the cabinet too (<see cref="InstallShieldCabinetSource.PathConflicts"/>), so a
+    /// file found cannot be told to be this one. It is not read. <see cref="InstallShieldOutsideFile.FoundLength"/> still gives the
     /// length of a file found there.
     /// </summary>
     PathHeldByDifferentFiles,
 
     /// <summary>
-    /// The entry holding the file's data is a version 6 link target with no name, or with a path
-    /// <see cref="PortableAssetPath.Relative"/> does not accept, so there is no path to look up.
+    /// The entry holding the file's data is a version 6 link target with no name, so there is no path
+    /// to look up.
     /// </summary>
     NoUsablePath,
+
+    /// <summary>
+    /// The lookup failed before it could tell what is at the path: a folder on the way could not be
+    /// listed, or the length of the file found could not be read, for example because access was
+    /// denied or the file went away during the open. Nothing is known about the file, and it is not
+    /// read.
+    /// </summary>
+    LookupFailed,
 }
 
 /// <summary>

@@ -304,19 +304,6 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                     MajorVersion == 0 ? Version0DescriptorSize : Version5DescriptorSize)
                 : ReadVersion6Descriptor(reader, table + descriptorsOffset + (long)index * Version6DescriptorSize);
 
-        string? LinkedPath(int index, FileDescriptor file)
-        {
-            if (file.NameOffset == 0) return null;
-            try
-            {
-                return EntryPath(index, file).Path;
-            }
-            catch (InvalidDataException)
-            {
-                return null;
-            }
-        }
-
         var skipped = new List<InstallShieldSkippedFile>();
         // The different files at each path, in the order their first entries come in the table. A
         // path that ends up with one file lists it, or skips it when it is stored outside; a path
@@ -406,8 +393,12 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
             if (segments is null)
             {
                 // Unshield looks for a file stored outside by the directory and name of the entry that
-                // holds its data, which for a link is the entry the link ends at.
-                member.LookupPath = dataIndex == index ? path : LinkedPath(dataIndex, data);
+                // holds its data, which for a link is the entry the link ends at. A link target with a
+                // name is an entry the loop reads too, so a path of it that does not read fails the open
+                // either way; one with no name leaves no path to look up.
+                member.LookupPath = dataIndex == index ? path
+                    : data.NameOffset == 0 ? null
+                    : EntryPath(dataIndex, data).Path;
                 var evidence = $"its data offset, {data.DataOffset}, is the length of volume {outsideVolume}, which would hold it";
                 var record = new InstallShieldSkippedFile(index, path, InstallShieldSkippedFileKind.StoredOutsideCabinet,
                     same is not null
@@ -468,8 +459,9 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         conflicts.Sort((left, right) => StringComparer.OrdinalIgnoreCase.Compare(left.Path, right.Path));
 
         // Each file stored outside is looked up beside the header, at the path of the entry that holds
-        // its data. Only one found there with exactly its stored length is read. At a path that holds
-        // other files too, the file found cannot be told to be this one, so it is not read.
+        // its data. Only one found there with exactly its stored length is read. When its own path, or
+        // the path looked up (a link's target can sit at a path held by different files), holds other
+        // files too, the file found cannot be told to be this one, so it is not read.
         var storedOutside = byPath.Values
             .SelectMany(files => files.Where(file => file.Segments is null).Select(file => (File: file, Contested: files.Count > 1)))
             .OrderBy(item => item.File.Index).ToArray();
@@ -480,9 +472,15 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
                 file.OutsideStatus = InstallShieldOutsideFileStatus.NoUsablePath;
                 continue;
             }
-            var (matches, length) = outside.Find(file.LookupPath);
+            if (outside.Find(file.LookupPath) is not { } found)
+            {
+                file.OutsideStatus = InstallShieldOutsideFileStatus.LookupFailed;
+                continue;
+            }
+            var (matches, length) = found;
             file.FoundLength = matches == 1 ? length : null;
-            file.OutsideStatus = isContested ? InstallShieldOutsideFileStatus.PathHeldByDifferentFiles
+            var heldByOthers = isContested || (byPath.TryGetValue(file.LookupPath, out var atLookup) && atLookup.Count > 1);
+            file.OutsideStatus = heldByOthers ? InstallShieldOutsideFileStatus.PathHeldByDifferentFiles
                 : matches == 0 ? InstallShieldOutsideFileStatus.Missing
                 : matches > 1 ? InstallShieldOutsideFileStatus.SeveralMatches
                 : length != file.StoredSize ? InstallShieldOutsideFileStatus.LengthDiffers
@@ -516,7 +514,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         Members = listed.Select(member => member.Metadata!).ToArray();
         OutsideFiles = storedOutside.Select(item => new InstallShieldOutsideFile(
             item.File.Metadata!, item.File.LookupPath, item.File.StoredSize, item.File.Compressed,
-            item.File.OutsideStatus, item.File.FoundLength)).ToArray();
+            item.File.OutsideStatus!.Value, item.File.FoundLength)).ToArray();
         PathConflicts = conflicts.Select(conflict => new InstallShieldPathConflict(
             conflict.Path,
             conflict.Files.Where(file => file.Segments is not null).Select(file => file.Metadata!).ToArray(),
@@ -677,7 +675,7 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
     private InstallShieldMemberStream Open(Member member) => new(
         member.Entry.Path, member.Entry.Size, member.Compressed ? CompressedFormat : null, member.Obfuscated,
         member.Md5, member.Segments ?? [new(0, 0, member.StoredSize)],
-        member.Segments is null ? _ => outside.Open(member.LookupPath!) : openVolume);
+        member.Segments is null ? _ => outside.Open(member.LookupPath!, member.StoredSize) : openVolume);
 
     /// <inheritdoc />
     public override void Dispose() { }
@@ -860,7 +858,8 @@ public sealed class InstallShieldCabinetSource : OriginalContentSource
         // For a file stored outside: where it is looked up, what was found there and whether it is read.
         public string? LookupPath { get; set; }
         public long? FoundLength { get; set; }
-        public InstallShieldOutsideFileStatus OutsideStatus { get; set; }
+        // Null until the file is looked up, so no member reads as available by default.
+        public InstallShieldOutsideFileStatus? OutsideStatus { get; set; }
     }
 
     private sealed record SkippedEntry(InstallShieldSkippedFile Record, string? Contested);

@@ -464,4 +464,6 @@ the limit whose outside files are present beside the header can fail the open wh
 open; raise the limit if those files are expected. `Files`, `OpenRead` and `SkippedFiles` are
 unchanged: entries stored outside stay unlisted with the kind `StoredOutsideCabinet`. The message
 for stored bytes that end early now reads "the file holding its stored bytes is shorter than when
-the set was opened" for a volume and for a file found beside the header alike.
+the set was opened" for a volume and for a file found beside the header alike. Code with an
+exhaustive `switch` over `InstallShieldOutsideFileStatus` handles `LookupFailed`, which a lookup
+that could not list a folder or read a length reports.

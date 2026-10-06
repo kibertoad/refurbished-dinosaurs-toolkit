@@ -10,9 +10,15 @@ namespace RefurbishedDinosaurs.LegacyFormats;
 internal abstract class InstallShieldOutsideStore
 {
     // How many files match the path ignoring case, and the length of the file when exactly one does.
-    public abstract (int Matches, long Length) Find(string relativePath);
+    // Null when the lookup failed before it could tell.
+    public abstract (int Matches, long Length)? Find(string relativePath);
 
-    public abstract Stream Open(string relativePath);
+    // Opens the one file at the path. A file now longer than storedSize, the length it had when the
+    // set was opened, is refused, since only that many bytes would be read and checked.
+    public abstract Stream Open(string relativePath, long storedSize);
+
+    private protected static InvalidDataException Grown(string relativePath) => new(
+        $"InstallShield file stored outside the cabinet at '{relativePath}' is longer than when the set was opened.");
 }
 
 // The header bytes a source is opened from. A .hdr is read whole. A .cab that holds the header is
@@ -190,23 +196,37 @@ internal static class InstallShieldCabinetOpener
     // ignoring case, as volumes are, so a case-sensitive file system can hold several matches.
     private sealed class DirectoryOutsideStore(string root) : InstallShieldOutsideStore
     {
-        private readonly Dictionary<string, string[]> listings = new(StringComparer.Ordinal);
+        // Each folder's entries by name ignoring case, so a lookup costs one probe per component
+        // however many files the folder holds.
+        private readonly Dictionary<string, ILookup<string, string>> listings = new(StringComparer.Ordinal);
 
-        public override (int Matches, long Length) Find(string relativePath)
+        // A folder that cannot be listed, or a file whose length cannot be read, leaves the lookup
+        // unanswered. It is not taken to mean the file is missing.
+        public override (int Matches, long Length)? Find(string relativePath)
         {
-            var matches = Matches(relativePath);
-            return (matches.Count, matches.Count == 1 ? new FileInfo(matches[0]).Length : 0);
+            try
+            {
+                var matches = Matches(relativePath);
+                return (matches.Count, matches.Count == 1 ? new FileInfo(matches[0]).Length : 0);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                return null;
+            }
         }
 
-        public override Stream Open(string relativePath)
+        public override Stream Open(string relativePath, long storedSize)
         {
             var matches = Matches(relativePath);
-            return matches.Count == 1
-                ? new FileStream(matches[0], FileMode.Open, FileAccess.Read, FileShare.Read)
-                : throw new FileNotFoundException(matches.Count == 0
+            if (matches.Count != 1)
+                throw new FileNotFoundException(matches.Count == 0
                     ? "InstallShield file stored outside the cabinet is no longer beside the header."
                     : "Several files beside the header now match the path of an InstallShield file stored outside the cabinet.",
                     relativePath);
+            var stream = new FileStream(matches[0], FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (stream.Length <= storedSize) return stream;
+            stream.Dispose();
+            throw Grown(relativePath);
         }
 
         private List<string> Matches(string relativePath)
@@ -216,20 +236,20 @@ internal static class InstallShieldCabinetOpener
             for (var index = 0; index < components.Length && current.Count > 0; index++)
             {
                 var last = index == components.Length - 1;
-                current = current.SelectMany(folder => Listing(folder))
-                    .Where(entry => Path.GetFileName(entry).Equals(components[index], StringComparison.OrdinalIgnoreCase)
-                                    && (last ? File.Exists(entry) : Directory.Exists(entry)))
+                current = current.SelectMany(folder => Listing(folder)[components[index]])
+                    .Where(entry => last ? File.Exists(entry) : Directory.Exists(entry))
                     .ToList();
             }
             return current;
         }
 
-        private string[] Listing(string folder)
+        private ILookup<string, string> Listing(string folder)
         {
             lock (listings)
             {
                 if (!listings.TryGetValue(folder, out var entries))
-                    listings.Add(folder, entries = Directory.Exists(folder) ? Directory.EnumerateFileSystemEntries(folder).ToArray() : []);
+                    listings.Add(folder, entries = (Directory.Exists(folder) ? Directory.EnumerateFileSystemEntries(folder) : [])
+                        .ToLookup(entry => Path.GetFileName(entry), StringComparer.OrdinalIgnoreCase));
                 return entries;
             }
         }
@@ -238,13 +258,15 @@ internal static class InstallShieldCabinetOpener
     // The folder of another source that holds the header. The source matches paths ignoring case.
     private sealed class ContainerOutsideStore(OriginalContentSource container, string directory) : InstallShieldOutsideStore
     {
-        public override (int Matches, long Length) Find(string relativePath) =>
+        public override (int Matches, long Length)? Find(string relativePath) =>
             container.TryGetFile(directory + relativePath, out var entry) ? (1, entry!.Size) : (0, 0);
 
-        public override Stream Open(string relativePath) => container.TryGetFile(directory + relativePath, out _)
-            ? container.OpenRead(directory + relativePath)
-            : throw new FileNotFoundException(
-                "InstallShield file stored outside the cabinet is no longer beside the header in the source.", directory + relativePath);
+        public override Stream Open(string relativePath, long storedSize) =>
+            !container.TryGetFile(directory + relativePath, out var entry)
+                ? throw new FileNotFoundException(
+                    "InstallShield file stored outside the cabinet is no longer beside the header in the source.", directory + relativePath)
+                : entry!.Size > storedSize ? throw Grown(directory + relativePath)
+                : container.OpenRead(directory + relativePath);
     }
 
     // As Unshield does, the volume names keep the header's name up to its first dot or digit:

@@ -176,6 +176,37 @@ public sealed class InstallShieldOutsideFileTests
         }
     }
 
+    // A link at a path of its own is looked up at its target's path. When different files hold that
+    // path, the file found there cannot be told to be the link's, so the link does not read it either.
+    [Fact]
+    public void DoesNotReadALinkWhoseTargetPathHoldsDifferentFiles()
+    {
+        var root = TemporaryDirectory();
+        try
+        {
+            var data = Bytes(5000, 19);
+            CabinetFile[] files =
+            [
+                new("Data", "first.bin", data, Outside: true),
+                new("Copy", "linked.bin", [], LinkTo: 0),
+                new("DATA", "FIRST.bin", Bytes(5000, 20)),
+            ];
+            SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(6, files));
+            Write(root, "Data/first.bin", SyntheticInstallShieldCabinet.StoredBytes(files[0]));
+
+            using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
+            Assert.Equal(["Data/first.bin"], source.PathConflicts.Select(conflict => conflict.Path));
+            Assert.Equal(
+                [(0, "Data/first.bin", Status.PathHeldByDifferentFiles), (1, "Data/first.bin", Status.PathHeldByDifferentFiles)],
+                source.OutsideFiles.Select(file => (file.Member.Metadata.Index, file.LookupPath!, file.Status)));
+            Assert.Throws<FileNotFoundException>(() => source.OpenEntry(1));
+        }
+        finally
+        {
+            Directory.Delete(root, true);
+        }
+    }
+
     // A file found with the right length is still decoded and checked as a member inside is.
     [Theory]
     [InlineData(5, false)]
@@ -225,11 +256,53 @@ public sealed class InstallShieldOutsideFileTests
             Write(root, "outside.bin", files[0].Data[..100]);
             Assert.Contains("is shorter than when the set was opened",
                 (await Assert.ThrowsAsync<InvalidDataException>(() => ReadAll(source.OpenEntry(0)))).Message);
+            // A longer file starting with the same bytes would read as the stored ones if only the
+            // stored length were read, so it fails too.
+            Write(root, "outside.bin", [.. files[0].Data, .. Bytes(10, 22)]);
+            Assert.Contains("is longer than when the set was opened",
+                (await Assert.ThrowsAsync<InvalidDataException>(() => ReadAll(source.OpenEntry(0)))).Message);
             File.Delete(Path.Combine(root, "outside.bin"));
             await Assert.ThrowsAsync<FileNotFoundException>(() => ReadAll(source.OpenEntry(0)));
         }
         finally
         {
+            Directory.Delete(root, true);
+        }
+    }
+
+    // A folder on the path that cannot be listed says nothing about the file: it is reported as a
+    // failed lookup, never as missing, and the set still opens. Unix file modes deny the listing, so
+    // the test is skipped on Windows and for a process the modes do not stop.
+    [Fact]
+    public void ReportsALookupThatCannotListAFolderAsFailed()
+    {
+        if (OperatingSystem.IsWindows()) Assert.Skip("The test denies the listing with Unix file modes.");
+        var root = TemporaryDirectory();
+        var locked = Path.Combine(root, "Data");
+        try
+        {
+            CabinetFile[] files = [new("Data", "outside.bin", Bytes(500, 21), Compressed: false, Outside: true)];
+            SyntheticInstallShieldCabinet.WriteTo(root, SyntheticInstallShieldCabinet.Build(5, files));
+            Write(root, "Data/outside.bin", files[0].Data);
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(locked, UnixFileMode.None);
+            try
+            {
+                _ = Directory.GetFileSystemEntries(locked);
+                Assert.Skip("The process can list a folder whose modes deny it.");
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+
+            using var source = OriginalContentSource.OpenInstallShieldCabinet(Path.Combine(root, "data1.hdr"));
+            var file = Assert.Single(source.OutsideFiles);
+            Assert.Equal((Status.LookupFailed, (long?)null), (file.Status, file.FoundLength));
+            Assert.Throws<FileNotFoundException>(() => source.OpenEntry(0));
+        }
+        finally
+        {
+            if (!OperatingSystem.IsWindows() && Directory.Exists(locked))
+                File.SetUnixFileMode(locked, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             Directory.Delete(root, true);
         }
     }
