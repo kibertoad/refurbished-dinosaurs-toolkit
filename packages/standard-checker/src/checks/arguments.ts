@@ -1,14 +1,16 @@
 // Argument counts: every `call` passes one argument for each item of the called rule's Parameters
-// list, every function call one for each parameter of its `define`, and every `emit` one for each
-// item of the Parameters list of each handler its glossary entry names. Two `emit`s of one event in
-// rules that share a build pass the same number of arguments.
+// list, every call to a function a rule defines one for each parameter of its `define`, and every
+// `emit` one for each item of the Parameters list of each handler its glossary entry names. Two
+// `emit`s of one event in rules that share a build pass the same number of arguments, which is the
+// only check an event with no handlers gets.
 //
-// A call to a split rule, or an emit handled by one, is counted against each entry of the split that
-// lists one of the calling rule's builds, and a call to a function that a split rule defines against
-// the `define` of each such entry. A Parameters section in any other form than `None.` or the list
-// gives no count, so the calls and emits that depend on it are named as a skipped step and do not
-// fail the check. A call or emit whose argument list is never closed is named as a skipped step too.
-// Only live rules are checked, and only live rules' `define`s are counted against.
+// A call to a split rule, and an emit to a split handler, is counted against each entry of the
+// split that lists one of the calling or emitting rule's builds, and a call to a function that a
+// split rule defines against the `define` of each such entry. A Parameters section in any other
+// form than `None.` or the list gives no count, so the calls and emits that depend on it are named
+// as a skipped step and do not fail the check. A call or emit whose argument list is never closed
+// is named as a skipped step too. Only live rules are checked, and only live rules' `define`s are
+// counted against.
 
 import type { Context } from "../context.ts";
 import { asList, idsIn, kindOf } from "../ids.ts";
@@ -18,10 +20,10 @@ import { BUILTINS, defines, procedureLocals, withoutCommentsAndStrings } from ".
 /**
  * The number of parameters a rule's Parameters section lists: 0 for `None.`, otherwise the number
  * of items of a Markdown list whose items each open with a code span holding a name, or a name, a
- * colon and a type (`` `gang: FMT-DATA-005` ``), followed directly by a colon. An item may continue
- * on indented lines. Null when the section holds anything else, `None known.`, an item that names
- * two parameters and an item with text between the code span and the colon included, so its
- * parameters cannot be counted.
+ * colon and a type, followed directly by a colon (`` - `gang: FMT-DATA-005`: the gang ``). An item
+ * may continue on indented lines. Null when the section holds anything else, so its parameters
+ * cannot be counted: `None known.`, prose after the list, or an item that names two parameters
+ * (`` - `x`, `y`: the cell ``) or puts anything between its code span and the colon.
  */
 export function parameterCount(section: string): number | null {
   const text = section.trim();
@@ -175,22 +177,20 @@ export function checkArgumentCounts(ctx: Context) {
           file,
           other.id === id
             ? `emits ${event} with ${plural(n, "argument")}, but also emits it with ${plural(other.count, "argument")}`
-            : `emits ${event} with ${plural(n, "argument")}, but ${other.id}, which shares a build with it, emits it with ${plural(other.count, "argument")}`,
+            : `emits ${event} with ${plural(n, "argument")}, but ${other.id} emits it with ${plural(other.count, "argument")}`,
         );
       if (!others.some((o) => o.id === id && o.count === n)) others.push({ id, entry: e, count: n });
-      for (const handler of new Set(idsIn(glossary.get(event)))) {
-        if (kindOf(handler) !== "RULE" || entries.get(handler)?.kind !== "RULE") continue;
-        for (const target of targetsOf(handler, e)) {
-          const want = countOf(target);
-          if (want === null) cannotCount(target, `emit of ${event} in ${id}`);
-          else if (want !== n)
-            problem(
-              file,
-              target === handler
-                ? `emits ${event} with ${plural(n, "argument")}, but the Parameters section of its handler ${handler} lists ${plural(want, "parameter")}`
-                : `emits ${event} with ${plural(n, "argument")}, but the Parameters section of ${target}, the entry of the split of its handler ${handler} that lists a build of this rule, lists ${plural(want, "parameter")}`,
-            );
-        }
+      const handlers = idsIn(glossary.get(event)).filter(
+        (x) => kindOf(x) === "RULE" && entries.get(x)?.kind === "RULE",
+      );
+      for (const handler of new Set(handlers.flatMap((h) => targetsOf(h, e)))) {
+        const want = countOf(handler);
+        if (want === null) cannotCount(handler, `emit of ${event} in ${id}`);
+        else if (want !== n)
+          problem(
+            file,
+            `emits ${event} with ${plural(n, "argument")}, but the Parameters section of its handler ${handler} lists ${plural(want, "parameter")}`,
+          );
       }
     }
   }

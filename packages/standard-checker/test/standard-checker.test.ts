@@ -3066,9 +3066,10 @@ for (const params of [
   "The score before the kill, `n`.",
   "`n`, the score before the kill.",
   "None known.",
-  "- `n`, `bonus`: the score and the points on top.",
-  "- `n` the score before the kill.",
-  "- `n` (UINT16): the score before the kill.",
+  "- `n`, `bonus`: the score before the kill and the points on top.",
+  "- `n` (the score): before the kill.",
+  "- `n` is the score before the kill.",
+  "- `n`: the score before the kill.\n- `bonus`, `extra`: points on top.",
 ])
   test(`calls and emits against a Parameters section in another form are skipped: ${params}`, (t) => {
     const root = broken(t, (r) => {
@@ -3093,18 +3094,44 @@ test("a Parameters list followed by prose is not counted", (t) => {
   assert.match(output, /argument counts against RULE-SCORE-002, .*\(call in RULE-SCORE-001\)/);
 });
 
-test("every emit of one event passes the same number of arguments, with or without handlers", (t) => {
+test("an event with no handlers is checked only against its other emits in rules that share a build", (t) => {
   const root = broken(t, (r) => {
     withCallee(r, "- `n`: the score before the kill.", "emit ScoreChanged(n)\nreturn n + 1", "");
     procedure(r, ["emit ScoreChanged(n, 1)"]);
   });
-  const { status, output } = run(root);
-  assert.equal(status, 1);
+  const shared = run(root);
+  assert.equal(shared.status, 1);
   assert.match(
-    output,
-    /RULE-SCORE-002\.md: emits ScoreChanged with 1 argument, but RULE-SCORE-001, which shares a build with it, emits it with 2 arguments$/m,
+    shared.output,
+    /RULE-SCORE-002\.md: emits ScoreChanged with 1 argument, but RULE-SCORE-001 emits it with 2 arguments$/m,
   );
-  assert.doesNotMatch(output, /its handler/);
+  assert.doesNotMatch(shared.output, /its handler/);
+  replaceIn(root, "spec/rules/RULE-SCORE-002.md", "builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.1]");
+  const apart = run(root);
+  assert.doesNotMatch(apart.output, /emits ScoreChanged/);
+});
+
+test("an emit to a split handler is counted against the entries that list the emitting rule's builds", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.", "return n + 1", "RULE-SCORE-003");
+    replaceIn(r, "spec/rules/RULE-SCORE-002.md", "split_with: []", "split_with: [RULE-SCORE-003]");
+    copyRule(r, "RULE-SCORE-003", (text) =>
+      text
+        .replace("builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.1]")
+        .replace("split_with: []", "split_with: [RULE-SCORE-002]")
+        .replace("- `n`: the score before the kill.", "- `n`: the score before the kill.\n- `bonus`: points on top."),
+    );
+    procedure(r, ["emit ScoreChanged(n)"]);
+  });
+  const passing = run(root);
+  assert.doesNotMatch(passing.output, /emits ScoreChanged/);
+  procedure(root, ["emit ScoreChanged(n, n)"]);
+  const failing = run(root);
+  assert.match(
+    failing.output,
+    /RULE-SCORE-001\.md: emits ScoreChanged with 2 arguments, but the Parameters section of its handler RULE-SCORE-002 lists 1 parameter$/m,
+  );
+  assert.doesNotMatch(failing.output, /its handler RULE-SCORE-003/);
 });
 
 test("a call to a split rule is counted against the entries that list the caller's builds", (t) => {
@@ -3220,33 +3247,4 @@ test("a function call from a rule that shares no build with its defines fails on
     run(root).output,
     /RULE-SCORE-002\.md: calls add_points\(\) with 3 arguments, but none of its defines takes that many \(1 parameter in RULE-SCORE-001, 2 parameters in RULE-SCORE-003\)$/m,
   );
-});
-
-test("emits of one event in rules that share no build may pass different numbers of arguments", (t) => {
-  const root = broken(t, (r) => {
-    withCallee(r, "- `n`: the score before the kill.", "emit ScoreChanged(n)\nreturn n + 1", "");
-    replaceIn(r, "spec/rules/RULE-SCORE-002.md", "builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.1]");
-    procedure(r, ["emit ScoreChanged(n, 1)"]);
-  });
-  assert.doesNotMatch(run(root).output, /emits ScoreChanged/);
-});
-
-test("an emit handled by a split rule is counted against the entries that list the emitter's builds", (t) => {
-  const root = broken(t, (r) => {
-    withCallee(r, "- `n`: the score before the kill.", "return n + 1", "RULE-SCORE-003");
-    replaceIn(r, "spec/rules/RULE-SCORE-002.md", "split_with: []", "split_with: [RULE-SCORE-003]");
-    copyRule(r, "RULE-SCORE-003", (text) =>
-      text
-        .replace("builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.1]")
-        .replace("split_with: []", "split_with: [RULE-SCORE-002]")
-        .replace("- `n`: the score before the kill.", "- `n`: the score before the kill.\n- `bonus`: points on top."),
-    );
-    procedure(r, ["emit ScoreChanged(n, n)"]);
-  });
-  const { output } = run(root);
-  assert.match(
-    output,
-    /RULE-SCORE-001\.md: emits ScoreChanged with 2 arguments, but the Parameters section of RULE-SCORE-002, the entry of the split of its handler RULE-SCORE-003 that lists a build of this rule, lists 1 parameter$/m,
-  );
-  assert.doesNotMatch(output, /its handler RULE-SCORE-003 lists/);
 });
