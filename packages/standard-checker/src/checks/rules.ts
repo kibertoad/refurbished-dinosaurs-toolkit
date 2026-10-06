@@ -20,7 +20,35 @@ export const withoutCommentsAndStrings = (code: string) => code.replace(/"[^"\n]
 export const parameterNames = (params: string) =>
   [...params.matchAll(/`([a-z_][a-z0-9_]*)(?=`|\s*:)/g)].map((m) => m[1]);
 
-const BUILTINS = new Set([
+/**
+ * Each `define` in a procedure: the function's name and its parameters as written, with their types
+ * (`n: UINT16`). A define with no parameters has an empty list.
+ */
+export const defines = (code: string) =>
+  [...code.matchAll(/\bdefine\s+([a-z_][a-z0-9_]*)\s*\(([^)]*)\)/g)].map((m) => ({
+    name: m[1],
+    params: m[2]
+      .split(",")
+      .map((p) => p.trim())
+      .filter((p) => p !== ""),
+  }));
+
+/**
+ * The names a procedure declares for itself: its `let`s, its loop variables, the parameters of its
+ * `define`s and the names its rule's Parameters section lists. A call to one of these names calls
+ * the local value, not a function another rule defines.
+ */
+export function procedureLocals(code: string, params: string) {
+  const locals = new Set<string>();
+  for (const m of code.matchAll(/\blet\s+([a-z_][a-z0-9_]*)/g)) locals.add(m[1]);
+  for (const m of code.matchAll(/\bfor\s+(?:each\s+)?([a-z_][a-z0-9_]*)\s+in\b/g)) locals.add(m[1]);
+  for (const d of defines(code)) for (const p of d.params) locals.add(p.split(":")[0].trim());
+  for (const name of parameterNames(params)) locals.add(name);
+  return locals;
+}
+
+/** The functions every procedure may call without a rule defining them. */
+export const BUILTINS = new Set([
   "min",
   "max",
   "abs",
@@ -202,13 +230,7 @@ export function checkRules(ctx: Context, { enumNames }: FormatNames) {
     if (/\b0x[0-9A-Fa-f]{6,}\b/.test(noNeutral) && /\b0x00[4-9A-F][0-9A-F]{5}\b/.test(noNeutral))
       problem(file, "the procedure contains what looks like an address outside a neutral name");
     // Functions called without `call`
-    const locals = new Set<string>();
-    for (const m of code.matchAll(/\blet\s+([a-z_][a-z0-9_]*)/g)) locals.add(m[1]);
-    for (const m of code.matchAll(/\bfor\s+(?:each\s+)?([a-z_][a-z0-9_]*)\s+in\b/g)) locals.add(m[1]);
-    for (const m of code.matchAll(/\bdefine\s+[a-z_][a-z0-9_]*\s*\(([^)]*)\)/g))
-      for (const p of m[1].split(",")) locals.add(p.split(":")[0].trim());
-    const params = e.sections.find((s) => s.title === "Parameters")?.text ?? "";
-    for (const name of parameterNames(params)) locals.add(name);
+    const locals = procedureLocals(code, e.sections.find((s) => s.title === "Parameters")?.text ?? "");
     for (const m of code.matchAll(/(?<![.\w])([a-z_][a-z0-9_]*)\s*\(/g)) {
       const name = m[1];
       if (BUILTINS.has(name) || KEYWORDS.has(name) || locals.has(name)) continue;
