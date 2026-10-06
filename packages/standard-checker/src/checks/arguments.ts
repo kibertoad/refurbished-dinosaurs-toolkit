@@ -1,13 +1,15 @@
 // Argument counts: every `call` passes one argument for each item of the called rule's Parameters
-// list, every function call one for each parameter of its `define`, and every `emit` one for each
-// item of the Parameters list of each handler its glossary entry names. Every `emit` of one event
-// passes the same number of arguments.
+// list, every call to a function a rule defines one for each parameter of its `define`, and every
+// `emit` one for each item of the Parameters list of each handler its glossary entry names. Two
+// `emit`s of one event in rules that share a build pass the same number of arguments, which is the
+// only check an event with no handlers gets.
 //
-// A call to a split rule is counted against each entry of the split that lists one of the calling
-// rule's builds, and a call to a function that a split rule defines against the `define` of each
-// such entry. A Parameters section in any other form than `None.` or the list gives no count, so
-// the calls and emits that depend on it are named as a skipped step and do not fail the check.
-// Only live rules are checked, and only live rules' `define`s are counted against.
+// A call to a split rule, and an emit to a split handler, is counted against each entry of the
+// split that lists one of the calling or emitting rule's builds, and a call to a function that a
+// split rule defines against the `define` of each such entry. A Parameters section in any other
+// form than `None.` or the list gives no count, so the calls and emits that depend on it are named
+// as a skipped step and do not fail the check. Only live rules are checked, and only live rules'
+// `define`s are counted against.
 
 import type { Context } from "../context.ts";
 import { asList, idsIn, kindOf } from "../ids.ts";
@@ -17,8 +19,10 @@ import { withoutCommentsAndStrings } from "./rules.ts";
 /**
  * The number of parameters a rule's Parameters section lists: 0 for `None.`, otherwise the number
  * of items of a Markdown list whose items each open with a code span holding a name, or a name, a
- * colon and a type (`` `gang: FMT-DATA-005` ``). An item may continue on indented lines. Null when
- * the section holds anything else, `None known.` included, so its parameters cannot be counted.
+ * colon and a type, followed directly by a colon (`` - `gang: FMT-DATA-005`: the gang ``). An item
+ * may continue on indented lines. Null when the section holds anything else, so its parameters
+ * cannot be counted: `None known.`, prose after the list, or an item that names two parameters
+ * (`` - `x`, `y`: the cell ``) or puts anything between its code span and the colon.
  */
 export function parameterCount(section: string): number | null {
   const text = section.trim();
@@ -27,7 +31,7 @@ export function parameterCount(section: string): number | null {
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
     if (/^[-*]\s/.test(line)) {
-      if (!/^[-*]\s+`[a-z_][a-z0-9_]*(?:\s*:\s*[^`\s][^`]*)?`/.test(line)) return null;
+      if (!/^[-*]\s+`[a-z_][a-z0-9_]*(?:\s*:\s*[^`\s][^`]*)?`:/.test(line)) return null;
       count++;
     } else if (!(count > 0 && /^\s/.test(line))) return null;
   }
@@ -91,8 +95,18 @@ export function checkArgumentCounts(ctx: Context) {
       defines.get(m[1])!.push({ id, count: m[2].split(",").filter((p) => p.trim() !== "").length });
     }
 
-  // Event name -> the first emit seen, to compare every other emit of it with.
-  const firstEmit = new Map<string, { id: string; count: number }>();
+  // The entries of a rule, or of the split it belongs to, that run for one of caller's builds. A rule
+  // that is not split, or a split none of whose entries lists one, gives the rule itself.
+  const runFor = (target: string, caller: Entry) => {
+    const group = [target, ...asList(entries.get(target)!.meta.split_with)].filter(
+      (x) => entries.get(x)?.kind === "RULE",
+    );
+    const sharing = [...new Set(group)].filter((x) => sharesBuild(entries.get(x)!, caller));
+    return sharing.length ? sharing : [target];
+  };
+
+  // Event name -> the emits seen so far, to compare each later emit of it in a rule sharing a build with.
+  const emits = new Map<string, { id: string; count: number }[]>();
 
   for (const [id, e] of live) {
     const { file } = e;
@@ -103,9 +117,7 @@ export function checkArgumentCounts(ctx: Context) {
       const n = countAfter(code, m.index + m[0].length);
       if (!called || called.kind !== "RULE" || n === null) continue;
       // A split rule runs the entry that lists the build being described.
-      const group = [m[1], ...asList(called.meta.split_with)].filter((x) => entries.get(x)?.kind === "RULE");
-      const sharing = [...new Set(group)].filter((x) => sharesBuild(entries.get(x)!, e));
-      for (const target of sharing.length ? sharing : [m[1]]) {
+      for (const target of runFor(m[1], e)) {
         const want = countOf(target);
         if (want === null) cannotCount(target, `call in ${id}`);
         else if (want !== n)
@@ -136,15 +148,18 @@ export function checkArgumentCounts(ctx: Context) {
       const event = m[1];
       const n = countAfter(code, m.index + m[0].length);
       if (n === null) continue;
-      const first = firstEmit.get(event);
-      if (!first) firstEmit.set(event, { id, count: n });
-      else if (first.count !== n)
+      if (!emits.has(event)) emits.set(event, []);
+      const other = emits.get(event)!.find((x) => x.count !== n && (x.id === id || sharesBuild(entries.get(x.id)!, e)));
+      if (other)
         problem(
           file,
-          `emits ${event} with ${plural(n, "argument")}, but ${first.id} emits it with ${plural(first.count, "argument")}`,
+          `emits ${event} with ${plural(n, "argument")}, but ${other.id} emits it with ${plural(other.count, "argument")}`,
         );
-      for (const handler of idsIn(glossary.get(event))) {
-        if (kindOf(handler) !== "RULE" || entries.get(handler)?.kind !== "RULE") continue;
+      emits.get(event)!.push({ id, count: n });
+      const handlers = idsIn(glossary.get(event)).filter(
+        (x) => kindOf(x) === "RULE" && entries.get(x)?.kind === "RULE",
+      );
+      for (const handler of new Set(handlers.flatMap((h) => runFor(h, e)))) {
         const want = countOf(handler);
         if (want === null) cannotCount(handler, `emit of ${event} in ${id}`);
         else if (want !== n)

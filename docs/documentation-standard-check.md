@@ -362,20 +362,24 @@ procedure:
 - `call RULE-COMBAT-012(attacker, defender)` passes one argument for each parameter of the called
   rule's Parameters section. When the called rule is split by build, the count is compared with
   each entry of the split that lists one of the calling rule's builds.
-- `roll(100)` passes one argument for each parameter of the `define` of `roll`. A function that a
-  split rule defines is compared with the `define` of each entry that lists one of the calling
-  rule's builds.
+- `roll(100)` passes one argument for each parameter of the `define` of `roll`, for a function a
+  rule defines. A function that a split rule defines is compared with the `define` of each entry
+  that lists one of the calling rule's builds. Built-in functions such as `sprintf` have no
+  `define` and are not counted.
 - `emit GangDetected(gang)` passes one argument for each parameter of the Parameters section of
-  every rule the event's glossary entry names, and every `emit` of one event passes the same
-  number, so an event with no handlers is checked too. Every rule ID in the glossary entry counts
-  as a handler.
+  every rule the event's glossary entry names, and every rule ID in the glossary entry counts as a
+  handler. A split handler is compared with each entry of the split that lists one of the emitting
+  rule's builds.
+- Two `emit`s of one event in rules that share a build pass the same number of arguments. An
+  event with no handlers gets only this check, since its glossary entry gives what it carries in
+  prose.
 
 A `call` or `emit` with no parentheses passes no arguments. Commas inside nested parentheses,
 brackets or braces do not separate arguments, so `call RULE-COMBAT-012(max(a, b), c)` passes two.
 
 The checker counts a Parameters section only in the form the standard gives it: `None.` for a rule
-that takes no parameters, or a list with one item per parameter, each opening with the name, or the
-name and type, in one code span:
+that takes no parameters, or a list with one item per parameter, each opening with a code span that
+holds the name, or the name and type, followed directly by a colon:
 
 ```markdown
 ## Parameters
@@ -384,8 +388,11 @@ name and type, in one code span:
 - `defender: FMT-DATA-005`: the gang it attacks.
 ```
 
-An item may continue on indented lines. A section that holds anything besides the list, prose
-or `None known.` included, still passes, but its parameters cannot be counted. Each call and `emit`
+An item may continue on indented lines. An item that names two parameters, such as
+``- `x`, `y`: the cell``, or puts anything between the code span and the colon, makes the whole list
+one the checker does not count, since counting its items would give the wrong number. Such a list,
+and a section that holds anything besides the list, prose or `None known.` included, still passes,
+but its parameters cannot be counted. Each call and `emit`
 counted against such a section is named in the result line instead, grouped by the rule whose
 section it is, such as `Skipped: argument counts against RULE-AI-002, whose Parameters section is
 not None. or a list of parameters (call in RULE-AI-001 (2 times), emit of GangDetected in
