@@ -115,13 +115,14 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
 | `callees` | the bounded call graph below an entry, with recursion and shared callees, optionally compared with Ghidra's edges | [function bounds](#function-bounds-and-site-ownership) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
+| `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
 | `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables and checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots) |
 
 The engine also has `scientific-method-engine ghidra-scripts`, which prints the directory of the
 packaged Ghidra scripts (see the engine's README for the list).
 
 All engine commands return JSON with the input fingerprint and schema `bounded-x86-v1`;
-`pointers` and `imports` return their own objects, described in their sections.
+`pointers`, `table` and `imports` return their own objects, described in their sections.
 `target` is described under [Call-target provenance](#call-target-provenance), and `bounds`
 and `owner` under [Function bounds and site ownership](#function-bounds-and-site-ownership).
 `trace` follows direct calls and local branches, records ordered effects and keeps
@@ -1219,6 +1220,63 @@ the most recent formations on each path and evicting the oldest; evicted
 formations remain explicit per path/event and refuse storage merging. Candidate
 lists are present only when non-empty. A complete
 or stopped trace never promotes a modeled association to runtime state evidence.
+
+## Pointer-table contents
+
+Run `scientific-method table <config.json>` to read what each entry of one table of pointers holds,
+such as a table of string offsets, from the build's bytes. It runs in the reader and needs no
+engine. `sourceKind` is `mz` (through the MZ/FBOV loader) or `pe32` (through the file's section
+table and base relocation directory, at the preferred image base). It implements STATUS-43 of the
+documentation standard.
+
+| Field | Meaning |
+|---|---|
+| `table.address` | `mz`: a loaded resident `{ segment, offset }`. `pe32`: a virtual address. |
+| `table.stride` | Bytes from one entry to the next, 1..65536. |
+| `table.pointer` | `offset` of the pointer in the entry and its `kind`: `near16` (with `segment`, the loaded segment the offset is formed in), `far16` (offset word, then segment word) or `flat32` (`pe32` only). |
+| `table.count` | Entries in the table, 1..65536. Each entry's pointer must lie in the range that holds the table. |
+| `layoutSource` | `{ site, evidence }`: the file offset of the code that reads an entry, which gives the stride, the pointer's offset and width and the segment. |
+| `countSource` | `{ kind, site, evidence }`: the code that gives the count, `kind` being `index bound` or `sentinel test`. |
+| `nullPointer` | `{ value, test }`: the raw value that counts as null and, as `{ site, evidence }`, the test in the code that treats it so. For `far16` the value is the stored double word, segment word high. |
+| `string` | `terminator` (a byte) and `limit`, the most bytes read per entry, terminator included, 1..65536. |
+| `entries` | Optional: the indices to read. Without it, every entry up to the count is read. |
+| `listing` | Optional: the analyzer's rendering, as `{ index, text }` (one byte per character) or `{ index, hex }`. |
+| `controls` | 1..256 entries whose target another reading has shown: `{ index, text \| hex \| result: "null", evidence }`. |
+
+`layoutSource` or `countSource` left out is reported as `unchecked input` in `table.layout` or
+`count`. A code source is checked only for lying in a mapped range; the report does not decode it.
+Without `nullPointer.test`, an entry holding the null value is read like any other, since offset 0
+of a data segment is an address like the rest, and `nullPointer.applied` is false.
+
+Each row in `entries` gives `index`, `site` (the file offset of its pointer), `raw`, `relocation`
+(the MZ relocation or PE base relocation over the pointer, or `null`), `target` and one `result`.
+FBOV fixups patch overlay code, which lies past the resident image that holds every `mz` entry, so
+none appears here. In a `pe32` section whose VirtualSize exceeds its raw data, the loader fills the
+rest with zeros, and the read continues into them. A row whose terminator comes from that fill
+carries `terminatedBy: "loader zero fill"`, and a target inside the fill gives `target.zeroFilled`
+in place of a file offset and range.
+
+| Result | Error | Meaning |
+|---|---|---|
+| `string` | no | A terminator follows at least one byte; `length`, `text` (one character per byte) and `hex`. |
+| `empty` | no | The target holds the terminator, in the file or in a PE section's zero fill; `length` is 0. |
+| `null` | no | The pointer holds the null value the query names with its test. |
+| `unterminated` | yes | No terminator before the limit, the end of the file range or the end of a PE section's zero fill; `examined` and `stoppedBy` (`byte limit`, `end of the file range` or `end of the section`). |
+| `uninitialized` | yes | The address is in memory the build gives no bytes for: the rest of an MZ load image's last paragraph and the header's minimum extra paragraphs, or a PE section's raw padding past its VirtualSize. Nothing is read. |
+| `unmapped` | yes | The pointer gets no address: its target is outside every mapped range, it is a `far16` pointer whose segment word nothing relocates, or a declared MZ relocation covers a `near16` word, a `far16` offset word or straddles a `far16` segment word, which shows that the stride or pointer offset reads a segment as an offset. |
+
+The three errors carry no `text` or `length`, so none of them reads as an empty or shortened
+string. `errors` lists their indices and `results` counts each result. With `listing`, each row
+compared gets `listing.matches` and, when false, a `reason` such as `the listing shows an empty
+string where the bytes give unmapped` or `the listing shows the first 3 of 5 bytes`. The listing is
+an input compared with the bytes and never replaces them. `listing.notCompared` lists rows for
+entries the run did not read.
+
+A control that the bytes do not match rejects the report. At least one control must be an entry
+other than entry 0 that holds a non-empty string, so that a wrong address, stride or segment cannot
+pass it. With `entries`, `coverage.read` lists the indices read and the report claims nothing about
+the others. The report reads the bytes as the file stores them at load; writes the code makes to the
+table or its strings before reading them are outside it.
 
 ## PE import slots
 

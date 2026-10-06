@@ -32,9 +32,11 @@ and `sourceKind`: `mz` for DOS executables, `pe32` for 32-bit Windows executable
 
 Commands: `trace`, `arguments`, `effects`, `returns`, `memory`, `guards`, `uses`, `incoming`,
 `call-order`, `dispatch`, `allocation`, `operand`, `operand-candidates`, `target`, `bounds`,
-`owner`, `callees`, `pointers` and `imports`. Their inputs, outputs and limits are in
+`owner`, `callees`, `pointers`, `table` and `imports`. Their inputs, outputs and limits are in
 [the bounded evidence reporter guide](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md).
-`pointers` and `imports` run entirely in Node; every other command runs in the engine.
+`pointers`, `table` and `imports` run entirely in Node; every other command runs in the engine.
+`table` reads the entries of one pointer table from the bytes of an `mz` or `pe32` source and
+compares an analyzer's listing of the table with them.
 
 `imports` lists the import the file's import tables put in each slot of a PE32 or PE32+ import
 address table, by slot address, and needs at least one positive control: a slot with the import
@@ -58,6 +60,7 @@ The package is ESM with type declarations.
 import { run, prepare, PREPARED_PROTOCOL } from "@scientific-method/executable-reader";
 import { readMz, incomingCalls } from "@scientific-method/executable-reader/legacy-image";
 import { pointerInventory } from "@scientific-method/executable-reader/pointer-inventory";
+import { tableContents } from "@scientific-method/executable-reader/table-contents";
 import { importReport } from "@scientific-method/executable-reader/pe-imports";
 ```
 
@@ -81,6 +84,8 @@ import { importReport } from "@scientific-method/executable-reader/pe-imports";
 | `Descriptor`, `Trampoline`, `Overlay`, `SourceRange`, `ResolvedOperand`, `FormatCounts`, `TargetSelector` | `legacy-image` | Types of the parsed tables. |
 | `pointerInventory(bytes, config)` | `pointer-inventory` | The `pointers` report over an already hash-checked buffer. |
 | `PointerConfig` | `pointer-inventory` | Type of the `pointers` query. |
+| `tableContents(bytes, config)` | `table-contents` | The `table` report over an already hash-checked buffer. |
+| `TableConfig`, `TableLayout`, `TableCodeSource`, `TableControl`, `TableListingRow`, `TablePointerKind`, `TableEntryResult` | `table-contents` | Types of the `table` query and its results. |
 | `importReport(bytes, config)` | `pe-imports` | The `imports` report over an already hash-checked buffer. |
 | `ImportConfig`, `ImportControl`, `ImportSlot`, `SlotImport`, `NamesFrom` | `pe-imports` | Types of the `imports` query, its controls and its slot rows. |
 

@@ -7,6 +7,8 @@ import { readMz, formatCounts, checkFormatControls, segmentOperands, selectedTar
 import type { TargetSelector } from "./legacy-image.ts";
 import { pointerInventory } from "./pointer-inventory.ts";
 import type { PointerConfig } from "./pointer-inventory.ts";
+import { tableContents } from "./table-contents.ts";
+import type { TableConfig } from "./table-contents.ts";
 import { importReport } from "./pe-imports.ts";
 import type { ImportConfig } from "./pe-imports.ts";
 
@@ -44,7 +46,7 @@ export interface ReportConfig {
   [key: string]: unknown;
 }
 /**
- * A bounded-x86-v1, pointer-inventory or import report. Its fields are documented in
+ * A bounded-x86-v1, pointer-inventory, table-contents or import report. Its fields are documented in
  * docs/bounded-evidence-reporters.md; this package passes them through without a typed model.
  */
 export type Report = Record<string, any>;
@@ -170,7 +172,7 @@ export const PREPARED_PROTOCOL = 3;
 
 /**
  * Runs one report, as the `scientific-method` command does. `args` is `[command, configPath]`.
- * `imports` and `pointers` run in Node; every other command is prepared here and piped to
+ * `imports`, `pointers` and `table` run in Node; every other command is prepared here and piped to
  * `python -m scientific_method_engine <command> -`, using `EVIDENCE_PYTHON` or `python`.
  * The engine gets 120 seconds and at most 32 MiB of output.
  */
@@ -190,6 +192,11 @@ export function run(args: string[]): Report {
     // so it skips prepare's instruction-reporter relocation list, which aborts on such a pair.
     const { source, bytes } = readVerifiedSource(supplied, base);
     return pointerInventory(bytes, { ...supplied, source } as PointerConfig);
+  }
+  if (command === "table") {
+    // The table report maps pointers through the file's own MZ or PE tables and reads the bytes itself.
+    const { source, bytes } = readVerifiedSource(supplied, base);
+    return tableContents(bytes, { ...supplied, source } as TableConfig);
   }
   const config = prepare(supplied, base);
   const python = process.env.EVIDENCE_PYTHON || "python";
