@@ -346,6 +346,34 @@ A tool that parses the output sees these changes. Existing line prefixes are kep
 
 ## Standard checker upgrades
 
+### Addresses in code and PowerShell comments are checked
+
+The address check read only `//` and `/* … */` comments in `.cs`, `.ts`, `.js` and `.mjs` files, so
+an address given in a PowerShell comment, or used by the code itself as a number or inside a string,
+passed whether or not any entry recorded it. It now reads `#` and `<# … #>` comments in `.ps1` files
+too, and checks every address the code uses: it must be recorded in an entry that the comment
+trailing its line, or the nearest comment-only line above it and that line's block, cites, or in
+that entry's evidence. With `images` set, a `0x` value of eight hex digits inside an image counts as
+an address wherever the code writes it; neutral names count without it.
+
+Correct each address the check reports. Put the finding that records it in the comment above the
+code, or above the table of addresses it belongs to, which then covers every row of the table. An
+exclusive bound such as `a < 0x00401010` passes when that comment gives the range it ends
+(`0x00401000..0x00401010`). A value that is not an address but falls inside an image, such as a
+colour written with eight digits, is reported too: write it with fewer digits, or give `images` the
+image's exact extent.
+
+### The spec may not name the rebuild's files
+
+The standard's rule that the spec never names a file of the rebuild had no check, so a spec entry
+could name a test file, and the path went stale when the test moved. The checker now fails a
+Markdown file in `spec/` that names a path in a `--rebuild` directory (`src` and `tests` by
+default, the action's `rebuild` input) or a source file found in one by its file name. Rewrite each
+line it reports to describe the comparison without the rebuild's file, and list the test in the
+parity row instead. A restoration whose rebuild lives in more directories, such as a server of its
+own, adds them to `--rebuild`. Tools that read the original, such as research scripts in `tools/`,
+stay out of it, since a finding may name them.
+
 ### `.fs` files are citation-checked
 
 The citation check skipped `.fs` files, so an F# source could cite a spec ID that does not exist or
