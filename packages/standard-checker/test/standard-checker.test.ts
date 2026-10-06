@@ -2614,9 +2614,7 @@ for (const [comment, ok, why] of [
     true,
     "is in a block comment that cites the finding",
   ],
-  ['var s = "// the handler at 0x00401004";\n', true, "is inside a string, not a comment"],
   ['var s = @"C:\\"; // the handler at 0x00401004 (FND-SCORE-001)\n', true, "trails a verbatim string"],
-  ['var s = """\n  // the handler at 0x00401004\n  """;\n', true, "is inside a raw string"],
   ["// The colour 0x00FF00FF is not an address.\n", true, "is a value outside the image"],
   [
     "var x = 1; // FND-SCORE-001:\n           // the handler at 0x00401004 adds one.\n",
@@ -2658,7 +2656,22 @@ test("JavaScript comments are read, and a template literal is not a comment", (t
   const result = run(root, ...IMAGE);
   assert.equal(result.status, 1, result.output);
   assert.match(result.output, /src\/b\.ts: line 1 gives 0x00401004/);
-  assert.doesNotMatch(result.output, /a\.mjs/);
+  // Read as part of the template literal, which is code.
+  assert.match(result.output, /src\/a\.mjs: line 2 uses 0x00401004 in code/);
+  assert.doesNotMatch(result.output, /a\.mjs: line \d+ gives/);
+});
+
+test("an address inside a string is read as code, not as a comment", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    withCode(r, "a.cs", 'var s = "// the handler at 0x00401004";\n');
+    withCode(r, "b.cs", 'var s = """\n  // the handler at 0x00401004\n  """;\n');
+  });
+  const result = run(root, ...IMAGE);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /src\/a\.cs: line 1 uses 0x00401004 in code/);
+  assert.match(result.output, /src\/b\.cs: line 2 uses 0x00401004 in code/);
+  assert.doesNotMatch(result.output, / gives /);
 });
 
 test("without --images only neutral names are checked", (t) => {
@@ -2718,7 +2731,193 @@ test("a regular expression literal is not read as a string or a comment", (t) =>
   const result = run(root, ...IMAGE);
   assert.equal(result.status, 1, result.output);
   assert.match(result.output, /src\/b\.mjs: line 2 gives 0x00401004/);
-  assert.doesNotMatch(result.output, /a\.mjs|c\.mjs/);
+  // Line 2 of a.mjs is code, so its address is one the code uses, not one a comment gives.
+  assert.match(result.output, /src\/a\.mjs: line 2 uses 0x00401004 in code/);
+  assert.doesNotMatch(result.output, /a\.mjs: line \d+ gives|c\.mjs/);
+});
+
+for (const [code, ok, why] of [
+  [
+    "// FND-SCORE-001: the handler.\nconst uint Handler = 0x00401004;\n",
+    true,
+    "under a comment that cites the finding",
+  ],
+  ["const uint Handler = 0x00401004; // FND-SCORE-001\n", true, "with a trailing comment that cites the finding"],
+  [
+    "// FND-SCORE-001: the handlers.\nvar a = 1;\n\nvar h = 0x00401004u;\n",
+    true,
+    "with a suffix, under the nearest comment above, past code and a blank line",
+  ],
+  ['// FND-SCORE-001\nvar s = "0x00401004";\n', true, "in a string, under a comment that cites the finding"],
+  ["const uint Handler = 0x00401004;\n", false, "with no comment above it"],
+  [
+    "// SRC-MANUAL: the handler.\nconst uint Handler = 0x00401004;\n",
+    false,
+    "under a comment that cites no record of it",
+  ],
+  [
+    "// FND-SCORE-001: the handler.\n// The next comment.\nvar x = 1;\nconst uint Handler = 0x00401004;\n",
+    true,
+    "under a block whose first line cites the finding",
+  ],
+  [
+    "// FND-SCORE-001: the handler.\n\n// Unrelated.\nconst uint Handler = 0x00401004;\n",
+    false,
+    "under a nearer comment that cites nothing",
+  ],
+  [
+    "// FND-SCORE-001: the handler spans 0x00401000..0x00401010.\nbool In(uint a) => a >= 0x00401000 && a < 0x00401010;\n",
+    true,
+    "as the end of a range its comment gives",
+  ],
+  [
+    "// FND-SCORE-001: the handler.\nbool Past(uint a) => a >= 0x00401010;\n",
+    false,
+    "as a range end its comment does not give",
+  ],
+  ["var colour = 0x00FF00FF;\n", true, "as a value outside the image"],
+] as Array<[string, boolean, string]>)
+  test(`an address in code ${why} ${ok ? "passes" : "fails"}`, (t) => {
+    const root = broken(t, (r) => {
+      establishByReading(r);
+      withCode(r, "Game.cs", code);
+    });
+    const result = run(root, ...IMAGE);
+    assert.equal(result.status, ok ? 0 : 1, result.output);
+    if (!ok)
+      assert.match(
+        result.output,
+        /src\/Game\.cs: line \d+ uses 0x004010[0-9A-F]{2} in code, but .*cite the finding that records it in that comment/,
+      );
+  });
+
+for (const [script, ok, why] of [
+  ["# FND-SCORE-001: the handler.\n$h = 0x00401004\n", true, "a line comment cites the finding"],
+  ["<#\n  The handler at 0x00401004 adds one.\n  FND-SCORE-001\n#>\n", true, "a block comment cites the finding"],
+  ["$x = 1 # the handler at 0x00401004\n", false, "a trailing comment cites nothing"],
+  ["# The handler at 0x00401004 adds one.\n", false, "a line comment cites nothing"],
+] as Array<[string, boolean, string]>)
+  test(`a PowerShell script where ${why} ${ok ? "passes" : "fails"}`, (t) => {
+    const root = broken(t, (r) => {
+      establishByReading(r);
+      mkdirSync(join(r, "tools"), { recursive: true });
+      writeFileSync(join(r, "tools", "Probe.ps1"), script);
+    });
+    const result = run(root, ...IMAGE);
+    assert.equal(result.status, ok ? 0 : 1, result.output);
+    if (!ok) assert.match(result.output, /tools\/Probe\.ps1: line 1 gives 0x00401004/);
+  });
+
+test("PowerShell strings and here-strings are code, and # inside a word starts no comment", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    mkdirSync(join(r, "tools"), { recursive: true });
+    writeFileSync(
+      join(r, "tools", "Probe.ps1"),
+      [
+        "$a = 'it''s # 0x00401004'",
+        '$b = "a `" # 0x00401008"',
+        "$c = @'",
+        "# 0x0040100C",
+        "'@",
+        "Write-Output a#0x00401000",
+        "",
+      ].join("\n"),
+    );
+  });
+  const result = run(root, ...IMAGE);
+  assert.equal(result.status, 1, result.output);
+  for (const [line, address] of [
+    [1, "0x00401004"],
+    [2, "0x00401008"],
+    [4, "0x0040100C"],
+    [6, "0x00401000"],
+  ])
+    assert.match(result.output, new RegExp(`tools/Probe\\.ps1: line ${line} uses ${address} in code`));
+  assert.doesNotMatch(result.output, / gives /);
+});
+
+// Runs the checker on a commit message in root.
+function message(root: string, text: string, ...args: string[]) {
+  writeFileSync(join(root, "COMMIT_EDITMSG"), text);
+  return run(root, "--message", join(root, "COMMIT_EDITMSG"), ...args);
+}
+
+test("a commit message passes when every address it gives is recorded in an entry it cites", (t) => {
+  const root = broken(t, (r) => establishByReading(r));
+  const cited = message(root, "Score kills in the handler at 0x00401004\n\nRULE-SCORE-001, FND-SCORE-001.\n", ...IMAGE);
+  assert.equal(cited.status, 0, cited.output);
+  assert.match(cited.output, /commit message check passed/);
+  // Only the message is checked: a problem elsewhere in the repository is the full check's to report.
+  rmSync(join(root, "spec", "index", "by-kind.md"));
+  const again = message(root, "Score kills in the handler at fn_00401004 (FND-SCORE-001).\n");
+  assert.equal(again.status, 0, again.output);
+});
+
+test("a commit message fails when it gives an address that no entry it cites records", (t) => {
+  const root = broken(t, (r) => establishByReading(r));
+  const uncited = message(root, "Score kills in the handler at 0x00401004.\n", ...IMAGE);
+  assert.equal(uncited.status, 1, uncited.output);
+  assert.match(uncited.output, /commit message: gives 0x00401004, but the message cites no entry that records it/);
+  const wrong = message(root, "Score kills at 0x00401010 (FND-SCORE-001).\n", ...IMAGE);
+  assert.equal(wrong.status, 1, wrong.output);
+  assert.match(wrong.output, /gives 0x00401010, but neither FND-SCORE-001 nor the evidence it cites records it/);
+});
+
+test("a commit message's comment lines and verbose diff are left out", (t) => {
+  const root = broken(t, (r) => establishByReading(r));
+  const result = message(
+    root,
+    [
+      "Score kills",
+      "# The handler at 0x00401004.",
+      "# ------------------------ >8 ------------------------",
+      "+// the handler at 0x00401008",
+      "",
+    ].join("\n"),
+    ...IMAGE,
+  );
+  assert.equal(result.status, 0, result.output);
+});
+
+test("--message cannot be combined with --check, and an unreadable message exits with 2", () => {
+  assert.equal(run(fixture, "--message", join(fixture, "PARITY.md"), "--check").status, 2);
+  assert.equal(run(fixture, "--message", join(fixture, "no-such-message")).status, 2);
+});
+
+// Adds a sentence to RULE-SCORE-001's Summary.
+function inSummary(root: string, text: string) {
+  replaceIn(root, "spec/rules/RULE-SCORE-001.md", "## Summary\n\n", `## Summary\n\n${text}\n\n`);
+}
+
+for (const [text, ok, why] of [
+  ["The rebuild's tests/Score.Tests/ScoreTests.cs replays the run.", false, "a path in the rebuild's tests"],
+  ["See ../../src/Score/Kill.cs.", false, "a relative path into the rebuild's source"],
+  ["ScoreTests.cs replays the run.", false, "a source file of the rebuild by its name"],
+  ["How to reproduce: run tools/research/list-callers.mjs.", true, "a research script in tools/"],
+  ["Each of the tests/experiments compares one draw.", true, "prose that only looks like a path"],
+  ["The game reads DATA/src/SCORES.BIN.", true, "a path that only contains a rebuild directory's name"],
+] as Array<[string, boolean, string]>)
+  test(`a spec entry that names ${why} ${ok ? "passes" : "fails"}`, (t) => {
+    const root = broken(t, (r) => {
+      mkdirSync(join(r, "tests", "Score.Tests"), { recursive: true });
+      writeFileSync(join(r, "tests", "Score.Tests", "ScoreTests.cs"), "// RULE-SCORE-001\n");
+      inSummary(r, text);
+    });
+    const result = run(root, "--data-dirs", "");
+    assert.equal(result.status, ok ? 0 : 1, result.output);
+    if (!ok)
+      assert.match(result.output, /spec\/rules\/RULE-SCORE-001\.md: line \d+ names .*, which belongs to the rebuild/);
+  });
+
+test("--rebuild chooses the directories the spec may not name", (t) => {
+  const root = broken(t, (r) => inSummary(r, "The server's server/src/kill.ts counts it."));
+  assert.equal(run(root).status, 0);
+  const result = run(root, "--rebuild", "src,tests,server");
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /names server\/src\/kill\.ts, which belongs to the rebuild/);
+  const none = broken(t, (r) => inSummary(r, "The rebuild's tests/Score.Tests/ScoreTests.cs replays the run."));
+  assert.equal(run(none, "--rebuild", "").status, 0);
 });
 
 for (const [option, value] of [

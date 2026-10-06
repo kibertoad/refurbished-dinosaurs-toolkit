@@ -126,24 +126,36 @@ by kind. Reviewing that agreement is part of the restoration's own review of its
 the checker does not compare prose with titles, because a paraphrase is a legitimate way to cite an
 entry.
 
-### Addresses in code comments
+| `rebuild` | `src,tests` | Directories that hold the rebuild. No Markdown file in `spec/` may name a path in them or a source file found in them. Empty turns the check off. See below. |
 
-An address of the original that a comment in the code gives must be recorded in an entry the
-comment cites, or in an entry that one of those cites as `evidence`. Citing a rule whose finding
-records the address is enough. Without this, a comment can cite an existing finding that says
-nothing about the address it gives, and the citation check still passes. A superseded entry
-records nothing.
+### Addresses in code
 
-- **Which comments.** `//` and `/* … */` comments in `.cs`, `.ts`, `.js` and `.mjs` files of the
-  code and reference directories. Text inside a string literal is not a comment. A comment block
-  is a run of consecutive comment-only lines. A comment that trails code also takes the comment
-  lines above it and the comment lines below it that start in its column, or that continue its
+An address of the original that the code gives, in a comment or in the code itself, must be
+recorded in an entry the comment it belongs to cites, or in an entry that one of those cites as
+`evidence`. Citing a rule whose finding records the address is enough. Without this, a comment
+can cite an existing finding that says nothing about the address it gives, and the citation check
+still passes. A superseded entry records nothing.
+
+- **Which comments.** `//` and `/* … */` comments in `.cs`, `.ts`, `.js` and `.mjs` files, and `#`
+  and `<# … #>` comments in `.ps1` files, of the code and reference directories. Text inside a
+  string literal is not a comment. In PowerShell, `#` starts a comment where a new token may begin:
+  at the start of a line, after whitespace, or after one of `; | & ( ) { } , =`. A comment block is
+  a run of consecutive comment-only lines. A comment that trails code also takes the comment lines
+  above it and the comment lines below it that start in its column, or that continue its
   `/* … */`, and each of those lines is read with the whole of that block.
+- **Which code.** An address in the code itself, written as a number (with a `u`, `U`, `l` or `L`
+  suffix or two) or inside a string, belongs to the comment that trails its line. Without one, it
+  belongs to the nearest comment-only line above it, however many lines of code or blank lines lie
+  between, and that line's block. So one comment above a table of addresses covers every row of
+  the table, and an address with no comment above it fails. Code cannot write a half-open range,
+  so a value that its comment gives as the end of one (`0x00401000..0x00401010`, for a test such
+  as `a < 0x00401010`) stands for the byte before it.
 - **Which addresses.** A neutral name, `fn_` or `g_` followed by eight hex digits, is always an
   address. A plain `0x` value of eight hex digits is one only inside an image given by `images`,
   so colours, masks and offsets are left alone. Without `images`, only neutral names are checked.
   The end of a half-open range (`..0x…`) stands for the byte before it. Segmented addresses are
-  not checked.
+  not checked, and neither are other files, such as test data in `.json`, which have no comment to
+  cite an entry from.
 - **What records an address.** The address written in the entry's `locations` or text, alone or
   inside a range, in either case. A range larger than `max-range` (64 KiB by default), such as a
   whole section, records only its two ends, nothing inside it; otherwise every finding that gives
@@ -159,7 +171,49 @@ Take the image's base and size from the finding that records them, for example a
 ```
 
 When a comment fails, cite the finding that records the address. When no finding does, write
-one in the same change.
+one in the same change. A value inside the image that is not an address, such as a colour written
+with eight digits, fails as well: write it with fewer digits, or give `images` the image's exact
+extent.
+
+### Addresses in commit messages
+
+A commit message that gives an address as evidence is held to the same rule as a comment: the
+address must be recorded in an entry the message cites, or in that entry's evidence. The checker
+checks one message with `--message <file>`, which reads only the message and the spec and exits
+with 0 when every address passes and 1 when one does not. It leaves out the lines git strips from a
+message, those starting with `#`, and everything from the scissors line of `git commit --verbose`
+on. Run it from a `commit-msg` hook, with the restoration's `--images`:
+
+```sh
+#!/bin/sh
+# .githooks/commit-msg
+exec pnpm exec standard-checker --message "$1" --images 0x00400000..0x004C9000
+```
+
+The hook checks against the spec in the working tree. A commit that adds the finding it cites
+passes when the finding is in the working tree, staged or not.
+
+### The spec does not name the rebuild
+
+The standard says the spec never names a class, file or setting of the rebuild. The checker fails
+each line of a Markdown file in `spec/`, other than the generated indexes, that names a path in one
+of the `rebuild` directories, such as `tests/Score.Tests/ScoreTests.cs` or `../../src/Score.cs`, or a
+source file (`.cs`, `.fs`, `.ts`, `.mjs`, `.js`, `.ps1`) found in one of them by its file name alone.
+A path counts when it exists, has a file extension or goes more than one level down, so prose such
+as "tests/experiments" does not. Describe the comparison in the entry without the file, and list
+the test in the parity row, which is where the rebuild points at the spec.
+
+Tools that read the original, such as a research script in `tools/` or a probe that runs the
+original, are not part of the rebuild, and a finding's How to reproduce section may name them, so
+`tools` is not in the default. A restoration whose rebuild has more directories adds them:
+
+```yaml
+      - uses: kibertoad/refurbished-dinosaurs-toolkit/actions/check-documentation@<sha>
+        with:
+          rebuild: src,tests,multiplayer
+```
+
+A class or setting named without its file is not caught; that is left to review.
 
 When the action installs the compiler, it runs the check with `--require-ksc`, so a compiler that
 cannot be found fails the check. With `kaitai-version: ""` and no compiler on the runner, the
@@ -212,7 +266,9 @@ one row per code range where one does.
 Before the check on addresses in code comments, a comment could give an address its citation does
 not record. On upgrading, a comment that names an address `fn_…` or `g_…` without citing an entry
 that records it fails. Set `images` to check plain `0x` addresses as well, and fix each failure
-by citing the finding that records the address, or by writing one.
+by citing the finding that records the address, or by writing one. The migration guide describes
+what changed when the check started reading PowerShell comments and the code itself, and when the
+spec's paths into the rebuild started to fail.
 
 ## Using setup-kaitai on its own
 
@@ -240,7 +296,7 @@ pnpm exec standard-checker --help     # every option
 ```
 
 Run it from the restoration's root or pass `--root`. The command-line options match the action's
-inputs: `--code`, `--references`, `--images`, `--max-range`, `--data-dirs` and `--base`, plus `--no-ksy` to skip compiling
+inputs: `--code`, `--references`, `--images`, `--max-range`, `--data-dirs`, `--rebuild` and `--base`, plus `--no-ksy` to skip compiling
 and `--glossary <path>` to accept the terms of a draft term file or a directory of them. Set `KSC` to the compiler's
 launcher, or put `kaitai-struct-compiler` on `PATH`, to compile the `.ksy` definitions.
 
