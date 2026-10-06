@@ -27,14 +27,18 @@ scientific-method <command> <config.json>
 The config is JSON with at least `source` (a path relative to the config file), its `xxh3` (the
 XXH3-128 hash the spec's build entry gives, as 32 lower-case hex digits; a `sha256` is refused),
 and `sourceKind`: `mz` for DOS executables, `pe32` for 32-bit Windows executables (parsed by the engine),
-or `synthetic-raw` for test data. The report is printed as JSON. On failure the command prints
+`pe32+` for 64-bit Windows executables (read only by `imports`), or `synthetic-raw` for test data. The report is printed as JSON. On failure the command prints
 `Evidence report: <reason>` to stderr and exits with 1.
 
 Commands: `trace`, `arguments`, `effects`, `returns`, `memory`, `guards`, `uses`, `incoming`,
 `call-order`, `dispatch`, `allocation`, `operand`, `operand-candidates`, `target`, `bounds`,
-`owner`, `callees` and `pointers`. Their inputs, outputs and limits are in
+`owner`, `callees`, `pointers` and `imports`. Their inputs, outputs and limits are in
 [the bounded evidence reporter guide](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md).
-`pointers` runs entirely in Node; every other command runs in the engine.
+`pointers` and `imports` run entirely in Node; every other command runs in the engine.
+
+`imports` lists the import the file's import tables put in each slot of a PE32 or PE32+ import
+address table, by slot address, and needs at least one positive control: a slot with the import
+other evidence shows. A control that maps to anything else rejects the report.
 
 For `mz` sources the reader also:
 
@@ -54,6 +58,7 @@ The package is ESM with type declarations.
 import { run, prepare, PREPARED_PROTOCOL } from "@scientific-method/executable-reader";
 import { readMz, incomingCalls } from "@scientific-method/executable-reader/legacy-image";
 import { pointerInventory } from "@scientific-method/executable-reader/pointer-inventory";
+import { importReport } from "@scientific-method/executable-reader/pe-imports";
 ```
 
 | Export | Module | Purpose |
@@ -76,6 +81,8 @@ import { pointerInventory } from "@scientific-method/executable-reader/pointer-i
 | `Descriptor`, `Trampoline`, `Overlay`, `SourceRange`, `ResolvedOperand`, `FormatCounts`, `TargetSelector` | `legacy-image` | Types of the parsed tables. |
 | `pointerInventory(bytes, config)` | `pointer-inventory` | The `pointers` report over an already hash-checked buffer. |
 | `PointerConfig` | `pointer-inventory` | Type of the `pointers` query. |
+| `importReport(bytes, config)` | `pe-imports` | The `imports` report over an already hash-checked buffer. |
+| `ImportConfig`, `ImportControl`, `ImportSlot`, `SlotImport`, `NamesFrom` | `pe-imports` | Types of the `imports` query, its controls and its slot rows. |
 
 Each export carries a doc comment with its exact checks and errors.
 

@@ -25,6 +25,10 @@
     "./pointer-inventory": {
       "types": "./dist/src/pointer-inventory.d.ts",
       "default": "./dist/src/pointer-inventory.js"
+    },
+    "./pe-imports": {
+      "types": "./dist/src/pe-imports.d.ts",
+      "default": "./dist/src/pe-imports.js"
     }
   },
   "files": [
