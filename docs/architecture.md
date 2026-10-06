@@ -39,15 +39,17 @@ engine.
   fixups and trampolines. Rejects NE, LE, LX and PE behind an MZ stub.
 - Derives relocation membership, canonical trampoline targets, overlay exports and format-table
   counts from the source, and enforces `formatControls`. A query may not supply any of these.
-- Owns the `pointers` inventory and the `table` contents report, which run without the engine.
+- Owns the `pointers` inventory, the `table` contents report and the `imports` report on PE32
+  and PE32+ import tables, which run without the engine.
 - Provides the `scientific-method` command. For every other command it builds a prepared config
   and pipes it to `python -m scientific_method_engine <command> -`.
-- Exports `legacy-image`, `pointer-inventory` and `table-contents` as a library for restoration repositories' own
-  Node tools.
+- Exports `legacy-image`, `pointer-inventory`, `table-contents` and `pe-imports` as a library for
+  restoration repositories' own Node tools.
 
 This is the required entry point for original MZ/FBOV executables. PE32 and synthetic sources pass
 through to the engine, which parses them itself, except in the `table` report, which reads a PE32
-section table and base relocation directory in the reader.
+section table and base relocation directory in the reader, and the `imports` report, which reads
+the PE import tables in the reader.
 
 ### scientific-method-engine
 

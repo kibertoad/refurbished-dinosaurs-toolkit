@@ -2983,3 +2983,268 @@ test("a field the entries of a split format give different types has no type", (
   const { output } = run(root);
   assert.doesNotMatch(output, /names anything/);
 });
+
+// RULE-SCORE-002, a copy of RULE-SCORE-001 with the given Parameters section and procedure, which
+// RULE-SCORE-001 lists in related, and the event ScoreChanged, whose glossary entry names the given
+// handlers, for the argument count tests.
+function withCallee(r: string, params: string, body = "return n + 1", handlers = "RULE-SCORE-002") {
+  copyRule(r, "RULE-SCORE-002", (text) =>
+    text.replace("- `n`: the score before the kill.", params).replace("return n + 1", body),
+  );
+  replaceIn(r, "parity/SCORE.md", row("RULE-SCORE-001"), row("RULE-SCORE-001") + "\n" + row("RULE-SCORE-002"));
+  replaceIn(r, "spec/rules/RULE-SCORE-001.md", "related: []", "related: [RULE-SCORE-002]");
+  writeFileSync(
+    join(r, "spec", "glossary", "ScoreChanged.md"),
+    `# ScoreChanged\n\nAn event: the score has changed. It carries \`score\`.${handlers ? ` Its handlers are ${handlers}, run at once.` : ""}\n`,
+  );
+}
+
+const ARGUMENT_SKIP = /argument counts against/;
+
+test("calls, function calls and emits that match the Parameters list or define pass", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `score: UINT16`: the score so far,\n  before the kill.\n\n- `bonus`: points added on top.");
+    procedure(r, [
+      "call RULE-SCORE-002(n, 1)",
+      "let more = call RULE-SCORE-002(max(n, 1), [1, 2][0])",
+      "let again = add_points(add_points(n))",
+      "emit ScoreChanged(n, more)",
+    ]);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.doesNotMatch(output, ARGUMENT_SKIP);
+});
+
+test("a rule whose Parameters section is None. takes no arguments", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "None.", "return 1");
+    procedure(r, ["call RULE-SCORE-002()", "call RULE-SCORE-002", "emit ScoreChanged"]);
+  });
+  const passing = run(root);
+  assert.equal(passing.status, 0, passing.output);
+  procedure(root, ["call RULE-SCORE-002(n)"]);
+  const failing = run(root);
+  assert.equal(failing.status, 1);
+  assert.match(
+    failing.output,
+    /RULE-SCORE-001\.md: calls RULE-SCORE-002 with 1 argument, but its Parameters section lists 0 parameters$/m,
+  );
+});
+
+for (const [line, message] of [
+  ["call RULE-SCORE-002(n, n)", "calls RULE-SCORE-002 with 2 arguments, but its Parameters section lists 1 parameter"],
+  ["call RULE-SCORE-002()", "calls RULE-SCORE-002 with 0 arguments, but its Parameters section lists 1 parameter"],
+  [
+    "let more = add_points(n, 2)",
+    "calls add_points() with 2 arguments, but its define in RULE-SCORE-001 takes 1 parameter",
+  ],
+  [
+    "let more = add_points()",
+    "calls add_points() with 0 arguments, but its define in RULE-SCORE-001 takes 1 parameter",
+  ],
+  [
+    "emit ScoreChanged(n, n)",
+    "emits ScoreChanged with 2 arguments, but the Parameters section of its handler RULE-SCORE-002 lists 1 parameter",
+  ],
+  [
+    "emit ScoreChanged",
+    "emits ScoreChanged with 0 arguments, but the Parameters section of its handler RULE-SCORE-002 lists 1 parameter",
+  ],
+])
+  test(`a wrong argument count is reported: ${line}`, (t) => {
+    const root = broken(t, (r) => {
+      withCallee(r, "- `n`: the score before the kill.");
+      procedure(r, [line]);
+    });
+    const { status, output } = run(root);
+    assert.equal(status, 1);
+    assert.ok(output.split(/\r?\n/).includes(`spec/rules/RULE-SCORE-001.md: ${message}`), output);
+  });
+
+for (const params of [
+  "The score before the kill, `n`.",
+  "`n`, the score before the kill.",
+  "None known.",
+  "- `n`, `bonus`: the score before the kill and the points on top.",
+  "- `n` (the score): before the kill.",
+  "- `n` is the score before the kill.",
+  "- `n`: the score before the kill.\n- `bonus`, `extra`: points on top.",
+])
+  test(`calls and emits against a Parameters section in another form are skipped: ${params}`, (t) => {
+    const root = broken(t, (r) => {
+      withCallee(r, params, "return 1");
+      procedure(r, ["call RULE-SCORE-002(n, n, n)", "call RULE-SCORE-002()", "emit ScoreChanged(n)"]);
+    });
+    const { status, output } = run(root);
+    assert.equal(status, 0, output);
+    assert.match(
+      output,
+      /Skipped: .*argument counts against RULE-SCORE-002, whose Parameters section is not None\. or a list of parameters \(call in RULE-SCORE-001 \(2 times\), emit of ScoreChanged in RULE-SCORE-001\)[;.]/,
+    );
+  });
+
+test("a Parameters list followed by prose is not counted", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.\n\nThe caller reads it first.");
+    procedure(r, ["call RULE-SCORE-002(n, n)"]);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.match(output, /argument counts against RULE-SCORE-002, .*\(call in RULE-SCORE-001\)/);
+});
+
+test("an event with no handlers is checked only against its other emits in rules that share a build", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.", "emit ScoreChanged(n)\nreturn n + 1", "");
+    procedure(r, ["emit ScoreChanged(n, 1)"]);
+  });
+  const shared = run(root);
+  assert.equal(shared.status, 1);
+  assert.match(
+    shared.output,
+    /RULE-SCORE-002\.md: emits ScoreChanged with 1 argument, but RULE-SCORE-001 emits it with 2 arguments$/m,
+  );
+  assert.doesNotMatch(shared.output, /its handler/);
+  replaceIn(root, "spec/rules/RULE-SCORE-002.md", "builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.1]");
+  const apart = run(root);
+  assert.doesNotMatch(apart.output, /emits ScoreChanged/);
+});
+
+test("an emit to a split handler is counted against the entries that list the emitting rule's builds", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.", "return n + 1", "RULE-SCORE-003");
+    replaceIn(r, "spec/rules/RULE-SCORE-002.md", "split_with: []", "split_with: [RULE-SCORE-003]");
+    copyRule(r, "RULE-SCORE-003", (text) =>
+      text
+        .replace("builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.1]")
+        .replace("split_with: []", "split_with: [RULE-SCORE-002]")
+        .replace("- `n`: the score before the kill.", "- `n`: the score before the kill.\n- `bonus`: points on top."),
+    );
+    procedure(r, ["emit ScoreChanged(n)"]);
+  });
+  const passing = run(root);
+  assert.doesNotMatch(passing.output, /emits ScoreChanged/);
+  procedure(root, ["emit ScoreChanged(n, n)"]);
+  const failing = run(root);
+  assert.match(
+    failing.output,
+    /RULE-SCORE-001\.md: emits ScoreChanged with 2 arguments, but the Parameters section of its handler RULE-SCORE-002 lists 1 parameter$/m,
+  );
+  assert.doesNotMatch(failing.output, /its handler RULE-SCORE-003/);
+});
+
+test("a call to a split rule is counted against the entries that list the caller's builds", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.");
+    replaceIn(r, "spec/rules/RULE-SCORE-002.md", "split_with: []", "split_with: [RULE-SCORE-003]");
+    copyRule(r, "RULE-SCORE-003", (text) =>
+      text
+        .replace("builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.1]")
+        .replace("split_with: []", "split_with: [RULE-SCORE-002]")
+        .replace("- `n`: the score before the kill.", "- `n`: the score before the kill.\n- `bonus`: points on top."),
+    );
+    procedure(r, ["call RULE-SCORE-003(n, n)"]);
+  });
+  const { output } = run(root);
+  assert.match(
+    output,
+    /RULE-SCORE-001\.md: calls RULE-SCORE-003 with 2 arguments, but the Parameters section of RULE-SCORE-002, the entry of the split that lists a build of this rule, lists 1 parameter$/m,
+  );
+  assert.doesNotMatch(output, /calls RULE-SCORE-003 with 2 arguments, but its Parameters/);
+});
+
+test("a function call is counted against the define of the split entries that list the caller's builds", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.", "return add_points(n, n)");
+    const original = readFileSync(join(r, "spec", "rules", "RULE-SCORE-001.md"), "utf8");
+    writeFileSync(
+      join(r, "spec", "rules", "RULE-SCORE-003.md"),
+      original
+        .replace("id: RULE-SCORE-001", "id: RULE-SCORE-003")
+        .replace("builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.1]")
+        .replace("split_with: []", "split_with: [RULE-SCORE-001]")
+        .replace("define add_points(n: UINT16):", "define add_points(n: UINT16, bonus):"),
+    );
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "split_with: []", "split_with: [RULE-SCORE-003]");
+  });
+  const { output } = run(root);
+  assert.match(
+    output,
+    /RULE-SCORE-002\.md: calls add_points\(\) with 2 arguments, but its define in RULE-SCORE-001 takes 1 parameter$/m,
+  );
+  assert.doesNotMatch(
+    output,
+    /RULE-SCORE-002\.md: calls add_points\(\) with 2 arguments, but its define in RULE-SCORE-003/,
+  );
+});
+
+for (const line of ["call RULE-SCORE-002(n", "let more = add_points(n", "emit ScoreChanged(n"])
+  test(`an argument list that is not closed is named as a skipped step: ${line}`, (t) => {
+    const root = broken(t, (r) => {
+      withCallee(r, "- `n`: the score before the kill.");
+      procedure(r, [line]);
+    });
+    const { output } = run(root);
+    assert.match(
+      output,
+      /Skipped: .*the argument count of the (?:call|emit) of .* in RULE-SCORE-001, whose argument list is not closed/,
+    );
+  });
+
+test("a Parameters list with + bullets is counted", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "+ `n`: the score before the kill.");
+    procedure(r, ["call RULE-SCORE-002(n, n)"]);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /RULE-SCORE-001\.md: calls RULE-SCORE-002 with 2 arguments, but its Parameters section lists 1 parameter$/m,
+  );
+});
+
+test("calls and emits against a rule with no Parameters section say the section is missing", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.");
+    replaceIn(r, "spec/rules/RULE-SCORE-002.md", "## Parameters\n\n- `n`: the score before the kill.\n\n", "");
+    procedure(r, ["call RULE-SCORE-002(n)"]);
+  });
+  const { output } = run(root);
+  assert.match(
+    output,
+    /argument counts against RULE-SCORE-002, which has no Parameters section \(call in RULE-SCORE-001\)/,
+  );
+});
+
+test("a call to a name the procedure declares itself is not counted against another rule's define", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `add_points`: the function that scores a kill.", "return add_points(1, 2)", "");
+  });
+  const { output } = run(root);
+  assert.doesNotMatch(output, /calls add_points\(\)/);
+});
+
+test("a function call from a rule that shares no build with its defines fails only if it fits none", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.", "return add_points(n, n)");
+    replaceIn(r, "spec/rules/RULE-SCORE-002.md", "builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.2]");
+    const original = readFileSync(join(r, "spec", "rules", "RULE-SCORE-001.md"), "utf8");
+    writeFileSync(
+      join(r, "spec", "rules", "RULE-SCORE-003.md"),
+      original
+        .replace("id: RULE-SCORE-001", "id: RULE-SCORE-003")
+        .replace("builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.1]")
+        .replace("split_with: []", "split_with: [RULE-SCORE-001]")
+        .replace("define add_points(n: UINT16):", "define add_points(n: UINT16, bonus):"),
+    );
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "split_with: []", "split_with: [RULE-SCORE-003]");
+  });
+  assert.doesNotMatch(run(root).output, /calls add_points\(\)/);
+  replaceIn(root, "spec/rules/RULE-SCORE-002.md", "return add_points(n, n)", "return add_points(n, n, n)");
+  assert.match(
+    run(root).output,
+    /RULE-SCORE-002\.md: calls add_points\(\) with 3 arguments, but none of its defines takes that many \(1 parameter in RULE-SCORE-001, 2 parameters in RULE-SCORE-003\)$/m,
+  );
+});

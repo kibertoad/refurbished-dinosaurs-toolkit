@@ -1,6 +1,6 @@
 {
   "name": "@scientific-method/executable-reader",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "Hash-guarded MZ and Borland FBOV executable reader, and the command line for scientific-method-engine reports.",
   "type": "module",
   "license": "MIT",
@@ -29,6 +29,10 @@
     "./table-contents": {
       "types": "./dist/src/table-contents.d.ts",
       "default": "./dist/src/table-contents.js"
+    },
+    "./pe-imports": {
+      "types": "./dist/src/pe-imports.d.ts",
+      "default": "./dist/src/pe-imports.js"
     }
   },
   "files": [

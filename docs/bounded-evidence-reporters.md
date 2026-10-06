@@ -116,12 +116,13 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `callees` | the bounded call graph below an entry, with recursion and shared callees, optionally compared with Ghidra's edges | [function bounds](#function-bounds-and-site-ownership) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
+| `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables and checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots) |
 
 The engine also has `scientific-method-engine ghidra-scripts`, which prints the directory of the
 packaged Ghidra scripts (see the engine's README for the list).
 
 All engine commands return JSON with the input fingerprint and schema `bounded-x86-v1`;
-`pointers` and `table` return their own objects, described in their sections.
+`pointers`, `table` and `imports` return their own objects, described in their sections.
 `target` is described under [Call-target provenance](#call-target-provenance), and `bounds`
 and `owner` under [Function bounds and site ownership](#function-bounds-and-site-ownership).
 `trace` follows direct calls and local branches, records ordered effects and keeps
@@ -132,7 +133,8 @@ the complete traversal, so gaps in a projection are expected.
 Arguments are recognized by consumed stack offsets and widths relative to each
 call frame. Near returns occupy two bytes and far returns four; an immediately executed
 `push cs` followed by a near call supplies a four-byte frame that must end in
-a matching far return with unchanged stack/segment provenance; saved BP is
+a far return with unchanged stack/segment provenance, or in a near return over a frame
+the callee converted ([below](#converted-call-frames)); saved BP is
 accounted for by actual pushes. LDS/LES consuming four bytes establishes a far
 pointer grouping. Adjacent pushes alone do not. Register widening, frame cleanup,
 stack overwrites and unknown return addresses remain visible. A root query may
@@ -146,17 +148,50 @@ Every `return` event carries `returnCheck`, the checks that return made against 
 | Field | Meaning |
 |---|---|
 | `frame` | `entry` for the root frame, `call` for a traced call's frame |
-| `frameSource` | for a traced call, how the frame was built: `call`, `lcall`, or the push-CS/near-call frame |
+| `frameSource` | for a traced call, how the frame was built: `call`, `lcall`, or `push-CS/near-call` |
 | `frameBytes`, `instructionBytes`, `widthMatches` | the frame's return width (`returnBytes` for the root), the width the return instruction pops, and whether they agree |
 | `spOffset`, `stackBalanced` | SP at the return as a signed offset from the frame's entry SP (`null` when SP is at no known offset from it), and whether SP is that entry SP |
-| `target`, `segment` | whether the return offset word (and, for a far return, the segment word) was read and compared with the call: `matches the call`, `does not match the call` (both values known), or a `not read: ...` / `not compared: ...` reason, including `not compared: the word read and the call's word are not both known values` |
+| `endsAtFrameEnd` | whether the words the return instruction pops end where the frame's return words end: SP plus `instructionBytes` is the entry SP plus `frameBytes`. With equal widths it is `stackBalanced`; with different widths it is `false` when `spOffset` is `null` |
+| `target`, `segment` | whether the return offset word was read and compared with the call, and, for a far return, the segment word; for a near return over a traced far call frame (`lcall` or push-CS/near-call), `segment` compares CS with the call's CS. Each is `matches the call`, `does not match the call` (both values known), or a `not read: ...` / `not compared: ...` reason, including `not compared: the word read and the call's word are not both known values` |
 
 A failed check stops the path with `return width differs from the call frame`,
 `stack balance differs from the call`, or `return width and stack balance differ from the call
-frame` when both fail. The return words are read only for a traced call and only after both
-checks pass. The root frame's are never read (`not read: the entry frame has no traced caller`),
-so a root path with `returned: true` passed the width and balance checks and says nothing about
-the bytes of its own return frame.
+frame` when both fail, unless the frame is a converted call frame (below). The return words are
+read only for a traced call, after both checks pass or the frame is converted. The root frame's
+are never read (`not read: the entry frame has no traced caller`), so a root path with
+`returned: true` passed the width and balance checks and says nothing about the bytes of its own
+return frame.
+
+### Converted call frames
+
+A traced callee may rebuild its return frame at the other width before it returns, for example
+`pop ax; push cs; push ax; retf` over a near call, or `pop ax; pop dx; push ax; ret` over a far
+call or a push-CS/near-call frame. The engine follows such a return when the frame is a traced
+call's, the widths differ and `endsAtFrameEnd` is `true`, so the return leaves SP where the call's
+own return would have left it ([ADR 0022](decisions/0022-converted-call-frames.md)). It then reads
+the words as for a matching return:
+
+- The offset word must be the call's return IP, or the path stops with `return target was
+  overwritten or has unknown provenance`.
+- A far return's segment word must be the call's CS. A different known segment stops the path
+  with `far return segment changed`, and a segment word with no known value that is not the
+  call's own CS value stops it with `far return segment is not known to be the call's`. A wrong
+  segment stops even though the stack balances.
+- A near return leaves CS as it is, and CS must be the call's CS. A different known CS stops the
+  path with `CS after a near return over a far call frame is not the call's segment`, and an
+  unknown one with `CS after a near return over a far call frame is not known to be the call's
+  segment`. A far call into another segment therefore never returns near.
+
+A segment matches when it is the same value as the call's CS: an equal known value, or the very
+value the call saw when CS was not known (a `push cs` the callee made, or a CS it kept). The same
+two stops apply to a far return over a frame of its own width.
+
+A conversion that leaves SP anywhere else keeps the width and balance stops: one that pushed too
+few or too many words, or one whose SP is at no known offset. The root frame has no traced caller
+whose words could be compared, so a root return at the other width stops with the width check
+even when `endsAtFrameEnd` is `true`; trace from a caller to follow such a function. Argument
+reads count from the call's own frame, by address, so a read through the converted frame keeps
+its offset, and a cleanup immediate on the converted return releases arguments as on any return.
 
 `arguments` also maps each traced call's stack slots onto the widths its callee read. Each path
 gets `argumentFrames`, one per traced call (modeled calls have none). Offsets count from the
@@ -609,7 +644,8 @@ reached only through a rejected start, including a call's return site, is
 including later callers; reached prefixed and indirect calls are also reported.
 Unknown calls have explicit gaps and fallthrough assumes they return. Narrower
 regions and exhausted budgets are partial scope, even with zero hits. There is
-no universal call-completeness or native-reachability claim. PE indirect imports,
+no universal call-completeness or native-reachability claim. Which import a
+slot holds comes from the reader's [`imports` report](#pe-import-slots). PE indirect imports,
 IAT trampolines, stored callables, exception dispatch and computed targets remain
 unresolved rather than guessed. This initial model implements bounded reports,
 not a solver, loader emulator or whole-program analysis.
@@ -1241,6 +1277,48 @@ other than entry 0 that holds a non-empty string, so that a wrong address, strid
 pass it. With `entries`, `coverage.read` lists the indices read and the report claims nothing about
 the others. The report reads the bytes as the file stores them at load; writes the code makes to the
 table or its strings before reading them are outside it.
+
+## PE import slots
+
+`scientific-method imports <config.json>` says which import the file's own import tables put in
+each slot of a PE file's import address table. It runs in the reader without the engine, and it is
+the only command that reads PE32+: select `sourceKind: "pe32"` or `"pe32+"`, which must match the
+optional header. Regions are not used.
+
+For each descriptor in the import directory the report reads the DLL name, the import lookup table
+and the import address table, walked in step one entry at a time at the thunk width (4 bytes in
+PE32, 8 in PE32+) up to the lookup table's null entry. An entry with the top bit set is an ordinal
+with no name; any other entry points at a hint and name. `slots` lists every slot by its virtual
+address at the preferred image base, sorted by address, with `rva`, `fileOffset`, the descriptor
+and the slot's index in it, `dll`, `storedEntry` (the address table entry as stored),
+`lookupEntry`, `namesFrom` and `import` (`{ name, hint }` or `{ ordinal }`). `descriptors` gives
+each descriptor's tables, time stamp and `namesFrom`.
+
+A descriptor whose time stamp is not zero was bound, so its import address table as stored holds
+addresses in the DLLs, and such an address can have its top bit set, as every address in
+`KERNEL32.DLL` did under Windows 95. A descriptor with no lookup table, which some linkers of the
+period wrote, has its names read from the import address table as stored in the file when it was
+not bound, and its `namesFrom` says so. A slot of a bound descriptor with no lookup table gets
+`import: null` with a `reason`, and its stored entry is never decoded as an ordinal. A stored entry
+of an unbound descriptor that is neither a well-formed ordinal nor a hint and name in the file gets
+no import either. A lookup table entry of that kind, a table outside the file's loaded bytes,
+an address table that ends before its lookup table, a non-ASCII name and overlapping address tables
+fail the report, as do sections that overlap each other or the headers, slot addresses that would
+leave 4 GiB in PE32, and `formatControls`, which apply only to `mz` sources.
+
+`controls` is required: 1..256 positive controls, each a slot whose import other evidence shows,
+as `{ slot, dll, name }` or `{ slot, dll, ordinal }`. `slot` is the virtual address, `dll` is
+compared without regard to case and `name` exactly. A control whose slot holds anything else, holds
+no import, or is not a slot at all rejects the report. Line counts of a listing such as
+`dumpbin /imports` never identify a slot: such a listing gives the descriptors in directory order,
+which need not be the order their address tables sit in, and leaves out the null entry that ends
+each descriptor's slots. The arguments a call site passes can confirm a mapped import or show that something is
+wrong, but they do not name it.
+
+The import directory holds only what the loader resolves when it loads the file. Delay-loaded
+imports and functions found through `GetProcAddress` are named in `exclusions`;
+`delayImportDirectory` gives the delay-load directory when the file has one, unread. The report
+never shows that the code calls nothing else, and it does not read which code calls through a slot.
 
 ## Return widths, declared encodings and caller dependencies
 

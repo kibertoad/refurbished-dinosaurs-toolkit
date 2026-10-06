@@ -63,6 +63,7 @@
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkArgumentCounts } from "./checks/arguments.ts";
 import { checkBase } from "./checks/base.ts";
 import { checkCommentAddresses } from "./checks/comment-addresses.ts";
 import { checkAcrossEntries } from "./checks/cross-entry.ts";
@@ -104,6 +105,7 @@ const ctx: Context = { config, problem, skip, spec, codeFiles: createCodeFiles(c
 
 const formatNames = checkEntries(ctx);
 checkRules(ctx, formatNames);
+checkArgumentCounts(ctx);
 checkFieldNames(ctx, formatNames);
 checkAcrossEntries(ctx, formatNames);
 compileKaitai(ctx);

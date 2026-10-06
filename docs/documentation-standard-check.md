@@ -354,6 +354,59 @@ describes only in prose, leaves the type another declaration writes in place. A 
 section has no table yet has no fields, so every field named on it is reported. The problem names
 where the type came from, so a type stated wrongly can be fixed where it is written.
 
+## Argument counts
+
+The checker counts the arguments of every `call`, function call and `emit` in a live rule's
+procedure:
+
+- `call RULE-COMBAT-012(attacker, defender)` passes one argument for each parameter of the called
+  rule's Parameters section. When the called rule is split by build, the count is compared with
+  each entry of the split that lists one of the calling rule's builds.
+- `roll(100)` passes one argument for each parameter of the `define` of `roll`, for a function a
+  rule defines. A function that a split rule defines is compared with the `define` of each entry
+  that lists one of the calling rule's builds. When no entry lists one, the call fails only if it
+  fits none of the `define`s. Built-in functions such as `sprintf` have no `define` and are not
+  counted, and neither is a call to a name the procedure declares itself, as a `let`, a loop
+  variable, a parameter of its `define`s or an item of its Parameters section.
+- `emit GangDetected(gang)` passes one argument for each parameter of the Parameters section of
+  every rule the event's glossary entry names, and every rule ID in the glossary entry counts as a
+  handler. A split handler is compared with each entry of the split that lists one of the emitting
+  rule's builds.
+- Two `emit`s of one event in rules that share a build pass the same number of arguments. An
+  event with no handlers gets only this check, since its glossary entry gives what it carries in
+  prose.
+
+A `call` or `emit` with no parentheses passes no arguments. Commas inside nested parentheses,
+brackets or braces do not separate arguments, so `call RULE-COMBAT-012(max(a, b), c)` passes two.
+A call or `emit` whose argument list is never closed cannot be counted, and is named in the result
+line as a skipped step.
+
+The checker counts a Parameters section only in the form the standard gives it: `None.` for a rule
+that takes no parameters, or a list with one item per parameter, each opening with a code span that
+holds the name, or the name and type, followed directly by a colon:
+
+```markdown
+## Parameters
+
+- `attacker: FMT-DATA-005`: the gang that attacks.
+- `defender: FMT-DATA-005`: the gang it attacks.
+```
+
+An item may continue on indented lines. An item that names two parameters, such as
+``- `x`, `y`: the cell``, or puts anything between the code span and the colon, makes the whole list
+one the checker does not count, since counting its items would give the wrong number. Such a list,
+and a section that holds anything besides the list, prose or `None known.` included, still passes,
+but its parameters cannot be counted. Each call and `emit`
+counted against such a section is named in the result line instead, grouped by the rule whose
+section it is, such as `Skipped: argument counts against RULE-AI-002, whose Parameters section is
+not None. or a list of parameters (call in RULE-AI-001 (2 times), emit of GangDetected in
+RULE-AI-007).` A rule with no Parameters section at all is named the same way, as one `which has no
+Parameters section`. Converting that rule's Parameters section to the list form puts those calls under
+the check. Function calls are always counted, since a `define` already writes its parameters in a
+fixed form.
+
+The checker does not compare an argument's type with the parameter's type.
+
 ## What it does not check
 
 A few checks in the standard's list need something the checker does not have, and are left to

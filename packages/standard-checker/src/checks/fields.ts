@@ -25,7 +25,7 @@ import type { Context } from "../context.ts";
 import { asList } from "../ids.ts";
 import type { Entry } from "../types.ts";
 import type { FormatNames } from "./formats.ts";
-import { parameterNames, withoutCommentsAndStrings } from "./rules.ts";
+import { defines, parameterNames, withoutCommentsAndStrings } from "./rules.ts";
 
 /**
  * A type that holds a structure: the format IDs of one format (more than one for a format split by
@@ -226,9 +226,8 @@ export function checkFieldNames(ctx: Context, { layouts }: FormatNames) {
     for (const name of parameterNames(params))
       declare(name, fixed(typedParams.has(name) ? typedParams.get(name) : undefined, "the Parameters section"));
     for (const line of lines) {
-      const d = /\bdefine\s+[a-z_][a-z0-9_]*\s*\(([^)]*)\)/.exec(line);
-      if (d)
-        for (const p of d[1].split(",")) {
+      for (const d of defines(line))
+        for (const p of d.params) {
           const [name, type] = p.split(":");
           if (/^[a-z_][a-z0-9_]*$/.test(name.trim()))
             declare(name.trim(), fixed(type === undefined ? undefined : typeOf(type), "its define"));

@@ -395,6 +395,32 @@ committed and is kept with the captures, with its hash in the fixture's `startin
 
 Engine releases that need a change in a restoration are listed here, newest first.
 
+### A callee's converted return frame returns to its caller
+
+A traced callee that rebuilt its near call frame as a far one before a `RETF` (or its far frame as
+a near one before a `RET`) used to stop with `return width and stack balance differ from the call
+frame`. The engine now follows that return when its words end where the call's frame ended, the
+offset word is the call's return IP and the segment is the call's CS
+([converted call frames](bounded-evidence-reporters.md#converted-call-frames)). Every
+`returnCheck` gains `endsAtFrameEnd`, and a near return over a traced far call frame (`lcall` or
+push-CS/near-call) gains `segment`. The push-CS/near-call frame's `frameSource` is now
+`push-CS/near-call`; it was `push-CS/near-call; matching far return required`. A far return whose
+segment word has no known value, and is not the call's own CS value, now stops with `far return
+segment is not known to be the call's`; it used to stop with `far return segment changed`, which
+is now kept for a segment known to differ.
+
+What to change:
+
+- A test or tool that matches the old `frameSource` string matches `push-CS/near-call`.
+- A test or tool that matches `far return segment changed` also matches `far return segment is
+  not known to be the call's`, where it meant any rejected segment. A finding that read the old
+  stop as a proven segment change is checked against `returnCheck.segment`.
+- A test that compares `returnCheck` as a whole adds `endsAtFrameEnd`.
+- A query that expected such a callee to stop now reads past it. A finding that rested on the stop
+  (an unread callee, a gap at its return) is rerun.
+- A hand reading or local patch that followed such a conversion can be dropped once its query
+  returns through the callee.
+
 ### A failed return check names which check failed
 
 A return whose width differs from its frame, or whose SP is not the frame's entry SP, used to stop

@@ -392,6 +392,14 @@ class PEReporterTests(unittest.TestCase):
         self.assertEqual(arg['argument']['offsetFromEntrySP'], 4)
         self.assertEqual(arg['width'], 4)
 
+    def test_a_nested_near_return_over_a_four_byte_frame_has_no_segment_check(self):
+        # A PE32 near call's frame is four bytes, the width of its near return. Nothing reads a segment.
+        r = report('e8 01 00 00 00 c3 c3')
+        self.assertTrue(r['completeWithinModel'], r)
+        check = next(e for e in events(r, 'return') if e['depth'] == 1)['returnCheck']
+        self.assertEqual((check['frameBytes'], check['instructionBytes'], check['target']), (4, 4, 'matches the call'))
+        self.assertNotIn('segment', check)
+
     def test_arguments_follow_an_enter_frame(self):
         c = Code().emit('68 78 56 34 12').branch('e8', 'callee').emit('83 c4 04 c3')
         c.label('callee').emit('c8 08 00 00 8b 45 08 c9 c3')

@@ -9,6 +9,8 @@ import { pointerInventory } from "./pointer-inventory.ts";
 import type { PointerConfig } from "./pointer-inventory.ts";
 import { tableContents } from "./table-contents.ts";
 import type { TableConfig } from "./table-contents.ts";
+import { importReport } from "./pe-imports.ts";
+import type { ImportConfig } from "./pe-imports.ts";
 
 /**
  * A code region the researcher maps: file offsets `start..end` loaded at `segment:ip`. {@link prepare}
@@ -44,7 +46,7 @@ export interface ReportConfig {
   [key: string]: unknown;
 }
 /**
- * A bounded-x86-v1, pointer-inventory or table-contents report. Its fields are documented in
+ * A bounded-x86-v1, pointer-inventory, table-contents or import report. Its fields are documented in
  * docs/bounded-evidence-reporters.md; this package passes them through without a typed model.
  */
 export type Report = Record<string, any>;
@@ -94,7 +96,9 @@ export function prepare(config: ReportConfig, base: string): PreparedConfig {
   // PE parsing and mapping validation are performed by the Python source loader.
   if (config.sourceKind === "pe32") return { ...config, source };
   if (config.sourceKind !== "mz")
-    throw new Error("sourceKind must be mz, pe32 or synthetic-raw; other loaders are unsupported");
+    throw new Error(
+      "sourceKind must be mz, pe32 or synthetic-raw; pe32+ is read only by imports, and other loaders are unsupported",
+    );
   const image = readMz(bytes, config.loadSegment);
   const formatTables = {
     loadSegment: image.loadSegment,
@@ -168,7 +172,7 @@ export const PREPARED_PROTOCOL = 3;
 
 /**
  * Runs one report, as the `scientific-method` command does. `args` is `[command, configPath]`.
- * `pointers` and `table` run in Node; every other command is prepared here and piped to
+ * `imports`, `pointers` and `table` run in Node; every other command is prepared here and piped to
  * `python -m scientific_method_engine <command> -`, using `EVIDENCE_PYTHON` or `python`.
  * The engine gets 120 seconds and at most 32 MiB of output.
  */
@@ -178,6 +182,11 @@ export function run(args: string[]): Report {
   if (statSync(file).size > 1024 * 1024) throw new Error("Config exceeds 1 MiB");
   const supplied = JSON.parse(readFileSync(file, "utf8")) as ReportConfig,
     base = dirname(resolve(file));
+  if (command === "imports") {
+    // The import report reads the PE import tables itself; the engine has no part in it.
+    const { source, bytes } = readVerifiedSource(supplied, base);
+    return importReport(bytes, { ...supplied, source } as ImportConfig);
+  }
   if (command === "pointers") {
     // The inventory reads the MZ/FBOV tables itself and reports each unresolvable pair as a row,
     // so it skips prepare's instruction-reporter relocation list, which aborts on such a pair.

@@ -62,6 +62,12 @@ class Stack(unittest.TestCase):
     def test_push_pop_and_leave(self):
         check(self, "b81100 50 6a22 5b 59 55 89e5 6a33 c9 c3", resolved=("bx", "cx", "sp"))
 
+    def test_converted_return_frames(self):
+        # call near; mov cx,sp; ret | pop ax; push cs; push ax; retf: the callee returns far over its near frame.
+        check(self, "e80300 89e1 c3 58 0e 50 cb", resolved=("ax", "cx", "sp"))
+        # push cs; call near; mov cx,sp; ret | pop ax; pop dx; push ax; ret 0: near over the push-CS far frame.
+        check(self, "0e e80300 89e1 c3 58 5a 50 c20000", resolved=("ax", "cx", "dx", "sp"))
+
     def test_enter_frames(self):
         # mov bp, 1111h; ENTER size,level; mov ax, bp; mov cx, sp; [mov bx,[bp-2]]; mov dx,[bp]; leave; ret
         for enter in ("c8040000", "c8000000", "c8ffff00", "c8040020"):
