@@ -1213,17 +1213,21 @@ Without `nullPointer.test`, an entry holding the null value is read like any oth
 of a data segment is an address like the rest, and `nullPointer.applied` is false.
 
 Each row in `entries` gives `index`, `site` (the file offset of its pointer), `raw`, `relocation`
-(the MZ relocation, FBOV fixup or PE base relocation over the pointer, or `null`), `target` and one
-`result`:
+(the MZ relocation or PE base relocation over the pointer, or `null`), `target` and one `result`.
+FBOV fixups patch overlay code, which lies past the resident image that holds every `mz` entry, so
+none appears here. In a `pe32` section whose VirtualSize exceeds its raw data, the loader fills the
+rest with zeros, and the read continues into them. A row whose terminator comes from that fill
+carries `terminatedBy: "loader zero fill"`, and a target inside the fill gives `target.zeroFilled`
+in place of a file offset and range.
 
 | Result | Error | Meaning |
 |---|---|---|
 | `string` | no | A terminator follows at least one byte; `length`, `text` (one character per byte) and `hex`. |
-| `empty` | no | The target holds the terminator; `length` is 0. |
+| `empty` | no | The target holds the terminator, in the file or in a PE section's zero fill; `length` is 0. |
 | `null` | no | The pointer holds the null value the query names with its test. |
-| `unterminated` | yes | No terminator before the limit or the end of the file range; `examined` and `stoppedBy`. |
-| `uninitialized` | yes | The address is in memory the file holds no bytes for: an MZ image's minimum extra paragraphs, or a PE section past its raw data. Nothing is read. |
-| `unmapped` | yes | The target is outside every mapped range, or it is a `far16` pointer whose segment word nothing relocates, which gets no address. |
+| `unterminated` | yes | No terminator before the limit, the end of the file range or the end of a PE section's zero fill; `examined` and `stoppedBy` (`byte limit`, `end of the file range` or `end of the section`). |
+| `uninitialized` | yes | The address is in memory the build gives no bytes for: the rest of an MZ load image's last paragraph and the header's minimum extra paragraphs, or a PE section's raw padding past its VirtualSize. Nothing is read. |
+| `unmapped` | yes | The pointer gets no address: its target is outside every mapped range, it is a `far16` pointer whose segment word nothing relocates, or a declared MZ relocation covers a `near16` word, a `far16` offset word or straddles a `far16` segment word, which shows that the stride or pointer offset reads a segment as an offset. |
 
 The three errors carry no `text` or `length`, so none of them reads as an empty or shortened
 string. `errors` lists their indices and `results` counts each result. With `listing`, each row

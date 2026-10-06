@@ -87,7 +87,8 @@ export interface TableConfig {
 
 /**
  * What an entry's pointer leads to. `unterminated` (no terminator before the limit or the end of the
- * file range), `uninitialized` (memory the file holds no bytes for) and `unmapped` are errors.
+ * memory read), `uninitialized` (memory the build gives no bytes for) and `unmapped` (no address) are
+ * errors.
  */
 export type TableEntryResult = "string" | "empty" | "null" | "unterminated" | "uninitialized" | "unmapped";
 
@@ -124,11 +125,13 @@ function codeSource(given: unknown, label: string, ranges: FileRange[]): Record<
 
 /**
  * Reads every entry of one pointer table (or the `entries` the query lists) from the build's bytes.
- * For each entry it gives the raw pointer, any relocation or fixup over it, the address it maps to and
+ * For each entry it gives the raw pointer, any relocation over it, the address it maps to and
  * the file range holding that address, then reads from there to the named terminator under the byte
- * limit. A null pointer, an empty string, a read with no terminator before the limit or the end of
- * the file range, a target in memory the file does not initialize, and a target outside every mapped
- * range are separate results; the last three are errors and carry no text or length. An analyzer's
+ * limit. In a `pe32` section the read continues into the zeros the loader fills past the raw data.
+ * A null pointer, an empty string, a read with no terminator before the limit or the end of the
+ * memory read, a target in memory the build does not initialize, and a target with no address (outside
+ * every mapped range, or a word a declared relocation shows to be a segment) are separate results;
+ * the last three are errors and carry no text or length. An analyzer's
  * `listing` is compared entry by entry against the bytes read. Throws when a control is missed, when
  * no control is a non-empty string at an entry other than 0, when an input is out of range, or when
  * an entry's pointer lies outside the range that holds the table.
@@ -138,7 +141,7 @@ export function tableContents(bytes: Buffer, config: TableConfig) {
   if (!layout || typeof layout !== "object")
     throw new Error("The table report needs table: address, stride, pointer and count");
   const pointer = layout.pointer;
-  if (!pointer || typeof pointer !== "object" || !(pointer.kind in widths))
+  if (!pointer || typeof pointer !== "object" || !Object.hasOwn(widths, pointer.kind))
     throw new Error("table.pointer needs offset and kind: near16, far16 or flat32");
   const width = widths[pointer.kind];
   if (!inRange(layout.count, 1, MAX_COUNT)) throw new Error(`table.count must be 1..${MAX_COUNT}`);
@@ -150,8 +153,12 @@ export function tableContents(bytes: Buffer, config: TableConfig) {
     throw new Error(`string needs terminator (a byte, 0..255) and limit (1..${MAX_LIMIT} bytes, terminator included)`);
   let mapping: Mapping;
   if (config.sourceKind === "mz") mapping = mzMapping(bytes, config, layout);
-  else if (config.sourceKind === "pe32") mapping = pe32Mapping(bytes, layout);
-  else throw new Error("The table report reads mz or pe32 sources, whose mappings it derives from the file");
+  else if (config.sourceKind === "pe32") {
+    // The PE32 mapping reads neither field; accepting them would read as format tables checked.
+    if (config.formatControls !== undefined || config.loadSegment !== undefined)
+      throw new Error("formatControls and loadSegment apply only to mz sources");
+    mapping = pe32Mapping(bytes, layout);
+  } else throw new Error("The table report reads mz or pe32 sources, whose mappings it derives from the file");
 
   let indices: number[];
   if (config.entries === undefined) indices = Array.from({ length: layout.count }, (_, i) => i);
@@ -203,19 +210,60 @@ export function tableContents(bytes: Buffer, config: TableConfig) {
     const row = { index, site, raw: decoded.raw, relocation: decoded.relocation };
     if (decoded.value === nullValue) return { ...row, target: null, result: "null" as TableEntryResult, error: false };
     const target = decoded.target;
-    if (!("fileOffset" in target))
+    if ("result" in target)
       return { ...row, target: { address: target.address }, result: target.result, error: true, reason: target.reason };
+    const { terminator, limit } = string;
+    const unterminated = (examined: number, stoppedBy: string) => ({
+      result: "unterminated" as TableEntryResult,
+      error: true,
+      examined,
+      stoppedBy,
+    });
+    if (!("range" in target)) {
+      // In a PE section's zero-filled part: every byte up to the end of that part is 0.
+      const located = { ...row, target: { address: target.address, zeroFilled: target.reason } };
+      if (terminator === 0)
+        return {
+          ...located,
+          result: "empty" as TableEntryResult,
+          error: false,
+          length: 0,
+          text: "",
+          hex: "",
+          terminatedBy: "loader zero fill",
+        };
+      return {
+        ...located,
+        ...unterminated(
+          Math.min(limit, target.zeroFill),
+          limit <= target.zeroFill ? "byte limit" : "end of the section",
+        ),
+      };
+    }
     const start = target.fileOffset,
-      stop = Math.min(target.range.end, start + string.limit),
-      found = bytes.subarray(start, stop).indexOf(string.terminator);
+      fileEnd = target.range.end,
+      zeroFill = target.zeroFill ?? 0,
+      stop = Math.min(fileEnd, start + limit);
+    let found = bytes.subarray(start, stop).indexOf(terminator),
+      terminatedBy: string | undefined;
     const located = { ...row, target: { address: target.address, fileOffset: start, range: target.range } };
+    if (found < 0 && zeroFill && start + limit > fileEnd) {
+      // The file's bytes end inside the limit, and the loader's zero fill continues the section.
+      if (terminator === 0) {
+        found = fileEnd - start;
+        terminatedBy = "loader zero fill";
+      } else {
+        const memory = fileEnd - start + zeroFill;
+        return {
+          ...located,
+          ...unterminated(Math.min(limit, memory), limit <= memory ? "byte limit" : "end of the section"),
+        };
+      }
+    }
     if (found < 0)
       return {
         ...located,
-        result: "unterminated" as TableEntryResult,
-        error: true,
-        examined: stop - start,
-        stoppedBy: start + string.limit <= target.range.end ? "byte limit" : "end of the file range",
+        ...unterminated(stop - start, start + limit <= fileEnd ? "byte limit" : "end of the file range"),
       };
     const content = bytes.subarray(start, start + found);
     return {
@@ -225,6 +273,7 @@ export function tableContents(bytes: Buffer, config: TableConfig) {
       length: found,
       text: content.toString("latin1"),
       hex: content.toString("hex"),
+      ...(terminatedBy ? { terminatedBy } : {}),
     };
   });
   const byIndex = new Map(rows.map((r) => [r.index, r]));
@@ -253,8 +302,9 @@ export function tableContents(bytes: Buffer, config: TableConfig) {
       else {
         const actual = Buffer.from(row.hex as string, "hex");
         if (!actual.equals(value))
-          reason =
-            value.length < actual.length && actual.subarray(0, value.length).equals(value)
+          reason = !value.length
+            ? `the listing shows an empty string where the bytes give a ${actual.length}-byte string`
+            : value.length < actual.length && actual.subarray(0, value.length).equals(value)
               ? `the listing shows the first ${value.length} of ${actual.length} bytes`
               : `the listing shows ${shownAs} that differs from the bytes`;
       }

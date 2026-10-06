@@ -106,6 +106,45 @@ test("table report gives six results for a table the analyzer lists as five empt
   assert.match(r.count.source, /unchecked input/);
   assert.match(r.table.layout.source, /unchecked input/);
   assert.equal(query({ listing: [{ index: 1, hex: "48454c4c4f" }] }).entries[1].listing.matches, true);
+  assert.match(
+    query({ listing: [{ index: 1, text: "" }] }).entries[1].listing.reason,
+    /an empty string where the bytes give a 5-byte string/,
+  );
+});
+
+test("table report counts the load image's last partial paragraph as uninitialized and gives relocated near words no address", (t) => {
+  const data = nearTable();
+  data.writeUInt16LE(500, 2); // the load image ends at file 500, inside a paragraph
+  data.writeUInt16LE(0, 10); // no extra paragraphs
+  data.writeUInt16LE(0x1b8, 88); // entry 4 points at file 504, in the image's last paragraph
+  const { query } = harness(t, data, nearConfig);
+  const r = query();
+  assert.equal(r.entries[4].result, "uninitialized");
+
+  // A relocation over file 87..88 straddles entries 3 and 4, and one at file 90 covers entry 5.
+  const relocated = Buffer.from(data);
+  relocated.writeUInt16LE(2, 6);
+  relocated.writeUInt16LE(87 - 64, 28);
+  relocated.writeUInt16LE(90 - 64, 32);
+  const words = harness(t, relocated, nearConfig).query();
+  assert.equal(words.entries[1].result, "string");
+  assert.equal(words.entries[1].relocation, null);
+  for (const [index, site] of [
+    [3, 87],
+    [4, 87],
+    [5, 90],
+  ]) {
+    const e = words.entries[index!];
+    assert.equal(e.result, "unmapped");
+    assert.equal(e.error, true);
+    assert.equal(e.target.address, null);
+    assert.deepEqual(e.relocation, { site, kind: "MZ relocation" });
+    assert.match(e.reason, /declared relocation covers the near word/);
+  }
+  assert.throws(
+    () => query({ table: { ...nearConfig.table, pointer: { offset: 0, kind: "constructor", segment: 0x1000 } } }),
+    /near16, far16 or flat32/,
+  );
 });
 
 test("table report rejects a wrong stride through its positive control", (t) => {
@@ -184,14 +223,15 @@ test("table report follows far pointers only through a declared relocation", (t)
   far(2, 5, 0xb800); // no relocation: a fixed address
   far(3, 0, 0x40); // relocated: 1040:0000, past the image
   data.write("FAR\0", 128, "latin1");
-  const { query } = harness(t, data, {
+  const config = {
     sourceKind: "mz",
     table: { address: { segment: 0x1000, offset: 0x10 }, stride: 4, pointer: { offset: 0, kind: "far16" }, count: 4 },
     string: { terminator: 0, limit: 32 },
     nullPointer: { value: 0, test: { site: 64, evidence: "synthetic" } },
     controls: [{ index: 1, text: "FAR", evidence: "synthetic" }],
     formatControls: { relocations: 2 },
-  });
+  };
+  const { query } = harness(t, data, config);
   const r = query();
   assert.deepEqual(
     r.entries.map((e: Report) => e.result),
@@ -209,6 +249,16 @@ test("table report follows far pointers only through a declared relocation", (t)
   assert.match(r.entries[3].reason, /outside the resident load image/);
   assert.equal(r.mapping.formatTables.counts.relocations, 2);
   assert.throws(() => query({ formatControls: { relocations: 3 } }), /Format control/);
+
+  // A relocation over entry 3's offset word says the entries are misaligned: no address.
+  const stray = Buffer.from(data);
+  stray.writeUInt16LE(3, 6);
+  stray.writeUInt16LE(92 - 64, 36);
+  const misaligned = harness(t, stray, { ...config, formatControls: { relocations: 3 } }).query();
+  assert.equal(misaligned.entries[1].result, "string");
+  assert.equal(misaligned.entries[3].result, "unmapped");
+  assert.deepEqual(misaligned.entries[3].relocation, { site: 92, kind: "MZ relocation" });
+  assert.match(misaligned.entries[3].reason, /covers the offset word or straddles the segment word/);
 });
 
 // A PE32/i386 image based at 0x400000: .rdata at RVA 0x1000 (file 0x200, 0x200 bytes) and .data at
@@ -261,7 +311,7 @@ test("table report maps PE32 pointers through the section table and the base rel
   const r = query();
   assert.deepEqual(
     r.entries.map((e: Report) => e.result),
-    ["empty", "string", "null", "unterminated", "uninitialized", "unmapped"],
+    ["empty", "string", "null", "unterminated", "empty", "unmapped"],
   );
   assert.equal(r.table.range.view, "section 0 .rdata");
   assert.deepEqual(r.entries[1].relocation, { rva: "0x00001004", type: 3 });
@@ -270,9 +320,14 @@ test("table report maps PE32 pointers through the section table and the base rel
   assert.equal(r.entries[2].relocation, null);
   assert.equal(r.entries[3].stoppedBy, "end of the file range");
   assert.equal(r.entries[3].examined, 8);
-  assert.match(r.entries[4].reason, /section 1 \.data past its raw data/);
+  // The loader fills .data past its raw data with zeros, so a 0 terminator ends the read at once.
+  assert.equal(r.entries[4].error, false);
+  assert.equal(r.entries[4].terminatedBy, "loader zero fill");
+  assert.match(r.entries[4].target.zeroFilled, /section 1 \.data past its raw data, which the loader fills with zeros/);
+  assert.equal(r.entries[4].target.fileOffset, undefined);
   assert.match(r.entries[5].reason, /outside the headers and every section/);
-  assert.deepEqual(r.listing.differs, [2, 3, 4, 5]);
+  assert.deepEqual(r.listing.matches, [4]);
+  assert.deepEqual(r.listing.differs, [2, 3, 5]);
   assert.equal(r.mapping.relocations, "the file's base relocation directory");
   assert.throws(
     () => query({ table: { address: 0x402300, stride: 4, pointer: { offset: 0, kind: "flat32" }, count: 1 } }),
@@ -282,4 +337,61 @@ test("table report maps PE32 pointers through the section table and the base rel
     () => query({ table: { address: 0x401000, stride: 4, pointer: { offset: 0, kind: "flat32" }, count: 200 } }),
     /past section 0/,
   );
+  // The PE32 mapping reads no MZ format tables and no load segment, so neither may be supplied.
+  assert.throws(() => query({ formatControls: { relocations: 0 } }), /apply only to mz sources/);
+  assert.throws(() => query({ loadSegment: 0x1000 }), /apply only to mz sources/);
+});
+
+test("table report reads PE32 strings into the loader's zero fill and leaves raw padding unread", (t) => {
+  const data = pe32();
+  data.writeUInt32LE(0x1f0, 88 + 224 + 8); // .rdata's VirtualSize ends 0x10 bytes before its raw data
+  data.write("ABC", 0x5fd, "latin1"); // the last three raw bytes of .data
+  data.writeUInt32LE(0x4021fd, 0x210); // entry 4 points at them
+  data.writeUInt32LE(0x402300, 0x214); // entry 5 points into .data's zero fill, 0x100 bytes before its end
+  data.write("Hello$", 0x240, "latin1"); // entry 1 ends at "$", then at the 0 after it
+  const { query } = harness(t, data, {
+    sourceKind: "pe32",
+    table: { address: 0x401000, stride: 4, pointer: { offset: 0, kind: "flat32" }, count: 6 },
+    string: { terminator: 0, limit: 64 },
+    controls: [{ index: 1, text: "Hello$", evidence: "synthetic" }],
+  });
+  const r = query();
+  // Entry 3 points into .rdata's raw padding past its VirtualSize.
+  assert.equal(r.entries[3].result, "uninitialized");
+  assert.match(r.entries[3].reason, /section 0 \.rdata past its VirtualSize/);
+  // The file holds "ABC" where .data's raw data ends; the zero fill after it ends the string.
+  assert.equal(r.entries[4].result, "string");
+  assert.equal(r.entries[4].text, "ABC");
+  assert.equal(r.entries[4].terminatedBy, "loader zero fill");
+  assert.equal(r.entries[4].target.fileOffset, 0x5fd);
+  assert.equal(r.entries[5].result, "empty");
+  assert.equal(r.entries[1].terminatedBy, undefined);
+
+  // With a terminator other than 0, the zero fill never ends a read.
+  const dollar = (limit: number) =>
+    query({ string: { terminator: 0x24, limit }, controls: [{ index: 1, text: "Hello", evidence: "synthetic" }] });
+  const short = dollar(64);
+  for (const index of [4, 5]) {
+    assert.equal(short.entries[index].result, "unterminated");
+    assert.equal(short.entries[index].stoppedBy, "byte limit");
+    assert.equal(short.entries[index].examined, 64);
+  }
+  const wide = dollar(0x1000);
+  assert.equal(wide.entries[4].stoppedBy, "end of the section");
+  assert.equal(wide.entries[4].examined, 3 + 0x200);
+  assert.equal(wide.entries[5].stoppedBy, "end of the section");
+  assert.equal(wide.entries[5].examined, 0x100);
+  assert.equal(wide.entries[5].text, undefined);
+});
+
+test("table report refuses PE32 sections whose raw bytes overlap", (t) => {
+  const data = pe32();
+  data.writeUInt32LE(0x300, 88 + 264 + 20); // .data's raw bytes start inside .rdata's
+  const { query } = harness(t, data, {
+    sourceKind: "pe32",
+    table: { address: 0x401000, stride: 4, pointer: { offset: 0, kind: "flat32" }, count: 6 },
+    string: { terminator: 0, limit: 64 },
+    controls: [{ index: 1, text: "Hello", evidence: "synthetic" }],
+  });
+  assert.throws(() => query(), /Overlapping PE raw sections/);
 });

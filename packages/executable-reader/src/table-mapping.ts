@@ -1,5 +1,5 @@
 // How the table report maps a stored pointer to an address and a file range in an MZ or PE32 build.
-import { readMz, formatCounts, checkFormatControls, segmentOperands, hex } from "./legacy-image.ts";
+import { readMz, formatCounts, checkFormatControls, hex } from "./legacy-image.ts";
 import type { TableConfig, TableLayout, TablePointerKind } from "./table-contents.ts";
 
 /** A half-open range of file offsets that the build maps into memory. */
@@ -8,9 +8,14 @@ export interface FileRange {
   start: number;
   end: number;
 }
-/** Where a pointer leads: a file range that holds its bytes, or why the file holds none for it. */
+/**
+ * Where a pointer leads: a file range that holds its bytes, a PE section's zero-filled part past its
+ * raw data, or why the build defines no bytes there. `zeroFill` counts the bytes of loader zero fill
+ * that follow `range.end` in memory, or that run from the address to the end of the zero-filled part.
+ */
 export type Target =
-  | { address: string; fileOffset: number; range: FileRange }
+  | { address: string; fileOffset: number; range: FileRange; zeroFill?: number }
+  | { address: string; reason: string; zeroFill: number }
   | { address: string | null; reason: string; result: "uninitialized" | "unmapped" };
 /** One stored pointer: its raw form, its value for the null comparison, any relocation over it and its target. */
 export interface Decoded {
@@ -41,8 +46,11 @@ export const inRange = (n: unknown, lo: number, hi: number): n is number =>
 
 /**
  * Maps an `mz` table through the MZ/FBOV loader. A near offset maps in the segment the query names;
- * a far pointer maps only through a declared relocation or fixup over its segment word. Memory past the
- * load image within the header's minimum extra paragraphs is uninitialized, and anything else unmapped.
+ * a far pointer maps only through a declared MZ relocation over its segment word. FBOV fixups patch
+ * overlay code past the resident image, which holds every entry, so none covers an entry. A
+ * relocation over a near word, over a far pointer's offset word or straddling its segment word leaves
+ * the entry unmapped. Memory past the
+ * load image, in its last paragraph or the header's minimum extra paragraphs, is uninitialized, and anything else unmapped.
  */
 export function mzMapping(bytes: Buffer, config: TableConfig, layout: TableLayout): Mapping {
   const image = readMz(bytes, config.loadSegment);
@@ -56,8 +64,9 @@ export function mzMapping(bytes: Buffer, config: TableConfig, layout: TableLayou
   if (typeof at !== "object" || at === null || !isWord(at.segment) || !isWord(at.offset))
     throw new Error("An mz table address is a loaded resident segment and offset in 0..65535");
   const resident = image.ranges[0]!;
-  // DOS allocates the header's minimum extra paragraphs past the load image without initializing them.
-  const uninitializedEnd = image.end + bytes.readUInt16LE(10) * 16;
+  // DOS allocates the load image in whole paragraphs, then the header's minimum extra paragraphs, and
+  // initializes neither the image's last partial paragraph nor the extra ones.
+  const uninitializedEnd = Math.ceil(image.end / 16) * 16 + bytes.readUInt16LE(10) * 16;
   const locate = (seg: number, offset: number): Target => {
     const address = seg16(seg, offset),
       p = image.header + (seg - image.loadSegment) * 16 + offset;
@@ -67,7 +76,7 @@ export function mzMapping(bytes: Buffer, config: TableConfig, layout: TableLayou
         address,
         result: "uninitialized",
         reason:
-          "past the load image, in the minimum extra memory the header asks for, which the file does not initialize",
+          "past the load image, in its last paragraph or the minimum extra memory the header asks for, which the file does not initialize",
       };
     return {
       address,
@@ -76,12 +85,22 @@ export function mzMapping(bytes: Buffer, config: TableConfig, layout: TableLayou
     };
   };
   const start = image.address(at.segment, at.offset);
-  const operands = segmentOperands(image);
   const declared = (site: number): Record<string, unknown> | null => {
     if (image.relocations.has(site)) return { site, kind: "MZ relocation" };
-    const owner = image.overlays.find((o) => o.fixups.has(site));
-    return owner ? { site, kind: "FBOV fixup", descriptor: bytes.readUInt16LE(site) >>> 3 } : null;
+    return null;
   };
+  // A declared relocation over these sites puts a segment word where the decode expects something else.
+  const misplaced = (sites: number[]) => sites.map(declared).find((d) => d !== null) ?? null;
+  const misread = (raw: string, value: number, relocation: Record<string, unknown>, what: string): Decoded => ({
+    raw,
+    value,
+    relocation,
+    target: {
+      address: null,
+      result: "unmapped",
+      reason: `a declared relocation covers ${what}, so the bytes hold a segment where an offset is expected; check the stride and pointer offset`,
+    },
+  });
   return {
     table: { address: seg16(at.segment, at.offset), fileOffset: start, range: resident },
     ranges: image.ranges,
@@ -94,20 +113,19 @@ export function mzMapping(bytes: Buffer, config: TableConfig, layout: TableLayou
     decode(site) {
       if (kind === "near16") {
         const raw = bytes.readUInt16LE(site);
-        // A near offset is never relocated; a declared operand over it says the word is something else.
-        const covering = operands.find((s) => s < site + 2 && s + 2 > site);
-        return {
-          raw: hex(raw, 4),
-          value: raw,
-          relocation: covering === undefined ? null : declared(covering),
-          target: locate(segment!, raw),
-        };
+        // A near offset is never relocated; a declared relocation over it says the word is something else.
+        const relocation = misplaced([site - 1, site, site + 1]);
+        if (relocation) return misread(hex(raw, 4), raw, relocation, "the near word");
+        return { raw: hex(raw, 4), value: raw, relocation: null, target: locate(segment!, raw) };
       }
       const offset = bytes.readUInt16LE(site),
         rawSegment = bytes.readUInt16LE(site + 2),
         raw = seg16(rawSegment, offset),
         value = rawSegment * 0x10000 + offset,
-        relocation = declared(site + 2);
+        relocation = declared(site + 2),
+        // Over the offset word, or straddling the segment word, a relocation means the entries are misaligned.
+        stray = misplaced([site - 1, site, site + 1, site + 3]);
+      if (stray) return misread(raw, value, stray, "the offset word or straddles the segment word");
       if (!relocation)
         return {
           raw,
@@ -119,9 +137,7 @@ export function mzMapping(bytes: Buffer, config: TableConfig, layout: TableLayou
             reason: "nothing relocates the segment word, so the pointer has no address in the load image",
           },
         };
-      const loaded =
-        image.loadSegment +
-        (relocation.kind === "MZ relocation" ? rawSegment : image.descriptors[rawSegment >>> 3]!.segment);
+      const loaded = image.loadSegment + rawSegment;
       if (loaded > 0xffff)
         return {
           raw,
@@ -141,12 +157,15 @@ interface Section {
   rva: number;
   extent: number;
   rawStart: number;
+  rawSize: number;
   loaded: number;
+  zeroFill: number;
 }
 
 /**
  * Maps a `pe32` table through the section table at the preferred image base, and reports the base
- * relocation over each pointer. A section's part past its raw data is uninitialized.
+ * relocation over each pointer. The loader fills a section's part past its raw data, up to its
+ * VirtualSize, with zeros; raw bytes past VirtualSize are padding the report does not read.
  */
 export function pe32Mapping(bytes: Buffer, layout: TableLayout): Mapping {
   const span = (at: number, size: number) => {
@@ -185,18 +204,27 @@ export function pe32Mapping(bytes: Buffer, layout: TableLayout): Mapping {
       rawStart = u32(at + 20),
       extent = Math.max(virtualSize, rawSize),
       // Raw bytes past VirtualSize are file-alignment padding, which the loader does not map.
-      loaded = virtualSize ? Math.min(rawSize, virtualSize) : rawSize;
+      loaded = virtualSize ? Math.min(rawSize, virtualSize) : rawSize,
+      // The PE format has the loader fill the rest of VirtualSize past the raw data with zeros.
+      zeroFill = Math.max(virtualSize - rawSize, 0);
     if (!extent || rva < headers || rva + extent > size)
       throw new Error("PE section escapes image or overlaps headers");
     if (rawSize) {
       span(rawStart, rawSize);
       if (rawStart < headers) throw new Error("PE section raw bytes overlap headers");
     }
-    for (const prior of sections)
+    for (const prior of sections) {
       if (Math.max(rva, prior.rva) < Math.min(rva + extent, prior.rva + prior.extent))
         throw new Error("Ambiguous PE virtual section mapping");
+      if (
+        rawSize &&
+        prior.rawSize &&
+        Math.max(rawStart, prior.rawStart) < Math.min(rawStart + rawSize, prior.rawStart + prior.rawSize)
+      )
+        throw new Error("Overlapping PE raw sections");
+    }
     const name = bytes.toString("latin1", at, at + 8).replace(/\0.*$/s, "");
-    sections.push({ index: i, name, rva, extent, rawStart, loaded });
+    sections.push({ index: i, name, rva, extent, rawStart, rawSize, loaded, zeroFill });
   }
   const headerRange: FileRange = { view: "headers", start: 0, end: headers };
   const rangeOf = (s: Section): FileRange => ({
@@ -210,15 +238,21 @@ export function pe32Mapping(bytes: Buffer, layout: TableLayout): Mapping {
     if (rva >= 0 && rva + width <= headers) return { address, fileOffset: rva, range: headerRange };
     for (const s of sections)
       if (rva >= s.rva && rva + width <= s.rva + s.loaded)
-        return { address, fileOffset: s.rawStart + rva - s.rva, range: rangeOf(s) };
+        return { address, fileOffset: s.rawStart + rva - s.rva, range: rangeOf(s), zeroFill: s.zeroFill };
     const holder = sections.find((s) => rva >= s.rva && rva < s.rva + s.extent);
-    return holder
-      ? {
-          address,
-          result: "uninitialized",
-          reason: `in section ${holder.index} ${holder.name} past its raw data, which the file does not initialize`,
-        }
-      : { address, result: "unmapped", reason: "outside the headers and every section of the image" };
+    if (!holder) return { address, result: "unmapped", reason: "outside the headers and every section of the image" };
+    const filled = holder.rva + holder.loaded + holder.zeroFill - rva;
+    if (filled > 0)
+      return {
+        address,
+        reason: `in section ${holder.index} ${holder.name} past its raw data, which the loader fills with zeros`,
+        zeroFill: filled,
+      };
+    return {
+      address,
+      result: "uninitialized",
+      reason: `in section ${holder.index} ${holder.name} past its VirtualSize, in raw padding the report does not read as loaded`,
+    };
   };
   // Base relocations, by the RVA of the first byte each one patches.
   const relocations = new Map<number, { type: number; width: number }>();
