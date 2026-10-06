@@ -289,7 +289,7 @@ public sealed class RecoverableFileTests : IDisposable
     {
         Write("1");
         Assert.Throws<ArgumentException>(() => RecoverableFile.ReadAndRepair(PathName, Read, rejectedSuffix: ".bak"));
-        Assert.Throws<ArgumentException>(() => RecoverableFile.Restore(PathName, _ => { }, rejectedSuffix: "."));
+        Assert.Throws<ArgumentException>(() => RecoverableFile.Restore(PathName, _ => { }, rejectedSuffix: "/x"));
     }
 
     private sealed record Settings(int Version, bool Enabled);
