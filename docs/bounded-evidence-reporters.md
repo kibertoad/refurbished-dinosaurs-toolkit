@@ -375,9 +375,9 @@ INC/DEC and effective-size sign extension. ENTER runs at nesting levels 0 and 1 
 modulo 32): its saved frame pointer and, at level 1, the new frame pointer are stack writes at
 ENTER's site, and BP and SP take ENTER's site as their producer. A higher level copies frame
 pointers from the caller's frame chain and stops the path with `ENTER nesting level <n> copies the
-caller's frame chain, which is not modeled`. ENTER and LEAVE with an operand-size override stop the
-path. It follows direct near/far
-calls, jumps, common conditional branches, JCXZ, the LOOP family, balanced
+caller's frame chain, which is not modeled`, where `<n>` is the level in effect (the byte modulo
+32). ENTER and LEAVE with an operand-size or address-size override stop the path. The decoder
+follows direct near/far calls, jumps, common conditional branches, JCXZ, the LOOP family, balanced
 returns, and far calls and jumps through an `m16:16` pointer the path produced
 ([below](#indirect-far-transfers-through-a-traced-pointer)). Unsupported instructions, repeat prefixes, 32-bit control transfers,
 other indirect targets, interrupts and recursion/loop limits stop the affected path.

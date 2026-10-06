@@ -73,8 +73,9 @@ class EnterFrames(unittest.TestCase):
         self.assertEqual(frame(4, level=0x21)["paths"][0]["registers"]["cx"]["expression"], below_entry(8))
 
     def test_nesting_levels_that_copy_the_frame_chain_stop(self):
-        for level in (2, 0x1F, 0xFF):
-            r = far(f"c8 04 00 {level:02x} " + BODY)
+        # The stop names the level the CPU uses, the byte modulo 32.
+        for byte, level in ((2, 2), (0x1F, 31), (0x22, 2), (0xFF, 31)):
+            r = far(f"c8 04 00 {byte:02x} " + BODY)
             path = r["paths"][0]
             self.assertFalse(r["completeWithinModel"])
             self.assertFalse(path["returned"])
@@ -86,6 +87,20 @@ class EnterFrames(unittest.TestCase):
         r = far("66 c8 04 00 00 " + BODY)
         self.assertFalse(r["completeWithinModel"])
         self.assertEqual(r["paths"][0]["stop"], "Operand-size override on ENTER is unsupported")
+
+    def test_address_size_override_stops_before_any_write(self):
+        # SLEIGH lifts 67 C8 in real mode with ESP and no SS base; the CPU still uses SS:SP.
+        r = far("67 c8 04 00 00 " + BODY)
+        self.assertFalse(r["completeWithinModel"])
+        self.assertEqual(r["paths"][0]["stop"], "Address-size override on ENTER is unsupported")
+        self.assertEqual(events(r, "write"), [])
+
+    def test_leave_with_an_address_size_override_stops(self):
+        # SLEIGH lifts 67 C9 in real mode with ESP and EBP; the CPU still restores SP from BP.
+        r = far("55 89 e5 b8 34 12 67 c9 cb")
+        self.assertFalse(r["completeWithinModel"])
+        self.assertEqual(r["paths"][0]["stop"], "Address-size override on LEAVE is unsupported")
+        self.assertEqual(events(r, "read"), [])
 
     def test_a_frame_left_unrestored_does_not_return(self):
         r = far("c8 04 00 00 b8 34 12 cb")
