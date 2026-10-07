@@ -8,6 +8,13 @@
 //
 //   --root <dir>        the repository to check (default: the current directory)
 //   --check             fail when an index or PARITY.md is stale instead of rewriting it
+//   --scheduled-generation
+//                       the indexes and PARITY.md are updated on the main branch only, such as
+//                       by a scheduled job: neither write nor compare them, and fail when the
+//                       change since the base (where HEAD forked from --base, or the fork point)
+//                       edits, adds or removes one; a file that matches the base branch's tip,
+//                       or a change that only regenerates them, passes; the result line names
+//                       the comparison with the spec as skipped
 //   --base <ref>        also fail when an ID or area that exists at <ref> is gone (default: where
 //                       HEAD forked from origin/$GITHUB_BASE_REF or origin/main; when that does not
 //                       resolve, the result line names the comparison as skipped)
@@ -57,7 +64,8 @@
 // This file reads the options and runs the phases in order: load the spec, check the entries, the
 // rules, the field names in their procedures and what crosses entries, compile the Kaitai
 // definitions, check the deviations, parity, VALIDATION.md, the code's references and comments and
-// the base ref, then write or check the generated files. Every phase reports into one collector,
+// the base ref, then write or check the generated files, or with --scheduled-generation check that
+// the change leaves them alone. Every phase reports into one collector,
 // which prints the problems at the end in the order they were found.
 
 import { readFileSync } from "node:fs";
@@ -79,7 +87,7 @@ import { createCodeFiles } from "./code-files.ts";
 import type { Context } from "./context.ts";
 import { generateIndexes } from "./generate/indexes.ts";
 import { generateParity } from "./generate/parity-md.ts";
-import { checkLineLimits, writeGenerated } from "./generate/write.ts";
+import { checkGeneratedUnchanged, checkLineLimits, writeGenerated } from "./generate/write.ts";
 import { loadSpec } from "./load/spec.ts";
 import { parseOptions } from "./options.ts";
 import { createProblems } from "./problems.ts";
@@ -114,10 +122,11 @@ const parity = checkParity(ctx, deviations);
 checkValidation(ctx, parity);
 checkReferences(ctx, deviations);
 checkCommentAddresses(ctx);
-checkBase(ctx, deviations);
+const base = checkBase(ctx, deviations);
 const generated = generateIndexes(ctx);
 generateParity(ctx, parity, generated);
-writeGenerated(ctx, generated);
+if (config.scheduledGeneration) checkGeneratedUnchanged(ctx, generated, base);
+else writeGenerated(ctx, generated);
 checkLineLimits(ctx);
 
 report({ entries: spec.entries.size, parityRows: parity.rows.size, deviations: deviations.size });

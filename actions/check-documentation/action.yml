@@ -29,6 +29,10 @@ inputs:
     description: Ref whose spec IDs, areas and deviations must still exist. Empty uses where HEAD forked from origin/$GITHUB_BASE_REF or origin/main. On a pull request the action fetches the base branch with enough history for that, and fails when the fork point still does not resolve; elsewhere the result line names the comparison as skipped.
     required: false
     default: ""
+  scheduled-generation:
+    description: '"true" when spec/index/ and PARITY.md are updated on the main branch only, such as by a scheduled job. The check then neither compares them with the spec nor writes them, and fails when the change since the base edits, adds or removes one.'
+    required: false
+    default: "false"
   kaitai-version:
     description: Kaitai Struct compiler release to install for compiling spec/formats/*.ksy. Empty skips the install, as does a root with no .ksy file.
     required: false
@@ -92,6 +96,7 @@ runs:
         DOC_MAX_RANGE: ${{ inputs.max-range }}
         DOC_DATA_DIRS: ${{ inputs.data-dirs }}
         DOC_BASE: ${{ inputs.base }}
+        DOC_SCHEDULED_GENERATION: ${{ inputs.scheduled-generation }}
         # The compiler was installed above, so a compiler the check cannot find is a failure. The
         # install exports KSC, which the check takes without running it, so today this guards
         # against an install that stops setting KSC; a KSC that does not run fails as a compile error.

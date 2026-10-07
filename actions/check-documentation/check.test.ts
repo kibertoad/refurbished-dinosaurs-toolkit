@@ -237,6 +237,24 @@ test("check.sh with no base branch, as on a push, names the skipped comparison",
   assert.equal(git(clone, "for-each-ref", "refs/remotes/origin/main"), "");
 });
 
+test("check.sh with scheduled-generation fails a pull request that edits a generated file", { skip }, (t) => {
+  const clone = shallowClone(t, documentedOrigin(t), "feature");
+  const env = checkEnv(clone, { GITHUB_BASE_REF: "main", DOC_SCHEDULED_GENERATION: "true" });
+  const unchanged = runScript("check.sh", [], env);
+  assert.equal(unchanged.status, 0, unchanged.output);
+  assert.match(
+    unchanged.output,
+    /Skipped: .*comparison of the generated files with the spec \(--scheduled-generation\)\.$/m,
+  );
+  writeFileSync(join(clone, "spec", "index", "by-kind.md"), "edited\n");
+  const { status, output } = runScript("check.sh", [], env);
+  assert.equal(status, 1, output);
+  assert.match(
+    output,
+    /^spec\/index\/by-kind\.md: differs from [0-9a-f]{40}; the generated files are updated on the main branch only/m,
+  );
+});
+
 test("check.sh with a base input compares with it and fetches nothing", { skip }, (t) => {
   const clone = shallowClone(t, documentedOrigin(t), "feature");
   const { status, output } = runScript("check.sh", [], checkEnv(clone, { GITHUB_BASE_REF: "main", DOC_BASE: "HEAD" }));

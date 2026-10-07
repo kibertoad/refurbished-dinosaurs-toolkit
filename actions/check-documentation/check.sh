@@ -13,6 +13,7 @@ if [ "$DOC_REQUIRE_KSC" = "true" ]; then args+=(--require-ksc); fi
 if [ -n "$DOC_IMAGES" ]; then args+=(--images "$DOC_IMAGES"); fi
 if [ -n "$DOC_MAX_RANGE" ]; then args+=(--max-range "$DOC_MAX_RANGE"); fi
 if [ -n "$DOC_DATA_DIRS" ]; then args+=(--data-dirs "$DOC_DATA_DIRS"); fi
+if [ "${DOC_SCHEDULED_GENERATION:-false}" = "true" ]; then args+=(--scheduled-generation); fi
 if [ -n "$DOC_BASE" ]; then
   args+=(--base "$DOC_BASE")
 elif [ -n "${GITHUB_BASE_REF:-}" ]; then
