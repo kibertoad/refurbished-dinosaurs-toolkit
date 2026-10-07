@@ -16,9 +16,15 @@ export function checkAddress(problem: Problem, file: string, value: Yaml, format
     problem(file, `an address cannot be given in a file of format ${format}; use offset`);
     return;
   }
+  if (!addressParts(value, re)) problem(file, `address ${value} is not in the notation for a ${format} file`);
+}
+/**
+ * An address names one byte, or a range of two joined by `..`. Returns the one or two addresses
+ * when each is in `notation`, the address rule of the file's format, or null when one is not.
+ */
+export function addressParts(value: Yaml, notation: RegExp): string[] | null {
   const parts = String(value).split("..");
-  if (parts.length > 2 || parts.some((p) => !re.test(p)))
-    problem(file, `address ${value} is not in the notation for a ${format} file`);
+  return parts.length > 2 || parts.some((p) => !notation.test(p)) ? null : parts;
 }
 /**
  * An offset names one byte, or a half-open range of two: 0x20..0x3C covers 0x20 up to but not

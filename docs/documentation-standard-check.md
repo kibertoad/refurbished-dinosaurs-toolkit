@@ -214,6 +214,16 @@ not record. On upgrading, a comment that names an address `fn_…` or `g_…` wi
 that records it fails. Set `images` to check plain `0x` addresses as well, and fix each failure
 by citing the finding that records the address, or by writing one.
 
+## Measuring coverage
+
+The same package installs `standard-coverage`, which reads the function inventories in `coverage/`
+and the entries' `locations`, and prints for each analysed file the share of its functions and of
+their bytes that some entry cites, followed by the functions that no entry cites and that are not
+out of scope. `--require-complete` fails while any are left, which is the Audit stage's condition on
+functions. [The package README](../packages/standard-checker/README.md#coverage) gives the inventory
+format and what counts as citing a function. The figures change with every batch, so print them on
+demand rather than committing them.
+
 ## Using setup-kaitai on its own
 
 `actions/setup-kaitai` installs the compiler without running the check, for a workflow that

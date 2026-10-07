@@ -11,7 +11,8 @@
     "directory": "packages/standard-checker"
   },
   "bin": {
-    "standard-checker": "dist/standard-checker.js"
+    "standard-checker": "dist/standard-checker.js",
+    "standard-coverage": "dist/coverage.js"
   },
   "files": [
     "dist"
