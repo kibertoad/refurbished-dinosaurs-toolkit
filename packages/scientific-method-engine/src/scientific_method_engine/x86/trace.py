@@ -993,7 +993,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                         try:
                             flags_word = state.peek(state.segment("ss"), op("add", state.reg(state.sp), const(4, 16), at), 2)
                             flags_frame = (16, flags_word.term) in state.saved_flags
-                        except StopPath:
+                        except PATH_STOPS:
                             flags_frame = False
                     # A traced call records its return-frame width; argumentFrames maps the slots above it.
                     call_event["returnFrameBytes"] = 4 if m == "lcall" or push_cs else image.bits // 8

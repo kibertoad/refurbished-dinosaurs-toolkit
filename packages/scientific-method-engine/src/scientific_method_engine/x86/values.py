@@ -1,19 +1,22 @@
 """Small bit-vector expressions; unknown values retain their producers."""
 from dataclasses import dataclass
 
-# The most nested terms one value's expression may hold.
+# The most terms one value's expression may hold, counting every tuple node at any depth.
 TERM_LIMIT = 1024
 
 
 class TermLimit(ValueError):
-    """A value's expression would hold more than ``TERM_LIMIT`` nested terms.
+    """A value's expression would hold more than ``TERM_LIMIT`` terms.
 
     A trace stops the path whose instruction built the value, with this message as the stop
     reason. Raised anywhere else, it fails the run like any other ``ValueError``.
     """
 
-    def __init__(self):
-        super().__init__(f"expression term limit: a value would hold more than {TERM_LIMIT} nested terms; narrow the query")
+    MESSAGE = f"expression term limit: a value's expression would hold more than {TERM_LIMIT} terms; narrow the query"
+
+    def __init__(self, message=MESSAGE):
+        # The message is an argument so that copying or pickling the error can rebuild it.
+        super().__init__(message)
 
 
 @dataclass(frozen=True)

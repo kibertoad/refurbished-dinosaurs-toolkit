@@ -1,10 +1,13 @@
 """A value past the term limit stops its own path; the other paths and their controls stay."""
+import copy
+import pickle
 import unittest
 from test_x86 import Code, report
+from scientific_method_engine.x86.relational import probe_memory
 from scientific_method_engine.x86.values import TERM_LIMIT, TermLimit, Value, const, op
 
 FRAME = {"ds": 0x3000, "ss": 0x9000, "sp": 0xE000}
-STOP = f"expression term limit: a value would hold more than {TERM_LIMIT} nested terms; narrow the query"
+STOP = f"expression term limit: a value's expression would hold more than {TERM_LIMIT} terms; narrow the query"
 
 
 def additions(count):
@@ -71,6 +74,38 @@ class TermLimitTests(unittest.TestCase):
         model = [{"site": 0, "evidence": "synthetic model", "returnBytes": 4, "cases": [{}]}]
         with self.assertRaisesRegex(ValueError, "Modeled return width differs"):
             report(c, "trace", returnBytes=4, registers=FRAME, callModels=model)
+
+    def test_a_memory_probe_past_the_limit_is_unresolved(self):
+        # A probe observes the path, so a base too large to offset leaves its row unresolved.
+        # Two terms, then two per addition: a base of TERM_LIMIT terms, which the displacement's
+        # offset term takes past the limit.
+        term = ("neg", ("unknown", "x"))
+        for _ in range((TERM_LIMIT - 2) // 2):
+            term = ("add", term, ("unknown", "y"))
+        Value(16, term)
+
+        class Probed:
+            bits = 16
+
+            def segment(self, name):
+                return const(0x3000, 16)
+
+            def reg(self, name):
+                return Value(16, term)
+
+            def keys(self, segment, offset, width):
+                raise AssertionError("the offset cannot be formed")
+
+        address = {"segment": "ds", "base": "bx", "displacement": 2, "width": 2}
+        row = probe_memory(Probed(), "probe", address)
+        self.assertEqual(row["unresolved"], STOP)
+        self.assertIsNone(row["offset"])
+        self.assertNotIn("byteProducers", row)
+
+    def test_the_error_survives_copy_and_pickle(self):
+        for rebuilt in (copy.copy(TermLimit()), pickle.loads(pickle.dumps(TermLimit()))):
+            self.assertIsInstance(rebuilt, TermLimit)
+            self.assertEqual(str(rebuilt), STOP)
 
     def test_the_limit_outside_a_path_raises(self):
         # Outside a traced path nothing can stop, so the limit fails the run as a ValueError.

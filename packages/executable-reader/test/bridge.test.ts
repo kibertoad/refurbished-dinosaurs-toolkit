@@ -1384,7 +1384,7 @@ test("a value past the engine's term limit stops its own path and keeps the othe
   const [returned, stopped] = r.paths;
   assert.equal(returned.returned, true);
   assert.equal(stopped.returned, false);
-  assert.match(stopped.stop, /^expression term limit: a value would hold more than 1024 nested terms/);
+  assert.match(stopped.stop, /^expression term limit: a value's expression would hold more than 1024 terms/);
   assert.ok(stopped.stopSite > adds && (stopped.stopSite - adds) % 2 === 0);
   assert.equal(stopped.events.filter((e: Report) => e.kind === "arithmetic").length, (stopped.stopSite - adds) / 2);
   assert.deepEqual(r.gaps, []);
