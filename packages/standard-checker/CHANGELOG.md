@@ -1,5 +1,11 @@
 # @scientific-method/standard-checker
 
+## 2.4.0
+
+### Minor Changes
+
+- 5b15fb2: Add `--scheduled-generation`, for a restoration that updates `spec/index/` and `PARITY.md` on its main branch only, such as from a scheduled job. The check then neither writes nor compares those files, and fails when the change since the base edits, adds or removes one. A file that matches its copy at the base branch's tip passes, as does a change that only regenerates them. The fork point now takes in every head of a merge in progress, an octopus merge's included.
+
 ## 2.3.0
 
 ### Minor Changes
