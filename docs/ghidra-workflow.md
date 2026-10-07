@@ -124,6 +124,18 @@ next to any "no callers", "no references" or "exactly N sites" claim:
   handler chain (`CALL [ECX]`), a jump table or a callback registration passes the same constant
   without a reference to the callee. When a census of call sites comes back thin, search the
   constant itself with `ReportScalarConstants` before concluding the value is computed.
+- The type `ReportReferences` prints is the reference type Ghidra's analysis recorded, not the
+  access the instruction makes. A direct store (`MOV [0x402000],EAX`) is `WRITE` and a direct load
+  is `READ`, but an indexed store (`MOV [EAX*4 + 0x402000],ECX`), an indexed load, an address
+  loaded as an immediate and a `LEA` are all `DATA`, and an indexed read-modify-write
+  (`INC dword ptr [EAX*4 + 0x402000]`) gets no reference at all. Filtering the output to `WRITE`
+  therefore misses writers, and keeping `DATA` still misses the instructions Ghidra did not
+  reference. For a writer search, run the engine's `operand-candidates` over the declared code
+  regions: it lists every encoded displacement or immediate equal to the address, indexed forms
+  included, with the operand's `access` (`read`, `write` or both), and fails when a known writer
+  given in `controls` is missed. `ReportScalarConstants memory <address>` is the Ghidra-side
+  search for the same memory operands, direct and indexed, without access. Neither sees a write
+  through a pointer computed at run time.
 - The first-argument scripts take the nearest `PUSH` before the call. A value moved into a
   register after the last push (`PUSH ESI; MOV ESI,0x23; CALL`) is not the first stack argument;
   if the callee reads it, it is a register argument, and the scripts list the call as non-literal.

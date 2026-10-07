@@ -1,8 +1,10 @@
 // Reports bounded instruction references to explicitly supplied scalar values, as immediates or
-// inside memory operands (a displacement, or the scale of an index such as the 4 in [EBX + ECX*4]).
+// inside memory operands (a displacement, an absolute address such as [0x41c000], or the scale of an
+// index such as the 4 in [EBX + ECX*4]).
 // @category Restoration
 
 import ghidra.app.script.GhidraScript;
+import ghidra.program.model.address.Address;
 import ghidra.program.model.lang.OperandType;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
@@ -38,8 +40,8 @@ public class ReportScalarConstants extends GhidraScript {
             for (int operand = 0; operand < instruction.getNumOperands(); operand++) {
                 String operandKind = null;
                 for (Object object : instruction.getOpObjects(operand)) {
-                    if (!(object instanceof Scalar scalar)
-                        || !matchesRequested(scalar, requested)) continue;
+                    Scalar scalar = operandValue(object, instruction.getOperandType(operand));
+                    if (scalar == null || !matchesRequested(scalar, requested)) continue;
                     if (operandKind == null) operandKind = operandKind(instruction.getOperandType(operand));
                     if (kind != null && !kind.equals(operandKind)) break;
                     if (matches == MAX_MATCHES) {
@@ -64,9 +66,19 @@ public class ReportScalarConstants extends GhidraScript {
     // Ghidra types an immediate operand SCALAR, adding ADDRESS when it points into the program
     // (PUSH 0x41c000 to a string). A memory operand is never SCALAR: a displacement such as the one in
     // [ECX + 0x44] or the scale in [EBX + ECX*4] makes it DYNAMIC, and an absolute one such as
-    // [0x41c000] is ADDRESS with its address as the scalar object.
+    // [0x41c000] is ADDRESS and DATA.
     private static String operandKind(int type) {
         return OperandType.isScalar(type) ? "immediate" : "memory";
+    }
+
+    // A displacement, scale or immediate is a Scalar object. An absolute memory operand such as
+    // [0x41c000] holds its address as an Address object instead. A direct branch target is an Address
+    // in a CODE operand; it is not an encoded constant, so it never matches.
+    private static Scalar operandValue(Object object, int type) {
+        if (object instanceof Scalar scalar) return scalar;
+        if (object instanceof Address address && !OperandType.isCodeReference(type))
+            return new Scalar(address.getSize(), address.getOffset(), false);
+        return null;
     }
 
     // Arguments are decoded as signed longs while operands are reported unsigned, so a request
