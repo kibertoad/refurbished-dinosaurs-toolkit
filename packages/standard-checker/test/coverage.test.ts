@@ -336,3 +336,66 @@ test("the provenance and regions files beside an inventory are not read as inven
   assert.match(output, /^coverage\/BLD-EXAMPLE-1\.0\/GAME\.EXE\.tsv: 1 of 1 functions cited/m);
   assert.doesNotMatch(output, /provenance|regions/);
 });
+
+test("the provenance and regions files are not read when their inventory is missing", (t) => {
+  const root = copy(t);
+  inventory(root, "xxh3\t0123456789abcdef\n", "coverage/BLD-EXAMPLE-1.0/GAME.EXE.provenance.tsv");
+  inventory(root, "0x00401000\t4096\n", "coverage/BLD-EXAMPLE-1.0/GAME.EXE.regions.tsv");
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.match(output, /No function inventories in coverage\//);
+  assert.doesNotMatch(output, /provenance|regions/);
+});
+
+test("an offset range of overlay code must lie inside a row of the build's Code ranges", (t) => {
+  const root = copy(t);
+  const manifest = join(root, "spec", "builds", "BLD-EXAMPLE-1.0.files.yaml");
+  writeFileSync(manifest, readFileSync(manifest, "utf8").replace("format: PE", "format: MZ"));
+  const build = join(root, "spec", "builds", "BLD-EXAMPLE-1.0.md");
+  writeFileSync(
+    build,
+    readFileSync(build, "utf8").replace(
+      "## Code ranges\n\nNone.",
+      "## Code ranges\n\n| File | Range | Overlay | Finding |\n|---|---|---|---|\n| GAME.EXE | 0x0200..0x0400 | 1 | FND-SCORE-001 |",
+    ),
+  );
+  inventory(
+    root,
+    "start\tsize\tranges\n0x0200\t32\t0x0200..0x0210 0x0300..0x0310\n0x0380\t32\t0x0380..0x0390 0x03F8..0x0408\n" +
+      "0x0220\t16\t0x0220..0x0228 1000:0000..1000:0008\n",
+  );
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.match(
+    output,
+    /line 3: range 0x03F8\.\.0x0408 lies inside no row the Code ranges section of BLD-EXAMPLE-1\.0 gives for GAME\.EXE$/m,
+  );
+  assert.match(output, /line 4: range 1000:0000\.\.1000:0008 is not a half-open range start\.\.end/);
+  assert.doesNotMatch(output, /line 2/);
+});
+
+test("an NE body stays inside the segment it starts in", (t) => {
+  const root = copy(t);
+  const manifest = join(root, "spec", "builds", "BLD-EXAMPLE-1.0.files.yaml");
+  writeFileSync(manifest, readFileSync(manifest, "utf8").replace("format: PE", "format: NE"));
+  inventory(
+    root,
+    [
+      "start\tsize\tranges",
+      "0001:FFF0\t16\t",
+      "0002:0000\t32\t0002:0000..0002:0010 0003:0000..0003:0010",
+      "0004:0000\t48\t0004:0000..0004:0010 0004:FFF0..0005:0010",
+      "0006:FFF0\t32\t",
+      "0007:FFF0\t32\t0007:FFF0..0008:0000 0008:0000..0008:0010",
+      "",
+    ].join("\n"),
+  );
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  for (const line of [
+    "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: line 4: range 0004:FFF0..0005:0010 runs past the end of the segment it starts in",
+    "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: line 5: size 32 runs past the end of the segment of 0006:FFF0",
+  ])
+    assert.ok(output.includes(line), `${line}\n${output}`);
+  assert.doesNotMatch(output, /line [237]/);
+});

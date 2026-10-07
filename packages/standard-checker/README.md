@@ -91,17 +91,17 @@ written as a directory `@CD`. Its columns are `start` and `size`, then optionall
 or for MZ overlay code an offset inside a row of the build's Code ranges. When the body is not one
 range from `start`, `ranges` lists its half-open ranges as `start..end` in the same notation,
 separated by spaces: `0x00401000..0x00401010 0x00401200..0x00401210`. `size` is then their total,
-one of them holds `start`, and they do not overlap. The `.provenance.tsv` and `.regions.tsv` files
+one of them holds `start`, and they do not overlap. In an `NE` file each range, and a body without
+`ranges`, ends in the segment it starts in. The `.provenance.tsv` and `.regions.tsv` files
 the work protocol puts beside an inventory are not read.
 
 An entry cites a function when one of its `locations` names the same build and file and its
 address, offset or half-open range overlaps the function's body: its `ranges`, or `size` bytes from
-`start` when the row gives none. Locations with
-`kind: file-data`, into the unpacked form of a packed file, or of superseded entries cite nothing,
-and neither does an address written in an entry's body. Real-mode segmented addresses (`MZ`, `COM`)
-are compared by the linear address they name, and each `NE` segment is a space of its own. A row
-without `ranges` is measured as if its body were contiguous. The shares count functions and
-bytes of the functions not out of scope.
+`start` when the row gives none. Locations with `kind: file-data`, into the unpacked form of a
+packed file, or of superseded entries cite nothing, and neither does an address written in an
+entry's body. Real-mode segmented addresses (`MZ`, `COM`) are compared by the linear address they
+name, and each `NE` segment is a space of its own. A row without `ranges` is measured as if its body
+were contiguous. The shares count functions and bytes of the functions not out of scope.
 
 It exits with 0, with 1 when an inventory is invalid or `--require-complete` finds an uncited
 function or no inventory at all, and with 2 when the options are invalid. Problems with the spec
@@ -109,10 +109,10 @@ itself are left to `standard-checker`; a warning gives how many there were while
 many locations in files of code did not parse, since those cite nothing.
 
 `standard-checker` reads the same inventories. Ranges are half-open, so a range whose end is an
-inventoried function's last byte (`start` plus `size` minus one, or the last byte of any of its
-`ranges`) stops a byte short, the usual slip
-when a range is copied from an analyzer that gives last bytes, and the check fails it with the end
-it should have. It checks every range a location of a current entry gives in that build and file,
+inventoried function's last byte (`start` plus `size` minus one, or for a row with `ranges` the last
+byte of each range, with ranges that touch taken as one) stops a byte short, the usual slip when a
+range is copied from an analyzer that gives last bytes, and the check fails it with the end it
+should have. It checks every range a location of a current entry gives in that build and file,
 by address or by offset, and the address ranges written in the body of an entry whose locations all
 name that one build and file. Without inventories it checks nothing and reports no skipped step.
 

@@ -76,12 +76,12 @@ const at = (address: string, file = "GAME.EXE") => [
   `    address: ${address}`,
 ];
 
-// Two functions of GAME.EXE: 0x00401000 for 32 bytes, so its last byte is 0x0040101F, and
-// 0x00401100 for 16 bytes.
-function inventory(root: string) {
+// The inventory of GAME.EXE. By default two functions: 0x00401000 for 32 bytes, so its last byte is
+// 0x0040101F, and 0x00401100 for 16 bytes.
+function inventory(root: string, text = "start\tsize\n0x00401000\t32\n0x00401100\t16\n") {
   const path = join(root, "coverage", "BLD-EXAMPLE-1.0", "GAME.EXE.tsv");
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, "start\tsize\n0x00401000\t32\n0x00401100\t16\n");
+  writeFileSync(path, text);
 }
 
 const PROBLEM = (what: string) =>
@@ -155,9 +155,7 @@ test("a body range of an entry located in two files is not checked", (t) => {
 test("a range that ends on the last byte of one of a body's ranges fails", (t) => {
   const root = copy(t);
   finding(root, at("0x00401200..0x0040120F"));
-  const path = join(root, "coverage", "BLD-EXAMPLE-1.0", "GAME.EXE.tsv");
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, "start\tsize\tranges\n0x00401000\t32\t0x00401000..0x00401010 0x00401200..0x00401210\n");
+  inventory(root, "start\tsize\tranges\n0x00401000\t32\t0x00401000..0x00401010 0x00401200..0x00401210\n");
   const { status, output } = run(root);
   assert.equal(status, 1, output);
   assert.ok(
@@ -167,4 +165,13 @@ test("a range that ends on the last byte of one of a body's ranges fails", (t) =
     ),
     output,
   );
+});
+
+test("a range that ends where two ranges of a body touch passes", (t) => {
+  const root = copy(t);
+  finding(root, at("0x00401000..0x0040100F"));
+  inventory(root, "start\tsize\tranges\n0x00401000\t32\t0x00401000..0x00401010 0x00401010..0x00401020\n");
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
 });

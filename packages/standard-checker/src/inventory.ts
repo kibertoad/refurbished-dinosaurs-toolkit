@@ -24,7 +24,7 @@ export interface InventoryRow {
   outOfScope: string;
   /**
    * The body's half-open ranges in the row's space, in address order: those the ranges column
-   * gives, or start through start + size when it gives none.
+   * gives, with ranges that touch joined into one, or start through start + size when it gives none.
    */
   body: Array<{ start: bigint; end: bigint }>;
 }
@@ -108,16 +108,16 @@ export function readInventories(
   const inventories: Inventory[] = [];
   for (const path of paths) {
     const bad = (why: string) => problems.push(`${path}: ${why}`);
-    // A side file is skipped, unless the manifest names a file whose inventory it would be.
-    const side = SIDE_FILES.find((s) => path.endsWith(s));
-    if (side && paths.includes(path.slice(0, -side.length) + ".tsv")) continue;
     const target = inventoryTarget(path);
+    const bf = target && (buildFiles.get(target.build) ?? []).find((f) => f.path === target.file);
+    // A side file is skipped, with or without its inventory, unless the manifest names a file whose
+    // inventory it would be.
+    if (!bf && SIDE_FILES.some((s) => path.endsWith(s))) continue;
     if (!target) {
       bad("is not coverage/<build>/<file>.tsv for a build ID and a path its manifest gives");
       continue;
     }
     const { build, file } = target;
-    const bf = (buildFiles.get(build) ?? []).find((f) => f.path === file);
     if (!bf) {
       bad(entries.has(build) ? `${file} is not in the manifest of ${build}` : `${build} is not a build of the spec`);
       continue;
@@ -176,10 +176,19 @@ export function readInventories(
         bad(`${at}: offset ${start} lies inside no row the Code ranges section of ${build} gives for ${file}`);
         return;
       }
+      // An NE segment is a space of its own, numbered 0x10000 apart, so a range's last byte must lie
+      // in the segment of its first. Its end can still be the next segment's 0000.
+      const segment = (a: bigint) => a >> 16n;
+      const crossesSegment = (from: bigint, to: bigint) =>
+        format === "NE" && place.space === "address" && segment(to - 1n) !== segment(from);
       // The ranges column: the body's half-open ranges, `start..end` in the same notation as start,
       // separated by spaces, when the body is not the size bytes from start.
       let body = [{ start: place.at, end: place.at + BigInt(size) }];
       const written = cell("ranges");
+      if (!written && crossesSegment(place.at, place.at + BigInt(size))) {
+        bad(`${at}: size ${size} runs past the end of the segment of ${start}`);
+        return;
+      }
       if (written) {
         body = [];
         for (const item of written.split(/ +/)) {
@@ -193,6 +202,10 @@ export function readInventories(
             bad(`${at}: range ${item} lies inside no row the Code ranges section of ${build} gives for ${file}`);
             return;
           }
+          if (crossesSegment(from.at, to.at)) {
+            bad(`${at}: range ${item} runs past the end of the segment it starts in`);
+            return;
+          }
           body.push({ start: from.at, end: to.at });
         }
         body.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
@@ -200,6 +213,14 @@ export function readInventories(
           bad(`${at}: the ranges overlap`);
           return;
         }
+        // Ranges that touch are one stretch of the body, which has no last byte where they meet. An NE
+        // range that ends at the next segment's 0000 does not touch the range starting there.
+        body = body.reduce<typeof body>((merged, r) => {
+          const last = merged.at(-1);
+          if (last && last.end === r.start && !crossesSegment(last.start, r.end)) last.end = r.end;
+          else merged.push({ ...r });
+          return merged;
+        }, []);
         const total = body.reduce((n, r) => n + (r.end - r.start), 0n);
         if (total !== BigInt(size)) {
           bad(`${at}: size ${size} is not the total of the ranges, ${total}`);

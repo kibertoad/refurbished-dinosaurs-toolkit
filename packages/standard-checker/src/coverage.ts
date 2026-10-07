@@ -26,14 +26,16 @@
 //
 // An entry cites a function when one of its locations names the same build and file and its
 // address or offset, or the half-open range it gives, overlaps the function's body: its ranges, or
-// size bytes from start when the row gives none. A location with kind: file-data, a location into the unpacked form of a packed
-// file, and the locations of superseded entries cite nothing. An address written in an entry's
-// body does not count; only locations do. Real-mode segmented addresses (MZ, COM) are compared by
-// the linear address they name; an NE segment is a space of its own.
+// size bytes from start when the row gives none. A location with kind: file-data, a location into
+// the unpacked form of a packed file, and the locations of superseded entries cite nothing. An
+// address written in an entry's body does not count; only locations do. Real-mode segmented
+// addresses (MZ, COM) are compared by the linear address they name; an NE segment is a space of
+// its own.
 //
 // A row without ranges is measured as if its body were contiguous, so for a function whose body is
 // not, a location in a gap after its start can count as citing it, and a location in a part placed
-// elsewhere does not. A cited function has been looked at, not read completely, which only the citing entry's status says.
+// elsewhere does not. A cited function has been looked at, not read completely, which only the
+// citing entry's status says.
 //
 // The spec is read as the documentation check reads it. Problems with the spec itself are left to
 // that check, and a location that does not parse cites nothing here; a warning gives how many
@@ -154,12 +156,10 @@ function measure(root: string) {
   const read = readInventories(config.repoDir, spec);
   const inventories = read.inventories.map((inv) => ({
     ...inv,
-    functions: inv.functions.map((f): InventoryFunction => ({
-      ...f,
-      citedBy: [
-        ...new Set(f.body.flatMap((r) => citing(indexed.get(`${inv.build}\0${inv.file}\0${f.space}`), r.start, r.end))),
-      ].sort(),
-    })),
+    functions: inv.functions.map((f): InventoryFunction => {
+      const index = indexed.get(`${inv.build}\0${inv.file}\0${f.space}`);
+      return { ...f, citedBy: [...new Set(f.body.flatMap((r) => citing(index, r.start, r.end)))].sort() };
+    }),
   }));
   return { inventories, problems: read.problems, specProblems, unreadLocations };
 }
