@@ -1,13 +1,14 @@
 """Transitive reachability from established starts to target sites over the entry-path CFG."""
 from collections import deque
 from .image import integer
-from .trace import walk, cfg_step, base_mnemonic, unsupported_transfer, INTERRUPTS
+from .trace import walk, cfg_step, base_mnemonic, unsupported_transfer, holding_instruction, INTERRUPTS, RETURNS
 from .pcode_backend import interrupt_vector
 
 # The virtual root of the dominator computation; no file offset is negative.
 ROOT = -1
 CALLS = ("call", "lcall")
 UNSUPPORTED = "unsupported control-transfer frame encoding"
+LEAF_OVERLAP = "leaf start inside a reached instruction; the leaf is not decoded, so its boundary is unchecked"
 
 
 def _sites(value, label, image, limit=256):
@@ -40,7 +41,7 @@ def _leaves(value, image, starts):
     return leaves
 
 
-def _kinds(image, at, ins, step):
+def _kinds(at, ins, step):
     """Each successor of ``step`` with how the CFG reaches it: call, return, table, interrupt, jump or fall."""
     m, following = base_mnemonic(ins), at + ins.size
     targets = {e["target"] for e in step.edges if e["target"] is not None}
@@ -106,8 +107,9 @@ def reach(image, config):
     targets = _sites(config.get("targets"), "targets", image)
     leaves = _leaves(config.get("leaves", []), image, set(starts))
     controls = config.get("controls", [])
-    if not isinstance(controls, list) or len(controls) > 256 or any(type(at) is not int for at in controls):
-        raise ValueError("Invalid positive controls")
+    if (not isinstance(controls, list) or len(controls) > 256 or any(type(at) is not int for at in controls)
+            or len(set(controls)) != len(controls)):
+        raise ValueError("Positive controls must be at most 256 distinct file offsets")
     limit = integer(config.get("limit", 1000), 1, 10000, "result limit")
     instruction_limit = config.get("instructionLimit", 10000)
     seen, walk_gaps, _, _, contested = walk(image, starts, instruction_limit, follow_interrupts=True, stops=frozenset(leaves))
@@ -115,14 +117,15 @@ def reach(image, config):
     graph, unresolved, interrupts, resolved_calls = {}, [], [], {}
     for at, ins in sorted(seen.items()):
         step = cfg_step(image, at, ins, follow_interrupts=True)
-        graph[at] = [(s, kind) for s, kind in _kinds(image, at, ins, step) if s in seen or s in leaves]
+        graph[at] = [(s, kind) for s, kind in _kinds(at, ins, step) if s in seen or s in leaves]
         m = base_mnemonic(ins)
         text = (ins.mnemonic + " " + ins.op_str).strip()
+        kind = "call" if m in CALLS else "return" if m in RETURNS else "jump"
         if unsupported_transfer(image, ins):
-            unresolved.append({"site": at, "instruction": text, "kind": "call" if m in CALLS else "jump", "reason": UNSUPPORTED})
+            unresolved.append({"site": at, "instruction": text, "kind": kind, "reason": UNSUPPORTED})
         for edge in step.edges:
             if edge["target"] is None:
-                unresolved.append({"site": at, "instruction": text, "kind": "call" if m in CALLS else "jump",
+                unresolved.append({"site": at, "instruction": text, "kind": kind,
                                    "reason": edge["provenance"].get("reason", "target outside declared regions")})
             elif m in CALLS:
                 resolved_calls[at] = edge["target"]
@@ -188,9 +191,6 @@ def reach(image, config):
                 "route": {"assumedReturns": assumed_returns[::-1], "declaredTableJumps": tables[::-1],
                           "interruptsContinued": continued[::-1]}}
 
-    def inside(at):
-        # An x86 instruction is at most 15 bytes, so only the starts just before the site can hold it.
-        return next((s for s in range(max(at - 14, 0), at) if s in seen and at < s + seen[s].size), None)
     rows = []
     for target in targets:
         row = {"target": target}
@@ -203,7 +203,7 @@ def reach(image, config):
             row |= {"reached": True, "routine": routine[target], "leaf": target in leaves, **chain(target),
                     "throughEveryRoute": cut[::-1]}
         else:
-            holder = inside(target)
+            holder = holding_instruction(seen, target)
             row |= {"reached": False, "status": "inside a reached instruction" if holder is not None
                     else "start of a contested instruction" if target in contested else "not reached",
                     **({"insideInstruction": holder} if holder is not None else {})}
@@ -213,12 +213,16 @@ def reach(image, config):
         row["routine"] = routine.get(row["site"])
     unresolved_sites = {row["site"] for row in unresolved}
     gaps = [g for g in walk_gaps if g["site"] not in unresolved_sites and g["site"] not in contested]
-    known = {at: target for at, target in resolved_calls.items()}
+    # The walk never decodes a leaf, so its overlap check cannot see a leaf start inside a decoded instruction.
+    gaps += [{"site": at, "reason": LEAF_OVERLAP, "insideInstruction": holding_instruction(seen, at)}
+             for at in sorted(leaves) if at in distance and holding_instruction(seen, at) is not None]
     for at in controls:
-        if at not in known:
+        if at not in resolved_calls:
             raise ValueError(f"Positive control {at} missed or not resolved")
-    leaf_rows = [{"routine": at, "reason": reason, "reached": at in distance,
-                  "callSites": sorted(s for s, target in resolved_calls.items() if target == at)}
+    call_sites = {}
+    for site, target in sorted(resolved_calls.items()):
+        call_sites.setdefault(target, []).append(site)
+    leaf_rows = [{"routine": at, "reason": reason, "reached": at in distance, "callSites": call_sites.get(at, [])}
                  for at, reason in leaves.items()]
     counts = {"routines": len(routine_starts), "instructions": len(seen), "unresolved": len(unresolved),
               "interrupts": len(interrupts), "gaps": len(gaps), "contested": len(contested)}
@@ -227,7 +231,7 @@ def reach(image, config):
             "unresolved": unresolved[:limit], "interrupts": interrupts[:limit], "gaps": gaps[:limit],
             "contested": sorted(contested)[:limit],
             "truncated": any(len(x) > limit for x in (unresolved, interrupts, gaps, contested)),
-            "controls": [{"site": at, "target": known[at]} for at in controls],
+            "controls": [{"site": at, "target": resolved_calls[at]} for at in controls],
             "negativeUsable": bool(controls) and not (unresolved or gaps or contested),
             "assumptions": ["each reached call returns to its next instruction",
                             "each reached interrupt returns to its next instruction; interrupt handlers are not read",

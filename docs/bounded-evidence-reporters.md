@@ -967,7 +967,7 @@ for questions such as "can anything between program start and this point write t
 | `starts` | 1..256 file offsets, each an established region entry |
 | `targets` | 1..256 file offsets in declared code, such as the starts of a variable's writers or the writes themselves |
 | `leaves` | optional, at most 256 `{ "routine", "reason" }` objects: routines the walk reaches but does not read, so they call nothing. `reason` is required free text, and the report repeats it. A start cannot be a leaf |
-| `controls` | optional call sites the walk must decode and resolve; a missed or unresolved control fails the report |
+| `controls` | optional, at most 256 distinct call sites the walk must decode and resolve; a missed or unresolved control fails the report |
 | `indirectJumps` | the [declared tables](#evidenced-indirect-jump-tables) the walk follows |
 | `instructionLimit` | instructions the walk decodes (1..100000, default 10000) |
 | `limit` | rows kept in each of `unresolved`, `interrupts`, `gaps` and `contested` (1..10000, default 1000) |
@@ -981,14 +981,17 @@ region that holds it. Instruction boundaries are checked as in the entry-path wa
 instruction reached only through a rejected overlapping start is `contested`.
 
 Nothing else is followed. A computed call or jump, a far call with no relocation or fixup, a
-table jump with no declaration and a declared table that is not exhaustive are listed in
-`unresolved` with their `site`, `instruction` text, `kind` (`call` or `jump`), `reason` and the
-`routine` the walk read them in. The walk never reads table words for an undeclared jump, and it
-does not bound a table from the guard before it: a table's rows come from an `indirectJumps`
-declaration with its evidence, which `dispatch` can check. `gaps` lists edges that could not be
-decoded (invalid bytes or an address outside declared code), the instruction limit, and the
-other walk gaps. `interrupts` lists each interrupt the walk continued past, with its vector.
-Interrupt handlers are not read.
+table jump with no declaration, a declared table that is not exhaustive, and a call, jump or
+return whose frame encoding the walk does not model (an operand-size override, or a far transfer
+in the flat model) are listed in `unresolved` with their `site`, `instruction` text, `kind`
+(`call`, `jump` or `return`), `reason` and the `routine` the walk read them in. The walk never
+reads table words for an undeclared jump, and it does not bound a table from the guard before it:
+a table's rows come from an `indirectJumps` declaration with its evidence, which `dispatch` can
+check. `gaps` lists edges that could not be decoded (invalid bytes or an address outside declared
+code), the instruction limit, a reached leaf whose start lies inside a decoded instruction (with
+`insideInstruction`; the leaf is not decoded, so its boundary is not checked), and the other walk
+gaps. `interrupts` lists each interrupt the walk continued past, with its vector. Interrupt
+handlers are not read.
 
 Each `targets` row gives `reached`. A reached target has:
 

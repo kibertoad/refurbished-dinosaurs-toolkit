@@ -321,6 +321,12 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
     return seen, gaps, edges, undecoded, contested
 
 
+def holding_instruction(seen, site):
+    """The start of the instruction in ``seen`` whose bytes cover ``site`` past its first byte, or None."""
+    # An x86 instruction is at most 15 bytes, so only the starts just before the site can hold it.
+    return next((at for at in range(max(site - 14, 0), site) if at in seen and site < at + seen[at].size), None)
+
+
 def uncovered(start, end, spans):
     """The ranges of start..end that no span covers; spans are clipped to the bounds."""
     missing, cursor = [], start

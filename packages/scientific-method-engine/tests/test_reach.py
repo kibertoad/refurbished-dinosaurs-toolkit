@@ -85,6 +85,17 @@ class ReachTests(unittest.TestCase):
         self.assertNotIn(0x20, r["reachedRoutines"])
         self.assertFalse(r["negativeUsable"])
 
+    def test_a_leaf_start_inside_a_reached_instruction_is_a_gap(self):
+        # 0000 calls 0007, which jumps through a one-row table to 0005, inside the mov at 0003 (the return site).
+        data = bytes.fromhex("e80400" "b890c3" "c3" "2effa71000" "90909090" "0500")
+        table = {"site": 7, "exhaustive": True, "evidence": "synthetic: one row",
+                 "table": {"start": 0x10, "count": 1, "stride": 2, "evidence": "synthetic: one row"}}
+        r = run_report(data, config(data, targets=[5], controls=[0], indirectJumps=[table],
+                                    leaves=[{"routine": 5, "reason": "synthetic leaf"}]), "reach")
+        self.assertIn({"site": 5, "reason": "leaf start inside a reached instruction; the leaf is not decoded, so its "
+                       "boundary is unchecked", "insideInstruction": 3}, r["gaps"])
+        self.assertFalse(r["negativeUsable"])
+
     def test_a_negative_is_usable_only_with_controls_and_nothing_unresolved(self):
         # 0000 calls 0004, which returns; nothing reaches 0005.
         data = bytes.fromhex("e80100c3c3c3")
@@ -118,6 +129,14 @@ class ReachTests(unittest.TestCase):
         r = run_report(data, config(data, targets=[5]), "reach")
         self.assertEqual(r["unresolved"][0]["reason"], "no declared relocation/fixup")
 
+    def test_an_unsupported_return_is_unresolved_as_a_return(self):
+        # 0000 calls 0004, an o32 ret: an operand-size override the frame model does not cover.
+        data = bytes.fromhex("e80100c366c3")
+        r = run_report(data, config(data, targets=[3], controls=[0]), "reach")
+        self.assertEqual([(u["site"], u["kind"], u["routine"]) for u in r["unresolved"]], [(4, "return", 4)])
+        self.assertEqual(r["gaps"], [])
+        self.assertFalse(r["negativeUsable"])
+
     def test_an_undecodable_edge_is_a_gap(self):
         data = bytes.fromhex("e80100c30f")
         r = run_report(data, config(data, targets=[3]), "reach")
@@ -143,6 +162,7 @@ class ReachTests(unittest.TestCase):
                                ({"leaves": [{"routine": 0x18}]}, "routine and reason"),
                                ({"leaves": [{"routine": 0x18, "reason": " "}]}, "nonempty reason"),
                                ({"leaves": [{"routine": 0, "reason": "x"}]}, "start cannot be a leaf"),
+                               ({"controls": [0x3, 0x3]}, "distinct file offsets"),
                                ({"controls": [0x6]}, "Positive control 6 missed"),
                                ({"controls": [0x10]}, "Positive control 16 missed")]:
             with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, message):
