@@ -18,11 +18,18 @@ if [ ! -f "$zip" ]; then
   curl -fsSL --retry 3 -o "$zip" \
     "https://github.com/kaitai-io/kaitai_struct_compiler/releases/download/$KSC_VERSION/kaitai-struct-compiler-$KSC_VERSION.zip"
 fi
-# macOS may have shasum without GNU sha256sum.
-if command -v sha256sum > /dev/null; then
-  echo "$sha256  $zip" | sha256sum --check --strict
+# The hash tools differ by host: GNU sha256sum on Linux and Git Bash, a BSD sha256sum without
+# GNU's --check options on current macOS images, and only shasum on older ones. Each prints the
+# hash as the first field of `<tool> <file>`, so the script compares that field with the pin
+# instead of relying on any tool's check mode.
+if command -v sha256sum > /dev/null 2>&1; then
+  actual="$(sha256sum "$zip" | awk '{print $1}')"
 else
-  echo "$sha256  $zip" | shasum -a 256 --check
+  actual="$(shasum -a 256 "$zip" | awk '{print $1}')"
+fi
+if [ "$actual" != "$sha256" ]; then
+  echo "::error::$zip has SHA-256 $actual, expected $sha256." >&2
+  exit 1
 fi
 unzip -q -o "$zip" -d "$tmp"
 bin="$tmp/kaitai-struct-compiler-$KSC_VERSION/bin/kaitai-struct-compiler"
