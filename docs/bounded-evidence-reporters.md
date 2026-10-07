@@ -556,7 +556,12 @@ maximum 1,048,576); use inventories stop after 64 entries (`entryLimit`, maximum
 Caps, undecoded ranges and unsupported cases are explicit. Source size is capped
 at 256 MiB, config size at 1 MiB (16 MiB for the relocation-expanded config the
 Node wrapper pipes to Python) and each symbolic expression at 1,024 tuple nodes.
-The Node wrapper caps output at 32 MiB and execution at 120 seconds. The engine writes compact
+An instruction whose value would pass that cap stops its path with `expression term limit: a value
+would hold more than 1024 nested terms; narrow the query`, and `stopSite` names the instruction.
+Events and writes that instruction made before building the value, such as a memory read, stay on
+the path; the rest of the instruction does not run. The other paths, their events and their control occurrences stay in the report,
+which is then not `completeWithinModel`. Outside a traced path, such as while preparing a query or
+after tracing, the cap fails the run. The Node wrapper caps output at 32 MiB and execution at 120 seconds. The engine writes compact
 JSON to the wrapper, which prints the parsed report indented; run on a config file, the engine
 prints indented JSON itself. A limit never
 turns a partial search into an absence claim. `completeWithinModel` means all

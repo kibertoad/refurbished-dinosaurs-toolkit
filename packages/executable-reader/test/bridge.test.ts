@@ -1358,6 +1358,41 @@ test("trace decides a decrement loop's exit from p-code flags through the source
   assert.equal(path.registers.cx.value, 0);
 });
 
+test("a value past the engine's term limit stops its own path and keeps the other through the source bridge", (t) => {
+  const { dir, config } = fixture(t);
+  const additions = 600;
+  // mov ax, [100h]; mov bx, [102h]; test ax, ax; jz done; add ax, bx (repeated); done: retf
+  const head = Buffer.from([0xa1, 0x00, 0x01, 0x8b, 0x1e, 0x02, 0x01, 0x85, 0xc0, 0x0f, 0x84, 0, 0]);
+  head.writeUInt16LE(2 * additions, 11);
+  const adds = head.length;
+  const source = Buffer.concat([head, Buffer.alloc(2 * additions, Buffer.from([0x01, 0xd8])), Buffer.from([0xcb])]);
+  writeFileSync(join(dir, "source.bin"), source);
+  const query = {
+    source: "source.bin",
+    sourceKind: "synthetic-raw",
+    xxh3: sourceXxh3(source),
+    entry: 0,
+    returnBytes: 4,
+    registers: { ds: 0x3000, ss: 0x9000, sp: 0xe000 },
+    maxPaths: 2,
+    maxSteps: additions + 16,
+    regions: [{ ...config.regions[0]!, start: 0, end: source.length, entries: [0] }],
+    relationalControls: [{ name: "tested", kind: "reach", at: { site: 7 }, expect: "always" }],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const r = run(["trace", join(dir, "config.json")]);
+  const [returned, stopped] = r.paths;
+  assert.equal(returned.returned, true);
+  assert.equal(stopped.returned, false);
+  assert.match(stopped.stop, /^expression term limit: a value would hold more than 1024 nested terms/);
+  assert.ok(stopped.stopSite > adds && (stopped.stopSite - adds) % 2 === 0);
+  assert.equal(stopped.events.filter((e: Report) => e.kind === "arithmetic").length, (stopped.stopSite - adds) / 2);
+  assert.deepEqual(r.gaps, []);
+  assert.equal(r.completeWithinModel, false);
+  assert.equal(r.relationalControls.controls[0].verdict, "held");
+  assert.equal(r.relationalControls.controls[0].occurrences, 2);
+});
+
 test("trace names the failed root return check and the unread root return words through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(200, 28);
