@@ -10,10 +10,11 @@
 //   --check             fail when an index or PARITY.md is stale instead of rewriting it
 //   --scheduled-generation
 //                       the indexes and PARITY.md are updated on the main branch only, such as
-//                       by a scheduled job:
-//                       neither write nor compare them, and fail when the change since the base
-//                       (--base or the fork point) edits, adds or removes one; the result line
-//                       names the comparison with the spec as skipped
+//                       by a scheduled job: neither write nor compare them, and fail when the
+//                       change since the base (where HEAD forked from --base, or the fork point)
+//                       edits, adds or removes one; a file that matches the base branch's tip,
+//                       or a change that only regenerates them, passes; the result line names
+//                       the comparison with the spec as skipped
 //   --base <ref>        also fail when an ID or area that exists at <ref> is gone (default: where
 //                       HEAD forked from origin/$GITHUB_BASE_REF or origin/main; when that does not
 //                       resolve, the result line names the comparison as skipped)
@@ -86,7 +87,7 @@ import { createCodeFiles } from "./code-files.ts";
 import type { Context } from "./context.ts";
 import { generateIndexes } from "./generate/indexes.ts";
 import { generateParity } from "./generate/parity-md.ts";
-import { checkLineLimits, writeGenerated } from "./generate/write.ts";
+import { checkGeneratedUnchanged, checkLineLimits, writeGenerated } from "./generate/write.ts";
 import { loadSpec } from "./load/spec.ts";
 import { parseOptions } from "./options.ts";
 import { createProblems } from "./problems.ts";
@@ -124,7 +125,8 @@ checkCommentAddresses(ctx);
 const base = checkBase(ctx, deviations);
 const generated = generateIndexes(ctx);
 generateParity(ctx, parity, generated);
-writeGenerated(ctx, generated, base);
+if (config.scheduledGeneration) checkGeneratedUnchanged(ctx, generated, base);
+else writeGenerated(ctx, generated);
 checkLineLimits(ctx);
 
 report({ entries: spec.entries.size, parityRows: parity.rows.size, deviations: deviations.size });

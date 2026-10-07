@@ -201,8 +201,18 @@ Set the action's `scheduled-generation` input to `"true"`, and pass `--scheduled
 local runs, such as a pre-commit hook. The check then neither compares the generated files with the
 spec nor writes them, and names that comparison as skipped. It fails when the change since the
 fork point edits, adds or removes one of them; restore such a file as it is on the base branch. A
-branch that merges the main branch takes its newer copies without a change of its own, since
-the fork point moves with the merge.
+file that matches its copy at the base branch's tip is not the branch's change, so a branch that
+takes the main branch's newer copies, by a merge, a squash merge or a cherry-pick, passes.
+
+A change that only regenerates them passes too: it touches no other file, and leaves each one as
+the checker without `--check` writes it. That is the commit the main branch takes, so the
+scheduled job can push it to the main branch or open a pull request with it, and the required
+check passes either way. Regenerating them beside any other change fails.
+
+Move a legacy `PARITY.md` that holds rows into `parity/` (see
+[Moving to the directory layout](#moving-to-the-directory-layout)) before turning this on. The
+move changes `PARITY.md` together with the files under `parity/`, so it fails once the input is
+set.
 
 ```yaml
       - uses: kibertoad/refurbished-dinosaurs-toolkit/actions/check-documentation@<sha>

@@ -899,15 +899,24 @@ test("--scheduled-generation fails a change that edits, adds or removes a genera
   const root = broken(t, (r) => withForkPoint(r));
   writeFileSync(join(root, "spec", "index", "by-kind.md"), "edited\n");
   writeFileSync(join(root, "spec", "index", "extra.md"), "# extra\n");
+  writeFileSync(join(root, "spec", "index", "café.md"), "# extra\n");
   rmSync(join(root, "spec", "index", "by-area.md"));
   replaceIn(root, "PARITY.md", "# Parity matrix", "# Parity matrix\n");
   const { status, output } = run(root, "--scheduled-generation");
   assert.equal(status, 1, output);
-  for (const path of ["PARITY.md", "spec/index/by-area.md", "spec/index/by-kind.md", "spec/index/extra.md"])
+  for (const path of ["PARITY.md", "spec/index/by-area.md", "spec/index/by-kind.md"])
     assert.match(
       output,
       new RegExp(
         `^${path.replaceAll(".", "\\.")}: differs from [0-9a-f]{40}; the generated files are updated on the main branch only, so restore it as it is at [0-9a-f]{40}$`,
+        "m",
+      ),
+    );
+  for (const path of ["spec/index/extra.md", "spec/index/café.md"])
+    assert.match(
+      output,
+      new RegExp(
+        `^${path.replaceAll(".", "\\.")}: does not exist at [0-9a-f]{40}; the generated files are updated on the main branch only, so remove it$`,
         "m",
       ),
     );
@@ -936,6 +945,9 @@ test("--scheduled-generation takes the base branch's newer generated files durin
   git("commit", "-q", "-am", "nightly");
   git("update-ref", "refs/remotes/origin/main", "HEAD");
   git("checkout", "-q", "feature");
+  // An explicit base the branch has not reached is compared from where the branch forked from it.
+  const behind = run(root, "--scheduled-generation", "--base", "origin/main");
+  assert.equal(behind.status, 0, behind.output);
   // Committing the merge after a conflict elsewhere runs the check with MERGE_HEAD set.
   git("merge", "-q", "--no-commit", "--no-ff", "origin/main");
   const merging = run(root, "--scheduled-generation", "--require-base");
@@ -943,6 +955,107 @@ test("--scheduled-generation takes the base branch's newer generated files durin
   git("commit", "-q", "-m", "merge");
   const merged = run(root, "--scheduled-generation", "--require-base");
   assert.equal(merged.status, 0, merged.output);
+});
+
+test("the fork point during a merge takes in an ID the merge deletes", (t) => {
+  const root = broken(t, (r) => withForkPoint(r));
+  const git = (...args: string[]) => {
+    const result = spawnSync(
+      "git",
+      ["-C", root, "-c", "user.name=test", "-c", "user.email=test@example.com", ...args],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+  };
+  git("checkout", "-q", "-b", "feature");
+  writeFileSync(join(root, "notes.txt"), "A change on the branch.\n");
+  git("add", ".");
+  git("commit", "-q", "-m", "feature");
+  git("checkout", "-q", "-b", "cleanup", "origin/main");
+  git("rm", "-q", "spec/rules/RULE-SCORE-001.md");
+  git("commit", "-q", "-m", "cleanup");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "feature");
+  git("merge", "-q", "--no-commit", "--no-ff", "origin/main");
+  const { output } = run(root, "--require-base");
+  assert.doesNotMatch(output, /RULE-SCORE-001 exists at/);
+  assert.doesNotMatch(output, /comparison with the base branch/);
+});
+
+// Runs git in root with a test identity, failing the test when git fails.
+function gitAt(root: string) {
+  return (...args: string[]) => {
+    const result = spawnSync(
+      "git",
+      ["-C", root, "-c", "user.name=test", "-c", "user.email=test@example.com", ...args],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+  };
+}
+
+test("the fork point during an octopus merge takes in every head being merged", (t) => {
+  const root = broken(t, (r) => withForkPoint(r));
+  const git = gitAt(root);
+  git("checkout", "-q", "-b", "feature");
+  writeFileSync(join(root, "notes.txt"), "A change on the branch.\n");
+  git("add", ".");
+  git("commit", "-q", "-m", "feature");
+  git("checkout", "-q", "-b", "topic", "origin/main");
+  writeFileSync(join(root, "topic.txt"), "Another branch.\n");
+  git("add", ".");
+  git("commit", "-q", "-m", "topic");
+  git("checkout", "-q", "-b", "cleanup", "origin/main");
+  git("rm", "-q", "spec/rules/RULE-SCORE-001.md");
+  git("commit", "-q", "-m", "cleanup");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "feature");
+  // origin/main is the second head, which rev-parse MERGE_HEAD would not return.
+  git("merge", "-q", "--no-commit", "--no-ff", "topic", "origin/main");
+  const { output } = run(root, "--require-base");
+  assert.doesNotMatch(output, /RULE-SCORE-001 exists at/);
+});
+
+test("--scheduled-generation passes the base branch's newer generated files taken by a squash merge", (t) => {
+  const root = broken(t, (r) => withForkPoint(r));
+  const git = gitAt(root);
+  git("checkout", "-q", "-b", "feature");
+  writeFileSync(join(root, "notes.txt"), "A change on the branch.\n");
+  git("add", ".");
+  git("commit", "-q", "-m", "feature");
+  git("checkout", "-q", "-b", "nightly", "origin/main");
+  writeFileSync(join(root, "spec", "index", "by-kind.md"), "rewritten by the job\n");
+  git("commit", "-q", "-am", "nightly");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "feature");
+  // A squash merge adds no merge parent, so the fork point stays where it was.
+  git("merge", "-q", "--squash", "origin/main");
+  git("commit", "-q", "-m", "squash");
+  const taken = run(root, "--scheduled-generation", "--require-base");
+  assert.equal(taken.status, 0, taken.output);
+  // A copy that matches neither the fork point nor the base branch's tip is still this change.
+  writeFileSync(join(root, "spec", "index", "by-kind.md"), "edited\n");
+  const edited = run(root, "--scheduled-generation", "--require-base");
+  assert.equal(edited.status, 1, edited.output);
+  assert.match(edited.output, /^spec\/index\/by-kind\.md: differs from [0-9a-f]{40}; /m);
+});
+
+test("--scheduled-generation passes a change that only regenerates the generated files", (t) => {
+  const root = broken(t, (r) => {
+    writeFileSync(join(r, "spec", "index", "by-kind.md"), "stale\n");
+    withForkPoint(r);
+  });
+  // The run that a scheduled job makes before committing to the main branch.
+  const regenerate = run(root);
+  assert.equal(regenerate.status, 0, regenerate.output);
+  assert.match(regenerate.output, /^wrote spec\/index\/by-kind\.md$/m);
+  const only = run(root, "--scheduled-generation", "--require-base");
+  assert.equal(only.status, 0, only.output);
+  // The same regeneration beside another change is the branch editing them.
+  writeFileSync(join(root, "notes.txt"), "A change on the branch.\n");
+  const mixed = run(root, "--scheduled-generation", "--require-base");
+  assert.equal(mixed.status, 1, mixed.output);
+  assert.match(mixed.output, /^spec\/index\/by-kind\.md: differs from [0-9a-f]{40}; /m);
 });
 
 test("a data path with a space is read whole", (t) => {
