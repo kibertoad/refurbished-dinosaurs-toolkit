@@ -4,39 +4,74 @@
 // `emit`s of one event in rules that share a build pass the same number of arguments, which is the
 // only check an event with no handlers gets.
 //
+// A rule the glossary entry names is a handler of the event unless its own procedure emits the
+// event and its When it runs section does not name it: such a rule is the event's emitter, which a
+// glossary entry names to say where the event comes from. A handler that emits its event again
+// names that event in When it runs, since that section gives what triggers the rule. An entry of
+// the emitter's split is not a handler either, unless its own When it runs section names the event.
+//
 // A call to a split rule, and an emit to a split handler, is counted against each entry of the
 // split that lists one of the calling or emitting rule's builds, and a call to a function that a
 // split rule defines against the `define` of each such entry. A Parameters section in any other
 // form than `None.` or the list gives no count, so the calls and emits that depend on it are named
-// as a skipped step and do not fail the check. A call or emit whose argument list is never closed
-// is named as a skipped step too. Only live rules are checked, and only live rules' `define`s are
-// counted against.
+// as a skipped step, with the first thing that stops the count, and do not fail the check. A call
+// or emit whose argument list is never closed is named as a skipped step too. Only live rules are
+// checked, and only live rules' `define`s are counted against.
 
 import type { Context } from "../context.ts";
 import { asList, idsIn, kindOf } from "../ids.ts";
 import type { Entry } from "../types.ts";
 import { BUILTINS, defines, procedureLocals, withoutCommentsAndStrings } from "./rules.ts";
 
+/** What a Parameters section gives: its parameter count, or why its parameters cannot be counted. */
+export type ParameterCount = { count: number; why?: undefined } | { count: null; why: string };
+
+// A line that opens a Markdown list item.
+const ITEM = /^[-*+]\s/;
+
+// Why a list item does not name one parameter in the counted form, or undefined when it does.
+function itemProblem(line: string): string | undefined {
+  const span = /^[-*+]\s+`([^`]*)`/.exec(line);
+  if (!span) return "does not open with a code span holding the parameter's name";
+  const rest = line.slice(span[0].length);
+  // A comma before the span's first colon separates names (`x, y`); one after it is in the type
+  // (`pair: (UINT16, UINT16)`), which the count accepts.
+  if (/^\s*(?:,|\/|\band\b|\bor\b)\s*`/.test(rest) || (rest.startsWith(":") && /^[^:]*,/.test(span[1])))
+    return "names more than one parameter";
+  if (!rest.startsWith(":")) return "does not follow its code span directly with a colon";
+  if (!/^[a-z_][a-z0-9_]*(?:\s*:\s*[^`\s][^`]*)?$/.test(span[1]))
+    return "has a code span holding neither a name nor a name, a colon and a type";
+  return undefined;
+}
+
 /**
  * The number of parameters a rule's Parameters section lists: 0 for `None.`, otherwise the number
  * of items of a Markdown list whose items each open with a code span holding a name, or a name, a
  * colon and a type, followed directly by a colon (`` - `gang: FMT-DATA-005`: the gang ``). An item
- * may continue on indented lines. Null when the section holds anything else, so its parameters
- * cannot be counted: `None known.`, prose after the list, or an item that names two parameters
- * (`` - `x`, `y`: the cell ``) or puts anything between its code span and the colon.
+ * may continue on indented lines. When the section holds anything else, its parameters cannot be
+ * counted, and `why` gives the first thing that stops the count, naming the item by its position
+ * when the list is at fault: an empty section, text with no list (`None known.` or a sentence),
+ * text outside the list, or an item that names two parameters (`` - `x`, `y`: the cell ``) or puts
+ * anything between its code span and the colon.
  */
-export function parameterCount(section: string): number | null {
+export function parameterCount(section: string): ParameterCount {
   const text = section.trim();
-  if (text === "None.") return 0;
+  if (text === "None.") return { count: 0 };
+  if (text === "") return { count: null, why: "it is empty" };
+  const lines = text.split("\n");
+  if (!lines.some((line) => ITEM.test(line))) return { count: null, why: "it holds text and no list" };
   let count = 0;
-  for (const line of text.split("\n")) {
+  for (const line of lines) {
     if (line.trim() === "") continue;
-    if (/^[-*+]\s/.test(line)) {
-      if (!/^[-*+]\s+`[a-z_][a-z0-9_]*(?:\s*:\s*[^`\s][^`]*)?`:/.test(line)) return null;
+    if (ITEM.test(line)) {
       count++;
-    } else if (!(count > 0 && /^\s/.test(line))) return null;
+      const problem = itemProblem(line);
+      if (problem) return { count: null, why: `item ${count} ${problem}` };
+    } else if (count === 0) return { count: null, why: "it holds text before the list" };
+    else if (!/^\s/.test(line))
+      return { count: null, why: `text after item ${count} is neither a list item nor indented under it` };
   }
-  return count > 0 ? count : null;
+  return { count };
 }
 
 /**
@@ -76,11 +111,12 @@ export function checkArgumentCounts(ctx: Context) {
   const builds = (e: Entry) => asList(e.meta.builds);
   const sharesBuild = (a: Entry, b: Entry) => builds(a).some((x) => builds(b).includes(x));
   const parametersOf = (id: string) => entries.get(id)!.sections.find((s) => s.title === "Parameters")?.text;
-  const counts = new Map<string, number | null>();
-  const countOf = (id: string) => {
+  const counts = new Map<string, ParameterCount>();
+  const parametersCounted = (id: string) => {
     if (!counts.has(id)) counts.set(id, parameterCount(parametersOf(id) ?? ""));
     return counts.get(id)!;
   };
+  const countOf = (id: string) => parametersCounted(id).count;
   // The entries whose Parameters section a call to rule from caller is counted against: each entry
   // of rule's split that lists one of the caller's builds, or rule itself when none does.
   const targetsOf = (rule: string, caller: Entry) => {
@@ -98,20 +134,47 @@ export function checkArgumentCounts(ctx: Context) {
   // What could not be counted because its argument list is never closed.
   const unclosed: string[] = [];
 
+  // Rule ID -> its procedure without comments and string contents.
+  const codes = new Map(live.map(([id, e]) => [id, withoutCommentsAndStrings(e.code ?? "")]));
+
   // Function name -> the rules that define it, with the parameter count of each define.
   const defined = new Map<string, { id: string; count: number }[]>();
-  for (const [id, e] of live)
-    for (const { name, params } of defines(withoutCommentsAndStrings(e.code ?? ""))) {
+  for (const [id] of live)
+    for (const { name, params } of defines(codes.get(id)!)) {
       if (!defined.has(name)) defined.set(name, []);
       defined.get(name)!.push({ id, count: params.length });
     }
+
+  // Event name -> the live rules whose procedure emits it.
+  const emitters = new Map<string, Set<string>>();
+  for (const [id] of live)
+    for (const m of codes.get(id)!.matchAll(/\bemit\s+([A-Za-z_][A-Za-z0-9_]*)/g)) {
+      if (!emitters.has(m[1])) emitters.set(m[1], new Set());
+      emitters.get(m[1])!.add(id);
+    }
+  // Whether rule's When it runs section names event.
+  const runsOn = (rule: string, event: string) => {
+    const when = entries.get(rule)!.sections.find((s) => s.title === "When it runs")?.text ?? "";
+    return new RegExp(`(?<![A-Za-z0-9_])${event}(?![A-Za-z0-9_])`).test(when);
+  };
+  // Whether rule is an emitter of event: it emits the event and its When it runs section does not
+  // name the event.
+  const emits = (rule: string, event: string) => !!emitters.get(event)?.has(rule) && !runsOn(rule, event);
+  // The entries an emit of event from emitter is counted against for a rule its glossary entry
+  // names: the entries of the rule's split that list one of the emitter's builds, leaving out
+  // emitters. When the named rule is itself an emitter, an entry of its split is counted only when
+  // its When it runs section names the event.
+  const handlersOf = (rule: string, event: string, emitter: Entry) => {
+    const named = emits(rule, event);
+    return targetsOf(rule, emitter).filter((x) => !emits(x, event) && (!named || runsOn(x, event)));
+  };
 
   // Event name -> the argument counts its emits pass, with the rule each comes from.
   const emitted = new Map<string, { id: string; entry: Entry; count: number }[]>();
 
   for (const [id, e] of live) {
     const { file } = e;
-    const code = withoutCommentsAndStrings(e.code ?? "");
+    const code = codes.get(id)!;
 
     for (const m of code.matchAll(/\bcall\s+(RULE-[A-Z0-9]+-\d+)/g)) {
       const called = entries.get(m[1]);
@@ -183,7 +246,8 @@ export function checkArgumentCounts(ctx: Context) {
       const handlers = idsIn(glossary.get(event)).filter(
         (x) => kindOf(x) === "RULE" && entries.get(x)?.kind === "RULE",
       );
-      for (const handler of new Set(handlers.flatMap((h) => targetsOf(h, e)))) {
+      const targets = new Set(handlers.flatMap((h) => handlersOf(h, event, e)));
+      for (const handler of targets) {
         const want = countOf(handler);
         if (want === null) cannotCount(handler, `emit of ${event} in ${id}`);
         else if (want !== n)
@@ -200,7 +264,7 @@ export function checkArgumentCounts(ctx: Context) {
     const why =
       parametersOf(target) === undefined
         ? "which has no Parameters section"
-        : "whose Parameters section is not None. or a list of parameters";
+        : `whose Parameters section is neither \`None.\` nor a list with one item per parameter: ${parametersCounted(target).why}`;
     skip(`argument counts against ${target}, ${why} (${list})`);
   }
   for (const what of new Set(unclosed)) skip(`the argument count of the ${what}, whose argument list is not closed`);

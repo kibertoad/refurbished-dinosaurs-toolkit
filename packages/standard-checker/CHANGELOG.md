@@ -1,5 +1,17 @@
 # @scientific-method/standard-checker
 
+## 2.7.2
+
+### Patch Changes
+
+- d2bcb20: The skipped step for calls and emits against a Parameters section the argument-count check cannot count now quotes `None.` and names the first thing that stops the count: an empty section, text with no list, text before or after the list, or the list item by position that names more than one parameter, does not open with the parameter's code span, does not follow it directly with a colon, or holds no parameter name in it.
+
+## 2.7.1
+
+### Patch Changes
+
+- 3754a4d: Stop counting an event's emitter as one of its handlers in the argument count check. A rule that an event's glossary entry names, whose own procedure emits the event and whose When it runs section does not name it, is the emitter, so its Parameters section is no longer compared with the event's `emit`s and no longer gives a skipped step while it is in prose. A handler that emits its event again names the event in When it runs and is still counted. An entry of the emitter's split counts as a handler only when its own When it runs section names the event.
+
 ## 2.7.0
 
 ### Minor Changes

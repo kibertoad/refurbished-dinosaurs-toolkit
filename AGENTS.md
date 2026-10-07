@@ -77,8 +77,14 @@ Update in the same PR:
 - **Disc archiver.** Its README's backend and format tables, and `schemas/disc-profile.schema.json`
   with `profile.py` for a profile field.
 - **Package READMEs**, for user-visible behaviour: options, exit codes, the exported API.
-- **The migration guide**, when downstream projects have to change something. Changes to the
-  .NET runtime packages go in the migrations of
+- **The migration guide**, when downstream projects have to change something. An engine entry is
+  headed `Engine X.Y.Z: ...` with the version the PR's label will release (the latest
+  `scientific-method-engine@` tag bumped by the largest label among this PR and the PRs that
+  changed the engine's release paths since that tag), and gets a row in the guide's version table.
+  If another engine release lands first, correct the version before merging. A release run plans
+  from every engine PR merged before it starts, so once the release is published, compare its tag
+  with the entry and correct the heading and row if they differ. Changes to the .NET runtime
+  packages go in the migrations of
   [the shared runtime libraries guide](docs/runtime-libraries.md).
 - **A tracking issue**, for work that takes several PRs. Open one stating the outcome, the tests and
   the exit condition, link each slice's PR to it, and close it once the exit condition is met.
