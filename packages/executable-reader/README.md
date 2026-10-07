@@ -42,6 +42,10 @@ compares an analyzer's listing of the table with them.
 address table, by slot address, and needs at least one positive control: a slot with the import
 other evidence shows. A control that maps to anything else rejects the report.
 
+In a PE source, a section whose PointerToRawData is 0 has no file bytes, whatever its
+SizeOfRawData says. `imports` and `table` read nothing from it, assume no loader fill, and list it
+in `rawIgnored` (`mapping.rawIgnored` in `table`).
+
 For `mz` sources the reader also:
 
 - refuses a query that supplies `relocations`, `formatTables` or `overlayExports`, which only the
@@ -88,6 +92,7 @@ import { importReport } from "@scientific-method/executable-reader/pe-imports";
 | `TableConfig`, `TableLayout`, `TableCodeSource`, `TableControl`, `TableListingRow`, `TablePointerKind`, `TableEntryResult` | `table-contents` | Types of the `table` query and its results. |
 | `importReport(bytes, config)` | `pe-imports` | The `imports` report over an already hash-checked buffer. |
 | `ImportConfig`, `ImportControl`, `ImportSlot`, `SlotImport`, `NamesFrom` | `pe-imports` | Types of the `imports` query, its controls and its slot rows. |
+| `IgnoredRawData` | `pe-imports` | A `rawIgnored` row: a section whose PointerToRawData is 0 and whose SizeOfRawData is not. |
 
 Each export carries a doc comment with its exact checks and errors.
 

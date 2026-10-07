@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run, sourceXxh3 } from "../src/report.ts";
 import type { Report } from "../src/report.ts";
+import { zeroRawPointerPe } from "./zero-raw-pointer.ts";
 
 // Writes the source and a config beside it; `query` returns the report for a config built on `base`.
 function harness(t: TestContext, data: Buffer, base: Record<string, unknown>) {
@@ -382,6 +383,60 @@ test("table report reads PE32 strings into the loader's zero fill and leaves raw
   assert.equal(wide.entries[5].stoppedBy, "end of the section");
   assert.equal(wide.entries[5].examined, 0x100);
   assert.equal(wide.entries[5].text, undefined);
+});
+
+test("table report reads nothing in a PE32 section whose PointerToRawData is 0 and assumes no fill", (t) => {
+  const data = zeroRawPointerPe();
+  // Table at 0x403100 (file 0x700): a pointer to the start of .bss, where file offset 0 holds "MZ",
+  // and one at "Hi".
+  [0x402000, 0x403180].forEach((va, i) => data.writeUInt32LE(va, 0x700 + i * 4));
+  data.write("Hi\0", 0x780, "latin1");
+  const { query } = harness(t, data, {
+    sourceKind: "pe32",
+    table: { address: 0x403100, stride: 4, pointer: { offset: 0, kind: "flat32" }, count: 2 },
+    string: { terminator: 0, limit: 64 },
+    controls: [{ index: 1, text: "Hi", evidence: "synthetic" }],
+  });
+  const r = query();
+  assert.equal(r.entries[0].result, "uninitialized");
+  assert.match(r.entries[0].reason, /section 1 \.bss, whose PointerToRawData is 0/);
+  assert.equal(r.entries[0].text, undefined);
+  assert.equal(r.entries[1].result, "string");
+  assert.deepEqual(r.mapping.rawIgnored, [
+    { section: 1, name: ".bss", sizeOfRawData: 0x200, reason: "PointerToRawData is 0" },
+  ]);
+  // A nonzero PointerToRawData below SizeOfHeaders is still refused.
+  const low = Buffer.from(data);
+  low.writeUInt32LE(0x200, 0x178 + 40 + 20);
+  const refused = harness(t, low, {
+    sourceKind: "pe32",
+    table: { address: 0x403100, stride: 4, pointer: { offset: 0, kind: "flat32" }, count: 2 },
+    string: { terminator: 0, limit: 64 },
+    controls: [{ index: 1, text: "Hi", evidence: "synthetic" }],
+  });
+  assert.throws(() => refused.query(), /raw bytes overlap headers/);
+});
+
+test("table report assumes no zero fill past SizeOfRawData in a PE32 section whose PointerToRawData is 0", (t) => {
+  const data = zeroRawPointerPe();
+  data.writeUInt32LE(0x400, 0x178 + 40 + 8); // .bss VirtualSize 0x400, past its SizeOfRawData 0x200
+  // Table at 0x403100 (file 0x700): pointers into .bss before and past SizeOfRawData, and one at "Hi".
+  [0x402010, 0x402300, 0x403180].forEach((va, i) => data.writeUInt32LE(va, 0x700 + i * 4));
+  data.write("Hi\0", 0x780, "latin1");
+  const { query } = harness(t, data, {
+    sourceKind: "pe32",
+    table: { address: 0x403100, stride: 4, pointer: { offset: 0, kind: "flat32" }, count: 3 },
+    string: { terminator: 0, limit: 64 },
+    controls: [{ index: 2, text: "Hi", evidence: "synthetic" }],
+  });
+  const r = query();
+  for (const entry of r.entries.slice(0, 2)) {
+    assert.equal(entry.result, "uninitialized");
+    assert.match(entry.reason, /section 1 \.bss, whose PointerToRawData is 0/);
+    assert.equal(entry.text, undefined);
+    assert.equal(entry.terminatedBy, undefined);
+  }
+  assert.equal(r.entries[2].result, "string");
 });
 
 test("table report refuses PE32 sections whose raw bytes overlap", (t) => {

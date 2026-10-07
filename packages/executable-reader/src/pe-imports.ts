@@ -1,4 +1,8 @@
 // The PE import report: which import the file's own import tables put in each import address table slot.
+import { peSections } from "./table-mapping.ts";
+import type { IgnoredRawData } from "./table-mapping.ts";
+
+export type { IgnoredRawData };
 
 /**
  * A positive control: a slot whose import other evidence shows, such as a call whose arguments and
@@ -56,14 +60,6 @@ const MAX_DESCRIPTORS = 4096,
   MAX_NAME = 4096,
   MAX_CONTROLS = 256;
 
-interface Section {
-  rva: number;
-  extent: number;
-  rawStart: number;
-  rawSize: number;
-  loaded: number;
-}
-
 const hexEntry = (value: bigint, width: number) => `0x${value.toString(16).padStart(width * 2, "0")}`;
 const hex = (n: number) => `0x${n.toString(16)}`;
 const describe = (dll: string, entry: { name?: string; ordinal?: number } | null) =>
@@ -108,6 +104,9 @@ function checkControls(controls: unknown): ImportControl[] {
  *
  * Slots are listed by address. Listing order of any other tool is never used. Every control in
  * `config.controls` must name the import the tables put in its slot, or the report throws.
+ * A section whose PointerToRawData is 0 has no file bytes, whatever its SizeOfRawData says, and
+ * `rawIgnored` lists each such section with a nonzero SizeOfRawData.
+ *
  * Throws as well for a malformed header, sections that overlap each other or the headers, an image
  * whose addresses leave the reportable range, a table outside the file, a lookup entry with reserved
  * bits set, a non-ASCII name, overlapping import address tables, supplied `formatControls` or an
@@ -162,33 +161,7 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
   if (!sizeOfImage || sizeOfHeaders < table + count * 40 || sizeOfHeaders > bytes.length || sizeOfHeaders > sizeOfImage)
     throw new Error("Invalid PE image/header extent");
   // The same section checks as the engine's PE32 loader, so that every RVA maps to one section.
-  const sections: Section[] = [];
-  for (let i = 0; i < count; i++) {
-    const at = table + i * 40;
-    const virtualSize = dword(at + 8),
-      rva = dword(at + 12),
-      rawSize = dword(at + 16),
-      rawStart = dword(at + 20);
-    const extent = Math.max(virtualSize, rawSize);
-    if (!extent || rva < sizeOfHeaders || rva + extent > sizeOfImage)
-      throw new Error("PE section escapes image or overlaps headers");
-    if (rawSize) {
-      span(rawStart, rawSize);
-      if (rawStart < sizeOfHeaders) throw new Error("PE section raw bytes overlap headers");
-    }
-    for (const prior of sections) {
-      if (Math.max(rva, prior.rva) < Math.min(rva + extent, prior.rva + prior.extent))
-        throw new Error("Ambiguous PE virtual section mapping");
-      if (
-        rawSize &&
-        prior.rawSize &&
-        Math.max(rawStart, prior.rawStart) < Math.min(rawStart + rawSize, prior.rawStart + prior.rawSize)
-      )
-        throw new Error("Overlapping PE raw sections");
-    }
-    // Raw bytes past VirtualSize are file-alignment padding, which the loader does not map.
-    sections.push({ rva, extent, rawStart, rawSize, loaded: virtualSize ? Math.min(rawSize, virtualSize) : rawSize });
-  }
+  const { sections, rawIgnored } = peSections(bytes, table, count, sizeOfHeaders, sizeOfImage);
   // File offset of `rva` and how many bytes from there on are loaded from the file, or null for none.
   const loadedRun = (rva: number): { at: number; length: number } | null => {
     if (rva < sizeOfHeaders) return { at: rva, length: sizeOfHeaders - rva };
@@ -337,6 +310,7 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
       noImport: counted((s) => s.import === null),
     },
     delayImportDirectory: delay.rva ? delay : null,
+    rawIgnored,
     searched:
       "the import directory: each descriptor's import lookup table and import address table, walked in step up to the null entry",
     exclusions: [

@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { MAX_REPORT_MIB, prepare, run, sourceXxh3 } from "../src/report.ts";
 import type { Region, Report } from "../src/report.ts";
+import { zeroRawPointerPe } from "./zero-raw-pointer.ts";
 // The engine runs from the monorepo checkout beside this package, installed or not.
 const engine = fileURLToPath(new URL("../../scientific-method-engine/src", import.meta.url));
 if (existsSync(engine)) process.env.PYTHONPATH = [engine, process.env.PYTHONPATH].filter(Boolean).join(delimiter);
@@ -148,6 +149,36 @@ function pe32Fixture(t: TestContext, code: number[]) {
   };
   return { dir, config };
 }
+
+test("PE32 trace runs over a file with a section whose PointerToRawData is 0", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "bounded-pe32-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // mov eax, [0x402000] (.bss); mov ecx, 0x12345678; ret
+  const code = [0xa1, 0x00, 0x20, 0x40, 0x00, 0xb9, 0x78, 0x56, 0x34, 0x12, 0xc3];
+  const data = zeroRawPointerPe(code);
+  writeFileSync(join(dir, "source.bin"), data);
+  const config = {
+    source: "source.bin",
+    sourceKind: "pe32",
+    xxh3: sourceXxh3(data),
+    entry: 0x400,
+    regions: [
+      { name: "text", start: 0x400, end: 0x400 + code.length, entries: [0x400], evidence: "synthetic PE32 entry" },
+    ],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(config));
+  const report = run(["trace", join(dir, "config.json")]);
+  assert.equal(report.completeWithinModel, true);
+  assert.equal(report.paths[0].registers.ecx.value, 0x12345678);
+  // The headers at file offset 0 are not read as .bss.
+  assert.equal(report.paths[0].registers.eax.value, null);
+  const bss = report.sourceMapping.sections[1];
+  assert.deepEqual(
+    [bss.name, bss.rawStart, bss.rawSize, bss.loadedRawSize, bss.rawIgnored],
+    [".bss", 0, 0x200, 0, "PointerToRawData is 0"],
+  );
+  assert.equal(report.sourceMapping.sections[0].rawIgnored, null);
+});
 
 test("PE32 incoming claims no call reached only past a port access", (t) => {
   // mov dx, 0x3c8; out dx, al (or nop); call t; ret; t: ret

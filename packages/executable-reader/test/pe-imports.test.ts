@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { run, sourceXxh3 } from "../src/report.ts";
 import { importReport } from "../src/pe-imports.ts";
 import type { ImportControl, ImportSlot } from "../src/pe-imports.ts";
+import { GET_VERSION_SLOT, zeroRawPointerPe } from "./zero-raw-pointer.ts";
 
 type Thunk = { name: string; hint: number } | { ordinal: number };
 interface Dll {
@@ -252,6 +253,37 @@ test("import report refuses a lookup entry that is neither an ordinal nor a hint
   assert.throws(
     () => report([{ slot: slot(0, 0), dll: "KERNEL32.dll", name: "CreateFileA" }], data),
     /lookup table entry 1 of KERNEL32\.dll is neither an ordinal nor a hint\/name/,
+  );
+});
+
+test("import report gives a section whose PointerToRawData is 0 no file bytes and names it", () => {
+  const control = [{ slot: GET_VERSION_SLOT, dll: "kernel32.dll", name: "GetVersion" }];
+  const data = zeroRawPointerPe();
+  const r = importReport(data, { sourceKind: "pe32", controls: control });
+  assert.deepEqual(
+    r.slots.map((s: ImportSlot) => [s.slot, s.dll, s.import]),
+    [[GET_VERSION_SLOT, "KERNEL32.DLL", { name: "GetVersion", hint: 0 }]],
+  );
+  assert.equal(r.controls[0]!.matched, true);
+  assert.deepEqual(r.rawIgnored, [{ section: 1, name: ".bss", sizeOfRawData: 0x200, reason: "PointerToRawData is 0" }]);
+  // A lookup table in that section is not read from the headers at file offset 0.
+  const intoBss = Buffer.from(data);
+  intoBss.writeUInt32LE(0x2000, 0x600);
+  assert.throws(
+    () => importReport(intoBss, { sourceKind: "pe32", controls: control }),
+    /Import lookup table entry of KERNEL32\.DLL at RVA 0x2000 is not in the file's loaded bytes/,
+  );
+  // A nonzero PointerToRawData below SizeOfHeaders is still refused.
+  const low = Buffer.from(data);
+  low.writeUInt32LE(0x200, 0x178 + 40 + 20);
+  assert.throws(() => importReport(low, { sourceKind: "pe32", controls: control }), /raw bytes overlap headers/);
+  // Every section with file bytes leaves the list empty.
+  assert.deepEqual(
+    importReport(buildPe(false).data, {
+      sourceKind: "pe32",
+      controls: [{ slot: 0x400000 + DLLS[0]!.address, dll: "KERNEL32.dll", name: "CreateFileA" }],
+    }).rawIgnored,
+    [],
   );
 });
 
