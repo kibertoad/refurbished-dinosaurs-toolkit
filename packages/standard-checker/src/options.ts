@@ -8,6 +8,7 @@ interface Options {
   "no-ksy"?: boolean;
   "require-ksc"?: boolean;
   "require-base"?: boolean;
+  "scheduled-generation"?: boolean;
   root?: string;
   base?: string;
   code?: string;
@@ -26,6 +27,11 @@ export interface Config {
   specDir: string;
   /** --check: report stale generated files instead of rewriting them. */
   checkOnly: boolean;
+  /**
+   * --scheduled-generation: a scheduled job writes the generated files on the main branch, so the
+   * run neither writes nor compares them, and fails when the change since the base edits them.
+   */
+  scheduledGeneration: boolean;
   /** --no-ksy: skip compiling the Kaitai definitions. */
   skipKsy: boolean;
   /** --require-ksc: fail when there are Kaitai definitions and no compiler is found. */
@@ -62,7 +68,7 @@ export const dirList = (value: string | undefined, fallback: string[]) =>
         .map((x) => x.trim())
         .filter(Boolean);
 
-const FLAGS = ["--check", "--no-ksy", "--require-ksc", "--require-base"];
+const FLAGS = ["--check", "--no-ksy", "--require-ksc", "--require-base", "--scheduled-generation"];
 const VALUED = [
   "--root",
   "--base",
@@ -101,6 +107,7 @@ export function parseOptions(argv: string[]): Config {
     console.error("--record-validation writes VALIDATION.md, so it cannot be combined with --check");
     process.exit(2);
   }
+  const scheduledGeneration = options["scheduled-generation"] === true;
   const skipKsy = options["no-ksy"] === true;
   const requireKsc = options["require-ksc"] === true;
   if (skipKsy && requireKsc) {
@@ -129,6 +136,7 @@ export function parseOptions(argv: string[]): Config {
     repoDir,
     specDir,
     checkOnly,
+    scheduledGeneration,
     skipKsy,
     requireKsc,
     baseArg,

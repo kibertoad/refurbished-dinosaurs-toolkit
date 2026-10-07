@@ -8,6 +8,11 @@
 //
 //   --root <dir>        the repository to check (default: the current directory)
 //   --check             fail when an index or PARITY.md is stale instead of rewriting it
+//   --scheduled-generation
+//                       a scheduled job writes the indexes and PARITY.md on the main branch:
+//                       neither write nor compare them, and fail when the change since the base
+//                       (--base or the fork point) edits, adds or removes one; the result line
+//                       names the comparison with the spec as skipped
 //   --base <ref>        also fail when an ID or area that exists at <ref> is gone (default: where
 //                       HEAD forked from origin/$GITHUB_BASE_REF or origin/main; when that does not
 //                       resolve, the result line names the comparison as skipped)
@@ -57,7 +62,8 @@
 // This file reads the options and runs the phases in order: load the spec, check the entries, the
 // rules, the field names in their procedures and what crosses entries, compile the Kaitai
 // definitions, check the deviations, parity, VALIDATION.md, the code's references and comments and
-// the base ref, then write or check the generated files. Every phase reports into one collector,
+// the base ref, then write or check the generated files, or with --scheduled-generation check that
+// the change leaves them alone. Every phase reports into one collector,
 // which prints the problems at the end in the order they were found.
 
 import { readFileSync } from "node:fs";
@@ -114,10 +120,10 @@ const parity = checkParity(ctx, deviations);
 checkValidation(ctx, parity);
 checkReferences(ctx, deviations);
 checkCommentAddresses(ctx);
-checkBase(ctx, deviations);
+const base = checkBase(ctx, deviations);
 const generated = generateIndexes(ctx);
 generateParity(ctx, parity, generated);
-writeGenerated(ctx, generated);
+writeGenerated(ctx, generated, base);
 checkLineLimits(ctx);
 
 report({ entries: spec.entries.size, parityRows: parity.rows.size, deviations: deviations.size });

@@ -189,6 +189,27 @@ git add spec/index PARITY.md
 Use the version the action's toolkit commit carries in `packages/standard-checker/package.json`,
 so the local run and CI agree.
 
+### Generating on a schedule instead
+
+When several pull requests are open at once, most of them change the indexes and `PARITY.md`, and
+those files conflict between them on almost every merge. A restoration can instead leave them to a
+scheduled job on the main branch, which runs the checker without `--check` and commits what it
+writes. Branches then never change them, and the main branch's copies are as old as the job's last
+run.
+
+Set the action's `scheduled-generation` input to `"true"`, and pass `--scheduled-generation` to
+local runs, such as a pre-commit hook. The check then neither compares the generated files with the
+spec nor writes them, and names that comparison as skipped. It fails when the change since the
+fork point edits, adds or removes one of them; restore such a file as it is on the base branch. A
+branch that merges the main branch takes the job's newer copies without a change of its own, since
+the fork point moves with the merge.
+
+```yaml
+      - uses: kibertoad/refurbished-dinosaurs-toolkit/actions/check-documentation@<sha>
+        with:
+          scheduled-generation: "true"
+```
+
 ### 6. Make it required
 
 To block merging on a failing check, add the job to the branch protection rule or ruleset for
@@ -240,7 +261,8 @@ pnpm exec standard-checker --help     # every option
 ```
 
 Run it from the restoration's root or pass `--root`. The command-line options match the action's
-inputs: `--code`, `--references`, `--images`, `--max-range`, `--data-dirs` and `--base`, plus `--no-ksy` to skip compiling
+inputs: `--code`, `--references`, `--images`, `--max-range`, `--data-dirs`, `--base` and
+`--scheduled-generation`, plus `--no-ksy` to skip compiling
 and `--glossary <path>` to accept the terms of a draft term file or a directory of them. Set `KSC` to the compiler's
 launcher, or put `kaitai-struct-compiler` on `PATH`, to compile the `.ksy` definitions.
 

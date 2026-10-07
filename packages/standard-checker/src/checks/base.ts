@@ -11,9 +11,10 @@ import type { Deviation } from "./deviations.ts";
  * Reports a spec ID, area or deviation that exists at the base (--base, or where HEAD forked from
  * the base branch) and is gone now, and a superseded format entry whose Layout has no table although
  * it had one at the base. Without --base, a fork point that does not resolve is recorded as a
- * skipped step, or with --require-base reported as a problem.
+ * skipped step, or with --require-base reported as a problem. Returns the base it compared with, or
+ * null when there was none.
  */
-export function checkBase(ctx: Context, deviations: Map<string, Deviation>) {
+export function checkBase(ctx: Context, deviations: Map<string, Deviation>): string | null {
   const { problem, skip } = ctx;
   const { entries, areas } = ctx.spec;
   const { repoDir, baseArg, requireBase } = ctx.config;
@@ -25,8 +26,17 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>) {
   let base = baseArg;
   if (!base) {
     const target = process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : "origin/main";
+    // While a merge is being committed (a pre-commit hook after a conflict, or --no-commit), the
+    // change already holds what MERGE_HEAD brings, so the fork point is the one the merge commit
+    // will have: git computes the merge base of target with a merge of HEAD and MERGE_HEAD.
+    let merging: string[] = [];
     try {
-      base = git("merge-base", "HEAD", target).trim();
+      merging = [git("rev-parse", "-q", "--verify", "MERGE_HEAD").trim()];
+    } catch {
+      // No merge in progress, or no git, which the merge-base call below reports.
+    }
+    try {
+      base = git("merge-base", target, "HEAD", ...merging).trim();
     } catch (error) {
       // Outside a git repository, in a shallow clone, or without the base branch fetched, there is
       // no fork point, and the deleted-ID checks cannot run. The run says so instead of reading as
@@ -37,7 +47,7 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>) {
           : `HEAD has no merge-base with ${target}, fetch it with enough history or pass --base`;
       if (requireBase) problem(null, `${missing}. --require-base requires the comparison with the base branch`);
       else skip(`comparison with the base branch (${missing})`);
-      return;
+      return null;
     }
   }
   let listing: string;
@@ -45,7 +55,7 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>) {
     listing = git("ls-tree", "-r", "--name-only", base, "--", "spec", "deviations");
   } catch {
     problem(null, `cannot list spec/ at ${base}`);
-    return;
+    return null;
   }
   for (const p of listing.split("\n")) {
     const m =
@@ -93,4 +103,5 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>) {
   if (oldDev)
     for (const m of oldDev.matchAll(/^## (DEV-[A-Z0-9]+-\d+)$/gm))
       if (!deviations.has(m[1])) problem(null, `${m[1]} exists at ${base} and has been removed`);
+  return base;
 }

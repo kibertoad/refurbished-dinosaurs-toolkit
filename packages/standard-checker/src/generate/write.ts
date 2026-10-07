@@ -1,6 +1,8 @@
-// Writing the generated files, or with --check reporting the stale ones, and the line limit of
-// every Markdown file the standard defines.
+// Writing the generated files, or with --check reporting the stale ones, or with
+// --scheduled-generation reporting a change to them, and the line limit of every Markdown file the
+// standard defines.
 
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import type { Context } from "../context.ts";
@@ -10,12 +12,18 @@ import { LINE_LIMIT } from "../standard.ts";
 
 /**
  * Writes each generated file whose text has changed and removes any other file in spec/index/,
- * printing what it did. With --check it reports them as problems instead.
+ * printing what it did. With --check it reports them as problems instead. With
+ * --scheduled-generation it does neither, and reports each generated file that differs from base
+ * (the base checkBase compared with, or null when there was none).
  */
-export function writeGenerated(ctx: Context, generated: Map<string, string>) {
+export function writeGenerated(ctx: Context, generated: Map<string, string>, base: string | null) {
   const { problem } = ctx;
-  const { repoDir, specDir, checkOnly } = ctx.config;
+  const { repoDir, specDir, checkOnly, scheduledGeneration } = ctx.config;
   const indexDir = join(specDir, "index");
+  if (scheduledGeneration) {
+    checkUnchanged(ctx, generated, base);
+    return;
+  }
   const stale: string[] = [];
   for (const [p, content] of generated) {
     const current = existsSync(p) ? readText(p) : null;
@@ -51,6 +59,43 @@ export function writeGenerated(ctx: Context, generated: Map<string, string>) {
     };
     if (existsSync(indexDir)) prune(indexDir);
   }
+}
+
+/**
+ * Reports each generated file that the working tree changes, adds or removes since base, untracked
+ * files that git does not ignore included. A scheduled job on the main branch writes them, so a
+ * branch that edits them would conflict with every other branch that does. Without a base the
+ * comparison does not run, and checkBase has already named it as skipped or, with --require-base,
+ * reported it.
+ */
+function checkUnchanged(ctx: Context, generated: Map<string, string>, base: string | null) {
+  const { problem, skip } = ctx;
+  const { repoDir, specDir } = ctx.config;
+  skip("comparison of the generated files with the spec (--scheduled-generation)");
+  if (!base) return;
+  const indexDir = join(specDir, "index");
+  // spec/index/ as a whole, so that a file the check would not write counts too, and every other
+  // generated file (PARITY.md) by name.
+  const paths = [indexDir, ...[...generated.keys()].filter((p) => !p.startsWith(indexDir))].map((p) =>
+    toSlash(relative(repoDir, p)),
+  );
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-C", repoDir, ...args], { stdio: ["ignore", "pipe", "ignore"] }).toString();
+  let changed: string[];
+  try {
+    changed = [
+      ...git("diff", "--name-only", "--relative", base, "--", ...paths).split("\n"),
+      ...git("ls-files", "--others", "--exclude-standard", "--", ...paths).split("\n"),
+    ].filter(Boolean);
+  } catch {
+    problem(null, `cannot compare the generated files with ${base}`);
+    return;
+  }
+  for (const p of [...new Set(changed)].sort())
+    problem(
+      join(repoDir, p),
+      `differs from ${base}; the main branch's scheduled job writes the generated files, so restore it as it is at ${base}`,
+    );
 }
 
 /** Reports every Markdown file the standard defines that is longer than LINE_LIMIT lines. */

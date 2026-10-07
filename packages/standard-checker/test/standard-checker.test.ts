@@ -867,6 +867,84 @@ test("an explicit --base runs the comparison without a fork point, with or witho
   assert.doesNotMatch(output, /HEAD has no merge-base/);
 });
 
+// The skipped step that --scheduled-generation adds to the result line, as a pattern.
+const SCHEDULED = "comparison of the generated files with the spec \\(--scheduled-generation\\)";
+
+test("--scheduled-generation neither writes nor compares the generated files", (t) => {
+  const root = broken(t, (r) => writeFileSync(join(r, "spec", "index", "by-kind.md"), "stale\n"));
+  for (const args of [[], ["--check"]]) {
+    const { status, output } = run(root, "--scheduled-generation", ...args);
+    assert.equal(status, 0, output);
+    assert.match(
+      output,
+      new RegExp(`^spec check passed with skipped steps: .*; ${NO_FORK_POINT}; ${SCHEDULED}\\.$`, "m"),
+    );
+    assert.doesNotMatch(output, /is stale|^wrote /m);
+  }
+  assert.equal(readFileSync(join(root, "spec", "index", "by-kind.md"), "utf8"), "stale\n");
+});
+
+test("--scheduled-generation passes a stale index the base branch carries", (t) => {
+  const root = broken(t, (r) => {
+    writeFileSync(join(r, "spec", "index", "by-kind.md"), "stale\n");
+    withForkPoint(r);
+  });
+  const { status, output } = run(root, "--scheduled-generation", "--require-base");
+  assert.equal(status, 0, output);
+  assert.match(output, new RegExp(`^spec check passed with skipped steps: .*; ${SCHEDULED}\\.$`, "m"));
+  assert.doesNotMatch(output, /comparison with the base branch/);
+});
+
+test("--scheduled-generation fails a change that edits, adds or removes a generated file", (t) => {
+  const root = broken(t, (r) => withForkPoint(r));
+  writeFileSync(join(root, "spec", "index", "by-kind.md"), "edited\n");
+  writeFileSync(join(root, "spec", "index", "extra.md"), "# extra\n");
+  rmSync(join(root, "spec", "index", "by-area.md"));
+  replaceIn(root, "PARITY.md", "# Parity matrix", "# Parity matrix\n");
+  const { status, output } = run(root, "--scheduled-generation");
+  assert.equal(status, 1, output);
+  for (const path of ["PARITY.md", "spec/index/by-area.md", "spec/index/by-kind.md", "spec/index/extra.md"])
+    assert.match(
+      output,
+      new RegExp(
+        `^${path.replaceAll(".", "\\.")}: differs from [0-9a-f]{40}; the main branch's scheduled job writes the generated files, so restore it as it is at [0-9a-f]{40}$`,
+        "m",
+      ),
+    );
+  assert.doesNotMatch(output, /is stale|is not a file the check writes/);
+});
+
+test("--scheduled-generation takes the base branch's newer generated files during a merge", (t) => {
+  const root = broken(t, (r) => withForkPoint(r));
+  const git = (...args: string[]) => {
+    const result = spawnSync(
+      "git",
+      ["-C", root, "-c", "user.name=test", "-c", "user.email=test@example.com", ...args],
+      {
+        encoding: "utf8",
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+  };
+  // The branch changes something else; the base branch's scheduled job rewrites an index.
+  git("checkout", "-q", "-b", "feature");
+  writeFileSync(join(root, "notes.txt"), "A change on the branch.\n");
+  git("add", ".");
+  git("commit", "-q", "-m", "feature");
+  git("checkout", "-q", "-b", "nightly", "origin/main");
+  writeFileSync(join(root, "spec", "index", "by-kind.md"), "rewritten by the job\n");
+  git("commit", "-q", "-am", "nightly");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "feature");
+  // Committing the merge after a conflict elsewhere runs the check with MERGE_HEAD set.
+  git("merge", "-q", "--no-commit", "--no-ff", "origin/main");
+  const merging = run(root, "--scheduled-generation", "--require-base");
+  assert.equal(merging.status, 0, merging.output);
+  git("commit", "-q", "-m", "merge");
+  const merged = run(root, "--scheduled-generation", "--require-base");
+  assert.equal(merged.status, 0, merged.output);
+});
+
 test("a data path with a space is read whole", (t) => {
   const root = broken(t, (r) => {
     replaceIn(

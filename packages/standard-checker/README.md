@@ -44,6 +44,7 @@ problems under other sections carry no label yet.
 |---|---|---|
 | `--root <dir>` | The repository to check. | the current directory |
 | `--check` | Fail when an index or `PARITY.md` is stale, instead of rewriting it. | rewrite |
+| `--scheduled-generation` | For a restoration whose main branch gets the indexes and `PARITY.md` from a scheduled job. Neither write nor compare them with the spec, and fail when the change since the base (`--base`, or the fork point) edits, adds or removes one, untracked files git does not ignore included. The result line names the comparison with the spec as skipped. Without a base the change is not compared either, and the base comparison is named as skipped or, with `--require-base`, fails. | write or compare |
 | `--base <ref>` | Also fail when a spec ID, area or deviation that exists at `<ref>` is gone, or when a superseded format entry has no layout table although it had one at `<ref>`. | where HEAD forked from `origin/$GITHUB_BASE_REF` or `origin/main`; when that does not resolve, the comparison is named as skipped |
 | `--require-base` | Fail when no `--base` is given and the fork point does not resolve, instead of passing with the comparison skipped. | pass with the comparison skipped |
 | `--no-ksy` | Skip compiling the Kaitai definitions in `spec/formats/`. The result line names the skipped compilation. | compile |
