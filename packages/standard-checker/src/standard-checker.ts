@@ -30,13 +30,17 @@
 //                       but whose PLACEHOLDER comments do not count against parity (default: none)
 //   --images <ranges>   comma-separated half-open address ranges of the original's flat 32-bit
 //                       images, such as 0x00400000..0x004C9000; a 0x value inside one that a code
-//                       comment gives must be recorded in an entry the comment cites (default: none,
-//                       so only fn_ and g_ names are checked)
+//                       comment gives, or that the code uses under a comment, must be recorded in an
+//                       entry the comment cites (default: none, so only fn_ and g_ names are checked)
 //   --max-range <bytes> the largest address range an entry can record an address by; a larger one,
 //                       such as a whole section, records only its two ends (default: 0x10000)
 //   --data-dirs <dirs>  comma-separated top-level directories of the original's data; a path into
 //                       one of them must name a file of some build with its exact case (default:
 //                       the top-level directories of the files the build entries list)
+//   --rebuild <dirs>    comma-separated directories that hold the rebuild; no Markdown file in spec/
+//                       may name a path in them or a source file found in them (default: src,tests)
+//   --message <file>    check only the commit message in file: every address it gives must be
+//                       recorded in an entry it cites, as for a code comment. For a commit-msg hook
 //   --record-validation <builds>
 //                       write VALIDATION.md for the test files of the validated rows that carry a
 //                       "needs: GAME_DIR" comment, naming the comma-separated build IDs the run
@@ -78,6 +82,8 @@ import { checkAcrossEntries } from "./checks/cross-entry.ts";
 import { checkDeviations } from "./checks/deviations.ts";
 import { checkEntries } from "./checks/entries.ts";
 import { checkFieldNames } from "./checks/fields.ts";
+import { checkMessageAddresses } from "./checks/message-addresses.ts";
+import { checkRebuildPaths } from "./checks/rebuild-paths.ts";
 import { compileKaitai } from "./checks/kaitai.ts";
 import { checkParity } from "./checks/parity.ts";
 import { checkReferences } from "./checks/references.ts";
@@ -106,6 +112,7 @@ if (argv.includes("--help") || argv.includes("-h")) {
 }
 const config = parseOptions(argv);
 const { problem, skip, report } = createProblems(config.repoDir);
+if (config.message !== undefined) checkMessage(config.message);
 const spec = loadSpec({ config, problem });
 // The checker's modules all sit in this file's directory, which holds nothing else, so the code
 // checks leave the whole directory out.
@@ -122,6 +129,7 @@ const parity = checkParity(ctx, deviations);
 checkValidation(ctx, parity);
 checkReferences(ctx, deviations);
 checkCommentAddresses(ctx);
+checkRebuildPaths(ctx);
 const base = checkBase(ctx, deviations);
 const generated = generateIndexes(ctx);
 generateParity(ctx, parity, generated);
@@ -130,3 +138,32 @@ else writeGenerated(ctx, generated);
 checkLineLimits(ctx);
 
 report({ entries: spec.entries.size, parityRows: parity.rows.size, deviations: deviations.size });
+
+// --message: the spec is loaded without reporting what is wrong with it, which the full check does,
+// and only the message's addresses are checked. Exits with 0 when they pass, 1 when they do not and
+// 2 when the file cannot be read.
+function checkMessage(file: string): never {
+  let text: string;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (err) {
+    console.error(`cannot read the commit message ${file}: ${(err as Error).message}`);
+    process.exit(2);
+  }
+  const found: string[] = [];
+  const spec = loadSpec({ config, problem: () => {} });
+  const ctx: Context = {
+    config,
+    problem: (_file, message) => found.push(message),
+    skip,
+    spec,
+    codeFiles: () => [],
+  };
+  checkMessageAddresses(ctx, file, text);
+  if (found.length) {
+    for (const message of found) console.error(`commit message: ${message}`);
+    process.exit(1);
+  }
+  console.log("commit message check passed.");
+  process.exit(0);
+}

@@ -17,6 +17,8 @@ interface Options {
   "max-range"?: string;
   "data-dirs"?: string;
   "record-validation"?: string;
+  rebuild?: string;
+  message?: string;
 }
 
 /** What one run of the checker was asked to do, from its command line. */
@@ -54,6 +56,10 @@ export interface Config {
   dataDirs: string[] | undefined;
   /** The --record-validation build IDs, or undefined when the option was not given. */
   recordValidation: string[] | undefined;
+  /** The --rebuild directories, relative to repoDir, whose paths and source files the spec may not name. */
+  rebuildRoots: string[];
+  /** The --message file, or undefined when the option was not given. */
+  message: string | undefined;
 }
 
 /**
@@ -79,6 +85,8 @@ const VALUED = [
   "--max-range",
   "--data-dirs",
   "--record-validation",
+  "--rebuild",
+  "--message",
 ];
 
 /** Reads the arguments after the script's path. An invalid one prints why and exits with 2. */
@@ -112,6 +120,12 @@ export function parseOptions(argv: string[]): Config {
   const requireKsc = options["require-ksc"] === true;
   if (skipKsy && requireKsc) {
     console.error("--require-ksc requires the Kaitai compilation that --no-ksy skips, so they cannot be combined");
+    process.exit(2);
+  }
+  if (options.message !== undefined && (checkOnly || options["record-validation"] !== undefined)) {
+    console.error(
+      "--message checks only a commit message, so it cannot be combined with --check or --record-validation",
+    );
     process.exit(2);
   }
   const baseArg = options.base ?? null;
@@ -149,5 +163,7 @@ export function parseOptions(argv: string[]): Config {
     dataDirs: options["data-dirs"] === undefined ? undefined : dirList(options["data-dirs"], []),
     recordValidation:
       options["record-validation"] === undefined ? undefined : dirList(options["record-validation"], []),
+    rebuildRoots: dirList(options.rebuild, ["src", "tests"]),
+    message: options.message === undefined ? undefined : resolve(options.message),
   };
 }

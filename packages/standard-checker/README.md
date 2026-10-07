@@ -14,7 +14,7 @@ pnpm exec standard-checker --check    # check, and fail on a stale index or PARI
 It exits with 0 when the repository passes, 1 when it reports problems (one line per problem,
 starting with the file's path), and 2 when the options are invalid or `--record-validation` cannot
 write the record. `--record-validation` cannot be combined with `--check`, nor `--require-ksc` with
-`--no-ksy`.
+`--no-ksy`, nor `--message` with either `--check` or `--record-validation`.
 
 A pass ends with `spec check passed:` and the counts of entries, parity rows and deviations. When a
 step of the check did not run, it ends with `spec check passed with skipped steps:`, the counts, and
@@ -52,9 +52,11 @@ problems under other sections carry no label yet.
 | `--glossary <path>` | Also accept the terms of a draft glossary file, or of a directory of them. | none |
 | `--code <dirs>` | Comma-separated directories whose files may cite spec and deviation IDs and hold `PLACEHOLDER` comments. | `src,tests,tools` |
 | `--references <dirs>` | Comma-separated directories whose files may cite IDs but whose `PLACEHOLDER` comments do not count against parity. | none |
-| `--images <ranges>` | Comma-separated half-open address ranges of the original's flat 32-bit images, such as `0x00400000..0x004C9000`. A `0x` value inside one that a code comment gives must be recorded in an entry the comment cites. | none, so only `fn_` and `g_` names are checked |
+| `--images <ranges>` | Comma-separated half-open address ranges of the original's flat 32-bit images, such as `0x00400000..0x004C9000`. A `0x` value inside one that a code comment gives, or that the code uses under a comment, must be recorded in an entry the comment cites. | none, so only `fn_` and `g_` names are checked |
 | `--max-range <bytes>` | The largest address range an entry can record an address by. A larger one, such as a whole section, records only its two ends. | `0x10000` |
 | `--data-dirs <dirs>` | Comma-separated top-level directories of the original's data. A path into one must name a file of some build, with its exact case. | the top-level directories of the files the build entries list |
+| `--rebuild <dirs>` | Comma-separated directories that hold the rebuild. No Markdown file in `spec/` may name a path in them, or a source file found in them by its file name. An empty value turns the check off. | `src,tests` |
+| `--message <file>` | Check only the commit message in the file: every address it gives must be recorded in an entry it cites, as for a code comment. Everything from the scissors line of `git commit --verbose` on is left out; comment lines before it are checked, since git keeps them under `git commit -m`. Exits with 0 or 1, or 2 when the file cannot be read. For a `commit-msg` hook. | not checked |
 | `--record-validation <builds>` | Write `VALIDATION.md` for the marked test files of validated parity rows, naming the comma-separated build IDs the run used and HEAD as the commit the run tested. Run it only after every test in those files passed with none skipped, against HEAD as committed: it refuses, with exit code 2, when the working tree differs from HEAD in anything other than `VALIDATION.md`, counting untracked files that git does not ignore. | not written |
 | `--help` | Print the options. | |
 
@@ -106,7 +108,7 @@ many locations in files of code did not parse, since those cite nothing.
 The toolkit's `actions/check-documentation` composite action runs this checker with `--check`,
 installs a pinned Kaitai compiler when the repository has `.ksy` files (and then passes
 `--require-ksc`), and exposes every option
-above as an input. On a pull request with no `base` input, it fetches the base branch with enough
+above as an input, apart from `--message` and `--record-validation`. On a pull request with no `base` input, it fetches the base branch with enough
 history for the fork point and passes `--require-base`. Pin the action to the toolkit commit whose `packages/standard-checker` matches
 the version installed here, so CI and local runs apply the same checks.
 
