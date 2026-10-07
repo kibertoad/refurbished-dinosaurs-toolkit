@@ -90,12 +90,15 @@ overlay code an offset inside a row of the build's Code ranges.
 An entry cites a function when one of its `locations` names the same build and file and its
 address, offset or half-open range overlaps the function's `size` bytes from `start`. Locations with
 `kind: file-data`, into the unpacked form of a packed file, or of superseded entries cite nothing,
-and neither does an address written in an entry's body. A function whose body is not contiguous is
-measured as if it were. The shares count functions and bytes of the functions not out of scope.
+and neither does an address written in an entry's body. Real-mode segmented addresses (`MZ`, `COM`)
+are compared by the linear address they name, and each `NE` segment is a space of its own. A
+function whose body is not contiguous is measured as if it were. The shares count functions and
+bytes of the functions not out of scope.
 
 It exits with 0, with 1 when an inventory is invalid or `--require-complete` finds an uncited
-function, and with 2 when the options are invalid. Problems with the spec itself are left to
-`standard-checker`.
+function or no inventory at all, and with 2 when the options are invalid. Problems with the spec
+itself are left to `standard-checker`; a warning gives how many there were while loading it and how
+many locations in files of code did not parse, since those cite nothing.
 
 ## In GitHub Actions
 

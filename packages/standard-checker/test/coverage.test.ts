@@ -70,10 +70,44 @@ function inventory(root: string, text: string, path = "coverage/BLD-EXAMPLE-1.0/
 const PE_INVENTORY =
   "start\tsize\tname\tout_of_scope\n0x00401000\t32\tkill_handler\t\n0x00401100\t16\t\t\n0x00401200\t8\t\tlibrary code\n";
 
-test("a repository without inventories says so and passes", (t) => {
-  const { status, output } = run(copy(t));
+test("a repository without inventories says so, and passes unless completeness is required", (t) => {
+  const root = copy(t);
+  const { status, output } = run(root);
   assert.equal(status, 0, output);
   assert.match(output, /^No function inventories in coverage\/\.$/m);
+  const required = run(root, "--require-complete");
+  assert.equal(required.status, 1, required.output);
+  assert.match(required.output, /^--require-complete: there are no function inventories to measure$/m);
+});
+
+test("an inventory under a directory named bin is read", (t) => {
+  const root = copy(t);
+  inventory(root, "start\tsize\n0x00401000\t4\n", "coverage/BLD-EXAMPLE-1.0/bin/GAME.tsv");
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes("coverage/BLD-EXAMPLE-1.0/bin/GAME.tsv: bin/GAME is not in the manifest"), output);
+});
+
+test("a location that does not parse is counted in a warning", (t) => {
+  const root = copy(t);
+  finding(root, "FND-SCORE-001", at("0x0040100a"));
+  inventory(root, PE_INVENTORY);
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.match(output, /: 0 of 2 functions cited/);
+  assert.match(output, /^Warning: 1 locations in files of code do not parse and cite nothing/m);
+});
+
+test("a long range that starts before shorter ones still cites every function it reaches", (t) => {
+  const root = copy(t);
+  finding(root, "FND-SCORE-001", at("0x00401000..0x00401110"));
+  finding(root, "FND-SCORE-002", at("0x00401004"));
+  inventory(root, PE_INVENTORY);
+  const { status, output } = run(root, "--list");
+  assert.equal(status, 0, output);
+  assert.match(output, /^ {2}0x00401000\t32\tFND-SCORE-001, FND-SCORE-002$/m);
+  assert.match(output, /^ {2}0x00401100\t16\tFND-SCORE-001$/m);
+  assert.match(output, /: 2 of 2 functions cited/);
 });
 
 test("a function is cited by a location that overlaps it, and out-of-scope functions are left out", (t) => {
@@ -146,7 +180,20 @@ test("--json gives the figures, and --list adds the entries that cite each funct
       },
     ],
     problems: [],
+    unread: [],
   });
+  const listedJson = JSON.parse(run(root, "--json", "--list").stdout);
+  assert.deepEqual(listedJson.inventories[0].list, [
+    {
+      start: "0x00401000",
+      size: 32,
+      name: "kill_handler",
+      outOfScope: "",
+      citedBy: ["FND-SCORE-001", "FND-SCORE-002"],
+    },
+    { start: "0x00401100", size: 16, name: "", outOfScope: "", citedBy: [] },
+    { start: "0x00401200", size: 8, name: "", outOfScope: "library code", citedBy: [] },
+  ]);
   const listed = run(root, "--list");
   assert.match(listed.output, /^  0x00401000\t32\tFND-SCORE-001, FND-SCORE-002$/m);
   assert.match(listed.output, /^  0x00401100\t16\tNone$/m);
@@ -160,6 +207,18 @@ test("segmented addresses are compared by the linear address they name", (t) => 
   finding(root, "FND-SCORE-001", at("1001:0000..1001:0004"));
   inventory(root, "start\tsize\n1000:0010\t16\n1000:0100\t16\n");
   assert.match(run(root).output, /: 1 of 2 functions cited \(50\.0%\), 16 of 32 bytes/);
+});
+
+test("each NE segment is its own space, so segments do not overlap by their numbers", (t) => {
+  const root = copy(t);
+  const manifest = join(root, "spec", "builds", "BLD-EXAMPLE-1.0.files.yaml");
+  writeFileSync(manifest, readFileSync(manifest, "utf8").replace("format: PE", "format: NE"));
+  // 0001:0010 and 0002:0000 would both be 0x20 as real-mode linear addresses.
+  finding(root, "FND-SCORE-001", at("0001:0010"));
+  inventory(root, "start\tsize\n0001:0000\t32\n0002:0000\t16\n");
+  const { output } = run(root, "--list");
+  assert.match(output, /: 1 of 2 functions cited \(50\.0%\), 32 of 48 bytes/);
+  assert.match(output, /^  0002:0000\t16\tNone$/m);
 });
 
 test("an invalid inventory is reported and fails", (t) => {

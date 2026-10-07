@@ -11,7 +11,8 @@
 //   --list                also print every function with the entries that cite it, a report for
 //                         reading on demand rather than for committing
 //   --require-complete    fail when a function that is not out of scope is cited by no entry, the
-//                         condition the protocol's Audit stage ends on
+//                         condition the protocol's Audit stage ends on, or when there is no
+//                         inventory to measure
 //
 // A function inventory is coverage/<build>/<file>.tsv, where <file> is the path the build's
 // manifest gives, with a CD: or CD2: prefix written as a directory @CD or @CD2. It is tab-separated,
@@ -24,24 +25,26 @@
 // address or offset, or the half-open range it gives, overlaps the function's bytes, taken as size
 // bytes from start. A location with kind: file-data, a location into the unpacked form of a packed
 // file, and the locations of superseded entries cite nothing. An address written in an entry's
-// body does not count; only locations do.
+// body does not count; only locations do. Real-mode segmented addresses (MZ, COM) are compared by
+// the linear address they name; an NE segment is a space of its own.
 //
 // A function whose body is not contiguous is measured as if it were, so a location in a gap after
 // its start can count as citing it, and a location in a part placed elsewhere does not. A cited
 // function has been looked at, not read completely, which only the citing entry's status says.
 //
 // The spec is read as the documentation check reads it. Problems with the spec itself are left to
-// that check, and a location that does not parse cites nothing here.
+// that check, and a location that does not parse cites nothing here; a warning gives how many
+// problems loading the spec and how many unparsed locations there were.
 //
 // It exits with 0, with 1 when an inventory is invalid or --require-complete finds an uncited
-// function, and with 2 when the options are invalid.
+// function or no inventory, and with 2 when the options are invalid.
 
-import { existsSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { toSlash, walk } from "./files.ts";
+import { toSlash } from "./files.ts";
 import { asList } from "./ids.ts";
-import { parseOffset } from "./locations.ts";
+import { addressParts, parseOffset } from "./locations.ts";
 import { loadSpec } from "./load/spec.ts";
 import { parseOptions } from "./options.ts";
 import { locationRule } from "./standard.ts";
@@ -85,24 +88,27 @@ interface InventoryReport {
 const OPTIONS = ["--json", "--list", "--require-complete"];
 
 /**
- * A linear value for an address in the notation of a format: segment * 16 + offset for a
- * segmented address, the number itself for a flat one. Returns null when it is not in the notation.
+ * A number for an address in the notation of a format, or null when it is not in the notation. A
+ * flat address is the number itself. A real-mode segmented address (MZ, COM) is segment * 16 +
+ * offset, so two spellings of one byte compare equal. An NE segment is its own space of up to 64 KiB,
+ * so its number is segment * 65536 + offset, which keeps segments 0001 and 0002 from overlapping.
  */
-function linear(value: string, notation: RegExp): bigint | null {
-  if (!notation.test(value)) return null;
+function linear(value: string, format: Yaml): bigint | null {
+  const notation = locationRule(format)?.address;
+  if (!notation?.test(value)) return null;
   const seg = /^([0-9A-F]{4}):([0-9A-F]{4})$/.exec(value);
-  return seg ? BigInt(parseInt(seg[1], 16) * 16 + parseInt(seg[2], 16)) : BigInt(value);
+  if (!seg) return BigInt(value);
+  const [segment, offset] = [BigInt(`0x${seg[1]}`), BigInt(`0x${seg[2]}`)];
+  return format === "NE" ? (segment << 16n) + offset : segment * 16n + offset;
 }
 
 /** The half-open range a location's address or offset gives, with its space, or null. */
-function locationRange(loc: Meta, notation: RegExp | undefined): { space: Space; start: bigint; end: bigint } | null {
+function locationRange(loc: Meta, format: Yaml): { space: Space; start: bigint; end: bigint } | null {
   if ("address" in loc) {
-    if (!notation) return null;
-    const ends = String(loc.address)
-      .split("..")
-      .map((p) => linear(p, notation));
-    if (ends.length > 2 || ends.some((e) => e === null)) return null;
-    const [start, end] = ends as bigint[];
+    const notation = locationRule(format)?.address;
+    const parts = notation ? addressParts(loc.address, notation) : null;
+    if (!parts) return null;
+    const [start, end] = parts.map((p) => linear(p, format)!);
     return { space: "address", start, end: end ?? start + 1n };
   }
   if ("offset" in loc) {
@@ -110,6 +116,46 @@ function locationRange(loc: Meta, notation: RegExp | undefined): { space: Space;
     return range ? { space: "offset", start: range[0], end: range[1] } : null;
   }
   return null;
+}
+
+/** The half-open range one location of an entry gives. */
+interface CitedRange {
+  start: bigint;
+  end: bigint;
+  id: string;
+}
+
+/** Ranges sorted by start, with the largest end among each range and those before it. */
+interface RangeIndex {
+  ranges: CitedRange[];
+  maxEnd: bigint[];
+}
+
+function indexRanges(ranges: CitedRange[]): RangeIndex {
+  const sorted = [...ranges].sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+  const maxEnd: bigint[] = [];
+  sorted.forEach((r, k) => maxEnd.push(k && maxEnd[k - 1] > r.end ? maxEnd[k - 1] : r.end));
+  return { ranges: sorted, maxEnd };
+}
+
+/**
+ * The sorted IDs of the entries whose ranges overlap [start, end). Only the ranges that start
+ * before end are candidates, and the walk back through them stops once no earlier range reaches
+ * past start, so a function costs a binary search plus the ranges near it.
+ */
+function citing(index: RangeIndex | undefined, start: bigint, end: bigint): string[] {
+  if (!index) return [];
+  const { ranges, maxEnd } = index;
+  let lo = 0;
+  let hi = ranges.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (ranges[mid].start < end) lo = mid + 1;
+    else hi = mid;
+  }
+  const ids = new Set<string>();
+  for (let k = lo - 1; k >= 0 && maxEnd[k] > start; k--) if (ranges[k].end > start) ids.add(ranges[k].id);
+  return [...ids].sort();
 }
 
 /** The build ID and manifest path an inventory's path stands for, or null when it has the wrong shape. */
@@ -127,30 +173,43 @@ function inventoryTarget(path: string): { build: string; file: string } | null {
 function measure(root: string) {
   const problems: string[] = [];
   const config = parseOptions(["--root", root]);
-  const spec = loadSpec({ config, problem: () => {} });
+  // The spec's problems are standard-checker's to report; here only their number is kept, since an
+  // entry or manifest that could not be read cites nothing.
+  let specProblems = 0;
+  const spec = loadSpec({ config, problem: () => specProblems++ });
   const { entries, buildFiles, codeRanges } = spec;
   const repoDir = config.repoDir;
-  const paths: string[] = [];
-  walk(join(repoDir, "coverage"), (f) => {
-    if (f.endsWith(".tsv")) paths.push(toSlash(relative(repoDir, f)));
-  });
-  paths.sort();
+  // Every .tsv file at any depth. The checker's walk skips directories such as bin/, which can hold
+  // a shipped file and so an inventory.
+  const coverageDir = join(repoDir, "coverage");
+  const paths = existsSync(coverageDir)
+    ? readdirSync(coverageDir, { recursive: true, encoding: "utf8" })
+        .filter((p) => p.endsWith(".tsv") && statSync(join(coverageDir, p)).isFile())
+        .map((p) => `coverage/${toSlash(p)}`)
+        .sort()
+    : [];
 
   // Build, file and space -> every range a location of a current entry gives there.
-  const cited = new Map<string, Array<{ start: bigint; end: bigint; id: string }>>();
+  const cited = new Map<string, CitedRange[]>();
+  // Locations in a file of code that cite nothing because they do not parse.
+  let unreadLocations = 0;
   for (const [id, e] of entries) {
     if (e.meta.status === "superseded") continue;
     for (const loc of asList(e.meta.locations) as Meta[]) {
       if (!loc || typeof loc !== "object" || loc.kind === "file-data" || loc.unpacked === true) continue;
       const bf = (buildFiles.get(loc.build) ?? []).find((f) => f.path === loc.file);
       if (!bf) continue;
-      const range = locationRange(loc, locationRule(bf.unpacked?.format ?? bf.format)?.address);
-      if (!range || range.end <= range.start) continue;
+      const range = locationRange(loc, bf.unpacked?.format ?? bf.format);
+      if (!range || range.end <= range.start) {
+        unreadLocations++;
+        continue;
+      }
       const key = `${loc.build}\0${loc.file}\0${range.space}`;
       if (!cited.has(key)) cited.set(key, []);
       cited.get(key)!.push({ start: range.start, end: range.end, id });
     }
   }
+  const indexed = new Map([...cited].map(([key, ranges]) => [key, indexRanges(ranges)]));
 
   const inventories: Array<{ path: string; build: string; file: string; functions: InventoryFunction[] }> = [];
   for (const path of paths) {
@@ -204,7 +263,7 @@ function measure(root: string) {
         return;
       }
       let place: { space: Space; at: bigint } | null = null;
-      const address = linear(start, rule.address!);
+      const address = linear(start, format);
       if (address !== null) place = { space: "address", at: address };
       else if (rule.offset && /^0x[0-9A-F]{2,}$/.test(start)) {
         const offset = BigInt(start);
@@ -225,13 +284,7 @@ function measure(root: string) {
       }
       seen.add(key);
       const end = place.at + BigInt(size);
-      const citedBy = [
-        ...new Set(
-          (cited.get(`${build}\0${file}\0${place.space}`) ?? [])
-            .filter((r) => r.start < end && place!.at < r.end)
-            .map((r) => r.id),
-        ),
-      ].sort();
+      const citedBy = citing(indexed.get(`${build}\0${file}\0${place.space}`), place.at, end);
       functions.push({
         start,
         ...place,
@@ -246,7 +299,7 @@ function measure(root: string) {
     );
     inventories.push({ path, build, file, functions });
   }
-  return { inventories, problems };
+  return { inventories, problems, specProblems, unreadLocations };
 }
 
 /** The figures of one measured inventory. */
@@ -301,9 +354,19 @@ function main(argv: string[]) {
     console.error(`No spec/ directory in ${root}.`);
     return 1;
   }
-  const { inventories, problems } = measure(root);
+  const { inventories, problems, specProblems, unreadLocations } = measure(root);
   const reports = inventories.map(summarize);
   const incomplete = reports.filter((r) => r.uncited.length);
+  // With nothing measured there is nothing complete, so --require-complete does not pass vacuously.
+  const unmeasured = !reports.length && !problems.length;
+  const unread = [
+    ...(specProblems
+      ? [`standard-checker reports ${specProblems} problems loading the spec; what it could not read cites nothing`]
+      : []),
+    ...(unreadLocations
+      ? [`${unreadLocations} locations in files of code do not parse and cite nothing; standard-checker reports them`]
+      : []),
+  ];
   if (flags.has("--json"))
     console.log(
       JSON.stringify(
@@ -312,22 +375,25 @@ function main(argv: string[]) {
             flags.has("--list")
               ? {
                   ...r,
-                  functions_cited_by: inventories[k].functions.map((f) => ({
+                  list: inventories[k].functions.map((f) => ({
                     start: f.start,
                     size: f.size,
+                    name: f.name,
+                    outOfScope: f.outOfScope,
                     citedBy: f.citedBy,
                   })),
                 }
               : r,
           ),
           problems,
+          unread,
         },
         null,
         2,
       ),
     );
   else {
-    if (!reports.length && !problems.length) console.log("No function inventories in coverage/.");
+    if (unmeasured) console.log("No function inventories in coverage/.");
     reports.forEach((r, k) => {
       console.log(
         `${r.path}: ${r.cited} of ${r.functions - r.outOfScope} functions cited${share(r.cited, r.functions - r.outOfScope)}, ` +
@@ -341,14 +407,19 @@ function main(argv: string[]) {
           );
     });
     for (const p of problems) console.error(p);
+    for (const u of unread) console.error(`Warning: ${u}.`);
     if (reports.length)
       console.log("A cited function has been looked at, not read completely; the citing entry's status says how far.");
   }
-  if (flags.has("--require-complete") && incomplete.length && !flags.has("--json"))
-    console.error(
-      `--require-complete: ${incomplete.length} inventories list functions that no entry cites and that are not out of scope`,
-    );
-  return problems.length || (flags.has("--require-complete") && incomplete.length) ? 1 : 0;
+  const requireComplete = flags.has("--require-complete");
+  if (requireComplete && !flags.has("--json")) {
+    if (incomplete.length)
+      console.error(
+        `--require-complete: ${incomplete.length} inventories list functions that no entry cites and that are not out of scope`,
+      );
+    if (unmeasured) console.error("--require-complete: there are no function inventories to measure");
+  }
+  return problems.length || (requireComplete && (incomplete.length || unmeasured)) ? 1 : 0;
 }
 
 process.exitCode = main(process.argv.slice(2));
