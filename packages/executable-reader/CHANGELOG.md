@@ -1,5 +1,11 @@
 # @scientific-method/executable-reader
 
+## 2.3.1
+
+### Patch Changes
+
+- 3ba1ebf: List the engine's new `reach` command among the commands the reader runs.
+
 ## 2.3.0
 
 ### Minor Changes
