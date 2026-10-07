@@ -24,7 +24,8 @@ public class ReportReferences extends GhidraScript {
             println("===== references to " + target + " =====");
             ReferenceIterator references = currentProgram.getReferenceManager().getReferencesTo(target);
             int count = 0;
-            while (references.hasNext() && count < MAX_REFERENCES && !monitor.isCancelled()) {
+            while (references.hasNext() && count < MAX_REFERENCES) {
+                monitor.checkCancelled();
                 Reference reference = references.next();
                 Instruction instruction = currentProgram.getListing().getInstructionContaining(reference.getFromAddress());
                 Function function = currentProgram.getFunctionManager().getFunctionContaining(reference.getFromAddress());

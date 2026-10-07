@@ -131,9 +131,11 @@ next to any "no callers", "no references" or "exactly N sites" claim:
   (`INC dword ptr [EAX*4 + 0x402000]`) gets no reference at all. Filtering the output to `WRITE`
   therefore misses writers, and keeping `DATA` still misses the instructions Ghidra did not
   reference. For a writer search, run the engine's `operand-candidates` over the declared code
-  regions: it lists every encoded displacement or immediate equal to the address, indexed forms
-  included, with the operand's `access` (`read`, `write` or both), and fails when a known writer
-  given in `controls` is missed. `ReportScalarConstants memory <address>` is the Ghidra-side
+  regions: it lists the encoded displacements and immediates equal to the address, indexed forms
+  included, with the operand's `access` (`read`, `write` or both), up to its `limit` and
+  `scanLimit` (`truncated` and `partialSearch` say when it stopped short). A site given in
+  `controls` fails the report unless it is a memory operand on a path from a declared entry.
+  `ReportScalarConstants memory <address>` is the Ghidra-side
   search for the same memory operands, direct and indexed, without access. Neither sees a write
   through a pointer computed at run time.
 - The first-argument scripts take the nearest `PUSH` before the call. A value moved into a
