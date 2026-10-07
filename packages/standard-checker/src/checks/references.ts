@@ -1,5 +1,6 @@
 // Implementation references: every spec and deviation ID in code, tests, the parity files and the
 // deviation files resolves. A deviation keeps citing what it departed from after that is superseded.
+// An ID that --squashed lists is named with its replacements, and fails even where it is an alias.
 
 import { readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
@@ -14,7 +15,7 @@ import type { Deviation } from "./deviations.ts";
 export function checkReferences(ctx: Context, deviations: Map<string, Deviation>) {
   const { problem } = ctx;
   const { entries } = ctx.spec;
-  const { repoDir } = ctx.config;
+  const { repoDir, squashed } = ctx.config;
   const parityDir = join(repoDir, "parity");
   const devDir = join(repoDir, "deviations");
   const isDeviationFile = (f: string) => resolve(f).startsWith(devDir + sep);
@@ -25,6 +26,14 @@ export function checkReferences(ctx: Context, deviations: Map<string, Deviation>
     });
   for (const { file: f, text } of scan) {
     for (const x of idsIn(text)) {
+      const into = squashed.get(x);
+      if (into && !entries.has(x)) {
+        problem(
+          f,
+          `cites ${x}, which was squashed into ${into.join(", ")}; cite ${into.length > 1 ? "those" : "it"} instead`,
+        );
+        continue;
+      }
       if (isAlias(x) && !entries.has(x)) continue; // aliases can collide with ordinary words
       if (!entries.has(x)) problem(f, `cites ${x}, which does not exist in the spec`);
       else if (isSuperseded(entries, x) && !isDeviationFile(f))

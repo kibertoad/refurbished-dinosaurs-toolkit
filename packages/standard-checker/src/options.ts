@@ -1,6 +1,7 @@
 // The command line, read into a Config. An invalid option prints why and exits with 2.
 
 import { join, resolve } from "node:path";
+import { ID_RE } from "./standard.ts";
 
 interface Options {
   glossary: string[];
@@ -19,6 +20,7 @@ interface Options {
   "record-validation"?: string;
   rebuild?: string;
   message?: string;
+  squashed?: string;
 }
 
 /** What one run of the checker was asked to do, from its command line. */
@@ -60,6 +62,11 @@ export interface Config {
   rebuildRoots: string[];
   /** The --message file, or undefined when the option was not given. */
   message: string | undefined;
+  /**
+   * --squashed: each spec ID this change squashed, deleting it, mapped to the replacements its
+   * superseded_by named at the base, which keep the final content. Empty when not given.
+   */
+  squashed: Map<string, string[]>;
 }
 
 /**
@@ -87,6 +94,7 @@ const VALUED = [
   "--record-validation",
   "--rebuild",
   "--message",
+  "--squashed",
 ];
 
 /** Reads the arguments after the script's path. An invalid one prints why and exits with 2. */
@@ -146,6 +154,7 @@ export function parseOptions(argv: string[]): Config {
     console.error(`--max-range takes a positive number of bytes, such as 0x10000, not ${options["max-range"]}`);
     process.exit(2);
   }
+  const squashed = parseSquashed(options.squashed);
   return {
     repoDir,
     specDir,
@@ -165,5 +174,37 @@ export function parseOptions(argv: string[]): Config {
       options["record-validation"] === undefined ? undefined : dirList(options["record-validation"], []),
     rebuildRoots: dirList(options.rebuild, ["src", "tests"]),
     message: options.message === undefined ? undefined : resolve(options.message),
+    squashed,
   };
+}
+
+/** A whole spec ID: ID_RE anchored, without its global flag. */
+const WHOLE_ID = new RegExp(`^(?:${ID_RE.source})$`);
+
+/**
+ * Reads --squashed: comma-separated items OLD=NEW, or OLD=NEW+NEW for an entry replaced by several.
+ * An invalid item prints why and exits with 2.
+ */
+function parseSquashed(value: string | undefined): Map<string, string[]> {
+  const squashed = new Map<string, string[]>();
+  for (const item of dirList(value, [])) {
+    const [old, replacements, ...rest] = item.split("=").map((x) => x.trim());
+    const into = (replacements ?? "").split("+").map((x) => x.trim());
+    if (rest.length > 0 || !WHOLE_ID.test(old) || !into.every((id) => WHOLE_ID.test(id))) {
+      console.error(
+        `--squashed takes items OLD=NEW or OLD=NEW+NEW of spec IDs, separated by commas, such as FND-AI-008=FND-AI-064, not ${item}`,
+      );
+      process.exit(2);
+    }
+    if (squashed.has(old)) {
+      console.error(`--squashed lists ${old} more than once`);
+      process.exit(2);
+    }
+    if (into.includes(old) || new Set(into).size !== into.length) {
+      console.error(`--squashed: ${item} names ${old} as its own replacement, or a replacement twice`);
+      process.exit(2);
+    }
+    squashed.set(old, into);
+  }
+  return squashed;
 }

@@ -867,6 +867,134 @@ test("an explicit --base runs the comparison without a fork point, with or witho
   assert.doesNotMatch(output, /HEAD has no merge-base/);
 });
 
+// A superseded copy of RULE-SCORE-001 under id, replaced by supersededBy.
+const supersededRule = (r: string, id: string, supersededBy: string) =>
+  copyRule(r, id, (text) =>
+    text
+      .replace("status: sourced", "status: superseded")
+      .replace("superseded_by: []", `superseded_by: [${supersededBy}]`),
+  );
+
+// A committed copy of the fixture whose RULE-SCORE-002 is superseded by supersededBy, after
+// setup(root) has added anything else the base needs; the working tree then deletes RULE-SCORE-002.
+function squashedAt(t: TestContext, supersededBy = "RULE-SCORE-001", setup = (_root: string) => {}) {
+  const root = broken(t, (r) => {
+    supersededRule(r, "RULE-SCORE-002", supersededBy);
+    setup(r);
+    commitBase(r);
+  });
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-002.md"));
+  return root;
+}
+
+test("--squashed accepts a deleted entry squashed into the replacements it named at the base", (t) => {
+  const root = squashedAt(t);
+  const plain = run(root, "--base", "HEAD");
+  assert.equal(plain.status, 1);
+  assert.match(
+    plain.output,
+    /^spec: RULE-SCORE-002 exists at HEAD and has been deleted or renamed \[IDENTIFIERS-6\]$/m,
+  );
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-001");
+  assert.equal(status, 0, output);
+  assert.doesNotMatch(output, /RULE-SCORE-002/);
+});
+
+test("--squashed fails when the listed replacements are not the base's superseded_by", (t) => {
+  const root = squashedAt(t);
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=FMT-SCORE-001");
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /^spec: RULE-SCORE-002 is listed in --squashed as squashed into FMT-SCORE-001, but at HEAD its superseded_by is \[RULE-SCORE-001\] \[IDENTIFIERS-6\]$/m,
+  );
+});
+
+test("--squashed fails when a replacement does not exist", (t) => {
+  const root = squashedAt(t, "RULE-SCORE-001, RULE-SCORE-009");
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-009+RULE-SCORE-001");
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /^spec: RULE-SCORE-002 is listed in --squashed as squashed into RULE-SCORE-009, which does not exist \[IDENTIFIERS-6\]$/m,
+  );
+  assert.doesNotMatch(output, /its superseded_by is/);
+});
+
+test("--squashed fails when a replacement is superseded", (t) => {
+  const root = squashedAt(t, "RULE-SCORE-003", (r) => supersededRule(r, "RULE-SCORE-003", "RULE-SCORE-001"));
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-003");
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /RULE-SCORE-003\.md: RULE-SCORE-002 is listed in --squashed as squashed into RULE-SCORE-003, which is superseded \[IDENTIFIERS-6\]$/m,
+  );
+});
+
+test("--squashed fails for an entry that still exists, with or without a base", (t) => {
+  const root = broken(t, (r) => supersededRule(r, "RULE-SCORE-002", "RULE-SCORE-001"));
+  for (const args of [[], ["--base", "HEAD"]]) {
+    if (args.length) commitBase(root);
+    const { status, output } = run(root, ...args, "--squashed", "RULE-SCORE-002=RULE-SCORE-001");
+    assert.equal(status, 1);
+    assert.match(output, /RULE-SCORE-002\.md: RULE-SCORE-002 is listed in --squashed but still exists$/m);
+  }
+});
+
+test("--squashed names an entry the base does not have as a skipped step", (t) => {
+  const root = broken(t, (r) => commitBase(r));
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-001");
+  assert.equal(status, 0, output);
+  assert.match(output, /Skipped: .*--squashed RULE-SCORE-002: not at the base, nothing to accept/);
+});
+
+test("a squashed ID still cited anywhere fails, an alias included", (t) => {
+  const root = squashedAt(t, "RULE-SCORE-001", (r) => {
+    writeFileSync(
+      join(r, "spec", "sources", "SRC-OLD-MANUAL.md"),
+      readFileSync(join(r, "spec", "sources", "SRC-MANUAL.md"), "utf8")
+        .replace("id: SRC-MANUAL", "id: SRC-OLD-MANUAL")
+        .replace("superseded_by: []", "superseded_by: [SRC-MANUAL]"),
+    );
+    mkdirSync(join(r, "notes"));
+  });
+  rmSync(join(root, "spec", "sources", "SRC-OLD-MANUAL.md"));
+  replaceIn(root, "spec/glossary/add_points.md", "RULE-SCORE-001.", "RULE-SCORE-001, which replaced RULE-SCORE-002.");
+  writeFileSync(join(root, "notes", "handover.md"), "# Handover\n\nRead SRC-OLD-MANUAL and RULE-SCORE-002.\n");
+  const squashed = ["--squashed", "RULE-SCORE-002=RULE-SCORE-001,SRC-OLD-MANUAL=SRC-MANUAL"];
+  const { status, output } = run(root, "--base", "HEAD", "--references", "notes", ...squashed);
+  assert.equal(status, 1);
+  assert.match(output, /add_points cites RULE-SCORE-002, which does not exist$/m);
+  assert.match(output, /handover\.md: cites RULE-SCORE-002, which was squashed into RULE-SCORE-001; cite it instead$/m);
+  assert.match(output, /handover\.md: cites SRC-OLD-MANUAL, which was squashed into SRC-MANUAL; cite it instead$/m);
+  assert.doesNotMatch(output, /deleted or renamed/);
+});
+
+test("--squashed leaves an unlisted deletion failing", (t) => {
+  const root = squashedAt(t, "RULE-SCORE-001", (r) => supersededRule(r, "RULE-SCORE-003", "RULE-SCORE-001"));
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-003.md"));
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-001");
+  assert.equal(status, 1);
+  assert.match(output, /^spec: RULE-SCORE-003 exists at HEAD and has been deleted or renamed \[IDENTIFIERS-6\]$/m);
+  assert.doesNotMatch(output, /RULE-SCORE-002/);
+});
+
+test("--squashed rejects a malformed value with exit code 2", () => {
+  for (const [value, message] of [
+    ["RULE-SCORE-002", /--squashed takes items OLD=NEW or OLD=NEW\+NEW of spec IDs/],
+    ["RULE-SCORE-002=", /--squashed takes items/],
+    ["RULE-SCORE-002=DEV-SCORE-001", /--squashed takes items/],
+    ["RULE-SCORE-002=RULE-SCORE-001=RULE-SCORE-003", /--squashed takes items/],
+    ["RULE-SCORE-002=RULE-SCORE-002", /names RULE-SCORE-002 as its own replacement, or a replacement twice/],
+    ["RULE-SCORE-002=RULE-SCORE-001+RULE-SCORE-001", /as its own replacement, or a replacement twice/],
+    ["RULE-SCORE-002=RULE-SCORE-001,RULE-SCORE-002=RULE-SCORE-003", /--squashed lists RULE-SCORE-002 more than once/],
+  ] as const) {
+    const { status, output } = run(fixture, "--squashed", value);
+    assert.equal(status, 2, `${value}: ${output}`);
+    assert.match(output, message);
+  }
+});
+
 // The skipped step that --scheduled-generation adds to the result line, as a pattern.
 const SCHEDULED = "comparison of the generated files with the spec \\(--scheduled-generation\\)";
 

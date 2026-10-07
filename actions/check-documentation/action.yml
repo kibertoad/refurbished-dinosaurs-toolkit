@@ -37,6 +37,10 @@ inputs:
     description: '"true" when spec/index/ and PARITY.md are updated on the main branch only, such as by a scheduled job. The check then neither compares them with the spec nor writes them, and fails when the change since the base edits, adds or removes one.'
     required: false
     default: "false"
+  squashed:
+    description: Comma-separated OLD=NEW or OLD=NEW+NEW items naming superseded entries this change deleted and the replacements their superseded_by named at the base. Each listed deletion passes instead of failing IDENTIFIERS-6 when that list matches and every replacement exists and is not superseded. Empty accepts no deletion.
+    required: false
+    default: ""
   kaitai-version:
     description: Kaitai Struct compiler release to install for compiling spec/formats/*.ksy. Empty skips the install, as does a root with no .ksy file.
     required: false
@@ -102,6 +106,7 @@ runs:
         DOC_REBUILD: ${{ inputs.rebuild }}
         DOC_BASE: ${{ inputs.base }}
         DOC_SCHEDULED_GENERATION: ${{ inputs.scheduled-generation }}
+        DOC_SQUASHED: ${{ inputs.squashed }}
         # The compiler was installed above, so a compiler the check cannot find is a failure. The
         # install exports KSC, which the check takes without running it, so today this guards
         # against an install that stops setting KSC; a KSC that does not run fails as a compile error.

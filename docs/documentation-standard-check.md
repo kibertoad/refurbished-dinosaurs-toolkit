@@ -281,6 +281,28 @@ set.
           scheduled-generation: "true"
 ```
 
+### Squashing superseded entries
+
+The standard keeps a superseded entry in place, so the checker fails a change that deletes one.
+Before a restoration's spec is relied on outside the project, it may squash its superseded
+entries instead: delete each one, keep its replacements with the final content, and move every
+citation of the old ID to them. A squashed ID is never used again.
+
+List each squashed entry with its replacements in the action's `squashed` input and in
+`--squashed` for local runs: `FND-AI-008=FND-AI-064,FND-AI-025=FND-AI-069`, or
+`FND-X-001=FND-X-002+FND-X-003` for an entry split in two. The check accepts a listed deletion
+when the entry's `superseded_by` at the base names exactly those replacements and each of them
+exists and is not superseded. It fails for a listed entry that still exists, and for any
+citation of a squashed ID that is left, including a build or source alias in the code. Once the
+squash is on the main branch, a listed ID the base does not have is named as a skipped step, so
+remove the input in a later change.
+
+```yaml
+      - uses: kibertoad/refurbished-dinosaurs-toolkit/actions/check-documentation@<sha>
+        with:
+          squashed: FND-AI-008=FND-AI-064,FND-AI-025=FND-AI-069
+```
+
 ### 6. Make it required
 
 To block merging on a failing check, add the job to the branch protection rule or ruleset for
@@ -344,8 +366,8 @@ pnpm exec standard-checker --help     # every option
 ```
 
 Run it from the restoration's root or pass `--root`. The command-line options match the action's
-inputs: `--code`, `--references`, `--images`, `--max-range`, `--data-dirs`, `--rebuild`, `--base`
-and `--scheduled-generation`, plus `--no-ksy` to skip compiling
+inputs: `--code`, `--references`, `--images`, `--max-range`, `--data-dirs`, `--rebuild`, `--base`,
+`--scheduled-generation` and `--squashed`, plus `--no-ksy` to skip compiling
 and `--glossary <path>` to accept the terms of a draft term file or a directory of them. Set `KSC` to the compiler's
 launcher, or put `kaitai-struct-compiler` on `PATH`, to compile the `.ksy` definitions.
 
