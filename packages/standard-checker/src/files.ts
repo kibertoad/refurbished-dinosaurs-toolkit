@@ -14,7 +14,7 @@ export const toSlash = (p: string) => p.replaceAll("\\", "/");
 export function walk(dir: string, fn: (path: string) => void) {
   if (!existsSync(dir)) return;
   for (const name of readdirSync(dir)) {
-    if (["bin", "obj", "node_modules", ".git", "artifacts"].includes(name)) continue;
+    if (["bin", "obj", "dist", "node_modules", ".git", "artifacts"].includes(name)) continue;
     const p = join(dir, name);
     if (statSync(p).isDirectory()) walk(p, fn);
     else fn(p);
