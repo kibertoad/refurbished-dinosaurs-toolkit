@@ -1,0 +1,7 @@
+---
+"@scientific-method/standard-checker": minor
+---
+
+Check a build's listing record, `spec/builds/<ID>.listing.yaml`, which the standard now allows a build to keep and name in its `listing` field (ENTRY-TYPES-16 and ENTRY-TYPES-17). The checker fails a `listing` field that names another file or a missing one, a record no build names, and a record whose fields or items break the standard's shape: an unknown `links` mode, `cycles` that does not match it, a medium without a valid prefix or layout, an item without exactly one of `size`, `link` and `stopped`, a path listed twice, items out of byte order, or an archive member outside the archives the record lists. It then compares the record with the manifest and `<ID>.other-files.yaml` as ENTRY-TYPES-18 says, and fails with the path named: a file in neither list and under no directory exclusion, a size that differs from the manifest's, a manifest path or listed other file the record lacks, and a link or stopped path the list of other files does not give by its own path. Paths on a disc the record's media leave out, and audio tracks of a disc whose tracks the listing did not read, are exempt. Where the list of other files is prose, the comparison with it is named as a skipped step.
+
+A manifest path under a directory exclusion (a path in the list of other files that ends in `/`) now fails, with or without a listing record (ENTRY-TYPES-15). Problems with build entries, manifests, lists of other files and Code ranges now end with the label of the Builds rule they break, ENTRY-TYPES-9 to ENTRY-TYPES-19.

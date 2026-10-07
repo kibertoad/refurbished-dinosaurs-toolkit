@@ -2656,7 +2656,10 @@ for (const [why, xxh3] of [
     });
     const result = run(root);
     assert.equal(result.status, 1, result.output);
-    assert.match(result.output, /BLD-EXAMPLE-1\.0\.files\.yaml: DATA\/SCORES\.BIN is listed twice$/m);
+    assert.match(
+      result.output,
+      /BLD-EXAMPLE-1\.0\.files\.yaml: DATA\/SCORES\.BIN is listed twice \[ENTRY-TYPES-14\]$/m,
+    );
   });
 
 test("an offset into a PE file is reported once, as an offset, not also against Code ranges", (t) => {
@@ -2779,7 +2782,7 @@ test("a manifest compares a numeric path as text, so a file named 0 has a path",
   });
   const result = run(root);
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /BLD-EXAMPLE-1\.0\.files\.yaml: 0 is listed twice$/m);
+  assert.match(result.output, /BLD-EXAMPLE-1\.0\.files\.yaml: 0 is listed twice \[ENTRY-TYPES-14\]$/m);
   assert.doesNotMatch(result.output, /every file has a path/);
 });
 
@@ -2792,7 +2795,7 @@ test("a manifest path that is a map is reported, not compared as [object Object]
   });
   const result = run(root);
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /BLD-EXAMPLE-1\.0\.files\.yaml: a path is text, not a map or list$/m);
+  assert.match(result.output, /BLD-EXAMPLE-1\.0\.files\.yaml: a path is text, not a map or list \[ENTRY-TYPES-10\]$/m);
   assert.doesNotMatch(result.output, /is listed twice/);
 });
 
@@ -2800,7 +2803,310 @@ test("a list of other files reports a path that is a list", (t) => {
   const root = broken(t, otherFiles("other_files:\n  - path: [a, b]\n    reason: a save slot\n"));
   const result = run(root);
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /other-files\.yaml: a path is text, not a map or list$/m);
+  assert.match(result.output, /other-files\.yaml: a path is text, not a map or list \[ENTRY-TYPES-14\]$/m);
+});
+
+test("a manifest path under a directory exclusion fails, with or without a listing record", (t) => {
+  const root = broken(t, otherFiles("other_files:\n  - path: DATA/\n    reason: the game writes its scores here\n"));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(
+    result.output,
+    /BLD-EXAMPLE-1\.0\.files\.yaml: DATA\/SCORES\.BIN is in the manifest and lies under the directory exclusion DATA\/ \[ENTRY-TYPES-15\]$/m,
+  );
+});
+
+// A synthetic listing record of the fixture's build: the two manifest files, a disc with an archive
+// the listing went inside, an installer, a link and a directory DOSBox fills, sorted byte by byte.
+const LISTING_HEAD =
+  'tool: build-listing 1.0\ndate: 2026-10-07\nlinks: listed\ncycles: null\nmedia:\n  - prefix: ""\n    source: null\n    layout: null\n  - prefix: "CD:"\n    source: null\n    layout: "2048"\narchives:\n  - path: CD:DATA.ARC\n    depth: 1\n';
+const LISTING_ITEMS: Array<[string, string]> = [
+  ["CD:DATA.ARC", "size: 300"],
+  ["CD:DATA.ARC|INTRO.FLI", "size: 120"],
+  ["CD:README", "size: 40"],
+  ["DATA/SCORES.BIN", "size: 2"],
+  ["GAME.EXE", "size: 1024"],
+  ["SAVES", "link: C:/Users/Public/Saves"],
+  ["SETUP.EXE", "size: 5000"],
+  ["capture/shot1.png", "size: 77"],
+];
+const LISTING_OTHER: Array<[string, string]> = [
+  ["CD:DATA.ARC", "intro movies, read by the installer only"],
+  ["CD:README", "text for the player"],
+  ["SAVES", "a link to the player's saves"],
+  ["SETUP.EXE", "installer"],
+  ["capture/", "DOSBox writes screenshots here"],
+];
+const listingItems = (items: Array<[string, string]>) =>
+  `items:\n${items.map(([path, rest]) => `  - path: ${path}\n    ${rest}\n`).join("")}`;
+const otherFilesList = (items: Array<[string, string]>) =>
+  `other_files:\n${items.map(([path, reason]) => `  - path: ${path}\n    reason: ${reason}\n`).join("")}`;
+
+// Gives the fixture's build the listing record (null for none on disk) and, unless other is null,
+// a list of other files in BLD-EXAMPLE-1.0.other-files.yaml that its Other files section names.
+function withListing(
+  record: string | null = LISTING_HEAD + listingItems(LISTING_ITEMS),
+  other: string | null = otherFilesList(LISTING_OTHER),
+  named = true,
+) {
+  return (r: string) => {
+    if (record !== null) writeFileSync(join(r, "spec/builds/BLD-EXAMPLE-1.0.listing.yaml"), record);
+    if (named)
+      replaceIn(
+        r,
+        "spec/builds/BLD-EXAMPLE-1.0.md",
+        "manifest: BLD-EXAMPLE-1.0.files.yaml\n",
+        "manifest: BLD-EXAMPLE-1.0.files.yaml\nlisting: BLD-EXAMPLE-1.0.listing.yaml\n",
+      );
+    if (other !== null) otherFiles(other)(r);
+  };
+}
+
+function addToManifest(r: string, path: string, format = "data", size = 8) {
+  const file = join(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml");
+  writeFileSync(
+    file,
+    readFileSync(file, "utf8") +
+      `  - path: ${path}\n    format: ${format}\n    size: ${size}\n    xxh3: 00112233445566778899aabbccddeeff\n`,
+  );
+}
+
+test("a listing record that agrees with the manifest and the list of other files passes", (t) => {
+  const root = broken(t, withListing());
+  const result = run(root);
+  assert.equal(result.status, 0, result.output);
+  assert.doesNotMatch(result.output, /listing/);
+});
+
+test("a listing path dropped from the list of other files fails with the path named", (t) => {
+  const root = broken(
+    t,
+    withListing(undefined, otherFilesList(LISTING_OTHER.filter(([path]) => path !== "SETUP.EXE"))),
+  );
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(
+    result.output,
+    /BLD-EXAMPLE-1\.0\.listing\.yaml: SETUP\.EXE is in the record but neither in the manifest nor in the list of other files, and under no directory exclusion \[ENTRY-TYPES-18\]$/m,
+  );
+});
+
+test("a manifest path the listing record lacks fails with the path named", (t) => {
+  const root = broken(t, (r) => {
+    withListing()(r);
+    addToManifest(r, "DATA/EXTRA.BIN");
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(
+    result.output,
+    /BLD-EXAMPLE-1\.0\.files\.yaml: DATA\/EXTRA\.BIN is in the manifest but not in the listing record BLD-EXAMPLE-1\.0\.listing\.yaml \[ENTRY-TYPES-18\]$/m,
+  );
+});
+
+test("a path in the list of other files that the listing record lacks fails with the path named", (t) => {
+  const root = broken(t, withListing(undefined, otherFilesList([...LISTING_OTHER, ["INSTALL.LOG", "installer log"]])));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(
+    result.output,
+    /BLD-EXAMPLE-1\.0\.other-files\.yaml: INSTALL\.LOG is in the list of other files but not in the listing record BLD-EXAMPLE-1\.0\.listing\.yaml \[ENTRY-TYPES-18\]$/m,
+  );
+});
+
+test("a listing record size that differs from the manifest's fails", (t) => {
+  const items = LISTING_ITEMS.map(([path, rest]): [string, string] => [
+    path,
+    path === "GAME.EXE" ? "size: 1000" : rest,
+  ]);
+  const root = broken(t, withListing(LISTING_HEAD + listingItems(items)));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(
+    result.output,
+    /BLD-EXAMPLE-1\.0\.listing\.yaml: GAME\.EXE: the record gives 1000 bytes and the manifest 1024 \[ENTRY-TYPES-18\]$/m,
+  );
+});
+
+test("a link or stopped path counts only when the list of other files gives it by its own path", (t) => {
+  const items: Array<[string, string]> = [...LISTING_ITEMS, ["capture/zz.png", "stopped: could not be read"]];
+  const root = broken(
+    t,
+    withListing(LISTING_HEAD + listingItems(items), otherFilesList(LISTING_OTHER.filter(([path]) => path !== "SAVES"))),
+  );
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(
+    result.output,
+    /listing\.yaml: SAVES is a link in the record, and the list of other files does not give it by its own path \[ENTRY-TYPES-18\]$/m,
+  );
+  // A directory exclusion does not account for a stopped path under it.
+  assert.match(
+    result.output,
+    /listing\.yaml: capture\/zz\.png is a stopped path in the record, and the list of other files does not give it by its own path \[ENTRY-TYPES-18\]$/m,
+  );
+});
+
+test("a manifest path the record gives as a link fails", (t) => {
+  const items = LISTING_ITEMS.map(([path, rest]): [string, string] => [
+    path,
+    path === "GAME.EXE" ? "link: ../elsewhere/GAME.EXE" : rest,
+  ]);
+  const root = broken(t, withListing(LISTING_HEAD + listingItems(items)));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(
+    result.output,
+    /files\.yaml: GAME\.EXE is in the manifest, but the record gives it as a link, not a file/,
+  );
+});
+
+test("a listing record that belongs to no build entry fails", (t) => {
+  const root = broken(t, (r) =>
+    writeFileSync(join(r, "spec/builds/BLD-NOPE-1.0.listing.yaml"), LISTING_HEAD + listingItems(LISTING_ITEMS)),
+  );
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(
+    result.output,
+    /BLD-NOPE-1\.0\.listing\.yaml: belongs to no build entry \(BLD-NOPE-1\.0\) \[ENTRY-TYPES-16\]$/m,
+  );
+});
+
+test("a listing field that names a missing record, and a record no listing field names, fail", (t) => {
+  const missing = broken(t, withListing(null, null));
+  const a = run(missing);
+  assert.equal(a.status, 1, a.output);
+  assert.match(
+    a.output,
+    /BLD-EXAMPLE-1\.0\.md: listing BLD-EXAMPLE-1\.0\.listing\.yaml does not exist \[ENTRY-TYPES-16\]$/m,
+  );
+  const unnamed = broken(t, withListing(undefined, undefined, false));
+  const b = run(unnamed);
+  assert.equal(b.status, 1, b.output);
+  assert.match(
+    b.output,
+    /BLD-EXAMPLE-1\.0\.md: BLD-EXAMPLE-1\.0\.listing\.yaml is this build's listing record; name it in listing \[ENTRY-TYPES-16\]$/m,
+  );
+});
+
+for (const [why, items, error] of [
+  [
+    "a path listed twice",
+    [...LISTING_ITEMS, ["capture/shot1.png", "size: 77"]],
+    /listing\.yaml: capture\/shot1\.png is listed twice \[ENTRY-TYPES-17\]$/m,
+  ],
+  [
+    "items out of byte order",
+    [LISTING_ITEMS[4], ...LISTING_ITEMS.filter((_, i) => i !== 4)],
+    /listing\.yaml: CD:DATA\.ARC comes after GAME\.EXE; items are sorted by path compared byte by byte \[ENTRY-TYPES-17\]$/m,
+  ],
+  [
+    "an item with two kinds",
+    LISTING_ITEMS.map(([path, rest]) => [path, path === "SAVES" ? `${rest}\n    size: 4` : rest]),
+    /listing\.yaml: SAVES: an item has a path and one of size, link or stopped \[ENTRY-TYPES-17\]$/m,
+  ],
+  [
+    "a member of an archive that is not a file item",
+    [...LISTING_ITEMS.slice(0, 3), ["CD:README|PART.TXT", "size: 4"], ...LISTING_ITEMS.slice(3)],
+    /listing\.yaml: CD:README\|PART\.TXT is a member of CD:README, which archives does not list \[ENTRY-TYPES-16\]$/m,
+  ],
+  [
+    "a path on a medium the record does not name",
+    [["CD2:INTRO.AVI", "size: 9"], ...LISTING_ITEMS],
+    /listing\.yaml: CD2:INTRO\.AVI: media names no prefix CD2: \[ENTRY-TYPES-16\]$/m,
+  ],
+] as Array<[string, Array<[string, string]>, RegExp]>)
+  test(`a listing record with ${why} fails`, (t) => {
+    const root = broken(t, withListing(LISTING_HEAD + listingItems(items)));
+    const result = run(root);
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, error);
+  });
+
+for (const [why, from, to, error] of [
+  [
+    "links that is no mode",
+    "links: listed",
+    "links: sometimes",
+    /listing\.yaml: links is one of listed, followed, refused/,
+  ],
+  [
+    "followed links without a cycle rule",
+    "links: listed",
+    "links: followed",
+    /listing\.yaml: cycles says how a followed link that leads back to a directory it was in was stopped/,
+  ],
+  [
+    "a disc without a layout",
+    'layout: "2048"',
+    "layout: null",
+    /listing\.yaml: CD: layout is one of 2048, MODE1\/2352, MODE2\/2352/,
+  ],
+  ["a missing field", "date: 2026-10-07\n", "", /listing\.yaml: a listing record gives date \[ENTRY-TYPES-16\]$/m],
+  [
+    "an archive depth of 0",
+    "depth: 1",
+    "depth: 0",
+    /listing\.yaml: archive CD:DATA\.ARC: depth is a whole number from 1/,
+  ],
+] as Array<[string, string, string, RegExp]>)
+  test(`a listing record with ${why} fails`, (t) => {
+    const record = LISTING_HEAD + listingItems(LISTING_ITEMS);
+    assert.ok(record.includes(from));
+    const root = broken(t, withListing(record.replace(from, to)));
+    const result = run(root);
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, error);
+  });
+
+test("a disc the record's media leave out and audio tracks the listing did not read need not be in the record", (t) => {
+  const root = broken(t, (r) => {
+    withListing()(r);
+    addToManifest(r, "CD2:MOVIE.AVI");
+    addToManifest(r, "CD:track02", "cdda", 2352);
+  });
+  const result = run(root);
+  assert.equal(result.status, 0, result.output);
+});
+
+test("an audio track of a disc whose tracks the listing read must be in the record", (t) => {
+  const items: Array<[string, string]> = [
+    ...LISTING_ITEMS.slice(0, 3),
+    ["CD:track02", "size: 2352"],
+    ...LISTING_ITEMS.slice(3),
+  ];
+  const root = broken(t, (r) => {
+    withListing(LISTING_HEAD + listingItems(items))(r);
+    addToManifest(r, "CD:track02", "cdda", 2352);
+    addToManifest(r, "CD:track03", "cdda", 2352);
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /files\.yaml: CD:track03 is in the manifest but not in the listing record/);
+  assert.doesNotMatch(result.output, /CD:track02 is in the manifest/);
+});
+
+test("a listing record beside a prose list of other files is compared with the manifest, and the rest is named as skipped", (t) => {
+  const items = LISTING_ITEMS.filter(
+    ([path]) => path === "GAME.EXE" || path === "DATA/SCORES.BIN" || path === "SETUP.EXE",
+  );
+  const head = LISTING_HEAD.replace(/archives:\n.*\n.*\n/, "archives: []\n");
+  const passes = broken(t, withListing(head + listingItems(items), null));
+  const a = run(passes);
+  assert.equal(a.status, 0, a.output);
+  assert.match(
+    a.output,
+    /Skipped: .*comparison of BLD-EXAMPLE-1\.0\.listing\.yaml with the list of other files of BLD-EXAMPLE-1\.0 \(the checker reads that list only from BLD-EXAMPLE-1\.0\.other-files\.yaml\)/,
+  );
+  // The manifest side is still compared.
+  const fails = broken(t, (r) => {
+    withListing(head + listingItems(items), null)(r);
+    addToManifest(r, "DATA/EXTRA.BIN");
+  });
+  const b = run(fails);
+  assert.equal(b.status, 1, b.output);
+  assert.match(b.output, /DATA\/EXTRA\.BIN is in the manifest but not in the listing record/);
 });
 
 for (const format of ["MZ", "COM", "NE", "PE", "LE", "LX", "ELF"])

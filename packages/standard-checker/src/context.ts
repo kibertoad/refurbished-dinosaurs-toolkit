@@ -18,6 +18,11 @@ export interface Spec {
   glossaryFiles: Map<string, string>;
   /** Build ID -> the files of its manifest that are maps. */
   buildFiles: Map<string, Meta[]>;
+  /**
+   * Build ID -> the paths of its list of other files, for a build whose list is in
+   * builds/<ID>.other-files.yaml and could be read. A path ending in / is a directory exclusion.
+   */
+  otherFiles: Map<string, string[]>;
   /** Build ID -> its Code ranges, for a build whose section was read. */
   codeRanges: Map<string, CodeRange[]>;
 }

@@ -32,21 +32,29 @@ export function loadCodeRanges(
     // A malformed section is reported once here; offsets into the build are then not measured
     // against it, as with a missing section, rather than each failing again.
     if (found.length !== 1 || found[0].header.join("|") !== CODE_RANGES.join("|") || found[0].rows.length === 0) {
-      problem(e.file, `the Code ranges section is one table with the columns ${CODE_RANGES.join(" | ")}, or None.`);
+      problem(
+        e.file,
+        `the Code ranges section is one table with the columns ${CODE_RANGES.join(" | ")}, or None.`,
+        "ENTRY-TYPES-19",
+      );
       continue;
     }
     codeRanges.set(id, ranges);
     const files = buildFiles.get(id) ?? [];
     for (const row of found[0].rows) {
       if (row.length !== CODE_RANGES.length) {
-        problem(e.file, `Code ranges row ${row.join(" | ")}: a row has ${CODE_RANGES.length} cells, not ${row.length}`);
+        problem(
+          e.file,
+          `Code ranges row ${row.join(" | ")}: a row has ${CODE_RANGES.length} cells, not ${row.length}`,
+          "ENTRY-TYPES-19",
+        );
         continue;
       }
       const [path, range, overlay, finding] = row.map(unticked);
       const at = `Code ranges row ${path} ${range}`;
       const bf = files.find((f) => f.path === path);
       if (!bf) {
-        problem(e.file, `${at}: ${path} is not in the manifest`);
+        problem(e.file, `${at}: ${path} is not in the manifest`, "ENTRY-TYPES-19");
         continue;
       }
       // Only overlay code is located by offset, so a row is for a file whose unpacked format takes
@@ -54,24 +62,25 @@ export function loadCodeRanges(
       const format = bf.unpacked?.format ?? bf.format;
       const rule = locationRule(format);
       if (rule && !(rule.offset && rule.address))
-        problem(e.file, `${at}: ${path} is a ${format} file, which holds no code located by offset`);
+        problem(e.file, `${at}: ${path} is a ${format} file, which holds no code located by offset`, "ENTRY-TYPES-19");
       // The notation is parseOffset's; a row additionally needs both ends of the range.
       if (!range.includes("..") || !parseOffset(range)) {
         problem(
           e.file,
           `${at}: the range is one half-open offset range, 0x followed by upper-case hex digits on each side of ..`,
+          "ENTRY-TYPES-19",
         );
         continue;
       }
       if (!/^(?:-|\d+|0x[0-9A-F]+)$/.test(overlay))
-        problem(e.file, `${at}: the overlay is its number, or - where there is none`);
+        problem(e.file, `${at}: the overlay is its number, or - where there is none`, "ENTRY-TYPES-19");
       // A finding that does not exist is reported with the other unresolved IDs of the body.
       const ids = idsIn(finding);
       const cited = entries.get(ids[0]);
       if (ids.length !== 1 || kindOf(ids[0]) !== "FND" || finding !== ids[0])
-        problem(e.file, `${at}: the finding column holds the ID of one finding`);
+        problem(e.file, `${at}: the finding column holds the ID of one finding`, "ENTRY-TYPES-19");
       else if (cited && !asList(cited.meta.builds).includes(id))
-        problem(e.file, `${at}: ${ids[0]} does not list ${id}`);
+        problem(e.file, `${at}: ${ids[0]} does not list ${id}`, "ENTRY-TYPES-19");
       else if (cited?.meta.status === "superseded")
         problem(e.file, `${at}: cites ${ids[0]}, which is superseded`, "STATUS-17");
       // The finding shows code in this file of this build, so it has a location there that is not
@@ -85,6 +94,7 @@ export function loadCodeRanges(
         problem(
           e.file,
           `${at}: ${ids[0]} has no code location in ${path} of ${id}, so it cannot establish a code range there`,
+          "ENTRY-TYPES-19",
         );
       }
       const parsed = checkOffset(problem, e.file, range, bf);

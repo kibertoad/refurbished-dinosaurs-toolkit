@@ -22,7 +22,7 @@ export function loadSpec(ctx: LoadContext): Spec {
   const entries = loadEntries(ctx);
   const { glossaryDir, glossary, glossaryFiles } = loadGlossary(ctx);
   const buildFiles = loadBuildFiles(ctx, entries);
-  checkOtherFiles(ctx, entries, buildFiles);
+  const otherFiles = checkOtherFiles(ctx, entries, buildFiles);
   const codeRanges = loadCodeRanges(ctx, entries, buildFiles);
-  return { areas, entries, glossaryDir, glossary, glossaryFiles, buildFiles, codeRanges };
+  return { areas, entries, glossaryDir, glossary, glossaryFiles, buildFiles, otherFiles, codeRanges };
 }
