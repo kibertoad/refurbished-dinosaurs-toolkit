@@ -608,6 +608,14 @@ past VirtualSize are not initialized source code. Overlapping raw or virtual sec
 unsupported machines, PE32+, conflicting mappings and MZ relocation/overlay
 inputs fail. Headers and section metadata appear in every report's sourceMapping.
 
+A section whose PointerToRawData is 0 has no file bytes, whatever its SizeOfRawData says, as some
+linkers write an uninitialized data section. Its SizeOfRawData still counts toward its virtual
+extent (`mappedExtent`), its `loadedRawSize` is 0, and its `rawIgnored` in sourceMapping is
+`"PointerToRawData is 0"` (`null` on every other section). The engine reads none of its bytes and
+does not assume what a loader puts there, so a load from it has no known value. A nonzero
+PointerToRawData below SizeOfHeaders still fails. The reader's `imports` and `table` reports apply
+the same rule to PE sections.
+
 The model decodes i386 instructions with 32-bit effective addresses, ESP/EBP
 stack frames, four-byte near return addresses and E8 rel32 target arithmetic.
 File-offset query sites remain distinct from loaded virtual addresses: variable
@@ -1254,7 +1262,9 @@ FBOV fixups patch overlay code, which lies past the resident image that holds ev
 none appears here. In a `pe32` section whose VirtualSize exceeds its raw data, the loader fills the
 rest with zeros, and the read continues into them. A row whose terminator comes from that fill
 carries `terminatedBy: "loader zero fill"`, and a target inside the fill gives `target.zeroFilled`
-in place of a file offset and range.
+in place of a file offset and range. A `pe32` section whose PointerToRawData is 0 has no file
+bytes and no assumed fill, so a target in it is `uninitialized`; `mapping.rawIgnored` lists each
+such section as `{ section, name, sizeOfRawData, reason }`.
 
 | Result | Error | Meaning |
 |---|---|---|
@@ -1262,7 +1272,7 @@ in place of a file offset and range.
 | `empty` | no | The target holds the terminator, in the file or in a PE section's zero fill; `length` is 0. |
 | `null` | no | The pointer holds the null value the query names with its test. |
 | `unterminated` | yes | No terminator before the limit, the end of the file range or the end of a PE section's zero fill; `examined` and `stoppedBy` (`byte limit`, `end of the file range` or `end of the section`). |
-| `uninitialized` | yes | The address is in memory the build gives no bytes for: the rest of an MZ load image's last paragraph and the header's minimum extra paragraphs, or a PE section's raw padding past its VirtualSize. Nothing is read. |
+| `uninitialized` | yes | The address is in memory the build gives no bytes for: the rest of an MZ load image's last paragraph and the header's minimum extra paragraphs, a PE section's raw padding past its VirtualSize, or a PE section whose PointerToRawData is 0, where no loader fill is assumed either. Nothing is read. |
 | `unmapped` | yes | The pointer gets no address: its target is outside every mapped range, it is a `far16` pointer whose segment word nothing relocates, or a declared MZ relocation covers a `near16` word, a `far16` offset word or straddles a `far16` segment word, which shows that the stride or pointer offset reads a segment as an offset. |
 
 The three errors carry no `text` or `length`, so none of them reads as an empty or shortened
@@ -1304,7 +1314,10 @@ of an unbound descriptor that is neither a well-formed ordinal nor a hint and na
 no import either. A lookup table entry of that kind, a table outside the file's loaded bytes,
 an address table that ends before its lookup table, a non-ASCII name and overlapping address tables
 fail the report, as do sections that overlap each other or the headers, slot addresses that would
-leave 4 GiB in PE32, and `formatControls`, which apply only to `mz` sources.
+leave 4 GiB in PE32, and `formatControls`, which apply only to `mz` sources. A section whose
+PointerToRawData is 0 has no file bytes, whatever its SizeOfRawData says, so no table is read from
+it; `rawIgnored` lists each such section as `{ section, name, sizeOfRawData, reason }`. A nonzero
+PointerToRawData below SizeOfHeaders still overlaps the headers.
 
 `controls` is required: 1..256 positive controls, each a slot whose import other evidence shows,
 as `{ slot, dll, name }` or `{ slot, dll, ordinal }`. `slot` is the virtual address, `dll` is

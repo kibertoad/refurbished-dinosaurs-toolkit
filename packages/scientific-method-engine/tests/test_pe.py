@@ -365,6 +365,47 @@ class PEReporterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Image(data, {**config, 'regions': [{**config['regions'][0], 'end': CODE_RAW + 0x11}]})
 
+    def test_a_zero_raw_pointer_gives_a_section_no_file_bytes(self):
+        # .text (raw 0x400), .bss (SizeOfRawData 0x200, PointerToRawData 0) and .data (raw 0x600),
+        # all with VirtualSize 0, behind 0x400 bytes of headers.
+        data = bytearray(0x800)
+        def d(at, n):
+            struct.pack_into('<I', data, at, n)
+        data[:2] = b'MZ'; d(60, 0x80); data[0x80:0x84] = b'PE\0\0'
+        struct.pack_into('<HH', data, 0x84, 0x14c, 3); struct.pack_into('<H', data, 0x94, 0xe0)
+        opt = 0x98
+        struct.pack_into('<H', data, opt, 0x10b); d(opt + 28, BASE); d(opt + 56, 0x4000); d(opt + 60, 0x400); d(opt + 92, 16)
+        for at, name, rva, raw, flags in ((0x178, b'.text', 0x1000, 0x400, 0x60000020),
+                                          (0x1a0, b'.bss', 0x2000, 0, 0xc0000080),
+                                          (0x1c8, b'.data', 0x3000, 0x600, 0xc0000040)):
+            data[at:at + len(name)] = name
+            for off, n in ((12, rva), (16, 0x200), (20, raw), (36, flags)):
+                d(at + off, n)
+        code = bytes.fromhex('a1 00 20 40 00 b9 78 56 34 12 c3')  # mov eax, [.bss]; mov ecx, 0x12345678
+        data[0x400:0x400 + len(code)] = code
+        config = {'sourceKind': 'pe32', 'entry': 0x400, 'regions': [{'name': 'text', 'start': 0x400, 'end': 0x400 + len(code),
+                                                     'entries': [0x400], 'evidence': 'synthetic established entries'}]}
+        image = Image(bytes(data), config)
+        bss = image.config['peMetadata']['sections'][1]
+        self.assertEqual((bss['rawStart'], bss['rawSize'], bss['loadedRawSize'], bss['mappedExtent']), (0, 0x200, 0, 0x200))
+        self.assertEqual(bss['rawIgnored'], 'PointerToRawData is 0')
+        self.assertEqual([s['rawIgnored'] for s in image.config['peMetadata']['sections']], [None, 'PointerToRawData is 0', None])
+        # The headers at file offset 0 are not read as the section's bytes.
+        self.assertIsNone(image.file_offset(BASE + 0x2000))
+        r = run_report(bytes(data), config, 'trace')
+        self.assertTrue(r['completeWithinModel'], r)
+        registers = r['paths'][0]['registers']
+        self.assertEqual(registers['ecx']['value'], 0x12345678)
+        self.assertIsNone(registers['eax'].get('value'))
+        self.assertEqual(r['sourceMapping']['sections'][1]['rawIgnored'], 'PointerToRawData is 0')
+        # A region cannot be declared over the ignored bytes.
+        with self.assertRaisesRegex(ValueError, 'loaded raw executable section bytes'):
+            Image(bytes(data), {**config, 'regions': [{**config['regions'][0], 'start': 0, 'end': 0x10}]})
+        # A nonzero pointer below SizeOfHeaders is still refused.
+        low = bytearray(data); struct.pack_into('<I', low, 0x1a0 + 20, 0x200)
+        with self.assertRaisesRegex(ValueError, 'overlap headers'):
+            Image(bytes(low), config)
+
     def test_malformed_regions_fail_with_a_diagnosable_error(self):
         data, config = fixture('c3')
         for regions in ({'name': 'text'}, [1], ['text'], [None]):

@@ -1,4 +1,8 @@
 // The PE import report: which import the file's own import tables put in each import address table slot.
+import { ignoredRawData } from "./table-mapping.ts";
+import type { IgnoredRawData } from "./table-mapping.ts";
+
+export type { IgnoredRawData };
 
 /**
  * A positive control: a slot whose import other evidence shows, such as a call whose arguments and
@@ -60,6 +64,7 @@ interface Section {
   rva: number;
   extent: number;
   rawStart: number;
+  /** File bytes the section has: SizeOfRawData, or 0 when its PointerToRawData is 0. */
   rawSize: number;
   loaded: number;
 }
@@ -108,6 +113,9 @@ function checkControls(controls: unknown): ImportControl[] {
  *
  * Slots are listed by address. Listing order of any other tool is never used. Every control in
  * `config.controls` must name the import the tables put in its slot, or the report throws.
+ * A section whose PointerToRawData is 0 has no file bytes, whatever its SizeOfRawData says, and
+ * `rawIgnored` lists each such section with a nonzero SizeOfRawData.
+ *
  * Throws as well for a malformed header, sections that overlap each other or the headers, an image
  * whose addresses leave the reportable range, a table outside the file, a lookup entry with reserved
  * bits set, a non-ASCII name, overlapping import address tables, supplied `formatControls` or an
@@ -163,13 +171,18 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
     throw new Error("Invalid PE image/header extent");
   // The same section checks as the engine's PE32 loader, so that every RVA maps to one section.
   const sections: Section[] = [];
+  const rawIgnored: IgnoredRawData[] = [];
   for (let i = 0; i < count; i++) {
     const at = table + i * 40;
     const virtualSize = dword(at + 8),
       rva = dword(at + 12),
-      rawSize = dword(at + 16),
+      sizeOfRawData = dword(at + 16),
       rawStart = dword(at + 20);
-    const extent = Math.max(virtualSize, rawSize);
+    const extent = Math.max(virtualSize, sizeOfRawData);
+    // A zero PointerToRawData gives the section no file bytes, whatever SizeOfRawData says.
+    const ignored = ignoredRawData(bytes, at, i, sizeOfRawData, rawStart);
+    if (ignored) rawIgnored.push(ignored);
+    const rawSize = ignored ? 0 : sizeOfRawData;
     if (!extent || rva < sizeOfHeaders || rva + extent > sizeOfImage)
       throw new Error("PE section escapes image or overlaps headers");
     if (rawSize) {
@@ -337,6 +350,7 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
       noImport: counted((s) => s.import === null),
     },
     delayImportDirectory: delay.rva ? delay : null,
+    rawIgnored,
     searched:
       "the import directory: each descriptor's import lookup table and import address table, walked in step up to the null entry",
     exclusions: [

@@ -157,15 +157,48 @@ interface Section {
   rva: number;
   extent: number;
   rawStart: number;
+  /** File bytes the section has: SizeOfRawData, or 0 when its PointerToRawData is 0. */
   rawSize: number;
   loaded: number;
   zeroFill: number;
+  rawIgnored: boolean;
+}
+
+/**
+ * A PE section whose SizeOfRawData is not zero but whose PointerToRawData is, so it has no file
+ * bytes. Its SizeOfRawData still counts toward its virtual extent. Reports read none of its bytes
+ * and do not assume what a loader puts there.
+ */
+export interface IgnoredRawData {
+  /** Index of the section in the section table. */
+  section: number;
+  name: string;
+  sizeOfRawData: number;
+  reason: "PointerToRawData is 0";
+}
+
+/**
+ * The section header at file offset `at`, the `section`th in the table, as {@link IgnoredRawData}
+ * when its PointerToRawData is 0 and its SizeOfRawData is not, or null otherwise.
+ */
+export function ignoredRawData(
+  bytes: Buffer,
+  at: number,
+  section: number,
+  sizeOfRawData: number,
+  pointerToRawData: number,
+): IgnoredRawData | null {
+  if (!sizeOfRawData || pointerToRawData) return null;
+  const name = bytes.toString("latin1", at, at + 8).replace(/\0.*$/s, "");
+  return { section, name, sizeOfRawData, reason: "PointerToRawData is 0" };
 }
 
 /**
  * Maps a `pe32` table through the section table at the preferred image base, and reports the base
  * relocation over each pointer. The loader fills a section's part past its raw data, up to its
- * VirtualSize, with zeros; raw bytes past VirtualSize are padding the report does not read.
+ * VirtualSize, with zeros; raw bytes past VirtualSize are padding the report does not read. A
+ * section whose PointerToRawData is 0 has no file bytes, whatever its SizeOfRawData says: an
+ * address in it is `uninitialized`, with no fill assumed, and `provenance.rawIgnored` lists it.
  */
 export function pe32Mapping(bytes: Buffer, layout: TableLayout): Mapping {
   const span = (at: number, size: number) => {
@@ -196,17 +229,23 @@ export function pe32Mapping(bytes: Buffer, layout: TableLayout): Mapping {
   if (!size || base + size > 2 ** 32 || headers < table + count * 40 || headers > bytes.length || headers > size)
     throw new Error("Invalid PE image/header extent");
   const sections: Section[] = [];
+  const rawIgnored: IgnoredRawData[] = [];
   for (let i = 0; i < count; i++) {
     const at = table + i * 40,
       virtualSize = u32(at + 8),
       rva = u32(at + 12),
-      rawSize = u32(at + 16),
+      sizeOfRawData = u32(at + 16),
       rawStart = u32(at + 20),
-      extent = Math.max(virtualSize, rawSize),
+      extent = Math.max(virtualSize, sizeOfRawData),
+      // A zero PointerToRawData gives the section no file bytes, whatever SizeOfRawData says.
+      ignored = ignoredRawData(bytes, at, i, sizeOfRawData, rawStart),
+      rawSize = ignored ? 0 : sizeOfRawData,
       // Raw bytes past VirtualSize are file-alignment padding, which the loader does not map.
       loaded = virtualSize ? Math.min(rawSize, virtualSize) : rawSize,
       // The PE format has the loader fill the rest of VirtualSize past the raw data with zeros.
-      zeroFill = Math.max(virtualSize - rawSize, 0);
+      // Where a section's raw data is ignored, the report assumes no fill at all.
+      zeroFill = ignored ? 0 : Math.max(virtualSize - rawSize, 0);
+    if (ignored) rawIgnored.push(ignored);
     if (!extent || rva < headers || rva + extent > size)
       throw new Error("PE section escapes image or overlaps headers");
     if (rawSize) {
@@ -224,7 +263,7 @@ export function pe32Mapping(bytes: Buffer, layout: TableLayout): Mapping {
         throw new Error("Overlapping PE raw sections");
     }
     const name = bytes.toString("latin1", at, at + 8).replace(/\0.*$/s, "");
-    sections.push({ index: i, name, rva, extent, rawStart, rawSize, loaded, zeroFill });
+    sections.push({ index: i, name, rva, extent, rawStart, rawSize, loaded, zeroFill, rawIgnored: ignored !== null });
   }
   const headerRange: FileRange = { view: "headers", start: 0, end: headers };
   const rangeOf = (s: Section): FileRange => ({
@@ -241,6 +280,12 @@ export function pe32Mapping(bytes: Buffer, layout: TableLayout): Mapping {
         return { address, fileOffset: s.rawStart + rva - s.rva, range: rangeOf(s), zeroFill: s.zeroFill };
     const holder = sections.find((s) => rva >= s.rva && rva < s.rva + s.extent);
     if (!holder) return { address, result: "unmapped", reason: "outside the headers and every section of the image" };
+    if (holder.rawIgnored)
+      return {
+        address,
+        result: "uninitialized",
+        reason: `in section ${holder.index} ${holder.name}, whose PointerToRawData is 0, so the file gives it no bytes; the report does not assume what a loader puts there`,
+      };
     const filled = holder.rva + holder.loaded + holder.zeroFill - rva;
     if (filled > 0)
       return {
@@ -309,6 +354,7 @@ export function pe32Mapping(bytes: Buffer, layout: TableLayout): Mapping {
       imageBase: hex(base),
       relocations: relocationSource,
       loadAssumption: "preferred image base; the bytes are read as the file stores them",
+      rawIgnored,
     },
   };
 }
