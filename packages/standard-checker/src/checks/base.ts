@@ -1,11 +1,15 @@
 // IDs, areas and deviations that exist on the base branch must not disappear, and a format entry
-// superseded since the base keeps the layout table it had there.
+// superseded since the base keeps the layout table it had there. A superseded entry that --squashed
+// lists may disappear into the replacements it named at the base.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import type { Context } from "../context.ts";
-import { splitSections, tables } from "../markdown.ts";
+import { isSuperseded, squashedInto } from "../evidence.ts";
+import { asList } from "../ids.ts";
+import { splitFrontMatter, splitSections, tables } from "../markdown.ts";
+import { parseYaml } from "../yaml.ts";
 import type { Deviation } from "./deviations.ts";
 
 /** A function that runs git in dir and returns its standard output, throwing when git fails. */
@@ -53,11 +57,19 @@ export function baseTarget(baseArg: string | null | undefined): string {
  * it had one at the base. Without --base, a fork point that does not resolve is recorded as a
  * skipped step, or with --require-base reported as a problem. Returns the base it compared with, or
  * null when there was none.
+ *
+ * An ID that --squashed lists is accepted as gone when at the base it was superseded by exactly the
+ * listed replacements, and each replacement exists now and is not superseded, or is squashed in the
+ * same change. One that still exists is a problem with or without a base, and one the base does
+ * not have is a skipped step, so a repository can keep the option after the squash reaches its main
+ * branch, where it stops a squashed ID from being used again.
  */
 export function checkBase(ctx: Context, deviations: Map<string, Deviation>): string | null {
   const { problem, skip } = ctx;
   const { entries, areas } = ctx.spec;
-  const { repoDir, baseArg, requireBase } = ctx.config;
+  const { repoDir, baseArg, requireBase, squashed } = ctx.config;
+  for (const id of squashed.keys())
+    if (entries.has(id)) problem(entries.get(id)!.file, `${id} is listed in --squashed but still exists`);
   // Without --base, compare with the point this branch left the base branch (the pull request's
   // target in CI), not that branch's tip: an entry added on the base branch after this branch
   // forked is not one this branch deleted. A base that resolves but cannot be listed is a problem.
@@ -87,24 +99,25 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>): str
     problem(null, `cannot list spec/ at ${base}`);
     return null;
   }
+  const atBase = new Set<string>();
   for (const p of listing.split("\n")) {
     const m =
       /^spec\/(?:builds|sources|formats|rules|findings|experiments|bugs|screens)\/([A-Z]+-[A-Z0-9.-]+)\.md$/.exec(p);
-    if (m && !entries.has(m[1]))
-      problem(null, `${m[1]} exists at ${base} and has been deleted or renamed`, "IDENTIFIERS-6");
+    if (m) atBase.add(m[1]);
+    if (m && !entries.has(m[1])) {
+      const into = squashed.get(m[1]);
+      // ls-tree lists paths relative to --root, and ./ makes git show read them the same way.
+      if (into) checkSquashed(ctx, m[1], into, base, gitShow(git, base, `./${p}`));
+      else problem(null, `${m[1]} exists at ${base} and has been deleted or renamed`, "IDENTIFIERS-6");
+    }
     const d = /^deviations\/(DEV-[A-Z0-9]+-\d+)\.md$/.exec(p);
     if (d && !deviations.has(d[1])) problem(null, `${d[1]} exists at ${base} and has been deleted or renamed`);
   }
+  for (const id of squashed.keys()) if (!atBase.has(id)) skip(`--squashed ${id}: not at the base, nothing to accept`);
   // ./ makes the path relative to --root, which need not be the top of the repository. A file
   // that does not exist at the base has nothing to compare, and each is read on its own so a
   // missing README does not skip the deviation comparison.
-  const show = (path: string) => {
-    try {
-      return git("show", `${base}:./${path}`).replace(/\r\n/g, "\n");
-    } catch {
-      return null;
-    }
-  };
+  const show = (path: string) => gitShow(git, base, `./${path}`);
   const oldReadme = show("spec/README.md");
   // Reads the area table the way the current README is read, so areas with or without
   // backticks are both found.
@@ -134,4 +147,65 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>): str
     for (const m of oldDev.matchAll(/^## (DEV-[A-Z0-9]+-\d+)$/gm))
       if (!deviations.has(m[1])) problem(null, `${m[1]} exists at ${base} and has been removed`);
   return base;
+}
+
+/** A file at rev, with CRLF read as LF, or null when git cannot show it. */
+function gitShow(git: ReturnType<typeof gitIn>, rev: string, path: string): string | null {
+  try {
+    return git("show", `${rev}:${path}`).replace(/\r\n/g, "\n");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Reports what keeps the deletion of id, which --squashed lists as squashed into `into`, from being
+ * accepted: its superseded_by at the base cannot be read or names other entries, or a replacement
+ * is missing or superseded now. A replacement that --squashed lists as well is accepted here and
+ * checked as its own deletion, so a chain of superseded entries can be squashed in one change. old is the entry's text at the base, or null when git could not
+ * show it.
+ */
+function checkSquashed(ctx: Context, id: string, into: string[], base: string, old: string | null) {
+  const { problem } = ctx;
+  const { entries } = ctx.spec;
+  const split = old === null ? { error: "cannot be read" } : splitFrontMatter(old);
+  let unreadable = "error" in split ? split.error : null;
+  const meta =
+    "error" in split
+      ? {}
+      : parseYaml(split.yaml, id, (_file, message) => {
+          unreadable ??= `has front matter that cannot be read (${message})`;
+        });
+  if (unreadable !== null)
+    problem(
+      null,
+      `${id} is listed in --squashed, but at ${base} it ${unreadable}, so its superseded_by is unknown`,
+      "IDENTIFIERS-6",
+    );
+  const named = asList(meta.superseded_by).map(String);
+  const same = named.length === into.length && into.every((r) => named.includes(r));
+  if (unreadable === null && !same)
+    problem(
+      null,
+      `${id} is listed in --squashed as squashed into ${into.join(", ")}, but at ${base} its superseded_by is [${named.join(", ")}]`,
+      "IDENTIFIERS-6",
+    );
+  // A replacement that --squashed lists too is deleted in the same change, and its own deletion is
+  // checked as listed. A chain of them has to end in entries that exist.
+  if (squashedInto(ctx.config.squashed, id).length === 0)
+    problem(
+      null,
+      `${id} is listed in --squashed, but its replacements are all squashed into each other`,
+      "IDENTIFIERS-6",
+    );
+  for (const r of into)
+    if (!entries.has(r) && ctx.config.squashed.has(r)) continue;
+    else if (!entries.has(r))
+      problem(null, `${id} is listed in --squashed as squashed into ${r}, which does not exist`, "IDENTIFIERS-6");
+    else if (isSuperseded(entries, r))
+      problem(
+        entries.get(r)!.file,
+        `${id} is listed in --squashed as squashed into ${r}, which is superseded`,
+        "IDENTIFIERS-6",
+      );
 }

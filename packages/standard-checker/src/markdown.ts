@@ -10,21 +10,26 @@ export const lineCount = (text: string) => (text === "" ? 0 : text.split("\n").l
 /** Reads a text file with CRLF line ends read as LF. */
 export const readText = (file: string) => readFileSync(file, "utf8").replace(/\r\n/g, "\n");
 
+/**
+ * Splits an entry's text, with LF line ends, into its front matter and body, or returns why it
+ * cannot.
+ */
+export function splitFrontMatter(text: string): { yaml: string; body: string } | { error: string } {
+  if (!text.startsWith("---\n")) return { error: "has no front matter" };
+  const end = text.indexOf("\n---\n", 4);
+  if (end < 0) return { error: "front matter is not closed" };
+  return { yaml: text.slice(4, end), body: text.slice(end + 5) };
+}
+
 /** Reads an entry's front matter, body and sections, or reports why it cannot and returns null. */
 export function readEntry(file: string, problem: Problem) {
-  const text = readFileSync(file, "utf8").replace(/\r\n/g, "\n");
-  if (!text.startsWith("---\n")) {
-    problem(file, "has no front matter");
+  const split = splitFrontMatter(readText(file));
+  if ("error" in split) {
+    problem(file, split.error);
     return null;
   }
-  const end = text.indexOf("\n---\n", 4);
-  if (end < 0) {
-    problem(file, "front matter is not closed");
-    return null;
-  }
-  const meta = parseYaml(text.slice(4, end), file, problem);
-  const body = text.slice(end + 5);
-  return { file, meta, body, sections: splitSections(body) };
+  const meta = parseYaml(split.yaml, file, problem);
+  return { file, meta, body: split.body, sections: splitSections(split.body) };
 }
 
 /** The `##` sections of a Markdown body, skipping fenced code. */
