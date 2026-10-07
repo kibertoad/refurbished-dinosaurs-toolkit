@@ -1,5 +1,11 @@
 # @scientific-method/standard-checker
 
+## 2.3.0
+
+### Minor Changes
+
+- 780405e: Add `standard-coverage`, which measures how much of each analysed file the spec's locations cite against the function inventories in `coverage/`, lists the functions no entry cites, and with `--require-complete` fails while any in-scope function is uncited.
+
 ## 2.2.0
 
 ### Minor Changes
