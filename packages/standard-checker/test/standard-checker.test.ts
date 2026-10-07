@@ -931,6 +931,61 @@ test("--squashed fails when a replacement is superseded", (t) => {
   );
 });
 
+test("--squashed reads the entry at the base when --root is below the top of the repository", (t) => {
+  const top = mkdtempSync(join(tmpdir(), "doc-check-"));
+  t.after(() => rmSync(top, { recursive: true, force: true }));
+  const root = join(top, "restoration");
+  cpSync(fixture, root, { recursive: true });
+  supersededRule(root, "RULE-SCORE-002", "RULE-SCORE-001");
+  commitBase(top);
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-002.md"));
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-001");
+  assert.equal(status, 0, output);
+  assert.doesNotMatch(output, /RULE-SCORE-002/);
+});
+
+test("--squashed names front matter at the base it cannot read, instead of an empty superseded_by", (t) => {
+  const root = squashedAt(t, "RULE-SCORE-001", (r) =>
+    writeFileSync(join(r, "spec", "rules", "RULE-SCORE-002.md"), "# RULE-SCORE-002\n"),
+  );
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-001");
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /^spec: RULE-SCORE-002 is listed in --squashed, but at HEAD it has no front matter, so its superseded_by is unknown \[IDENTIFIERS-6\]$/m,
+  );
+  assert.doesNotMatch(output, /its superseded_by is \[/);
+});
+
+test("--squashed accepts a chain of superseded entries squashed in one change", (t) => {
+  const root = squashedAt(t, "RULE-SCORE-003", (r) => supersededRule(r, "RULE-SCORE-003", "RULE-SCORE-001"));
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-003.md"));
+  const chain = ["--squashed", "RULE-SCORE-002=RULE-SCORE-003,RULE-SCORE-003=RULE-SCORE-001"];
+  const { status, output } = run(root, "--base", "HEAD", ...chain);
+  assert.equal(status, 0, output);
+  assert.doesNotMatch(output, /RULE-SCORE-00[23]/);
+  // A citation left behind names the end of the chain, the entry that exists.
+  replaceIn(root, "spec/glossary/add_points.md", "RULE-SCORE-001.", "RULE-SCORE-002.");
+  const cited = run(root, "--base", "HEAD", ...chain);
+  assert.equal(cited.status, 1);
+  assert.match(
+    cited.output,
+    /add_points cites RULE-SCORE-002, which was squashed into RULE-SCORE-001; cite it instead$/m,
+  );
+});
+
+test("--squashed fails for replacements that are only squashed into each other", (t) => {
+  const root = squashedAt(t, "RULE-SCORE-003", (r) => supersededRule(r, "RULE-SCORE-003", "RULE-SCORE-002"));
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-003.md"));
+  const cycle = ["--squashed", "RULE-SCORE-002=RULE-SCORE-003,RULE-SCORE-003=RULE-SCORE-002"];
+  const { status, output } = run(root, "--base", "HEAD", ...cycle);
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /^spec: RULE-SCORE-002 is listed in --squashed, but its replacements are all squashed into each other \[IDENTIFIERS-6\]$/m,
+  );
+});
+
 test("--squashed fails for an entry that still exists, with or without a base", (t) => {
   const root = broken(t, (r) => supersededRule(r, "RULE-SCORE-002", "RULE-SCORE-001"));
   for (const args of [[], ["--base", "HEAD"]]) {
@@ -964,7 +1019,7 @@ test("a squashed ID still cited anywhere fails, an alias included", (t) => {
   const squashed = ["--squashed", "RULE-SCORE-002=RULE-SCORE-001,SRC-OLD-MANUAL=SRC-MANUAL"];
   const { status, output } = run(root, "--base", "HEAD", "--references", "notes", ...squashed);
   assert.equal(status, 1);
-  assert.match(output, /add_points cites RULE-SCORE-002, which does not exist$/m);
+  assert.match(output, /add_points cites RULE-SCORE-002, which was squashed into RULE-SCORE-001; cite it instead$/m);
   assert.match(output, /handover\.md: cites RULE-SCORE-002, which was squashed into RULE-SCORE-001; cite it instead$/m);
   assert.match(output, /handover\.md: cites SRC-OLD-MANUAL, which was squashed into SRC-MANUAL; cite it instead$/m);
   assert.doesNotMatch(output, /deleted or renamed/);
@@ -1000,8 +1055,8 @@ test("--squashed rejects a malformed value with exit code 2", () => {
     ["RULE-SCORE-002=", /--squashed takes items/],
     ["RULE-SCORE-002=DEV-SCORE-001", /--squashed takes items/],
     ["RULE-SCORE-002=RULE-SCORE-001=RULE-SCORE-003", /--squashed takes items/],
-    ["RULE-SCORE-002=RULE-SCORE-002", /names RULE-SCORE-002 as its own replacement, or a replacement twice/],
-    ["RULE-SCORE-002=RULE-SCORE-001+RULE-SCORE-001", /as its own replacement, or a replacement twice/],
+    ["RULE-SCORE-002=RULE-SCORE-002", /names RULE-SCORE-002 as its own replacement$/m],
+    ["RULE-SCORE-002=RULE-SCORE-001+RULE-SCORE-001", /names a replacement more than once$/m],
     ["RULE-SCORE-002=RULE-SCORE-001,RULE-SCORE-002=RULE-SCORE-003", /--squashed lists RULE-SCORE-002 more than once/],
   ] as const) {
     const { status, output } = run(fixture, "--squashed", value);

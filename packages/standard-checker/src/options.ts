@@ -200,8 +200,12 @@ function parseSquashed(value: string | undefined): Map<string, string[]> {
       console.error(`--squashed lists ${old} more than once`);
       process.exit(2);
     }
-    if (into.includes(old) || new Set(into).size !== into.length) {
-      console.error(`--squashed: ${item} names ${old} as its own replacement, or a replacement twice`);
+    if (into.includes(old)) {
+      console.error(`--squashed: ${item} names ${old} as its own replacement`);
+      process.exit(2);
+    }
+    if (new Set(into).size !== into.length) {
+      console.error(`--squashed: ${item} names a replacement more than once`);
       process.exit(2);
     }
     squashed.set(old, into);

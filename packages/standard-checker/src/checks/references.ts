@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import type { Context } from "../context.ts";
-import { isSuperseded } from "../evidence.ts";
+import { isSuperseded, whyMissing } from "../evidence.ts";
 import { walk } from "../files.ts";
 import { idsIn, isAlias } from "../ids.ts";
 import { DEV_RE } from "../standard.ts";
@@ -26,16 +26,11 @@ export function checkReferences(ctx: Context, deviations: Map<string, Deviation>
     });
   for (const { file: f, text } of scan) {
     for (const x of idsIn(text)) {
-      const into = squashed.get(x);
-      if (into && !entries.has(x)) {
-        problem(
-          f,
-          `cites ${x}, which was squashed into ${into.join(", ")}; cite ${into.length > 1 ? "those" : "it"} instead`,
-        );
-        continue;
-      }
-      if (isAlias(x) && !entries.has(x)) continue; // aliases can collide with ordinary words
-      if (!entries.has(x)) problem(f, `cites ${x}, which does not exist in the spec`);
+      // Aliases can collide with ordinary words, so one that does not resolve is skipped, unless
+      // --squashed lists it.
+      if (isAlias(x) && !entries.has(x) && !squashed.has(x)) continue;
+      if (!entries.has(x))
+        problem(f, `cites ${x}, ${squashed.has(x) ? whyMissing(ctx, x) : "which does not exist in the spec"}`);
       else if (isSuperseded(entries, x) && !isDeviationFile(f))
         problem(f, `cites ${x}, which is superseded; cite what replaced it`);
     }

@@ -4,7 +4,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Context } from "../context.ts";
-import { mayBeInterrupted, onlyEmulatedRuns } from "../evidence.ts";
+import { mayBeInterrupted, onlyEmulatedRuns, whyMissing } from "../evidence.ts";
 import { asList, idsIn, kindOf } from "../ids.ts";
 import { readCsv } from "../markdown.ts";
 import { KINDS, LIST_LIMIT } from "../standard.ts";
@@ -217,7 +217,7 @@ export function checkRules(ctx: Context, { enumNames }: FormatNames) {
         "another rule may interrupt this procedure (# may run:), so a complete reading cannot establish it; leave complete_reading empty",
         "STATUS-4",
       );
-    for (const x of idsIn(code)) if (!entries.has(x)) problem(file, `procedure names ${x}, which does not exist`);
+    for (const x of idsIn(code)) if (!entries.has(x)) problem(file, `procedure names ${x}, ${whyMissing(ctx, x)}`);
     for (const m of code.matchAll(/\bemit\s+([A-Za-z_][A-Za-z0-9_]*)/g))
       if (!useTerm(m[1])) problem(file, `emits ${m[1]}, which has no glossary entry`);
     for (const m of code.matchAll(/\bdrain\s+([A-Za-z_][A-Za-z0-9_]*)/g))

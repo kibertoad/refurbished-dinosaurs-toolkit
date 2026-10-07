@@ -38,7 +38,7 @@ inputs:
     required: false
     default: "false"
   squashed:
-    description: Comma-separated OLD=NEW or OLD=NEW+NEW items naming superseded entries this change deleted and the replacements their superseded_by named at the base. Each listed deletion passes instead of failing IDENTIFIERS-6 when that list matches and every replacement exists and is not superseded. Empty accepts no deletion.
+    description: Comma-separated OLD=NEW or OLD=NEW+NEW items naming superseded entries this change deleted and the replacements their superseded_by named at the base. Each listed deletion passes instead of failing IDENTIFIERS-6 when that list matches and every replacement exists and is not superseded, or is listed too. A listed entry that exists fails, so keep the input after the squash reaches the main branch. Empty accepts no deletion.
     required: false
     default: ""
   kaitai-version:

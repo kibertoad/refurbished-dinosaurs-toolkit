@@ -292,12 +292,15 @@ List each squashed entry with its replacements in the action's `squashed` input 
 `--squashed` for local runs: `FND-AI-008=FND-AI-064,FND-AI-025=FND-AI-069`, or
 `FND-X-001=FND-X-002+FND-X-003` for an entry split in two. The check accepts a listed deletion
 when the entry's `superseded_by` at the base names exactly those replacements and each of them
-exists and is not superseded. It fails for a listed entry that still exists, and for any
-citation of a squashed ID that is left, including a build or source alias in the code. The
+exists and is not superseded. A chain is squashed by listing each link: with `A` superseded by `B`
+and `B` by `C`, `A=B,B=C` deletes both, and a citation of `A` is pointed at `C`. It fails for a listed entry that still exists, and for a squashed
+ID still cited in the spec, the glossary, the code, the `references` directories, `parity/` or
+`deviations/`, including a build or source alias in the code. The
 indexes and `PARITY.md` are not searched for citations: with `scheduled-generation` they may name a
-squashed ID until the main branch regenerates them, and without it the check rewrites them. Once the
-squash is on the main branch, a listed ID the base does not have is named as a skipped step, so
-remove the input in a later change.
+squashed ID until the main branch regenerates them, and without it the check rewrites them. Keep the
+input after the squash reaches the main branch: a listed ID that exists again fails, so the input
+is what stops a squashed ID from being used again. A listed ID the base does not have is named as a
+skipped step.
 
 ```yaml
       - uses: kibertoad/refurbished-dinosaurs-toolkit/actions/check-documentation@<sha>

@@ -20,9 +20,39 @@ export const isSuperseded = (entries: Map<string, Entry>, id: string) =>
     asList(entries.get(id)!.meta.superseded_by).length > 0 &&
     ["BLD", "SRC"].includes(entries.get(id)!.kind));
 
+/**
+ * The entries that stand in for id after --squashed: its listed replacements, with each one that is
+ * squashed too replaced by its own. Empty when --squashed does not list id, or when its
+ * replacements only lead back to squashed IDs already followed.
+ */
+export function squashedInto(squashed: Map<string, string[]>, id: string): string[] {
+  const into: string[] = [];
+  const seen = new Set([id]);
+  const follow = (x: string) => {
+    for (const r of squashed.get(x) ?? []) {
+      if (seen.has(r)) continue;
+      seen.add(r);
+      if (squashed.has(r)) follow(r);
+      else into.push(r);
+    }
+  };
+  follow(id);
+  return into;
+}
+
+/**
+ * Why a cited id that is not an entry fails, worded to follow the citation: it names the
+ * replacements of an ID that --squashed lists, and says the ID does not exist otherwise.
+ */
+export function whyMissing(ctx: Context, id: string) {
+  const into = squashedInto(ctx.config.squashed, id);
+  if (into.length === 0) return "which does not exist";
+  return `which was squashed into ${into.join(", ")}; cite ${into.length > 1 ? "those" : "it"} instead`;
+}
+
 /** Reports each of ids that is not an entry, as cited by what in file. */
 export function checkResolves(ctx: Context, file: string, ids: string[], what: string) {
-  for (const id of ids) if (!ctx.spec.entries.has(id)) ctx.problem(file, `${what} cites ${id}, which does not exist`);
+  for (const id of ids) if (!ctx.spec.entries.has(id)) ctx.problem(file, `${what} cites ${id}, ${whyMissing(ctx, id)}`);
 }
 
 /**

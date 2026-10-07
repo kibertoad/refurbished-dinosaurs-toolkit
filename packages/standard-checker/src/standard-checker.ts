@@ -23,8 +23,10 @@
 //   --squashed <list>   comma-separated OLD=NEW or OLD=NEW+NEW items: superseded entries this change
 //                       deleted, squashed into the replacements their superseded_by named at the
 //                       base. Each deletion passes when that list matches and every replacement
-//                       exists and is not superseded; an OLD that still exists fails, and one the
-//                       base does not have is named as skipped. A squashed ID still cited anywhere
+//                       exists and is not superseded or is listed too (A=B,B=C squashes a
+//                       chain); an OLD that still exists fails, and one the base does not have is
+//                       named as skipped. A squashed ID still cited in the
+//                       spec, the glossary, the code, the references, parity/ or deviations/
 //                       fails, an alias included; the generated files are not searched, so under
 //                       --scheduled-generation they may name one until the main branch regenerates them
 //   --no-ksy            skip compiling the Kaitai definitions; the result line names the skip
