@@ -30,7 +30,7 @@ inputs:
     required: false
     default: ""
   scheduled-generation:
-    description: '"true" when a scheduled job writes spec/index/ and PARITY.md on the main branch. The check then neither compares them with the spec nor writes them, and fails when the change since the base edits, adds or removes one.'
+    description: '"true" when spec/index/ and PARITY.md are updated on the main branch only, such as by a scheduled job. The check then neither compares them with the spec nor writes them, and fails when the change since the base edits, adds or removes one.'
     required: false
     default: "false"
   kaitai-version:

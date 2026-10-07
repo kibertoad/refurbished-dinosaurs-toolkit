@@ -63,8 +63,8 @@ export function writeGenerated(ctx: Context, generated: Map<string, string>, bas
 
 /**
  * Reports each generated file that the working tree changes, adds or removes since base, untracked
- * files that git does not ignore included. A scheduled job on the main branch writes them, so a
- * branch that edits them would conflict with every other branch that does. Without a base the
+ * files that git does not ignore included. They are updated on the main branch only, so a branch
+ * that edits them would conflict with every other branch that does. Without a base the
  * comparison does not run, and checkBase has already named it as skipped or, with --require-base,
  * reported it.
  */
@@ -94,7 +94,7 @@ function checkUnchanged(ctx: Context, generated: Map<string, string>, base: stri
   for (const p of [...new Set(changed)].sort())
     problem(
       join(repoDir, p),
-      `differs from ${base}; the main branch's scheduled job writes the generated files, so restore it as it is at ${base}`,
+      `differs from ${base}; the generated files are updated on the main branch only, so restore it as it is at ${base}`,
     );
 }
 

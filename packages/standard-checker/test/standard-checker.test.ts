@@ -907,7 +907,7 @@ test("--scheduled-generation fails a change that edits, adds or removes a genera
     assert.match(
       output,
       new RegExp(
-        `^${path.replaceAll(".", "\\.")}: differs from [0-9a-f]{40}; the main branch's scheduled job writes the generated files, so restore it as it is at [0-9a-f]{40}$`,
+        `^${path.replaceAll(".", "\\.")}: differs from [0-9a-f]{40}; the generated files are updated on the main branch only, so restore it as it is at [0-9a-f]{40}$`,
         "m",
       ),
     );
@@ -926,7 +926,7 @@ test("--scheduled-generation takes the base branch's newer generated files durin
     );
     assert.equal(result.status, 0, result.stderr);
   };
-  // The branch changes something else; the base branch's scheduled job rewrites an index.
+  // The branch changes something else; the base branch gets a newer index.
   git("checkout", "-q", "-b", "feature");
   writeFileSync(join(root, "notes.txt"), "A change on the branch.\n");
   git("add", ".");

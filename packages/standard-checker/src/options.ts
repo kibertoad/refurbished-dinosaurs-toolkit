@@ -28,8 +28,8 @@ export interface Config {
   /** --check: report stale generated files instead of rewriting them. */
   checkOnly: boolean;
   /**
-   * --scheduled-generation: a scheduled job writes the generated files on the main branch, so the
-   * run neither writes nor compares them, and fails when the change since the base edits them.
+   * --scheduled-generation: the generated files are updated on the main branch only, so the run
+   * neither writes nor compares them, and fails when the change since the base edits them.
    */
   scheduledGeneration: boolean;
   /** --no-ksy: skip compiling the Kaitai definitions. */

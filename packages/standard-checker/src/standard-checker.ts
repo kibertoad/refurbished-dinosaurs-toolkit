@@ -9,7 +9,8 @@
 //   --root <dir>        the repository to check (default: the current directory)
 //   --check             fail when an index or PARITY.md is stale instead of rewriting it
 //   --scheduled-generation
-//                       a scheduled job writes the indexes and PARITY.md on the main branch:
+//                       the indexes and PARITY.md are updated on the main branch only, such as
+//                       by a scheduled job:
 //                       neither write nor compare them, and fail when the change since the base
 //                       (--base or the fork point) edits, adds or removes one; the result line
 //                       names the comparison with the spec as skipped

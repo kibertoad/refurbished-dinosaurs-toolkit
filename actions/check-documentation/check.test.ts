@@ -249,7 +249,10 @@ test("check.sh with scheduled-generation fails a pull request that edits a gener
   writeFileSync(join(clone, "spec", "index", "by-kind.md"), "edited\n");
   const { status, output } = runScript("check.sh", [], env);
   assert.equal(status, 1, output);
-  assert.match(output, /^spec\/index\/by-kind\.md: differs from [0-9a-f]{40}; the main branch's scheduled job/m);
+  assert.match(
+    output,
+    /^spec\/index\/by-kind\.md: differs from [0-9a-f]{40}; the generated files are updated on the main branch only/m,
+  );
 });
 
 test("check.sh with a base input compares with it and fetches nothing", { skip }, (t) => {

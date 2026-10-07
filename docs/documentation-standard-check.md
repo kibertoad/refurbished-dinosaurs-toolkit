@@ -189,19 +189,19 @@ git add spec/index PARITY.md
 Use the version the action's toolkit commit carries in `packages/standard-checker/package.json`,
 so the local run and CI agree.
 
-### Generating on a schedule instead
+### Updating the generated files on the main branch only
 
 When several pull requests are open at once, most of them change the indexes and `PARITY.md`, and
-those files conflict between them on almost every merge. A restoration can instead leave them to a
-scheduled job on the main branch, which runs the checker without `--check` and commits what it
-writes. Branches then never change them, and the main branch's copies are as old as the job's last
-run.
+those files conflict between them on almost every merge. A restoration can instead update them on
+the main branch only, by running the checker there without `--check` and committing what it
+writes, by hand or from a scheduled job. Branches then never change them, and the main branch's
+copies are as old as the last such run.
 
 Set the action's `scheduled-generation` input to `"true"`, and pass `--scheduled-generation` to
 local runs, such as a pre-commit hook. The check then neither compares the generated files with the
 spec nor writes them, and names that comparison as skipped. It fails when the change since the
 fork point edits, adds or removes one of them; restore such a file as it is on the base branch. A
-branch that merges the main branch takes the job's newer copies without a change of its own, since
+branch that merges the main branch takes its newer copies without a change of its own, since
 the fork point moves with the merge.
 
 ```yaml
