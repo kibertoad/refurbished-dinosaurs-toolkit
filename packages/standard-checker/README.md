@@ -69,6 +69,34 @@ is looked up on `PATH` the same way.
 On every platform, a launcher found on `PATH` whose `--version` fails is not used, and the checker
 prints a warning naming its path, with its output.
 
+## Coverage
+
+`standard-coverage` measures how much of each analysed file of code the spec cites, against the
+function inventories in `coverage/`, as the work protocol's
+[Measuring progress](https://dinorefurb.com/work-protocol/#measuring-progress) section describes.
+
+```sh
+pnpm exec standard-coverage                       # per-file shares and the uncited functions
+pnpm exec standard-coverage --list                # also every function with the entries citing it
+pnpm exec standard-coverage --json                # the same figures as JSON
+pnpm exec standard-coverage --require-complete    # fail while an in-scope function is uncited
+```
+
+An inventory is `coverage/<build>/<file>.tsv`, with `<file>` the manifest's path and a `CD:` prefix
+written as a directory `@CD`. Its columns are `start` and `size`, then optionally `name` and
+`out_of_scope`. `start` is in the standard's notation for the file's format: an address, or for MZ
+overlay code an offset inside a row of the build's Code ranges.
+
+An entry cites a function when one of its `locations` names the same build and file and its
+address, offset or half-open range overlaps the function's `size` bytes from `start`. Locations with
+`kind: file-data`, into the unpacked form of a packed file, or of superseded entries cite nothing,
+and neither does an address written in an entry's body. A function whose body is not contiguous is
+measured as if it were. The shares count functions and bytes of the functions not out of scope.
+
+It exits with 0, with 1 when an inventory is invalid or `--require-complete` finds an uncited
+function, and with 2 when the options are invalid. Problems with the spec itself are left to
+`standard-checker`.
+
 ## In GitHub Actions
 
 The toolkit's `actions/check-documentation` composite action runs this checker with `--check`,
