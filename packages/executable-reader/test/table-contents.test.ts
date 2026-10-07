@@ -417,6 +417,28 @@ test("table report reads nothing in a PE32 section whose PointerToRawData is 0 a
   assert.throws(() => refused.query(), /raw bytes overlap headers/);
 });
 
+test("table report assumes no zero fill past SizeOfRawData in a PE32 section whose PointerToRawData is 0", (t) => {
+  const data = zeroRawPointerPe();
+  data.writeUInt32LE(0x400, 0x178 + 40 + 8); // .bss VirtualSize 0x400, past its SizeOfRawData 0x200
+  // Table at 0x403100 (file 0x700): pointers into .bss before and past SizeOfRawData, and one at "Hi".
+  [0x402010, 0x402300, 0x403180].forEach((va, i) => data.writeUInt32LE(va, 0x700 + i * 4));
+  data.write("Hi\0", 0x780, "latin1");
+  const { query } = harness(t, data, {
+    sourceKind: "pe32",
+    table: { address: 0x403100, stride: 4, pointer: { offset: 0, kind: "flat32" }, count: 3 },
+    string: { terminator: 0, limit: 64 },
+    controls: [{ index: 2, text: "Hi", evidence: "synthetic" }],
+  });
+  const r = query();
+  for (const entry of r.entries.slice(0, 2)) {
+    assert.equal(entry.result, "uninitialized");
+    assert.match(entry.reason, /section 1 \.bss, whose PointerToRawData is 0/);
+    assert.equal(entry.text, undefined);
+    assert.equal(entry.terminatedBy, undefined);
+  }
+  assert.equal(r.entries[2].result, "string");
+});
+
 test("table report refuses PE32 sections whose raw bytes overlap", (t) => {
   const data = pe32();
   data.writeUInt32LE(0x300, 88 + 264 + 20); // .data's raw bytes start inside .rdata's

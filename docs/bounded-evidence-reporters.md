@@ -611,7 +611,9 @@ inputs fail. Headers and section metadata appear in every report's sourceMapping
 A section whose PointerToRawData is 0 has no file bytes, whatever its SizeOfRawData says, as some
 linkers write an uninitialized data section. Its SizeOfRawData still counts toward its virtual
 extent (`mappedExtent`), its `loadedRawSize` is 0, and its `rawIgnored` in sourceMapping is
-`"PointerToRawData is 0"` (`null` on every other section). The engine reads none of its bytes and
+`"PointerToRawData is 0"` (`null` on every other section). Its `rawStart` and `rawSize` keep the
+header's values, 0 and SizeOfRawData, and name no file bytes; the file bytes of any section are
+`rawStart` up to `rawStart + loadedRawSize`. The engine reads none of its bytes and
 does not assume what a loader puts there, so a load from it has no known value. A nonzero
 PointerToRawData below SizeOfHeaders still fails. The reader's `imports` and `table` reports apply
 the same rule to PE sections.

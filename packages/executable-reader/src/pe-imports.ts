@@ -1,5 +1,5 @@
 // The PE import report: which import the file's own import tables put in each import address table slot.
-import { ignoredRawData } from "./table-mapping.ts";
+import { peSections } from "./table-mapping.ts";
 import type { IgnoredRawData } from "./table-mapping.ts";
 
 export type { IgnoredRawData };
@@ -59,15 +59,6 @@ const MAX_DESCRIPTORS = 4096,
   MAX_ENTRIES = 65536,
   MAX_NAME = 4096,
   MAX_CONTROLS = 256;
-
-interface Section {
-  rva: number;
-  extent: number;
-  rawStart: number;
-  /** File bytes the section has: SizeOfRawData, or 0 when its PointerToRawData is 0. */
-  rawSize: number;
-  loaded: number;
-}
 
 const hexEntry = (value: bigint, width: number) => `0x${value.toString(16).padStart(width * 2, "0")}`;
 const hex = (n: number) => `0x${n.toString(16)}`;
@@ -170,38 +161,7 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
   if (!sizeOfImage || sizeOfHeaders < table + count * 40 || sizeOfHeaders > bytes.length || sizeOfHeaders > sizeOfImage)
     throw new Error("Invalid PE image/header extent");
   // The same section checks as the engine's PE32 loader, so that every RVA maps to one section.
-  const sections: Section[] = [];
-  const rawIgnored: IgnoredRawData[] = [];
-  for (let i = 0; i < count; i++) {
-    const at = table + i * 40;
-    const virtualSize = dword(at + 8),
-      rva = dword(at + 12),
-      sizeOfRawData = dword(at + 16),
-      rawStart = dword(at + 20);
-    const extent = Math.max(virtualSize, sizeOfRawData);
-    // A zero PointerToRawData gives the section no file bytes, whatever SizeOfRawData says.
-    const ignored = ignoredRawData(bytes, at, i, sizeOfRawData, rawStart);
-    if (ignored) rawIgnored.push(ignored);
-    const rawSize = ignored ? 0 : sizeOfRawData;
-    if (!extent || rva < sizeOfHeaders || rva + extent > sizeOfImage)
-      throw new Error("PE section escapes image or overlaps headers");
-    if (rawSize) {
-      span(rawStart, rawSize);
-      if (rawStart < sizeOfHeaders) throw new Error("PE section raw bytes overlap headers");
-    }
-    for (const prior of sections) {
-      if (Math.max(rva, prior.rva) < Math.min(rva + extent, prior.rva + prior.extent))
-        throw new Error("Ambiguous PE virtual section mapping");
-      if (
-        rawSize &&
-        prior.rawSize &&
-        Math.max(rawStart, prior.rawStart) < Math.min(rawStart + rawSize, prior.rawStart + prior.rawSize)
-      )
-        throw new Error("Overlapping PE raw sections");
-    }
-    // Raw bytes past VirtualSize are file-alignment padding, which the loader does not map.
-    sections.push({ rva, extent, rawStart, rawSize, loaded: virtualSize ? Math.min(rawSize, virtualSize) : rawSize });
-  }
+  const { sections, rawIgnored } = peSections(bytes, table, count, sizeOfHeaders, sizeOfImage);
   // File offset of `rva` and how many bytes from there on are loaded from the file, or null for none.
   const loadedRun = (rva: number): { at: number; length: number } | null => {
     if (rva < sizeOfHeaders) return { at: rva, length: sizeOfHeaders - rva };

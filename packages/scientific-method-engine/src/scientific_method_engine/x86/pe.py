@@ -12,7 +12,9 @@ def pe32(data):
     ``rawSize``, ``loadedRawSize`` (raw bytes actually loaded), ``mappedExtent``, ``rawIgnored`` and
     ``executable``. A section whose PointerToRawData is 0 has no file bytes: its SizeOfRawData still
     counts toward ``mappedExtent``, its ``loadedRawSize`` is 0, and its ``rawIgnored`` says why
-    (None on every other section). What a loader puts in such a section is not assumed. Raises
+    (None on every other section). ``rawStart`` and ``rawSize`` keep the header's PointerToRawData
+    and SizeOfRawData, so they name no file bytes there; ``loadedRawSize`` is the file extent to
+    read. What a loader puts in such a section is not assumed. Raises
     ``ValueError`` for anything other than an MZ-stubbed PE32 for i386, and for truncated,
     overlapping or ambiguous sections, a nonzero PointerToRawData below SizeOfHeaders among them.
     The mapping assumes the preferred image base; rebasing and imports are not simulated.
@@ -46,7 +48,7 @@ def pe32(data):
     span(table, count * 40)
     if not size or base + size > 1 << 32 or headers < table + count * 40 or headers > len(data) or headers > size:
         raise ValueError("Invalid PE image/header extent")
-    sections, file_sizes = [], []
+    sections = []
     for i in range(count):
         at = table + i * 40
         virtual_size, rva, raw_size, raw = (dword(at + j) for j in (8, 12, 16, 20))
@@ -66,13 +68,13 @@ def pe32(data):
                    "rva": rva, "va": base + rva, "virtualSize": virtual_size,
                    "rawStart": raw, "rawSize": raw_size, "loadedRawSize": loaded, "mappedExtent": extent,
                    "rawIgnored": ignored, "executable": bool(dword(at + 36) & 0x20000000)}
-        for prior, prior_size in file_sizes:
+        for prior in sections:
             if max(rva, prior['rva']) < min(rva + extent, prior['rva'] + prior['mappedExtent']):
                 raise ValueError("Ambiguous PE virtual section mapping")
+            prior_size = 0 if prior['rawIgnored'] else prior['rawSize']
             if file_size and prior_size and max(raw, prior['rawStart']) < min(raw + file_size, prior['rawStart'] + prior_size):
                 raise ValueError("Overlapping PE raw sections")
         sections.append(section)
-        file_sizes.append((section, file_size))
     return {"format": "PE32/i386", "imageBase": base, "sizeOfImage": size,
             "sizeOfHeaders": headers, "sections": sections,
             "mappingProvenance": "source COFF/PE optional header and section table",
