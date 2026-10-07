@@ -3538,6 +3538,68 @@ test("an event with no handlers is checked only against its other emits in rules
   assert.doesNotMatch(apart.output, /emits ScoreChanged/);
 });
 
+// Rewrites the glossary entry of ScoreChanged that withCallee writes, after its first sentence.
+function scoreChangedSays(r: string, text: string) {
+  writeFileSync(
+    join(r, "spec", "glossary", "ScoreChanged.md"),
+    `# ScoreChanged\n\nAn event: the score has changed. It carries \`score\` and \`bonus\`. ${text}\n`,
+  );
+}
+
+test("a rule the glossary entry names as the event's emitter is not counted as a handler", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.", "return n + 1", "");
+    scoreChangedSays(r, "RULE-SCORE-001 emits it. No rule handles it yet.");
+    procedure(r, ["emit ScoreChanged(n, 1)"]);
+  });
+  const listed = run(root);
+  assert.equal(listed.status, 0, listed.output);
+  assert.doesNotMatch(listed.output, ARGUMENT_SKIP);
+  replaceIn(root, "spec/rules/RULE-SCORE-001.md", "- `n`: the score before the kill.", "The score before the kill.");
+  const prose = run(root);
+  assert.equal(prose.status, 0, prose.output);
+  assert.doesNotMatch(prose.output, ARGUMENT_SKIP);
+});
+
+test("an emit is counted against a handler the glossary entry names beside the emitter", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.", "return n + 1", "");
+    scoreChangedSays(r, "RULE-SCORE-001 emits it, and RULE-SCORE-002 handles it at once.");
+    procedure(r, ["emit ScoreChanged(n, 1)"]);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /RULE-SCORE-001\.md: emits ScoreChanged with 2 arguments, but the Parameters section of its handler RULE-SCORE-002 lists 1 parameter$/m,
+  );
+  assert.doesNotMatch(output, /its handler RULE-SCORE-001/);
+});
+
+test("a handler that emits its event again is counted when its When it runs section names the event", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.", "emit ScoreChanged(n, 1)\nreturn n + 1", "");
+    scoreChangedSays(r, "RULE-SCORE-001 emits it, and RULE-SCORE-002 handles it and emits it again.");
+    replaceIn(r, "spec/rules/RULE-SCORE-002.md", "When an enemy dies.", "When `ScoreChanged` is emitted.");
+    procedure(r, ["emit ScoreChanged(n, 1)"]);
+  });
+  const named = run(root);
+  assert.equal(named.status, 1);
+  assert.match(
+    named.output,
+    /RULE-SCORE-002\.md: emits ScoreChanged with 2 arguments, but the Parameters section of its handler RULE-SCORE-002 lists 1 parameter$/m,
+  );
+  assert.doesNotMatch(named.output, /its handler RULE-SCORE-001/);
+  replaceIn(
+    root,
+    "spec/rules/RULE-SCORE-002.md",
+    "When `ScoreChanged` is emitted.",
+    "When `ScoreChangedLater` is emitted.",
+  );
+  const unnamed = run(root);
+  assert.equal(unnamed.status, 0, unnamed.output);
+});
+
 test("an emit to a split handler is counted against the entries that list the emitting rule's builds", (t) => {
   const root = broken(t, (r) => {
     withCallee(r, "- `n`: the score before the kill.", "return n + 1", "RULE-SCORE-003");

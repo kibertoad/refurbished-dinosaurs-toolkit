@@ -4,6 +4,11 @@
 // `emit`s of one event in rules that share a build pass the same number of arguments, which is the
 // only check an event with no handlers gets.
 //
+// A rule the glossary entry names is a handler of the event unless its own procedure emits the
+// event and its When it runs section does not name it: such a rule is the event's emitter, which a
+// glossary entry names to say where the event comes from. A handler that emits its event again
+// names that event in When it runs, since that section gives what triggers the rule.
+//
 // A call to a split rule, and an emit to a split handler, is counted against each entry of the
 // split that lists one of the calling or emitting rule's builds, and a call to a function that a
 // split rule defines against the `define` of each such entry. A Parameters section in any other
@@ -106,6 +111,21 @@ export function checkArgumentCounts(ctx: Context) {
       defined.get(name)!.push({ id, count: params.length });
     }
 
+  // Event name -> the live rules whose procedure emits it.
+  const emitters = new Map<string, Set<string>>();
+  for (const [id, e] of live)
+    for (const m of withoutCommentsAndStrings(e.code ?? "").matchAll(/\bemit\s+([A-Za-z_][A-Za-z0-9_]*)/g)) {
+      if (!emitters.has(m[1])) emitters.set(m[1], new Set());
+      emitters.get(m[1])!.add(id);
+    }
+  // Whether rule is a handler of event among the rules its glossary entry names: it is not when it
+  // emits the event and its When it runs section does not name the event, which makes it the emitter.
+  const handles = (rule: string, event: string) => {
+    if (!emitters.get(event)?.has(rule)) return true;
+    const when = entries.get(rule)!.sections.find((s) => s.title === "When it runs")?.text ?? "";
+    return new RegExp(`(?<![A-Za-z0-9_])${event}(?![A-Za-z0-9_])`).test(when);
+  };
+
   // Event name -> the argument counts its emits pass, with the rule each comes from.
   const emitted = new Map<string, { id: string; entry: Entry; count: number }[]>();
 
@@ -183,7 +203,8 @@ export function checkArgumentCounts(ctx: Context) {
       const handlers = idsIn(glossary.get(event)).filter(
         (x) => kindOf(x) === "RULE" && entries.get(x)?.kind === "RULE",
       );
-      for (const handler of new Set(handlers.flatMap((h) => targetsOf(h, e)))) {
+      const targets = new Set(handlers.flatMap((h) => targetsOf(h, e)).filter((h) => handles(h, event)));
+      for (const handler of targets) {
         const want = countOf(handler);
         if (want === null) cannotCount(handler, `emit of ${event} in ${id}`);
         else if (want !== n)

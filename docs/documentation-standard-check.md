@@ -476,8 +476,12 @@ procedure:
   counted, and neither is a call to a name the procedure declares itself, as a `let`, a loop
   variable, a parameter of its `define`s or an item of its Parameters section.
 - `emit GangDetected(gang)` passes one argument for each parameter of the Parameters section of
-  every rule the event's glossary entry names, and every rule ID in the glossary entry counts as a
-  handler. A split handler is compared with each entry of the split that lists one of the emitting
+  every rule the event's glossary entry names as a handler. Every rule ID in the glossary entry
+  counts as a handler except the event's emitter: a rule whose own procedure emits the event and
+  whose When it runs section does not name it. So a glossary entry can say which rule emits the
+  event (`RULE-COMBAT-004 emits it.`) without the emit being compared with that rule's Parameters
+  section. A handler that emits its event again names the event in When it runs, which gives what
+  triggers the rule, and is still counted. A split handler is compared with each entry of the split that lists one of the emitting
   rule's builds.
 - Two `emit`s of one event in rules that share a build pass the same number of arguments. An
   event with no handlers gets only this check, since its glossary entry gives what it carries in
