@@ -106,8 +106,8 @@ Most restorations need no inputs. Set one when the defaults do not match the rep
 | `java-version` | empty | Java to install with `actions/setup-java` before the compiler. |
 
 The code and reference directories are scanned for `.cs`, `.ts`, `.mjs`, `.js`, `.ps1`, `.fs`,
-`.md` and `.json` files, skipping `bin`, `obj`, `node_modules`, `.git` and `artifacts`. Every spec
-ID cited in those files and in the Markdown files of `parity/` and `deviations/` must exist and not
+`.md` and `.json` files, skipping `bin`, `obj`, `dist`, `node_modules`, `.git` and `artifacts`.
+Every spec ID cited in those files and in the Markdown files of `parity/` and `deviations/` must exist and not
 be superseded, and every deviation ID cited in those files and in `parity/` must be in
 `deviations/`. A deviation file may cite the superseded entry it departed from, and the deviation
 IDs it cites are not checked.
@@ -204,6 +204,8 @@ The standard says the spec never names a class, file or setting of the rebuild. 
 each line of a Markdown file in `spec/`, other than the generated indexes, that names a path in one
 of the `rebuild` directories, such as `tests/Score.Tests/ScoreTests.cs` or `../../src/Score.cs`, or a
 source file (`.cs`, `.fs`, `.ts`, `.mjs`, `.js`, `.ps1`) found in one of them by its file name alone.
+The search for those names skips `bin`, `obj`, `dist`, `node_modules`, `.git` and `artifacts`, so a
+file name that only build output has, such as a bundler's `index.js`, stays free to use.
 A path counts when it exists, or when it is written with forward slashes and has a file extension
 or goes more than one level down. So prose such as "tests/experiments" does not count, and neither
 does a path of the original's own sources quoted as evidence with backslashes, such as

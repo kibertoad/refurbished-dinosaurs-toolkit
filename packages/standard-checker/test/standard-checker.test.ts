@@ -3134,6 +3134,20 @@ test("--rebuild takes a directory written with ./ in front, and a nested one cou
   assert.equal(run(prose, "--rebuild", "server/src").status, 0);
 });
 
+for (const dir of ["bin", "obj", "dist", "node_modules", "artifacts"])
+  test(`a source file name that only ${dir} in a --rebuild directory has stays free to use`, (t) => {
+    const withName = (source: string) =>
+      broken(t, (r) => {
+        mkdirSync(join(r, "src", source), { recursive: true });
+        writeFileSync(join(r, "src", source, "index.js"), "export {};\n");
+        inSummary(r, "The installer's index.js unpacks the archive.");
+      });
+    assert.equal(run(withName(join("Score", dir))).status, 0);
+    const control = run(withName("Score"));
+    assert.equal(control.status, 1, control.output);
+    assert.match(control.output, /names index\.js, which belongs to the rebuild/);
+  });
+
 for (const [option, value] of [
   ["--images", "0x00400000"],
   ["--images", "0x00500000..0x00400000"],
