@@ -151,3 +151,20 @@ test("a body range of an entry located in two files is not checked", (t) => {
   assert.equal(status, 0, output);
   assert.ok(!output.includes("last byte"), output);
 });
+
+test("a range that ends on the last byte of one of a body's ranges fails", (t) => {
+  const root = copy(t);
+  finding(root, at("0x00401200..0x0040120F"));
+  const path = join(root, "coverage", "BLD-EXAMPLE-1.0", "GAME.EXE.tsv");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, "start\tsize\tranges\n0x00401000\t32\t0x00401000..0x00401010 0x00401200..0x00401210\n");
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(
+    output.includes(
+      "location address 0x00401200..0x0040120F ends on the last byte of a range of the function at 0x00401000 in " +
+        "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv; ranges are half-open, so it ends at 0x00401210",
+    ),
+    output,
+  );
+});

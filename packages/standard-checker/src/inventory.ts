@@ -22,6 +22,11 @@ export interface InventoryRow {
   size: number;
   name: string;
   outOfScope: string;
+  /**
+   * The body's half-open ranges in the row's space, in address order: those the ranges column
+   * gives, or start through start + size when it gives none.
+   */
+  body: Array<{ start: bigint; end: bigint }>;
 }
 
 /** One inventory, with its rows sorted by space, then start. */
@@ -66,6 +71,12 @@ export function locationRange(loc: Meta, format: Yaml): { space: Space; start: b
   return null;
 }
 
+/**
+ * The files the work protocol puts beside an inventory, named after it with these endings in place of
+ * .tsv. They hold the inventory's provenance and the denominator audit's totals, not functions.
+ */
+const SIDE_FILES = [".provenance.tsv", ".regions.tsv"];
+
 /** The build ID and manifest path an inventory's path stands for, or null when it has the wrong shape. */
 function inventoryTarget(path: string): { build: string; file: string } | null {
   const m = /^coverage\/(BLD-[^/]+)\/(.+)\.tsv$/.exec(path);
@@ -97,6 +108,9 @@ export function readInventories(
   const inventories: Inventory[] = [];
   for (const path of paths) {
     const bad = (why: string) => problems.push(`${path}: ${why}`);
+    // A side file is skipped, unless the manifest names a file whose inventory it would be.
+    const side = SIDE_FILES.find((s) => path.endsWith(s));
+    if (side && paths.includes(path.slice(0, -side.length) + ".tsv")) continue;
     const target = inventoryTarget(path);
     if (!target) {
       bad("is not coverage/<build>/<file>.tsv for a build ID and a path its manifest gives");
@@ -123,9 +137,9 @@ export function readInventories(
       columns[0] !== "start" ||
       columns[1] !== "size" ||
       new Set(columns).size !== columns.length ||
-      columns.some((c) => !["start", "size", "name", "out_of_scope"].includes(c))
+      columns.some((c) => !["start", "size", "name", "out_of_scope", "ranges"].includes(c))
     ) {
-      bad("the columns are start and size, then optionally name and out_of_scope, each once");
+      bad("the columns are start and size, then optionally name, out_of_scope and ranges, each once");
       continue;
     }
     const ranges: CodeRange[] = (codeRanges.get(build) ?? []).filter((r) => r.file === file);
@@ -145,20 +159,56 @@ export function readInventories(
         bad(`${at}: size ${cell("size")} is not a positive number of bytes`);
         return;
       }
-      let place: { space: Space; at: bigint } | null = null;
-      const address = linear(start, format);
-      if (address !== null) place = { space: "address", at: address };
-      else if (rule.offset && /^0x[0-9A-F]{2,}$/.test(start)) {
-        const offset = BigInt(start);
-        if (!ranges.some((r) => r.start <= offset && offset < r.end)) {
-          bad(`${at}: offset ${start} lies inside no row the Code ranges section of ${build} gives for ${file}`);
-          return;
-        }
-        place = { space: "offset", at: offset };
-      }
+      // A place in the file: an address in the format's notation, or an offset into overlay code.
+      const placeOf = (value: string): { space: Space; at: bigint } | null => {
+        const address = linear(value, format);
+        if (address !== null) return { space: "address", at: address };
+        if (rule.offset && /^0x[0-9A-F]{2,}$/.test(value)) return { space: "offset", at: BigInt(value) };
+        return null;
+      };
+      const inCode = (offset: bigint, end = offset + 1n) => ranges.some((r) => r.start <= offset && end <= r.end);
+      const place = placeOf(start);
       if (!place) {
         bad(`${at}: start ${start} is not an address in the notation for a ${format} file`);
         return;
+      }
+      if (place.space === "offset" && !inCode(place.at)) {
+        bad(`${at}: offset ${start} lies inside no row the Code ranges section of ${build} gives for ${file}`);
+        return;
+      }
+      // The ranges column: the body's half-open ranges, `start..end` in the same notation as start,
+      // separated by spaces, when the body is not the size bytes from start.
+      let body = [{ start: place.at, end: place.at + BigInt(size) }];
+      const written = cell("ranges");
+      if (written) {
+        body = [];
+        for (const item of written.split(/ +/)) {
+          const ends = item.split("..");
+          const [from, to] = ends.length === 2 ? ends.map(placeOf) : [null, null];
+          if (!from || !to || from.space !== place.space || to.space !== place.space || to.at <= from.at) {
+            bad(`${at}: range ${item} is not a half-open range start..end in the notation of its start`);
+            return;
+          }
+          if (place.space === "offset" && !inCode(from.at, to.at)) {
+            bad(`${at}: range ${item} lies inside no row the Code ranges section of ${build} gives for ${file}`);
+            return;
+          }
+          body.push({ start: from.at, end: to.at });
+        }
+        body.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+        if (body.some((r, i) => i > 0 && r.start < body[i - 1].end)) {
+          bad(`${at}: the ranges overlap`);
+          return;
+        }
+        const total = body.reduce((n, r) => n + (r.end - r.start), 0n);
+        if (total !== BigInt(size)) {
+          bad(`${at}: size ${size} is not the total of the ranges, ${total}`);
+          return;
+        }
+        if (!body.some((r) => r.start <= place.at && place.at < r.end)) {
+          bad(`${at}: start ${start} lies in none of the ranges`);
+          return;
+        }
       }
       const key = `${place.space}:${place.at}`;
       if (seen.has(key)) {
@@ -166,7 +216,7 @@ export function readInventories(
         return;
       }
       seen.add(key);
-      functions.push({ start, ...place, size, name: cell("name"), outOfScope: cell("out_of_scope") });
+      functions.push({ start, ...place, size, name: cell("name"), outOfScope: cell("out_of_scope"), body });
     });
     functions.sort((a, b) =>
       a.space === b.space ? (a.at < b.at ? -1 : a.at > b.at ? 1 : 0) : a.space < b.space ? -1 : 1,

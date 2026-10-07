@@ -16,21 +16,24 @@
 //
 // A function inventory is coverage/<build>/<file>.tsv, where <file> is the path the build's
 // manifest gives, with a CD: or CD2: prefix written as a directory @CD or @CD2. It is tab-separated,
-// with the columns start and size first, then optionally name and out_of_scope. start is the
-// function's first byte in the notation the standard uses for that file's format: an address, or
+// with the columns start and size first, then optionally name, out_of_scope and ranges. start is
+// the function's entry in the notation the standard uses for that file's format: an address, or
 // for overlay code in an MZ file an offset that lies inside a row of the build's Code ranges. size
-// is the function's body in bytes. A row with a reason in out_of_scope is out of scope.
+// is the function's body in bytes. A row with a reason in out_of_scope is out of scope. When the
+// body is not one range from start, ranges lists its half-open ranges as start..end in the same
+// notation, separated by spaces; size is their total, and one of them holds start. The
+// .provenance.tsv and .regions.tsv files the protocol puts beside an inventory are not read.
 //
 // An entry cites a function when one of its locations names the same build and file and its
-// address or offset, or the half-open range it gives, overlaps the function's bytes, taken as size
-// bytes from start. A location with kind: file-data, a location into the unpacked form of a packed
+// address or offset, or the half-open range it gives, overlaps the function's body: its ranges, or
+// size bytes from start when the row gives none. A location with kind: file-data, a location into the unpacked form of a packed
 // file, and the locations of superseded entries cite nothing. An address written in an entry's
 // body does not count; only locations do. Real-mode segmented addresses (MZ, COM) are compared by
 // the linear address they name; an NE segment is a space of its own.
 //
-// A function whose body is not contiguous is measured as if it were, so a location in a gap after
-// its start can count as citing it, and a location in a part placed elsewhere does not. A cited
-// function has been looked at, not read completely, which only the citing entry's status says.
+// A row without ranges is measured as if its body were contiguous, so for a function whose body is
+// not, a location in a gap after its start can count as citing it, and a location in a part placed
+// elsewhere does not. A cited function has been looked at, not read completely, which only the citing entry's status says.
 //
 // The spec is read as the documentation check reads it. Problems with the spec itself are left to
 // that check, and a location that does not parse cites nothing here; a warning gives how many
@@ -153,7 +156,9 @@ function measure(root: string) {
     ...inv,
     functions: inv.functions.map((f): InventoryFunction => ({
       ...f,
-      citedBy: citing(indexed.get(`${inv.build}\0${inv.file}\0${f.space}`), f.at, f.at + BigInt(f.size)),
+      citedBy: [
+        ...new Set(f.body.flatMap((r) => citing(indexed.get(`${inv.build}\0${inv.file}\0${f.space}`), r.start, r.end))),
+      ].sort(),
     })),
   }));
   return { inventories, problems: read.problems, specProblems, unreadLocations };

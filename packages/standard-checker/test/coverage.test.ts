@@ -276,3 +276,63 @@ test("overlay code located by offset is cited by an offset location", (t) => {
 test("invalid options exit with 2", (t) => {
   assert.equal(run(copy(t), "--nope").status, 2);
 });
+
+test("a body given as ranges is cited through any of its ranges and not through its gaps", (t) => {
+  const root = copy(t);
+  // 0x00401000 holds 0x00401000..0x00401010 and 0x00401200..0x00401210; 0x00401100 sits in the gap.
+  finding(root, "FND-SCORE-001", at("0x00401204"));
+  finding(root, "FND-SCORE-002", at("0x00401080"));
+  inventory(
+    root,
+    "start\tsize\tranges\n0x00401000\t32\t0x00401000..0x00401010 0x00401200..0x00401210\n0x00401100\t16\t\n",
+  );
+  const { status, stdout } = run(root, "--json", "--list");
+  assert.equal(status, 0, stdout);
+  assert.deepEqual(
+    JSON.parse(stdout).inventories[0].list.map((f: { start: string; citedBy: string[] }) => [f.start, f.citedBy]),
+    [
+      ["0x00401000", ["FND-SCORE-001"]],
+      ["0x00401100", []],
+    ],
+  );
+});
+
+test("a ranges column that does not describe the body is a problem", (t) => {
+  const root = copy(t);
+  inventory(
+    root,
+    [
+      "start\tsize\tranges",
+      "0x00401000\t32\t0x00401000..0x00401010",
+      "0x00401100\t16\t0x00401200..0x00401210",
+      "0x00401300\t32\t0x00401300..0x00401320 0x00401310..0x00401320",
+      "0x00401400\t16\t0x00401410..0x00401400",
+      "0x00401500\t16\t0x00401500-0x00401510",
+      "0x00401600\t16\t0x00401600..0x00401608 0x00401700..0x00401708",
+      "",
+    ].join("\n"),
+  );
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  for (const line of [
+    "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: line 2: size 32 is not the total of the ranges, 16",
+    "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: line 3: start 0x00401100 lies in none of the ranges",
+    "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: line 4: the ranges overlap",
+    "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: line 5: range 0x00401410..0x00401400 is not a half-open range start..end in the notation of its start",
+    "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: line 6: range 0x00401500-0x00401510 is not a half-open range start..end in the notation of its start",
+  ])
+    assert.ok(output.includes(line), `${line}\n${output}`);
+  assert.doesNotMatch(output, /line 7/);
+});
+
+test("the provenance and regions files beside an inventory are not read as inventories", (t) => {
+  const root = copy(t);
+  finding(root, "FND-SCORE-001", at("0x00401000"));
+  inventory(root, "start\tsize\n0x00401000\t32\n");
+  inventory(root, "xxh3\t0123456789abcdef\n", "coverage/BLD-EXAMPLE-1.0/GAME.EXE.provenance.tsv");
+  inventory(root, "0x00401000\t4096\n", "coverage/BLD-EXAMPLE-1.0/GAME.EXE.regions.tsv");
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.match(output, /^coverage\/BLD-EXAMPLE-1\.0\/GAME\.EXE\.tsv: 1 of 1 functions cited/m);
+  assert.doesNotMatch(output, /provenance|regions/);
+});
