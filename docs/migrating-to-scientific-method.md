@@ -272,7 +272,7 @@ after this one.
 
 ## Prepared-config protocol 2
 
-Reader 1.0 and engine 1.0 speak prepared-config protocol 2, which names the source by its
+Reader 1.0.0 and engine 1.0.0 speak prepared-config protocol 2, which names the source by its
 XXH3-128 hash, the hash the documentation standard uses for every file. Neither accepts protocol 1,
 so upgrade both together. Reports from these releases differ from earlier ones in `sourceIdentity`.
 
@@ -297,9 +297,8 @@ holds for the program, and the engine compares it with the source's.
 The reader and the engine moved from prepared protocol 2 to 3 when call models gained
 `preservesMemory` ([ADR 0009](decisions/0009-scoped-memory-hypotheses-on-call-models.md)). A
 protocol 3 reader and a protocol 2 engine refuse each other, and so do the reverse pair, with an
-error naming both packages. Upgrade `@scientific-method/executable-reader` and
-`scientific-method-engine` to their protocol 3 majors in the same change. Nothing accepts the old
-number.
+error naming both packages. Upgrade `@scientific-method/executable-reader` to 2.0.0 or later and
+`scientific-method-engine` to 2.0.0 or later in the same change. Nothing accepts the old number.
 
 Existing configs need no change. A model without `preservesMemory` invalidates memory as before, so
 a nested return through it still stops on an unknown return target. To join such a child to its
@@ -309,40 +308,6 @@ address pushed before the call, with evidence for why the service keeps them. Fo
 also list `ss` in `preserves`; the engine rejects a scope whose segment register the model replaces.
 Listing `ebp` or `esp` in `preserves` does not keep the frame bytes. A report that relies on a scope
 states it in `preservedMemoryScopes`; cite that hypothesis wherever the report is used as evidence.
-
-## Ghidra report scripts that state coverage
-
-The engine's Ghidra report scripts now say what their scans covered, and some read a call site
-differently. Rerun a saved census before comparing it with a new one; the counts can differ for
-these reasons:
-
-- `ReportCallSitesWithScalars` matches only immediates. A value that appears only as a
-  memory-operand displacement or address, such as the 8 in `PUSH [EBP+8]` or the 0x41c000 in
-  `MOV ECX,[0x41c000]`, no longer makes a call match. The
-  argument setup it reads ends at a function entry, a jump or call target, or an instruction that
-  does not fall through to the next.
-- `ReportConstantFirstArgumentCalls` and `ReportFirstArgumentCallSummary` take the nearest `PUSH`
-  past register setup (`PUSH 5; MOV ECX,ESI; CALL` now reads 5), read `PUSH [EBP+8]` as
-  non-literal, count a pointer immediate such as `PUSH 0x41c000` as a literal while reading the
-  absolute memory operand of `PUSH [0x41c000]` as non-literal, and give up at a
-  store through the stack pointer, a function entry or a jump or call target.
-
-A tool that parses the output sees these changes. Existing line prefixes are kept.
-
-- `ReportCallsToRange` takes an optional third argument (`all`, `calls` or `jumps`), adds the mode
-  to its header, ends each line with `[call]` or `[jump]`, and ends with the counts or a cap line.
-- `ReportScalarConstants` takes an optional first argument (`immediate` or `memory`) and appends
-  `:: <kind> operand <n> of <instruction>` to each match. The address of an absolute memory
-  operand, such as 0x41c000 in `MOV EAX,[0x41c000]`, is a `memory` match.
-- `ReportScalarConstants`, `ReportCallsToRange`, `ReportConstantFirstArgumentCalls` and
-  `ReportCallSitesWithScalars` end with a coverage line, or with a cap line that says the scan did
-  not finish.
-- `ReportFunctionSummary` adds each function's body ranges and calls without a fall-through, and
-  ends with the addresses it could not summarize.
-- `ReportDecompileWindow` cuts a line count above 160 to 160 instead of refusing it, and names the
-  next window's first line.
-- `ExportFunctionFingerprints` writes its rows to a temporary file and replaces the output only when
-  the export completes.
 
 ## Standard checker upgrades
 
@@ -421,9 +386,32 @@ committed and is kept with the captures, with its hash in the fixture's `startin
 
 ## Engine upgrades
 
-Engine releases that need a change in a restoration are listed here, newest first.
+Engine releases that need a change in a restoration are listed here, newest first. Each entry is
+headed with the engine release that introduced it. An upgrade from one version to a later one
+needs every entry whose version is above the old one and at most the new one. A release that is
+not in the table has no entry.
 
-### A callee's converted return frame returns to its caller
+| Engine | Entry |
+|---|---|
+| 12.0.0 | [A callee's converted return frame returns to its caller](#engine-1200-a-callees-converted-return-frame-returns-to-its-caller) |
+| 11.0.0 | [A failed return check names which check failed](#engine-1100-a-failed-return-check-names-which-check-failed) |
+| 10.0.0 | [Indirect far calls and jumps follow a pointer the path stored](#engine-1000-indirect-far-calls-and-jumps-follow-a-pointer-the-path-stored) |
+| 9.0.0 | [Ghidra instruction windows start only at an instruction](#engine-900-ghidra-instruction-windows-start-only-at-an-instruction) |
+| 8.1.1 | [An output count past a modeled call is a lower bound](#engine-811-an-output-count-past-a-modeled-call-is-a-lower-bound) |
+| 8.1.0 | [A memory scope may not cover the return frame of its own call](#engine-810-a-memory-scope-may-not-cover-the-return-frame-of-its-own-call) |
+| 8.0.0 | [`widthsConsistent` can be undecided](#engine-800-widthsconsistent-can-be-undecided) |
+| 7.4.0 | [The Ghidra cross-check rows carry the engine's side](#engine-740-the-ghidra-cross-check-rows-carry-the-engines-side) |
+| 7.3.0 | [The Ghidra cross-check reports a redirected fall-through](#engine-730-the-ghidra-cross-check-reports-a-redirected-fall-through) |
+| 7.2.0 | [Only the caller's bytes decide `widthsConsistent`](#engine-720-only-the-callers-bytes-decide-widthsconsistent) |
+| 7.0.0 | [The Ghidra cross-check compares fall-through at jumps and Ghidra-only edges](#engine-700-the-ghidra-cross-check-compares-fall-through-at-jumps-and-ghidra-only-edges) |
+| 6.0.0 | [The Ghidra cross-check compares fall-through at calls](#engine-600-the-ghidra-cross-check-compares-fall-through-at-calls) |
+| 5.0.0 | [Preserved memory scopes appear once per modeled call](#engine-500-preserved-memory-scopes-appear-once-per-modeled-call) |
+| 4.0.0 | [Declared-table continuations spend `continuationBudget`](#engine-400-declared-table-continuations-spend-continuationbudget) |
+| 3.0.0 | [The Ghidra report scripts state coverage](#engine-300-the-ghidra-report-scripts-state-coverage) |
+| 2.0.0 | [Prepared-config protocol 3, with reader 2.0.0](#prepared-config-protocol-3-scoped-memory-on-call-models) |
+| 1.0.0 | [Prepared-config protocol 2, with reader 1.0.0](#prepared-config-protocol-2) |
+
+### Engine 12.0.0: a callee's converted return frame returns to its caller
 
 A traced callee that rebuilt its near call frame as a far one before a `RETF` (or its far frame as
 a near one before a `RET`) used to stop with `return width and stack balance differ from the call
@@ -449,7 +437,7 @@ What to change:
 - A hand reading or local patch that followed such a conversion can be dropped once its query
   returns through the callee.
 
-### A failed return check names which check failed
+### Engine 11.0.0: a failed return check names which check failed
 
 A return whose width differs from its frame, or whose SP is not the frame's entry SP, used to stop
 with `return frame or stack balance differs from the call` in both cases. The stop now names the
@@ -467,7 +455,7 @@ What to change:
   no support: `returnCheck.target` on a root return is `not read: the entry frame has no traced
   caller`.
 
-### Indirect far calls and jumps follow a pointer the path stored
+### Engine 10.0.0: indirect far calls and jumps follow a pointer the path stored
 
 A far `CALL` or `JMP` through an `m16:16` pointer used to stop every path with
 `unresolved call: unsupported far transfer encoding` (a jump: `unresolved jump: ...`), even when
@@ -490,7 +478,7 @@ What to change:
   A test that compares a path's events as a whole adds it. `effects` also keeps
   the pointer read that a kept indirect far call or jump cites in `provenance.pointerRead`.
 
-### Ghidra instruction windows start only at an instruction
+### Engine 9.0.0: Ghidra instruction windows start only at an instruction
 
 `ReportInstructionWindow` used to start at the next instruction when no instruction started at the
 requested address, with nothing in its output to say so. It now prints an error that names what is
@@ -546,7 +534,27 @@ with a negative `displacement`. Start the scope at SP at the call and cover the 
 own return address and its arguments), leaving the bytes below SP out. A scope on another base value
 that only may alias the frame stays the query's hypothesis and does not stop the path.
 
-### The Ghidra cross-check rows carry the engine's side
+### Engine 8.0.0: `widthsConsistent` can be undecided
+
+`argumentFrameSites[].widthsConsistent`, added in engine 6.2.0 and redefined in 7.2.0 (see that
+entry), can now be `null`. A pair of reads that would conflict only if bytes the trace
+cannot attribute were the caller's (a slot a modeled call invalidated, a slot a write through
+another segment or base may have stored, a callee write through another address before the read,
+or a read byte past the 256-byte window) is listed in the new `undecidedWidths`, and leaves the
+site `null` unless another pair conflicts on the caller's bytes. A site whose only reads saw such
+bytes is `null` too. Such sites used to report
+`true`, or `false` when no read saw a byte from the slot writers. Each `groupings` row also adds
+`bytesOfUnknownOrigin`, the indices within `bytesNotFromSlotWriter` that may still be the caller's.
+
+- Code that tests `widthsConsistent` for truth, or compares it with `false`, handles `null`
+  separately. Read `undecidedWidths` and each read's `bytesOfUnknownOrigin` to see which pairs and
+  bytes left the site open; a read whose `offset` plus `width` passes the frame's `mappedBytes`
+  ran past the window. A concrete `ss`, `sp` and `ds` in the query, or a `preservesMemory` scope
+  on the modeled call, can let the trace attribute the bytes.
+- A finding that cited `widthsConsistent: true` for a site that is now `null` was resting on bytes
+  the trace did not attribute. Restate it as undecided or settle the bytes first.
+
+### Engine 7.4.0: the Ghidra cross-check rows carry the engine's side
 
 Each `callees` `ghidraCrossCheck` row that carries `ghidraFallsThrough` now also carries
 `engineReadsOn`: `true` where the engine's body reading continues to the next instruction at the
@@ -554,10 +562,10 @@ site and `false` where it stops. A row at a transfer outside the frame model, or
 the engine did not read, carries neither field. No result, count or `agreed` value changes. A test
 that compares such a row as a whole adds `engineReadsOn`.
 
-### The Ghidra cross-check reports a redirected fall-through
+### Engine 7.3.0: the Ghidra cross-check reports a redirected fall-through
 
-Engine 7.3.0 shipped this change as a minor release, but a config can fail after you export again
-with the `ExportCallEdges.java` packaged in it. That script writes `fallsThroughTo` and
+This change shipped as a minor release, but a config can fail after you export again with the
+`ExportCallEdges.java` packaged in it. That script writes `fallsThroughTo` and
 `fallsThroughToAddress` on an edge whose fall-through a user's override sends to another address
 than the next instruction, and still writes `fallsThrough: false` there. `callees` with
 `ghidraCallEdges` reads the new fields into each compared row as `ghidraFallsThroughTo` and
@@ -582,37 +590,14 @@ fall-through override in Ghidra and export again. A site you keep the override a
 whole adds `ghidraFallsThroughElsewhere`. A test that compares a row carrying `ghidraFallsThrough` as a
 whole adds `ghidraFallsThroughTo` and `ghidraFallsThroughToBasis`, also for an older export.
 
-### `widthsConsistent` in `argumentFrameSites`
+### Engine 7.2.0: only the caller's bytes decide `widthsConsistent`
 
 `arguments` added `argumentFrameSites[].widthsConsistent` in engine 6.2.0, meaning "the traced
-paths made at least one read and `conflictingWidths` is empty". Two releases changed what it means.
-
-#### Undecided sites
-
-`widthsConsistent` can now be `null`. A pair of reads that would conflict only if bytes the trace
-cannot attribute were the caller's (a slot a modeled call invalidated, a slot a write through
-another segment or base may have stored, a callee write through another address before the read,
-or a read byte past the 256-byte window) is listed in the new `undecidedWidths`, and leaves the
-site `null` unless another pair conflicts on the caller's bytes. A site whose only reads saw such
-bytes is `null` too. Such sites used to report
-`true`, or `false` when no read saw a byte from the slot writers. Each `groupings` row also adds
-`bytesOfUnknownOrigin`, the indices within `bytesNotFromSlotWriter` that may still be the caller's.
-
-- Code that tests `widthsConsistent` for truth, or compares it with `false`, handles `null`
-  separately. Read `undecidedWidths` and each read's `bytesOfUnknownOrigin` to see which pairs and
-  bytes left the site open; a read whose `offset` plus `width` passes the frame's `mappedBytes`
-  ran past the window. A concrete `ss`, `sp` and `ds` in the query, or a `preservesMemory` scope
-  on the modeled call, can let the trace attribute the bytes.
-- A finding that cited `widthsConsistent: true` for a site that is now `null` was resting on bytes
-  the trace did not attribute. Restate it as undecided or settle the bytes first.
-
-#### Engine 7.2.0: only the caller's bytes decide `widthsConsistent`
-
-Engine 7.2.0 changed the meaning under a minor version. Since then `widthsConsistent` is `true` when
-some read saw a byte from the slot writers and no listed pair has a byte both of its reads saw from
-the slot writers. It can be `true` while `conflictingWidths` lists a pair (a callee that reused its
-argument slot as a local), and it is `false` for a site whose only reads follow a callee store to
-the slot. `readWidths` entries added `fromCallerOnPaths` and `notFromCallerOnPaths` in the same
+paths made at least one read and `conflictingWidths` is empty". Engine 7.2.0 changed that meaning
+under a minor version. Since then `widthsConsistent` is `true` when some read saw a byte from the
+slot writers and no listed pair has a byte both of its reads saw from the slot writers. It can be
+`true` while `conflictingWidths` lists a pair (a callee that reused its argument slot as a local),
+and it is `false` for a site whose only reads follow a callee store to the slot. `readWidths` entries added `fromCallerOnPaths` and `notFromCallerOnPaths` in the same
 release.
 
 - Code that read `widthsConsistent: true` as "no conflicting pairs" reads `conflictingWidths`
@@ -620,7 +605,7 @@ release.
 - Code that read `widthsConsistent: false` as "some pair conflicts" checks `conflictingWidths` too:
   a site with no pairs can be `false` because no read saw the caller's bytes.
 
-### The Ghidra cross-check compares fall-through at jumps and Ghidra-only edges
+### Engine 7.0.0: the Ghidra cross-check compares fall-through at jumps and Ghidra-only edges
 
 `callees` with `ghidraCallEdges` compared Ghidra's fall-through only at agreed calls, conditional
 tail transfers and interrupts, where the engine reads on. Now:
@@ -645,7 +630,7 @@ from `ghidraAgreementSites` controls. A test that compares `counts`
 as a whole adds `ghidraContinues`, and a test that expects no `ghidraFallsThrough` on a `JMP` row or
 a `ghidraOnly` row expects it now.
 
-### The Ghidra cross-check compares fall-through at calls
+### Engine 6.0.0: the Ghidra cross-check compares fall-through at calls
 
 `callees` with `ghidraCallEdges` used to count a call both analyses have as an agreement whatever the
 export's `fallsThrough` said. A call where Ghidra ends the function, because it treats the callee as
@@ -670,7 +655,7 @@ compares `counts` as a whole adds `ghidraEndsFunction`. Exports written by copie
 `UNCONDITIONAL_CALL`; export again with the packaged script (`ghidraFallsThroughBasis: "flowName"`
 marks such rows).
 
-### Preserved memory scopes appear once per modeled call
+### Engine 5.0.0: preserved memory scopes appear once per modeled call
 
 A modeled call's `preservedMemoryScopes` descriptions are now reported only on the path's
 `conditionalModels` entry. The other places that repeated them cite that entry by its index in the
@@ -695,7 +680,7 @@ The engine also writes compact JSON when the reader runs it, so a report that ex
 32 MiB output cap through indentation alone may now complete. The reader still prints its report
 indented, and running the engine on a config file still prints indented JSON.
 
-### Declared-table continuations spend `continuationBudget`
+### Engine 4.0.0: declared-table continuations spend `continuationBudget`
 
 Continuations of a declared `indirectJumps` site used to share `maxPaths`, `totalSteps`,
 `maxSteps`, `visitLimit` and `stringIterations` with the ordinary paths and got whatever the
@@ -722,3 +707,37 @@ unchanged.
 - Controls that expected a `path limit` gap at a table jump because ordinary paths spent
   `maxPaths` now see continuation paths there. Rerun them: a newly returned continuation is still
   conditional evidence under its `declaredJumpAssumptions`.
+
+### Engine 3.0.0: the Ghidra report scripts state coverage
+
+The engine's Ghidra report scripts say what their scans covered, and some read a call site
+differently. Rerun a saved census before comparing it with a new one; the counts can differ for
+these reasons:
+
+- `ReportCallSitesWithScalars` matches only immediates. A value that appears only as a
+  memory-operand displacement or address, such as the 8 in `PUSH [EBP+8]` or the 0x41c000 in
+  `MOV ECX,[0x41c000]`, no longer makes a call match. The
+  argument setup it reads ends at a function entry, a jump or call target, or an instruction that
+  does not fall through to the next.
+- `ReportConstantFirstArgumentCalls` and `ReportFirstArgumentCallSummary` take the nearest `PUSH`
+  past register setup (`PUSH 5; MOV ECX,ESI; CALL` now reads 5), read `PUSH [EBP+8]` as
+  non-literal, count a pointer immediate such as `PUSH 0x41c000` as a literal while reading the
+  absolute memory operand of `PUSH [0x41c000]` as non-literal, and give up at a
+  store through the stack pointer, a function entry or a jump or call target.
+
+A tool that parses the output sees these changes. Existing line prefixes are kept.
+
+- `ReportCallsToRange` takes an optional third argument (`all`, `calls` or `jumps`), adds the mode
+  to its header, ends each line with `[call]` or `[jump]`, and ends with the counts or a cap line.
+- `ReportScalarConstants` takes an optional first argument (`immediate` or `memory`) and appends
+  `:: <kind> operand <n> of <instruction>` to each match. The address of an absolute memory
+  operand, such as 0x41c000 in `MOV EAX,[0x41c000]`, is a `memory` match.
+- `ReportScalarConstants`, `ReportCallsToRange`, `ReportConstantFirstArgumentCalls` and
+  `ReportCallSitesWithScalars` end with a coverage line, or with a cap line that says the scan did
+  not finish.
+- `ReportFunctionSummary` adds each function's body ranges and calls without a fall-through, and
+  ends with the addresses it could not summarize.
+- `ReportDecompileWindow` cuts a line count above 160 to 160 instead of refusing it, and names the
+  next window's first line.
+- `ExportFunctionFingerprints` writes its rows to a temporary file and replaces the output only when
+  the export completes.
