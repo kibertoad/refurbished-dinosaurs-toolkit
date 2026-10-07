@@ -155,6 +155,11 @@ The persistence types make writes recoverable; the game still owns its formats.
   and `Read`. Admit only the exceptions your format raises, and exclude incompatible versions from
   fallback, so an older generation is never loaded as if it were current.
 - A custom backup suffix must be passed to both `Write` and `Read`.
+- Load for play with `ReadAndRepair`, which restores a damaged primary from the backup and keeps
+  the rejected file as `.corrupt`; browse with `Read`, which changes nothing on disk. When neither
+  generation loads, classify `FileGenerationsUnreadableException.PrimaryFailure`.
+- Open readers of a save with `FileShare.Delete` where they may overlap a write, or the write's
+  promotion fails on Windows.
 - Serialize writers with `FileWriteLock`. The files are not a journal.
 - Set `JsonSettingsStore.MaximumBytes` to a limit that suits the application; the default admits
   any size. Use `LoadResult` to tell the player whether settings came from the backup or defaults.
@@ -467,3 +472,16 @@ for stored bytes that end early now reads "the file holding its stored bytes is 
 the set was opened" for a volume and for a file found beside the header alike. Code with an
 exhaustive `switch` over `InstallShieldOutsideFileStatus` handles `LookupFailed`, which a lookup
 that could not list a folder or read a length reports.
+
+### Unreadable file generations
+
+`RecoverableFile.Read` now throws `FileGenerationsUnreadableException`, which derives from
+`AggregateException`, when neither generation loads. `catch (AggregateException)` still catches
+it; a test written as `Assert.Throws<AggregateException>` changes to the new type or `ThrowsAny`.
+A missing backup is now reported this way whatever the predicate admits. Code that caught the bare
+`FileNotFoundException` a missing backup raised when the predicate did not admit `IOException`
+catches `FileGenerationsUnreadableException` and reads `PrimaryFailure` instead.
+
+`RecoverableFile.Write` promotes with `File.Replace`. On Windows the new primary takes the replaced
+file's creation time and attributes, and on other systems the backup is a hard link to the old
+primary where the filesystem supports one.
