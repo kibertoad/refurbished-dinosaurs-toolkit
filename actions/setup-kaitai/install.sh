@@ -18,12 +18,13 @@ if [ ! -f "$zip" ]; then
   curl -fsSL --retry 3 -o "$zip" \
     "https://github.com/kaitai-io/kaitai_struct_compiler/releases/download/$KSC_VERSION/kaitai-struct-compiler-$KSC_VERSION.zip"
 fi
-# The sha256sum on current macOS runner images is the BSD one, which rejects --strict, so macOS
-# uses shasum whether or not a sha256sum is on the path.
-if [ "$RUNNER_OS" = macOS ]; then
-  echo "$sha256  $zip" | shasum -a 256 --check
-else
+# Only GNU sha256sum takes --strict and answers --version. The sha256sum on current macOS runner
+# images is the BSD one, which rejects both, and a host may have no sha256sum at all, so any
+# sha256sum that does not answer --version leaves the check to shasum.
+if sha256sum --version > /dev/null 2>&1; then
   echo "$sha256  $zip" | sha256sum --check --strict
+else
+  echo "$sha256  $zip" | shasum -a 256 --check --strict
 fi
 unzip -q -o "$zip" -d "$tmp"
 bin="$tmp/kaitai-struct-compiler-$KSC_VERSION/bin/kaitai-struct-compiler"
