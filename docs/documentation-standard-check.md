@@ -541,12 +541,18 @@ one the checker does not count, since counting its items would give the wrong nu
 and a section that holds anything besides the list, prose or `None known.` included, still passes,
 but its parameters cannot be counted. Each call and `emit`
 counted against such a section is named in the result line instead, grouped by the rule whose
-section it is, such as `Skipped: argument counts against RULE-AI-002, whose Parameters section is
-not None. or a list of parameters (call in RULE-AI-001 (2 times), emit of GangDetected in
-RULE-AI-007).` A rule with no Parameters section at all is named the same way, as one `which has no
-Parameters section`. Converting that rule's Parameters section to the list form puts those calls under
-the check. Function calls are always counted, since a `define` already writes its parameters in a
-fixed form.
+section it is, with the first thing in the section that stops the count, such as
+``Skipped: argument counts against RULE-AI-002, whose Parameters section is neither `None.` nor a
+list with one item per parameter: item 2 names more than one parameter (call in RULE-AI-001 (2
+times), emit of GangDetected in RULE-AI-007).`` The reason is one of: the section is empty, it holds
+text and no list (a sentence that names the parameter, or `None known.`), it holds text before the
+list, text after item N is neither a list item nor indented under it, or item N names more than
+one parameter, does not open with a code span holding the parameter's name, does not follow its
+code span directly with a colon, or has a code span holding neither a name nor a name, a colon and
+a type. Items are numbered from 1 in the order the section lists them. A rule with no Parameters
+section at all is named the same way, as one `which has no Parameters section`. Converting that
+rule's Parameters section to the list form puts those calls under the check. Function calls are
+always counted, since a `define` already writes its parameters in a fixed form.
 
 The checker does not compare an argument's type with the parameter's type.
 
