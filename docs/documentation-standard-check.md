@@ -293,14 +293,18 @@ List each squashed entry with its replacements in the action's `squashed` input 
 `FND-X-001=FND-X-002+FND-X-003` for an entry split in two. The check accepts a listed deletion
 when the entry's `superseded_by` at the base names exactly those replacements and each of them
 exists and is not superseded. A chain is squashed by listing each link: with `A` superseded by `B`
-and `B` by `C`, `A=B,B=C` deletes both, and a citation of `A` is pointed at `C`. It fails for a listed entry that still exists, and for a squashed
-ID still cited in the spec, the glossary, the code, the `references` directories, `parity/` or
-`deviations/`, including a build or source alias in the code. The
-indexes and `PARITY.md` are not searched for citations: with `scheduled-generation` they may name a
-squashed ID until the main branch regenerates them, and without it the check rewrites them. Keep the
-input after the squash reaches the main branch: a listed ID that exists again fails, so the input
-is what stops a squashed ID from being used again. A listed ID the base does not have is named as a
-skipped step.
+and `B` by `C`, `A=B,B=C` deletes both, and a citation of `A` is pointed at `C`. It fails for a
+listed entry that still exists, and for a squashed ID still cited in the spec, the glossary, the
+code, the `references` directories, `parity/` or `deviations/`, including a build or source alias
+in the code. The indexes and `PARITY.md` are not searched for citations: with
+`scheduled-generation` they may name a squashed ID until the main branch regenerates them, and
+without it the check rewrites them.
+
+Keep the input after the squash reaches the main branch: a listed ID that exists again fails, so
+the input is what stops a squashed ID from being used again. A listed ID the base does not have is
+named as a skipped step. Keep the list for local runs where the reference check does not read it,
+such as a text file a wrapper script reads: a `.js`, `.mjs`, `.ts`, `.cs` or `.ps1` file under a
+checked directory that spells the list out cites every squashed ID in it and fails.
 
 ```yaml
       - uses: kibertoad/refurbished-dinosaurs-toolkit/actions/check-documentation@<sha>
