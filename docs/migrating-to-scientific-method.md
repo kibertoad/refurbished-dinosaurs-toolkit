@@ -272,7 +272,7 @@ after this one.
 
 ## Prepared-config protocol 2
 
-Reader 1.0.0 and engine 1.0.0 speak prepared-config protocol 2, which names the source by its
+Reader 1.x and engine 1.x speak prepared-config protocol 2, which names the source by its
 XXH3-128 hash, the hash the documentation standard uses for every file. Neither accepts protocol 1,
 so upgrade both together. Reports from these releases differ from earlier ones in `sourceIdentity`.
 
@@ -537,14 +537,14 @@ that only may alias the frame stays the query's hypothesis and does not stop the
 ### Engine 8.0.0: `widthsConsistent` can be undecided
 
 `argumentFrameSites[].widthsConsistent`, added in engine 6.2.0 and redefined in 7.2.0 (see that
-entry), can now be `null`. A pair of reads that would conflict only if bytes the trace
-cannot attribute were the caller's (a slot a modeled call invalidated, a slot a write through
-another segment or base may have stored, a callee write through another address before the read,
-or a read byte past the 256-byte window) is listed in the new `undecidedWidths`, and leaves the
-site `null` unless another pair conflicts on the caller's bytes. A site whose only reads saw such
-bytes is `null` too. Such sites used to report
-`true`, or `false` when no read saw a byte from the slot writers. Each `groupings` row also adds
-`bytesOfUnknownOrigin`, the indices within `bytesNotFromSlotWriter` that may still be the caller's.
+entry), can now be `null`. A pair of reads that would conflict only if bytes the trace cannot
+attribute were the caller's (a slot a modeled call invalidated, a slot a write through another
+segment or base may have stored, a callee write through another address before the read, or a read
+byte past the 256-byte window) is listed in the new `undecidedWidths`, and leaves the site `null`
+unless another pair conflicts on the caller's bytes. A site whose only reads saw such bytes is
+`null` too. Such sites used to report `true`, or `false` when no read saw a byte from the slot
+writers. Each `groupings` row also adds `bytesOfUnknownOrigin`, the indices within
+`bytesNotFromSlotWriter` that may still be the caller's.
 
 - Code that tests `widthsConsistent` for truth, or compares it with `false`, handles `null`
   separately. Read `undecidedWidths` and each read's `bytesOfUnknownOrigin` to see which pairs and
@@ -587,8 +587,8 @@ packaged script:
 Check the rows with `ghidraFallsThroughTo` set. Where the redirect is a leftover, clear the
 fall-through override in Ghidra and export again. A site you keep the override at stays
 `agreed: false`; remove it from `ghidraAgreementSites` controls. A test that compares `counts` as a
-whole adds `ghidraFallsThroughElsewhere`. A test that compares a row carrying `ghidraFallsThrough` as a
-whole adds `ghidraFallsThroughTo` and `ghidraFallsThroughToBasis`, also for an older export.
+whole adds `ghidraFallsThroughElsewhere`. A test that compares a row carrying `ghidraFallsThrough`
+as a whole adds `ghidraFallsThroughTo` and `ghidraFallsThroughToBasis`, also for an older export.
 
 ### Engine 7.2.0: only the caller's bytes decide `widthsConsistent`
 
@@ -597,8 +597,8 @@ paths made at least one read and `conflictingWidths` is empty". Engine 7.2.0 cha
 under a minor version. Since then `widthsConsistent` is `true` when some read saw a byte from the
 slot writers and no listed pair has a byte both of its reads saw from the slot writers. It can be
 `true` while `conflictingWidths` lists a pair (a callee that reused its argument slot as a local),
-and it is `false` for a site whose only reads follow a callee store to the slot. `readWidths` entries added `fromCallerOnPaths` and `notFromCallerOnPaths` in the same
-release.
+and it is `false` for a site whose only reads follow a callee store to the slot. `readWidths`
+entries added `fromCallerOnPaths` and `notFromCallerOnPaths` in the same release.
 
 - Code that read `widthsConsistent: true` as "no conflicting pairs" reads `conflictingWidths`
   directly and checks that it is empty.
