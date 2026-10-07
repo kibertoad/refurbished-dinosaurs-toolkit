@@ -271,6 +271,36 @@ public sealed class RecoverableFileTests : IDisposable
     }
 
     [Fact]
+    public void ReadAndRepairLeavesAPrimaryAnotherProcessHolds()
+    {
+        Assert.SkipUnless(OperatingSystem.IsWindows(), "Only Windows denies a read through a share mode.");
+        Write("1"); Write("2");
+        // The holder denies reads but shares delete, so the primary would be replaceable.
+        using (new FileStream(PathName, FileMode.Open, FileAccess.ReadWrite, FileShare.Delete))
+        {
+            var result = RecoverableFile.ReadAndRepair(PathName, Read);
+            Assert.Equal(1, result.Value);
+            Assert.IsType<IOException>(result.PrimaryFailure, exactMatch: false);
+            Assert.False(result.PrimaryRepaired);
+            Assert.Null(result.RepairFailure);
+        }
+        Assert.Equal("2", File.ReadAllText(PathName));
+        Assert.False(File.Exists(PathName + RecoverableFile.DefaultRejectedSuffix));
+    }
+
+    [Fact]
+    public void ReadAndRepairAsksTheCallerWhichFailuresAreDamage()
+    {
+        Write("1"); Write("2");
+        File.WriteAllText(PathName, "broken");
+        var result = RecoverableFile.ReadAndRepair(PathName, Read, error => error is IOException or FormatException,
+            isDamaged: _ => false);
+        Assert.Equal(1, result.Value);
+        Assert.False(result.PrimaryRepaired);
+        Assert.Equal("broken", File.ReadAllText(PathName));
+    }
+
+    [Fact]
     public void RestoreValidatesTheCopyBeforePromotingIt()
     {
         Write("1"); Write("2");

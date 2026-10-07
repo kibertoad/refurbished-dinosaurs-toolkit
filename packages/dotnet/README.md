@@ -647,8 +647,11 @@ When the primary fails with an admitted error and the backup is missing or fails
 `BackupFailure` hold the two errors; classify or rethrow `PrimaryFailure`, the file that was asked
 for. `ReadAndRepair` reads the same way for play and, after a backup load, restores the primary from
 the backup with `Restore`, which validates a durable copy, promotes it and keeps the rejected
-primary as `.corrupt`. A repair that fails is reported in `RepairFailure` and still returns the
-backup's value. `ReadBounded` checks file size before allocation. Serialize writers; these
+primary as `.corrupt`. It repairs only a primary that `isDamaged` calls damaged or missing; by
+default an access error or a Windows sharing or lock violation, which say another process holds a
+file that may be the newest generation, returns the backup's value and leaves the primary alone. A
+repair that fails is reported in `RepairFailure` and still returns the backup's value. A failed
+promotion keeps the primary but can lose the previous backup or rejected file. `ReadBounded` checks file size before allocation. Serialize writers; these
 operations are not a journal.
 
 Promotion over an existing primary uses `File.Replace`, which renames the kept primary to the

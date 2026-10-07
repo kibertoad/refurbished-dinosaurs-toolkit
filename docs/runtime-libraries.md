@@ -472,3 +472,16 @@ for stored bytes that end early now reads "the file holding its stored bytes is 
 the set was opened" for a volume and for a file found beside the header alike. Code with an
 exhaustive `switch` over `InstallShieldOutsideFileStatus` handles `LookupFailed`, which a lookup
 that could not list a folder or read a length reports.
+
+### Unreadable file generations
+
+`RecoverableFile.Read` now throws `FileGenerationsUnreadableException`, which derives from
+`AggregateException`, when neither generation loads. `catch (AggregateException)` still catches
+it; a test written as `Assert.Throws<AggregateException>` changes to the new type or `ThrowsAny`.
+A missing backup is now reported this way whatever the predicate admits. Code that caught the bare
+`FileNotFoundException` a missing backup raised when the predicate did not admit `IOException`
+catches `FileGenerationsUnreadableException` and reads `PrimaryFailure` instead.
+
+`RecoverableFile.Write` promotes with `File.Replace`. On Windows the new primary takes the replaced
+file's creation time and attributes, and on other systems the backup is a hard link to the old
+primary where the filesystem supports one.
