@@ -160,11 +160,12 @@ class Step(NamedTuple):
     supplied: bool = False
 
 
-def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False):
+def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, follow_interrupts=False):
     """The successors of ``ins`` decoded at ``at``, under the rule ``walk`` and the ``uses`` caller continuation share.
 
-    An unsupported transfer encoding, a return, an unconditional jump without a resolved target, an
-    interrupt, ``hlt`` and, unless ``follow_flat_ports``, a PE32 port access end the branch. A
+    An unsupported transfer encoding, a return, an unconditional jump without a resolved target,
+    ``hlt``, an interrupt unless ``follow_interrupts`` (which continues at the next instruction, as
+    ``body()`` does) and, unless ``follow_flat_ports``, a PE32 port access end the branch. A
     conditional jump or loop continues at its resolved target and at the next instruction. A declared
     indirect jump continues at its table rows only. A call continues at its resolved target and at
     its return site; with ``step_over_calls`` it continues at its return site only and its target
@@ -197,7 +198,7 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False):
             successors.append(target)
         if m in ("jmp", "ljmp"):
             return Step(successors, False, None, gaps, edges)
-    if m in INTERRUPTS or m == "hlt":
+    if m == "hlt" or (m in INTERRUPTS and not follow_interrupts):
         gaps.append({"site": at, "reason": "hardware or interrupt boundary"})
         return Step(successors, False, None, gaps, edges)
     # In the flat model I/O privilege decides whether a port access faults, so the walk claims nothing after it.
@@ -210,12 +211,14 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False):
     return Step(successors, False, return_site, gaps, edges)
 
 
-def walk(image, entries, limit=10000, follow_flat_ports=False):
+def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts=False, stops=frozenset()):
     """Decode the CFG reached from ``entries`` and check its instruction boundaries.
 
     A port access in the flat model records a gap and ends that branch, as ``trace`` stops there.
     ``follow_flat_ports`` continues past it instead, for callers that name each port access their
-    results depend on.
+    results depend on. ``follow_interrupts`` continues past an interrupt at the next instruction,
+    for callers that list each interrupt as an assumption. A site in ``stops`` is never decoded:
+    the walk reaches it and goes no further, so it is in no returned set.
     """
     integer(limit, 1, 100000, "instruction limit")
     pending, seen, gaps, edges = list(entries), {}, [], []
@@ -224,7 +227,7 @@ def walk(image, entries, limit=10000, follow_flat_ports=False):
     successors, returns, supplied_edges = {}, set(), set()
     while pending:
         at = pending.pop()
-        if at in seen:
+        if at in seen or at in stops:
             continue
         if len(seen) >= limit:
             gaps.append({"site": at, "reason": "instruction limit"})
@@ -234,7 +237,7 @@ def walk(image, entries, limit=10000, follow_flat_ports=False):
             gaps.append({"site": at, "reason": "undecoded or unmapped edge"})
             continue
         seen[at] = ins
-        step = cfg_step(image, at, ins, follow_flat_ports)
+        step = cfg_step(image, at, ins, follow_flat_ports, follow_interrupts=follow_interrupts)
         successors[at] = step.successors
         gaps.extend(step.gaps)
         edges.extend(step.edges)
@@ -320,6 +323,12 @@ def walk(image, entries, limit=10000, follow_flat_ports=False):
         inside = [(start, end) for start, end in intervals if r["start"] <= start < r["end"]]
         undecoded.extend({**hole, "region": r["name"]} for hole in uncovered(r["start"], r["end"], inside))
     return seen, gaps, edges, undecoded, contested
+
+
+def holding_instruction(seen, site):
+    """The start of the instruction in ``seen`` whose bytes cover ``site`` past its first byte, or None."""
+    # An x86 instruction is at most 15 bytes, so only the starts just before the site can hold it.
+    return next((at for at in range(max(site - 14, 0), site) if at in seen and site < at + seen[at].size), None)
 
 
 def uncovered(start, end, spans):

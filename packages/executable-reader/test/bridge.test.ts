@@ -668,6 +668,29 @@ test("callee graph through the source bridge keeps a reused node distinct from r
   assert.equal(r.completeWithinDeclaredGraph, true);
 });
 
+test("reach follows a resident far call and an overlay fixup call through the FBOV trampoline", (t) => {
+  const { dir, config } = overlayFixture(t);
+  const leaf = "synthetic: calls nothing while its flag holds its start value";
+  const path = join(dir, "config.json");
+  writeFileSync(path, JSON.stringify({ ...config, starts: [80, 532], targets: [528], controls: [80, 532] }));
+  const r = run(["reach", path]);
+  const target = r.targets[0];
+  assert.equal(target.reached, true);
+  assert.deepEqual(target.chain, [{ routine: 80 }, { callSite: 80, routine: 528 }]);
+  assert.deepEqual(r.controls, [
+    { site: 80, target: 528 },
+    { site: 532, target: 528 },
+  ]);
+  assert.deepEqual(r.reachedRoutines, [80, 528, 532]);
+  assert.equal(r.negativeUsable, true);
+  // A leaf is reached through the same trampoline and keeps its reason.
+  const leaves = [{ routine: 528, reason: leaf }];
+  writeFileSync(path, JSON.stringify({ ...config, starts: [532], targets: [528], controls: [532], leaves }));
+  const leafReport = run(["reach", path]);
+  assert.equal(leafReport.targets[0].leaf, true);
+  assert.deepEqual(leafReport.leaves, [{ routine: 528, reason: leaf, reached: true, callSites: [532] }]);
+});
+
 test("callee graph through the source bridge compares its edges with a Ghidra export", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);

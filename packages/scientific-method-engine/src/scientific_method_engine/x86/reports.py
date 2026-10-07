@@ -12,7 +12,7 @@ from .argument_frames import WINDOW_BYTES, argument_frames, stack_cleanup
 from .memory_scopes import model_scopes
 from .result_flow import return_flows
 from .image import Image, integer
-from .trace import (trace, walk, cfg_step, call_target, unsupported_transfer, uncovered, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
+from .trace import (trace, walk, cfg_step, call_target, unsupported_transfer, uncovered, holding_instruction, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
                     RETURNS, INTERRUPTS, PORTS, PORT_INPUTS, port_width, budget_input)
 from .pcode_backend import interrupt_vector
 
@@ -176,8 +176,7 @@ def incoming(image, config):
         if site in contested:
             row["position"] = {"meaning": "start of a contested instruction"}
             continue
-        # An x86 instruction is at most 15 bytes, so only the starts just before the site can hold it.
-        inside = next((at for at in range(max(site - 14, 0), site) if at in seen and site < at + seen[at].size), None)
+        inside = holding_instruction(seen, site)
         if inside is not None:
             row["position"] = {"insideInstruction": inside, "meaning": "bytes of a reached instruction; a call here needs an overlapping start"}
             continue
@@ -1729,6 +1728,9 @@ def _run_report(image, config, command):
         return owner(image, config)
     if command == "callees":
         return callees(image, config)
+    if command == "reach":
+        from .reach import reach
+        return reach(image, config)
     if command == "call-order":
         return call_order(image, config)
     if command == "incoming":

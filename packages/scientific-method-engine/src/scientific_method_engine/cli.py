@@ -13,7 +13,7 @@ PREPARED_CONFIG_LIMIT = 16 * 1024 * 1024
 # The header names the decoder and instruction semantics that actually ran, not the pins in pyproject.toml.
 DECODER = "capstone " + capstone.__version__
 INSTRUCTION_SEMANTICS = f"pypcode {pypcode.__version__} (Ghidra SLEIGH x86)"
-USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bounds|owner|callees|trace|uses|arguments|"
+USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bounds|owner|callees|reach|trace|uses|arguments|"
          "effects|returns|memory|incoming|call-order|guards|allocation|dispatch> <config.json|->\n"
          "effects includes ordered path writes/calls and local restoration witnesses; transactionality remains unestablished.\n"
          "callees compares its edges with an ExportCallEdges.java export given as ghidraCallEdges;\n"
@@ -21,6 +21,9 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "agreed is false where Ghidra ends the function at an instruction the engine reads past (ghidraEndsFunction),\n"
          "continues past one the engine stops at (ghidraContinues),\n"
          "or continues at another address than the next instruction (ghidraFallsThroughElsewhere).\n"
+         "reach lists the target sites the starts reach over resolved calls and jumps, with the fewest-call chain\n"
+         "and the routines every read route passes, and lists every reached transfer it could not resolve;\n"
+         "a leaves routine is reached but not read, and its reason is repeated in the report.\n"
          "trace, arguments, effects, returns, guards, memory and allocation check relationalControls:\n"
          "a violated control fails the report; an undecided one is reported and never counts as held.\n"
          "A lastWriter control with an address inspects that memory at its checkpoint anchors without a read.\n"
