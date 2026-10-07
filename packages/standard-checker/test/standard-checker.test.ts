@@ -4044,12 +4044,12 @@ const locatedAt = (address: string, file = "GAME.EXE") => [
   `    address: ${address}`,
 ];
 
-// Function inventory rows of GAME.EXE. The default gives 0x00401000 for 32 bytes, so its last byte
-// is 0x0040101F, and 0x00401100 for 16 bytes.
-function inventory(root: string, rows = "0x00401000\t32\n0x00401100\t16\n") {
+// Function inventory rows of GAME.EXE under the given columns. The default gives 0x00401000 for 32
+// bytes, so its last byte is 0x0040101F, and 0x00401100 for 16 bytes.
+function inventory(root: string, rows = "0x00401000\t32\n0x00401100\t16\n", columns = "start\tsize") {
   const path = join(root, "coverage", "BLD-EXAMPLE-1.0", "GAME.EXE.tsv");
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `start\tsize\n${rows}`);
+  writeFileSync(path, `${columns}\n${rows}`);
 }
 
 // Adds SETUP.EXE, a second PE file, to the manifest of BLD-EXAMPLE-1.0.
@@ -4177,6 +4177,32 @@ test("a superseded entry's ranges are not checked", (t) => {
         .replaceAll("0x00401020", "0x0040101F"),
     );
     inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});
+
+test("a range that ends on the last byte of one of a body's ranges fails", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401200..0x0040120F"));
+    inventory(r, "0x00401000\t32\t0x00401000..0x00401010 0x00401200..0x00401210\n", "start\tsize\tranges");
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(
+    output.includes(
+      "location address 0x00401200..0x0040120F ends on the last byte of a range of the function at 0x00401000 in " +
+        "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv; ranges are half-open, so it ends at 0x00401210",
+    ),
+    output,
+  );
+});
+
+test("a range that ends where two ranges of a body touch passes", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x0040100F"));
+    inventory(r, "0x00401000\t32\t0x00401000..0x00401010 0x00401010..0x00401020\n", "start\tsize\tranges");
   });
   const { status, output } = run(root);
   assert.equal(status, 0, output);
