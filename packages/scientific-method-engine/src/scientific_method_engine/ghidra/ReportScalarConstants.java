@@ -1,9 +1,9 @@
 // Reports bounded instruction references to explicitly supplied scalar values, as immediates or
-// inside memory operands (a displacement, or the scale of an index such as the 4 in [EBX + ECX*4]).
+// inside memory operands (a displacement, an absolute address such as [0x41c000], or the scale of an
+// index such as the 4 in [EBX + ECX*4]).
 // @category Restoration
 
 import ghidra.app.script.GhidraScript;
-import ghidra.program.model.lang.OperandType;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.Instruction;
 import ghidra.program.model.listing.InstructionIterator;
@@ -11,6 +11,8 @@ import ghidra.program.model.scalar.Scalar;
 
 import java.util.HashSet;
 import java.util.Set;
+
+import scientificmethod.OperandConstants;
 
 public class ReportScalarConstants extends GhidraScript {
     private static final int MAX_MATCHES = 300;
@@ -36,11 +38,12 @@ public class ReportScalarConstants extends GhidraScript {
             monitor.checkCancelled();
             Instruction instruction = instructions.next();
             for (int operand = 0; operand < instruction.getNumOperands(); operand++) {
+                int operandType = instruction.getOperandType(operand);
                 String operandKind = null;
                 for (Object object : instruction.getOpObjects(operand)) {
-                    if (!(object instanceof Scalar scalar)
-                        || !matchesRequested(scalar, requested)) continue;
-                    if (operandKind == null) operandKind = operandKind(instruction.getOperandType(operand));
+                    Scalar scalar = OperandConstants.value(object, operandType);
+                    if (scalar == null || !matchesRequested(scalar, requested)) continue;
+                    if (operandKind == null) operandKind = operandKind(instruction, operand);
                     if (kind != null && !kind.equals(operandKind)) break;
                     if (matches == MAX_MATCHES) {
                         println("Output capped at " + MAX_MATCHES + " matches; the search did not finish. "
@@ -61,12 +64,12 @@ public class ReportScalarConstants extends GhidraScript {
         else println("Matched " + matches + " operands; the search covered every disassembled instruction.");
     }
 
-    // Ghidra types an immediate operand SCALAR, adding ADDRESS when it points into the program
-    // (PUSH 0x41c000 to a string). A memory operand is never SCALAR: a displacement such as the one in
-    // [ECX + 0x44] or the scale in [EBX + ECX*4] makes it DYNAMIC, and an absolute one such as
-    // [0x41c000] is ADDRESS with its address as the scalar object.
-    private static String operandKind(int type) {
-        return OperandType.isScalar(type) ? "immediate" : "memory";
+    // Ghidra's operand types do not tell the two kinds apart: LEA EAX,[0x41c000] and the 16-bit
+    // CALLF [0x1234] are SCALAR like an immediate, and the far direct target in CALLF 0x12:0x12345678
+    // is ADDRESS and CODE like an absolute memory operand. Ghidra writes every memory operand in
+    // brackets ([0x41c000], [ECX + 0x44], FS:[0x0]) and no immediate.
+    private static String operandKind(Instruction instruction, int operand) {
+        return instruction.getDefaultOperandRepresentation(operand).contains("[") ? "memory" : "immediate";
     }
 
     // Arguments are decoded as signed longs while operands are reported unsigned, so a request

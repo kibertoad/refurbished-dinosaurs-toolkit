@@ -5,7 +5,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Context } from "../context.ts";
-import { isSuperseded } from "../evidence.ts";
+import { isSuperseded, whyMissing } from "../evidence.ts";
 import { asList, idsIn } from "../ids.ts";
 import { readText } from "../markdown.ts";
 import { KINDS } from "../standard.ts";
@@ -21,13 +21,13 @@ export function checkAcrossEntries(ctx: Context, { enumNames }: FormatNames) {
   // Glossary claims
   for (const [term, text] of glossary) {
     for (const x of idsIn(text))
-      if (!entries.has(x)) problem(glossaryFile(term), `${term} cites ${x}, which does not exist`);
+      if (!entries.has(x)) problem(glossaryFile(term), `${term} cites ${x}, ${whyMissing(ctx, x)}`);
       else if (isSuperseded(entries, x)) problem(glossaryFile(term), `${term} cites ${x}, which is superseded`);
   }
 
   // Body references
   for (const [, e] of entries)
-    for (const x of idsIn(e.body)) if (!entries.has(x)) problem(e.file, `the body names ${x}, which does not exist`);
+    for (const x of idsIn(e.body)) if (!entries.has(x)) problem(e.file, `the body names ${x}, ${whyMissing(ctx, x)}`);
 
   // A path into a build's data directories names a file of some build with its exact case. A
   // directory, or a pattern whose last part holds a placeholder such as nn or xxx, is left alone.

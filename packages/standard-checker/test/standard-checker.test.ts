@@ -867,6 +867,204 @@ test("an explicit --base runs the comparison without a fork point, with or witho
   assert.doesNotMatch(output, /HEAD has no merge-base/);
 });
 
+// A superseded copy of RULE-SCORE-001 under id, replaced by supersededBy.
+const supersededRule = (r: string, id: string, supersededBy: string) =>
+  copyRule(r, id, (text) =>
+    text
+      .replace("status: sourced", "status: superseded")
+      .replace("superseded_by: []", `superseded_by: [${supersededBy}]`),
+  );
+
+// A committed copy of the fixture whose RULE-SCORE-002 is superseded by supersededBy, after
+// setup(root) has added anything else the base needs; the working tree then deletes RULE-SCORE-002.
+function squashedAt(t: TestContext, supersededBy = "RULE-SCORE-001", setup = (_root: string) => {}) {
+  const root = broken(t, (r) => {
+    supersededRule(r, "RULE-SCORE-002", supersededBy);
+    setup(r);
+    commitBase(r);
+  });
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-002.md"));
+  return root;
+}
+
+test("--squashed accepts a deleted entry squashed into the replacements it named at the base", (t) => {
+  const root = squashedAt(t);
+  const plain = run(root, "--base", "HEAD");
+  assert.equal(plain.status, 1);
+  assert.match(
+    plain.output,
+    /^spec: RULE-SCORE-002 exists at HEAD and has been deleted or renamed \[IDENTIFIERS-6\]$/m,
+  );
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-001");
+  assert.equal(status, 0, output);
+  assert.doesNotMatch(output, /RULE-SCORE-002/);
+});
+
+test("--squashed fails when the listed replacements are not the base's superseded_by", (t) => {
+  const root = squashedAt(t);
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=FMT-SCORE-001");
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /^spec: RULE-SCORE-002 is listed in --squashed as squashed into FMT-SCORE-001, but at HEAD its superseded_by is \[RULE-SCORE-001\] \[IDENTIFIERS-6\]$/m,
+  );
+});
+
+test("--squashed fails when a replacement does not exist", (t) => {
+  const root = squashedAt(t, "RULE-SCORE-001, RULE-SCORE-009");
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-009+RULE-SCORE-001");
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /^spec: RULE-SCORE-002 is listed in --squashed as squashed into RULE-SCORE-009, which does not exist \[IDENTIFIERS-6\]$/m,
+  );
+  assert.doesNotMatch(output, /its superseded_by is/);
+});
+
+test("--squashed fails when a replacement is superseded", (t) => {
+  const root = squashedAt(t, "RULE-SCORE-003", (r) => supersededRule(r, "RULE-SCORE-003", "RULE-SCORE-001"));
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-003");
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /RULE-SCORE-003\.md: RULE-SCORE-002 is listed in --squashed as squashed into RULE-SCORE-003, which is superseded \[IDENTIFIERS-6\]$/m,
+  );
+});
+
+test("--squashed reads the entry at the base when --root is below the top of the repository", (t) => {
+  const top = mkdtempSync(join(tmpdir(), "doc-check-"));
+  t.after(() => rmSync(top, { recursive: true, force: true }));
+  const root = join(top, "restoration");
+  cpSync(fixture, root, { recursive: true });
+  supersededRule(root, "RULE-SCORE-002", "RULE-SCORE-001");
+  commitBase(top);
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-002.md"));
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-001");
+  assert.equal(status, 0, output);
+  assert.doesNotMatch(output, /RULE-SCORE-002/);
+});
+
+test("--squashed names front matter at the base it cannot read, instead of an empty superseded_by", (t) => {
+  const root = squashedAt(t, "RULE-SCORE-001", (r) =>
+    writeFileSync(join(r, "spec", "rules", "RULE-SCORE-002.md"), "# RULE-SCORE-002\n"),
+  );
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-001");
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /^spec: RULE-SCORE-002 is listed in --squashed, but at HEAD it has no front matter, so its superseded_by is unknown \[IDENTIFIERS-6\]$/m,
+  );
+  assert.doesNotMatch(output, /its superseded_by is \[/);
+});
+
+test("--squashed accepts a chain of superseded entries squashed in one change", (t) => {
+  const root = squashedAt(t, "RULE-SCORE-003", (r) => supersededRule(r, "RULE-SCORE-003", "RULE-SCORE-001"));
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-003.md"));
+  const chain = ["--squashed", "RULE-SCORE-002=RULE-SCORE-003,RULE-SCORE-003=RULE-SCORE-001"];
+  const { status, output } = run(root, "--base", "HEAD", ...chain);
+  assert.equal(status, 0, output);
+  assert.doesNotMatch(output, /RULE-SCORE-00[23]/);
+  // A citation left behind names the end of the chain, the entry that exists.
+  replaceIn(root, "spec/glossary/add_points.md", "RULE-SCORE-001.", "RULE-SCORE-002.");
+  const cited = run(root, "--base", "HEAD", ...chain);
+  assert.equal(cited.status, 1);
+  assert.match(
+    cited.output,
+    /add_points cites RULE-SCORE-002, which was squashed into RULE-SCORE-001; cite it instead$/m,
+  );
+});
+
+test("--squashed fails for replacements that are only squashed into each other", (t) => {
+  const root = squashedAt(t, "RULE-SCORE-003", (r) => supersededRule(r, "RULE-SCORE-003", "RULE-SCORE-002"));
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-003.md"));
+  const cycle = ["--squashed", "RULE-SCORE-002=RULE-SCORE-003,RULE-SCORE-003=RULE-SCORE-002"];
+  const { status, output } = run(root, "--base", "HEAD", ...cycle);
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /^spec: RULE-SCORE-002 is listed in --squashed, but its replacements are all squashed into each other \[IDENTIFIERS-6\]$/m,
+  );
+});
+
+test("--squashed fails for an entry that still exists, with or without a base", (t) => {
+  const root = broken(t, (r) => supersededRule(r, "RULE-SCORE-002", "RULE-SCORE-001"));
+  for (const args of [[], ["--base", "HEAD"]]) {
+    if (args.length) commitBase(root);
+    const { status, output } = run(root, ...args, "--squashed", "RULE-SCORE-002=RULE-SCORE-001");
+    assert.equal(status, 1);
+    assert.match(output, /RULE-SCORE-002\.md: RULE-SCORE-002 is listed in --squashed but still exists$/m);
+  }
+});
+
+test("--squashed names an entry the base does not have as a skipped step", (t) => {
+  const root = broken(t, (r) => commitBase(r));
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-001");
+  assert.equal(status, 0, output);
+  assert.match(output, /Skipped: .*--squashed RULE-SCORE-002: not at the base, nothing to accept/);
+});
+
+test("a squashed ID still cited anywhere fails, an alias included", (t) => {
+  const root = squashedAt(t, "RULE-SCORE-001", (r) => {
+    writeFileSync(
+      join(r, "spec", "sources", "SRC-OLD-MANUAL.md"),
+      readFileSync(join(r, "spec", "sources", "SRC-MANUAL.md"), "utf8")
+        .replace("id: SRC-MANUAL", "id: SRC-OLD-MANUAL")
+        .replace("superseded_by: []", "superseded_by: [SRC-MANUAL]"),
+    );
+    mkdirSync(join(r, "notes"));
+  });
+  rmSync(join(root, "spec", "sources", "SRC-OLD-MANUAL.md"));
+  replaceIn(root, "spec/glossary/add_points.md", "RULE-SCORE-001.", "RULE-SCORE-001, which replaced RULE-SCORE-002.");
+  writeFileSync(join(root, "notes", "handover.md"), "# Handover\n\nRead SRC-OLD-MANUAL and RULE-SCORE-002.\n");
+  const squashed = ["--squashed", "RULE-SCORE-002=RULE-SCORE-001,SRC-OLD-MANUAL=SRC-MANUAL"];
+  const { status, output } = run(root, "--base", "HEAD", "--references", "notes", ...squashed);
+  assert.equal(status, 1);
+  assert.match(output, /add_points cites RULE-SCORE-002, which was squashed into RULE-SCORE-001; cite it instead$/m);
+  assert.match(output, /handover\.md: cites RULE-SCORE-002, which was squashed into RULE-SCORE-001; cite it instead$/m);
+  assert.match(output, /handover\.md: cites SRC-OLD-MANUAL, which was squashed into SRC-MANUAL; cite it instead$/m);
+  assert.doesNotMatch(output, /deleted or renamed/);
+});
+
+test("--squashed with --scheduled-generation passes generated files that still name the squashed ID", (t) => {
+  const root = broken(t, (r) => {
+    supersededRule(r, "RULE-SCORE-002", "RULE-SCORE-001");
+    assert.equal(run(r).status, 0);
+    commitBase(r);
+  });
+  assert.match(readFileSync(join(root, "spec", "index", "by-kind.md"), "utf8"), /RULE-SCORE-002/);
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-002.md"));
+  const args = ["--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-001"];
+  const { status, output } = run(root, "--scheduled-generation", ...args);
+  assert.equal(status, 0, output);
+  // Where the check writes the generated files, a stale copy fails as it always does.
+  assert.equal(run(root, "--check", ...args).status, 1);
+});
+
+test("--squashed leaves an unlisted deletion failing", (t) => {
+  const root = squashedAt(t, "RULE-SCORE-001", (r) => supersededRule(r, "RULE-SCORE-003", "RULE-SCORE-001"));
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-003.md"));
+  const { status, output } = run(root, "--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-001");
+  assert.equal(status, 1);
+  assert.match(output, /^spec: RULE-SCORE-003 exists at HEAD and has been deleted or renamed \[IDENTIFIERS-6\]$/m);
+  assert.doesNotMatch(output, /RULE-SCORE-002/);
+});
+
+test("--squashed rejects a malformed value with exit code 2", () => {
+  for (const [value, message] of [
+    ["RULE-SCORE-002", /--squashed takes items OLD=NEW or OLD=NEW\+NEW of spec IDs/],
+    ["RULE-SCORE-002=", /--squashed takes items/],
+    ["RULE-SCORE-002=DEV-SCORE-001", /--squashed takes items/],
+    ["RULE-SCORE-002=RULE-SCORE-001=RULE-SCORE-003", /--squashed takes items/],
+    ["RULE-SCORE-002=RULE-SCORE-002", /names RULE-SCORE-002 as its own replacement$/m],
+    ["RULE-SCORE-002=RULE-SCORE-001+RULE-SCORE-001", /names a replacement more than once$/m],
+    ["RULE-SCORE-002=RULE-SCORE-001,RULE-SCORE-002=RULE-SCORE-003", /--squashed lists RULE-SCORE-002 more than once/],
+  ] as const) {
+    const { status, output } = run(fixture, "--squashed", value);
+    assert.equal(status, 2, `${value}: ${output}`);
+    assert.match(output, message);
+  }
+});
+
 // The skipped step that --scheduled-generation adds to the result line, as a pattern.
 const SCHEDULED = "comparison of the generated files with the spec \\(--scheduled-generation\\)";
 
@@ -3674,4 +3872,192 @@ test("a function call from a rule that shares no build with its defines fails on
     run(root).output,
     /RULE-SCORE-002\.md: calls add_points\(\) with 3 arguments, but none of its defines takes that many \(1 parameter in RULE-SCORE-001, 2 parameters in RULE-SCORE-003\)$/m,
   );
+});
+
+// Ranges against the function inventories in coverage/.
+
+// A valid finding of BLD-EXAMPLE-1.0 with the given locations (YAML lines) and observation.
+function rangeFinding(root: string, locations: string[], observation = "The handler adds 1 to the score.") {
+  mkdirSync(join(root, "spec", "findings"), { recursive: true });
+  writeFileSync(
+    join(root, "spec", "findings", "FND-SCORE-001.md"),
+    [
+      "---",
+      "id: FND-SCORE-001",
+      "title: The kill handler adds one to the score",
+      "status: recorded",
+      "builds: [BLD-EXAMPLE-1.0]",
+      "superseded_by: []",
+      "recorded_by: example",
+      "reproduced_by: []",
+      "method: static",
+      "locations:",
+      ...locations,
+      "tool: Ghidra 12.1.3",
+      "environment: null",
+      "---",
+      "",
+      "## Observation",
+      "",
+      observation,
+      "",
+      "## Interpretation",
+      "",
+      "Each kill adds one point.",
+      "",
+      "## Alternatives",
+      "",
+      "None known.",
+      "",
+      "## How to reproduce",
+      "",
+      "Open the function at 0x00401000.",
+      "",
+    ].join("\n"),
+  );
+}
+
+const locatedAt = (address: string, file = "GAME.EXE") => [
+  "  - build: BLD-EXAMPLE-1.0",
+  `    file: ${file}`,
+  `    address: ${address}`,
+];
+
+// Function inventory rows of GAME.EXE. The default gives 0x00401000 for 32 bytes, so its last byte
+// is 0x0040101F, and 0x00401100 for 16 bytes.
+function inventory(root: string, rows = "0x00401000\t32\n0x00401100\t16\n") {
+  const path = join(root, "coverage", "BLD-EXAMPLE-1.0", "GAME.EXE.tsv");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `start\tsize\n${rows}`);
+}
+
+// Adds SETUP.EXE, a second PE file, to the manifest of BLD-EXAMPLE-1.0.
+const withSetupExe = (root: string) =>
+  replaceIn(
+    root,
+    "spec/builds/BLD-EXAMPLE-1.0.files.yaml",
+    "  - path: DATA/SCORES.BIN",
+    "  - path: SETUP.EXE\n    format: PE\n    size: 1024\n    xxh3: 00112233445566778899aabbccddeeff\n  - path: DATA/SCORES.BIN",
+  );
+
+const LAST_BYTE = (what: string) =>
+  `${what} ends on the last byte of the function at 0x00401000 in coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv; ranges are half-open, so it ends at 0x00401020`;
+
+test("a location range that ends on a function's last byte fails", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F"));
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes(LAST_BYTE("location address 0x00401000..0x0040101F")), output);
+});
+
+test("a half-open range that ends one past a function's last byte passes", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x00401020"), "The handler, `0x00401000..0x00401020`, adds 1 to the score.");
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});
+
+test("a range in the body that ends on a function's last byte fails", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(
+      r,
+      locatedAt("0x00401000..0x00401020"),
+      "| Range | Bytes |\n|---|---|\n| `0x00401000..0x0040101F` | 32 |",
+    );
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes(LAST_BYTE("the body's range 0x00401000..0x0040101F")), output);
+});
+
+test("the body of an entry located only by file data in one file is checked against that file's inventory", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(
+      r,
+      ["  - build: BLD-EXAMPLE-1.0", "    file: GAME.EXE", "    kind: file-data", "    offset: 0x0010..0x0020"],
+      "The table the handler reads follows it, 0x00401000..0x0040101F.",
+    );
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes(LAST_BYTE("the body's range 0x00401000..0x0040101F")), output);
+});
+
+test("a segmented range is compared by linear address and the end keeps its segment", (t) => {
+  const root = broken(t, (r) => {
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", "format: MZ");
+    rangeFinding(r, locatedAt("1000:0000..1001:000F"));
+    inventory(r, "1000:0000\t32\n");
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(
+    output.includes(
+      "location address 1000:0000..1001:000F ends on the last byte of the function at 1000:0000 in coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv; ranges are half-open, so it ends at 1001:0010",
+    ),
+    output,
+  );
+});
+
+test("without inventories ranges are not checked and no step is reported as skipped", (t) => {
+  const root = broken(t, (r) =>
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F"), "The handler spans 0x00401000..0x0040101F."),
+  );
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte") && !output.includes("inventor"), output);
+});
+
+test("a range in another file is not checked against this file's inventory", (t) => {
+  const root = broken(t, (r) => {
+    withSetupExe(r);
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F", "SETUP.EXE"), "The installer spans 0x00401000..0x0040101F.");
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});
+
+test("a body range of an entry located in two files is not checked", (t) => {
+  const root = broken(t, (r) => {
+    withSetupExe(r);
+    rangeFinding(
+      r,
+      [...locatedAt("0x00401000..0x00401020"), ...locatedAt("0x00401000..0x00401020", "SETUP.EXE")],
+      "One of them spans 0x00401000..0x0040101F.",
+    );
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});
+
+test("a superseded entry's ranges are not checked", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x00401020"), "The handler spans 0x00401000..0x00401020.");
+    const dir = join(r, "spec", "findings");
+    const current = readFileSync(join(dir, "FND-SCORE-001.md"), "utf8");
+    writeFileSync(join(dir, "FND-SCORE-002.md"), current.replace("id: FND-SCORE-001", "id: FND-SCORE-002"));
+    writeFileSync(
+      join(dir, "FND-SCORE-001.md"),
+      current
+        .replace("status: recorded", "status: superseded")
+        .replace("superseded_by: []", "superseded_by: [FND-SCORE-002]")
+        .replaceAll("0x00401020", "0x0040101F"),
+    );
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
 });

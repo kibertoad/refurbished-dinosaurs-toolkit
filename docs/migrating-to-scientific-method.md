@@ -393,6 +393,7 @@ not in the table has no entry.
 
 | Engine | Entry |
 |---|---|
+| 13.0.0 | [The scalar constant scripts match absolute memory operands](#engine-1300-the-scalar-constant-scripts-match-absolute-memory-operands) |
 | 12.0.0 | [A callee's converted return frame returns to its caller](#engine-1200-a-callees-converted-return-frame-returns-to-its-caller) |
 | 11.0.0 | [A failed return check names which check failed](#engine-1100-a-failed-return-check-names-which-check-failed) |
 | 10.0.0 | [Indirect far calls and jumps follow a pointer the path stored](#engine-1000-indirect-far-calls-and-jumps-follow-a-pointer-the-path-stored) |
@@ -410,6 +411,16 @@ not in the table has no entry.
 | 3.0.0 | [The Ghidra report scripts state coverage](#engine-300-the-ghidra-report-scripts-state-coverage) |
 | 2.0.0 | [Prepared-config protocol 3, with reader 2.0.0](#prepared-config-protocol-3-scoped-memory-on-call-models) |
 | 1.0.0 | [Prepared-config protocol 2, with reader 1.0.0](#prepared-config-protocol-2) |
+
+### Engine 13.0.0: the scalar constant scripts match absolute memory operands
+
+`ReportScalarConstants` and `ReportFunctionScalarConstants` now load
+`scientificmethod/OperandConstants.java`, so run them with the package's script directory as
+`-scriptPath`, or copy the `scientificmethod/` directory along with them. Both now match the address
+of an absolute memory operand such as `[0x41c000]`, and `ReportFunctionScalarConstants` reads every
+range of the function's body, so a saved census can grow. `ReportScalarConstants` takes an
+operand's kind from its brackets: `LEA EAX,[0x41c000]` and the 16-bit `CALLF [0x1234]` are
+`memory`, and the far direct target in `CALLF 0x12:0x12345678` is `immediate`.
 
 ### Engine 12.0.0: a callee's converted return frame returns to its caller
 

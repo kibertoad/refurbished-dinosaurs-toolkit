@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { collectPlaceholders } from "../code-files.ts";
 import type { Context } from "../context.ts";
-import { mayBeInterrupted, onlyEmulatedRuns } from "../evidence.ts";
+import { mayBeInterrupted, onlyEmulatedRuns, squashedInto } from "../evidence.ts";
 import { checkTestFiles, markdownTree, NEEDS_GAME, walk } from "../files.ts";
 import { areaOf, compareIds, kindOf } from "../ids.ts";
 import { readText, tables } from "../markdown.ts";
@@ -101,7 +101,13 @@ export function checkParity(ctx: Context, deviations: Map<string, Deviation>): P
         previous = specId;
         const e = entries.get(specId);
         if (!e) {
-          problem(file, `${specId} does not exist in the spec`);
+          const into = squashedInto(ctx.config.squashed, specId);
+          problem(
+            file,
+            into.length > 0
+              ? `${specId} was squashed into ${into.join(", ")}; its row belongs to ${into.length > 1 ? "those" : "it"} now`
+              : `${specId} does not exist in the spec`,
+          );
           continue;
         }
         if (!["RULE", "FMT", "SCR"].includes(e.kind) || e.meta.status === "superseded")

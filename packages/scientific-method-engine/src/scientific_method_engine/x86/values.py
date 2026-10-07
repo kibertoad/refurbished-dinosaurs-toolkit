@@ -1,6 +1,24 @@
 """Small bit-vector expressions; unknown values retain their producers."""
 from dataclasses import dataclass
 
+# The most terms one value's expression may hold, counting every tuple node at any depth.
+TERM_LIMIT = 1024
+
+
+class TermLimit(ValueError):
+    """A value's expression would hold more than ``TERM_LIMIT`` terms.
+
+    A trace stops the path whose instruction built the value, with this message as the stop
+    reason. Raised anywhere else, it fails the run like any other ``ValueError``.
+    """
+
+    MESSAGE = f"expression term limit: a value's expression would hold more than {TERM_LIMIT} terms; narrow the query"
+
+    def __init__(self, message=MESSAGE):
+        # The message is an argument so that copying or pickling the error can rebuild it.
+        super().__init__(message)
+
+
 @dataclass(frozen=True)
 class Value:
     bits: int
@@ -12,8 +30,8 @@ class Value:
         while pending:
             term = pending.pop()
             count += 1
-            if count > 1024:
-                raise ValueError("Symbolic expression complexity limit reached; narrow the query")
+            if count > TERM_LIMIT:
+                raise TermLimit()
             if isinstance(term, tuple):
                 pending.extend(item for item in term if isinstance(item, tuple))
 

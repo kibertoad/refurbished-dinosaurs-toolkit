@@ -20,6 +20,15 @@
 //                       resolve, the result line names the comparison as skipped)
 //   --require-base      fail when no --base is given and the fork point does not resolve, instead
 //                       of passing with the comparison skipped
+//   --squashed <list>   comma-separated OLD=NEW or OLD=NEW+NEW items: superseded entries this change
+//                       deleted, squashed into the replacements their superseded_by named at the
+//                       base. Each deletion passes when that list matches and every replacement
+//                       exists and is not superseded or is listed too (A=B,B=C squashes a
+//                       chain); an OLD that still exists fails, and one the base does not have is
+//                       named as skipped. A squashed ID still cited in the
+//                       spec, the glossary, the code, the references, parity/ or deviations/
+//                       fails, an alias included; the generated files are not searched, so under
+//                       --scheduled-generation they may name one until the main branch regenerates them
 //   --no-ksy            skip compiling the Kaitai definitions; the result line names the skip
 //   --require-ksc       fail when spec/formats/ holds Kaitai definitions and no compiler is found,
 //                       instead of passing with the compilation skipped
@@ -67,10 +76,11 @@
 //
 // This file reads the options and runs the phases in order: load the spec, check the entries, the
 // rules, the field names in their procedures and what crosses entries, compile the Kaitai
-// definitions, check the deviations, parity, VALIDATION.md, the code's references and comments and
-// the base ref, then write or check the generated files, or with --scheduled-generation check that
-// the change leaves them alone. Every phase reports into one collector,
-// which prints the problems at the end in the order they were found.
+// definitions, check the deviations, parity, VALIDATION.md, the code's references and comments, the
+// range ends against the function inventories in coverage/, and the base ref, then write or check
+// the generated files, or with --scheduled-generation check that the change leaves them alone.
+// Every phase reports into one collector, which prints the problems at the end in the order they
+// were found.
 
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -83,6 +93,7 @@ import { checkDeviations } from "./checks/deviations.ts";
 import { checkEntries } from "./checks/entries.ts";
 import { checkFieldNames } from "./checks/fields.ts";
 import { checkMessageAddresses } from "./checks/message-addresses.ts";
+import { checkRangeEnds } from "./checks/range-ends.ts";
 import { checkRebuildPaths } from "./checks/rebuild-paths.ts";
 import { compileKaitai } from "./checks/kaitai.ts";
 import { checkParity } from "./checks/parity.ts";
@@ -130,6 +141,7 @@ checkValidation(ctx, parity);
 checkReferences(ctx, deviations);
 checkCommentAddresses(ctx);
 checkRebuildPaths(ctx);
+checkRangeEnds(ctx);
 const base = checkBase(ctx, deviations);
 const generated = generateIndexes(ctx);
 generateParity(ctx, parity, generated);
