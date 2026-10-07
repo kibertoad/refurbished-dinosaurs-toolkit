@@ -21,7 +21,8 @@
 // for overlay code in an MZ file an offset that lies inside a row of the build's Code ranges. size
 // is the function's body in bytes. A row with a reason in out_of_scope is out of scope. When the
 // body is not one range from start, ranges lists its half-open ranges as start..end in the same
-// notation, separated by spaces; size is their total, and one of them holds start. The
+// notation, separated by spaces; size is their total, and one of them holds start. In an NE file
+// each range, and a body without ranges, ends in the segment it starts in. The
 // .provenance.tsv and .regions.tsv files the protocol puts beside an inventory are not read.
 //
 // An entry cites a function when one of its locations names the same build and file and its
@@ -47,11 +48,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { asList } from "./ids.ts";
-import { type InventoryRow, locationRange, readInventories } from "./inventory.ts";
+import { type InventoryRow, codeLocations, readInventories } from "./inventory.ts";
 import { loadSpec } from "./load/spec.ts";
 import { parseOptions } from "./options.ts";
-import type { Meta } from "./types.ts";
 
 /** One row of an inventory, with the entries that cite it. */
 interface InventoryFunction extends InventoryRow {
@@ -137,12 +136,8 @@ function measure(root: string) {
   let unreadLocations = 0;
   for (const [id, e] of entries) {
     if (e.meta.status === "superseded") continue;
-    for (const loc of asList(e.meta.locations) as Meta[]) {
-      if (!loc || typeof loc !== "object" || loc.kind === "file-data" || loc.unpacked === true) continue;
-      const bf = (buildFiles.get(loc.build) ?? []).find((f) => f.path === loc.file);
-      if (!bf) continue;
-      const range = locationRange(loc, bf.unpacked?.format ?? bf.format);
-      if (!range || range.end <= range.start) {
+    for (const { loc, range } of codeLocations(e.meta, buildFiles)) {
+      if (!range) {
         unreadLocations++;
         continue;
       }

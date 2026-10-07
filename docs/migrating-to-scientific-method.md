@@ -423,6 +423,16 @@ committed and is kept with the captures, with its hash in the fixture's `startin
 
 Engine releases that need a change in a restoration are listed here, newest first.
 
+### The scalar constant scripts match absolute memory operands
+
+`ReportScalarConstants` and `ReportFunctionScalarConstants` now load
+`scientificmethod/OperandConstants.java`, so run them with the package's script directory as
+`-scriptPath`, or copy the `scientificmethod/` directory along with them. Both now match the address
+of an absolute memory operand such as `[0x41c000]`, and `ReportFunctionScalarConstants` reads every
+range of the function's body, so a saved census can grow. `ReportScalarConstants` takes an
+operand's kind from its brackets: `LEA EAX,[0x41c000]` and the 16-bit `CALLF [0x1234]` are
+`memory`, and the far direct target in `CALLF 0x12:0x12345678` is `immediate`.
+
 ### A callee's converted return frame returns to its caller
 
 A traced callee that rebuilt its near call frame as a far one before a `RETF` (or its far frame as

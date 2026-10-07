@@ -2523,8 +2523,10 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual(b["paths"][0]["registers"]["eax"]["value"], 0xffff8080)
 
     def test_symbolic_growth_is_bounded(self):
-        with self.assertRaisesRegex(ValueError, "complexity"):
-            report("01 d8 " * 200 + "c3")
+        # test_term_limit.py covers the stop beside other paths.
+        path = report("01 d8 " * 200 + "c3")["paths"][0]
+        self.assertFalse(path["returned"])
+        self.assertTrue(path["stop"].startswith("expression term limit"))
 
 
     def test_dispatch_rejects_wrong_layout_and_reports_index_overrun(self):

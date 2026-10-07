@@ -24,7 +24,8 @@ public class ReportReferences extends GhidraScript {
             println("===== references to " + target + " =====");
             ReferenceIterator references = currentProgram.getReferenceManager().getReferencesTo(target);
             int count = 0;
-            while (references.hasNext() && count < MAX_REFERENCES && !monitor.isCancelled()) {
+            while (references.hasNext() && count < MAX_REFERENCES) {
+                monitor.checkCancelled();
                 Reference reference = references.next();
                 Instruction instruction = currentProgram.getListing().getInstructionContaining(reference.getFromAddress());
                 Function function = currentProgram.getFunctionManager().getFunctionContaining(reference.getFromAddress());
@@ -38,5 +39,10 @@ public class ReportReferences extends GhidraScript {
             if (count == 0) println("No references found.");
             else if (count == MAX_REFERENCES && references.hasNext()) println("Output capped at " + MAX_REFERENCES + " references.");
         }
+
+        // Ghidra types an indexed store such as MOV [EAX*4+table],ECX as DATA, and gives an indexed
+        // read-modify-write no reference at all, so the type column cannot answer "who writes this".
+        println("Types are Ghidra's reference types, not the access an instruction makes: DATA covers"
+            + " indexed reads and writes and address formation. An operand Ghidra gave no reference is not listed.");
     }
 }

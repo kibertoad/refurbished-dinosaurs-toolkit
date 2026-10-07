@@ -5,6 +5,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { toSlash } from "./files.ts";
+import { asList } from "./ids.ts";
 import { addressParts, parseOffset } from "./locations.ts";
 import { locationRule } from "./standard.ts";
 import type { CodeRange, Meta, Yaml } from "./types.ts";
@@ -76,6 +77,28 @@ export function locationRange(loc: Meta, format: Yaml): { space: Space; start: b
  * .tsv. They hold the inventory's provenance and the denominator audit's totals, not functions.
  */
 const SIDE_FILES = [".provenance.tsv", ".regions.tsv"];
+
+/** A location of an entry in code, with the half-open range it gives, or null when that does not parse or is empty. */
+export interface CodeLocation {
+  loc: Meta;
+  range: { space: Space; start: bigint; end: bigint } | null;
+}
+
+/**
+ * The locations of an entry that place it in code: those in a file the build's manifest lists,
+ * leaving out file-data locations and those into the unpacked form of a packed file, each with the range it gives in that file's notation.
+ */
+export function codeLocations(meta: Meta, buildFiles: Map<string, Meta[]>): CodeLocation[] {
+  const found: CodeLocation[] = [];
+  for (const loc of asList(meta.locations) as Meta[]) {
+    if (!loc || typeof loc !== "object" || loc.kind === "file-data" || loc.unpacked === true) continue;
+    const bf = (buildFiles.get(loc.build) ?? []).find((f) => f.path === loc.file);
+    if (!bf) continue;
+    const range = locationRange(loc, bf.unpacked?.format ?? bf.format);
+    found.push({ loc, range: range && range.start < range.end ? range : null });
+  }
+  return found;
+}
 
 /** The build ID and manifest path an inventory's path stands for, or null when it has the wrong shape. */
 function inventoryTarget(path: string): { build: string; file: string } | null {

@@ -255,6 +255,14 @@ test("check.sh with scheduled-generation fails a pull request that edits a gener
   );
 });
 
+test("check.sh passes the squashed input to the checker", { skip }, (t) => {
+  const clone = shallowClone(t, documentedOrigin(t), "feature");
+  const env = checkEnv(clone, { GITHUB_BASE_REF: "main", DOC_SQUASHED: "RULE-SCORE-002=RULE-SCORE-001" });
+  const { status, output } = runScript("check.sh", [], env);
+  assert.equal(status, 0, output);
+  assert.match(output, /Skipped: .*--squashed RULE-SCORE-002: not at the base, nothing to accept/);
+});
+
 test("check.sh with a base input compares with it and fetches nothing", { skip }, (t) => {
   const clone = shallowClone(t, documentedOrigin(t), "feature");
   const { status, output } = runScript("check.sh", [], checkEnv(clone, { GITHUB_BASE_REF: "main", DOC_BASE: "HEAD" }));

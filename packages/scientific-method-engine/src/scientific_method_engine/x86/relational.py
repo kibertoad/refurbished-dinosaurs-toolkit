@@ -9,7 +9,7 @@ from math import inf
 from .image import integer
 from .machine import ALIASES, NO_WRITE, State, StopPath
 from .memory_scopes import SEGMENTS
-from .values import const, op
+from .values import const, op, TermLimit
 
 KINDS = ("reach", "order", "lastWriter", "containment", "relation", "origin")
 OPERATORS = ("eq", "ne", "lt", "le", "gt", "ge")
@@ -144,14 +144,17 @@ def probe_memory(state, name, address):
     The row carries ``byteProducers`` as a read of those bytes would report them, or ``unresolved``
     when the address cannot be inspected.
     """
-    offset = const(address.get("displacement", 0), state.bits)
-    if "base" in address:
-        offset = op("add", state.reg(address["base"]), offset)
     segment = state.segment(address["segment"])
-    row = {"control": name, "segment": segment.report(), "offset": offset.report(), "width": address["width"]}
+    row = {"control": name, "segment": segment.report(), "offset": None, "width": address["width"]}
+    # A probe only observes the path, so an address it cannot form (``offset`` stays None) or
+    # inspect leaves the row unresolved and the path running.
     try:
+        offset = const(address.get("displacement", 0), state.bits)
+        if "base" in address:
+            offset = op("add", state.reg(address["base"]), offset)
+        row["offset"] = offset.report()
         keys = state.keys(segment, offset, address["width"])[3]
-    except StopPath as error:
+    except (StopPath, TermLimit) as error:
         return {**row, "unresolved": str(error)}
     return {**row, "byteProducers": [state.byte_writer(i, key) for i, key in enumerate(keys)]}
 

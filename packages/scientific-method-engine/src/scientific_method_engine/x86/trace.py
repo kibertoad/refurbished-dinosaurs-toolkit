@@ -6,12 +6,16 @@ from .image import integer
 from .machine import (State, StopPath, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
                       string_count, string_effect, check_string_form, compare_string, repeated, string_width,
                       FLAT_PORT_REASON)
-from .values import const, unknown, sources, op, join
+from .values import const, unknown, sources, op, join, TermLimit
 from .result_flow import validate_contracts, result_contracts
 from .loops import LoopTracker
 from .memory_scopes import validate_scopes, capture_scopes, retain_scopes, scope_history
 from .pcode_backend import interrupt_vector
 from .relational import checkpoint_anchors, memory_probes, probe_memory
+
+# What stops one path and leaves the others: the model cannot follow it, or a value it built
+# would pass the term limit. Errors in the query still fail the run.
+PATH_STOPS = (StopPath, TermLimit)
 
 def call_target(image, site, ins):
     if ins.mnemonic in ("lcall", "ljmp"):
@@ -740,7 +744,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
         try:
             value = s.get(ins, ins.operands[0], image)
             address = s.address(ins, ins.operands[0]) if ins.operands[0].type == X86_OP_MEM else None
-        except StopPath as error:
+        except PATH_STOPS as error:
             global_gaps.append({"site": s.at, "reason": "conditional table operand unresolved: " + str(error)})
             return
         groups = {}
@@ -902,7 +906,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                                         string_step(child, ins, count)
                                         child.at = following
                                         pending.append(child)
-                                    except StopPath as error:
+                                    except PATH_STOPS as error:
                                         finish(child, str(error))
                     string_step(state, ins, count)
                     state.at = following
@@ -916,7 +920,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                     # Scopes resolve first, so a path that stops on them reports the boundary unmodeled.
                     try:
                         captured = capture_model_scopes(state, interrupt_model, 6)
-                    except StopPath:
+                    except PATH_STOPS:
                         state.event("hardware-boundary", boundary="interrupt", mnemonic=m, vector=vector,
                                     interpretation="the interrupt handler and its effects are not modeled")
                         raise
@@ -989,7 +993,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                         try:
                             flags_word = state.peek(state.segment("ss"), op("add", state.reg(state.sp), const(4, 16), at), 2)
                             flags_frame = (16, flags_word.term) in state.saved_flags
-                        except StopPath:
+                        except PATH_STOPS:
                             flags_frame = False
                     # A traced call records its return-frame width; argumentFrames maps the slots above it.
                     call_event["returnFrameBytes"] = 4 if m == "lcall" or push_cs else image.bits // 8
@@ -1125,7 +1129,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                     continue
                 state.semantics.ordinary(state, ins, image)
                 state.at = following
-        except StopPath as error:
+        except PATH_STOPS as error:
             finish(state, str(error))
     if continuing:
         # Only continuation states are traced after the switch: deferred states are popped only when
