@@ -2749,6 +2749,13 @@ for (const [code, ok, why] of [
     "with a suffix, under the nearest comment above, past code and a blank line",
   ],
   ['// FND-SCORE-001\nvar s = "0x00401004";\n', true, "in a string, under a comment that cites the finding"],
+  [
+    "// FND-SCORE-001 records these.\nuint[] t = {\n  0x00401000,\n  0x00401004, // the kill handler\n};\n",
+    true,
+    "in a table row with a comment of its own, under a comment that cites the finding",
+  ],
+  ["// FND-SCORE-001\nconst handler = 0x0040_1004n;\n", true, "with digit separators and a BigInt suffix"],
+  ["const handler = 0x0040_1004n;\n", false, "with digit separators and a BigInt suffix and no comment"],
   ["const uint Handler = 0x00401004;\n", false, "with no comment above it"],
   [
     "// SRC-MANUAL: the handler.\nconst uint Handler = 0x00401004;\n",
@@ -2864,20 +2871,24 @@ test("a commit message fails when it gives an address that no entry it cites rec
   assert.match(wrong.output, /gives 0x00401010, but neither FND-SCORE-001 nor the evidence it cites records it/);
 });
 
-test("a commit message's comment lines and verbose diff are left out", (t) => {
+test("a commit message's verbose diff is left out, with any comment character", (t) => {
   const root = broken(t, (r) => establishByReading(r));
-  const result = message(
-    root,
-    [
-      "Score kills",
-      "# The handler at 0x00401004.",
-      "# ------------------------ >8 ------------------------",
-      "+// the handler at 0x00401008",
-      "",
-    ].join("\n"),
-    ...IMAGE,
-  );
-  assert.equal(result.status, 0, result.output);
+  for (const scissors of ["# ------------------------ >8 ------------------------", "; ------ >8 ------"]) {
+    const result = message(
+      root,
+      ["Score kills", "# Please enter the commit message.", scissors, "+// the handler at 0x00401008", ""].join("\n"),
+      ...IMAGE,
+    );
+    assert.equal(result.status, 0, result.output);
+  }
+});
+
+test("a commit message's comment lines are checked, since git commit -m keeps them", (t) => {
+  const root = broken(t, (r) => establishByReading(r));
+  const result = message(root, "#12: the handler at 0x00401004\n", ...IMAGE);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /commit message: gives 0x00401004, but the message cites no entry that records it/);
+  assert.equal(message(root, "#12: the handler at 0x00401004 (FND-SCORE-001)\n", ...IMAGE).status, 0);
 });
 
 test("--message cannot be combined with --check, and an unreadable message exits with 2", () => {
@@ -2897,6 +2908,8 @@ for (const [text, ok, why] of [
   ["How to reproduce: run tools/research/list-callers.mjs.", true, "a research script in tools/"],
   ["Each of the tests/experiments compares one draw.", true, "prose that only looks like a path"],
   ["The game reads DATA/src/SCORES.BIN.", true, "a path that only contains a rebuild directory's name"],
+  ["The handler asserts in src\\game\\score.cpp.", true, "a path of the original's sources, with backslashes"],
+  ["See tests\\Score.Tests\\ScoreTests.cs.", false, "an existing rebuild path written with backslashes"],
 ] as Array<[string, boolean, string]>)
   test(`a spec entry that names ${why} ${ok ? "passes" : "fails"}`, (t) => {
     const root = broken(t, (r) => {
@@ -2918,6 +2931,16 @@ test("--rebuild chooses the directories the spec may not name", (t) => {
   assert.match(result.output, /names server\/src\/kill\.ts, which belongs to the rebuild/);
   const none = broken(t, (r) => inSummary(r, "The rebuild's tests/Score.Tests/ScoreTests.cs replays the run."));
   assert.equal(run(none, "--rebuild", "").status, 0);
+});
+
+test("--rebuild takes a directory written with ./ in front, and a nested one counts depth from itself", (t) => {
+  const root = broken(t, (r) => inSummary(r, "The server's server/src/kill.ts counts it."));
+  const dotted = run(root, "--rebuild", "./server");
+  assert.equal(dotted.status, 1, dotted.output);
+  assert.match(dotted.output, /names server\/src\/kill\.ts, which belongs to the rebuild/);
+  // One level below server/src, without an extension, is prose.
+  const prose = broken(t, (r) => inSummary(r, "Each of the server/src/handlers draws one frame."));
+  assert.equal(run(prose, "--rebuild", "server/src").status, 0);
 });
 
 for (const [option, value] of [

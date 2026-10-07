@@ -99,7 +99,7 @@ export function powershellComments(source: string): CodeLine[] {
       continue;
     }
     line().code = true;
-    const here = /^@(['"])[ \t]*\n/.exec(text.slice(i, i + 64));
+    const here = c === "@" ? /^@(['"])[ \t]*\n/.exec(text.slice(i, i + 64)) : null;
     if (here) {
       // A here-string closes at a line that starts with its quote and @.
       const close = new RegExp(`\\n${here[1]}@`, "g");

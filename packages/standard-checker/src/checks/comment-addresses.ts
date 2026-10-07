@@ -11,10 +11,10 @@
 // the same block.
 //
 // An address in a comment belongs to that comment's block. An address in the code itself, as a
-// number or inside a string, belongs to the comment that trails its line, or else to the nearest
+// number or inside a string, belongs to the comment that trails its line and to the nearest
 // comment-only line above it and that line's block, however many lines of code lie between. So a
-// table of addresses under one comment is covered by what that comment cites, and an address with
-// no comment above it at all fails. Code cannot write a half-open range, so a value that the
+// table of addresses under one comment is covered by what that comment cites, a row with a comment
+// of its own included, and an address with neither a comment on its line nor one above it fails. Code cannot write a half-open range, so a value that the
 // comment gives as the end of one (`..0x…`) stands for the byte before it in the code as well.
 //
 // An entry records an address written in its locations or its text, singly or inside a half-open
@@ -71,6 +71,7 @@ export function checkCommentAddresses(ctx: Context) {
       return blocks.get(key)!;
     };
     const none = { text: "", cited: [] as string[], scope: [] as string[] };
+    let above = -1; // the nearest comment-only line above line i
     for (let i = 0; i < lines.length; i++) {
       const { comments } = lines[i]!;
       const inComments = addressesIn(comments.map((c) => c.text).join("\n"), images);
@@ -86,11 +87,22 @@ export function checkCommentAddresses(ctx: Context) {
         }
       }
       if (inCode.length) {
-        // The comment trailing this line, or the nearest comment-only line above it.
-        let above = i - 1;
-        while (above >= 0 && !commentOnly(above)) above--;
-        const block = comments.length ? blockAt(i) : above >= 0 ? blockAt(above) : none;
+        // The comment trailing this line and the nearest comment-only line above it, so a row of a
+        // table that has a comment of its own stays covered by the comment above the table.
+        const own = comments.length ? blockAt(i) : none;
+        const head = above >= 0 ? blockAt(above) : none;
+        const block = {
+          text: `${head.text}\n${own.text}`,
+          cited: [...new Set([...own.cited, ...head.cited])],
+          scope: [...new Set([...own.scope, ...head.scope])],
+        };
         const { cited, scope } = block;
+        const citing =
+          own.cited.length && head.cited.length
+            ? "the comments on that line and above it cite"
+            : own.cited.length
+              ? "the comment on that line cites"
+              : "the comment above it cites";
         for (const { written, value } of inCode) {
           // Code cannot write a half-open range, so a value its comment gives as the end of one
           // stands for the byte before it there too.
@@ -98,10 +110,11 @@ export function checkCommentAddresses(ctx: Context) {
           if (recorded.records(scope, value) || (end && recorded.records(scope, value - 1))) continue;
           problem(
             file,
-            `line ${i + 1} uses ${written} in code, but ${cited.length ? `neither ${cited.join(", ")}, which the comment ${comments.length ? "on that line" : "above it"} cites, nor the evidence ${cited.length === 1 ? "it cites" : "they cite"} records it` : "no comment on that line or above it cites an entry that records it"}; cite the finding that records it in that comment, or record it in a new one`,
+            `line ${i + 1} uses ${written} in code, but ${cited.length ? `neither ${cited.join(", ")}, which ${citing}, nor the evidence ${cited.length === 1 ? "it cites" : "they cite"} records it` : "no comment on that line or above it cites an entry that records it"}; cite the finding that records it in that comment, or record it in a new one`,
           );
         }
       }
+      if (commentOnly(i)) above = i;
     }
   }
 }

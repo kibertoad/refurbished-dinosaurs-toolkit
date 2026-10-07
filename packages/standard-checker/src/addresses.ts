@@ -5,15 +5,17 @@ import { isSuperseded } from "./evidence.ts";
 import { asList } from "./ids.ts";
 import type { Entry } from "./types.ts";
 
-// An address as code or prose writes it: 0x and eight hex digits, or a neutral name. In code, a C#
-// or C integer suffix (u, U, l, L, or two of them) may follow a 0x value.
-const ADDRESS_RE = /(?<![0-9A-Za-z_])(0x|fn_|g_)([0-9A-Fa-f]{8})(?:[uUlL]{1,2})?(?![0-9A-Za-z_])/g;
+// An address as code or prose writes it: 0x and eight hex digits, or a neutral name. In code, a 0x
+// value may group its digits with _ separators (C#, TypeScript), and a C# or C integer suffix (u, U,
+// l, L, or two of them) or a TypeScript BigInt n may follow it.
+const ADDRESS_RE =
+  /(?<![0-9A-Za-z_])(?:(0x)((?:[0-9A-Fa-f]_*){7}[0-9A-Fa-f])(?:[uUlL]{1,2}|n)?|(fn_|g_)([0-9A-Fa-f]{8}))(?![0-9A-Za-z_])/g;
 // An address or a half-open range of them, as an entry writes it.
 const RANGE_RE = /(?<![0-9A-Za-z_])(?:0x|fn_|g_)([0-9A-Fa-f]{8})(?:\.\.0x([0-9A-Fa-f]{8}))?(?![0-9A-Za-z_])/g;
 
 /** An address found in text: as written, and its value. */
 export interface FoundAddress {
-  /** The address as the text writes it, without a suffix. */
+  /** The address as the text writes it, without a suffix or digit separators. */
   written: string;
   /** Its value; for the end of a half-open range, the byte before it. */
   value: number;
@@ -27,10 +29,12 @@ export interface FoundAddress {
 export function addressesIn(text: string, images: Array<[number, number]>): FoundAddress[] {
   const found = new Map<string, FoundAddress>();
   for (const m of text.matchAll(ADDRESS_RE)) {
+    const prefix = m[1] ?? m[3]!;
+    const digits = (m[2] ?? m[4]!).replaceAll("_", "");
     const rangeEnd = m.index >= 2 && text.slice(m.index - 2, m.index) === "..";
-    const value = parseInt(m[2]!, 16) - (rangeEnd ? 1 : 0);
-    if (m[1] === "0x" && !images.some(([low, high]) => value >= low && value < high)) continue;
-    const written = `${m[1]}${m[2]}`;
+    const value = parseInt(digits, 16) - (rangeEnd ? 1 : 0);
+    if (prefix === "0x" && !images.some(([low, high]) => value >= low && value < high)) continue;
+    const written = `${prefix}${digits}`;
     found.set(`${written}@${value}`, { written, value });
   }
   return [...found.values()];

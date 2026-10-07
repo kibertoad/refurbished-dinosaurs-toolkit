@@ -143,11 +143,13 @@ still passes. A superseded entry records nothing.
   a run of consecutive comment-only lines. A comment that trails code also takes the comment lines
   above it and the comment lines below it that start in its column, or that continue its
   `/* … */`, and each of those lines is read with the whole of that block.
-- **Which code.** An address in the code itself, written as a number (with a `u`, `U`, `l` or `L`
-  suffix or two) or inside a string, belongs to the comment that trails its line. Without one, it
-  belongs to the nearest comment-only line above it, however many lines of code or blank lines lie
-  between, and that line's block. So one comment above a table of addresses covers every row of
-  the table, and an address with no comment above it fails. Code cannot write a half-open range,
+- **Which code.** An address in the code itself, written as a number or inside a string, belongs
+  to the comment that trails its line and to the nearest comment-only line above it, however many
+  lines of code or blank lines lie between, and that line's block. Either may cite the entry that
+  records it. So one comment above a table of addresses covers every row of the table, a row with
+  a comment of its own included, and an address with neither a comment on its line nor one above
+  it fails. A number may group its digits with `_` (`0x0040_1000`) and carry a `u`, `U`, `l` or `L`
+  suffix or two, or a BigInt `n`. Code cannot write a half-open range,
   so a value that its comment gives as the end of one (`0x00401000..0x00401010`, for a test such
   as `a < 0x00401010`) stands for the byte before it.
 - **Which addresses.** A neutral name, `fn_` or `g_` followed by eight hex digits, is always an
@@ -180,9 +182,12 @@ extent.
 A commit message that gives an address as evidence is held to the same rule as a comment: the
 address must be recorded in an entry the message cites, or in that entry's evidence. The checker
 checks one message with `--message <file>`, which reads only the message and the spec and exits
-with 0 when every address passes and 1 when one does not. It leaves out the lines git strips from a
-message, those starting with `#`, and everything from the scissors line of `git commit --verbose`
-on. Run it from a `commit-msg` hook, with the restoration's `--images`:
+with 0 when every address passes and 1 when one does not. It leaves out everything from the
+scissors line of `git commit --verbose` on, which git always cuts. It checks comment lines (those
+starting with `#`, or `core.commentChar`) too: git keeps them under `git commit -m` and the
+`whitespace` and `verbatim` cleanup modes, and a hook cannot tell which mode the commit uses. An
+address that git's own comments name, such as a branch or file name, therefore needs a citation as
+well. Run it from a `commit-msg` hook, with the restoration's `--images`:
 
 ```sh
 #!/bin/sh
@@ -199,8 +204,10 @@ The standard says the spec never names a class, file or setting of the rebuild. 
 each line of a Markdown file in `spec/`, other than the generated indexes, that names a path in one
 of the `rebuild` directories, such as `tests/Score.Tests/ScoreTests.cs` or `../../src/Score.cs`, or a
 source file (`.cs`, `.fs`, `.ts`, `.mjs`, `.js`, `.ps1`) found in one of them by its file name alone.
-A path counts when it exists, has a file extension or goes more than one level down, so prose such
-as "tests/experiments" does not. Describe the comparison in the entry without the file, and list
+A path counts when it exists, or when it is written with forward slashes and has a file extension
+or goes more than one level down. So prose such as "tests/experiments" does not count, and neither
+does a path of the original's own sources quoted as evidence with backslashes, such as
+`src\game\score.cpp` from an assert string. Describe the comparison in the entry without the file, and list
 the test in the parity row, which is where the rebuild points at the spec.
 
 Tools that read the original, such as a research script in `tools/` or a probe that runs the

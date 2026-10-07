@@ -352,7 +352,7 @@ The address check read only `//` and `/* … */` comments in `.cs`, `.ts`, `.js`
 an address given in a PowerShell comment, or used by the code itself as a number or inside a string,
 passed whether or not any entry recorded it. It now reads `#` and `<# … #>` comments in `.ps1` files
 too, and checks every address the code uses: it must be recorded in an entry that the comment
-trailing its line, or the nearest comment-only line above it and that line's block, cites, or in
+trailing its line or the nearest comment-only line above it (with that line's block) cites, or in
 that entry's evidence. With `images` set, a `0x` value of eight hex digits inside an image counts as
 an address wherever the code writes it; neutral names count without it.
 

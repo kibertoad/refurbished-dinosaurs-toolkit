@@ -4,19 +4,21 @@
 // this from a commit-msg hook, so a commit cannot give as evidence an address that no finding
 // records.
 //
-// Git's own lines are left out: everything from a scissors line (`# ---…--- >8 ---…---`, which
-// `git commit --verbose` writes above the diff) on, and every line that starts with `#`, which git
-// strips from the message.
+// Everything from a scissors line (`# ---…--- >8 ---…---`, which `git commit --verbose` writes above
+// the diff, with core.commentChar in place of `#`) on is left out, since git cuts it in every
+// cleanup mode. Comment lines before it are checked: whether git strips them depends on the cleanup
+// mode (`git commit -m "#12 …"` keeps them), which a commit-msg hook cannot see, so leaving them out
+// would let an uncited address into a commit.
 
 import { addressesIn, recordedAddresses } from "../addresses.ts";
 import type { Context } from "../context.ts";
 import { idsIn } from "../ids.ts";
 
-/** The text of a commit message file without the lines git strips from it. */
+/** The text of a commit message file up to the scissors line, which git cuts in every cleanup mode. */
 export function messageText(raw: string): string {
   const lines = raw.replace(/\r\n?/g, "\n").split("\n");
-  const scissors = lines.findIndex((l) => /^# -+ >8 -+$/.test(l));
-  return (scissors < 0 ? lines : lines.slice(0, scissors)).filter((l) => !l.startsWith("#")).join("\n");
+  const scissors = lines.findIndex((l) => /^\S+ -+ >8 -+$/.test(l));
+  return (scissors < 0 ? lines : lines.slice(0, scissors)).join("\n");
 }
 
 /** Checks the addresses that the commit message in file gives; text is the message as read. */
