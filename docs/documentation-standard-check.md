@@ -514,9 +514,9 @@ list, text after item N is neither a list item nor indented under it, or item N 
 one parameter, does not open with a code span holding the parameter's name, does not follow its
 code span directly with a colon, or has a code span holding neither a name nor a name, a colon and
 a type. Items are numbered from 1 in the order the section lists them. A rule with no Parameters
-section at all is named the same way, as one `which has no Parameters section`. Converting that rule's Parameters section to the list form puts those calls under
-the check. Function calls are always counted, since a `define` already writes its parameters in a
-fixed form.
+section at all is named the same way, as one `which has no Parameters section`. Converting that
+rule's Parameters section to the list form puts those calls under the check. Function calls are
+always counted, since a `define` already writes its parameters in a fixed form.
 
 The checker does not compare an argument's type with the parameter's type.
 

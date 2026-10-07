@@ -8,9 +8,9 @@
 // split that lists one of the calling or emitting rule's builds, and a call to a function that a
 // split rule defines against the `define` of each such entry. A Parameters section in any other
 // form than `None.` or the list gives no count, so the calls and emits that depend on it are named
-// as a skipped step, with the first thing that stops the count, and do not fail the check. A call or emit whose argument list is never closed
-// is named as a skipped step too. Only live rules are checked, and only live rules' `define`s are
-// counted against.
+// as a skipped step, with the first thing that stops the count, and do not fail the check. A call
+// or emit whose argument list is never closed is named as a skipped step too. Only live rules are
+// checked, and only live rules' `define`s are counted against.
 
 import type { Context } from "../context.ts";
 import { asList, idsIn, kindOf } from "../ids.ts";
@@ -28,7 +28,9 @@ function itemProblem(line: string): string | undefined {
   const span = /^[-*+]\s+`([^`]*)`/.exec(line);
   if (!span) return "does not open with a code span holding the parameter's name";
   const rest = line.slice(span[0].length);
-  if (/^\s*(?:,|\/|\band\b|\bor\b)\s*`/.test(rest) || (rest.startsWith(":") && span[1].includes(",")))
+  // A comma before the span's first colon separates names (`x, y`); one after it is in the type
+  // (`pair: (UINT16, UINT16)`), which the count accepts.
+  if (/^\s*(?:,|\/|\band\b|\bor\b)\s*`/.test(rest) || (rest.startsWith(":") && /^[^:]*,/.test(span[1])))
     return "names more than one parameter";
   if (!rest.startsWith(":")) return "does not follow its code span directly with a colon";
   if (!/^[a-z_][a-z0-9_]*(?:\s*:\s*[^`\s][^`]*)?$/.test(span[1]))

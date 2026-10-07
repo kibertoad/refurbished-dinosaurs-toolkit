@@ -3459,6 +3459,20 @@ test("a rule whose Parameters section is None. takes no arguments", (t) => {
   );
 });
 
+test("a Parameters item whose type holds a comma counts as one parameter", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `pair: (UINT16, UINT16)`: the score before the kill and the points on top.", "return 1");
+    procedure(r, ["call RULE-SCORE-002(n, n)"]);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.match(
+    output,
+    /RULE-SCORE-001\.md: calls RULE-SCORE-002 with 2 arguments, but its Parameters section lists 1 parameter$/m,
+  );
+  assert.doesNotMatch(output, ARGUMENT_SKIP);
+});
+
 for (const [line, message] of [
   ["call RULE-SCORE-002(n, n)", "calls RULE-SCORE-002 with 2 arguments, but its Parameters section lists 1 parameter"],
   ["call RULE-SCORE-002()", "calls RULE-SCORE-002 with 0 arguments, but its Parameters section lists 1 parameter"],
@@ -3488,6 +3502,21 @@ for (const [line, message] of [
     assert.equal(status, 1);
     assert.ok(output.split(/\r?\n/).includes(`spec/rules/RULE-SCORE-001.md: ${message}`), output);
   });
+
+test("calls against an empty Parameters section are skipped with the reason", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "", "return 1");
+    procedure(r, ["call RULE-SCORE-002(n)"]);
+  });
+  const { output } = run(root);
+  assert.ok(
+    output.includes(
+      "argument counts against RULE-SCORE-002, whose Parameters section is neither `None.` nor a list with one " +
+        "item per parameter: it is empty (call in RULE-SCORE-001)",
+    ),
+    output,
+  );
+});
 
 for (const [params, why] of [
   ["The score before the kill, `n`.", "it holds text and no list"],
