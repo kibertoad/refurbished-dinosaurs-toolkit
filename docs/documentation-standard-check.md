@@ -293,7 +293,9 @@ List each squashed entry with its replacements in the action's `squashed` input 
 `FND-X-001=FND-X-002+FND-X-003` for an entry split in two. The check accepts a listed deletion
 when the entry's `superseded_by` at the base names exactly those replacements and each of them
 exists and is not superseded. It fails for a listed entry that still exists, and for any
-citation of a squashed ID that is left, including a build or source alias in the code. Once the
+citation of a squashed ID that is left, including a build or source alias in the code. The
+indexes and `PARITY.md` are not searched for citations: with `scheduled-generation` they may name a
+squashed ID until the main branch regenerates them, and without it the check rewrites them. Once the
 squash is on the main branch, a listed ID the base does not have is named as a skipped step, so
 remove the input in a later change.
 

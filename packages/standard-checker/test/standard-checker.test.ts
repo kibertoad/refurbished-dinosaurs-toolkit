@@ -970,6 +970,21 @@ test("a squashed ID still cited anywhere fails, an alias included", (t) => {
   assert.doesNotMatch(output, /deleted or renamed/);
 });
 
+test("--squashed with --scheduled-generation passes generated files that still name the squashed ID", (t) => {
+  const root = broken(t, (r) => {
+    supersededRule(r, "RULE-SCORE-002", "RULE-SCORE-001");
+    assert.equal(run(r).status, 0);
+    commitBase(r);
+  });
+  assert.match(readFileSync(join(root, "spec", "index", "by-kind.md"), "utf8"), /RULE-SCORE-002/);
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-002.md"));
+  const args = ["--base", "HEAD", "--squashed", "RULE-SCORE-002=RULE-SCORE-001"];
+  const { status, output } = run(root, "--scheduled-generation", ...args);
+  assert.equal(status, 0, output);
+  // Where the check writes the generated files, a stale copy fails as it always does.
+  assert.equal(run(root, "--check", ...args).status, 1);
+});
+
 test("--squashed leaves an unlisted deletion failing", (t) => {
   const root = squashedAt(t, "RULE-SCORE-001", (r) => supersededRule(r, "RULE-SCORE-003", "RULE-SCORE-001"));
   rmSync(join(root, "spec", "rules", "RULE-SCORE-003.md"));

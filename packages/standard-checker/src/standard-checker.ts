@@ -25,7 +25,8 @@
 //                       base. Each deletion passes when that list matches and every replacement
 //                       exists and is not superseded; an OLD that still exists fails, and one the
 //                       base does not have is named as skipped. A squashed ID still cited anywhere
-//                       fails, an alias included
+//                       fails, an alias included; the generated files are not searched, so under
+//                       --scheduled-generation they may name one until the main branch regenerates them
 //   --no-ksy            skip compiling the Kaitai definitions; the result line names the skip
 //   --require-ksc       fail when spec/formats/ holds Kaitai definitions and no compiler is found,
 //                       instead of passing with the compilation skipped
