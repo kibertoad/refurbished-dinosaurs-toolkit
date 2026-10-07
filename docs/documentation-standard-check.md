@@ -250,6 +250,37 @@ git add spec/index PARITY.md
 Use the version the action's toolkit commit carries in `packages/standard-checker/package.json`,
 so the local run and CI agree.
 
+### Updating the generated files on the main branch only
+
+When several pull requests are open at once, most of them change the indexes and `PARITY.md`, and
+those files conflict between them on almost every merge. A restoration can instead update them on
+the main branch only, by running the checker there without `--check` and committing what it
+writes, by hand or from a scheduled job. Branches then never change them, and the main branch's
+copies are as old as the last such run.
+
+Set the action's `scheduled-generation` input to `"true"`, and pass `--scheduled-generation` to
+local runs, such as a pre-commit hook. The check then neither compares the generated files with the
+spec nor writes them, and names that comparison as skipped. It fails when the change since the
+fork point edits, adds or removes one of them; restore such a file as it is on the base branch. A
+file that matches its copy at the base branch's tip is not the branch's change, so a branch that
+takes the main branch's newer copies, by a merge, a squash merge or a cherry-pick, passes.
+
+A change that only regenerates them passes too: it touches no other file, and leaves each one as
+the checker without `--check` writes it. That is the commit the main branch takes, so the
+scheduled job can push it to the main branch or open a pull request with it, and the required
+check passes either way. Regenerating them beside any other change fails.
+
+Move a legacy `PARITY.md` that holds rows into `parity/` (see
+[Moving to the directory layout](#moving-to-the-directory-layout)) before turning this on. The
+move changes `PARITY.md` together with the files under `parity/`, so it fails once the input is
+set.
+
+```yaml
+      - uses: kibertoad/refurbished-dinosaurs-toolkit/actions/check-documentation@<sha>
+        with:
+          scheduled-generation: "true"
+```
+
 ### 6. Make it required
 
 To block merging on a failing check, add the job to the branch protection rule or ruleset for
@@ -277,6 +308,16 @@ by citing the finding that records the address, or by writing one. The migration
 what changed when the check started reading PowerShell comments and the code itself, and when the
 spec's paths into the rebuild started to fail.
 
+## Measuring coverage
+
+The same package installs `standard-coverage`, which reads the function inventories in `coverage/`
+and the entries' `locations`, and prints for each analysed file the share of its functions and of
+their bytes that some entry cites, followed by the functions that no entry cites and that are not
+out of scope. `--require-complete` fails while any are left, which is the Audit stage's condition on
+functions. [The package README](../packages/standard-checker/README.md#coverage) gives the inventory
+format and what counts as citing a function. The figures change with every batch, so print them on
+demand rather than committing them.
+
 ## Using setup-kaitai on its own
 
 `actions/setup-kaitai` installs the compiler without running the check, for a workflow that
@@ -303,7 +344,8 @@ pnpm exec standard-checker --help     # every option
 ```
 
 Run it from the restoration's root or pass `--root`. The command-line options match the action's
-inputs: `--code`, `--references`, `--images`, `--max-range`, `--data-dirs`, `--rebuild` and `--base`, plus `--no-ksy` to skip compiling
+inputs: `--code`, `--references`, `--images`, `--max-range`, `--data-dirs`, `--rebuild`, `--base`
+and `--scheduled-generation`, plus `--no-ksy` to skip compiling
 and `--glossary <path>` to accept the terms of a draft term file or a directory of them. Set `KSC` to the compiler's
 launcher, or put `kaitai-struct-compiler` on `PATH`, to compile the `.ksy` definitions.
 

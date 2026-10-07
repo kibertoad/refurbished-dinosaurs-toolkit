@@ -2,31 +2,71 @@
 // superseded since the base keeps the layout table it had there.
 
 import { execFileSync } from "node:child_process";
-import { relative } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { relative, resolve } from "node:path";
 import type { Context } from "../context.ts";
 import { splitSections, tables } from "../markdown.ts";
 import type { Deviation } from "./deviations.ts";
+
+/** A function that runs git in dir and returns its standard output, throwing when git fails. */
+export const gitIn =
+  (dir: string) =>
+  (...args: string[]) =>
+    execFileSync("git", ["-C", dir, ...args], { stdio: ["ignore", "pipe", "ignore"] }).toString();
+
+/**
+ * Where HEAD forked from ref: their merge-base. While a merge is being committed (a pre-commit hook
+ * after a conflict, or --no-commit), the change already holds what MERGE_HEAD brings, so it is the
+ * fork point the merge commit will have: git computes the merge base of ref with a merge of HEAD
+ * and MERGE_HEAD. Throws when there is none, or when git is missing (code ENOENT).
+ */
+export function forkPoint(dir: string, ref: string): string {
+  const git = gitIn(dir);
+  // MERGE_HEAD holds a line for each head being merged, several for an octopus merge, of which
+  // rev-parse reads only the first.
+  let merging: string[] = [];
+  try {
+    const file = resolve(dir, git("rev-parse", "--git-path", "MERGE_HEAD").trim());
+    if (existsSync(file))
+      merging = readFileSync(file, "utf8")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => /^[0-9a-f]{40,64}$/.test(line));
+  } catch {
+    // Not a git repository, or no git, which the merge-base call below reports.
+  }
+  return git("merge-base", ref, "HEAD", ...merging).trim();
+}
+
+/**
+ * The ref whose fork point a run compares with: --base when given, otherwise the base branch,
+ * origin/$GITHUB_BASE_REF or origin/main.
+ */
+export function baseTarget(baseArg: string | null | undefined): string {
+  if (baseArg) return baseArg;
+  return process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : "origin/main";
+}
 
 /**
  * Reports a spec ID, area or deviation that exists at the base (--base, or where HEAD forked from
  * the base branch) and is gone now, and a superseded format entry whose Layout has no table although
  * it had one at the base. Without --base, a fork point that does not resolve is recorded as a
- * skipped step, or with --require-base reported as a problem.
+ * skipped step, or with --require-base reported as a problem. Returns the base it compared with, or
+ * null when there was none.
  */
-export function checkBase(ctx: Context, deviations: Map<string, Deviation>) {
+export function checkBase(ctx: Context, deviations: Map<string, Deviation>): string | null {
   const { problem, skip } = ctx;
   const { entries, areas } = ctx.spec;
   const { repoDir, baseArg, requireBase } = ctx.config;
   // Without --base, compare with the point this branch left the base branch (the pull request's
   // target in CI), not that branch's tip: an entry added on the base branch after this branch
   // forked is not one this branch deleted. A base that resolves but cannot be listed is a problem.
-  const git = (...args: string[]) =>
-    execFileSync("git", ["-C", repoDir, ...args], { stdio: ["ignore", "pipe", "ignore"] }).toString();
+  const git = gitIn(repoDir);
   let base = baseArg;
   if (!base) {
-    const target = process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : "origin/main";
+    const target = baseTarget(null);
     try {
-      base = git("merge-base", "HEAD", target).trim();
+      base = forkPoint(repoDir, target);
     } catch (error) {
       // Outside a git repository, in a shallow clone, or without the base branch fetched, there is
       // no fork point, and the deleted-ID checks cannot run. The run says so instead of reading as
@@ -37,7 +77,7 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>) {
           : `HEAD has no merge-base with ${target}, fetch it with enough history or pass --base`;
       if (requireBase) problem(null, `${missing}. --require-base requires the comparison with the base branch`);
       else skip(`comparison with the base branch (${missing})`);
-      return;
+      return null;
     }
   }
   let listing: string;
@@ -45,7 +85,7 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>) {
     listing = git("ls-tree", "-r", "--name-only", base, "--", "spec", "deviations");
   } catch {
     problem(null, `cannot list spec/ at ${base}`);
-    return;
+    return null;
   }
   for (const p of listing.split("\n")) {
     const m =
@@ -93,4 +133,5 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>) {
   if (oldDev)
     for (const m of oldDev.matchAll(/^## (DEV-[A-Z0-9]+-\d+)$/gm))
       if (!deviations.has(m[1])) problem(null, `${m[1]} exists at ${base} and has been removed`);
+  return base;
 }

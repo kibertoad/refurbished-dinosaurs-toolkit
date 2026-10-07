@@ -44,6 +44,7 @@ problems under other sections carry no label yet.
 |---|---|---|
 | `--root <dir>` | The repository to check. | the current directory |
 | `--check` | Fail when an index or `PARITY.md` is stale, instead of rewriting it. | rewrite |
+| `--scheduled-generation` | For a restoration that updates the indexes and `PARITY.md` on its main branch only, such as from a scheduled job. Neither write nor compare them with the spec, and fail when the change since the base (where HEAD forked from `--base`, or the fork point) edits, adds or removes one, untracked files git does not ignore included. A file that matches its copy at the base branch's tip (`--base`, or `origin/$GITHUB_BASE_REF` or `origin/main`) passes, as does a change that only regenerates them and touches nothing else. The result line names the comparison with the spec as skipped. Without a base the change is not compared either, and the base comparison is named as skipped or, with `--require-base`, fails. | write or compare |
 | `--base <ref>` | Also fail when a spec ID, area or deviation that exists at `<ref>` is gone, or when a superseded format entry has no layout table although it had one at `<ref>`. | where HEAD forked from `origin/$GITHUB_BASE_REF` or `origin/main`; when that does not resolve, the comparison is named as skipped |
 | `--require-base` | Fail when no `--base` is given and the fork point does not resolve, instead of passing with the comparison skipped. | pass with the comparison skipped |
 | `--no-ksy` | Skip compiling the Kaitai definitions in `spec/formats/`. The result line names the skipped compilation. | compile |
@@ -70,6 +71,37 @@ is looked up on `PATH` the same way.
 
 On every platform, a launcher found on `PATH` whose `--version` fails is not used, and the checker
 prints a warning naming its path, with its output.
+
+## Coverage
+
+`standard-coverage` measures how much of each analysed file of code the spec cites, against the
+function inventories in `coverage/`, as the work protocol's
+[Measuring progress](https://dinorefurb.com/work-protocol/#measuring-progress) section describes.
+
+```sh
+pnpm exec standard-coverage                       # per-file shares and the uncited functions
+pnpm exec standard-coverage --list                # also every function with the entries citing it
+pnpm exec standard-coverage --json                # the same figures as JSON
+pnpm exec standard-coverage --require-complete    # fail while an in-scope function is uncited
+```
+
+An inventory is `coverage/<build>/<file>.tsv`, with `<file>` the manifest's path and a `CD:` prefix
+written as a directory `@CD`. Its columns are `start` and `size`, then optionally `name` and
+`out_of_scope`. `start` is in the standard's notation for the file's format: an address, or for MZ
+overlay code an offset inside a row of the build's Code ranges.
+
+An entry cites a function when one of its `locations` names the same build and file and its
+address, offset or half-open range overlaps the function's `size` bytes from `start`. Locations with
+`kind: file-data`, into the unpacked form of a packed file, or of superseded entries cite nothing,
+and neither does an address written in an entry's body. Real-mode segmented addresses (`MZ`, `COM`)
+are compared by the linear address they name, and each `NE` segment is a space of its own. A
+function whose body is not contiguous is measured as if it were. The shares count functions and
+bytes of the functions not out of scope.
+
+It exits with 0, with 1 when an inventory is invalid or `--require-complete` finds an uncited
+function or no inventory at all, and with 2 when the options are invalid. Problems with the spec
+itself are left to `standard-checker`; a warning gives how many there were while loading it and how
+many locations in files of code did not parse, since those cite nothing.
 
 ## In GitHub Actions
 
