@@ -7,7 +7,8 @@
 // A rule the glossary entry names is a handler of the event unless its own procedure emits the
 // event and its When it runs section does not name it: such a rule is the event's emitter, which a
 // glossary entry names to say where the event comes from. A handler that emits its event again
-// names that event in When it runs, since that section gives what triggers the rule.
+// names that event in When it runs, since that section gives what triggers the rule. An entry of
+// the emitter's split is not a handler either, unless its own When it runs section names the event.
 //
 // A call to a split rule, and an emit to a split handler, is counted against each entry of the
 // split that lists one of the calling or emitting rule's builds, and a call to a function that a
@@ -103,27 +104,39 @@ export function checkArgumentCounts(ctx: Context) {
   // What could not be counted because its argument list is never closed.
   const unclosed: string[] = [];
 
+  // Rule ID -> its procedure without comments and string contents.
+  const codes = new Map(live.map(([id, e]) => [id, withoutCommentsAndStrings(e.code ?? "")]));
+
   // Function name -> the rules that define it, with the parameter count of each define.
   const defined = new Map<string, { id: string; count: number }[]>();
-  for (const [id, e] of live)
-    for (const { name, params } of defines(withoutCommentsAndStrings(e.code ?? ""))) {
+  for (const [id] of live)
+    for (const { name, params } of defines(codes.get(id)!)) {
       if (!defined.has(name)) defined.set(name, []);
       defined.get(name)!.push({ id, count: params.length });
     }
 
   // Event name -> the live rules whose procedure emits it.
   const emitters = new Map<string, Set<string>>();
-  for (const [id, e] of live)
-    for (const m of withoutCommentsAndStrings(e.code ?? "").matchAll(/\bemit\s+([A-Za-z_][A-Za-z0-9_]*)/g)) {
+  for (const [id] of live)
+    for (const m of codes.get(id)!.matchAll(/\bemit\s+([A-Za-z_][A-Za-z0-9_]*)/g)) {
       if (!emitters.has(m[1])) emitters.set(m[1], new Set());
       emitters.get(m[1])!.add(id);
     }
-  // Whether rule is a handler of event among the rules its glossary entry names: it is not when it
-  // emits the event and its When it runs section does not name the event, which makes it the emitter.
-  const handles = (rule: string, event: string) => {
-    if (!emitters.get(event)?.has(rule)) return true;
+  // Whether rule's When it runs section names event.
+  const runsOn = (rule: string, event: string) => {
     const when = entries.get(rule)!.sections.find((s) => s.title === "When it runs")?.text ?? "";
     return new RegExp(`(?<![A-Za-z0-9_])${event}(?![A-Za-z0-9_])`).test(when);
+  };
+  // Whether rule is an emitter of event: it emits the event and its When it runs section does not
+  // name the event.
+  const emits = (rule: string, event: string) => !!emitters.get(event)?.has(rule) && !runsOn(rule, event);
+  // The entries an emit of event from emitter is counted against for a rule its glossary entry
+  // names: the entries of the rule's split that list one of the emitter's builds, leaving out
+  // emitters. When the named rule is itself an emitter, an entry of its split is counted only when
+  // its When it runs section names the event.
+  const handlersOf = (rule: string, event: string, emitter: Entry) => {
+    const named = emits(rule, event);
+    return targetsOf(rule, emitter).filter((x) => !emits(x, event) && (!named || runsOn(x, event)));
   };
 
   // Event name -> the argument counts its emits pass, with the rule each comes from.
@@ -131,7 +144,7 @@ export function checkArgumentCounts(ctx: Context) {
 
   for (const [id, e] of live) {
     const { file } = e;
-    const code = withoutCommentsAndStrings(e.code ?? "");
+    const code = codes.get(id)!;
 
     for (const m of code.matchAll(/\bcall\s+(RULE-[A-Z0-9]+-\d+)/g)) {
       const called = entries.get(m[1]);
@@ -203,7 +216,7 @@ export function checkArgumentCounts(ctx: Context) {
       const handlers = idsIn(glossary.get(event)).filter(
         (x) => kindOf(x) === "RULE" && entries.get(x)?.kind === "RULE",
       );
-      const targets = new Set(handlers.flatMap((h) => targetsOf(h, e)).filter((h) => handles(h, event)));
+      const targets = new Set(handlers.flatMap((h) => handlersOf(h, event, e)));
       for (const handler of targets) {
         const want = countOf(handler);
         if (want === null) cannotCount(handler, `emit of ${event} in ${id}`);

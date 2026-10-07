@@ -481,8 +481,9 @@ procedure:
   whose When it runs section does not name it. So a glossary entry can say which rule emits the
   event (`RULE-COMBAT-004 emits it.`) without the emit being compared with that rule's Parameters
   section. A handler that emits its event again names the event in When it runs, which gives what
-  triggers the rule, and is still counted. A split handler is compared with each entry of the split that lists one of the emitting
-  rule's builds.
+  triggers the rule, and is still counted. A split handler is compared with each entry of the split
+  that lists one of the emitting rule's builds. An entry of the emitter's split counts as a handler
+  only when its own When it runs section names the event.
 - Two `emit`s of one event in rules that share a build pass the same number of arguments. An
   event with no handlers gets only this check, since its glossary entry gives what it carries in
   prose.

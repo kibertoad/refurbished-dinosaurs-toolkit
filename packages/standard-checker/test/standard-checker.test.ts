@@ -3538,7 +3538,8 @@ test("an event with no handlers is checked only against its other emits in rules
   assert.doesNotMatch(apart.output, /emits ScoreChanged/);
 });
 
-// Rewrites the glossary entry of ScoreChanged that withCallee writes, after its first sentence.
+// Rewrites the glossary entry of ScoreChanged that withCallee writes: it carries score and bonus, and
+// text follows in place of the sentence that names the handlers.
 function scoreChangedSays(r: string, text: string) {
   writeFileSync(
     join(r, "spec", "glossary", "ScoreChanged.md"),
@@ -3598,6 +3599,30 @@ test("a handler that emits its event again is counted when its When it runs sect
   );
   const unnamed = run(root);
   assert.equal(unnamed.status, 0, unnamed.output);
+});
+
+test("an entry of the emitter's split is a handler only when its When it runs section names the event", (t) => {
+  const root = broken(t, (r) => {
+    withCallee(r, "- `n`: the score before the kill.", "emit ScoreChanged(n, 1)\nreturn n + 1", "");
+    scoreChangedSays(r, "RULE-SCORE-002 emits it. No rule handles it yet.");
+    replaceIn(r, "spec/rules/RULE-SCORE-002.md", "split_with: []", "split_with: [RULE-SCORE-003]");
+    copyRule(r, "RULE-SCORE-003", (text) =>
+      text
+        .replace("builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.1]")
+        .replace("split_with: []", "split_with: [RULE-SCORE-002]"),
+    );
+    replaceIn(r, "spec/rules/RULE-SCORE-001.md", "builds: [BLD-EXAMPLE-1.0]", "builds: [BLD-EXAMPLE-1.1]");
+    procedure(r, ["emit ScoreChanged(n, 1)"]);
+  });
+  const unnamed = run(root);
+  assert.doesNotMatch(unnamed.output, /its handler RULE-SCORE-00[23]/);
+  replaceIn(root, "spec/rules/RULE-SCORE-003.md", "When an enemy dies.", "When `ScoreChanged` is emitted.");
+  const named = run(root);
+  assert.match(
+    named.output,
+    /RULE-SCORE-001\.md: emits ScoreChanged with 2 arguments, but the Parameters section of its handler RULE-SCORE-003 lists 1 parameter$/m,
+  );
+  assert.doesNotMatch(named.output, /its handler RULE-SCORE-002/);
 });
 
 test("an emit to a split handler is counted against the entries that list the emitting rule's builds", (t) => {
