@@ -1729,6 +1729,9 @@ def _run_report(image, config, command):
         return owner(image, config)
     if command == "callees":
         return callees(image, config)
+    if command == "reach":
+        from .reach import reach
+        return reach(image, config)
     if command == "call-order":
         return call_order(image, config)
     if command == "incoming":

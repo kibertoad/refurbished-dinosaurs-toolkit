@@ -114,6 +114,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `bounds` | the instruction extent reached from one entry, with its interrupt and port instructions | [function bounds](#function-bounds-and-site-ownership), [hardware boundaries](#hardware-boundaries) |
 | `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
 | `callees` | the bounded call graph below an entry, with recursion and shared callees, optionally compared with Ghidra's edges | [function bounds](#function-bounds-and-site-ownership) |
+| `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved | [reachability](#reachability-from-starts-to-targets) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
 | `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables and checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots) |
@@ -955,9 +956,70 @@ which are warnings only. An optional
 among the owners, whether its body reaches the site, whether it is contested,
 and which of its returns come before the site.
 
+## Reachability from starts to targets
+
+`reach` answers whether code that runs from a set of starts can arrive at a set of target sites,
+for questions such as "can anything between program start and this point write this variable"
+([ADR 0023](decisions/0023-reachability-over-the-entry-path-cfg.md)). It takes:
+
+| Field | Meaning |
+|---|---|
+| `starts` | 1..256 file offsets, each an established region entry |
+| `targets` | 1..256 file offsets in declared code, such as the starts of a variable's writers or the writes themselves |
+| `leaves` | optional, at most 256 `{ "routine", "reason" }` objects: routines the walk reaches but does not read, so they call nothing. `reason` is required free text, and the report repeats it. A start cannot be a leaf |
+| `controls` | optional call sites the walk must decode and resolve; a missed or unresolved control fails the report |
+| `indirectJumps` | the [declared tables](#evidenced-indirect-jump-tables) the walk follows |
+| `instructionLimit` | instructions the walk decodes (1..100000, default 10000) |
+| `limit` | rows kept in each of `unresolved`, `interrupts`, `gaps` and `contested` (1..10000, default 1000) |
+
+The walk is the entry-path walk `incoming` and `uses` read, started from `starts` alone. It
+follows every resolved call into its callee and on at its return site, every resolved jump and
+branch, the rows of a declared indirect jump table, and every interrupt to the next instruction.
+Far calls resolve as `target` describes: through an MZ relocation, or through an FBOV fixup and
+the trampoline it names to the overlay entry. A near transfer resolves through the mapping of the
+region that holds it. Instruction boundaries are checked as in the entry-path walk, so an
+instruction reached only through a rejected overlapping start is `contested`.
+
+Nothing else is followed. A computed call or jump, a far call with no relocation or fixup, a
+table jump with no declaration and a declared table that is not exhaustive are listed in
+`unresolved` with their `site`, `instruction` text, `kind` (`call` or `jump`), `reason` and the
+`routine` the walk read them in. The walk never reads table words for an undeclared jump, and it
+does not bound a table from the guard before it: a table's rows come from an `indirectJumps`
+declaration with its evidence, which `dispatch` can check. `gaps` lists edges that could not be
+decoded (invalid bytes or an address outside declared code), the instruction limit, and the
+other walk gaps. `interrupts` lists each interrupt the walk continued past, with its vector.
+Interrupt handlers are not read.
+
+Each `targets` row gives `reached`. A reached target has:
+
+| Field | Meaning |
+|---|---|
+| `chain` | one route with the fewest calls: the start as `{ "routine" }`, then each call as `{ "callSite", "routine" }` |
+| `calls` | the number of calls on the chain |
+| `routine` | the routine the chain's last call entered, or the start |
+| `route` | what the chain rests on: `assumedReturns` (calls whose return site it continued at), `declaredTableJumps` (the table rows it took) and `interruptsContinued` |
+| `throughEveryRoute` | the routine starts, outermost first, that every route the walk read to the target passes. A routine that only runs and returns before the target is not on such a route |
+| `leaf` | whether the target is the start of a leaf |
+
+An unreached target gives `status`: `not reached`, `inside a reached instruction` (with
+`insideInstruction`) or `start of a contested instruction`. A leaf's body is not read, so a target
+inside it past its start is not reached through it.
+
+`reachedRoutines` lists the starts and the resolved targets of reached calls, leaves included.
+`counts` gives the routines, the decoded instructions and the full length of each list. `leaves`
+repeats each leaf with its reason, whether the walk reached it and the call sites that entered it.
+
+`negativeUsable` holds when `controls` were given and nothing is unresolved, no gap was recorded
+and no instruction is contested. Even then a target that is not reached is unreached only on the
+walk's assumptions, which the report lists: each call and interrupt returns to the next
+instruction, each leaf calls nothing for its stated reason, and each declared table holds the
+routes its declaration gives. `throughEveryRoute` describes the routes the walk read; an
+unresolved transfer may add a route that passes none of those routines. None of this proves
+runtime reachability.
+
 ## Evidenced indirect jump tables
 
-CFG discovery commands (`bounds`, `owner`, `callees`, `incoming`, and entry-path queries)
+CFG discovery commands (`bounds`, `owner`, `callees`, `reach`, `incoming`, and entry-path queries)
 accept `indirectJumps` for segmented16 computed near word jumps. Each declaration
 names `site`, consumer/mapping `evidence`, an explicit boolean `exhaustive`, and
 `table: { start, count, stride, fieldOffset, evidence }`. The target field is a

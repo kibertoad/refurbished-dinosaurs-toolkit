@@ -32,7 +32,7 @@ and `sourceKind`: `mz` for DOS executables, `pe32` for 32-bit Windows executable
 
 Commands: `trace`, `arguments`, `effects`, `returns`, `memory`, `guards`, `uses`, `incoming`,
 `call-order`, `dispatch`, `allocation`, `operand`, `operand-candidates`, `target`, `bounds`,
-`owner`, `callees`, `pointers`, `table` and `imports`. Their inputs, outputs and limits are in
+`owner`, `callees`, `reach`, `pointers`, `table` and `imports`. Their inputs, outputs and limits are in
 [the bounded evidence reporter guide](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md).
 `pointers`, `table` and `imports` run entirely in Node; every other command runs in the engine.
 `table` reads the entries of one pointer table from the bytes of an `mz` or `pe32` source and
