@@ -67,10 +67,11 @@
 //
 // This file reads the options and runs the phases in order: load the spec, check the entries, the
 // rules, the field names in their procedures and what crosses entries, compile the Kaitai
-// definitions, check the deviations, parity, VALIDATION.md, the code's references and comments and
-// the base ref, then write or check the generated files, or with --scheduled-generation check that
-// the change leaves them alone. Every phase reports into one collector,
-// which prints the problems at the end in the order they were found.
+// definitions, check the deviations, parity, VALIDATION.md, the code's references and comments, the
+// range ends against the function inventories in coverage/, and the base ref, then write or check
+// the generated files, or with --scheduled-generation check that the change leaves them alone.
+// Every phase reports into one collector, which prints the problems at the end in the order they
+// were found.
 
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -83,6 +84,7 @@ import { checkDeviations } from "./checks/deviations.ts";
 import { checkEntries } from "./checks/entries.ts";
 import { checkFieldNames } from "./checks/fields.ts";
 import { checkMessageAddresses } from "./checks/message-addresses.ts";
+import { checkRangeEnds } from "./checks/range-ends.ts";
 import { checkRebuildPaths } from "./checks/rebuild-paths.ts";
 import { compileKaitai } from "./checks/kaitai.ts";
 import { checkParity } from "./checks/parity.ts";
@@ -130,6 +132,7 @@ checkValidation(ctx, parity);
 checkReferences(ctx, deviations);
 checkCommentAddresses(ctx);
 checkRebuildPaths(ctx);
+checkRangeEnds(ctx);
 const base = checkBase(ctx, deviations);
 const generated = generateIndexes(ctx);
 generateParity(ctx, parity, generated);

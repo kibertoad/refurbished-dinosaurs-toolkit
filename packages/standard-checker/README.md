@@ -103,6 +103,13 @@ function or no inventory at all, and with 2 when the options are invalid. Proble
 itself are left to `standard-checker`; a warning gives how many there were while loading it and how
 many locations in files of code did not parse, since those cite nothing.
 
+`standard-checker` reads the same inventories. Ranges are half-open, so a range whose end is an
+inventoried function's last byte (`start` plus `size` minus one) stops a byte short, the usual slip
+when a range is copied from an analyzer that gives last bytes, and the check fails it with the end
+it should have. It checks every range a location of a current entry gives in that build and file,
+by address or by offset, and the address ranges written in the body of an entry whose locations all
+name that one build and file. Without inventories it checks nothing and reports no skipped step.
+
 ## In GitHub Actions
 
 The toolkit's `actions/check-documentation` composite action runs this checker with `--check`,
