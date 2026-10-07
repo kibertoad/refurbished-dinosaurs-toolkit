@@ -13,10 +13,14 @@
 
 import type { Context } from "../context.ts";
 import { asList } from "../ids.ts";
-import { type InventoryRow, type Space, linear, locationRange, readInventories } from "../inventory.ts";
+import { type InventoryRow, type Space, codeLocations, linear, readInventories } from "../inventory.ts";
 import type { Meta, Yaml } from "../types.ts";
 
-/** One past `value`, written the way `value` is: the same width, and for segment:offset the same segment. */
+/**
+ * One past `value`, written the way `value` is: the same width, and for segment:offset the same
+ * segment. Null when that does not fit: past offset FFFF of the segment, or past the last address
+ * of eight or sixteen hex digits.
+ */
 function nextInNotation(value: string): string | null {
   const seg = /^([0-9A-F]{4}):([0-9A-F]{4})$/.exec(value);
   if (seg) {
@@ -24,8 +28,14 @@ function nextInNotation(value: string): string | null {
     return offset > 0xffff ? null : `${seg[1]}:${offset.toString(16).toUpperCase().padStart(4, "0")}`;
   }
   const digits = value.length - 2;
-  return `0x${(BigInt(value) + 1n).toString(16).toUpperCase().padStart(digits, "0")}`;
+  const next = `0x${(BigInt(value) + 1n).toString(16).toUpperCase().padStart(digits, "0")}`;
+  return next.length > value.length && (digits === 8 || digits === 16) ? null : next;
 }
+
+// A range in an entry's body, in the address notation of a file: two addresses joined by `..`,
+// either in backticks of its own.
+const ATOM = String.raw`0x[0-9A-F]{8}(?:[0-9A-F]{8})?|[0-9A-F]{4}:[0-9A-F]{4}`;
+const BODY_RANGE = new RegExp(String.raw`(?<![0-9A-Za-z:])(${ATOM})\`?\s*\.\.\s*\`?(${ATOM})(?![0-9A-Za-z:])`, "g");
 
 export function checkRangeEnds(ctx: Context) {
   const { problem, spec, config } = ctx;
@@ -52,21 +62,9 @@ export function checkRangeEnds(ctx: Context) {
 
   for (const e of spec.entries.values()) {
     if (e.meta.status === "superseded") continue;
-    const places = new Set<string>();
-    let format: Yaml = null;
-    let place: { build: Yaml; file: Yaml } | null = null;
-    for (const loc of asList(e.meta.locations) as Meta[]) {
-      if (!loc || typeof loc !== "object") continue;
-      places.add(`${loc.build}\0${loc.file}`);
-      place = { build: loc.build, file: loc.file };
-      if (loc.kind === "file-data" || loc.unpacked === true) continue;
-      const bf = (spec.buildFiles.get(loc.build) ?? []).find((f) => f.path === loc.file);
-      if (!bf) continue;
-      format = bf.unpacked?.format ?? bf.format;
-      const value = String(loc.address ?? loc.offset ?? "");
-      if (!value.includes("..")) continue;
-      const range = locationRange(loc, format);
-      if (!range || range.end <= range.start) continue;
+    for (const { loc, range } of codeLocations(e.meta, spec.buildFiles)) {
+      const value = String("address" in loc ? loc.address : loc.offset);
+      if (!range || !value.includes("..")) continue;
       const hit = endsFunction(loc.build, loc.file, range.space, range.end);
       if (hit)
         problem(
@@ -74,15 +72,20 @@ export function checkRangeEnds(ctx: Context) {
           message(`location ${"address" in loc ? "address" : "offset"} ${value}`, value.split("..")[1], hit),
         );
     }
-    if (places.size !== 1 || !place || format === null) continue;
-    // The body's ranges, in the address notation of the one file: two addresses joined by `..`,
-    // either in backticks of its own.
-    const atom = String.raw`0x[0-9A-F]{8}(?:[0-9A-F]{8})?|[0-9A-F]{4}:[0-9A-F]{4}`;
-    const re = new RegExp(String.raw`(?<![0-9A-Za-z:])(${atom})\`?\s*\.\.\s*\`?(${atom})(?![0-9A-Za-z:])`, "g");
-    for (const m of e.body.matchAll(re)) {
+    // The body's ranges, when every location names one build and file, whatever their kind.
+    const places = new Map<string, Meta>();
+    for (const loc of asList(e.meta.locations) as Meta[])
+      if (loc && typeof loc === "object") places.set(`${loc.build}\0${loc.file}`, loc);
+    if (places.size !== 1) continue;
+    const [{ build, file }] = places.values();
+    if (!lastBytes.has(`${build}\0${file}\0address`)) continue;
+    const bf = (spec.buildFiles.get(build) ?? []).find((f) => f.path === file);
+    if (!bf) continue;
+    const format: Yaml = bf.unpacked?.format ?? bf.format;
+    for (const m of e.body.matchAll(BODY_RANGE)) {
       const [start, end] = [linear(m[1], format), linear(m[2], format)];
       if (start === null || end === null || end <= start) continue;
-      const hit = endsFunction(place.build, place.file, "address", end);
+      const hit = endsFunction(build, file, "address", end);
       if (hit) problem(e.file, message(`the body's range ${m[1]}..${m[2]}`, m[2], hit));
     }
   }

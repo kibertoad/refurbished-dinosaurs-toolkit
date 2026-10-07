@@ -3675,3 +3675,191 @@ test("a function call from a rule that shares no build with its defines fails on
     /RULE-SCORE-002\.md: calls add_points\(\) with 3 arguments, but none of its defines takes that many \(1 parameter in RULE-SCORE-001, 2 parameters in RULE-SCORE-003\)$/m,
   );
 });
+
+// Ranges against the function inventories in coverage/.
+
+// A valid finding of BLD-EXAMPLE-1.0 with the given locations (YAML lines) and observation.
+function rangeFinding(root: string, locations: string[], observation = "The handler adds 1 to the score.") {
+  mkdirSync(join(root, "spec", "findings"), { recursive: true });
+  writeFileSync(
+    join(root, "spec", "findings", "FND-SCORE-001.md"),
+    [
+      "---",
+      "id: FND-SCORE-001",
+      "title: The kill handler adds one to the score",
+      "status: recorded",
+      "builds: [BLD-EXAMPLE-1.0]",
+      "superseded_by: []",
+      "recorded_by: example",
+      "reproduced_by: []",
+      "method: static",
+      "locations:",
+      ...locations,
+      "tool: Ghidra 12.1.3",
+      "environment: null",
+      "---",
+      "",
+      "## Observation",
+      "",
+      observation,
+      "",
+      "## Interpretation",
+      "",
+      "Each kill adds one point.",
+      "",
+      "## Alternatives",
+      "",
+      "None known.",
+      "",
+      "## How to reproduce",
+      "",
+      "Open the function at 0x00401000.",
+      "",
+    ].join("\n"),
+  );
+}
+
+const locatedAt = (address: string, file = "GAME.EXE") => [
+  "  - build: BLD-EXAMPLE-1.0",
+  `    file: ${file}`,
+  `    address: ${address}`,
+];
+
+// Function inventory rows of GAME.EXE. The default gives 0x00401000 for 32 bytes, so its last byte
+// is 0x0040101F, and 0x00401100 for 16 bytes.
+function inventory(root: string, rows = "0x00401000\t32\n0x00401100\t16\n") {
+  const path = join(root, "coverage", "BLD-EXAMPLE-1.0", "GAME.EXE.tsv");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `start\tsize\n${rows}`);
+}
+
+// Adds SETUP.EXE, a second PE file, to the manifest of BLD-EXAMPLE-1.0.
+const withSetupExe = (root: string) =>
+  replaceIn(
+    root,
+    "spec/builds/BLD-EXAMPLE-1.0.files.yaml",
+    "  - path: DATA/SCORES.BIN",
+    "  - path: SETUP.EXE\n    format: PE\n    size: 1024\n    xxh3: 00112233445566778899aabbccddeeff\n  - path: DATA/SCORES.BIN",
+  );
+
+const LAST_BYTE = (what: string) =>
+  `${what} ends on the last byte of the function at 0x00401000 in coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv; ranges are half-open, so it ends at 0x00401020`;
+
+test("a location range that ends on a function's last byte fails", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F"));
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes(LAST_BYTE("location address 0x00401000..0x0040101F")), output);
+});
+
+test("a half-open range that ends one past a function's last byte passes", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x00401020"), "The handler, `0x00401000..0x00401020`, adds 1 to the score.");
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});
+
+test("a range in the body that ends on a function's last byte fails", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(
+      r,
+      locatedAt("0x00401000..0x00401020"),
+      "| Range | Bytes |\n|---|---|\n| `0x00401000..0x0040101F` | 32 |",
+    );
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes(LAST_BYTE("the body's range 0x00401000..0x0040101F")), output);
+});
+
+test("the body of an entry located only by file data in one file is checked against that file's inventory", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(
+      r,
+      ["  - build: BLD-EXAMPLE-1.0", "    file: GAME.EXE", "    kind: file-data", "    offset: 0x0010..0x0020"],
+      "The table the handler reads follows it, 0x00401000..0x0040101F.",
+    );
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes(LAST_BYTE("the body's range 0x00401000..0x0040101F")), output);
+});
+
+test("a segmented range is compared by linear address and the end keeps its segment", (t) => {
+  const root = broken(t, (r) => {
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", "format: MZ");
+    rangeFinding(r, locatedAt("1000:0000..1001:000F"));
+    inventory(r, "1000:0000\t32\n");
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(
+    output.includes(
+      "location address 1000:0000..1001:000F ends on the last byte of the function at 1000:0000 in coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv; ranges are half-open, so it ends at 1001:0010",
+    ),
+    output,
+  );
+});
+
+test("without inventories ranges are not checked and no step is reported as skipped", (t) => {
+  const root = broken(t, (r) =>
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F"), "The handler spans 0x00401000..0x0040101F."),
+  );
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte") && !output.includes("inventor"), output);
+});
+
+test("a range in another file is not checked against this file's inventory", (t) => {
+  const root = broken(t, (r) => {
+    withSetupExe(r);
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F", "SETUP.EXE"), "The installer spans 0x00401000..0x0040101F.");
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});
+
+test("a body range of an entry located in two files is not checked", (t) => {
+  const root = broken(t, (r) => {
+    withSetupExe(r);
+    rangeFinding(
+      r,
+      [...locatedAt("0x00401000..0x00401020"), ...locatedAt("0x00401000..0x00401020", "SETUP.EXE")],
+      "One of them spans 0x00401000..0x0040101F.",
+    );
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});
+
+test("a superseded entry's ranges are not checked", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x00401020"), "The handler spans 0x00401000..0x00401020.");
+    const dir = join(r, "spec", "findings");
+    const current = readFileSync(join(dir, "FND-SCORE-001.md"), "utf8");
+    writeFileSync(join(dir, "FND-SCORE-002.md"), current.replace("id: FND-SCORE-001", "id: FND-SCORE-002"));
+    writeFileSync(
+      join(dir, "FND-SCORE-001.md"),
+      current
+        .replace("status: recorded", "status: superseded")
+        .replace("superseded_by: []", "superseded_by: [FND-SCORE-002]")
+        .replaceAll("0x00401020", "0x0040101F"),
+    );
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});

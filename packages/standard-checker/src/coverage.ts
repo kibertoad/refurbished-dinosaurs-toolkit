@@ -42,11 +42,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { asList } from "./ids.ts";
-import { type InventoryRow, locationRange, readInventories } from "./inventory.ts";
+import { type InventoryRow, codeLocations, readInventories } from "./inventory.ts";
 import { loadSpec } from "./load/spec.ts";
 import { parseOptions } from "./options.ts";
-import type { Meta } from "./types.ts";
 
 /** One row of an inventory, with the entries that cite it. */
 interface InventoryFunction extends InventoryRow {
@@ -132,12 +130,8 @@ function measure(root: string) {
   let unreadLocations = 0;
   for (const [id, e] of entries) {
     if (e.meta.status === "superseded") continue;
-    for (const loc of asList(e.meta.locations) as Meta[]) {
-      if (!loc || typeof loc !== "object" || loc.kind === "file-data" || loc.unpacked === true) continue;
-      const bf = (buildFiles.get(loc.build) ?? []).find((f) => f.path === loc.file);
-      if (!bf) continue;
-      const range = locationRange(loc, bf.unpacked?.format ?? bf.format);
-      if (!range || range.end <= range.start) {
+    for (const { loc, range } of codeLocations(e.meta, buildFiles)) {
+      if (!range) {
         unreadLocations++;
         continue;
       }
