@@ -318,7 +318,9 @@ that each recorded a run conflicted, and so did a merge of the base branch into 
 record had changed. The check now reads one file per run from `validation/`, named
 `<date>-<first 12 hex digits of the commit>.md`, and fails while `VALIDATION.md` exists. A marked
 test file of a validated row passes while any run file records the hash it has now, and
-`--record-validation` writes a new run file and deletes the others.
+`--record-validation` writes a new run file and deletes the others. A run file that a merge or a
+row leaving `validated` leaves matching nothing fails the check until it is deleted by hand, which
+needs no new run.
 
 Move the record in one commit. The existing record is still a valid run, so it moves rather than
 being run again:
