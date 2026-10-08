@@ -18,7 +18,7 @@ export interface UnpackedRelocation {
   segment: number;
   offset: number;
 }
-/** The MZ header fields {@link unpack} writes. `minAlloc`, `maxAlloc` and the zero checksum come from the layout rule, not from the packed file. */
+/** The MZ header fields {@link unpack} writes. The layout rule sets `minAlloc`, `maxAlloc` and the zero checksum, which the packed file does not supply. */
 export interface UnpackedHeader {
   /** Header size in bytes: the fixed 28 bytes and the relocation table, padded with zeros to a multiple of 16. */
   headerBytes: number;
@@ -67,7 +67,7 @@ const LZEXE = {
  * MZ file written by layout rule {@link UNPACK_LAYOUT}. Every read is bounded: the compressed stream
  * must end with its end mark before the decompressor's CS:0, a copy may not reach before the start
  * of the output, the output may not pass {@link MAX_UNPACKED_BYTES}, and every relocation must name
- * a word inside the unpacked load module. Each failure throws an error naming the file offset.
+ * a word inside the unpacked load module that no other entry names. Each failure throws an error naming the file offset.
  * A file that carries neither signature is refused; that does not show it is not packed.
  * @param input The whole packed file, at most {@link MAX_PACKED_BYTES}. Data after its MZ image is refused.
  */
@@ -84,11 +84,16 @@ export function unpack(input: Uint8Array): UnpackResult {
     );
   const word = (p: number) => bytes.readUInt16LE(p);
   if (word(6) !== 0 || word(0x18) !== 0x1c)
-    throw new Error("An LZEXE file has no MZ relocations and its relocation table offset is 0x1C");
+    throw new Error(
+      `An LZEXE file has no MZ relocations and its relocation table offset is 0x1C; the words at 0x06 and 0x18 hold ${hex(word(6), 4)} and ${hex(word(0x18), 4)}`,
+    );
   const pages = word(4),
     tail = word(2),
     headerBytes = word(8) * 16;
-  if (!pages || tail > 511) throw new Error("Invalid MZ page dimensions");
+  if (!pages || tail > 511)
+    throw new Error(
+      `Invalid MZ page dimensions: ${hex(tail, 4)} bytes in the last page at 0x02, ${pages} pages at 0x04`,
+    );
   const end = (pages - 1) * 512 + (tail || 512);
   if (end > bytes.length)
     throw new Error(`The MZ image ends at ${hex(end)}, past the end of the file at ${hex(bytes.length)}`);
@@ -96,20 +101,19 @@ export function unpack(input: Uint8Array): UnpackResult {
     throw new Error(
       `${bytes.length - end} bytes follow the MZ image at ${hex(end)}; a file with data after its image is not unpacked`,
     );
-  if (headerBytes < 0x20 || headerBytes > end) throw new Error("Invalid MZ header size");
+  if (headerBytes < 0x20 || headerBytes > end)
+    throw new Error(`Invalid MZ header size at 0x08: ${hex(headerBytes)} bytes in an image of ${hex(end)}`);
   const packedLoad = end - headerBytes;
   const decompressor = headerBytes + word(0x16) * 16;
   if (decompressor + 16 > end)
     throw new Error(
       `The decompressor's header at ${hex(decompressor)} lies outside the load module, which ends at ${hex(end)}`,
     );
-  const [ip, cs, sp, ss, streamParagraphs] = [0, 1, 2, 3, 4].map((i) => word(decompressor + i * 2)) as [
-    number,
-    number,
-    number,
-    number,
-    number,
-  ];
+  const ip = word(decompressor),
+    cs = word(decompressor + 2),
+    sp = word(decompressor + 4),
+    ss = word(decompressor + 6),
+    streamParagraphs = word(decompressor + 8);
   const streamStart = decompressor - streamParagraphs * 16;
   if (streamStart < headerBytes)
     throw new Error(
@@ -120,13 +124,24 @@ export function unpack(input: Uint8Array): UnpackResult {
   const tableStart = decompressor + lzexe.table;
   const { linear, end: tableEnd } =
     lzexe.version === "0.91" ? relocations91(bytes, tableStart, end) : relocations90(bytes, tableStart, end);
-  for (const [at, offset] of linear)
+  // The reader's MZ parser refuses a word relocated twice, so a table that lists one twice is
+  // refused here rather than written into a file the reader would not read back.
+  const seen = new Set<number>();
+  for (const [at, offset] of linear) {
     if (offset + 2 > data.length)
       throw new Error(
         `The relocation read at ${hex(at)} names load-module offset ${hex(offset)}, past the unpacked load module of ${hex(data.length)} bytes`,
       );
+    if (seen.has(offset))
+      throw new Error(
+        `The relocation read at ${hex(at)} names load-module offset ${hex(offset)}, which an earlier entry already names`,
+      );
+    seen.add(offset);
+  }
   if (linear.length > 0xffff)
-    throw new Error(`The relocation table lists ${linear.length} entries; an MZ header holds 65535`);
+    throw new Error(
+      `The relocation table at ${hex(tableStart)} lists ${linear.length} entries; an MZ header holds 65535`,
+    );
 
   // Layout rule 1: the fixed header, the relocation table at 0x1C, zeros to a multiple of 16 bytes,
   // then the load module. The unpacked file asks DOS for the same memory as the packed file did.
@@ -176,7 +191,8 @@ export function unpack(input: Uint8Array): UnpackResult {
 // the next word is read as soon as the 16th bit of the current one is taken, before the bytes of the
 // token that bit belongs to.
 function decode(bytes: Buffer, start: number, limit: number) {
-  const out = Buffer.alloc(MAX_UNPACKED_BYTES);
+  // Only bytes already written are read back or returned, so the buffer needs no zero fill.
+  const out = Buffer.allocUnsafe(MAX_UNPACKED_BYTES);
   let size = 0,
     p = start;
   const byte = (what: string) => {
@@ -201,18 +217,20 @@ function decode(bytes: Buffer, start: number, limit: number) {
     if (size + n > MAX_UNPACKED_BYTES)
       throw new Error(`The token at ${hex(at)} takes the load module past ${hex(MAX_UNPACKED_BYTES)} bytes`);
   };
+  // `at` is the token's first byte after its flag bits, so it never names a flag word read between them.
   for (;;) {
-    const at = p;
     if (bit()) {
-      grow(at, 1);
+      grow(p, 1);
       out[size++] = byte("literal");
       continue;
     }
-    let length: number, distance: number;
+    let length: number, distance: number, at: number;
     if (!bit()) {
       length = ((bit() << 1) | bit()) + 2;
+      at = p;
       distance = 0x100 - byte("short copy distance");
     } else {
+      at = p;
       const low = byte("long copy distance"),
         high = byte("long copy distance");
       distance = 0x10000 - (low | ((high & 0xf8) << 5) | 0xe000);

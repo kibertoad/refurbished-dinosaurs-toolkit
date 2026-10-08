@@ -107,7 +107,7 @@ import { unpack, UNPACK_LAYOUT } from "@scientific-method/executable-reader/unpa
 | `IgnoredRawData` | `pe-imports` | A `rawIgnored` row: a section whose PointerToRawData is 0 and whose SizeOfRawData is not. |
 | `unpack(bytes)` | `unpack` | Unpacks an LZEXE 0.90 or 0.91 file in memory into an `UnpackResult`: the unpacked bytes, the rebuilt header and relocations, and the packed parts read. |
 | `UNPACK_LAYOUT` | `unpack` | The layout rule number the unpacked bytes are written by. |
-| `MAX_PACKED_BYTES`, `MAX_UNPACKED_BYTES` | `unpack` | The input and output size caps, 1 MiB each. |
+| `MAX_PACKED_BYTES`, `MAX_UNPACKED_BYTES` | `unpack` | The caps on the packed file and on the unpacked load module, 1 MiB each. |
 | `UnpackResult`, `UnpackedHeader`, `UnpackedRelocation`, `PackedParts` | `unpack` | Types of the result. |
 
 Each export carries a doc comment with its exact checks and errors.

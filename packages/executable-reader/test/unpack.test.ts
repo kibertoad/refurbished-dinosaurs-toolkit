@@ -264,6 +264,29 @@ test("a 0.90 file with per-segment relocation counts unpacks the same way", () =
   assert.equal(result.packed.relocationTable.end - result.packed.relocationTable.start, 38);
 });
 
+test("a 0.90 table that lists a relocation twice is refused", () => {
+  const table = Buffer.alloc(32 + 4);
+  table.writeUInt16LE(2, 0);
+  table.writeUInt16LE(0x0020, 2);
+  table.writeUInt16LE(0x0020, 4);
+  const tokens: Token[] = [...zeros(0x40), { mark: "end" }];
+  assert.throws(
+    () => unpack(lzexe(encode(tokens), { version: "0.90", table })),
+    /The relocation read at 0x[0-9A-F]{8} names load-module offset 0x00000020, which an earlier entry already names/,
+  );
+});
+
+test("a ninth relocation at 0x3C that points at NE bytes reads back through readMz", () => {
+  // Entry 8 sits at 0x3C as offset 0, segment 1, the double word 0x10000, where the file holds "NE".
+  const table = Buffer.from([1, 1, 1, 1, 1, 1, 1, 1, 8, 0, 1, 0]);
+  const tokens: Token[] = [...zeros(0xffc0), ...text("NE"), ...zeros(0x10), { mark: "end" }];
+  const result = unpack(lzexe(encode(tokens), { table }));
+  assert.equal(result.header.headerBytes, 0x40);
+  assert.equal(result.bytes.readUInt32LE(0x3c), 0x10000);
+  assert.equal(result.bytes.toString("latin1", 0x10000, 0x10002), "NE");
+  assert.equal(readMz(result.bytes, 0).relocations.size, 9);
+});
+
 test("a stream that ends inside a token fails naming the offset", () => {
   // Sixteen literal flags but only fourteen literal bytes before the decompressor's CS:0.
   const stream = Buffer.concat([Buffer.from([0xff, 0xff]), Buffer.alloc(14, 0x41)]);
@@ -283,6 +306,10 @@ test("a stream with no end mark before the decompressor fails", () => {
 test("a copy before the start of the output fails naming the offset", () => {
   const tokens: Token[] = [{ literal: 1 }, { copy: 2, length: 2, form: "short" }, { mark: "end" }];
   assert.throws(() => unpack(lzexe(encode(tokens))), /The copy read at 0x00000023 reaches 1 bytes before the start/);
+  // Fifteen literals leave the copy's first flag bit as the 16th, so the next flag word sits at
+  // 0x31 before the copy's distance byte at 0x33. The error names the distance byte.
+  const late: Token[] = [...text("ABCDEFGHIJKLMNO"), { copy: 20, length: 2, form: "short" }, { mark: "end" }];
+  assert.throws(() => unpack(lzexe(encode(late))), /The copy read at 0x00000033 reaches 5 bytes before the start/);
 });
 
 test("a relocation past the load module fails naming the offset", () => {

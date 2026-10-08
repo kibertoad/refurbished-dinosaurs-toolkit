@@ -1438,7 +1438,8 @@ Every read is bounded, and each failure names the file offset:
 - A copy may not reach before the start of the output, and the unpacked load module may not pass
   1 MiB, the real-mode address space.
 - The relocation table must end inside the load module, and every relocation must name a whole
-  word inside the unpacked load module.
+  word inside the unpacked load module. A 0.90 table that names a word twice is refused, because
+  the reader's MZ parser does not read a file that relocates a word twice.
 
 ### Layout rule 1
 
