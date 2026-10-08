@@ -8,7 +8,7 @@ import { baseTarget, forkPoint, gitIn } from "../checks/base.ts";
 import type { Context } from "../context.ts";
 import { markdownTree, toSlash, walk } from "../files.ts";
 import { lineCount, readText } from "../markdown.ts";
-import { LINE_LIMIT } from "../standard.ts";
+import { LINE_LIMIT, VALIDATION_DIR } from "../standard.ts";
 
 /**
  * Writes each generated file whose text has changed and removes any other file in spec/index/,
@@ -145,14 +145,15 @@ export function checkGeneratedUnchanged(ctx: Context, generated: Map<string, str
 export function checkLineLimits(ctx: Context) {
   const { problem } = ctx;
   const { repoDir, specDir } = ctx.config;
-  const validationPath = join(repoDir, "VALIDATION.md");
   const parityDir = join(repoDir, "parity");
   const devDir = join(repoDir, "deviations");
-  const files = [join(repoDir, "PARITY.md"), validationPath];
-  for (const dir of [specDir, parityDir, devDir])
-    walk(dir, (f) => {
-      if (f.endsWith(".md")) files.push(f);
-    });
+  const files = [join(repoDir, "PARITY.md")];
+  // A validation that is a file is reported by the validation check.
+  for (const dir of [specDir, parityDir, devDir, join(repoDir, VALIDATION_DIR)])
+    if (existsSync(dir) && statSync(dir).isDirectory())
+      walk(dir, (f) => {
+        if (f.endsWith(".md")) files.push(f);
+      });
   for (const f of files) {
     if (!existsSync(f)) continue;
     const lines = lineCount(readText(f));
