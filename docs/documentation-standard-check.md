@@ -444,7 +444,10 @@ now. The check, in CI as well, fails a validated row whose marked test file no r
 run records as it is now; a run file none of whose files has the hash it recorded, unless it lists
 a tracked file the checkout does not hold; a run file whose
 name does not match its Date and Commit; any other file in `validation/`; and a `VALIDATION.md` at
-the root. A restoration whose validated rows list no marked file needs no run file. The run files
+the root. A run file can also come to match nothing without a new run: after a merge of two
+branches that between them changed every file it matched, or when the rows whose files it matched
+stop being `validated`. Delete such a file by hand; that needs no run against the original's files.
+A restoration whose validated rows list no marked file needs no run file. The run files
 hold hashes of the marked test files only, so the check fails on the first commit when a marked
 test file changed, and passes it when only the code they exercise did. The checker cannot tell
 whether the tests passed; running them before recording is the maintainer's part.
