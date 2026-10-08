@@ -25,6 +25,22 @@ def run(count, **extra):
     return report(additions(count), "trace", **{"returnBytes": 4, "registers": FRAME, "maxPaths": 2, "maxSteps": count + 16, **extra})
 
 
+def negations(count):
+    """EAX loads an unknown dword and BX a constant; ``count`` NOTs of EAX follow, the last at ``last``."""
+    c = Code().emit("66 a1 00 01 bb 34 12")
+    for index in range(count):
+        if index == count - 1:
+            c.label("last")
+        c.emit("66 f7 d0")
+    return c.label("done").emit("cb")
+
+
+def negate(count, **extra):
+    c = negations(count)
+    return report(c, "trace", **{"returnBytes": 4, "registers": FRAME, "maxSteps": count + 16,
+                                 "checkpoints": [c.labels["done"]], **extra})
+
+
 class TermLimitTests(unittest.TestCase):
     def test_a_short_sum_returns_on_both_paths(self):
         r = run(8)
@@ -101,6 +117,59 @@ class TermLimitTests(unittest.TestCase):
         self.assertEqual(row["unresolved"], STOP)
         self.assertIsNone(row["offset"])
         self.assertNotIn("byteProducers", row)
+
+    def test_a_register_part_of_a_root_at_the_limit_is_an_unformed_row(self):
+        # Six terms for the loaded EAX and two per NOT: 509 of them leave EAX at the limit, and
+        # selecting AX, AL or AH from it adds the term that passes it.
+        c = negations(509)
+        r = negate(509)
+        path, = r["paths"]
+        self.assertTrue(path["returned"])
+        self.assertTrue(r["completeWithinModel"])
+        root = path["registers"]["eax"]
+        self.assertIsNotNone(root["expression"])
+        self.assertIn(c.labels["last"], root["producers"])
+        for snapshot in (path["registers"], path["events"][-1]["registers"]):
+            for name in ("ax", "al", "ah"):
+                self.assertEqual(snapshot[name], {"bits": 8 if name != "ax" else 16, "expression": None, "value": None,
+                                                  "producers": root["producers"], "unresolved": STOP})
+            self.assertEqual(snapshot["bx"]["value"], 0x1234)
+
+    def test_a_path_that_stops_with_a_root_at_the_limit_keeps_its_report(self):
+        c = negations(510)
+        path, = negate(510)["paths"]
+        self.assertEqual(path["stop"], STOP)
+        self.assertEqual(path["stopSite"], c.labels["last"])
+        self.assertEqual(path["registers"]["ax"]["unresolved"], STOP)
+        self.assertIsNotNone(path["registers"]["eax"]["expression"])
+
+    def test_a_control_on_an_unformed_register_is_undecided(self):
+        def bound(count):
+            c = negations(count)
+            rule = {"name": "bound", "kind": "relation", "at": {"site": c.labels["done"], "event": "checkpoint"},
+                    "op": "le", "left": {"field": "registers.ax"}, "right": 65535}
+            return negate(count, relationalControls=[rule])["relationalControls"]["controls"][0]
+
+        # The positive control: one NOT fewer leaves AX formed, and a word is at most 65535.
+        self.assertEqual(bound(508)["verdict"], "held")
+        result = bound(509)
+        self.assertEqual(result["verdict"], "undecided")
+        occurrence, = result["paths"][0]["occurrences"]
+        self.assertIn("was not formed: " + STOP, occurrence["reason"])
+
+    def test_an_entry_frame_whose_sp_cannot_be_formed_is_not_established(self):
+        # The entry SP's root starts at twelve terms, so 506 NOTs of ESP leave it at the limit; SP
+        # at the arrival is past it, and no offset is claimed.
+        c = Code().emit("66 f7 d4" * 506).label("entry").emit("c3")
+        data = c.bytes()
+        regions = [{"name": "synthetic", "start": 0, "end": len(data), "ip": 0, "segment": 0x1000, "resident": True,
+                    "entries": [0, c.labels["entry"]], "evidence": "synthetic declared code extent"}]
+        r = report(c, "trace", regions=regions, entry=c.labels["entry"], registers={"ds": 0x3000, "ss": 0x9000},
+                   entryFrame={"from": 0}, maxSteps=520)
+        frame = r["entryFrame"]
+        self.assertFalse(frame["established"])
+        self.assertEqual(frame["arrivals"], 1)
+        self.assertEqual(frame["reasons"], ["SP at an arrival could not be formed: " + STOP])
 
     def test_the_error_survives_copy_and_pickle(self):
         for rebuilt in (copy.copy(TermLimit()), pickle.loads(pickle.dumps(TermLimit()))):

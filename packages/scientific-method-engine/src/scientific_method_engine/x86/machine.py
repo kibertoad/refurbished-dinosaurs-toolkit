@@ -354,7 +354,12 @@ class State:
     def reg(self, name):
         root, low, bits = alias(name)
         value = extract(self.regs[root], low, bits)
-        return Value(bits, value.term, tuple(sorted(set().union(*self.reg_sources[root][low // 8:(low + bits) // 8]))))
+        return Value(bits, value.term, self.reg_origin(name))
+
+    def reg_origin(self, name):
+        """The sources of register ``name``'s bytes, which ``reg(name)`` carries, without forming its value."""
+        root, low, bits = alias(name)
+        return tuple(sorted(set().union(*self.reg_sources[root][low // 8:(low + bits) // 8])))
 
     def setreg(self, name, value, site):
         root, low, bits = alias(name)

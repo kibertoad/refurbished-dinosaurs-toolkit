@@ -47,6 +47,20 @@ class Value:
         return row
 
 
+def unformed(bits, origin, reason):
+    """The report row of a value the model could not form, with the sources it would have carried.
+
+    ``expression`` and ``value`` are None, ``producers`` and ``resultOrigins`` come from ``origin``
+    as ``Value.report`` gives them, and ``unresolved`` says why the value was not formed.
+    """
+    row = {"bits": bits, "expression": None, "value": None, "producers": [s for s in origin if s >= 0],
+           "unresolved": reason}
+    origins = sorted(-s - 1 for s in origin if s < 0)
+    if origins:
+        row["resultOrigins"] = origins
+    return row
+
+
 def result_marker(order):
     """A source tag naming the return event at ``order``; instruction sites are never negative."""
     return -order - 1

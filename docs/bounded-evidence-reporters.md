@@ -563,7 +563,12 @@ Events and writes that instruction made before building the value, such as a mem
 the path; the rest of the instruction does not run. The other paths, their events and their control
 occurrences stay in the report, which is then not `completeWithinModel`. A `lastWriter` address
 probe that would pass the cap leaves its occurrence undecided with that reason, and the path runs
-on. Outside a traced path, such as while preparing a query or after tracing, the cap fails the run.
+on. A register snapshot (a path's `registers`, or those of a `call`, `call-return`, `return` or
+`checkpoint` event) also only observes: a register whose root holds the cap and whose part (AX,
+AL or AH of EAX, for example) would pass it is a row with `expression` and `value` null, the
+`producers` its bytes carry, and the limit message as `unresolved`. A relational control that
+reads such a row leaves its occurrence undecided, and an `entryFrame` arrival whose SP cannot be
+formed leaves the frame unestablished with that reason. Outside a traced path, such as while preparing a query or after tracing, the cap fails the run.
 The Node wrapper caps output at 32 MiB and execution at 120 seconds. The engine writes compact
 JSON to the wrapper, which prints the parsed report indented; run on a config file, the engine
 prints indented JSON itself. A limit never
