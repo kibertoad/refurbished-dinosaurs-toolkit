@@ -192,9 +192,11 @@ public abstract class OriginalContentSource : IDisposable
     /// <summary>
     /// Opens an ISO 9660 image with 2048-byte sectors. It is checked when opened: block size, volume size
     /// against the file, both-endian fields agreeing, and every directory and file extent inside the
-    /// volume. Each directory and file name reads byte for byte as Latin-1 (ISO-8859-1), and without
-    /// its <c>;</c> version suffix and trailing dots must pass <see cref="PortableAssetPath.Relative"/>
-    /// as one component, or opening throws <see cref="InvalidDataException"/> naming it. The source records the image's length and last-write time here, and every later read
+    /// volume. Each directory and file name reads byte for byte as Latin-1 (ISO-8859-1) and loses its
+    /// <c>;</c> version suffix and trailing dots, unless that would give two entries of one directory the
+    /// same name ignoring case, as <c>README.;1</c> and <c>README.;2</c> would: those keep their whole identifiers. The
+    /// name must pass <see cref="PortableAssetPath.Relative"/> as one component, or opening throws
+    /// <see cref="InvalidDataException"/> naming it. The source records the image's length and last-write time here, and every later read
     /// of the image through it (<see cref="OpenRead"/> and <see cref="OpenVolume"/>) compares them with
     /// the file when it opens it and fails with an <see cref="IOException"/> when either has changed.
     /// A rewrite that keeps both the length and the last-write time is not detected.
@@ -614,6 +616,7 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
         var data = new byte[checked((int)directory.DataLength)];
         stream.Position = checked((long)directory.Extent * SectorSize);
         ReadExactly(stream, data);
+        var records = new List<DirectoryRecord>();
         var offset = 0;
         while (offset < data.Length)
         {
@@ -630,7 +633,20 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
             if (record.Identifier is "\0" or "\u0001") continue;
             if (record.IsMultiExtent)
                 throw new InvalidDataException($"Multi-extent ISO9660 entry is unsupported: '{record.Identifier}'.");
-            var name = NormalizeIsoName(record.Identifier);
+            records.Add(record);
+        }
+        // A name loses its version suffix and trailing dots unless that gives it the name of another
+        // entry in the directory, as README.;1 and README.;2 would. Then every entry of that name keeps
+        // its whole identifier, as the documentation standard writes disc paths (ENTRY-TYPES-11). Names
+        // are compared ignoring case, as the source looks paths up.
+        var shortened = records.Select(record => ShortIsoName(record.Identifier)).ToArray();
+        var shared = shortened.GroupBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < records.Count; index++)
+        {
+            var record = records[index];
+            var name = CheckedIsoName(record.Identifier,
+                shared.Contains(shortened[index]) ? record.Identifier : shortened[index]);
             var relative = string.IsNullOrEmpty(parent) ? name : $"{parent}/{name}";
             ValidateExtent(record.Extent, record.DataLength);
             if (record.IsDirectory)
@@ -687,11 +703,15 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
         return little;
     }
 
-    private static string NormalizeIsoName(string identifier)
+    // The identifier without its version suffix and the dots that end it.
+    private static string ShortIsoName(string identifier)
     {
         var separator = identifier.LastIndexOf(';');
-        var name = separator >= 0 ? identifier[..separator] : identifier;
-        name = name.TrimEnd('.');
+        return (separator >= 0 ? identifier[..separator] : identifier).TrimEnd('.');
+    }
+
+    private static string CheckedIsoName(string identifier, string name)
+    {
         // A separator inside one identifier would read as two components.
         if (name.Contains('/') || name.Contains('\\'))
             throw new InvalidDataException(

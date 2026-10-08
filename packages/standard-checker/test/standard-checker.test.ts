@@ -2947,6 +2947,26 @@ test("a link or stopped path counts only when the list of other files gives it b
   );
 });
 
+test("a single-quoted listing path reads '' as one quote", (t) => {
+  // Single quotes hold a value with both kinds of quote and a backslash, as a Windows link target can.
+  const items: Array<[string, string]> = [
+    ...LISTING_ITEMS.slice(0, 5),
+    ["'PLAYER''S GUIDE.TXT'", "size: 12"],
+    ["SAVES", "link: 'C:\\Users\\O''Brien \"Bob\"\\Saves'"],
+    ...LISTING_ITEMS.slice(6),
+  ];
+  const listed = otherFilesList([...LISTING_OTHER, ['"PLAYER\'S GUIDE.TXT"', "text for the player"]]);
+  const passing = run(broken(t, withListing(LISTING_HEAD + listingItems(items), listed)));
+  assert.equal(passing.status, 0, passing.output);
+
+  const failing = run(broken(t, withListing(LISTING_HEAD + listingItems(items))));
+  assert.equal(failing.status, 1, failing.output);
+  assert.match(
+    failing.output,
+    /listing\.yaml: PLAYER'S GUIDE\.TXT is in the record but neither in the manifest nor in the list of other files, and under no directory exclusion \[ENTRY-TYPES-18\]$/m,
+  );
+});
+
 test("a manifest path the record gives as a link fails", (t) => {
   const items = LISTING_ITEMS.map(([path, rest]): [string, string] => [
     path,

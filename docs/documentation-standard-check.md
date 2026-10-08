@@ -690,6 +690,12 @@ listed twice, items out of order when paths are compared byte by byte, an item o
 `media` does not name, and an archive member (`archive|member`) whose outermost archive `archives`
 does not list or that lies deeper than that archive's depth.
 
+`BuildListing.Make` in the `RefurbishedDinosaurs.LegacyFormats` NuGet package writes such a record
+from an installation directory and `.iso` or cue/bin disc images, with disc paths in the form
+ENTRY-TYPES-11 gives. Its README's
+[Listing a build](../packages/dotnet/README.md#listing-a-build) says what it lists and what it
+refuses.
+
 It then compares the record with the manifest and the list of other files, as ENTRY-TYPES-18 says,
 and fails, naming the path:
 
