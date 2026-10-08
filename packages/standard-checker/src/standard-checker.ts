@@ -75,10 +75,11 @@
 // scalars, flow lists, and block lists of flat maps.
 //
 // This file reads the options and runs the phases in order: load the spec, check the entries, the
-// rules, the field names in their procedures and what crosses entries, compile the Kaitai
-// definitions, check the deviations, parity, VALIDATION.md, the code's references and comments, the
-// range ends against the function inventories in coverage/, and the base ref, then write or check
-// the generated files, or with --scheduled-generation check that the change leaves them alone.
+// builds' listing records, the rules, the field names in their procedures and what crosses entries,
+// compile the Kaitai definitions, check the deviations, parity, VALIDATION.md, the code's references
+// and comments, the range ends against the function inventories in coverage/, and the base ref, then
+// write or check the generated files, or with --scheduled-generation check that the change leaves
+// them alone.
 // Every phase reports into one collector, which prints the problems at the end in the order they
 // were found.
 
@@ -92,6 +93,7 @@ import { checkAcrossEntries } from "./checks/cross-entry.ts";
 import { checkDeviations } from "./checks/deviations.ts";
 import { checkEntries } from "./checks/entries.ts";
 import { checkFieldNames } from "./checks/fields.ts";
+import { checkListings } from "./checks/listings.ts";
 import { checkMessageAddresses } from "./checks/message-addresses.ts";
 import { checkRangeEnds } from "./checks/range-ends.ts";
 import { checkRebuildPaths } from "./checks/rebuild-paths.ts";
@@ -130,6 +132,7 @@ const spec = loadSpec({ config, problem });
 const ctx: Context = { config, problem, skip, spec, codeFiles: createCodeFiles(config, dirname(selfPath)) };
 
 const formatNames = checkEntries(ctx);
+checkListings(ctx);
 checkRules(ctx, formatNames);
 checkArgumentCounts(ctx);
 checkFieldNames(ctx, formatNames);

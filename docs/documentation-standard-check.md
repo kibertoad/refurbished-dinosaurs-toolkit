@@ -20,8 +20,9 @@ The check expects these at the root it is given (the repository root by default)
 - the entries in `spec/builds/`, `spec/sources/`, `spec/formats/`, `spec/rules/`,
   `spec/findings/`, `spec/experiments/`, `spec/bugs/` and `spec/screens/`, as far as the
   restoration has any, with a `<ID>.files.yaml` manifest beside each build entry, a
-  `<ID>.other-files.yaml` beside it where the build's list of left-out paths is long, and any CSV
-  value files beside the entries that name them;
+  `<ID>.other-files.yaml` beside it where the build's list of left-out paths is long, a
+  `<ID>.listing.yaml` listing record where the build keeps one, and any CSV value files beside the
+  entries that name them;
 - `parity/`, with one `<AREA>.md` of parity rows per area, split by kind and then by block of 100
   numbers where an area would pass 1,000 lines;
 - `deviations/`, with one `<ID>.md` per deviation;
@@ -402,8 +403,8 @@ spec as a whole, such as a deleted ID. When the problem breaks a numbered rule o
 line ends with the rule's label, such as `[STATUS-4]`. The standard opens each rule with a
 sixth-level heading of that label, anchored at `#status-4`, and a restoration's vendored copy keeps
 the same anchors, so an agent can read that rule alone: its upstream link tooling gives the heading
-a line range like any other. Only Identifiers, Status and the shared part of Entry types are
-numbered so far, and problems under other sections have no label yet.
+a line range like any other. Only Identifiers, Status and Entry types up to the end of Builds
+are numbered so far, and problems under other sections have no label yet.
 
 ## Recording a validation run
 
@@ -663,17 +664,64 @@ has to. An offset into a `data` or `cdda` file needs no row.
 ### Other files
 
 A build's Other files section accounts for every path of the installation's listing that the
-manifest leaves out. Where that list would take the entry past the line limit, it goes in
-`builds/<ID>.other-files.yaml`, whose only key `other_files` is a list of maps of `path` and
-`reason`, and the section names the file. The checker fails a list that the section does not
+manifest leaves out (ENTRY-TYPES-14). Where that list would take the entry past the line limit, it
+goes in `builds/<ID>.other-files.yaml`, whose only key `other_files` is a list of maps of `path`
+and `reason`, and the section names the file. The checker fails a list that the section does not
 name, a section that names a list that does not exist, a list that belongs to no build, an item
 without a path or a reason, a path listed twice, and a path that is also in the manifest. It
 also fails a manifest that lists a path twice, whether or not the two items agree. In both files a
 path is text: an unquoted name such as `1990` or `0` is read as that text, and a path written as a
-map or list fails. The checker cannot tell whether the listing itself is complete. The standard
-keeps no copy of the listing in the repository, only the section's account of how it was made,
-which is left to review, and the checker reads no paths from an Other files section written as
-prose.
+map or list fails. A path in the list that ends in `/` is a directory exclusion (ENTRY-TYPES-15),
+and the checker fails a manifest path that lies under one. The checker reads no paths from an
+Other files section written as prose.
+
+### Listing records
+
+A build may keep its listing in `builds/<ID>.listing.yaml` and name it in the entry's `listing`
+field (ENTRY-TYPES-16 and ENTRY-TYPES-17). The checker fails a `listing` field that names any other
+file or a file that does not exist, a listing record that no `listing` field names, and one that
+belongs to no build entry. It checks the record's fields: `tool`, `date` as `YYYY-MM-DD`, `links`
+as `listed`, `followed` or `refused`, `cycles` given for followed links and `null` otherwise,
+`media` with one prefix per medium (`""` for the installation directory with a null source and
+layout, `CD:` or `CDn:` for a disc with one of the layouts `2048`, `MODE1/2352` and `MODE2/2352`),
+and `archives` with a path and a depth from 1 for each archive that is a file item of the record.
+Each item has a `path` and exactly one of `size`, `link` and `stopped`. The checker fails a path
+listed twice, items out of order when paths are compared byte by byte, an item on a medium that
+`media` does not name, and an archive member (`archive|member`) whose outermost archive `archives`
+does not list or that lies deeper than that archive's depth.
+
+It then compares the record with the manifest and the list of other files, as ENTRY-TYPES-18 says,
+and fails, naming the path:
+
+- a file item that is in neither the manifest nor the list of other files and lies under no
+  directory exclusion (archive members are exempt);
+- a file item whose size differs from the manifest's;
+- an archive member whose container is not a file item of the record;
+- a manifest path that is not a file item, or that the record gives as a link or stopped path;
+- a path in the list of other files, other than a directory exclusion, that is not an item;
+- a link or stopped item that the list of other files does not give by its own path. A directory
+  exclusion above it does not count;
+- a disc's `source` image that neither the manifest nor the list of other files gives by its own
+  path (ENTRY-TYPES-16). A directory exclusion above it does not count.
+
+A manifest or other-files path on a disc the record's `media` leave out need not be in the record,
+and neither need a CD audio track (`CD:track02`) on a disc where the record lists no track. The
+Other files section says why, and that is left to review.
+
+Agreement shows only that the record, the manifest and the list of other files name the same paths
+with the same sizes. It does not show that the game uses a file in the manifest, that an archive's
+members were surveyed, that the Survey is complete, or that the listing itself missed nothing: a
+listing that skipped a directory agrees with a manifest that skipped it too. The record holds no
+hashes, so a changed file of the same size passes. The checker does not read the files the record
+describes.
+
+Where the build's list of other files is written in the Other files section as prose, the checker
+still compares the record with the manifest, and names the rest of the comparison as a skipped
+step, such as `comparison of BLD-X.listing.yaml with the list of other files of BLD-X (the checker
+reads that list only from BLD-X.other-files.yaml)`. Move the list to `<ID>.other-files.yaml` to
+have it compared. Where `<ID>.other-files.yaml` exists but could not be read, its problems are
+reported and the skipped step gives that reason instead: `(BLD-X.other-files.yaml could not be
+read)`.
 
 A file in any other format fails the manifest check, and so does a packed file whose unpacked
 form is in any other format. Before such a file is documented, the Standard must decide how

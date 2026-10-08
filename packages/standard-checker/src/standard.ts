@@ -70,7 +70,7 @@ const COMMON = ["id", "title", "status", "builds", "superseded_by"];
 export const CLAIM_LINKS = ["evidence", "conflicting", "split_with", "related"];
 /**
  * The rules that make the fields every entry, or every claim, has always present. A field of one
- * kind alone is described under that kind, which has no numbered rules yet.
+ * kind alone is described under that kind, in the rule KIND_FIELD_RULES names for it.
  */
 export const FIELD_RULES: Record<string, Rule> = {
   id: "ENTRY-TYPES-4",
@@ -82,6 +82,13 @@ export const FIELD_RULES: Record<string, Rule> = {
   conflicting: "ENTRY-TYPES-5",
   split_with: "ENTRY-TYPES-5",
   related: "ENTRY-TYPES-6",
+};
+/**
+ * The rule that gives the fields of one kind of entry, for a kind whose section numbers it. The
+ * other kinds' sections are not numbered yet, so a field of theirs names no rule.
+ */
+export const KIND_FIELD_RULES: Record<string, Rule> = {
+  BLD: "ENTRY-TYPES-9",
 };
 /** The front matter fields each kind of entry requires. */
 export const FIELDS: Record<string, { required: string[] }> = {

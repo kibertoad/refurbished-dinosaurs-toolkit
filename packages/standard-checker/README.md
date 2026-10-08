@@ -37,8 +37,20 @@ the run fails.
 A problem that breaks a numbered rule of the standard ends with the rule's label in brackets, such
 as `[STATUS-14]`. The standard opens that rule with the heading `###### STATUS-14`, anchored at
 `#status-14` on the site and in the copies restorations vendor, so the rule can be read on its
-own. Rules are numbered in Identifiers, Status and the shared part of Entry types so far, and
-problems under other sections carry no label yet.
+own. Rules are numbered in Identifiers, Status and Entry types up to the end of Builds so far,
+and problems under other sections carry no label yet.
+
+A build that keeps a listing record, `spec/builds/<ID>.listing.yaml` named by the entry's `listing`
+field, has it checked against its manifest and its list of other files (ENTRY-TYPES-18): every file
+the record lists is in the manifest with the manifest's size, in the list of other files, or under
+a directory exclusion; every manifest path and every listed other file is in the record; and every
+link or stopped path is in the list of other files by its own path. A disc read from an image names
+that image in `source` by a path the manifest or the list of other files gives (ENTRY-TYPES-16).
+Each problem names the path.
+Agreement shows only that the three name the same paths. It does not show that the game uses a
+file or that the listing missed nothing. Where the list of other files is prose in the Other files
+section, or `<ID>.other-files.yaml` could not be read, the comparison with it is a skipped step on
+the result line that gives the reason, and only a readable `<ID>.other-files.yaml` is compared.
 
 ## Options
 

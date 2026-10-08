@@ -4,7 +4,15 @@
 import type { Context } from "../context.ts";
 import { checkResolves, isSuperseded } from "../evidence.ts";
 import { asList, kindOf } from "../ids.ts";
-import { CLAIM_STATUSES, EVIDENCE_STATUSES, FIELD_RULES, FIELDS, KINDS, SECTIONS } from "../standard.ts";
+import {
+  CLAIM_STATUSES,
+  EVIDENCE_STATUSES,
+  FIELD_RULES,
+  FIELDS,
+  KIND_FIELD_RULES,
+  KINDS,
+  SECTIONS,
+} from "../standard.ts";
 import type { Yaml } from "../types.ts";
 import { checkClaim } from "./claims.ts";
 import { checkExperiment, checkFinding } from "./evidence-entries.ts";
@@ -55,7 +63,8 @@ export function checkEntries(ctx: Context): FormatNames {
   for (const [id, e] of entries) {
     const { file, meta, kind } = e;
     checkIdForm(ctx, file, id);
-    for (const f of FIELDS[kind].required) if (!(f in meta)) problem(file, `front matter lacks ${f}`, FIELD_RULES[f]);
+    for (const f of FIELDS[kind].required)
+      if (!(f in meta)) problem(file, `front matter lacks ${f}`, FIELD_RULES[f] ?? KIND_FIELD_RULES[kind]);
     if (!Array.isArray(meta.superseded_by)) problem(file, "superseded_by must be a list", FIELD_RULES.superseded_by);
     const expectedSections = SECTIONS[kind];
     const got = e.sections.map((s) => s.title);
@@ -129,7 +138,8 @@ export function checkEntries(ctx: Context): FormatNames {
     if (kind === "EXP") checkExperiment(ctx, id, e, isSup);
     if (KINDS[kind].statuses === "claim") checkClaim(ctx, id, e);
 
-    if (kind === "BLD" && ![16, 32].includes(meta.int_width)) problem(file, "int_width must be 16 or 32");
+    if (kind === "BLD" && ![16, 32].includes(meta.int_width))
+      problem(file, "int_width must be 16 or 32", "ENTRY-TYPES-9");
     if (kind === "SRC" && meta.xxh3 !== null && !/^[0-9a-f]{32}$/.test(String(meta.xxh3)))
       problem(file, "xxh3 must be null or 32 lower-case hex digits");
 
