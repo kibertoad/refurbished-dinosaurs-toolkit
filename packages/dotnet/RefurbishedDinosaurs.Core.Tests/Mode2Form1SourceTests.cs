@@ -173,11 +173,13 @@ public sealed class Mode2Form1SourceTests
             // A second track starting at sector 10 leaves no room for the volume descriptor.
             var image = ToMode2Form1(OriginalContentSourceTests.BuildIso([1]));
             await WriteAsync(root, image, Mode2Cue + "TRACK 02 AUDIO\nINDEX 01 00:00:10\n");
-            Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenCueBin(root));
+            Assert.Contains("does not hold an ISO 9660 volume", Assert.Throws<InvalidDataException>(
+                () => OriginalContentSource.OpenCueBin(root)).Message, StringComparison.Ordinal);
 
             // A second track starting past the image.
             await WriteAsync(root, image, Mode2Cue + "TRACK 02 AUDIO\nINDEX 01 01:00:00\n");
-            Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenCueBin(root));
+            Assert.Contains("Track 02 INDEX 01 starts outside the BIN image", Assert.Throws<InvalidDataException>(
+                () => OriginalContentSource.OpenCueBin(root)).Message, StringComparison.Ordinal);
         }
         finally { Directory.Delete(root, true); }
     }

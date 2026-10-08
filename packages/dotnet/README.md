@@ -230,7 +230,7 @@ other type fails to parse.
 The two layouts of one disc list the same files and read the same file and volume bytes, so a
 `VolumeXxh3` pin holds for either. A `MODE2/2352` track is read only as CD-XA Form 1. A sector of
 another mode, a MODE2 sector whose subheader copies differ (such as a formless MODE2 track), and a
-Form 2 sector are rejected, never read at another offset. Directories and volume descriptors are
+Form 2 sector throw `InvalidDataException` when read. Directories and volume descriptors are
 Form 1, so a disc that stores some files in Form 2 sectors, such as interleaved audio or video,
 still opens and lists them; reading such a file through `OpenRead`, or the whole volume through
 `OpenVolume`, throws when it reaches the first Form 2 sector. The EDC, the ECC and the address in

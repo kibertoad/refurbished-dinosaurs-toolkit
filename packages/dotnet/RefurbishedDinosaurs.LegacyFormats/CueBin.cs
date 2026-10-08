@@ -134,9 +134,10 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     /// <summary>
     /// Parses a cue sheet. It must name exactly one <c>BINARY</c> <c>FILE</c> by a relative path
     /// <see cref="PortableAssetPath.Relative"/> accepts,
-    /// number its 1 to 99 tracks consecutively from 1, begin with a <c>MODE1/2352</c> or <c>MODE2/2352</c> track whose
-    /// <c>INDEX 01</c> is at <c>00:00:00</c> followed only by <c>AUDIO</c> tracks, give each track an
-    /// <c>INDEX 01</c>, and keep every index in order, within a track and across tracks. A
+    /// number its 1 to 99 tracks consecutively from 1, begin with a <c>MODE1/2352</c> or
+    /// <c>MODE2/2352</c> track whose <c>INDEX 01</c> is at <c>00:00:00</c> followed only by
+    /// <c>AUDIO</c> tracks, give each track an <c>INDEX 01</c>, and keep every index in order,
+    /// within a track and across tracks. A
     /// <c>FILE</c>, <c>TRACK</c> or <c>INDEX</c> line it cannot read is rejected, not skipped.
     /// </summary>
     /// <exception cref="InvalidDataException">The text breaks one of these rules or a timestamp is invalid.</exception>
@@ -342,7 +343,6 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     }
 }
 
-
 // The sector layouts a data track's user data is read from.
 internal enum RawDataTrackMode
 {
@@ -380,6 +380,7 @@ internal sealed class RawDataTrackUserDataStream(
         [0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00];
     private readonly byte[] sector = new byte[CueBinSheet.RawSectorSize];
     private readonly int userDataOffset = mode == RawDataTrackMode.Mode1 ? 16 : 24;
+    private readonly byte modeByte = mode == RawDataTrackMode.Mode1 ? (byte)1 : (byte)2;
     private readonly string declared = mode == RawDataTrackMode.Mode1 ? "MODE1/2352" : "MODE2/2352";
     private long sectorIndex = -1;
     private long position;
@@ -437,8 +438,7 @@ internal sealed class RawDataTrackUserDataStream(
         if (!sector.AsSpan(0, SyncPattern.Length).SequenceEqual(SyncPattern))
             throw new InvalidDataException(
                 $"Sector {index} has no {declared} sync pattern; the BIN does not match its cue sheet.");
-        var expectedMode = mode == RawDataTrackMode.Mode1 ? 1 : 2;
-        if (sector[ModeOffset] != expectedMode)
+        if (sector[ModeOffset] != modeByte)
             throw new InvalidDataException(
                 $"Sector {index} is mode {sector[ModeOffset]}, but the cue sheet declares {declared}.");
         if (mode == RawDataTrackMode.Mode2Form1) CheckForm1Subheader(index);
