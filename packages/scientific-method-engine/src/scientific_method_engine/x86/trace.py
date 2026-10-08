@@ -563,12 +563,17 @@ def entry_frame(image, config, entry):
         reasons.append("arrivals reach the entry with SP at different offsets: " + ", ".join(map(str, offsets)))
     established = not reasons
     bp = {a["bp"] for a in arrivals}
-    return {"from": start, "established": established, "sp": offsets[0] if established else None,
-            "bp": next(iter(bp)) if established and len(bp) == 1 else None,
-            "arrivals": len(arrivals), "pathsRead": len(report["paths"]), "stepsUsed": report["stepsUsed"],
-            "reasons": reasons,
-            "meaning": "offsets from the entry SP of the function at from, observed at each first arrival on the "
-                       "traced paths under the query's own inputs; bp null leaves BP unknown"}
+    frame = {"from": start, "established": established, "sp": offsets[0] if established else None,
+             "bp": next(iter(bp)) if established and len(bp) == 1 else None,
+             "arrivals": len(arrivals), "pathsRead": len(report["paths"]), "stepsUsed": report["stepsUsed"],
+             "reasons": reasons,
+             "meaning": "offsets from the entry SP of the function at from, observed at each first arrival on the "
+                        "traced paths under the query's own inputs; bp null leaves BP unknown"}
+    # BP does not decide whether the frame is established, so why it could not be formed has its own field.
+    unformed_bp = sorted({a["unresolved"]["bp"] for a in arrivals if "bp" in a.get("unresolved", {})})
+    if unformed_bp:
+        frame["bpUnresolved"] = unformed_bp
+    return frame
 
 
 def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=None, call_stacks=False, argument_window=0):

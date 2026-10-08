@@ -129,7 +129,9 @@ class TermLimitTests(unittest.TestCase):
         root = path["registers"]["eax"]
         self.assertIsNotNone(root["expression"])
         self.assertIn(c.labels["last"], root["producers"])
-        for snapshot in (path["registers"], path["events"][-1]["registers"]):
+        checkpoint, = (e for e in path["events"] if e["kind"] == "checkpoint")
+        self.assertEqual(path["events"][-1]["kind"], "return")
+        for snapshot in (path["registers"], checkpoint["registers"], path["events"][-1]["registers"]):
             for name in ("ax", "al", "ah"):
                 self.assertEqual(snapshot[name], {"bits": 8 if name != "ax" else 16, "expression": None, "value": None,
                                                   "producers": root["producers"], "unresolved": STOP})
@@ -170,6 +172,52 @@ class TermLimitTests(unittest.TestCase):
         self.assertFalse(frame["established"])
         self.assertEqual(frame["arrivals"], 1)
         self.assertEqual(frame["reasons"], ["SP at an arrival could not be formed: " + STOP])
+
+    def test_an_entry_frame_whose_bp_cannot_be_formed_names_the_limit(self):
+        # BP copies the entry SP's twelve terms, so 506 NOTs of EBP leave it at the limit; BP at the
+        # arrival is past it. SP is unaffected, so the frame is still established.
+        def frame(count):
+            c = Code().emit("66 89 e5" + " 66 f7 d5" * count).label("entry").emit("c3")
+            data = c.bytes()
+            regions = [{"name": "synthetic", "start": 0, "end": len(data), "ip": 0, "segment": 0x1000, "resident": True,
+                        "entries": [0, c.labels["entry"]], "evidence": "synthetic declared code extent"}]
+            return report(c, "trace", regions=regions, entry=c.labels["entry"], registers={"ds": 0x3000, "ss": 0x9000},
+                          entryFrame={"from": 0}, maxSteps=520)["entryFrame"]
+
+        # The positive control: one NOT fewer forms BP, which is just not an offset.
+        formed = frame(505)
+        self.assertTrue(formed["established"])
+        self.assertIsNone(formed["bp"])
+        self.assertNotIn("bpUnresolved", formed)
+        unformed = frame(506)
+        self.assertTrue(unformed["established"])
+        self.assertIsNone(unformed["bp"])
+        self.assertEqual(unformed["reasons"], [])
+        self.assertEqual(unformed["bpUnresolved"], [STOP])
+
+    def test_a_dispatch_whose_index_cannot_be_formed_names_the_limit(self):
+        # EBX loads an unknown dword; 509 NOTs leave it at the limit, so BX at the jump is past it.
+        def outcome(count):
+            c = Code().emit("66 8b 1e 00 01" + " 66 f7 d3" * count).label("dispatch").emit("ff 27").label("table").emit("20 00")
+            data = c.bytes()
+            dispatch = {"site": c.labels["dispatch"], "inputRegister": "ax", "indexRegister": "bx", "inputs": [1],
+                        "indexEvidence": "synthetic unknown index", "table": {"start": c.labels["table"], "count": 1,
+                        "stride": 2, "width": 2, "countEvidence": "synthetic single entry", "offset": 0,
+                        "mappingEvidence": "synthetic table"}}
+            return report(c, "dispatch", registers={"ds": 0x3000, "ss": 0x9000}, maxSteps=600,
+                          dispatch=dispatch)["cases"][0]["outcomes"][0]
+
+        # The positive control: one NOT fewer forms BX, which is unknown, so the outcome only stops.
+        formed = outcome(508)
+        self.assertEqual(formed["status"], "unresolved")
+        self.assertNotIn("unresolved", formed)
+        unformed = outcome(509)
+        self.assertEqual(unformed["status"], "unresolved")
+        self.assertEqual(unformed["unresolved"], STOP)
+        # A NOT past the limit stops the path before the jump, which the stop already says.
+        stopped = outcome(510)
+        self.assertEqual(stopped["stop"], STOP)
+        self.assertNotIn("unresolved", stopped)
 
     def test_the_error_survives_copy_and_pickle(self):
         for rebuilt in (copy.copy(TermLimit()), pickle.loads(pickle.dumps(TermLimit()))):

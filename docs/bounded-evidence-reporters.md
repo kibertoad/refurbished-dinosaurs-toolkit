@@ -368,7 +368,9 @@ displacement; `start` is its evidenced file mapping. The actual indirect near ju
 must use `indexRegister` as its sole address register and read the declared width.
 `indexDivisor` defaults to and must equal `stride`. Each case executes the decoded
 normalization and gates before reporting the table position and raw target.
-Returning before dispatch stays distinct from a stop on unsupported code.
+Returning before dispatch stays distinct from a stop on unsupported code. An outcome
+that reached the site with an index register it could not form carries the reason as
+`unresolved` ([limits](#limits-and-assumptions)).
 Normalization, source-to-table mapping and count evidence remain in the report.
 
 `allocation` adds `allocations`, each naming a call `site`, `requestRegister`,
@@ -402,8 +404,9 @@ says what that trace found:
 | `established` | every path from `from` was read until it arrived or returned, at least one arrived, each arrival was in a frame of that function (not inside a call to another function), and SP was at one offset from that frame's entry SP at every arrival |
 | `sp` | SP at the entry as a signed offset from the function's entry SP, which points at the return address |
 | `bp` | BP as such an offset when it was at the same one at every arrival; `null` leaves BP unknown |
+| `bpUnresolved` | present when BP could not be formed at an arrival: the reasons, such as the term limit ([limits](#limits-and-assumptions)); `bp` is then `null` |
 | `arrivals`, `pathsRead`, `stepsUsed` | what the trace from `from` read |
-| `reasons` | why the frame is not established: a path that stopped before reaching the entry, a limit gap, no arrival, an arrival inside another function, SP at different offsets or at no offset |
+| `reasons` | why the frame is not established: a path that stopped before reaching the entry, a limit gap, no arrival, an arrival inside another function, SP at different offsets or at no offset, or SP that could not be formed at an arrival ([limits](#limits-and-assumptions)) |
 | `meaning` | how to read `sp` and `bp` |
 
 An established frame starts the query with SP and BP at those offsets from an entry SP, and that
@@ -566,9 +569,13 @@ probe that would pass the cap leaves its occurrence undecided with that reason, 
 on. A register snapshot (a path's `registers`, or those of a `call`, `call-return`, `return` or
 `checkpoint` event) also only observes: a register whose root holds the cap and whose part (AX,
 AL or AH of EAX, for example) would pass it is a row with `expression` and `value` null, the
-`producers` its bytes carry, and the limit message as `unresolved`. A relational control that
-reads such a row leaves its occurrence undecided, and an `entryFrame` arrival whose SP cannot be
-formed leaves the frame unestablished with that reason. Outside a traced path, such as while preparing a query or after tracing, the cap fails the run.
+`producers` (and `resultOrigins`) its bytes carry, and the limit message as `unresolved`. A
+relational control that reads such a row leaves its occurrence undecided, and an `entryFrame`
+arrival whose SP cannot be formed leaves the frame unestablished with that reason (BP that cannot
+be formed leaves `bp` null and names the reason in `bpUnresolved`). A `dispatch` case that reaches
+its site with an index register that cannot be formed reports the outcome `unresolved` with the
+limit message as its `unresolved`. Outside a traced path, such as while preparing a query or after
+tracing, the cap fails the run.
 The Node wrapper caps output at 32 MiB and execution at 120 seconds. The engine writes compact
 JSON to the wrapper, which prints the parsed report indented; run on a config file, the engine
 prints indented JSON itself. A limit never

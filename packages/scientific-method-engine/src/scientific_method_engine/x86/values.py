@@ -40,11 +40,7 @@ class Value:
         return self.term[1] if self.term[0] == "constant" else None
 
     def report(self):
-        row = {"bits": self.bits, "expression": self.term, "value": self.number, "producers": producers(self)}
-        origins = result_origins(self)
-        if origins:
-            row["resultOrigins"] = origins
-        return row
+        return _row(self.bits, self.term, self.number, self.sources)
 
 
 def unformed(bits, origin, reason):
@@ -53,8 +49,12 @@ def unformed(bits, origin, reason):
     ``expression`` and ``value`` are None, ``producers`` and ``resultOrigins`` come from ``origin``
     as ``Value.report`` gives them, and ``unresolved`` says why the value was not formed.
     """
-    row = {"bits": bits, "expression": None, "value": None, "producers": [s for s in origin if s >= 0],
-           "unresolved": reason}
+    return {**_row(bits, None, None, origin), "unresolved": reason}
+
+
+def _row(bits, expression, value, origin):
+    """A report row with the ``producers`` and ``resultOrigins`` that the sources ``origin`` give."""
+    row = {"bits": bits, "expression": expression, "value": value, "producers": [s for s in origin if s >= 0]}
     origins = sorted(-s - 1 for s in origin if s < 0)
     if origins:
         row["resultOrigins"] = origins
