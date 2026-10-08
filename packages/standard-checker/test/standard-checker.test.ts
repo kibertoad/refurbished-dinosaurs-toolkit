@@ -4,7 +4,17 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -2129,7 +2139,7 @@ function commitAll(root: string) {
   git("commit", "-q", "-m", "fixture");
 }
 
-test("a validated row whose tests run in CI needs no VALIDATION.md", (t) => {
+test("a validated row whose tests run in CI needs no validation run", (t) => {
   const root = broken(t, (r) =>
     validateRow(r, "// Replays EXP-SCORE-001 for RULE-SCORE-001.\nexpect(kill(0)).toBe(1);\n"),
   );
@@ -2150,11 +2160,11 @@ test("a test file that mentions GAME_DIR without the comment is reported", (t) =
   );
 });
 
-test("a validated row needs its marked test files in VALIDATION.md", (t) => {
+test("a validated row needs its marked test files in a validation run", (t) => {
   const root = broken(t, (r) => validateRow(r));
   const { status, output } = run(root);
   assert.equal(status, 1);
-  assert.match(output, /RULE-SCORE-001: tests\/Score\.test\.ts is not in VALIDATION\.md/);
+  assert.match(output, /RULE-SCORE-001: tests\/Score\.test\.ts is in no run in validation\//);
 });
 
 test("--record-validation writes a record that a changed test file no longer matches", (t) => {
@@ -2164,8 +2174,11 @@ test("--record-validation writes a record that a changed test file no longer mat
   });
   const recorded = run(root, "--record-validation", "BLD-EXAMPLE-1.0");
   assert.equal(recorded.status, 0, recorded.output);
-  const record = readFileSync(join(root, "VALIDATION.md"), "utf8");
   const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  const runs = readdirSync(join(root, "validation"));
+  assert.equal(runs.length, 1);
+  assert.match(runs[0], new RegExp(`^\\d{4}-\\d{2}-\\d{2}-${head.slice(0, 12)}\\.md$`));
+  const record = readFileSync(join(root, "validation", runs[0]), "utf8");
   assert.match(record, new RegExp(`^- Commit: ${head}$`, "m"));
   assert.match(record, /^- Builds: BLD-EXAMPLE-1\.0$/m);
   assert.match(record, /^\| `tests\/Score\.test\.ts` \| `[0-9a-f]{64}` \|$/m);
@@ -2180,7 +2193,10 @@ test("--record-validation writes a record that a changed test file no longer mat
   writeFileSync(test, `${LOCAL_TEST}expect(kill(0)).toBe(2);\n`);
   const changed = run(root, "--check");
   assert.equal(changed.status, 1);
-  assert.match(changed.output, /RULE-SCORE-001: tests\/Score\.test\.ts has changed since VALIDATION\.md recorded it/);
+  assert.match(
+    changed.output,
+    /RULE-SCORE-001: tests\/Score\.test\.ts has changed since a run in validation\/ recorded it/,
+  );
 });
 
 test("--record-validation records only a run of HEAD as committed", (t) => {
@@ -2199,7 +2215,7 @@ test("--record-validation records only a run of HEAD as committed", (t) => {
     assert.equal(result.status, 2, result.output);
     assert.match(result.output, /the working tree differs from HEAD \(/);
     assert.match(result.output, expected);
-    assert.equal(existsSync(join(root, "VALIDATION.md")), false);
+    assert.equal(existsSync(join(root, "validation")), false);
   };
 
   // A marked test file changed since HEAD, staged or not.
@@ -2248,19 +2264,104 @@ test("--record-validation records only a run of HEAD as committed", (t) => {
   assert.equal(run(root, "--check").status, 0);
 });
 
-test("VALIDATION.md lists only the marked test files of validated rows", (t) => {
+// Records a run of the committed fixture and returns the run file's path.
+function recordRun(root: string) {
+  const recorded = run(root, "--record-validation", "BLD-EXAMPLE-1.0");
+  assert.equal(recorded.status, 0, recorded.output);
+  const [name] = readdirSync(join(root, "validation"));
+  return join(root, "validation", name);
+}
+
+test("runs recorded apart, as on two branches, each count while they still match", (t) => {
   const root = broken(t, (r) => {
     validateRow(r);
     commitAll(r);
-    assert.equal(run(r, "--record-validation", "BLD-EXAMPLE-1.0").status, 0);
-    replaceIn(r, "VALIDATION.md", "|---|---|\n", `|---|---|\n| \`tests/Other.test.ts\` | \`${"0".repeat(64)}\` |\n`);
+    const first = readFileSync(recordRun(r), "utf8");
+    // Another branch's run of the same test file, which also lists a file that is no longer a
+    // marked test file of a validated row.
+    const commit = "0123456789ab" + "c".repeat(28);
+    writeFileSync(
+      join(r, "validation", "2026-01-02-0123456789ab.md"),
+      first
+        .replace(/^- Commit: .*$/m, `- Commit: ${commit}`)
+        .replace(/^- Date: .*$/m, "- Date: 2026-01-02")
+        .replace("|---|---|\n", `|---|---|\n| \`tests/Other.test.ts\` | \`${"0".repeat(64)}\` |\n`),
+    );
+  });
+  const { status, output } = run(root, "--check");
+  assert.equal(status, 0, output);
+});
+
+test("a run file that records no marked test file as it is now is reported", (t) => {
+  const root = broken(t, (r) => {
+    validateRow(r);
+    commitAll(r);
+    const path = recordRun(r);
+    writeFileSync(
+      join(r, "validation", "2026-01-02-0123456789ab.md"),
+      readFileSync(path, "utf8")
+        .replace(/^- Commit: .*$/m, `- Commit: 0123456789ab${"c".repeat(28)}`)
+        .replace(/^- Date: .*$/m, "- Date: 2026-01-02")
+        .replace(/`[0-9a-f]{64}`/, `\`${"0".repeat(64)}\``),
+    );
   });
   const { status, output } = run(root, "--check");
   assert.equal(status, 1);
   assert.match(
     output,
-    /VALIDATION\.md: tests\/Other\.test\.ts is not a test file with a "needs: GAME_DIR" comment in a validated row's Tests/,
+    /validation[\\/]2026-01-02-0123456789ab\.md: records no marked test file of a validated row as it is now/,
   );
+});
+
+test("--record-validation deletes the runs that no longer match", (t) => {
+  const root = broken(t, (r) => {
+    validateRow(r);
+    commitAll(r);
+  });
+  const old = recordRun(root);
+  writeFileSync(
+    join(root, "validation", "2026-01-02-0123456789ab.md"),
+    readFileSync(old, "utf8")
+      .replace(/^- Commit: .*$/m, `- Commit: 0123456789ab${"c".repeat(28)}`)
+      .replace(/^- Date: .*$/m, "- Date: 2026-01-02"),
+  );
+  writeFileSync(join(root, "tests", "Score.test.ts"), `${LOCAL_TEST}expect(kill(0)).toBe(2);\n`);
+  spawnSync("git", ["-c", "user.name=Example", "-c", "user.email=example@example.com", "commit", "-qam", "change"], {
+    cwd: root,
+  });
+  const recorded = run(root, "--record-validation", "BLD-EXAMPLE-1.0");
+  assert.equal(recorded.status, 0, recorded.output);
+  assert.match(recorded.output, /deleted validation\/2026-01-02-0123456789ab\.md/);
+  assert.equal(existsSync(old), false);
+  assert.equal(readdirSync(join(root, "validation")).length, 1);
+  assert.equal(run(root, "--check").status, 0);
+});
+
+test("a run file's name gives its date and commit", (t) => {
+  const root = broken(t, (r) => {
+    validateRow(r);
+    commitAll(r);
+    const path = recordRun(r);
+    writeFileSync(join(r, "validation", "2026-01-02-0123456789ab.md"), readFileSync(path, "utf8"));
+    writeFileSync(join(r, "validation", "notes.md"), "# Notes\n");
+  });
+  const { status, output } = run(root, "--check");
+  assert.equal(status, 1);
+  assert.match(output, /2026-01-02-0123456789ab\.md: Date is \d{4}-\d{2}-\d{2}, but the file's name gives 2026-01-02/);
+  assert.match(output, /2026-01-02-0123456789ab\.md: Commit is [0-9a-f]{40}, but the file's name gives 0123456789ab/);
+  assert.match(output, /notes\.md: is not a run file/);
+});
+
+test("a VALIDATION.md left from before run files is reported", (t) => {
+  const root = broken(t, (r) => {
+    validateRow(r);
+    commitAll(r);
+    recordRun(r);
+    writeFileSync(join(r, "VALIDATION.md"), "# Validation record\n");
+  });
+  const { status, output } = run(root, "--check");
+  assert.equal(status, 1);
+  assert.match(output, /VALIDATION\.md: validation runs are recorded in validation\/, one file per run/);
 });
 
 test("--record-validation needs build entries and cannot run with --check", (t) => {

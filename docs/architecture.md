@@ -72,7 +72,7 @@ The commands, limits and acceptance rules are in
 ### @scientific-method/standard-checker
 
 Checks a restoration's `spec/`, `parity/` and `deviations/` against version 1 of the dinorefurb
-Documentation Standard, regenerates the spec indexes and `PARITY.md`, writes `VALIDATION.md` on
+Documentation Standard, regenerates the spec indexes and `PARITY.md`, writes validation run files on
 request and compiles Kaitai definitions. Its command is `standard-checker`. It does not read
 executables or evidence reports. The `actions/check-documentation` composite action runs it in CI.
 See [the documentation standard check](documentation-standard-check.md).

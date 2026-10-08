@@ -42,7 +42,7 @@ export function checkParity(ctx: Context, deviations: Map<string, Deviation>): P
   const parityCounts: { status: Record<string, number>; code: Record<string, number> } = { status: {}, code: {} };
   const validatedTests = new Map<string, Array<{ specId: string; file: string }>>(); // marked test file of a validated row -> [{ specId, file }]
   // A test file that reads the original's files through GAME_DIR says so with NEEDS_GAME. It runs
-  // only on a maintainer's machine, so its validated rows need it in VALIDATION.md; every other test
+  // only on a maintainer's machine, so its validated rows need it in a run file in validation/; every other test
   // runs in CI.
   const needsGame = (p: string) => existsSync(p) && NEEDS_GAME.test(readFileSync(p, "utf8"));
   // A PARITY.md that still holds the rows is left alone until they have moved, so the check does not

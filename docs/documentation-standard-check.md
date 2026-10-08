@@ -26,7 +26,7 @@ The check expects these at the root it is given (the repository root by default)
 - `parity/`, with one `<AREA>.md` of parity rows per area, split by kind and then by block of 100
   numbers where an area would pass 1,000 lines;
 - `deviations/`, with one `<ID>.md` per deviation;
-- `VALIDATION.md`, once a `validated` row lists a test file marked `needs: GAME_DIR` (see below).
+- `validation/`, once a `validated` row lists a test file marked `needs: GAME_DIR` (see below).
 
 The check writes `PARITY.md`. An empty directory needs a `.gitkeep` so that git keeps it.
 
@@ -421,19 +421,29 @@ test in those files passed and none was skipped, record it:
 pnpm exec standard-checker --record-validation BLD-GOG-EN-1.1
 ```
 
-This writes `VALIDATION.md` at the root: the commit, the date, the builds the run used, and the
-SHA-256 of every marked test file a validated row lists, hashed with CRLF read as LF. The standard
-defines the commit as the commit the run tested, and the check writes HEAD there, so the run has to
-test HEAD as committed. The check refuses to record, and exits with 2, when the working tree differs
-from HEAD in anything other than `VALIDATION.md`, including untracked files that git does not
-ignore. A record cannot name the commit that contains it, so a change to a validated row's marked
-tests or the code they exercise goes in two commits on the same branch: first the change, then,
-after the run against that commit, the new `VALIDATION.md`. The record holds hashes of the marked
-test files only, so the check fails on the first commit when a marked test file changed, and passes
-it when only the code they exercise did. From then on the check, in CI as well, fails a validated
-row whose marked test file is missing from the record or has changed since, and a record that lists
-any other file. A restoration whose validated rows list no marked file needs no record. The checker
-cannot tell whether the tests passed; running them before recording is the maintainer's part.
+This writes a run file, `validation/<date>-<commit>.md`, where the date is the day of the run and
+the commit is the first 12 hex digits of HEAD. It holds the full commit, the date, the builds the
+run used, and the SHA-256 of every marked test file a validated row lists, hashed with CRLF read as
+LF. Recording then deletes every other run file that no longer records any of those files with the
+hash it has now, since nothing in it describes the tree any more.
+
+The standard defines the commit as the commit the run tested, and the check writes HEAD there, so
+the run has to test HEAD as committed. The check refuses to record, and exits with 2, when the
+working tree differs from HEAD in anything outside `validation/`, including untracked files that git
+does not ignore. A run file cannot name the commit that contains it, so a change to a validated
+row's marked tests or the code they exercise goes in two commits on the same branch: first the
+change, then, after the run against that commit, the new run file.
+
+A run file is never edited after it is written. Two branches that each record a run add two files
+with different names, and when they merge, each run keeps counting for the test files it still
+matches. A marked test file of a validated row passes while any run file records the hash it has
+now. The check, in CI as well, fails a validated row whose marked test file no run records, or no
+run records as it is now; a run file none of whose files has the hash it recorded; a run file whose
+name does not match its Date and Commit; any other file in `validation/`; and a `VALIDATION.md` at
+the root. A restoration whose validated rows list no marked file needs no run file. The run files
+hold hashes of the marked test files only, so the check fails on the first commit when a marked
+test file changed, and passes it when only the code they exercise did. The checker cannot tell
+whether the tests passed; running them before recording is the maintainer's part.
 
 ## Moving a restoration onto it
 

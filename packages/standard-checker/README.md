@@ -3,7 +3,7 @@
 Checks a game restoration's `spec/`, `parity/` and `deviations/` against version 1 of the
 [dinorefurb documentation standard](https://dinorefurb.com/documentation-standard/#checks), and
 writes what the standard says is generated: the four indexes in `spec/index/`, the totals in
-`PARITY.md`, and on request `VALIDATION.md`. It has no dependencies and needs Node 22 or later.
+`PARITY.md`, and on request a validation run file in `validation/`. It has no dependencies and needs Node 22 or later.
 
 ```sh
 pnpm add -D @scientific-method/standard-checker
@@ -72,7 +72,7 @@ the result line that gives the reason, and only a readable `<ID>.other-files.yam
 | `--data-dirs <dirs>` | Comma-separated top-level directories of the original's data. A path into one must name a file of some build, with its exact case. | the top-level directories of the files the build entries list |
 | `--rebuild <dirs>` | Comma-separated directories that hold the rebuild. No Markdown file in `spec/` may name a path in them, or a source file found in them by its file name. An empty value turns the check off. | `src,tests` |
 | `--message <file>` | Check only the commit message in the file: every address it gives must be recorded in an entry it cites, as for a code comment. Everything from the scissors line of `git commit --verbose` on is left out; comment lines before it are checked, since git keeps them under `git commit -m`. Exits with 0 or 1, or 2 when the file cannot be read. For a `commit-msg` hook. | not checked |
-| `--record-validation <builds>` | Write `VALIDATION.md` for the marked test files of validated parity rows, naming the comma-separated build IDs the run used and HEAD as the commit the run tested. Run it only after every test in those files passed with none skipped, against HEAD as committed: it refuses, with exit code 2, when the working tree differs from HEAD in anything other than `VALIDATION.md`, counting untracked files that git does not ignore. | not written |
+| `--record-validation <builds>` | Write `validation/<date>-<commit>.md` for the marked test files of validated parity rows, naming the comma-separated build IDs the run used and HEAD as the commit the run tested, and delete the run files that no longer record any of those files as it is now. Run it only after every test in those files passed with none skipped, against HEAD as committed: it refuses, with exit code 2, when the working tree differs from HEAD in anything outside `validation/`, counting untracked files that git does not ignore. | not written |
 | `--help` | Print the options. | |
 
 The `KSC` environment variable names the Kaitai Struct compiler. Without it, the checker looks for
