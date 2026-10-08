@@ -15,7 +15,7 @@ import type { FormatNames } from "./formats.ts";
 export function checkAcrossEntries(ctx: Context, { enumNames }: FormatNames) {
   const { problem, config } = ctx;
   const { specDir } = config;
-  const { entries, glossary, glossaryFiles, glossaryDir, buildFiles } = ctx.spec;
+  const { entries, glossary, glossaryFiles, glossaryDir, buildFiles, otherFiles } = ctx.spec;
   const glossaryFile = (term: string) => glossaryFiles.get(term) ?? glossaryDir;
 
   // Glossary claims
@@ -29,24 +29,41 @@ export function checkAcrossEntries(ctx: Context, { enumNames }: FormatNames) {
   for (const [, e] of entries)
     for (const x of idsIn(e.body)) if (!entries.has(x)) problem(e.file, `the body names ${x}, ${whyMissing(ctx, x)}`);
 
-  // A path into a build's data directories names a file of some build with its exact case. A
-  // directory, or a pattern whose last part holds a placeholder such as nn or xxx, is left alone.
-  // The data directories are the top-level directories of the build files unless --data-dirs
-  // names them. A build path that holds a space is matched whole, longest first, together with any
-  // path that follows it, so Dir/With Space/file.ext is read as one path.
+  // A path into a build's data directories names, with its exact case, a file of some build's
+  // manifest or a path of some build's list of other files. A directory, or a pattern whose last
+  // part holds a placeholder such as nn or xxx, is left alone. The data directories are the
+  // top-level directories of the manifests' files unless --data-dirs names them; the lists of other
+  // files add no data directory. A directory exclusion in a list of other files is a directory: it
+  // does not stand for a file under it. A build path that holds a space is matched whole, longest
+  // first, together with any path that follows it, so Dir/With Space/file.ext is read as one path.
   {
     const exact = new Set<string>();
-    const folded = new Map<string, string>();
+    // Folded path -> the path as written and the file that writes it.
+    const folded = new Map<string, { path: string; where: string }>();
     const topDirs = new Set<string>();
+    const exclusions: { dir: string; list: string }[] = [];
+    const addParents = (parts: string[]) => {
+      for (let i = 1; i < parts.length; i++) exact.add(parts.slice(0, i).join("/"));
+    };
     for (const files of buildFiles.values())
       for (const f of files) {
         const p = f.path;
         if (typeof p !== "string") continue;
         exact.add(p);
-        folded.set(p.toLowerCase(), p);
+        folded.set(p.toLowerCase(), { path: p, where: "the build entry" });
         const parts = p.split("/");
         if (parts.length > 1) topDirs.add(parts[0]);
-        for (let i = 1; i < parts.length; i++) exact.add(parts.slice(0, i).join("/"));
+        addParents(parts);
+      }
+    for (const [id, paths] of otherFiles)
+      for (const o of paths) {
+        const list = `${id}.other-files.yaml`;
+        const p = o.endsWith("/") ? o.slice(0, -1) : o;
+        if (!p) continue;
+        exact.add(p);
+        if (o.endsWith("/")) exclusions.push({ dir: o, list });
+        else if (!folded.has(p.toLowerCase())) folded.set(p.toLowerCase(), { path: p, where: list });
+        addParents(p.split("/"));
       }
     const dataDirs = config.dataDirs ?? [...topDirs].sort();
     const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -62,10 +79,18 @@ export function checkAcrossEntries(ctx: Context, { enumNames }: FormatNames) {
         const p = m[0];
         if (exact.has(p)) continue;
         const last = p.split("/").pop()!;
-        if (folded.has(p.toLowerCase()))
-          problem(file, `path ${p} is written ${folded.get(p.toLowerCase())} in the build entry`);
+        const written = folded.get(p.toLowerCase());
+        if (written) problem(file, `path ${p} is written ${written.path} in ${written.where}`);
         else if (dirsFolded.has(p.toLowerCase())) problem(file, `directory ${p} differs in case from the build entry`);
-        else if (/\d/.test(last) && !/nn|NN|xx|XX/.test(last)) problem(file, `path ${p} is not a file of any build`);
+        else if (/\d/.test(last) && !/nn|NN|xx|XX/.test(last)) {
+          const under = exclusions.find((x) => p.startsWith(x.dir));
+          problem(
+            file,
+            under
+              ? `path ${p} lies under the directory exclusion ${under.dir} of ${under.list}, which does not name the files under it; list ${p} itself among the other files`
+              : `path ${p} is in no build's manifest or list of other files`,
+          );
+        }
       }
     };
     if (dataDirs.length > 0) {

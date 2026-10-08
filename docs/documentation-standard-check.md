@@ -101,7 +101,7 @@ Most restorations need no inputs. Set one when the defaults do not match the rep
 | `references` | empty | Directories whose files may cite IDs but whose `PLACEHOLDER:` comments do not count against parity. |
 | `images` | empty | Half-open address ranges of the original's flat 32-bit images, such as `0x00400000..0x004C9000`. See below. |
 | `max-range` | `0x10000` | The largest address range by which an entry records an address. |
-| `data-dirs` | from the build entries | Top-level directories of the original's data. A path into one must name a build file with its exact case. |
+| `data-dirs` | from the build entries | Top-level directories of the original's data. A path into one must name, with its exact case, a manifest file or a path of a build's list of other files (see Other files below). |
 | `base` | fork point | Ref whose IDs, areas and deviations must still exist. When it is set, the action fetches nothing and does not pass `--require-base`. |
 | `kaitai-version` | `0.11` | Compiler release to install, or empty to skip the install. With no `.ksy` file the install is skipped anyway. |
 | `java-version` | empty | Java to install with `actions/setup-java` before the compiler. |
@@ -674,6 +674,17 @@ path is text: an unquoted name such as `1990` or `0` is read as that text, and a
 map or list fails. A path in the list that ends in `/` is a directory exclusion (ENTRY-TYPES-15),
 and the checker fails a manifest path that lies under one. The checker reads no paths from an
 Other files section written as prose.
+
+An entry or glossary term may cite a path that the build's list of other files gives, such as a
+bundled source archive in a Source's `location`. A path into a data directory passes when it
+names a manifest file or a path of some build's `<ID>.other-files.yaml`, with its exact case. The
+data directories still come from the manifests alone, so the first manifest file in a directory
+starts the check for paths already cited in it, and those keep passing where the list of other
+files gives them. A path in another case is reported with the spelling and the file that gives it.
+A path under a directory exclusion fails, naming the exclusion, until the list gives that path by
+itself, because the exclusion does not show that the file exists. Passing shows only that the
+path is accounted for: it does not show that the game uses the file or that the Survey covered
+it.
 
 ### Listing records
 
