@@ -58,7 +58,8 @@ Analyses instructions and emits `bounded-x86-v1` reports.
 - Decodes segmented 16-bit and i386 instructions with Capstone and takes their semantics from
   pypcode's SLEIGH p-code (ADR 0003). It follows bounded paths and reports effects,
   arguments, returns, memory accesses, guards, incoming calls, allocation, dispatch, operands,
-  call targets, callee graphs, function bounds and site ownership.
+  call targets, callee graphs, function bounds and site ownership, and the call targets a function
+  inventory lacks.
 - Parses PE32/i386 sources and derives their section mappings.
 - Ships the shared Ghidra headless scripts as package data. `scientific-method-engine
   ghidra-scripts` prints their directory for `analyzeHeadless -scriptPath`.

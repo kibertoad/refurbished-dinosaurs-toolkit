@@ -105,6 +105,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
 | `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; a stop inside a called function also continues the inventory at the return site of each call open at the stop, named in `dependsOn` | this section, [hardware boundaries](#hardware-boundaries) |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
+| `inventory-check` | every resolved direct call target in the searched regions that a function inventory does not list as a start, with one calling site each and counts for a coverage report | [inventory call targets](#call-targets-a-function-inventory-lacks) |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
 | `dispatch` | the target of each input through a switch's jump table | this section, [jump tables](#evidenced-indirect-jump-tables) |
 | `allocation` | allocation requests, returned pointers and later writes; checks `relationalControls` | this section, [relational controls](#relational-controls) |
@@ -354,7 +355,9 @@ ranges reach the report. A declared segment counts when it overlaps a searched
 region, even if the region crosses its bounds. A domain the bytes actually scanned
 do not cover (including bytes a `scanLimit` stopped short of) lists its
 `unsearched` ranges and sets `partialSearch`, which makes `negativeUsable` false.
-Regions with no known domain are reported as covering only themselves. Each
+Regions with no known domain are compared with their own extent, so a
+`scanLimit` that stops short of one also lists its `unsearched` ranges and sets
+`partialSearch`. Each
 unverified candidate carries a `position`: inside a reached instruction (bytes
 of that instruction, so a call there needs an overlapping start) or in an
 undecoded range that no established path reaches. `unresolvedTransfers` lists
@@ -1048,6 +1051,55 @@ instruction, each leaf calls nothing for its stated reason, and each declared ta
 routes its declaration gives. `throughEveryRoute` describes the routes the walk read; an
 unresolved transfer may add a route that passes none of those routines. None of this proves
 runtime reachability.
+
+## Call targets a function inventory lacks
+
+`inventory-check` compares the direct call targets the code resolves with a committed function
+inventory, the `coverage/<build>/<file>.tsv` that coverage is measured against, so a project can
+state how many called routines the inventory misses next to its coverage figure
+([ADR 0024](decisions/0024-call-targets-a-function-inventory-lacks.md)). It takes:
+
+| Field | Meaning |
+|---|---|
+| `inventory` | the inventory TSV, relative to the config file's directory as `source` is (a Python caller of `run_report` passes an absolute path, and a relative one is refused). Its columns are `start` and `size`, then optionally `name`, `out_of_scope` and `ranges`, as the work protocol gives them; a row that does not parse fails the report with its line number |
+| `searchRegions`, `scanLimit`, `instructionLimit` | as for `incoming`: the regions scanned (all by default), the bytes the raw scan reads (1..1048576, default 65536) and the instructions the entry-path walk decodes. Raise `scanLimit` to the size of the declared code, or the search is partial |
+| `controls` | optional, at most 256 call sites that must be entry-path calls with a resolved target; a missed one fails the report |
+| `limit` | rows kept in each of `targets`, `unresolved` and `rowsOutsideDeclaredCode` (1..10000, default 1000) |
+
+The calls are the ones `incoming` reads: every E8 and 9A call start in the searched regions, and
+every call the entry-path walk from the established region entries reaches. Each resolves as
+`target` describes, near calls through the region mapping and far calls through an MZ relocation
+or an FBOV fixup and its trampoline to the overlay entry. Each distinct target is then placed in
+the inventory's notation: by `segment:ip` through its region's mapping for segmented code, by
+file offset for a region with a `container` (an overlay the reader declared, which the work
+protocol locates by offset), and by virtual address for flat32 code. Segmented addresses compare
+by `segment * 16 + offset`, so two spellings of one byte are the same start.
+
+Each target that is not a row's start is a row of `targets`:
+
+| Field | Meaning |
+|---|---|
+| `target`, `address` | the file offset, and the place in the inventory's notation |
+| `status` | `inside another row's body` (with `rows`, the rows whose body holds it), `outside every row`, or `outside declared code` (a canonical target no declared region maps, with a `null` address) |
+| `evidence` | the best of its calling sites: `entry-path call`, `contested call only` or `raw byte candidate only`. A target that only raw byte candidates or contested instructions call is not shown to be code |
+| `site`, `call`, `siteClassification`, `region`, `provenance` | one calling site of that evidence, the lowest, with `near` or `far` and the site's resolution |
+| `callSites` | how many calling sites of each kind the search found |
+
+`counts` gives `callTargets` and, under each evidence, the targets, the inventory starts among
+them and how many are inside another row, outside every row or outside declared code. It also
+counts the unresolved calls, the inventory rows and the rows outside declared code. `summary`
+states the entry-path counts in one sentence for a coverage report, leaving the targets outside
+declared code out of its total and naming them apart. It adds the targets from weaker evidence, the
+unresolved calls with how many of them the entry path reaches, a partial search (including a scan
+that `scanLimit` stopped) and a walk that `instructionLimit` stopped when there are any.
+`rowsOutsideDeclaredCode` lists the starts of rows no declared region places, such as overlay code
+written by an analysis segment, which no target can match. `unresolved`, `coverage`,
+`partialSearch` and `gaps` are as in `incoming`.
+
+The counts are lower bounds on what the inventory lacks. Computed calls, far calls with no
+relocation or fixup, calls the walk does not reach that start with a prefix, and routines reached
+only by jumps are not targets of this search. The report writes no inventory rows: a row needs the
+size an analyzer gives it, and the `address` column is the list to seed discovery with.
 
 ## Evidenced indirect jump tables
 

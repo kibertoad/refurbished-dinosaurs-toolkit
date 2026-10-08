@@ -31,10 +31,12 @@ and `sourceKind`: `mz` for DOS executables, `pe32` for 32-bit Windows executable
 `Evidence report: <reason>` to stderr and exits with 1.
 
 Commands: `trace`, `arguments`, `effects`, `returns`, `memory`, `guards`, `uses`, `incoming`,
-`call-order`, `dispatch`, `allocation`, `operand`, `operand-candidates`, `target`, `bounds`,
+`inventory-check`, `call-order`, `dispatch`, `allocation`, `operand`, `operand-candidates`, `target`, `bounds`,
 `owner`, `callees`, `reach`, `pointers`, `table` and `imports`. Their inputs, outputs and limits are in
 [the bounded evidence reporter guide](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md).
 `pointers`, `table` and `imports` run entirely in Node; every other command runs in the engine.
+`inventory-check` reads the function inventory TSV that `inventory` names, relative to the config file's
+directory as `source` is.
 `table` reads the entries of one pointer table from the bytes of an `mz` or `pe32` source and
 compares an analyzer's listing of the table with them.
 
