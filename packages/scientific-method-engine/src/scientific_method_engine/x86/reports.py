@@ -79,13 +79,20 @@ def search_coverage(image, spans):
     return rows
 
 
-def incoming(image, config):
-    target = integer(config.get("target"), 0, len(image.data) - 1, "target")
-    if image.region(target) is None:
-        raise ValueError("Incoming target is outside declared code")
-    limit = integer(config.get("limit", 100), 1, 10000, "result limit")
+def direct_calls(image, config):
+    """Every direct call site in the searched regions, as ``incoming`` and ``inventory-check`` read them.
+
+    Walks the entry-path CFG from every established entry, then scans every byte of the regions
+    ``searchRegions`` names (all regions by default) for E8 and 9A call starts, and adds each
+    reached call the scan cannot see (one that starts with a prefix). Returns a dict with the walk's
+    ``seen``, ``gaps`` (with a ``raw scan limit`` gap where ``scanLimit`` stopped a region),
+    ``edges``, ``undecoded`` and ``contested``; ``rows``, every call row in the order it was read,
+    each with its ``target`` (None when unresolved); ``scanned``, those rows by site, leaving out
+    the reached calls whose frame encoding the walk does not model; ``scans``, the region names
+    searched; and ``read``, the byte span the scan read in each.
+    """
     seen, gaps, edges, undecoded, contested = walk(image, entries(image), config.get("instructionLimit", 10000))
-    hits, candidates, scanned, partial, disputed = [], [], {}, [], []
+    rows, scanned = [], {}
 
     def classify(at):
         if at in seen:
@@ -117,10 +124,7 @@ def incoming(image, config):
             row = {"site": at, "target": resolved, "encoding": ins.mnemonic,
                    "classification": classify(at), "provenance": provenance, "region": name}
             scanned[at] = row
-            if resolved == target:
-                (hits if at in seen else disputed if at in contested else candidates).append(row)
-            elif resolved is None:
-                partial.append(row)
+            rows.append(row)
     for at, ins in sorted({**seen, **contested}.items()):
         if at in scanned or ins.mnemonic not in ("call", "lcall"):
             continue
@@ -129,21 +133,36 @@ def incoming(image, config):
             continue
         # A reached call can start with a prefix, so the raw E8/9A scan above never sees it.
         if unsupported_transfer(image, ins):
-            partial.append({"site": at, "target": None, "encoding": ins.mnemonic, "region": region["name"],
-                            "classification": "unsupported control-transfer frame encoding"})
+            rows.append({"site": at, "target": None, "encoding": ins.mnemonic, "region": region["name"],
+                         "classification": "unsupported control-transfer frame encoding"})
             continue
         resolved, provenance = call_target(image, at, ins)
         row = {"site": at, "target": resolved, "encoding": ins.mnemonic,
                "classification": classify(at), "provenance": provenance, "region": region["name"]}
         scanned[at] = row
-        if resolved == target:
-            (hits if at in seen else disputed).append(row)
-        elif resolved is None:
-            partial.append(row)
+        rows.append(row)
     for edge in edges:
         if edge.get("overlappingTarget") and edge["site"] in scanned:
             scanned[edge["site"]]["overlappingTarget"] = True
             scanned[edge["site"]]["boundaryEvidence"] = edge["boundaryEvidence"]
+    return {"seen": seen, "gaps": gaps, "edges": edges, "undecoded": undecoded, "contested": contested,
+            "rows": rows, "scanned": scanned, "scans": scans, "read": read}
+
+
+def incoming(image, config):
+    target = integer(config.get("target"), 0, len(image.data) - 1, "target")
+    if image.region(target) is None:
+        raise ValueError("Incoming target is outside declared code")
+    limit = integer(config.get("limit", 100), 1, 10000, "result limit")
+    calls = direct_calls(image, config)
+    seen, gaps, edges, undecoded, contested = (calls[k] for k in ("seen", "gaps", "edges", "undecoded", "contested"))
+    scanned, scans, read = calls["scanned"], calls["scans"], calls["read"]
+    hits, candidates, partial, disputed = [], [], [], []
+    for row in calls["rows"]:
+        if row["target"] is None:
+            partial.append(row)
+        elif row["target"] == target:
+            (hits if row["site"] in seen else disputed if row["site"] in contested else candidates).append(row)
     hits.sort(key=lambda row: row["site"])
     disputed.sort(key=lambda row: row["site"])
     controls = config.get("controls", [])
@@ -1718,6 +1737,8 @@ def _run_report(image, config, command):
         raise ValueError("controlOccurrenceLimit applies only to " + ", ".join(TRACE_COMMANDS))
     if "entryFrame" in config and command not in TRACE_COMMANDS:
         raise ValueError("entryFrame applies only to " + ", ".join(TRACE_COMMANDS))
+    if "inventory" in config and command != "inventory-check":
+        raise ValueError("inventory applies only to inventory-check")
     if command == "operand":
         return operand_provenance(image, config)
     if command == "target":
@@ -1735,6 +1756,9 @@ def _run_report(image, config, command):
         return call_order(image, config)
     if command == "incoming":
         return incoming(image, config)
+    if command == "inventory-check":
+        from .inventory import inventory_check
+        return inventory_check(image, config)
     if command == "operand-candidates":
         return operand_candidates(image, config)
     if command == "uses":

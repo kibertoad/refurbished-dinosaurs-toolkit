@@ -14,7 +14,7 @@ PREPARED_CONFIG_LIMIT = 16 * 1024 * 1024
 DECODER = "capstone " + capstone.__version__
 INSTRUCTION_SEMANTICS = f"pypcode {pypcode.__version__} (Ghidra SLEIGH x86)"
 USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bounds|owner|callees|reach|trace|uses|arguments|"
-         "effects|returns|memory|incoming|call-order|guards|allocation|dispatch> <config.json|->\n"
+         "effects|returns|memory|incoming|inventory-check|call-order|guards|allocation|dispatch> <config.json|->\n"
          "effects includes ordered path writes/calls and local restoration witnesses; transactionality remains unestablished.\n"
          "callees compares its edges with an ExportCallEdges.java export given as ghidraCallEdges;\n"
          "each row it compares fall-through at carries the engine's side as engineReadsOn;\n"
@@ -24,6 +24,9 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "reach lists the target sites the starts reach over resolved calls and jumps, with the fewest-call chain\n"
          "and the routines every read route passes, and lists every reached transfer it could not resolve;\n"
          "a leaves routine is reached but not read, and its reason is repeated in the report.\n"
+         "inventory-check places every resolved direct call target in the notation of the function inventory TSV\n"
+         "that inventory names and lists each target no row starts at: inside another row's body or outside every row,\n"
+         "with one calling site, near or far, and whether an entry-path call, a contested one or only raw bytes call it.\n"
          "trace, arguments, effects, returns, guards, memory and allocation check relationalControls:\n"
          "a violated control fails the report; an undecided one is reported and never counts as held.\n"
          "A lastWriter control with an address inspects that memory at its checkpoint anchors without a read.\n"
@@ -83,6 +86,14 @@ def main(argv):
                              "scientific-method-engine releases.")
     elif "preparedProtocol" in config:
         raise ValueError("preparedProtocol is set by the reader and cannot be supplied")
+    if "inventory" in config:
+        inventory = config["inventory"]
+        if not isinstance(inventory, str) or not inventory:
+            raise ValueError("inventory must name a function inventory TSV file")
+        if config_path == "-" and not Path(inventory).is_absolute():
+            # The reader resolves inventory against the config's directory; one that does not would send it unresolved.
+            raise ValueError("The reader sent a relative inventory path; install a matching @scientific-method/executable-reader")
+        config["inventory"] = str(Path(base) / inventory)
     data, identity = read_source(config, base)
     result = run_report(data, config, command)
     report = {"schema": "bounded-x86-v1", "decoder": DECODER, "instructionSemantics": INSTRUCTION_SEMANTICS,
