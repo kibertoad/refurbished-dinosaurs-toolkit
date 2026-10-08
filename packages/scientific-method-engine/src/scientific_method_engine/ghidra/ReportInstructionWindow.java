@@ -106,7 +106,7 @@ public class ReportInstructionWindow extends GhidraScript {
             List<String> overrides, boolean continues) {
         long bytes = last.subtract(first) + 1;
         String range = end == null ? first + " to the end of its address space" : first + ".." + end;
-        StringBuilder line = new StringBuilder("span: " + range + " (" + bytes + " bytes, last byte " + last
+        StringBuilder line = new StringBuilder("span: " + range + " (" + bytes + (bytes == 1 ? " byte" : " bytes") + ", last byte " + last
             + ", " + instructions + (instructions == 1 ? " instruction)" : " instructions)"));
         if (end == null) {
             line.append("; no address follows its last byte, so it has no exclusive end");
