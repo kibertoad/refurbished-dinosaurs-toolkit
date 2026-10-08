@@ -86,7 +86,15 @@ requested address when the two differ.
 `ReportInstructionWindow` prints a `gap:` line wherever the listing skips bytes between two
 instructions, and ends with the number printed or the point where the listing ended. A gap
 holds data, bytes Ghidra did not disassemble, or addresses between two memory blocks. It never
-says that the bytes are not code.
+says that the bytes are not code. Before that last line it prints a `span:` line for each run of
+printed instructions with no gap between them: the half-open range from the first instruction's
+start to the byte after the last instruction's final byte, then the byte count, the last byte and
+the instruction count. Copy a range's end from a span, or from the next instruction's start inside
+one, never from the start or last byte of the instruction that ends it: a range that stops at an
+instruction's start drops that instruction, which for a closing `RET` still ends on an
+instruction boundary. A span that reaches the end of its address space has no exclusive end, and
+says so. Spans are listed in address order, not in execution order, so a span says nothing about
+which of its instructions run or about the bytes in a gap between two spans.
 `ExportBoundedFlow` lists flow targets where no instruction starts in `noInstruction`, and sets
 `limitReached` when it stopped at its instruction limit with flow left unread; either one means the
 export does not cover the whole flow from the entry.
@@ -172,6 +180,14 @@ next to any "no callers", "no references" or "exactly N sites" claim:
   `LEA EAX,[ESP]` then `MOV [EAX],ECX`) can replace the pushed value, so the call is non-literal too.
 - Ghidra spells a repeat-prefixed string instruction with a suffix: `MOVSD.REP`, `CMPSB.REPE`,
   `SCASB.REPNE`. A search for the bare mnemonic misses them.
+- A text search of a listing matches spellings, not values. Ghidra writes one value differently
+  by operand kind: an absolute memory operand as a zero-padded address (`[0x0041c000]`), an
+  immediate or a displacement without leading zeros (`PUSH 0x41c000`, `[EAX*4 + 0x41c000]`). A
+  filter on one spelling misses the others. `ReportScalarConstants` compares operand values as
+  numbers, so spelling does not matter, and names each match `immediate` or `memory`. It matches
+  exact values only: an access through a base below the value, or a wider access that covers it,
+  is not a match. A local search over rendered text needs a positive control for each operand
+  kind it claims to cover.
 - `ReportSymbolReferences` matches each fragment as a case-insensitive substring of a symbol's
   full name, including Ghidra's default labels, which end in the address (`DAT_0041c000`,
   `PTR_FindExecutableA_0089d4a4`). An address fragment therefore names whatever is labelled there,
