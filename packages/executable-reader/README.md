@@ -32,15 +32,24 @@ and `sourceKind`: `mz` for DOS executables, `pe32` for 32-bit Windows executable
 
 Commands: `trace`, `arguments`, `effects`, `returns`, `memory`, `guards`, `uses`, `incoming`,
 `call-order`, `dispatch`, `allocation`, `operand`, `operand-candidates`, `target`, `bounds`,
-`owner`, `callees`, `reach`, `pointers`, `table` and `imports`. Their inputs, outputs and limits are in
+`owner`, `callees`, `reach`, `pointers`, `table`, `imports` and `unpack`. Their inputs, outputs and limits are in
 [the bounded evidence reporter guide](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md).
-`pointers`, `table` and `imports` run entirely in Node; every other command runs in the engine.
+`pointers`, `table`, `imports` and `unpack` run entirely in Node; every other command runs in the engine.
 `table` reads the entries of one pointer table from the bytes of an `mz` or `pe32` source and
 compares an analyzer's listing of the table with them.
 
 `imports` lists the import the file's import tables put in each slot of a PE32 or PE32+ import
 address table, by slot address, and needs at least one positive control: a slot with the import
 other evidence shows. A control that maps to anything else rejects the report.
+
+`unpack` decodes an LZEXE 0.90 or 0.91 executable (an `mz` source) and writes its unpacked form to
+the config's `output`, a path relative to the config file. It prints the `size`, `xxh3`, `format`
+and `tool` a build's `unpacked` item gives, and never runs the decompressor in the file. The
+unpacked file is written by a documented layout rule, so every run of a reader major version gives
+the same bytes; a change to the rule is a major release. An existing output with other bytes is
+refused. The guide's
+[unpacking section](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#unpacking-packed-executables)
+gives the rule, the bounds and the report.
 
 In a PE source, a section whose PointerToRawData is 0 has no file bytes, whatever its
 SizeOfRawData says. `imports` and `table` read nothing from it, assume no loader fill, and list it
@@ -66,6 +75,7 @@ import { readMz, incomingCalls } from "@scientific-method/executable-reader/lega
 import { pointerInventory } from "@scientific-method/executable-reader/pointer-inventory";
 import { tableContents } from "@scientific-method/executable-reader/table-contents";
 import { importReport } from "@scientific-method/executable-reader/pe-imports";
+import { unpack, UNPACK_LAYOUT } from "@scientific-method/executable-reader/unpack";
 ```
 
 | Export | Module | Purpose |
@@ -75,6 +85,8 @@ import { importReport } from "@scientific-method/executable-reader/pe-imports";
 | `PREPARED_PROTOCOL` | `.` | The prepared-config protocol number this reader speaks. |
 | `MAX_REPORT_MIB` | `.` | The most engine output, in MiB, that `run` reads before it fails. |
 | `sourceXxh3(bytes)` | `.` | The XXH3-128 hash `xxh3` must equal, as 32 lower-case hex digits. |
+| `readerTool()` | `.` | The reader's package name and version, the `tool` the `unpack` report gives. |
+| `UnpackConfig` | `.` | Type of the `unpack` config. |
 | `Region`, `ReportConfig`, `PreparedConfig`, `Report` | `.` | Types of the query, the prepared config and the report. |
 | `readMz(bytes, loadSegment?)` | `legacy-image` | Parses and bounds-checks an MZ executable and its FBOV envelope into an `MzImage`. |
 | `MzImage.address(segment, offset)` | `legacy-image` | File offset of a resident loaded address. |
@@ -93,6 +105,10 @@ import { importReport } from "@scientific-method/executable-reader/pe-imports";
 | `importReport(bytes, config)` | `pe-imports` | The `imports` report over an already hash-checked buffer. |
 | `ImportConfig`, `ImportControl`, `ImportSlot`, `SlotImport`, `NamesFrom` | `pe-imports` | Types of the `imports` query, its controls and its slot rows. |
 | `IgnoredRawData` | `pe-imports` | A `rawIgnored` row: a section whose PointerToRawData is 0 and whose SizeOfRawData is not. |
+| `unpack(bytes)` | `unpack` | Unpacks an LZEXE 0.90 or 0.91 file in memory into an `UnpackResult`: the unpacked bytes, the rebuilt header and relocations, and the packed parts read. |
+| `UNPACK_LAYOUT` | `unpack` | The layout rule number the unpacked bytes are written by. |
+| `MAX_PACKED_BYTES`, `MAX_UNPACKED_BYTES` | `unpack` | The input and output size caps, 1 MiB each. |
+| `UnpackResult`, `UnpackedHeader`, `UnpackedRelocation`, `PackedParts` | `unpack` | Types of the result. |
 
 Each export carries a doc comment with its exact checks and errors.
 

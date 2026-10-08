@@ -33,6 +33,10 @@
     "./pe-imports": {
       "types": "./dist/src/pe-imports.d.ts",
       "default": "./dist/src/pe-imports.js"
+    },
+    "./unpack": {
+      "types": "./dist/src/unpack.d.ts",
+      "default": "./dist/src/unpack.js"
     }
   },
   "files": [

@@ -118,6 +118,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
 | `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables and checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots) |
+| `unpack` | writes the unpacked form of an LZEXE 0.90 or 0.91 executable and gives the `size`, `xxh3`, `format` and `tool` of a build's `unpacked` item (reader only, no engine) | [unpacking packed executables](#unpacking-packed-executables) |
 
 The engine also has `scientific-method-engine ghidra-scripts`, which prints the directory of the
 packaged Ghidra scripts (see the engine's README for the list).
@@ -1406,6 +1407,63 @@ The import directory holds only what the loader resolves when it loads the file.
 imports and functions found through `GetProcAddress` are named in `exclusions`;
 `delayImportDirectory` gives the delay-load directory when the file has one, unread. The report
 never shows that the code calls nothing else, and it does not read which code calls through a slot.
+
+## Unpacking packed executables
+
+`scientific-method unpack <config.json>` decodes a packed DOS executable and writes its unpacked
+form, so that every restoration reading the same packed file gets the same bytes and the same
+`unpacked.xxh3`. It runs in the reader without the engine, and it never runs the decompressor in
+the file: it reads the decompressor's header words and its relocation table, and decodes the
+compressed stream itself. The config is `source`, its `xxh3`, `sourceKind: "mz"` and `output`, the
+path to write, relative to the config file. An existing output that already holds the same bytes
+is left alone (`outputWritten: false`); one that holds other bytes is refused.
+
+The reader unpacks LZEXE 0.91 and 0.90, recognized by `LZ91` or `LZ09` at offset 0x1C. A file with
+neither is refused with an error that says so; that does not show it is not packed. The signature
+names the format, so builds of LZEXE that write the same format are not told apart.
+
+The report gives `packer` (`LZEXE 0.91` or `LZEXE 0.90`), `unpacked` (`size`, `xxh3`, `format: "MZ"`
+and `tool`, the reader's package name and version), `layout`, the rebuilt `header`,
+`loadModuleSize`, `sourceIdentity`, and under `packed` the file offsets it read: the
+decompressor's header (`decompressor`), the compressed `stream` from its first flag word to the
+byte after its end mark, the `slack` between the end mark and the decompressor's CS:0, and the
+`relocationTable`. `setByLayout` names the header fields the packed file did not supply.
+
+Every read is bounded, and each failure names the file offset:
+
+- The packed file holds at most 1 MiB, and no data may follow its MZ image.
+- The compressed stream starts at the decompressor's CS:0 less the paragraph count its header
+  gives, which must lie inside the load module, and it must reach its end mark before CS:0. A
+  token or flag word that would cross CS:0 fails.
+- A copy may not reach before the start of the output, and the unpacked load module may not pass
+  1 MiB, the real-mode address space.
+- The relocation table must end inside the load module, and every relocation must name a whole
+  word inside the unpacked load module.
+
+### Layout rule 1
+
+The unpacked file is a 28-byte MZ header, the relocation table at 0x1C, zeros up to the next
+multiple of 16 bytes, then the load module. Nothing else is written.
+
+| Field | Value |
+|---|---|
+| bytes in last page, pages | from the file's total size |
+| relocations | the number of entries |
+| header paragraphs | the header size above, divided by 16 |
+| minimum allocation | the packed file's load module in paragraphs plus its minimum allocation, less the unpacked load module in paragraphs, at least 0 |
+| maximum allocation | 0xFFFF when the packed file's is 0xFFFF; otherwise the same sum with the packed file's maximum allocation, at least the minimum |
+| SS, SP, IP, CS | the words at CS:6, CS:4, CS:0 and CS:2 of the decompressor |
+| checksum | 0 |
+| relocation table offset | 0x1C |
+| overlay number | 0 |
+
+Each relocation is written as offset word then segment word, with the offset 0..15 and the segment
+holding the rest of the load-module offset, in the order the packed table lists them. The
+allocation fields make the unpacked file ask DOS for the memory the packed file asked for; the
+values the file had before it was packed are not recovered. `layout` in the report names the rule.
+A release that changes the rule changes the bytes and the `xxh3` of every unpacked file, so it
+increments `layout` and is a major release of the reader
+([ADR 0025](decisions/0025-reader-unpacking-and-its-layout-rule.md)).
 
 ## Return widths, declared encodings and caller dependencies
 
