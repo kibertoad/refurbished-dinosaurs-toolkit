@@ -322,7 +322,8 @@ public sealed class ContentSourceExtractorTests : IDisposable
     }
 
     // Builds an ISO 9660 image of the files, one directory sector per directory, files after them.
-    private static byte[] BuildTreeIso(IReadOnlyDictionary<string, byte[]> files)
+    // Each file's identifier is its name with ";1", or its name alone when rawNames is set.
+    internal static byte[] BuildTreeIso(IReadOnlyDictionary<string, byte[]> files, bool rawNames = false)
     {
         var directories = new List<string> { string.Empty };
         foreach (var path in files.Keys)
@@ -369,7 +370,7 @@ public sealed class ContentSourceExtractorTests : IDisposable
                     Encoding.ASCII.GetBytes(Name(child)));
             foreach (var (path, bytes) in files.Where(file => Parent(file.Key) == directory))
                 offset += OriginalContentSourceTests.WriteDirectoryRecord(block, offset, fileSectors[path], bytes.Length, false,
-                    Encoding.ASCII.GetBytes(Name(path) + ";1"));
+                    Encoding.ASCII.GetBytes(rawNames ? Name(path) : Name(path) + ";1"));
         }
         foreach (var (path, bytes) in files) bytes.CopyTo(image.AsSpan((int)fileSectors[path] * SectorSize));
         return image;

@@ -195,7 +195,7 @@ contexts outside per-frame loops.
 | Types | Reads |
 |---|---|
 | `AssetVerifier` | Check the player's original against an `AssetManifest` through any `OriginalContentSource`, and `IdentifyAsync` the supported edition it is, or that several editions match. |
-| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image, an InstallShield cabinet set or an InstallShield 3 archive behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path, and from the first bytes for an InstallShield 3 archive; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin`, `OpenInstallShieldCabinet` and `OpenInstallShieldArchive` take it explicitly. ISO 9660 file and directory names read byte for byte as Latin-1 (ISO-8859-1), as the volume label does. `OpenIso9660(stream)` opens an `.iso` image from a readable, seekable stream the caller keeps and the source never disposes; the streams it opens each keep their own position over it. A cue/bin source reads a `MODE1/2352` or `MODE2/2352` Form 1 data track (see [Cue/bin data tracks](#cuebin-data-tracks)). It gives the sheet as `Cue` and the full paths of the files `OpenCueBin` chose as `CuePath` and `BinPath`. It reads the `.cue` once and gives those bytes as `CueSheetBytes`: hash them to record the sheet that was parsed, since the file at `CuePath` may have been replaced after the source opened. An `.iso` or cue/bin source opened from a path records the image's length and last-write time when it opens, and each read of the `.iso` or BIN through the source (`OpenRead`, `OpenVolume`, `OpenBin` and the audio checks) fails with an `IOException` when either has changed; a rewrite that keeps both is not detected. A stream opened from `BinPath` is not checked, so read the image with `OpenBin`. |
+| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image, an InstallShield cabinet set or an InstallShield 3 archive behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path, and from the first bytes for an InstallShield 3 archive; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin`, `OpenInstallShieldCabinet` and `OpenInstallShieldArchive` take it explicitly. ISO 9660 file and directory names read byte for byte as Latin-1 (ISO-8859-1), as the volume label does, and lose their `;` version suffix and trailing dots unless that would give two entries of one directory the same name, as `README.;1` and `README.;2` would; those keep their whole identifiers, as the documentation standard writes disc paths. `OpenIso9660(stream)` opens an `.iso` image from a readable, seekable stream the caller keeps and the source never disposes; the streams it opens each keep their own position over it. A cue/bin source reads a `MODE1/2352` or `MODE2/2352` Form 1 data track (see [Cue/bin data tracks](#cuebin-data-tracks)). It gives the sheet as `Cue` and the full paths of the files `OpenCueBin` chose as `CuePath` and `BinPath`. It reads the `.cue` once and gives those bytes as `CueSheetBytes`: hash them to record the sheet that was parsed, since the file at `CuePath` may have been replaced after the source opened. An `.iso` or cue/bin source opened from a path records the image's length and last-write time when it opens, and each read of the `.iso` or BIN through the source (`OpenRead`, `OpenVolume`, `OpenBin` and the audio checks) fails with an `IOException` when either has changed; a rewrite that keeps both is not detected. A stream opened from `BinPath` is not checked, so read the image with `OpenBin`. |
 | `InstallShieldArchiveSource`, `InstallShieldArchiveLimits` | The members of an InstallShield 3 archive held in one file (such as `_SETUP.1`), from a file, inside another source or from a stream. See [InstallShield 3 archives](#installshield-3-archives). |
 | `InstallShieldCabinetSource`, `InstallShieldCabinetLimits` | The members of an InstallShield cabinet set of major version 0, 5 or 6 (`dataN.hdr` and `dataN.cab`), on disk or inside another source. See [InstallShield cabinets](#installshield-cabinets). |
 | `InstallShieldMember`, `InstallShieldEntryMetadata`, `InstallShieldFileGroup`, `InstallShieldFileGroupMembership`, `InstallShieldFileGroupMembershipKind` | Each listed member's file-table entry (index, directory, name) and the file groups whose ranges hold it, from either InstallShield source's `Members`. See [Member metadata and file groups](#member-metadata-and-file-groups). |
@@ -203,6 +203,7 @@ contexts outside per-frame loops.
 | `InstallShieldOutsideFile`, `InstallShieldOutsideFileStatus` | A cabinet file stored outside its volumes, from `InstallShieldCabinetSource.OutsideFiles`, with where it was looked for beside the header and what was found there; `OpenEntry(index)` reads an `Available` one. See [Members stored outside the cabinet](#members-stored-outside-the-cabinet). |
 | `ContentSourceExtractor`, `ContentExtractionOptions` | Copy the files of any `OriginalContentSource`, or a selection of them, into a staging directory and get an `InstalledAsset` record for each. See [Extracting a source into a stage](#extracting-a-source-into-a-stage). |
 | `CueBinSheet`, `CueBinTrack`, `CueBinTrackExtent` | A checked cue sheet for a single-file raw image: one `BINARY` file, a `MODE1/2352` or `MODE2/2352` data track starting at `00:00:00`, then audio tracks, with every index in order, the data track's end, and each track's sectors from `TrackExtent`. |
+| `BuildListing`, `BuildListingDisc`, `BuildListingRecord`, `BuildListingMedium`, `BuildListingItem` | Make a build's listing record, the `<ID>.listing.yaml` of the documentation standard, from an installation directory and disc images. See [Listing a build](#listing-a-build). |
 | `CddaTrackFingerprints`, `CddaTrackVerification` | Record and check the fingerprint of a CD audio track in a cue/bin image, accepting a rip shifted by a drive read offset up to the fingerprint's tolerance. See [CD audio across read offsets](#cd-audio-across-read-offsets). |
 | `CueSheet`, `RawMode1Image`, `Iso9660` | Cue/bin raw disc images and the ISO 9660 file system on their data track. `Iso9660` reads the volume with the reader behind `OpenIso9660`, so it applies the same checks, reads names as Latin-1, and fails on a name `PortableAssetPath.Relative` rejects. It checks each raw sector it reads for the MODE1/2352 sync pattern and mode byte, and reads MODE1 only: open a MODE2/2352 image with `OpenCueBin`. |
 | `CddaWave` | A CD audio track of a raw image, written out as WAVE, synchronously or with `WriteAsync`. See [Writing a CD audio track as WAVE](#writing-a-cd-audio-track-as-wave). |
@@ -235,6 +236,37 @@ Form 1, so a disc that stores some files in Form 2 sectors, such as interleaved 
 still opens and lists them; reading such a file through `OpenRead`, or the whole volume through
 `OpenVolume`, throws when it reaches the first Form 2 sector. The EDC, the ECC and the address in
 each sector's header are not checked.
+
+## Listing a build
+
+A build entry of the documentation standard may keep a listing record, `spec/builds/<ID>.listing.yaml`,
+which `@scientific-method/standard-checker` compares with the build's manifest and list of other
+files. `BuildListing.Make` writes one from the installation directory, the disc images, or both:
+
+```csharp
+var record = BuildListing.Make(
+    Path.Combine(gameDir, "BLD-X"),
+    [new BuildListingDisc("CD:", Path.Combine(gameDir, "images", "game.cue"), "game.cue")],
+    DateOnly.FromDateTime(DateTime.Today));
+File.WriteAllText("spec/builds/BLD-X.listing.yaml", record.ToYaml());
+```
+
+| Medium | What the record holds |
+|---|---|
+| Installation directory | Every file under it with its size, hidden and system files included, in every subdirectory. A symbolic link or junction is a `link` item with its target as stored, and is not entered (`links: listed`, `cycles: null`). Any other reparse point, a link whose target cannot be read, and a directory that cannot be entered are `stopped` items with the reason. |
+| `.iso` image | Each file of the primary volume under the disc's prefix, named as `OpenIso9660` names it, with layout `2048`. |
+| cue/bin image (`.cue` or `.bin`) | The same for the data track, with the track's type as the layout (`MODE1/2352` or `MODE2/2352`), and each audio track as `CD:track02` and so on, with the size of its raw audio from `CueBinSheet.TrackExtent`. |
+
+`BuildListingDisc.Source` is the image's path as the manifest or the list of other files writes it,
+which the record gives as the medium's `source`. A mounted disc is refused, since the drive gives
+the names it chooses, such as Joliet names, and not those of the primary volume. Items are sorted
+by path compared byte by byte in UTF-8, and `tool` names this package and its version. The listing
+goes inside no archive, so `archives` is `[]`. `Make` throws on a name a listing path cannot hold:
+a control character, `|`, or a `\` in a Linux or macOS name. `ToYaml` throws on a value with a single
+quote and also a double quote or backslash, which no quoted form the checker reads can hold.
+
+The record shows what the listing found. It reads no file, holds no hashes, and does not show
+which files the game uses.
 
 ## PCX images
 

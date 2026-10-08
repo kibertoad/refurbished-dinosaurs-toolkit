@@ -241,7 +241,10 @@ public sealed class RawMode1Image : IDisposable
 }
 
 /// <summary>A file in an ISO 9660 file system.</summary>
-/// <param name="Path">Path from the root with <c>/</c> separators, without the <c>;1</c> version suffix.</param>
+/// <param name="Path">
+/// Path from the root with <c>/</c> separators, without the <c>;1</c> version suffix, except where two
+/// entries of one directory would then share a name and keep their whole identifiers.
+/// </param>
 /// <param name="Extent">The first sector of the file's data.</param>
 /// <param name="Size">The file's size in bytes.</param>
 public sealed record IsoFile(string Path, uint Extent, uint Size);
@@ -255,7 +258,8 @@ public sealed record IsoFile(string Path, uint Extent, uint Size);
 /// with the same rules and messages: the primary volume descriptor, both-endian fields agreeing, the
 /// declared volume inside the data track, every extent inside the volume, and the limits on directory
 /// depth, size and entry count. Each name reads byte for byte as Latin-1 (ISO-8859-1) and, without its
-/// <c>;</c> version suffix and trailing dots, must pass <see cref="Core.IO.PortableAssetPath.Relative"/>.
+/// <c>;</c> version suffix and trailing dots (or whole, where two entries of one directory would
+/// otherwise share a name), must pass <see cref="Core.IO.PortableAssetPath.Relative"/>.
 /// Every raw sector it reads, for the volume or for a file, must carry the MODE1/2352 sync pattern and
 /// mode byte, as for <see cref="OriginalContentSource.OpenCueBin(string)"/>.
 /// </remarks>
