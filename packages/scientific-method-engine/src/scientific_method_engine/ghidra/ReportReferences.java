@@ -42,7 +42,10 @@ public class ReportReferences extends GhidraScript {
 
         // Ghidra types an indexed store such as MOV [EAX*4+table],ECX as DATA, and gives an indexed
         // read-modify-write no reference at all, so the type column cannot answer "who writes this".
+        // References start only at instructions and defined data, so a value in bytes Ghidra neither
+        // disassembled nor defined as a pointer is invisible here.
         println("Types are Ghidra's reference types, not the access an instruction makes: DATA covers"
-            + " indexed reads and writes and address formation. An operand Ghidra gave no reference is not listed.");
+            + " indexed reads and writes and address formation. An operand Ghidra gave no reference is not listed,"
+            + " nor are bytes Ghidra neither disassembled nor defined as a pointer.");
     }
 }

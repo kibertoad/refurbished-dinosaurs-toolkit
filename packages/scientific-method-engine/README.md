@@ -57,7 +57,7 @@ Finding references and calls:
 
 | Script | Arguments | Prints |
 |---|---|---|
-| `ReportReferences` | one or more addresses | references to each, with the referring instruction, function and Ghidra reference type. The type is not the access: `DATA` covers indexed reads and writes and address formation, and a memory operand Ghidra gave no reference is not listed |
+| `ReportReferences` | one or more addresses | references to each, with the referring instruction, function and Ghidra reference type. The type is not the access: `DATA` covers indexed reads and writes and address formation, and a memory operand Ghidra gave no reference is not listed, nor are bytes Ghidra neither disassembled nor defined as a pointer |
 | `ReportStringReferences` | one or more literal string fragments | strings containing a fragment and their references |
 | `ReportSymbolReferences` | one or more symbol-name fragments, matched as case-insensitive substrings of the full name | matching symbols, default labels included, and their references. Default labels end in their address, so an address fragment such as `0089d4a4` finds the `PTR_<name>_0089d4a4` import slot there |
 | `ReportScalarConstants` | optional operand kind (`immediate` or `memory`), one or more scalar values | instructions using any of them, unsigned or signed, as an immediate or inside a memory operand (a displacement such as `[ECX + 0x44]`, an absolute address such as `[0x41c000]`, or an index scale), with the kind on each line |
