@@ -55,8 +55,8 @@ public sealed class BuildListingRecord
     public DateOnly Date { get; }
 
     /// <summary>
-    /// What the listing did with symbolic links, junctions and other reparse points: <c>listed</c>,
-    /// since it gives each one as an item and enters none. The record's <c>cycles</c> is therefore null.
+    /// What the listing did with symbolic links, junctions and other directory reparse points:
+    /// <c>listed</c>, since it gives each one as an item and enters none. The record's <c>cycles</c> is therefore null.
     /// </summary>
     public string Links => "listed";
 
@@ -123,15 +123,16 @@ public sealed class BuildListingRecord
 /// <para>
 /// The installation directory is walked into every subdirectory, hidden and system files included.
 /// A symbolic link or junction is an item with its target as stored, and is not entered. Any other
-/// reparse point, a link whose target cannot be read, and a directory that cannot be entered are
-/// stopped items with the reason. A file's size is taken from the file system; no file is read.
+/// file reparse point, such as a cloud file's placeholder or a deduplicated file, is a file with the size the file system gives. Any other directory reparse point, a
+/// link whose target cannot be read, and a directory that cannot be entered are stopped items with
+/// the reason. A file's size is taken from the file system; no file is read.
 /// </para>
 /// <para>
 /// A disc is read through <see cref="OriginalContentSource.OpenIso9660(string)"/> or
 /// <see cref="OriginalContentSource.OpenCueBin(string)"/>, with their checks. Its paths are the
 /// names of its primary volume as that reader gives them: without the version suffix or the dot that
 /// ends a name with no extension, except where dropping them would give two entries of one directory
-/// the same name. A cue/bin image's audio tracks are file items under their track references
+/// the same name ignoring case. A cue/bin image's audio tracks are file items under their track references
 /// (<c>CD:track02</c>), each with the size of its raw audio from its <c>INDEX 01</c> to where the next
 /// track's pregap or audio begins, as <see cref="CueBinSheet.TrackExtent"/> gives it.
 /// </para>
@@ -144,6 +145,12 @@ public static partial class BuildListing
 {
     [GeneratedRegex("^CD[0-9]*:$", RegexOptions.CultureInvariant)]
     private static partial Regex DiscPrefix();
+
+    // A path that starts like this is a disc path, so no installation path may.
+    [GeneratedRegex("^CD[0-9]*:", RegexOptions.CultureInvariant)]
+    private static partial Regex StartsWithDiscPrefix();
+
+    private static readonly string[] ImageExtensions = [".iso", ".cue", ".bin"];
 
     private static readonly EnumerationOptions OneDirectory = new()
     {
@@ -160,14 +167,18 @@ public static partial class BuildListing
     /// <param name="date">The day the listing is made.</param>
     /// <exception cref="ArgumentException">
     /// Nothing is to be listed, a disc's prefix is not <c>CD:</c> or <c>CD</c> followed by a number and a
-    /// colon, two discs share a prefix, a disc's <see cref="BuildListingDisc.Source"/> is blank, or a
-    /// disc's image is not an <c>.iso</c>, <c>.cue</c> or <c>.bin</c> file.
+    /// colon, two discs share a prefix, a disc's <see cref="BuildListingDisc.Source"/> is blank or holds
+    /// a <c>\</c>, or a disc's image is not an <c>.iso</c>, <c>.cue</c> or <c>.bin</c> file. These are
+    /// checked before anything is listed.
     /// </exception>
     /// <exception cref="DirectoryNotFoundException">The installation directory does not exist.</exception>
+    /// <exception cref="FileNotFoundException">A disc image does not exist.</exception>
     /// <exception cref="InvalidDataException">
     /// A name in the installation directory holds a character a listing path cannot hold: a control
-    /// character, <c>|</c>, which marks an archive member, or a <c>\</c>, which Linux and macOS allow
-    /// in a name. Or a disc image is not valid, as its reader describes.
+    /// character, <c>|</c>, which marks an archive member, a <c>\</c>, which Linux and macOS allow
+    /// in a name, or an unpaired surrogate. Or a name at its top starts like a disc path
+    /// (<c>CD:</c>, <c>CD2:</c>), which Linux and macOS allow. Or a disc image is not valid, as its
+    /// reader describes.
     /// </exception>
     /// <exception cref="UnauthorizedAccessException">The installation directory itself cannot be read.</exception>
     /// <exception cref="IOException">The installation directory itself cannot be read, or a disc image changed while it was read.</exception>
@@ -186,6 +197,16 @@ public static partial class BuildListing
                 throw new ArgumentException($"Two discs have the prefix {disc.Prefix}.", nameof(discs));
             if (string.IsNullOrWhiteSpace(disc.Source))
                 throw new ArgumentException($"Disc {disc.Prefix} gives no source path for its image.", nameof(discs));
+            if (disc.Source.Contains('\\'))
+                throw new ArgumentException(
+                    $"Disc {disc.Prefix} source {AssetVerifier.JsonString(disc.Source)} uses '\\'; a listing path uses forward slashes.",
+                    nameof(discs));
+            var extension = Path.GetExtension(disc.ImagePath ?? "");
+            if (!ImageExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
+                throw new ArgumentException(
+                    $"Disc {disc.Prefix} is read from an .iso, .cue or .bin image, not {disc.ImagePath}. " +
+                    "A mounted disc gives the names the drive chooses, such as Joliet names, not those of the primary volume.",
+                    nameof(discs));
         }
 
         var media = new List<BuildListingMedium>();
@@ -218,7 +239,9 @@ public static partial class BuildListing
         catch (Exception exception) when (relative.Length > 0 &&
             exception is UnauthorizedAccessException or IOException or SecurityException)
         {
-            items.Add(new(relative, null, null, $"a directory it could not enter: {exception.Message}"));
+            // The exception's message names the directory by its full path on this machine, in this
+            // machine's language, so the record gives the kind of failure only.
+            items.Add(new(relative, null, null, $"a directory it could not enter ({exception.GetType().Name})"));
             return;
         }
         foreach (var entry in entries)
@@ -235,8 +258,9 @@ public static partial class BuildListing
         }
     }
 
-    // A symbolic link or junction gives its target; other reparse points, such as a cloud file's
-    // placeholder, have none to give and are not entered.
+    // A symbolic link or junction gives its target. A file reparse point with no target, such as a cloud
+    // file's placeholder or a deduplicated file, is a file whose size the file system gives as for any
+    // other; listing it reads none of its data. A directory reparse point with no target is not entered.
     private static BuildListingItem Linked(FileSystemInfo entry, string path)
     {
         string? target;
@@ -246,36 +270,38 @@ public static partial class BuildListing
         }
         catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
         {
-            return new(path, null, null, $"a link whose target could not be read: {exception.Message}");
+            return new(path, null, null, $"a link whose target could not be read ({exception.GetType().Name})");
         }
-        return target is null
-            ? new(path, null, null, "a reparse point that is not a symbolic link or junction, not entered")
-            : new(path, null, target, null);
+        if (target is not null) return new(path, null, target, null);
+        return entry is FileInfo file
+            ? new(path, file.Length, null, null)
+            : new(path, null, null, "a directory reparse point that is not a symbolic link or junction, not entered");
     }
 
     private static void CheckName(string name, string path)
     {
-        foreach (var c in name)
+        for (var index = 0; index < name.Length; index++)
         {
+            var c = name[index];
+            var paired = char.IsHighSurrogate(c) && index + 1 < name.Length && char.IsLowSurrogate(name[index + 1]);
             var problem = c < ' ' || c == '\u007f' ? $"the control character U+{(int)c:X4}"
                 : c == '|' ? "'|', which marks an archive member in a listing path"
                 : c == '\\' ? "'\\', which reads as a separator in a listing path"
+                : char.IsSurrogate(c) && !paired ? $"the unpaired surrogate U+{(int)c:X4}, which UTF-8 cannot hold"
                 : null;
             if (problem is not null)
                 throw new InvalidDataException($"{AssetVerifier.JsonString(path)} holds {problem}.");
+            if (paired) index++;
         }
+        if (StartsWithDiscPrefix().IsMatch(path))
+            throw new InvalidDataException(
+                $"{AssetVerifier.JsonString(path)} starts like a disc path, so a listing path cannot give it in the installation directory.");
     }
 
     private static BuildListingMedium ListDisc(BuildListingDisc disc, List<BuildListingItem> items)
     {
-        var extension = Path.GetExtension(disc.ImagePath);
-        var cueBin = extension.Equals(".cue", StringComparison.OrdinalIgnoreCase) ||
-            extension.Equals(".bin", StringComparison.OrdinalIgnoreCase);
-        if (!cueBin && !extension.Equals(".iso", StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException(
-                $"Disc {disc.Prefix} is read from an .iso, .cue or .bin image, not {disc.ImagePath}. " +
-                "A mounted disc gives the names the drive chooses, such as Joliet names, not those of the primary volume.",
-                "discs");
+        // Make checked the extension before listing anything.
+        var cueBin = !Path.GetExtension(disc.ImagePath).Equals(".iso", StringComparison.OrdinalIgnoreCase);
         using var source = cueBin ? OriginalContentSource.OpenCueBin(disc.ImagePath) : OriginalContentSource.OpenIso9660(disc.ImagePath);
         foreach (var file in source.Files) items.Add(new($"{disc.Prefix}{file.Path}", file.Size, null, null));
         if (source.Cue is not { } sheet) return new BuildListingMedium(disc.Prefix, disc.Source, "2048");

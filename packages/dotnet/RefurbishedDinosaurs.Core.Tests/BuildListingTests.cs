@@ -93,6 +93,39 @@ public sealed class BuildListingTests : IDisposable
     }
 
     [Fact]
+    public async Task GivesAFileReparsePointThatIsNotALinkAsAFile()
+    {
+        if (!OperatingSystem.IsWindows()) Assert.Skip("The test sets an NTFS reparse point.");
+        var install = Path.Combine(_work, "install");
+        var placeholder = Path.Combine(install, "GAME.DAT");
+        Directory.CreateDirectory(install);
+        await File.WriteAllBytesAsync(placeholder, new byte[300], Token);
+        // A reparse point of a Microsoft tag that is no link, as a cloud file's placeholder or a
+        // deduplicated file carries (IO_REPARSE_TAG_HSM here), with no data.
+        byte[] buffer = [0x04, 0x00, 0x00, 0xC0, 0, 0, 0, 0];
+        using (var handle = File.OpenHandle(placeholder, FileMode.Open, FileAccess.ReadWrite))
+        {
+            if (!NativeReparse.DeviceIoControl(handle, NativeReparse.SetReparsePoint, buffer, buffer.Length,
+                    IntPtr.Zero, 0, out _, IntPtr.Zero))
+                Assert.Skip($"This volume refused the reparse point (error {System.Runtime.InteropServices.Marshal.GetLastPInvokeError()}).");
+        }
+        Assert.NotEqual(0, (int)(File.GetAttributes(placeholder) & FileAttributes.ReparsePoint));
+
+        var record = BuildListing.Make(install, [], Day);
+        Assert.Equal([new BuildListingItem("GAME.DAT", 300, null, null)], record.Items);
+    }
+
+    private static class NativeReparse
+    {
+        public const uint SetReparsePoint = 0x000900A4;
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool DeviceIoControl(
+            Microsoft.Win32.SafeHandles.SafeFileHandle device, uint code, byte[] input, int inputLength,
+            IntPtr output, int outputLength, out int returned, IntPtr overlapped);
+    }
+
+    [Fact]
     public async Task GivesADirectoryItCannotEnterAsStopped()
     {
         if (OperatingSystem.IsWindows()) Assert.Skip("The test closes a directory with Unix permissions.");
@@ -117,12 +150,14 @@ public sealed class BuildListingTests : IDisposable
                 File.SetUnixFileMode(locked, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
 
-        Assert.Equal(2, record.Items.Count);
-        var stopped = record.Items[1];
-        Assert.Equal(("game.exe", 4L), (record.Items[0].Path, record.Items[0].Size));
-        Assert.Equal("locked", stopped.Path);
-        Assert.StartsWith("a directory it could not enter: ", stopped.Stopped, StringComparison.Ordinal);
-        Assert.Null(stopped.Size);
+        Assert.Equal(
+            [
+                new BuildListingItem("game.exe", 4, null, null),
+                new BuildListingItem("locked", null, null, "a directory it could not enter (UnauthorizedAccessException)")
+            ],
+            record.Items);
+        // The reason names no path on this machine, so the record can be written.
+        Assert.DoesNotContain(_work, record.ToYaml(), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -171,6 +206,31 @@ public sealed class BuildListingTests : IDisposable
             Assert.Equal(["NOTES", "README.;1", "README.;2", "SETUP.EXE"], source.Files.Select(file => file.Path));
         var record = BuildListing.Make(null, [new BuildListingDisc("CD2:", image, "game.iso")], Day);
         Assert.Equal(["CD2:NOTES", "CD2:README.;1", "CD2:README.;2", "CD2:SETUP.EXE"], record.Items.Select(item => item.Path));
+    }
+
+    [Fact]
+    public async Task KeepsTheWholeIdentifierOfNamesThatCollideIgnoringCase()
+    {
+        // The source looks paths up ignoring case, so Readme and README would be one path.
+        var image = Path.Combine(_work, "game.iso");
+        await File.WriteAllBytesAsync(image, ContentSourceExtractorTests.BuildTreeIso(new Dictionary<string, byte[]>
+        {
+            ["Readme.;1"] = new byte[4],
+            ["README.;2"] = new byte[6]
+        }, rawNames: true), Token);
+
+        var record = BuildListing.Make(null, [new BuildListingDisc("CD:", image, "game.iso")], Day);
+        Assert.Equal(["CD:README.;2", "CD:Readme.;1"], record.Items.Select(item => item.Path));
+    }
+
+    [Fact]
+    public async Task RefusesAnInstallationNameThatStartsLikeADiscPath()
+    {
+        if (OperatingSystem.IsWindows()) Assert.Skip("Windows refuses ':' in a name itself.");
+        var install = Path.Combine(_work, "install");
+        await WriteAsync(Path.Combine(install, "CD:notes.txt"), 1);
+        Assert.Contains("starts like a disc path", Assert.Throws<InvalidDataException>(() =>
+            BuildListing.Make(install, [], Day)).Message, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -234,6 +294,12 @@ public sealed class BuildListingTests : IDisposable
             BuildListing.Make(null, [new BuildListingDisc("CD:", image, " ")], Day)).Message, StringComparison.Ordinal);
         Assert.Contains("mounted disc", Assert.Throws<ArgumentException>(() =>
             BuildListing.Make(null, [new BuildListingDisc("CD:", _work, "D:")], Day)).Message, StringComparison.Ordinal);
+        Assert.Contains("forward slashes", Assert.Throws<ArgumentException>(() =>
+            BuildListing.Make(null, [new BuildListingDisc("CD:", image, "images\\game.iso")], Day)).Message,
+            StringComparison.Ordinal);
+        // A disc refused for its image is refused before the installation is walked.
+        Assert.Throws<ArgumentException>(() => BuildListing.Make(Path.Combine(_work, "missing"),
+            [new BuildListingDisc("CD:", _work, "D:")], Day));
     }
 
     [Fact]

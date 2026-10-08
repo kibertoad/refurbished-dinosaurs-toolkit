@@ -194,7 +194,7 @@ public abstract class OriginalContentSource : IDisposable
     /// against the file, both-endian fields agreeing, and every directory and file extent inside the
     /// volume. Each directory and file name reads byte for byte as Latin-1 (ISO-8859-1) and loses its
     /// <c>;</c> version suffix and trailing dots, unless that would give two entries of one directory the
-    /// same name, as <c>README.;1</c> and <c>README.;2</c> would: those keep their whole identifiers. The
+    /// same name ignoring case, as <c>README.;1</c> and <c>README.;2</c> would: those keep their whole identifiers. The
     /// name must pass <see cref="PortableAssetPath.Relative"/> as one component, or opening throws
     /// <see cref="InvalidDataException"/> naming it. The source records the image's length and last-write time here, and every later read
     /// of the image through it (<see cref="OpenRead"/> and <see cref="OpenVolume"/>) compares them with
@@ -637,10 +637,11 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
         }
         // A name loses its version suffix and trailing dots unless that gives it the name of another
         // entry in the directory, as README.;1 and README.;2 would. Then every entry of that name keeps
-        // its whole identifier, as the documentation standard writes disc paths (ENTRY-TYPES-11).
+        // its whole identifier, as the documentation standard writes disc paths (ENTRY-TYPES-11). Names
+        // are compared ignoring case, as the source looks paths up.
         var shortened = records.Select(record => ShortIsoName(record.Identifier)).ToArray();
-        var shared = shortened.GroupBy(name => name, StringComparer.Ordinal)
-            .Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet(StringComparer.Ordinal);
+        var shared = shortened.GroupBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
         for (var index = 0; index < records.Count; index++)
         {
             var record = records[index];
