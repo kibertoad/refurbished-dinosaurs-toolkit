@@ -53,6 +53,8 @@ public class ReportInstructionWindow extends GhidraScript {
         List<String> spans = new ArrayList<>();
         Address spanStart = null;
         int spanInstructions = 0;
+        // The instructions in the current span whose listed length the listing overrides.
+        List<String> overrides = new ArrayList<>();
         while (instruction != null && printed < count) {
             if (spanStart == null) {
                 spanStart = instruction.getAddress();
@@ -60,22 +62,27 @@ public class ReportInstructionWindow extends GhidraScript {
             println(instruction.getAddress() + ": " + instruction);
             printed++;
             spanInstructions++;
+            if (instruction.isLengthOverridden()) {
+                overrides.add(instruction.getAddress() + " (listed as " + instruction.getLength() + " of the "
+                    + instruction.getParsedLength() + " bytes it decodes)");
+            }
             Instruction next = instruction.getNext();
-            // next() is null when the instruction ends its address space, so a gap is measured
-            // from the instruction's last byte, and such a span has no exclusive end.
+            // Address.next() is null when the instruction ends its address space, so a gap is
+            // measured from the instruction's last byte, and such a span has no exclusive end.
             Address last = instruction.getMaxAddress();
             Address end = last.next();
             boolean adjacent = end != null && next != null && next.getAddress().equals(end);
             if (printed == count || !adjacent) {
-                spans.add(span(spanStart, last, end, spanInstructions));
+                spans.add(span(spanStart, last, end, spanInstructions, overrides, adjacent));
                 spanStart = null;
                 spanInstructions = 0;
-            }
-            if (printed < count && next != null && !adjacent) {
-                if (end == null) {
-                    println("gap: no instruction after " + last + " up to " + next.getAddress());
-                } else {
-                    println("gap: no instruction from " + end + " up to " + next.getAddress());
+                overrides.clear();
+                if (printed < count && next != null) {
+                    if (end == null) {
+                        println("gap: no instruction after " + last + " up to " + next.getAddress());
+                    } else {
+                        println("gap: no instruction from " + end + " up to " + next.getAddress());
+                    }
                 }
             }
             instruction = next;
@@ -92,11 +99,24 @@ public class ReportInstructionWindow extends GhidraScript {
 
     // A span as a half-open range with its last byte, so a range copied from it ends after the
     // final byte of its last instruction. Past the end of an address space no address can end it.
-    private static String span(Address first, Address last, Address end, int instructions) {
+    // A span the window's count closed says when the next instruction starts at its end, since
+    // the run goes on past the window. An instruction whose length the listing overrides decodes
+    // bytes past where the next instruction or the span ends, so the span names it.
+    private static String span(Address first, Address last, Address end, int instructions,
+            List<String> overrides, boolean continues) {
         long bytes = last.subtract(first) + 1;
         String range = end == null ? first + " to the end of its address space" : first + ".." + end;
-        return "span: " + range + " (" + bytes + " bytes, last byte " + last + ", " + instructions
-            + (instructions == 1 ? " instruction)" : " instructions)")
-            + (end == null ? "; no address follows its last byte, so it has no exclusive end" : "");
+        StringBuilder line = new StringBuilder("span: " + range + " (" + bytes + " bytes, last byte " + last
+            + ", " + instructions + (instructions == 1 ? " instruction)" : " instructions)"));
+        if (end == null) {
+            line.append("; no address follows its last byte, so it has no exclusive end");
+        }
+        if (continues) {
+            line.append("; the window stops here and the next instruction starts at ").append(end);
+        }
+        for (String override : overrides) {
+            line.append("; the listing overrides the length of the instruction at ").append(override);
+        }
+        return line.toString();
     }
 }

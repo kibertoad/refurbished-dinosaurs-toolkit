@@ -93,8 +93,12 @@ the instruction count. Copy a range's end from a span, or from the next instruct
 one, never from the start or last byte of the instruction that ends it: a range that stops at an
 instruction's start drops that instruction, which for a closing `RET` still ends on an
 instruction boundary. A span that reaches the end of its address space has no exclusive end, and
-says so. Spans are listed in address order, not in execution order, so a span says nothing about
-which of its instructions run or about the bytes in a gap between two spans.
+says so. A span the instruction count closed names the next instruction's start when that
+instruction follows at the span's end: the run goes on past the window, so the span's end is where
+the window stopped. A span names each instruction whose length the listing overrides, with the
+number of bytes it decodes, since those bytes run past the next instruction's start or the span's
+end. Spans are listed in address order. A span says nothing about which of its instructions run or
+about the bytes in a gap between two spans.
 `ExportBoundedFlow` lists flow targets where no instruction starts in `noInstruction`, and sets
 `limitReached` when it stopped at its instruction limit with flow left unread; either one means the
 export does not cover the whole flow from the entry.
