@@ -700,7 +700,9 @@ and fails, naming the path:
 - a manifest path that is not a file item, or that the record gives as a link or stopped path;
 - a path in the list of other files, other than a directory exclusion, that is not an item;
 - a link or stopped item that the list of other files does not give by its own path. A directory
-  exclusion above it does not count.
+  exclusion above it does not count;
+- a disc's `source` image that neither the manifest nor the list of other files gives by its own
+  path (ENTRY-TYPES-16). A directory exclusion above it does not count.
 
 A manifest or other-files path on a disc the record's `media` leave out need not be in the record,
 and neither need a CD audio track (`CD:track02`) on a disc where the record lists no track. The
@@ -717,7 +719,9 @@ Where the build's list of other files is written in the Other files section as p
 still compares the record with the manifest, and names the rest of the comparison as a skipped
 step, such as `comparison of BLD-X.listing.yaml with the list of other files of BLD-X (the checker
 reads that list only from BLD-X.other-files.yaml)`. Move the list to `<ID>.other-files.yaml` to
-have it compared.
+have it compared. Where `<ID>.other-files.yaml` exists but could not be read, its problems are
+reported and the skipped step gives that reason instead: `(BLD-X.other-files.yaml could not be
+read)`.
 
 A file in any other format fails the manifest check, and so does a packed file whose unpacked
 form is in any other format. Before such a file is documented, the Standard must decide how

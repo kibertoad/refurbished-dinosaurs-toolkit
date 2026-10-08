@@ -3060,6 +3060,102 @@ for (const [why, from, to, error] of [
     assert.match(result.output, error);
   });
 
+// Each malformed field is reported once, and not again by the checks that read it.
+for (const [why, from, to, error, repeat] of [
+  [
+    "no media",
+    /media:\n(?: {2}- prefix: .*\n(?: {4}.*\n)*)+/,
+    "",
+    /listing\.yaml: a listing record gives media \[ENTRY-TYPES-16\]$/m,
+    /media names no/,
+  ],
+  [
+    "no cycles",
+    /cycles: null\n/,
+    "",
+    /listing\.yaml: a listing record gives cycles \[ENTRY-TYPES-16\]$/m,
+    /cycles is null/,
+  ],
+  [
+    "a size that is not a number",
+    /size: 1024/,
+    "size: big",
+    /listing\.yaml: GAME\.EXE: size is a whole number of bytes \[ENTRY-TYPES-17\]$/m,
+    /the record gives/,
+  ],
+] as Array<[string, RegExp, string, RegExp, RegExp]>)
+  test(`a listing record with ${why} is reported once`, (t) => {
+    const record = LISTING_HEAD + listingItems(LISTING_ITEMS);
+    assert.match(record, from);
+    const root = broken(t, withListing(record.replace(from, to)));
+    const result = run(root);
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, error);
+    assert.doesNotMatch(result.output, repeat);
+  });
+
+test("a manifest item without a path is not reported as missing from the listing record", (t) => {
+  const root = broken(t, (r) => {
+    withListing()(r);
+    const file = join(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml");
+    writeFileSync(
+      file,
+      readFileSync(file, "utf8") + "  - format: data\n    size: 8\n    xxh3: 00112233445566778899aabbccddeeff\n",
+    );
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /files\.yaml: every file has a path \[ENTRY-TYPES-10\]$/m);
+  assert.doesNotMatch(result.output, /in the manifest but not in the listing record/);
+});
+
+test("a manifest item without a path is not compared with the list of other files as undefined", (t) => {
+  const root = broken(t, (r) => {
+    otherFiles("other_files:\n  - path: undefined\n    reason: a file named undefined\n")(r);
+    const file = join(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml");
+    writeFileSync(
+      file,
+      readFileSync(file, "utf8") + "  - format: data\n    size: 8\n    xxh3: 00112233445566778899aabbccddeeff\n",
+    );
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /files\.yaml: every file has a path \[ENTRY-TYPES-10\]$/m);
+  assert.doesNotMatch(result.output, /undefined is in the manifest/);
+});
+
+test("a disc's image source passes where the list of other files gives it, and fails under only a directory exclusion", (t) => {
+  const head = LISTING_HEAD.replace('source: null\n    layout: "2048"', 'source: images/game.iso\n    layout: "2048"');
+  assert.notEqual(head, LISTING_HEAD);
+  const record = head + listingItems([...LISTING_ITEMS, ["images/game.iso", "size: 9000"]]);
+  const listed = broken(
+    t,
+    withListing(record, otherFilesList([...LISTING_OTHER, ["images/game.iso", "the disc image"]])),
+  );
+  const a = run(listed);
+  assert.equal(a.status, 0, a.output);
+  // A directory exclusion accounts for the image as an item, but does not give it by its own path.
+  const excluded = broken(t, withListing(record, otherFilesList([...LISTING_OTHER, ["images/", "disc images"]])));
+  const b = run(excluded);
+  assert.equal(b.status, 1, b.output);
+  assert.match(
+    b.output,
+    /listing\.yaml: CD: source images\/game\.iso is in neither the manifest nor the list of other files \[ENTRY-TYPES-16\]$/m,
+  );
+});
+
+test("a listing record beside a list of other files that could not be read names the comparison as skipped for that reason", (t) => {
+  const root = broken(t, withListing(undefined, "other_files: none\n"));
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /other-files\.yaml: other_files must be a list \[ENTRY-TYPES-14\]$/m);
+  assert.match(
+    result.output,
+    /comparison of BLD-EXAMPLE-1\.0\.listing\.yaml with the list of other files of BLD-EXAMPLE-1\.0 \(BLD-EXAMPLE-1\.0\.other-files\.yaml could not be read\)/,
+  );
+  assert.doesNotMatch(result.output, /reads that list only from/);
+});
+
 test("a disc the record's media leave out and audio tracks the listing did not read need not be in the record", (t) => {
   const root = broken(t, (r) => {
     withListing()(r);

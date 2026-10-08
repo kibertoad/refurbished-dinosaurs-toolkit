@@ -28,6 +28,15 @@ export function pathText(
   return undefined;
 }
 
+/**
+ * Whether a manifest item has a path to compare. An item whose path is missing, empty, a map or a
+ * list has that reported by the manifest's own check, and is left out of every comparison so that
+ * it is never compared as the text "undefined".
+ */
+export function hasPath(f: Meta): boolean {
+  return f.path !== undefined && f.path !== null && f.path !== "" && typeof f.path !== "object";
+}
+
 /** The rule that ties each kind of file beside a build entry to its build. */
 const BELONGS: Record<string, Rule> = {
   files: "ENTRY-TYPES-10",
@@ -150,8 +159,8 @@ export function checkOtherFiles(
       continue;
     }
     // The front matter reader turns a bare name such as 1990 into a number, so paths compare as text.
-    const manifestPaths = (buildFiles.get(id) ?? []).map((f) => String(f.path));
-    const inManifest = new Set(manifestPaths);
+    const paths = (buildFiles.get(id) ?? []).filter(hasPath).map((f) => String(f.path));
+    const inManifest = new Set(paths);
     const seen = new Set<string>();
     for (const item of list.other_files) {
       if (!item || typeof item !== "object" || Object.keys(item).sort().join(",") !== "path,reason") {
@@ -172,7 +181,7 @@ export function checkOtherFiles(
     const manifest = join(dirname(e.file), `${id}.files.yaml`);
     for (const dir of seen) {
       if (!dir.endsWith("/")) continue;
-      for (const p of manifestPaths)
+      for (const p of paths)
         if (p.startsWith(dir))
           problem(manifest, `${p} is in the manifest and lies under the directory exclusion ${dir}`, "ENTRY-TYPES-15");
     }

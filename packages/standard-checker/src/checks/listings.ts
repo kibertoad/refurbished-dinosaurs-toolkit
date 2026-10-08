@@ -4,7 +4,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Context } from "../context.ts";
-import { pathText } from "../load/builds.ts";
+import { hasPath, pathText } from "../load/builds.ts";
 import { readText } from "../markdown.ts";
 import type { Meta, Yaml } from "../types.ts";
 import { parseYaml } from "../yaml.ts";
@@ -69,6 +69,8 @@ interface Listing {
   items: Item[];
   /** The prefixes of the media the record names. */
   media: Set<string>;
+  /** Each disc read from an image, as its prefix and the image's path. */
+  sources: Array<[string, string]>;
 }
 
 /**
@@ -87,16 +89,18 @@ function readRecord({ problem }: Context, path: string): Listing | undefined {
     problem(path, "date is the day the listing was made, as YYYY-MM-DD", "ENTRY-TYPES-16");
   if ("links" in record && !LINKS.includes(record.links))
     problem(path, `links is one of ${LINKS.join(", ")}`, "ENTRY-TYPES-16");
-  if (record.links === "followed" && !isText(record.cycles))
+  // A missing cycles has been reported with the other missing keys.
+  if (record.links === "followed" && "cycles" in record && !isText(record.cycles))
     problem(
       path,
       "cycles says how a followed link that leads back to a directory it was in was stopped",
       "ENTRY-TYPES-16",
     );
-  if (LINKS.includes(record.links) && record.links !== "followed" && record.cycles !== null)
+  if (LINKS.includes(record.links) && record.links !== "followed" && "cycles" in record && record.cycles !== null)
     problem(path, "cycles is null when links are not followed", "ENTRY-TYPES-16");
 
   const media = new Set<string>();
+  const sources: Array<[string, string]> = [];
   if ("media" in record && !Array.isArray(record.media)) problem(path, "media must be a list", "ENTRY-TYPES-16");
   for (const m of maps(record.media)) {
     const keys = Object.keys(m).sort().join(",");
@@ -121,6 +125,7 @@ function readRecord({ problem }: Context, path: string): Listing | undefined {
     } else {
       if (m.source !== null && !isText(m.source))
         problem(path, `${prefix} source is the image's path, or null for a physical disc`, "ENTRY-TYPES-16");
+      else if (m.source !== null) sources.push([prefix, String(m.source)]);
       if (!LAYOUTS.includes(String(m.layout)))
         problem(path, `${prefix} layout is one of ${LAYOUTS.join(", ")}`, "ENTRY-TYPES-16");
     }
@@ -162,8 +167,8 @@ function readRecord({ problem }: Context, path: string): Listing | undefined {
       continue;
     }
     const kind = kinds[0] === "size" ? "file" : (kinds[0] as "link" | "stopped");
-    if (kind === "file" && (!Number.isInteger(item.size) || item.size < 0))
-      problem(path, `${p}: size is a whole number of bytes`, "ENTRY-TYPES-17");
+    const size = kind === "file" && Number.isInteger(item.size) && item.size >= 0 ? (item.size as number) : undefined;
+    if (kind === "file" && size === undefined) problem(path, `${p}: size is a whole number of bytes`, "ENTRY-TYPES-17");
     if (kind !== "file" && !isText(item[kind]))
       problem(
         path,
@@ -176,7 +181,8 @@ function readRecord({ problem }: Context, path: string): Listing | undefined {
       problem(path, `${p} comes after ${previous}; items are sorted by path compared byte by byte`, "ENTRY-TYPES-17");
     seen.add(p);
     previous = p;
-    if (!media.has(prefixOf(p)))
+    // Media that are not a list have been reported once, and are not reported again for each item.
+    if (Array.isArray(record.media) && !media.has(prefixOf(p)))
       problem(
         path,
         `${p}: media names no ${prefixOf(p) ? `prefix ${prefixOf(p)}` : "installation directory"}`,
@@ -195,12 +201,13 @@ function readRecord({ problem }: Context, path: string): Listing | undefined {
           "ENTRY-TYPES-16",
         );
     }
-    items.push({ path: p, kind, size: kind === "file" ? item.size : undefined });
+    // A size reported as malformed is left out, so it is not compared with the manifest's as well.
+    items.push({ path: p, kind, size });
   }
   const files = new Set(items.filter((i) => i.kind === "file").map((i) => i.path));
   for (const a of archives.keys())
     if (!files.has(a)) problem(path, `archives lists ${a}, which is not a file item of the record`, "ENTRY-TYPES-16");
-  return { items, media };
+  return { items, media, sources };
 }
 
 /** The items of a YAML list that are maps; the list's own shape is reported by the caller. */
@@ -219,13 +226,15 @@ function reconcile(
   id: string,
   entryFile: string,
   path: string,
-  { items, media }: Listing,
+  { items, media, sources }: Listing,
   manifestFiles: Meta[],
   other: string[] | undefined,
 ) {
   const manifestPath = join(dirname(entryFile), `${id}.files.yaml`);
+  const otherPath = join(dirname(entryFile), `${id}.other-files.yaml`);
   const manifest = new Map<string, Meta>();
-  for (const f of manifestFiles) if (typeof f.path !== "object") manifest.set(String(f.path), f);
+  // A manifest item without a path has that reported already, and is not a path the record lacks.
+  for (const f of manifestFiles.filter(hasPath)) manifest.set(String(f.path), f);
   const byPath = new Map(items.map((i) => [i.path, i]));
   // A path on a disc the record's media leave out, and an audio track of a disc whose tracks the
   // listing did not read, need not be in the record. The Other files section says why, for review.
@@ -295,12 +304,23 @@ function reconcile(
       );
 
   if (!otherSet) {
-    skip(
-      `comparison of ${id}.listing.yaml with the list of other files of ${id} (the checker reads that list only from ${id}.other-files.yaml)`,
-    );
+    // A list that is on disk but could not be read has its problems reported already, and a prose
+    // list is not read at all. Either way the rest of the comparison, the media sources included,
+    // is named as skipped.
+    const why = existsSync(otherPath)
+      ? `${id}.other-files.yaml could not be read`
+      : `the checker reads that list only from ${id}.other-files.yaml`;
+    skip(`comparison of ${id}.listing.yaml with the list of other files of ${id} (${why})`);
     return;
   }
-  const otherPath = join(dirname(entryFile), `${id}.other-files.yaml`);
+  // A disc read from an image names that image as the manifest or the list of other files writes it.
+  for (const [prefix, source] of sources)
+    if (!manifest.has(source) && !otherSet.has(source))
+      problem(
+        path,
+        `${prefix} source ${source} is in neither the manifest nor the list of other files`,
+        "ENTRY-TYPES-16",
+      );
   for (const p of otherSet)
     if (!byPath.has(p) && !exempt(p))
       problem(

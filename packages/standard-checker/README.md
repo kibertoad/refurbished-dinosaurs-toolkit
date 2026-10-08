@@ -44,11 +44,13 @@ A build that keeps a listing record, `spec/builds/<ID>.listing.yaml` named by th
 field, has it checked against its manifest and its list of other files (ENTRY-TYPES-18): every file
 the record lists is in the manifest with the manifest's size, in the list of other files, or under
 a directory exclusion; every manifest path and every listed other file is in the record; and every
-link or stopped path is in the list of other files by its own path. Each problem names the path.
+link or stopped path is in the list of other files by its own path. A disc read from an image names
+that image in `source` by a path the manifest or the list of other files gives (ENTRY-TYPES-16).
+Each problem names the path.
 Agreement shows only that the three name the same paths. It does not show that the game uses a
 file or that the listing missed nothing. Where the list of other files is prose in the Other files
-section, the comparison with it is a skipped step on the result line, and only
-`<ID>.other-files.yaml` is compared.
+section, or `<ID>.other-files.yaml` could not be read, the comparison with it is a skipped step on
+the result line that gives the reason, and only a readable `<ID>.other-files.yaml` is compared.
 
 ## Options
 
