@@ -248,8 +248,17 @@ public abstract class OriginalContentSource : IDisposable
     /// <see cref="IOException"/> when either has changed. A rewrite that keeps both the length and the
     /// last-write time is not detected.
     /// The sheet is checked as <see cref="CueBinSheet.Parse"/> and <see cref="CueBinSheet.ValidateBin"/>
-    /// describe, the data track ends where the second track's pregap or audio begins, every raw sector
-    /// read is checked to be MODE1, and the volume is checked as <see cref="OpenIso9660(string)"/> describes.
+    /// describe, the data track ends where the second track's pregap or audio begins, and the volume is
+    /// checked as <see cref="OpenIso9660(string)"/> describes. Every raw sector read is checked against
+    /// the type the sheet declares for the data track: for <c>MODE1/2352</c> the sync pattern and mode
+    /// byte 1, and for <c>MODE2/2352</c> the sync pattern, mode byte 2, and a CD-XA subheader whose two
+    /// copies agree and whose submode marks Form 1. The user data is the 2048 bytes after the header
+    /// for MODE1 and after the subheader for MODE2 Form 1, so one disc reads the same files and volume
+    /// bytes in either layout. A sector that fails a check, such as a Form 2 sector of a file stored
+    /// as interleaved audio or video, throws <see cref="InvalidDataException"/> naming the sector when
+    /// it is read: while opening for the descriptors and directories, and from the stream
+    /// <see cref="OpenRead"/> or <see cref="OpenVolume"/> returns for a file's or the volume's sectors.
+    /// The EDC, the ECC and the address in each sector's header are not checked.
     /// </summary>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="IOException">The BIN changed while the source was being opened.</exception>
@@ -269,7 +278,7 @@ public abstract class OriginalContentSource : IDisposable
         if (dataSectors <= 16 || dataSectors > sectors)
             throw new InvalidDataException("Cue data track does not hold an ISO 9660 volume inside the BIN image.");
         return new Iso9660ContentSource(
-            () => new RawMode1UserDataStream(bin.OpenBuffered(), dataSectors),
+            () => new RawDataTrackUserDataStream(bin.OpenBuffered(), dataSectors, sheet.DataTrackMode),
             ContentSourceKinds.CueBin, new CueBinFiles(sheet, cuePath, cueBytes, bin));
     }
 

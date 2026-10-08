@@ -6,7 +6,9 @@ namespace RefurbishedDinosaurs.LegacyFormats;
 
 /// <summary>One track of a <see cref="CueBinSheet"/>.</summary>
 /// <param name="Number">The track number, from 1.</param>
-/// <param name="Type">The track type in upper case: <c>MODE1/2352</c> for the first, <c>AUDIO</c> for the rest.</param>
+/// <param name="Type">
+/// The track type in upper case: <c>MODE1/2352</c> or <c>MODE2/2352</c> for the first, <c>AUDIO</c> for the rest.
+/// </param>
 /// <param name="Indices">Sector of each <c>INDEX</c>, keyed by index number, at 75 sectors per second.</param>
 public sealed record CueBinTrack(int Number, string Type, IReadOnlyDictionary<int, int> Indices);
 
@@ -21,8 +23,9 @@ public sealed record CueBinTrackExtent(int Track, long StartSector, long EndSect
 }
 
 /// <summary>
-/// A checked cue sheet for a single-file raw disc image: one <c>MODE1/2352</c> data track followed by
-/// any number of audio tracks, all in the one <c>.bin</c> the sheet's <c>FILE</c> line names.
+/// A checked cue sheet for a single-file raw disc image: one <c>MODE1/2352</c> or <c>MODE2/2352</c>
+/// data track followed by any number of audio tracks, all in the one <c>.bin</c> the sheet's
+/// <c>FILE</c> line names.
 /// </summary>
 /// <param name="ReferencedFile">The <c>FILE</c> the sheet names, as a relative path.</param>
 /// <param name="Tracks">The tracks in order, numbered consecutively from 1.</param>
@@ -82,6 +85,11 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
         return new(number, start, end);
     }
 
+    // The sector layout of the data track's user data, from the type the sheet declares for it. A
+    // MODE2/2352 track is read as CD-XA Form 1; its sectors are checked as they are read.
+    internal RawDataTrackMode DataTrackMode =>
+        Tracks[0].Type == "MODE2/2352" ? RawDataTrackMode.Mode2Form1 : RawDataTrackMode.Mode1;
+
     // The first sector the image stores for the track at this list position: its INDEX 00 when it
     // declares a pregap, else its INDEX 01.
     private int StoredStart(int position) =>
@@ -126,9 +134,10 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     /// <summary>
     /// Parses a cue sheet. It must name exactly one <c>BINARY</c> <c>FILE</c> by a relative path
     /// <see cref="PortableAssetPath.Relative"/> accepts,
-    /// number its 1 to 99 tracks consecutively from 1, begin with a <c>MODE1/2352</c> track whose
-    /// <c>INDEX 01</c> is at <c>00:00:00</c> followed only by <c>AUDIO</c> tracks, give each track an
-    /// <c>INDEX 01</c>, and keep every index in order, within a track and across tracks. A
+    /// number its 1 to 99 tracks consecutively from 1, begin with a <c>MODE1/2352</c> or
+    /// <c>MODE2/2352</c> track whose <c>INDEX 01</c> is at <c>00:00:00</c> followed only by
+    /// <c>AUDIO</c> tracks, give each track an <c>INDEX 01</c>, and keep every index in order,
+    /// within a track and across tracks. A
     /// <c>FILE</c>, <c>TRACK</c> or <c>INDEX</c> line it cannot read is rejected, not skipped.
     /// </summary>
     /// <exception cref="InvalidDataException">The text breaks one of these rules or a timestamp is invalid.</exception>
@@ -196,8 +205,9 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
         }
         if (tracks.Count is 0 or > 99)
             throw new InvalidDataException("Cue sheet must contain between 1 and 99 tracks.");
-        if (tracks[0].Type != "MODE1/2352")
-            throw new InvalidDataException("First cue track must be MODE1/2352.");
+        if (tracks[0].Type is not ("MODE1/2352" or "MODE2/2352"))
+            throw new InvalidDataException(
+                $"First cue track must be MODE1/2352 or MODE2/2352, not {Truncate(tracks[0].Type)}.");
 
         var previous = -1;
         for (var offset = 0; offset < tracks.Count; offset++)
@@ -333,23 +343,45 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     }
 }
 
+// The sector layouts a data track's user data is read from.
+internal enum RawDataTrackMode
+{
+    // MODE1/2352: sync, header, 2048 bytes of user data at byte 16, EDC and ECC.
+    Mode1,
+    // MODE2/2352 CD-XA Form 1: sync, header, the 4-byte subheader written twice, 2048 bytes of user
+    // data at byte 24, EDC and ECC.
+    Mode2Form1,
+}
+
 /// <summary>
-/// Presents the user data of a MODE1/2352 track as a flat stream of 2048-byte sectors.
+/// Presents the user data of a MODE1/2352 or MODE2/2352 Form 1 track as a flat stream of 2048-byte
+/// sectors.
 /// </summary>
 /// <remarks>
-/// Each raw sector is read whole and its sync pattern and mode byte checked before the payload is
-/// handed on. A cue sheet only declares what a track is; without this check an image that is really
-/// MODE2, or a BIN that does not match its sheet, would be read at the wrong offset and surface as a
-/// malformed ISO 9660 volume instead of as an image to dump again. With <c>leaveOpen</c>, disposing
-/// the stream leaves <c>source</c> open, as <see cref="Iso9660"/> needs for the image the caller keeps.
+/// Each raw sector is read whole and its layout checked before the payload is handed on: the sync
+/// pattern and the mode byte for both modes, and for MODE2 the two copies of the subheader agreeing
+/// and its submode marking Form 1. A cue sheet only declares what a track is; without these checks
+/// an image whose sectors are another mode or form, or a BIN that does not match its sheet, would be
+/// read at the wrong offset and surface as a malformed ISO 9660 volume instead of as an image to
+/// dump again. The EDC and ECC are not checked, and neither is the address in the header. With
+/// <c>leaveOpen</c>, disposing the stream leaves <c>source</c> open, as <see cref="Iso9660"/> needs
+/// for the image the caller keeps.
 /// </remarks>
-internal sealed class RawMode1UserDataStream(Stream source, long sectorCount, bool leaveOpen = false) : Stream
+internal sealed class RawDataTrackUserDataStream(
+    Stream source, long sectorCount, RawDataTrackMode mode, bool leaveOpen = false) : Stream
 {
-    private const int UserDataOffset = 16;
     private const int LogicalSectorSize = 2048;
+    private const int ModeOffset = 15;
+    private const int SubheaderOffset = 16;
+    private const int SubheaderSize = 4;
+    // Bit 5 of the submode byte marks a Form 2 sector.
+    private const byte Form2Submode = 0x20;
     private static ReadOnlySpan<byte> SyncPattern =>
         [0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00];
     private readonly byte[] sector = new byte[CueBinSheet.RawSectorSize];
+    private readonly int userDataOffset = mode == RawDataTrackMode.Mode1 ? 16 : 24;
+    private readonly byte modeByte = mode == RawDataTrackMode.Mode1 ? (byte)1 : (byte)2;
+    private readonly string declared = mode == RawDataTrackMode.Mode1 ? "MODE1/2352" : "MODE2/2352";
     private long sectorIndex = -1;
     private long position;
 
@@ -371,7 +403,7 @@ internal sealed class RawMode1UserDataStream(Stream source, long sectorCount, bo
             var within = (int)(position % LogicalSectorSize);
             var count = Math.Min(remaining, LogicalSectorSize - within);
             ReadRawSector(index);
-            sector.AsSpan(UserDataOffset + within, count).CopyTo(buffer[(total - remaining)..]);
+            sector.AsSpan(userDataOffset + within, count).CopyTo(buffer[(total - remaining)..]);
             position += count;
             remaining -= count;
         }
@@ -405,11 +437,27 @@ internal sealed class RawMode1UserDataStream(Stream source, long sectorCount, bo
         source.ReadExactly(sector);
         if (!sector.AsSpan(0, SyncPattern.Length).SequenceEqual(SyncPattern))
             throw new InvalidDataException(
-                $"Sector {index} has no MODE1/2352 sync pattern; the BIN does not match its cue sheet.");
-        if (sector[15] != 1)
+                $"Sector {index} has no {declared} sync pattern; the BIN does not match its cue sheet.");
+        if (sector[ModeOffset] != modeByte)
             throw new InvalidDataException(
-                $"Sector {index} is mode {sector[15]}, but the cue sheet declares MODE1/2352.");
+                $"Sector {index} is mode {sector[ModeOffset]}, but the cue sheet declares {declared}.");
+        if (mode == RawDataTrackMode.Mode2Form1) CheckForm1Subheader(index);
         sectorIndex = index;
+    }
+
+    private void CheckForm1Subheader(long index)
+    {
+        var first = sector.AsSpan(SubheaderOffset, SubheaderSize);
+        var second = sector.AsSpan(SubheaderOffset + SubheaderSize, SubheaderSize);
+        if (!first.SequenceEqual(second))
+            throw new InvalidDataException(
+                $"Sector {index} is MODE2 but its two subheader copies differ, so it is not a CD-XA " +
+                "Form 1 sector. Only MODE2/2352 tracks of CD-XA Form 1 sectors are supported.");
+        if ((first[2] & Form2Submode) != 0)
+            throw new InvalidDataException(
+                $"Sector {index} is a MODE2 Form 2 sector. Form 2 sectors carry 2324 bytes of user data " +
+                "without ECC and cannot be read as ISO 9660 user data; only Form 1 sectors are " +
+                "supported, so a file stored in Form 2 sectors cannot be read from this source.");
     }
 
     private long ValidatePosition(long value) => value >= 0 && value <= Length

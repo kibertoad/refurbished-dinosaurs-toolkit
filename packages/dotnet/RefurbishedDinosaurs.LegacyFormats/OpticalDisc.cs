@@ -182,7 +182,8 @@ public static class CddaWave
 
 /// <summary>
 /// Reads the 2048-byte user data of the leading data track of a raw image with 2352-byte sectors, such
-/// as a <c>.bin</c> from a cue/bin pair.
+/// as a <c>.bin</c> from a cue/bin pair. It reads MODE1/2352 sectors only; open a cue/bin image
+/// whose data track is MODE2/2352 Form 1 with <see cref="OriginalContentSource.OpenCueBin(string)"/>.
 /// </summary>
 public sealed class RawMode1Image : IDisposable
 {
@@ -283,7 +284,7 @@ public sealed class Iso9660
         // instead of ending a read early.
         var stored = (int)Math.Min(image.SectorCount, image.StoredSectors);
         using var source = new Iso9660ContentSource(
-            () => new RawMode1UserDataStream(image.RawStream, stored, leaveOpen: true),
+            () => new RawDataTrackUserDataStream(image.RawStream, stored, RawDataTrackMode.Mode1, leaveOpen: true),
             ContentSourceKinds.CueBin, null, files);
         Files = files.ToArray();
     }
@@ -297,7 +298,8 @@ public sealed class Iso9660
         var offset = (long)file.Extent * Sector;
         var result = new byte[checked((int)file.Size)];
         if (offset + result.Length > (long)_image.SectorCount * Sector) throw new EndOfStreamException();
-        using var track = new RawMode1UserDataStream(_image.RawStream, _image.SectorCount, leaveOpen: true);
+        using var track = new RawDataTrackUserDataStream(
+            _image.RawStream, _image.SectorCount, RawDataTrackMode.Mode1, leaveOpen: true);
         track.Position = offset;
         track.ReadExactly(result);
         return result;
