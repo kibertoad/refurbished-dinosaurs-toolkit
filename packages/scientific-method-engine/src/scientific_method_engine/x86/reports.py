@@ -643,7 +643,8 @@ def dispatch(image, config):
         outcomes = []
         for path in report["paths"]:
             reached = bool(path["instructionPath"]) and path["instructionPath"][-1] == site
-            index_value = path["registers"].get(index_reg, {}).get("value")
+            index_row = path["registers"].get(index_reg, {})
+            index_value = index_row.get("value")
             if reached and index_value is not None:
                 index_value *= scale
                 if index_value % divisor or index_value // divisor >= count:
@@ -653,6 +654,9 @@ def dispatch(image, config):
                     outcomes.append({"status": "selected", "position": index, "rawTarget": rows[index], "encodedIndex": index_value})
             else:
                 outcomes.append({"status": "returned-before-dispatch" if path["returned"] else "unresolved", "stop": path["stop"]})
+                if reached and "unresolved" in index_row:
+                    # The site was reached but the index register could not be formed, which the stop alone does not say.
+                    outcomes[-1]["unresolved"] = index_row["unresolved"]
             outcomes[-1]["transformations"] = [e for e in path["events"] if e["kind"] == "arithmetic"]
             outcomes[-1]["guards"] = path["guards"]
         results.append({"input": value, "outcomes": outcomes, "gaps": report["gaps"]})

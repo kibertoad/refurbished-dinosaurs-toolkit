@@ -6,7 +6,7 @@ from .image import integer
 from .machine import (State, StopPath, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
                       string_count, string_effect, check_string_form, compare_string, repeated, string_width,
                       FLAT_PORT_REASON)
-from .values import const, unknown, sources, op, join, TermLimit
+from .values import const, unknown, sources, op, join, unformed, TermLimit
 from .result_flow import validate_contracts, result_contracts
 from .loops import LoopTracker
 from .memory_scopes import validate_scopes, capture_scopes, retain_scopes, scope_history
@@ -407,8 +407,18 @@ def hardware_placement(outputs, conditional_outputs, gaps):
     return result
 
 
+def register_row(state, name):
+    """Register ``name``'s report row. A snapshot only observes the path, so a partial register that
+    would pass the term limit (its root holds the limit, and selecting the part adds a term) is a row
+    with no expression or value and the limit as its ``unresolved`` reason."""
+    try:
+        return state.reg(name).report()
+    except TermLimit as error:
+        return unformed(ALIASES[name][2], state.reg_origin(name), str(error))
+
+
 def snapshot(state):
-    return {name: state.reg(name).report() for name in ALIASES}
+    return {name: register_row(state, name) for name in ALIASES}
 
 
 # The stop for each failed combination of (widthMatches, stackBalanced) at a return.
@@ -545,18 +555,25 @@ def entry_frame(image, config, entry):
     if not arrivals:
         reasons.append(f"no path from {start} reached the entry")
     offsets = sorted({a["sp"] for a in arrivals if a["sp"] is not None})
-    if any(a["sp"] is None for a in arrivals):
+    unformed_sp = sorted({a["unresolved"]["sp"] for a in arrivals if "sp" in a.get("unresolved", {})})
+    reasons += ["SP at an arrival could not be formed: " + reason for reason in unformed_sp]
+    if any(a["sp"] is None and "sp" not in a.get("unresolved", {}) for a in arrivals):
         reasons.append("SP at an arrival is not an offset from the function's entry SP")
     elif len(offsets) > 1:
         reasons.append("arrivals reach the entry with SP at different offsets: " + ", ".join(map(str, offsets)))
     established = not reasons
     bp = {a["bp"] for a in arrivals}
-    return {"from": start, "established": established, "sp": offsets[0] if established else None,
-            "bp": next(iter(bp)) if established and len(bp) == 1 else None,
-            "arrivals": len(arrivals), "pathsRead": len(report["paths"]), "stepsUsed": report["stepsUsed"],
-            "reasons": reasons,
-            "meaning": "offsets from the entry SP of the function at from, observed at each first arrival on the "
-                       "traced paths under the query's own inputs; bp null leaves BP unknown"}
+    frame = {"from": start, "established": established, "sp": offsets[0] if established else None,
+             "bp": next(iter(bp)) if established and len(bp) == 1 else None,
+             "arrivals": len(arrivals), "pathsRead": len(report["paths"]), "stepsUsed": report["stepsUsed"],
+             "reasons": reasons,
+             "meaning": "offsets from the entry SP of the function at from, observed at each first arrival on the "
+                        "traced paths under the query's own inputs; bp null leaves BP unknown"}
+    # BP does not decide whether the frame is established, so why it could not be formed has its own field.
+    unformed_bp = sorted({a["unresolved"]["bp"] for a in arrivals if "bp" in a.get("unresolved", {})})
+    if unformed_bp:
+        frame["bpUnresolved"] = unformed_bp
+    return frame
 
 
 def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=None, call_stacks=False, argument_window=0):
@@ -730,8 +747,15 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                 "instructionPath": s.path, "guards": s.guards, "events": s.events,
                 "registers": snapshot(s), "conditionalModels": s.conditional}
         if reason == ENTRY_ARRIVAL:
-            path["arrival"] = {"frameEntry": s.frames[-1]["entry"], "sp": s.frame_offset(s.reg(s.sp)),
-                               "bp": s.frame_offset(s.reg(s.bp))}
+            arrival = path["arrival"] = {"frameEntry": s.frames[-1]["entry"]}
+            for key, name in (("sp", s.sp), ("bp", s.bp)):
+                # Finishing a path only observes it, so a register past the term limit is an offset
+                # not known, with the limit as the reason.
+                try:
+                    arrival[key] = s.frame_offset(s.reg(name))
+                except TermLimit as error:
+                    arrival[key] = None
+                    arrival.setdefault("unresolved", {})[key] = str(error)
         if s.loops is not None:
             path["loops"] = s.loops.report()
         if call_stacks and not returned:

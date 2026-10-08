@@ -1447,6 +1447,34 @@ test("a value past the engine's term limit stops its own path and keeps the othe
   assert.equal(r.relationalControls.controls[0].occurrences, 2);
 });
 
+test("a register part of a root at the engine's term limit is an unformed row through the source bridge", (t) => {
+  const { dir, config } = fixture(t);
+  // mov eax, [100h]; not eax (509 times, leaving EAX at the limit); retf
+  const head = Buffer.from([0x66, 0xa1, 0x00, 0x01]);
+  const source = Buffer.concat([head, Buffer.alloc(3 * 509, Buffer.from([0x66, 0xf7, 0xd0])), Buffer.from([0xcb])]);
+  writeFileSync(join(dir, "source.bin"), source);
+  const query = {
+    source: "source.bin",
+    sourceKind: "synthetic-raw",
+    xxh3: sourceXxh3(source),
+    entry: 0,
+    returnBytes: 4,
+    registers: { ds: 0x3000, ss: 0x9000, sp: 0xe000 },
+    maxSteps: 509 + 16,
+    regions: [{ ...config.regions[0]!, start: 0, end: source.length, entries: [0] }],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const r = run(["trace", join(dir, "config.json")]);
+  const [path] = r.paths;
+  assert.equal(path.returned, true);
+  assert.equal(r.completeWithinModel, true);
+  assert.notEqual(path.registers.eax.expression, null);
+  const ax = path.registers.ax;
+  assert.deepEqual([ax.bits, ax.expression, ax.value], [16, null, null]);
+  assert.deepEqual(ax.producers, path.registers.eax.producers);
+  assert.match(ax.unresolved, /^expression term limit: a value's expression would hold more than 1024 terms/);
+});
+
 test("trace names the failed root return check and the unread root return words through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(200, 28);
