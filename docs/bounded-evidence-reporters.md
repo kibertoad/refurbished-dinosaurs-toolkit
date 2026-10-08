@@ -355,7 +355,9 @@ ranges reach the report. A declared segment counts when it overlaps a searched
 region, even if the region crosses its bounds. A domain the bytes actually scanned
 do not cover (including bytes a `scanLimit` stopped short of) lists its
 `unsearched` ranges and sets `partialSearch`, which makes `negativeUsable` false.
-Regions with no known domain are reported as covering only themselves. Each
+Regions with no known domain are compared with their own extent, so a
+`scanLimit` that stops short of one also lists its `unsearched` ranges and sets
+`partialSearch`. Each
 unverified candidate carries a `position`: inside a reached instruction (bytes
 of that instruction, so a call there needs an overlapping start) or in an
 undecoded range that no established path reaches. `unresolvedTransfers` lists
@@ -1047,7 +1049,7 @@ state how many called routines the inventory misses next to its coverage figure
 
 | Field | Meaning |
 |---|---|
-| `inventory` | the inventory TSV, relative to the config file's directory as `source` is. Its columns are `start` and `size`, then optionally `name`, `out_of_scope` and `ranges`, as the work protocol gives them; a row that does not parse fails the report with its line number |
+| `inventory` | the inventory TSV, relative to the config file's directory as `source` is (a Python caller of `run_report` passes an absolute path, and a relative one is refused). Its columns are `start` and `size`, then optionally `name`, `out_of_scope` and `ranges`, as the work protocol gives them; a row that does not parse fails the report with its line number |
 | `searchRegions`, `scanLimit`, `instructionLimit` | as for `incoming`: the regions scanned (all by default), the bytes the raw scan reads (1..1048576, default 65536) and the instructions the entry-path walk decodes. Raise `scanLimit` to the size of the declared code, or the search is partial |
 | `controls` | optional, at most 256 call sites that must be entry-path calls with a resolved target; a missed one fails the report |
 | `limit` | rows kept in each of `targets`, `unresolved` and `rowsOutsideDeclaredCode` (1..10000, default 1000) |
@@ -1074,8 +1076,10 @@ Each target that is not a row's start is a row of `targets`:
 `counts` gives `callTargets` and, under each evidence, the targets, the inventory starts among
 them and how many are inside another row, outside every row or outside declared code. It also
 counts the unresolved calls, the inventory rows and the rows outside declared code. `summary`
-states the entry-path counts in one sentence for a coverage report and adds the targets from
-weaker evidence, the unresolved calls and a partial search when there are any.
+states the entry-path counts in one sentence for a coverage report, leaving the targets outside
+declared code out of its total and naming them apart. It adds the targets from weaker evidence, the
+unresolved calls with how many of them the entry path reaches, a partial search (including a scan
+that `scanLimit` stopped) and a walk that `instructionLimit` stopped when there are any.
 `rowsOutsideDeclaredCode` lists the starts of rows no declared region places, such as overlay code
 written by an analysis segment, which no target can match. `unresolved`, `coverage`,
 `partialSearch` and `gaps` are as in `incoming`.

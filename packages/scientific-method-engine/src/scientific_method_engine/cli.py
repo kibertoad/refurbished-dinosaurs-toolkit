@@ -93,7 +93,7 @@ def main(argv):
         if config_path == "-" and not Path(inventory).is_absolute():
             # The reader resolves inventory against the config's directory; one that does not would send it unresolved.
             raise ValueError("The reader sent a relative inventory path; install a matching @scientific-method/executable-reader")
-        config["inventory"] = str(Path(base) / inventory)
+        config["inventory"] = str(Path(base).absolute() / inventory)
     data, identity = read_source(config, base)
     result = run_report(data, config, command)
     report = {"schema": "bounded-x86-v1", "decoder": DECODER, "instructionSemantics": INSTRUCTION_SEMANTICS,

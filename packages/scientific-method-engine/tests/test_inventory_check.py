@@ -70,6 +70,12 @@ class InventoryCheckTests(unittest.TestCase):
                          [(0x0B, "inside another row's body", [{"start": "0FFF:0016", "size": 6, "name": "second"}])])
         self.assertEqual(r["counts"]["entry-path call"]["insideAnotherRow"], 1)
 
+    def test_a_long_row_before_the_target_still_names_every_row_whose_body_holds_it(self):
+        # The long row 0FFF:0010 covers 0000..000F; the short rows after it start past 000B or end before it.
+        r = self.check("start\tsize\tname\n0FFF:0010\t16\tlong\n1000:0001\t2\tshort\n1000:0006\t1\tret\n1000:0009\t3\tholder\n")
+        self.assertEqual([(t["target"], [row["name"] for row in t["rows"]]) for t in r["targets"]],
+                         [(0x0B, ["long", "holder"])])
+
     def test_a_ranges_column_gives_the_body_and_its_ends_are_exclusive(self):
         inside = self.check("start\tsize\tranges\n1000:0000\t6\t\n1000:0006\t2\t1000:0006..1000:0007 1000:000B..1000:000C\n")
         self.assertEqual([(t["target"], t["status"]) for t in inside["targets"]], [(0x0B, "inside another row's body")])
@@ -105,14 +111,57 @@ class InventoryCheckTests(unittest.TestCase):
         self.assertEqual(r["counts"]["entry-path call"]["outsideEveryRow"], 0)
         self.assertEqual(r["counts"]["raw byte candidate only"]["outsideEveryRow"], 1)
         self.assertIn("0 of the 2 call targets", r["summary"])
-        self.assertIn("1 more come only from contested instructions or raw byte candidates", r["summary"])
+        self.assertIn("1 more comes only from contested instructions or raw byte candidates", r["summary"])
 
     def test_an_unresolved_call_is_listed_and_named_in_the_summary(self):
         data = bytes.fromhex("ffd3" "c3")  # call bx; ret
         r = self.check("start\tsize\n1000:0000\t3\n", data=data)
         self.assertEqual([(u["site"], u["target"]) for u in r["unresolved"]], [(0, None)])
         self.assertEqual(r["counts"]["unresolvedCalls"], 1)
-        self.assertIn("1 calls in the searched regions are unresolved", r["summary"])
+        self.assertIn("1 call in the searched regions is unresolved, 1 of them on the entry path", r["summary"])
+
+    def test_the_summary_says_how_many_unresolved_calls_are_raw_byte_candidates(self):
+        # 000C is an unreached far call with no fixup on its segment word.
+        r = self.check("start\tsize\n1000:0000\t6\n1000:0006\t1\n1000:000B\t1\n", data=CALLS + bytes.fromhex("9a00000000" "c3"))
+        self.assertEqual([(u["site"], u["classification"]) for u in r["unresolved"]], [(12, "raw byte candidate")])
+        self.assertIn("1 call in the searched regions is unresolved, 0 of them on the entry path", r["summary"])
+
+    def test_a_target_outside_declared_code_is_left_out_of_the_compared_total(self):
+        # The FBOV fixup names file offset 0010, which no declared region holds.
+        data = bytes.fromhex("9a00000800" "c3") + bytes(18)
+        regions = [{"name": "resident", "start": 0, "end": 6, "ip": 0, "segment": 0x1000, "resident": True,
+                    "entries": [0], "evidence": "synthetic resident code"}]
+        fixup = {"site": 3, "raw": 8, "descriptor": 1, "segment": 0x2000, "target": 0x10, "trampoline": 0x40,
+                 "evidence": "synthetic FBOV descriptor/fixup"}
+        r = run_report(data, config(data, regions, relocations=[fixup], inventory=self.inventory("start\tsize\n1000:0000\t6\n")),
+                       "inventory-check")
+        self.assertEqual([(t["target"], t["address"], t["status"]) for t in r["targets"]], [(0x10, None, "outside declared code")])
+        self.assertEqual(r["counts"]["entry-path call"]["outsideDeclaredCode"], 1)
+        self.assertTrue(r["summary"].startswith("0 of the 0 call targets that entry-path calls resolve to are not inventory "
+                                                "starts: 0 inside another row's body, 0 outside every row. 1 more entry-path "
+                                                "call target lies outside declared code and is not compared with the inventory."))
+
+    def test_a_scan_limit_short_of_the_code_makes_the_search_partial(self):
+        # The region lies in no container or declared segment, so only the scan gap shows the stop.
+        r = self.check("start\tsize\n1000:0000\t6\n1000:0006\t1\n", data=RAW, scanLimit=12)
+        self.assertEqual([(g["unsearchedStart"], g["reason"]) for g in r["gaps"] if g.get("reason") == "raw scan limit"],
+                         [(12, "raw scan limit")])
+        self.assertIn("The search is partial.", r["summary"])
+        self.assertTrue(r["partialSearch"])
+        self.assertEqual([c["unsearched"] for c in r["coverage"]], [[{"start": 12, "end": len(RAW)}]])
+        # incoming reads the same coverage, so its search is partial too.
+        incoming = run_report(RAW, config(RAW, target=0x0B, scanLimit=12), "incoming")
+        self.assertTrue(incoming["partialSearch"])
+        self.assertFalse(run_report(RAW, config(RAW, target=0x0B), "incoming")["partialSearch"])
+        walked = self.check("start\tsize\n1000:0000\t6\n1000:0006\t1\n", instructionLimit=1)
+        self.assertIn("The entry-path walk stopped at its instruction limit", walked["summary"])
+
+    def test_an_inventory_past_its_row_or_size_limit_is_refused(self):
+        from scientific_method_engine.x86 import inventory
+        with self.assertRaisesRegex(ValueError, f"more than {inventory.MAX_ROWS} rows"):
+            self.check("start\tsize\n" + "1000:0000\t1\n" * (inventory.MAX_ROWS + 1))
+        with self.assertRaisesRegex(ValueError, "at most 16 MiB"):
+            self.check("start\tsize\n" + " " * inventory.MAX_INVENTORY)
 
     def test_flat32_code_is_placed_by_its_virtual_address(self):
         data = bytes.fromhex("e800000000" "c3")  # call 00401005; ret
@@ -141,6 +190,8 @@ class InventoryCheckTests(unittest.TestCase):
             with self.subTest(text=text):
                 with self.assertRaisesRegex(ValueError, message):
                     self.check(text)
+        with self.assertRaisesRegex(ValueError, "inventory must be an absolute path"):
+            run_report(CALLS, config(inventory="inventory.tsv"), "inventory-check")
         with self.assertRaisesRegex(ValueError, "needs inventory"):
             run_report(CALLS, config(), "inventory-check")
         with self.assertRaisesRegex(ValueError, "inventory applies only to inventory-check"):

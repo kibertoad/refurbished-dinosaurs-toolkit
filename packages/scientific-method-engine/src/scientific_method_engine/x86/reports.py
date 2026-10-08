@@ -63,7 +63,7 @@ def search_coverage(image, spans):
                 holders = [{"view": "section " + section["name"], "start": section["rawStart"],
                             "end": section["rawStart"] + section["loadedRawSize"]}]
         if not holders:
-            alone.append(r["name"])
+            alone.append(r)
         for c in holders:
             containers.setdefault((c["view"], c["start"], c["end"]), []).append(r["name"])
     rows = []
@@ -74,8 +74,14 @@ def search_coverage(image, spans):
                      "meaning": "partial search: callers in the unsearched ranges are not covered" if missing else
                                 "the searched regions cover the complete container"})
     if alone:
-        rows.append({"container": None, "regions": alone, "partial": False,
-                     "meaning": "no overlay, section or declared segment contains these regions; the search covers them only"})
+        # With no container to compare with, each region is compared with its own extent, so a scan that
+        # scanLimit stopped is reported as partial.
+        missing = [gap for r in alone for gap in uncovered(r["start"], r["end"], [spans[r["name"]]])]
+        rows.append({"container": None, "regions": [r["name"] for r in alone], "unsearched": missing,
+                     "partial": bool(missing),
+                     "meaning": "partial search: no overlay, section or declared segment contains these regions, "
+                                "and callers in their unsearched ranges are not covered" if missing else
+                                "no overlay, section or declared segment contains these regions; the search covers them only"})
     return rows
 
 
@@ -149,6 +155,19 @@ def direct_calls(image, config):
             "rows": rows, "scanned": scanned, "scans": scans, "read": read}
 
 
+def call_controls(calls, config):
+    """The rows of the ``controls`` call sites in a ``direct_calls`` result. Raises ``ValueError`` when a
+    control is not an entry-path call the scan read with a resolved target."""
+    controls = config.get("controls", [])
+    if not isinstance(controls, list) or len(controls) > 256:
+        raise ValueError("Invalid positive controls")
+    scanned, seen = calls["scanned"], calls["seen"]
+    for at in controls:
+        if type(at) is not int or at not in scanned or at not in seen or scanned[at]["target"] is None:
+            raise ValueError(f"Positive control {at} missed or not verified")
+    return [scanned[at] for at in controls]
+
+
 def incoming(image, config):
     target = integer(config.get("target"), 0, len(image.data) - 1, "target")
     if image.region(target) is None:
@@ -156,7 +175,7 @@ def incoming(image, config):
     limit = integer(config.get("limit", 100), 1, 10000, "result limit")
     calls = direct_calls(image, config)
     seen, gaps, edges, undecoded, contested = (calls[k] for k in ("seen", "gaps", "edges", "undecoded", "contested"))
-    scanned, scans, read = calls["scanned"], calls["scans"], calls["read"]
+    scans, read = calls["scans"], calls["read"]
     hits, candidates, partial, disputed = [], [], [], []
     for row in calls["rows"]:
         if row["target"] is None:
@@ -165,12 +184,7 @@ def incoming(image, config):
             (hits if row["site"] in seen else disputed if row["site"] in contested else candidates).append(row)
     hits.sort(key=lambda row: row["site"])
     disputed.sort(key=lambda row: row["site"])
-    controls = config.get("controls", [])
-    if not isinstance(controls, list) or len(controls) > 256:
-        raise ValueError("Invalid positive controls")
-    for at in controls:
-        if type(at) is not int or at not in scanned or at not in seen or scanned[at]["target"] is None:
-            raise ValueError(f"Positive control {at} missed or not verified")
+    controls = call_controls(calls, config)
     truncated = len(hits) + len(candidates) + len(disputed) + len(partial) > limit
     budget = limit
     def bounded(rows):
@@ -209,7 +223,7 @@ def incoming(image, config):
     return {"target": target, "sections": {k: v[:limit] for k, v in sections.items()}, "confirmed": bounded(hits), "candidates": bounded(candidates),
             "contested": bounded(disputed), "unresolved": bounded(partial),
             "counts": {"confirmed": len(hits), "candidates": len(candidates), "contested": len(disputed), "unresolved": len(partial)},
-            "truncated": truncated, "controls": [scanned[at] for at in controls],
+            "truncated": truncated, "controls": controls,
             "searched": [r for r in image.regions if r["name"] in scans], "coverage": coverage, "partialSearch": partial_scope,
             "unresolvedTransfers": sorted(transfers, key=lambda t: t["site"]), "undecodedRanges": undecoded, "gaps": gaps,
             "negativeUsable": bool(controls) and not (hits or candidates or disputed or partial or gaps or truncated or undecoded or partial_scope),

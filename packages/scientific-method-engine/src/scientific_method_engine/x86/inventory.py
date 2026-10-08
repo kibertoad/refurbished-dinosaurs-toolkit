@@ -37,10 +37,14 @@ def _place(value, image):
 def read_inventory(path, image):
     """The rows of a function inventory TSV (``start``, ``size``, then optionally ``name``, ``out_of_scope``
     and ``ranges``), each with its ``space``, ``at`` and half-open ``body`` ranges. Raises ``ValueError``
-    naming the line of the first row that does not parse."""
+    naming the line of the first row that does not parse. ``path`` must be absolute: the CLI resolves a
+    config's relative ``inventory`` against the config file's directory, and a library caller resolves
+    it the same way, so no path is read against the process's working directory."""
     if not isinstance(path, str) or not path:
         raise ValueError("inventory must name a function inventory TSV file")
     file = Path(path)
+    if not file.is_absolute():
+        raise ValueError("inventory must be an absolute path; resolve it against the config file's directory")
     if not file.is_file() or file.stat().st_size > MAX_INVENTORY:
         raise ValueError("inventory must be a regular file of at most 16 MiB")
     text = re.sub(r"(?:\r?\n)+$", "", file.read_text(encoding="utf-8").lstrip("﻿"))
@@ -116,6 +120,11 @@ def _domains(image):
         yield kind, low, low + r["end"] - r["start"]
 
 
+def _count(n, one, many):
+    """``n`` followed by the singular or the plural wording."""
+    return f"{n} {one if n == 1 else many}"
+
+
 def inventory_check(image, config):
     """Every resolved direct call target in the searched regions, classified against a function inventory.
 
@@ -124,22 +133,26 @@ def inventory_check(image, config):
     reported with one calling site, near or far, and the evidence of its best site: a call on the
     entry path, a contested instruction, or only a raw byte candidate.
     """
-    from .reports import direct_calls, search_coverage
+    from .reports import call_controls, direct_calls, search_coverage
     if "inventory" not in config:
         raise ValueError("inventory-check needs inventory, the path of a function inventory TSV")
     rows = read_inventory(config["inventory"], image)
     limit = integer(config.get("limit", 1000), 1, 10000, "result limit")
     calls = direct_calls(image, config)
-    seen, contested, scanned = calls["seen"], calls["contested"], calls["scanned"]
+    seen, contested = calls["seen"], calls["contested"]
 
     starts = {(row["space"], row["at"]) for row in rows}
     pieces = sorted((row["space"], begin, end, i) for i, row in enumerate(rows) for begin, end in row["body"])
     keys = [(space, begin) for space, begin, _, _ in pieces]
-    longest = max((end - begin for _, begin, end, _ in pieces), default=0)
+    # reach[i] is the furthest end of pieces[0..i] in pieces[i]'s space, so a lookup stops at the first
+    # piece before which nothing reaches the target, however long one row is.
+    reach = []
+    for i, (space, _, end, _) in enumerate(pieces):
+        reach.append(max(end, reach[-1]) if i and pieces[i - 1][0] == space else end)
 
     def owners(space, at):
         found, i = [], bisect_right(keys, (space, at)) - 1
-        while i >= 0 and pieces[i][0] == space and pieces[i][1] > at - longest - 1:
+        while i >= 0 and pieces[i][0] == space and reach[i] > at:
             if pieces[i][1] <= at < pieces[i][2]:
                 found.append(pieces[i][3])
             i -= 1
@@ -188,25 +201,32 @@ def inventory_check(image, config):
             entry["rows"] = [{k: rows[i][k] for k in ("start", "size", "name") if k in rows[i]} for i in held]
         missing.append(entry)
 
-    controls = config.get("controls", [])
-    if not isinstance(controls, list) or len(controls) > 256:
-        raise ValueError("Invalid positive controls")
-    for at in controls:
-        if type(at) is not int or at not in scanned or at not in seen or scanned[at]["target"] is None:
-            raise ValueError(f"Positive control {at} missed or not verified")
+    controls = call_controls(calls, config)
     coverage = search_coverage(image, calls["read"])
     partial = any(c["partial"] for c in coverage)
     path = tally["entry-path call"]
     lacking = path["insideAnotherRow"] + path["outsideEveryRow"]
+    # A target no declared region places is compared with no row, so it is left out of the comparison's total.
+    compared = path["targets"] - path["outsideDeclaredCode"]
     others = sum(t["insideAnotherRow"] + t["outsideEveryRow"] for label, t in tally.items() if label != "entry-path call")
-    summary = (f"{lacking} of the {path['targets']} call targets that entry-path calls resolve to are not inventory starts: "
-               f"{path['insideAnotherRow']} inside another row's body, {path['outsideEveryRow']} outside every row.")
+    summary = (f"{lacking} of the {_count(compared, 'call target that entry-path calls resolve to is', 'call targets that entry-path calls resolve to are')} "
+               f"not inventory starts: {path['insideAnotherRow']} inside another row's body, "
+               f"{path['outsideEveryRow']} outside every row.")
+    if path["outsideDeclaredCode"]:
+        summary += " " + _count(path["outsideDeclaredCode"],
+                                "more entry-path call target lies outside declared code and is not compared with the inventory.",
+                                "more entry-path call targets lie outside declared code and are not compared with the inventory.")
     if others:
-        summary += f" {others} more come only from contested instructions or raw byte candidates."
+        summary += f" {_count(others, 'more comes', 'more come')} only from contested instructions or raw byte candidates."
     if unresolved:
-        summary += f" {len(unresolved)} calls in the searched regions are unresolved."
+        reached = sum(row["site"] in seen for row in unresolved)
+        summary += (f" {_count(len(unresolved), 'call in the searched regions is', 'calls in the searched regions are')} "
+                    f"unresolved, {reached} of them on the entry path.")
+    stopped = {g.get("reason") for g in calls["gaps"]}
     if partial:
         summary += " The search is partial."
+    if "instruction limit" in stopped:
+        summary += " The entry-path walk stopped at its instruction limit, so it can reach more calls."
     summary += " Calls the search does not resolve can add targets."
     return {"inventory": {"path": config["inventory"], "rows": len(rows)},
             "targets": missing[:limit], "unresolved": unresolved[:limit],
@@ -214,7 +234,7 @@ def inventory_check(image, config):
             "counts": {"callTargets": len(by_target), **tally, "unresolvedCalls": len(unresolved),
                        "inventoryRows": len(rows), "rowsOutsideDeclaredCode": len(outside_code)},
             "truncated": any(len(x) > limit for x in (missing, unresolved, outside_code)),
-            "summary": summary, "controls": [scanned[at] for at in controls],
+            "summary": summary, "controls": controls,
             "searched": [r for r in image.regions if r["name"] in calls["scans"]], "coverage": coverage,
             "partialSearch": partial, "gaps": calls["gaps"],
             "exclusions": ["computed call targets (listed in unresolved when the walk reaches them)", "unrelocated far calls",
