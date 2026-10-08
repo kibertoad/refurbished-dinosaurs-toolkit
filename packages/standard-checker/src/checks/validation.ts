@@ -28,23 +28,24 @@ interface Run {
 }
 
 /**
- * With --record-validation, writes a run file to validation/ and deletes the run files that no
- * longer record any marked test file as it is now (or prints why it cannot record and exits with
- * 2). Then checks validation/ against the marked test files of the validated rows.
+ * With --record-validation, writes a run file to validation/ and deletes every other run file except
+ * one that lists a test file git tracks but the checkout does not hold (or prints why it cannot
+ * record and exits with 2). Then checks validation/ against the marked test files of the validated rows.
  */
 export function checkValidation(ctx: Context, { validatedTests }: Parity) {
   const { problem } = ctx;
   const { entries } = ctx.spec;
   const { repoDir } = ctx.config;
   const runDir = join(repoDir, VALIDATION_DIR);
-  const current = new Map<string, string>(); // marked test file of a validated row -> its hash now
-  for (const tf of validatedTests.keys()) {
-    const p = join(repoDir, tf);
-    if (existsSync(p)) current.set(tf, testHash(p));
-  }
+  // Marked test file of a validated row -> its hash now. Parity marks only a test file that exists.
+  const current = new Map([...validatedTests.keys()].map((tf) => [tf, testHash(join(repoDir, tf))] as const));
+  // A run that lists a file git tracks but this checkout does not hold, as a sparse checkout leaves
+  // its skip-worktree files absent, may still validate that file in a full checkout. Parity cannot
+  // see such a file, so the run is kept and never reported as stale here.
+  const listsUnseen = (run: Run) => unseen(repoDir, [...run.hashes.keys()]);
   // A run file is stale once no file it lists still has the hash it recorded: nothing it attests
   // describes the tree any more.
-  const stale = (run: Run) => ![...run.hashes].some(([tf, hash]) => current.get(tf) === hash);
+  const stale = (run: Run) => ![...run.hashes].some(([tf, hash]) => current.get(tf) === hash) && !listsUnseen(run);
 
   if (ctx.config.recordValidation !== undefined) {
     const builds = ctx.config.recordValidation;
@@ -138,6 +139,10 @@ export function checkValidation(ctx: Context, { validatedTests }: Parity) {
     }
     const date = new Date().toISOString().slice(0, 10);
     const name = `${date}-${commit.slice(0, 12)}.md`;
+    if (existsSync(runDir) && !statSync(runDir).isDirectory()) {
+      console.error(`--record-validation: ${VALIDATION_DIR} is not a directory, so the run cannot be written there`);
+      process.exit(2);
+    }
     mkdirSync(runDir, { recursive: true });
     writeFileSync(
       join(runDir, name),
@@ -157,14 +162,15 @@ export function checkValidation(ctx: Context, { validatedTests }: Parity) {
       ].join("\n"),
     );
     console.log(`wrote ${VALIDATION_DIR}/${name}`);
-    // The new run records every marked test file as it is now, so another run that records none of
-    // them is stale. A run file that cannot be read is left for the check to report.
+    // The new run records every marked test file as it is now, so every other run this checkout can
+    // judge adds nothing and is deleted. Another branch's runs are not in this tree, so they survive
+    // and come back with the merge. A run file that cannot be read is left for the check to report.
     for (const other of readdirSync(runDir).sort()) {
-      if (other === name || !RUN_NAME.test(other)) continue;
+      if (other === name || !RUN_NAME.test(other) || !statSync(join(runDir, other)).isFile()) continue;
       const run = readRun(join(runDir, other), () => {});
-      if (run && stale(run)) {
+      if (run && !listsUnseen(run)) {
         rmSync(join(runDir, other));
-        console.log(`deleted ${VALIDATION_DIR}/${other}, which records no test file as it is now`);
+        console.log(`deleted ${VALIDATION_DIR}/${other}, which the new run replaces`);
       }
     }
   }
@@ -181,23 +187,23 @@ export function checkValidation(ctx: Context, { validatedTests }: Parity) {
       for (const name of readdirSync(runDir).sort()) {
         const path = join(runDir, name);
         const m = RUN_NAME.exec(name);
-        if (!m) {
+        if (!m || !statSync(path).isFile()) {
           problem(path, "is not a run file; a run file is named <date>-<first 12 hex digits of the commit>.md");
           continue;
         }
         const run = readRun(path, (message) => problem(path, message), { date: m[1], commit: m[2] }, entries);
         if (!run) continue;
+        // --record-validation deletes a stale run only when it has a marked test file to record.
         if (stale(run))
           problem(
             path,
-            "records no marked test file of a validated row as it is now; delete it (--record-validation deletes such runs)",
+            `records no marked test file of a validated row as it is now; delete it${current.size ? " (--record-validation deletes such runs)" : ""}`,
           );
         runs.push(run);
       }
   }
   for (const [tf, rows] of validatedTests) {
     const hash = current.get(tf);
-    if (hash === undefined) continue;
     const listed = runs.filter((run) => run.hashes.has(tf));
     for (const { specId, file } of rows) {
       if (!listed.length)
@@ -211,6 +217,26 @@ export function checkValidation(ctx: Context, { validatedTests }: Parity) {
           `${specId}: ${tf} has changed since a run in ${VALIDATION_DIR}/ recorded it; run its tests against the original's files and record them again`,
         );
     }
+  }
+}
+
+/**
+ * Whether any of paths, relative to repoDir, is tracked by git but absent from the working tree.
+ * Outside a git repository nothing is tracked.
+ */
+function unseen(repoDir: string, paths: string[]): boolean {
+  const absent = paths.filter((p) => !existsSync(join(repoDir, p)));
+  if (!absent.length) return false;
+  try {
+    return (
+      execFileSync("git", ["--literal-pathspecs", "ls-files", "-z", "--", ...absent], {
+        cwd: repoDir,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }) !== ""
+    );
+  } catch {
+    return false;
   }
 }
 

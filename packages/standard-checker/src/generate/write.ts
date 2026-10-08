@@ -148,10 +148,12 @@ export function checkLineLimits(ctx: Context) {
   const parityDir = join(repoDir, "parity");
   const devDir = join(repoDir, "deviations");
   const files = [join(repoDir, "PARITY.md")];
+  // A validation that is a file is reported by the validation check.
   for (const dir of [specDir, parityDir, devDir, join(repoDir, VALIDATION_DIR)])
-    walk(dir, (f) => {
-      if (f.endsWith(".md")) files.push(f);
-    });
+    if (existsSync(dir) && statSync(dir).isDirectory())
+      walk(dir, (f) => {
+        if (f.endsWith(".md")) files.push(f);
+      });
   for (const f of files) {
     if (!existsSync(f)) continue;
     const lines = lineCount(readText(f));

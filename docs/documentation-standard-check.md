@@ -424,8 +424,11 @@ pnpm exec standard-checker --record-validation BLD-GOG-EN-1.1
 This writes a run file, `validation/<date>-<commit>.md`, where the date is the day of the run and
 the commit is the first 12 hex digits of HEAD. It holds the full commit, the date, the builds the
 run used, and the SHA-256 of every marked test file a validated row lists, hashed with CRLF read as
-LF. Recording then deletes every other run file that no longer records any of those files with the
-hash it has now, since nothing in it describes the tree any more.
+LF. Recording then deletes every other run file, since the new run records every marked test file as
+it is now. It keeps a run file that lists a test file git tracks but the checkout does not hold, as
+a sparse checkout leaves its skip-worktree files absent, because that run may still be the one that
+validates the file in a full checkout. Runs recorded on other branches are not in the tree, so they
+come back when those branches merge.
 
 The standard defines the commit as the commit the run tested, and the check writes HEAD there, so
 the run has to test HEAD as committed. The check refuses to record, and exits with 2, when the
@@ -438,7 +441,8 @@ A run file is never edited after it is written. Two branches that each record a 
 with different names, and when they merge, each run keeps counting for the test files it still
 matches. A marked test file of a validated row passes while any run file records the hash it has
 now. The check, in CI as well, fails a validated row whose marked test file no run records, or no
-run records as it is now; a run file none of whose files has the hash it recorded; a run file whose
+run records as it is now; a run file none of whose files has the hash it recorded, unless it lists
+a tracked file the checkout does not hold; a run file whose
 name does not match its Date and Commit; any other file in `validation/`; and a `VALIDATION.md` at
 the root. A restoration whose validated rows list no marked file needs no run file. The run files
 hold hashes of the marked test files only, so the check fails on the first commit when a marked

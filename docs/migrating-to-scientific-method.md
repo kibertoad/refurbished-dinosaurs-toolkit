@@ -318,14 +318,14 @@ that each recorded a run conflicted, and so did a merge of the base branch into 
 record had changed. The check now reads one file per run from `validation/`, named
 `<date>-<first 12 hex digits of the commit>.md`, and fails while `VALIDATION.md` exists. A marked
 test file of a validated row passes while any run file records the hash it has now, and
-`--record-validation` writes a new run file and deletes the ones that no longer match anything.
+`--record-validation` writes a new run file and deletes the others.
 
 Move the record in one commit. The existing record is still a valid run, so it moves rather than
 being run again:
 
 ```sh
-date=$(sed -n 's/^- Date: //p' VALIDATION.md)
-commit=$(sed -n 's/^- Commit: //p' VALIDATION.md | cut -c1-12)
+date=$(tr -d '\r' < VALIDATION.md | sed -n 's/^- Date: *//p' | tr -d ' ')
+commit=$(tr -d '\r' < VALIDATION.md | sed -n 's/^- Commit: *//p' | cut -c1-12)
 mkdir -p validation
 git mv VALIDATION.md "validation/$date-$commit.md"
 ```

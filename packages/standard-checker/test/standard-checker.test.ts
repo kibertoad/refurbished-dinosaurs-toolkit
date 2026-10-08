@@ -2337,6 +2337,55 @@ test("--record-validation deletes the runs that no longer match", (t) => {
   assert.equal(run(root, "--check").status, 0);
 });
 
+test("--record-validation deletes an earlier run that still matches", (t) => {
+  const root = broken(t, (r) => {
+    validateRow(r);
+    // The commit carries regenerated indexes and PARITY.md, so a second record finds the tree clean.
+    run(r);
+    commitAll(r);
+  });
+  const old = recordRun(root);
+  const earlier = join(root, "validation", "2026-01-02-0123456789ab.md");
+  writeFileSync(
+    earlier,
+    readFileSync(old, "utf8")
+      .replace(/^- Commit: .*$/m, `- Commit: 0123456789ab${"c".repeat(28)}`)
+      .replace(/^- Date: .*$/m, "- Date: 2026-01-02"),
+  );
+  // The earlier run still matches the test file, so the check passes with both.
+  assert.equal(run(root, "--check").status, 0);
+  const recorded = run(root, "--record-validation", "BLD-EXAMPLE-1.0");
+  assert.equal(recorded.status, 0, recorded.output);
+  assert.match(recorded.output, /deleted validation\/2026-01-02-0123456789ab\.md, which the new run replaces/);
+  assert.deepEqual(readdirSync(join(root, "validation")), [old.split(/[\\/]/).pop()]);
+});
+
+test("a run of a test file the sparse checkout does not hold is kept", (t) => {
+  const audio = `| \`tests/Audio.test.ts\` | \`${"0".repeat(64)}\` |`;
+  const root = broken(t, (r) => {
+    validateRow(r);
+    writeFileSync(join(r, "tests", "Audio.test.ts"), "// needs: GAME_DIR\n");
+    run(r);
+    commitAll(r);
+  });
+  const sparse = join(root, "validation", "2026-01-02-0123456789ab.md");
+  writeFileSync(
+    sparse,
+    readFileSync(recordRun(root), "utf8")
+      .replace(/^- Commit: .*$/m, `- Commit: 0123456789ab${"c".repeat(28)}`)
+      .replace(/^- Date: .*$/m, "- Date: 2026-01-02")
+      .replace(/^\| `tests\/Score\.test\.ts` .*$/m, audio),
+  );
+  spawnSync("git", ["update-index", "--skip-worktree", "tests/Audio.test.ts"], { cwd: root });
+  rmSync(join(root, "tests", "Audio.test.ts"));
+  const checked = run(root, "--check");
+  assert.equal(checked.status, 0, checked.output);
+  const recorded = run(root, "--record-validation", "BLD-EXAMPLE-1.0");
+  assert.equal(recorded.status, 0, recorded.output);
+  assert.equal(existsSync(sparse), true);
+  assert.equal(readdirSync(join(root, "validation")).length, 2);
+});
+
 test("a run file's name gives its date and commit", (t) => {
   const root = broken(t, (r) => {
     validateRow(r);
@@ -2350,6 +2399,56 @@ test("a run file's name gives its date and commit", (t) => {
   assert.match(output, /2026-01-02-0123456789ab\.md: Date is \d{4}-\d{2}-\d{2}, but the file's name gives 2026-01-02/);
   assert.match(output, /2026-01-02-0123456789ab\.md: Commit is [0-9a-f]{40}, but the file's name gives 0123456789ab/);
   assert.match(output, /notes\.md: is not a run file/);
+});
+
+test("a directory in validation/ or a validation file is reported", (t) => {
+  const inside = broken(t, (r) => {
+    validateRow(r);
+    commitAll(r);
+    recordRun(r);
+    mkdirSync(join(r, "validation", "2026-01-02-0123456789ab.md"));
+  });
+  const nested = run(inside, "--check");
+  assert.equal(nested.status, 1, nested.output);
+  assert.match(nested.output, /2026-01-02-0123456789ab\.md: is not a run file/);
+
+  const file = broken(t, (r) => {
+    validateRow(r);
+    commitAll(r);
+    writeFileSync(join(r, "validation"), "# Validation run\n");
+  });
+  const checked = run(file, "--check");
+  assert.equal(checked.status, 1, checked.output);
+  assert.match(checked.output, /validation: must be a directory of run files/);
+  const recorded = run(file, "--record-validation", "BLD-EXAMPLE-1.0");
+  assert.equal(recorded.status, 2, recorded.output);
+});
+
+test("a run file left when no validated row has a marked test file is reported", (t) => {
+  const root = broken(t, (r) => {
+    mkdirSync(join(r, "validation"));
+    writeFileSync(
+      join(r, "validation", "2026-01-02-0123456789ab.md"),
+      [
+        "# Validation run",
+        "",
+        `- Commit: 0123456789ab${"c".repeat(28)}`,
+        "- Date: 2026-01-02",
+        "- Builds: BLD-EXAMPLE-1.0",
+        "",
+        "| Test file | SHA-256 |",
+        "|---|---|",
+        `| \`tests/Score.test.ts\` | \`${"0".repeat(64)}\` |`,
+        "",
+      ].join("\n"),
+    );
+  });
+  const { status, output } = run(root, "--check");
+  assert.equal(status, 1);
+  assert.match(
+    output,
+    /2026-01-02-0123456789ab\.md: records no marked test file of a validated row as it is now; delete it$/m,
+  );
 });
 
 test("a VALIDATION.md left from before run files is reported", (t) => {
