@@ -138,6 +138,25 @@ next to any "no callers", "no references" or "exactly N sites" claim:
   `ReportScalarConstants memory <address>` is the Ghidra-side
   search for the same memory operands, direct and indexed, without access. Neither sees a write
   through a pointer computed at run time.
+- Each search for an address reads one of three layers, and a complete search of one says nothing
+  about the next. Name the layer next to the claim:
+  1. Recorded references. `ReportReferences` and the call scripts above list what Ghidra's
+     analysis recorded a reference for. References start only at instructions and at data Ghidra
+     defined as a pointer, so a value in bytes it left undefined has none.
+  2. Decoded operands. `ReportScalarConstants` reads every instruction Ghidra disassembled and
+     nothing else. The engine's `operand-candidates` decodes at every byte of the declared
+     regions, counts a memory operand as a use only on a path from a declared entry, and lists a
+     decode off those paths as `unresolvedBoundary` or `rejectedOverlap`.
+  3. Literal bytes. A byte scan of the mapped file for the value, with the positive control the
+     next paragraph asks for, finds it wherever it occurs: in
+     code, in data and in bytes no analysis disassembled. A hit that `ReportInstructionContext`
+     places in no instruction, and that `operand-candidates` does not count as a use, has no code
+     provenance yet. It establishes no instruction boundary, no reachability and no access kind,
+     so it stays an unclassified candidate: counting it as a writer and dropping it from the count
+     both claim more than the scan showed.
+
+  No layer sees an address computed at run time, an access through an aliased pointer or segment,
+  or a write from outside the program.
 - The first-argument scripts take the nearest `PUSH` before the call. A value moved into a
   register after the last push (`PUSH ESI; MOV ESI,0x23; CALL`) is not the first stack argument;
   if the callee reads it, it is a register argument, and the scripts list the call as non-literal.
