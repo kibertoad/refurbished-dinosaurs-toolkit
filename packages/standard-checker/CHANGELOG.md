@@ -1,5 +1,13 @@
 # @scientific-method/standard-checker
 
+## 2.9.1
+
+### Patch Changes
+
+- be596da: Read `''` inside a single-quoted YAML value as one single quote, as YAML does. A value such as
+  `'C:\Users\O''Brien\Saves'` was cut at the first quote, so a listing record or spec file could not
+  hold a value with a single quote and also a double quote or a backslash.
+
 ## 2.9.0
 
 ### Minor Changes
