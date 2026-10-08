@@ -9,13 +9,18 @@
 // ../ parts, that does not continue a longer path or word. It is the rebuild's when it exists, or
 // when it is written with forward slashes and has a file extension or goes more than one level down,
 // so prose such as "tests/experiments" does not count, and neither does a path of the original's
-// own sources quoted as evidence, such as `src\game\score.cpp` from an assert string. A file name is a name with the extension of a source file (.cs, .fs, .ts, .mjs, .js, .ps1)
-// that some file in a --rebuild directory has. The generated indexes in spec/index/ are left out.
+// own sources quoted as evidence, such as `src\game\score.cpp` from an assert string. In a source
+// entry (spec/sources/) a path is the rebuild's only when it exists: the entry describes a source
+// outside the rebuild, such as another project's repository or a shipped archive, and a path in it
+// that does not exist here is that source's own, such as `src/gpl/state.c`. A file name is a name
+// with the extension of a source file (.cs, .fs, .ts, .mjs, .js, .ps1) that some file in a
+// --rebuild directory has. The generated indexes in spec/index/ are left out.
 
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join, sep } from "node:path";
 import type { Context } from "../context.ts";
 import { toSlash, walk } from "../files.ts";
+import { KINDS } from "../standard.ts";
 
 const EXTENSIONS = "(?:cs|fs|ts|mjs|js|ps1)";
 const SOURCE = new RegExp(`\\.${EXTENSIONS}$`);
@@ -43,8 +48,10 @@ export function checkRebuildPaths(ctx: Context) {
   );
   const NAME_RE = new RegExp(`(?<![\\w./\\\\-])[\\w.-]+\\.${EXTENSIONS}(?![\\w-])`, "g");
   const index = join(specDir, "index") + sep;
+  const sources = join(specDir, KINDS.SRC.dir) + sep;
   walk(specDir, (file) => {
     if (!file.endsWith(".md") || file.startsWith(index)) return;
+    const source = file.startsWith(sources);
     const lines = readFileSync(file, "utf8").replace(/\r\n?/g, "\n").split("\n");
     lines.forEach((line, i) => {
       const found = new Set<string>();
@@ -57,7 +64,8 @@ export function checkRebuildPaths(ctx: Context) {
         // A path written with backslashes is the original's (an assert string, a build path) unless
         // it exists: the spec and the rebuild write their own paths with forward slashes.
         const guessed = !path.includes("\\") && (/\.\w+$/.test(rest) || rest.includes("/"));
-        if (exists || guessed) found.add(path);
+        // A path in a source entry that does not exist here names a file of the source it describes.
+        if (exists || (guessed && !source)) found.add(path);
       }
       for (const [name] of line.matchAll(NAME_RE)) if (names.has(name)) found.add(name);
       for (const name of found)
