@@ -310,6 +310,18 @@ public sealed class BuildListingTests : IDisposable
         Assert.Contains("  - path: \"Player's Guide.txt\"\n", BuildListing.Make(install, [], Day).ToYaml(), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task WritesAValueWithBothQuotesInSingleQuotesWithTheQuoteDoubled()
+    {
+        var image = Path.Combine(_work, "game.iso");
+        await File.WriteAllBytesAsync(image, ContentSourceExtractorTests.BuildTreeIso(new Dictionary<string, byte[]>
+        {
+            ["SETUP.EXE"] = new byte[7]
+        }), Token);
+        var record = BuildListing.Make(null, [new BuildListingDisc("CD:", image, "Bob's \"best\" disc.iso")], Day);
+        Assert.Contains("    source: 'Bob''s \"best\" disc.iso'\n", record.ToYaml(), StringComparison.Ordinal);
+    }
+
     private static string Msf(int sector) => $"{sector / 75 / 60:D2}:{sector / 75 % 60:D2}:{sector % 75:D2}";
 
     private static async Task WriteAsync(string path, int length)

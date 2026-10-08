@@ -71,12 +71,11 @@ public sealed class BuildListingRecord
 
     /// <summary>
     /// The record as the YAML the documentation standard gives. Each text value is written in single
-    /// quotes, or in double quotes when it holds a single quote.
+    /// quotes, or in double quotes when it holds a single quote and neither a double quote nor a
+    /// backslash. A value that holds a single quote and also a double quote or a backslash is written
+    /// in single quotes with each single quote doubled, which only releases of
+    /// <c>@scientific-method/standard-checker</c> after 2.9.0 read.
     /// </summary>
-    /// <exception cref="InvalidDataException">
-    /// A path, link target or source holds both a single quote and a double quote or a backslash,
-    /// which no quoted form the checker reads can hold. The message names the value.
-    /// </exception>
     public string ToYaml()
     {
         var text = new StringBuilder();
@@ -104,14 +103,14 @@ public sealed class BuildListingRecord
         return text.ToString();
     }
 
-    // The checker's YAML reader ends a quoted value at the next quote of its kind and reads no
-    // escapes, and in double quotes a backslash starts an escape in YAML itself.
+    // The checker's YAML reader reads no escapes in double quotes, where a backslash starts one in YAML
+    // itself. In single quotes it reads '' as one quote only in releases after standard-checker 2.9.0,
+    // so a value with a single quote goes in double quotes where it can, which every release reads.
     private static string Quoted(string value)
     {
         if (!value.Contains('\'')) return $"'{value}'";
         if (!value.Contains('"') && !value.Contains('\\')) return $"\"{value}\"";
-        throw new InvalidDataException(
-            $"{AssetVerifier.JsonString(value)} holds a single quote and a double quote or backslash, so the listing record cannot write it.");
+        return $"'{value.Replace("'", "''", StringComparison.Ordinal)}'";
     }
 }
 

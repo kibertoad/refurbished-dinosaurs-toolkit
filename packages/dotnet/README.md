@@ -266,8 +266,11 @@ a control character, `|`, an unpaired surrogate, a `\` in a Linux or macOS name,
 name that starts like a disc path, such as `CD:x`. It refuses a disc `Source` that holds a `\`
 before listing anything. A `stopped` item gives the kind of failure, such as
 `a directory it could not enter (UnauthorizedAccessException)`, and not the exception's message,
-which names the full path on the machine that made the listing. `ToYaml` throws on a value with a single
-quote and also a double quote or backslash, which no quoted form the checker reads can hold.
+which names the full path on the machine that made the listing. `ToYaml` writes a value in single
+quotes, or in double quotes when it holds a single quote and neither a double quote nor a backslash.
+A value with a single quote and also a double quote or backslash, such as a link target under
+`C:\Users\O'Brien`, goes in single quotes with the quote doubled (`''`), which
+`@scientific-method/standard-checker` reads in releases after 2.9.0.
 
 The record shows what the listing found. It reads no file, holds no hashes, and does not show
 which files the game uses.

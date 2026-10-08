@@ -13,8 +13,14 @@ export function parseScalar(raw: string): Yaml {
     return v.slice(1, end);
   }
   if (v.startsWith("'")) {
-    const end = v.indexOf("'", 1);
-    return v.slice(1, end);
+    // In single quotes, '' stands for one quote, as YAML reads it.
+    let out = "";
+    for (let i = 1; i < v.length; i++) {
+      if (v[i] !== "'") out += v[i];
+      else if (v[i + 1] === "'") out += v[i++];
+      else break;
+    }
+    return out;
   }
   const hash = v.search(/\s#/);
   if (hash >= 0) v = v.slice(0, hash).trim();
