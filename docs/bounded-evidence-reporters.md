@@ -103,7 +103,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 |---|---|---|
 | `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; follows an indirect far call or jump whose pointer the path produced; declared-table continuations run on their own `continuationBudget`; checks `relationalControls`; `entryFrame` starts an entry inside its function's frame | this section, [narrower entries](#a-narrower-entry-inside-its-functions-frame), [indirect far transfers](#indirect-far-transfers-through-a-traced-pointer), [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
-| `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; a stop inside a called function also continues the inventory at the return site of each call open at the stop, named in `dependsOn` | this section, [hardware boundaries](#hardware-boundaries) |
+| `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; the inventory continues past interrupts, which it assumes return to the next instruction, and a stop inside a called function also continues it at the return site of each call open at the stop, each named in `dependsOn` | this section, [hardware boundaries](#hardware-boundaries) |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
 | `inventory-check` | every resolved direct call target in the searched regions that a function inventory does not list as a start, with one calling site each and counts for a coverage report | [inventory call targets](#call-targets-a-function-inventory-lacks) |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
@@ -296,15 +296,20 @@ numeric `segment`. It traces each established entry instead of linearly decoding
 a region. `controls` names known matching instruction offsets; a missed control
 is an error. The report separates matching accesses, possible unknown aliases,
 raw operand candidates and undecoded ranges. After a stopped effect trace,
-explicit memory operands reached from the stops are still inventoried (in the PE32
-model also those reached only by continuing past a port access, see
-[hardware boundaries](#hardware-boundaries)), in
+explicit memory operands reached from the stops are still inventoried (also those
+reached only by continuing past an interrupt, which the inventory assumes returns
+to the next instruction, and in the PE32 model those reached only by continuing
+past a port access, see [hardware boundaries](#hardware-boundaries)), in
 `conditionalAccesses` rather than `matches`, with unknown values and segment state.
 Their default or overridden segment-register name is retained, and x87 and
 INS/OUTS operands take their access direction from the mnemonic. Each one's
-`dependsOn` names the stops whose CFG reaches it (an unread call, an unsupported
-instruction, an exhausted budget) and every call, and in the PE32 model every
-port access, it is reached past, since those were never traced either. Once a
+`dependsOn` names the stops whose CFG reaches it (an unread call, an unmodeled
+interrupt, an unsupported instruction, an exhausted budget) and every call and
+interrupt, and in the PE32 model every port access, it is reached past, since
+those were never traced either. An interrupt it is reached past has the reason
+`interrupt past a stop; assumed to return to the next instruction`, or, when the
+query's `callModels` model it, `modeled interrupt past a stop; returns to the next
+instruction as its call model declares`. Once a
 named callee has been read, those are the accesses to re-check.
 
 A stop inside a directly called function does not end the inventory at that
@@ -313,14 +318,14 @@ continues at the call's return site in the caller, and for a nested stop at the
 return site of every open call out to the entry. A path dropped at a path limit
 inside a called function counts as a stop there. A return site is continued only
 when the called function's CFG from the stop (or from the inner return site)
-reaches a return instruction, with calls inside it stepped over; a callee that
+reaches a return instruction, with calls and interrupts inside it stepped over; a callee that
 cannot return on its encoded CFG leaves its caller's continuation out. In the
 PE32 model an IRET stops the trace, so it is no such return. A stop at a
 return instruction is that return failing, so it continues no caller. The
 `dependsOn` of a row reached this way names the stop, each open call between the
 stop and the row with `call open at a stop inside its callee; continued at its
-return site, assumed to return`, and every call and PE32 port access stepped
-over on the way to those returns. In the PE32 model such a row counts as reached
+return site, assumed to return`, and every call, interrupt and PE32 port access
+stepped over on the way to those returns. In the PE32 model such a row counts as reached
 past a port access when the stop is one or when every route to a callee's return
 crosses one. A walk to a callee's return that exhausts `instructionLimit` records
 an `instruction limit` gap at its start and continues no caller beyond it.
@@ -772,8 +777,16 @@ return and leaves the interrupt's FLAGS word on the stack, as DOS INT 25h and 26
 and the word at SS:SP is the pre-interrupt FLAGS, reported as a `flags-save` event, so a later
 `popf` restores them. `leavesFlags` is rejected on any other model and with any value but `true`.
 A model at INT1, INT3 (also written as `INT 1` or `INT 3`), INTO or at any interrupt in the PE32
-model is not used, and the path stops there as without it. A path that stops on the model's `preservesMemory` scopes reports the boundary event
-without `modeled`.
+model is not used, and the path stops there as without it. A path that stops on the model's
+`preservesMemory` scopes reports the boundary event without `modeled`.
+
+The entry walk behind `uses` and the boundary walk for declared table targets continue past an
+interrupt whose model the trace uses, so an access traced after it is a `uses` match, and a table
+target after it is a verified boundary. Like a call's return site, the instruction after the
+interrupt is reached only if the handler returns, so that fall-through never proves an overlapping
+instruction start. Without a model, `uses` lists an operand after the interrupt in
+`conditionalAccesses` with the interrupt in `dependsOn`, and the walk's
+`hardware or interrupt boundary` gap at the interrupt stays.
 
 `trace` and every command built on it return `hardwareBoundaries`, one row per
 boundary site with the `paths` and `declaredContinuationPaths` that reach it,

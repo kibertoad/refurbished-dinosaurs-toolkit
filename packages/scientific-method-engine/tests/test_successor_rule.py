@@ -4,7 +4,7 @@ from test_x86 import configuration
 from test_pe import CODE_RAW, fixture as pe_fixture
 from scientific_method_engine.x86.image import Image
 from scientific_method_engine.x86.reports import _function_exit
-from scientific_method_engine.x86.trace import walk
+from scientific_method_engine.x86.trace import walk, modeled_interrupt_sites
 
 
 def table(code, targets, exhaustive):
@@ -37,9 +37,9 @@ REAL_MODE = [
     ("call to its return site", "e8 00 00 c3", {}, {3}, {3}, (), False),
     ("far call", "9a 06 00 00 10 c3 c3", FAR_FIXUP, {5}, {5}, {6}, False),
     ("far jump", "ea 06 00 00 10 c3 c3", FAR_FIXUP, {6}, {6}, (), False),
-    ("interrupt", "cd 21 c3", {}, set(), set(), (), False),
-    ("breakpoint", "cc c3", {}, set(), set(), (), False),
-    ("overflow interrupt", "ce c3", {}, set(), set(), (), False),
+    ("interrupt", "cd 21 c3", {}, {2}, {2}, (), False),
+    ("breakpoint", "cc c3", {}, {1}, {1}, (), False),
+    ("overflow interrupt", "ce c3", {}, {1}, {1}, (), False),
     ("hlt", "f4 c3", {}, set(), set(), (), False),
     ("port input", "ec c3", {}, {1}, {1}, (), False),
     ("port output", "e6 60 c3", {}, {2}, {2}, (), False),
@@ -59,14 +59,15 @@ FLAT = [
     ("port input", "ec c3", set(), {1}, (), False),
     ("port output", "e6 60 c3", set(), {2}, (), False),
     ("string port output", "f3 6e c3", set(), {2}, (), False),
-    ("interrupt", "cd 2e c3", set(), set(), (), False),
+    ("interrupt", "cd 2e c3", {2}, {2}, (), False),
     ("hlt", "f4 c3", set(), set(), (), False),
 ]
 
 
 class SuccessorRuleTests(unittest.TestCase):
     def check(self, image, start, expected, stepped, returns, follow):
-        seen, _, _, _, _ = walk(image, [start], follow_flat_ports=follow)
+        # The uses inventory past a stop follows interrupts in both walks.
+        seen, _, _, _, _ = walk(image, [start], follow_flat_ports=follow, follow_interrupts=True)
         route, exits, truncated = _function_exit(image, start, 10000, follow, {})
         walked = {at - start for at in seen} - {0}
         routed = {at - start for at in route}
@@ -90,6 +91,26 @@ class SuccessorRuleTests(unittest.TestCase):
             for follow in (False, True):
                 with self.subTest(exhaustive=exhaustive, follow_flat_ports=follow):
                     self.check(Image(data, configuration(data, **extra)), 0, {3, 4}, (), False, follow)
+
+    def test_entry_walk_continues_past_modeled_interrupts_only(self):
+        # (code, whether a call model at 0 is used, sites walked without and with the model at 0)
+        cases = [("cd 21 c3", True, {0}, {0, 2}), ("cc c3", False, {0}, {0}), ("ce c3", False, {0}, {0})]
+        for code, used, without, with_model in cases:
+            data = bytes.fromhex(code)
+            image = Image(data, configuration(data))
+            modeled = modeled_interrupt_sites(image, [{"site": 0}])
+            with self.subTest(code):
+                self.assertEqual(modeled, frozenset({0}) if used else frozenset())
+                seen, gaps, _, _, _ = walk(image, [0])
+                self.assertEqual(set(seen), without)
+                self.assertIn({"site": 0, "reason": "hardware or interrupt boundary"}, gaps)
+                seen, gaps, _, _, _ = walk(image, [0], modeled_interrupts=modeled)
+                self.assertEqual(set(seen), with_model)
+                self.assertEqual(any(g["reason"] == "hardware or interrupt boundary" for g in gaps), not used)
+        # In the PE32 model a call model at an interrupt is not used.
+        data, config = pe_fixture("cd 2e c3")
+        image = Image(data, config)
+        self.assertEqual(modeled_interrupt_sites(image, [{"site": CODE_RAW}]), frozenset())
 
     def test_flat_model_walks_continue_at_the_same_sites(self):
         for name, code, without, with_ports, stepped, returns in FLAT:
