@@ -38,7 +38,20 @@ export interface Inventory {
   file: string;
   /** The format addresses in the file are given in: the unpacked format of a packed file. */
   format: Yaml;
+  /** The rows that could be read. */
   functions: InventoryRow[];
+  /** How many rows the inventory has below its header, read or not. */
+  rows: number;
+  /** How many of them could not be read; each has a problem. */
+  invalidRows: number;
+}
+
+/** An inventory that could not be read at all, with the reason, which is also one of the problems. */
+export interface UnreadInventory {
+  /** The inventory's path, relative to the root. */
+  path: string;
+  /** Why it could not be read, the problem without the path. */
+  reason: string;
 }
 
 /**
@@ -109,15 +122,18 @@ function inventoryTarget(path: string): { build: string; file: string } | null {
 }
 
 /**
- * Reads every inventory under repoDir/coverage. Returns the inventories that could be read, and a
- * problem for each inventory or row that could not, starting with the inventory's path.
+ * Reads every inventory under repoDir/coverage. Returns the inventories whose header could be read,
+ * each with the rows that could be read and a count of those that could not; the inventories that
+ * could not be read at all; and a problem for each inventory or row that could not, starting with
+ * the inventory's path.
  */
 export function readInventories(
   repoDir: string,
   spec: { entries: Map<string, unknown>; buildFiles: Map<string, Meta[]>; codeRanges: Map<string, CodeRange[]> },
-): { inventories: Inventory[]; problems: string[] } {
+): { inventories: Inventory[]; unread: UnreadInventory[]; problems: string[] } {
   const { entries, buildFiles, codeRanges } = spec;
   const problems: string[] = [];
+  const unread: UnreadInventory[] = [];
   // Every .tsv file at any depth. The checker's walk skips directories such as bin/, which can hold
   // a shipped file and so an inventory.
   const coverageDir = join(repoDir, "coverage");
@@ -131,24 +147,28 @@ export function readInventories(
   const inventories: Inventory[] = [];
   for (const path of paths) {
     const bad = (why: string) => problems.push(`${path}: ${why}`);
+    const reject = (why: string) => {
+      bad(why);
+      unread.push({ path, reason: why });
+    };
     const target = inventoryTarget(path);
     const bf = target && (buildFiles.get(target.build) ?? []).find((f) => f.path === target.file);
     // A side file is skipped, with or without its inventory, unless the manifest names a file whose
     // inventory it would be.
     if (!bf && SIDE_FILES.some((s) => path.endsWith(s))) continue;
     if (!target) {
-      bad("is not coverage/<build>/<file>.tsv for a build ID and a path its manifest gives");
+      reject("is not coverage/<build>/<file>.tsv for a build ID and a path its manifest gives");
       continue;
     }
     const { build, file } = target;
     if (!bf) {
-      bad(entries.has(build) ? `${file} is not in the manifest of ${build}` : `${build} is not a build of the spec`);
+      reject(entries.has(build) ? `${file} is not in the manifest of ${build}` : `${build} is not a build of the spec`);
       continue;
     }
     const format: Yaml = bf.unpacked?.format ?? bf.format;
     const rule = locationRule(format);
     if (!rule?.address) {
-      bad(`${file} is a ${format} file, which holds no code to inventory`);
+      reject(`${file} is a ${format} file, which holds no code to inventory`);
       continue;
     }
     const lines = readFileSync(join(repoDir, path), "utf8")
@@ -162,7 +182,7 @@ export function readInventories(
       new Set(columns).size !== columns.length ||
       columns.some((c) => !["start", "size", "name", "out_of_scope", "ranges"].includes(c))
     ) {
-      bad("the columns are start and size, then optionally name, out_of_scope and ranges, each once");
+      reject("the columns are start and size, then optionally name, out_of_scope and ranges, each once");
       continue;
     }
     const ranges: CodeRange[] = (codeRanges.get(build) ?? []).filter((r) => r.file === file);
@@ -265,7 +285,16 @@ export function readInventories(
     functions.sort((a, b) =>
       a.space === b.space ? (a.at < b.at ? -1 : a.at > b.at ? 1 : 0) : a.space < b.space ? -1 : 1,
     );
-    inventories.push({ path, build, file, format, functions });
+    inventories.push({
+      path,
+      build,
+      file,
+      format,
+      functions,
+      rows: lines.length,
+      // Every row is either read into functions or rejected with a problem.
+      invalidRows: lines.length - functions.length,
+    });
   }
-  return { inventories, problems };
+  return { inventories, unread, problems };
 }

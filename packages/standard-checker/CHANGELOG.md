@@ -1,5 +1,31 @@
 # @scientific-method/standard-checker
 
+## 4.0.0
+
+### Major Changes
+
+- 6f2032f: `standard-coverage` gives no figures for an inventory with a row it cannot read. It prints `<path>: not measured, <n> of <m> rows are invalid`, and `--json` lists such an inventory, and one it cannot read at all, under a new `unmeasured` array of `path` and `reason` instead of under `inventories`. Figures over the readable rows left the other functions out of both counts, and an inventory whose rows were all invalid printed `0 of 0 functions cited`.
+
+## 3.0.1
+
+### Patch Changes
+
+- 88ec74c: A source entry in `spec/sources/` may cite its external source's own paths, such as `src/gpl/state.c` from another project's repository or the members of a shipped archive. In a source entry, a path under a `--rebuild` directory counts as the rebuild's only when it exists in the restoration. Other Markdown in the spec, including files under `spec/sources/` that are not source entries, keeps the existing rule. Whether a path exists in the rebuild is now decided ignoring case on every platform, so Linux reports the same paths as Windows and macOS.
+
+## 3.0.0
+
+### Major Changes
+
+- afa327e: Validation runs are recorded in `validation/`, one file per run named `<date>-<commit>.md`, in place of `VALIDATION.md`. A marked test file of a validated row passes while any run file records the hash it has now, `--record-validation` deletes every other run file except one that lists a test file a sparse checkout does not hold, and the check fails while `VALIDATION.md` exists. Two branches that each record a run no longer conflict. The migration guide shows how to move an existing record.
+
+## 2.9.1
+
+### Patch Changes
+
+- be596da: Read `''` inside a single-quoted YAML value as one single quote, as YAML does. A value such as
+  `'C:\Users\O''Brien\Saves'` was cut at the first quote, so a listing record or spec file could not
+  hold a value with a single quote and also a double quote or a backslash.
+
 ## 2.9.0
 
 ### Minor Changes

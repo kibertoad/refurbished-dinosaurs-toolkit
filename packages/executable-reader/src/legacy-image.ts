@@ -78,7 +78,9 @@ export function span(start: number, size: number, end: number, label: string): v
 }
 /**
  * Parses an MZ executable and its optional FBOV overlay envelope. Every table and range is
- * bounds-checked, and NE, LE, LX and PE executables behind an MZ stub are refused.
+ * bounds-checked, and NE, LE, LX and PE executables behind an MZ stub are refused. The word at 0x3C
+ * is read as the offset of such a header only when the header is at least 64 bytes and the
+ * relocation table does not cover 0x3C..0x3F.
  * @param bytes The whole executable, at most 256 MiB.
  * @param loadSegment The segment the resident image is loaded at; addresses are reported relative to it.
  */
@@ -115,7 +117,8 @@ export function readMz(bytes: Buffer, loadSegment = 0x1000): MzImage {
     if (relocations.has(p)) throw new Error("Duplicate MZ relocation operand");
     relocations.add(p);
   }
-  if (header >= 64) {
+  // A relocation table that covers 0x3C..0x3F holds an entry there, so those bytes are no e_lfanew.
+  if (header >= 64 && !(count && table < 64 && table + count * 4 > 60)) {
     const extended = u32(60);
     if (
       extended >= header &&

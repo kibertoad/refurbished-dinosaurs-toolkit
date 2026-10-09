@@ -311,6 +311,45 @@ states it in `preservedMemoryScopes`; cite that hypothesis wherever the report i
 
 ## Standard checker upgrades
 
+### `standard-coverage` gives no figures for an inventory it could not read in full
+
+An inventory with a row that did not parse was measured over its other rows, so its figures left
+that row's function out of both counts, and an inventory whose rows all failed printed
+`0 of 0 functions cited` beside its problems. Such an inventory now prints
+`<path>: not measured, <n> of <m> rows are invalid`, and `--json` lists it under a new
+`unmeasured` array of `path` and `reason`, with the inventories that could not be read at all,
+instead of under `inventories`. The exit code is 1, as before.
+
+A script that reads `--json` takes `unmeasured` as files whose coverage is unknown, never as files
+with nothing cited, and one that matches the text output matches the `not measured` line.
+
+### Validation runs move from `VALIDATION.md` to `validation/`
+
+`VALIDATION.md` held one record whose Commit and Date lines every new run rewrote, so two branches
+that each recorded a run conflicted, and so did a merge of the base branch into a branch whose
+record had changed. The check now reads one file per run from `validation/`, named
+`<date>-<first 12 hex digits of the commit>.md`, and fails while `VALIDATION.md` exists. A marked
+test file of a validated row passes while any run file records the hash it has now, and
+`--record-validation` writes a new run file and deletes the others. A run file that a merge or a
+row leaving `validated` leaves matching nothing fails the check until it is deleted by hand, which
+needs no new run.
+
+Move the record in one commit. The existing record is still a valid run, so it moves rather than
+being run again:
+
+```sh
+date=$(tr -d '\r' < VALIDATION.md | sed -n 's/^- Date: *//p' | tr -d ' ')
+commit=$(tr -d '\r' < VALIDATION.md | sed -n 's/^- Commit: *//p' | cut -c1-12)
+mkdir -p validation
+git mv VALIDATION.md "validation/$date-$commit.md"
+```
+
+Then change the moved file's title to `# Validation run`. The title is not checked, but a new
+record writes that one. A script or hook that matches the check's messages about the record matches
+`is in no run in validation/` and `has changed since a run in validation/ recorded it` in place of
+`is not in VALIDATION.md` and `has changed since VALIDATION.md recorded it`, and one that stages or
+commits `VALIDATION.md` after recording stages `validation/` instead, deletions included.
+
 ### Addresses in code and PowerShell comments are checked
 
 The address check read only `//` and `/* … */` comments in `.cs`, `.ts`, `.js` and `.mjs` files, so
@@ -354,10 +393,10 @@ out of the scanned directories, or leave its directory out of `--code` and `--re
 `--record-validation` wrote `git rev-parse HEAD` as the record's Commit while hashing the marked test
 files in the working tree, so a record made before committing a change named the parent of the
 tree the run tested. It now exits with 2 and lists the paths when the working tree differs from
-HEAD in anything other than `VALIDATION.md`, untracked files that git does not ignore included.
+HEAD in anything outside the record, untracked files that git does not ignore included.
 
 A script or hook that recorded a run before committing the change it tested now commits the change
-first, runs the marked tests against that commit, records, and commits `VALIDATION.md` on the same
+first, runs the marked tests against that commit, records, and commits the record on the same
 branch. The commit before the record fails the check for each validated row whose marked test file
 changed, so a hook that requires the check to pass on every commit lets that commit through or runs
 on push instead. Records already committed stay valid: the check compares only the hashes.

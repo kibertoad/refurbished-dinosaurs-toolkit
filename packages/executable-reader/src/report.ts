@@ -1,6 +1,7 @@
 // Canonical MZ/FBOV provenance plus the bounded Python instruction engine (scientific-method-engine).
-import { readFileSync, statSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { resolve, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { xxh3 } from "@node-rs/xxhash";
 import { spawnSync } from "node:child_process";
 import { readMz, formatCounts, checkFormatControls, segmentOperands, selectedTarget } from "./legacy-image.ts";
@@ -11,6 +12,7 @@ import { tableContents } from "./table-contents.ts";
 import type { TableConfig } from "./table-contents.ts";
 import { importReport } from "./pe-imports.ts";
 import type { ImportConfig } from "./pe-imports.ts";
+import { unpack } from "./unpack.ts";
 
 /**
  * A code region the researcher maps: file offsets `start..end` loaded at `segment:ip`. {@link prepare}
@@ -43,6 +45,11 @@ export interface ReportConfig {
   regions?: Region[];
   overlayExports?: unknown;
   formatTables?: unknown;
+  /**
+   * The function inventory TSV that `inventory-check` compares call targets with, resolved against
+   * the config file's directory as `source` is.
+   */
+  inventory?: string;
   [key: string]: unknown;
 }
 /**
@@ -85,11 +92,13 @@ function readVerifiedSource(config: ReportConfig, base: string) {
 /**
  * Verifies the source hash and, for `mz` sources, derives relocations, format-table counts, overlay
  * exports and region containers from the source tables. `pe32` and `synthetic-raw` sources pass
- * through for the engine to parse. Throws when the query supplies a field only the source may provide.
+ * through for the engine to parse. An `inventory` path is resolved against `base`. Throws when the query supplies a field only the source may provide.
  * @param base Directory that `config.source` is relative to.
  */
 export function prepare(config: ReportConfig, base: string): PreparedConfig {
   const { source, bytes } = readVerifiedSource(config, base);
+  // The engine reads the pipe from another directory, so it refuses an inventory path not resolved here.
+  if (typeof config.inventory === "string") config = { ...config, inventory: resolve(base, config.inventory) };
   if (config.sourceKind !== "mz" && config.formatControls !== undefined)
     throw new Error("formatControls apply only to mz sources");
   if (config.sourceKind === "synthetic-raw") return { ...config, source };
@@ -165,6 +174,59 @@ export function prepare(config: ReportConfig, base: string): PreparedConfig {
   return { ...config, source, relocations, formatTables, overlayExports };
 }
 
+/** The reader's package name and version, as the `unpack` report gives it for a build's `unpacked.tool`. */
+export function readerTool(): string {
+  // src/report.ts runs from source in tests and from dist/src/report.js once built.
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 4; i++, dir = dirname(dir)) {
+    const path = join(dir, "package.json");
+    if (!existsSync(path)) continue;
+    const pkg = JSON.parse(readFileSync(path, "utf8"));
+    if (pkg.name === "@scientific-method/executable-reader") return `${pkg.name} ${pkg.version}`;
+  }
+  throw new Error("The reader cannot find its own package.json");
+}
+
+/** The `unpack` command's config: a hash-checked `mz` source and the path to write its unpacked form to. */
+export interface UnpackConfig extends ReportConfig {
+  /** Where the unpacked file is written, relative to the config file. An existing file must already hold the same bytes. */
+  output: string;
+}
+
+// Unpacks the hash-checked source and writes the result. An existing output is left alone when it
+// already holds the same bytes and refused otherwise, so a rerun never replaces a file silently.
+function unpackReport(bytes: Buffer, config: UnpackConfig, source: string, base: string): Report {
+  if (config.sourceKind !== "mz") throw new Error("unpack reads mz sources");
+  if (typeof config.output !== "string" || !config.output) throw new Error("unpack needs an output path");
+  const output = resolve(base, config.output);
+  if (output === source) throw new Error("The output path names the source");
+  const result = unpack(bytes);
+  let written = true;
+  if (existsSync(output)) {
+    if (!readFileSync(output).equals(result.bytes))
+      throw new Error(`${output} exists and holds other bytes; remove it or name another output`);
+    written = false;
+  } else writeFileSync(output, result.bytes, { flag: "wx" });
+  return {
+    report: "unpack",
+    layout: result.layout,
+    sourceIdentity: { size: bytes.length, xxh3: config.xxh3 },
+    packer: result.packer,
+    output,
+    outputWritten: written,
+    unpacked: { size: result.bytes.length, xxh3: sourceXxh3(result.bytes), format: "MZ", tool: readerTool() },
+    header: result.header,
+    // These header fields are not read from the packed file; the layout rule sets them.
+    setByLayout: {
+      minAlloc: "the unpacked file asks for the memory the packed file asked for",
+      maxAlloc: "0xFFFF when the packed file's is; otherwise the same rule, at least minAlloc",
+      checksum: "0",
+    },
+    loadModuleSize: result.loadModuleSize,
+    packed: result.packed,
+  };
+}
+
 /** The most engine output, in MiB, that {@link run} reads. A larger report fails with an error and no partial report. */
 export const MAX_REPORT_MIB = 32;
 /** The prepared-config protocol this reader speaks. It must equal `scientific_method_engine.PREPARED_PROTOCOL`; the engine refuses any other number. */
@@ -172,7 +234,8 @@ export const PREPARED_PROTOCOL = 3;
 
 /**
  * Runs one report, as the `scientific-method` command does. `args` is `[command, configPath]`.
- * `imports`, `pointers` and `table` run in Node; every other command is prepared here and piped to
+ * `imports`, `pointers`, `table` and `unpack` run in Node, and `unpack` also writes the unpacked
+ * file its config names; every other command is prepared here and piped to
  * `python -m scientific_method_engine <command> -`, using `EVIDENCE_PYTHON` or `python`.
  * The engine gets 120 seconds and at most 32 MiB of output.
  */
@@ -192,6 +255,11 @@ export function run(args: string[]): Report {
     // so it skips prepare's instruction-reporter relocation list, which aborts on such a pair.
     const { source, bytes } = readVerifiedSource(supplied, base);
     return pointerInventory(bytes, { ...supplied, source } as PointerConfig);
+  }
+  if (command === "unpack") {
+    // Unpacking decodes the packer's format in Node; the decompressor in the file is never run.
+    const { source, bytes } = readVerifiedSource(supplied, base);
+    return unpackReport(bytes, supplied as UnpackConfig, source, base);
   }
   if (command === "table") {
     // The table report maps pointers through the file's own MZ or PE tables and reads the bytes itself.

@@ -3,7 +3,7 @@
 Checks a game restoration's `spec/`, `parity/` and `deviations/` against version 1 of the
 [dinorefurb documentation standard](https://dinorefurb.com/documentation-standard/#checks), and
 writes what the standard says is generated: the four indexes in `spec/index/`, the totals in
-`PARITY.md`, and on request `VALIDATION.md`. It has no dependencies and needs Node 22 or later.
+`PARITY.md`, and on request a validation run file in `validation/`. It has no dependencies and needs Node 22 or later.
 
 ```sh
 pnpm add -D @scientific-method/standard-checker
@@ -70,9 +70,9 @@ the result line that gives the reason, and only a readable `<ID>.other-files.yam
 | `--images <ranges>` | Comma-separated half-open address ranges of the original's flat 32-bit images, such as `0x00400000..0x004C9000`. A `0x` value inside one that a code comment gives, or that the code uses under a comment, must be recorded in an entry the comment cites. | none, so only `fn_` and `g_` names are checked |
 | `--max-range <bytes>` | The largest address range an entry can record an address by. A larger one, such as a whole section, records only its two ends. | `0x10000` |
 | `--data-dirs <dirs>` | Comma-separated top-level directories of the original's data. A path into one must name, with its exact case, a file of some build's manifest or a path of some build's `<ID>.other-files.yaml`. A path under a directory exclusion counts only when the list gives it by its own path. A path that names nothing known is reported only when its last part holds a digit and no placeholder such as `nn`. | the top-level directories of the files the manifests list |
-| `--rebuild <dirs>` | Comma-separated directories that hold the rebuild. No Markdown file in `spec/` may name a path in them, or a source file found in them by its file name. An empty value turns the check off. | `src,tests` |
+| `--rebuild <dirs>` | Comma-separated directories that hold the rebuild. No Markdown file in `spec/` may name a path in them, or a source file found in them by its file name. In a source entry in `spec/sources/`, a path counts only when it exists, in any case, so the entry can cite the external source's own paths. An empty value turns the check off. | `src,tests` |
 | `--message <file>` | Check only the commit message in the file: every address it gives must be recorded in an entry it cites, as for a code comment. Everything from the scissors line of `git commit --verbose` on is left out; comment lines before it are checked, since git keeps them under `git commit -m`. Exits with 0 or 1, or 2 when the file cannot be read. For a `commit-msg` hook. | not checked |
-| `--record-validation <builds>` | Write `VALIDATION.md` for the marked test files of validated parity rows, naming the comma-separated build IDs the run used and HEAD as the commit the run tested. Run it only after every test in those files passed with none skipped, against HEAD as committed: it refuses, with exit code 2, when the working tree differs from HEAD in anything other than `VALIDATION.md`, counting untracked files that git does not ignore. | not written |
+| `--record-validation <builds>` | Write `validation/<date>-<commit>.md` for the marked test files of validated parity rows, naming the comma-separated build IDs the run used and HEAD as the commit the run tested, and delete every other run file, except one that lists a test file git tracks but a sparse checkout does not hold. Run it only after every test in those files passed with none skipped, against HEAD as committed: it refuses, with exit code 2, when the working tree differs from HEAD in anything outside `validation/`, counting untracked files that git does not ignore. | not written |
 | `--help` | Print the options. | |
 
 The `KSC` environment variable names the Kaitai Struct compiler. Without it, the checker looks for
@@ -117,6 +117,13 @@ packed file, or of superseded entries cite nothing, and neither does an address 
 entry's body. Real-mode segmented addresses (`MZ`, `COM`) are compared by the linear address they
 name, and each `NE` segment is a space of its own. A row without `ranges` is measured as if its body
 were contiguous. The shares count functions and bytes of the functions not out of scope.
+
+An inventory that cannot be read, or that has a row that cannot be read, gets no figures. It is
+printed as `<path>: not measured, <reason>` (for a bad row, `2 of 40 rows are invalid`), each
+problem is printed after the figures, and `--json` lists it under `unmeasured` with `path` and
+`reason` instead of under `inventories`. Figures over the readable rows alone would leave the
+other functions out of both counts, and an inventory whose rows are all invalid would read as a
+file with no functions.
 
 It exits with 0, with 1 when an inventory is invalid or `--require-complete` finds an uncited
 function or no inventory at all, and with 2 when the options are invalid. Problems with the spec

@@ -42,6 +42,11 @@
 // that check, and a location that does not parse cites nothing here; a warning gives how many
 // problems loading the spec and how many unparsed locations there were.
 //
+// An inventory that cannot be read, or that has a row that cannot be read, gets no figures: it is
+// listed as not measured with the reason, and each problem is printed. Figures over the rows that
+// could be read would leave the other functions out of both the cited and the uncited count, so a
+// file whose rows are all invalid would read as a file of no functions.
+//
 // It exits with 0, with 1 when an inventory is invalid or --require-complete finds an uncited
 // function or no inventory, and with 2 when the options are invalid.
 
@@ -51,6 +56,17 @@ import { fileURLToPath } from "node:url";
 import { type InventoryRow, codeLocations, readInventories } from "./inventory.ts";
 import { loadSpec } from "./load/spec.ts";
 import { parseOptions } from "./options.ts";
+
+/**
+ * An inventory that gets no figures: one that could not be read at all, or one with a row that
+ * could not be read.
+ */
+interface UnmeasuredInventory {
+  /** The inventory's path, relative to the root. */
+  path: string;
+  /** Why it is not measured: the file-level problem, or how many of its rows are invalid. */
+  reason: string;
+}
 
 /** One row of an inventory, with the entries that cite it. */
 interface InventoryFunction extends InventoryRow {
@@ -149,14 +165,25 @@ function measure(root: string) {
   const indexed = new Map([...cited].map(([key, ranges]) => [key, indexRanges(ranges)]));
 
   const read = readInventories(config.repoDir, spec);
-  const inventories = read.inventories.map((inv) => ({
-    ...inv,
-    functions: inv.functions.map((f): InventoryFunction => {
-      const index = indexed.get(`${inv.build}\0${inv.file}\0${f.space}`);
-      return { ...f, citedBy: [...new Set(f.body.flatMap((r) => citing(index, r.start, r.end)))].sort() };
-    }),
-  }));
-  return { inventories, problems: read.problems, specProblems, unreadLocations };
+  // An inventory with a row that could not be read is not measured: figures over the other rows
+  // would count that row's function as neither cited nor uncited, and with every row invalid they
+  // would read as a file of no functions.
+  const unmeasured: UnmeasuredInventory[] = [
+    ...read.unread,
+    ...read.inventories
+      .filter((inv) => inv.invalidRows)
+      .map((inv) => ({ path: inv.path, reason: `${inv.invalidRows} of ${inv.rows} rows are invalid` })),
+  ].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const inventories = read.inventories
+    .filter((inv) => !inv.invalidRows)
+    .map((inv) => ({
+      ...inv,
+      functions: inv.functions.map((f): InventoryFunction => {
+        const index = indexed.get(`${inv.build}\0${inv.file}\0${f.space}`);
+        return { ...f, citedBy: [...new Set(f.body.flatMap((r) => citing(index, r.start, r.end)))].sort() };
+      }),
+    }));
+  return { inventories, unmeasured, problems: read.problems, specProblems, unreadLocations };
 }
 
 /** The figures of one measured inventory. */
@@ -211,11 +238,12 @@ function main(argv: string[]) {
     console.error(`No spec/ directory in ${root}.`);
     return 1;
   }
-  const { inventories, problems, specProblems, unreadLocations } = measure(root);
+  const { inventories, unmeasured, problems, specProblems, unreadLocations } = measure(root);
   const reports = inventories.map(summarize);
   const incomplete = reports.filter((r) => r.uncited.length);
-  // With nothing measured there is nothing complete, so --require-complete does not pass vacuously.
-  const unmeasured = !reports.length && !problems.length;
+  // With no inventory there is nothing complete, so --require-complete does not pass vacuously. An
+  // inventory that is not measured fails the run through its problems.
+  const noInventories = !reports.length && !unmeasured.length;
   const unread = [
     ...(specProblems
       ? [`standard-checker reports ${specProblems} problems loading the spec; what it could not read cites nothing`]
@@ -242,6 +270,7 @@ function main(argv: string[]) {
                 }
               : r,
           ),
+          unmeasured,
           problems,
           unread,
         },
@@ -250,7 +279,8 @@ function main(argv: string[]) {
       ),
     );
   else {
-    if (unmeasured) console.log("No function inventories in coverage/.");
+    if (noInventories) console.log("No function inventories in coverage/.");
+    for (const u of unmeasured) console.log(`${u.path}: not measured, ${u.reason}`);
     reports.forEach((r, k) => {
       console.log(
         `${r.path}: ${r.cited} of ${r.functions - r.outOfScope} functions cited${share(r.cited, r.functions - r.outOfScope)}, ` +
@@ -274,9 +304,9 @@ function main(argv: string[]) {
       console.error(
         `--require-complete: ${incomplete.length} inventories list functions that no entry cites and that are not out of scope`,
       );
-    if (unmeasured) console.error("--require-complete: there are no function inventories to measure");
+    if (noInventories) console.error("--require-complete: there are no function inventories to measure");
   }
-  return problems.length || (requireComplete && (incomplete.length || unmeasured)) ? 1 : 0;
+  return problems.length || (requireComplete && (incomplete.length || noInventories)) ? 1 : 0;
 }
 
 process.exitCode = main(process.argv.slice(2));

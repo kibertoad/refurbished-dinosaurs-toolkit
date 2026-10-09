@@ -26,7 +26,7 @@ The check expects these at the root it is given (the repository root by default)
 - `parity/`, with one `<AREA>.md` of parity rows per area, split by kind and then by block of 100
   numbers where an area would pass 1,000 lines;
 - `deviations/`, with one `<ID>.md` per deviation;
-- `VALIDATION.md`, once a `validated` row lists a test file marked `needs: GAME_DIR` (see below).
+- `validation/`, once a `validated` row lists a test file marked `needs: GAME_DIR` (see below).
 
 The check writes `PARITY.md`. An empty directory needs a `.gitkeep` so that git keeps it.
 
@@ -213,6 +213,16 @@ does a path of the original's own sources quoted as evidence with backslashes, s
 `src\game\score.cpp` from an assert string. Describe the comparison in the entry without the file, and list
 the test in the parity row, which is where the rebuild points at the spec.
 
+A source entry in `spec/sources/` describes a source outside the rebuild, such as another
+project's repository or a shipped archive, and may cite that source's own files by their paths,
+such as `src/gpl/state.c` or a table of an archive's members. In a source entry a path counts only
+when it exists in the restoration, so a source's file that shares its path with a file of the
+rebuild still fails; qualify it with the source's directory or cite it as a full link. The
+comparison ignores case on every platform, so `src/Score.cs` fails when the rebuild has
+`src/score.cs`, on Linux as on Windows. A file name of the rebuild written alone fails in every
+entry. Elsewhere in the spec, cite the source entry's
+ID instead of the source's paths.
+
 Tools that read the original, such as a research script in `tools/` or a probe that runs the
 original, are not part of the rebuild, and a finding's How to reproduce section may name them, so
 `tools` is not in the default. A restoration whose rebuild has more directories adds them:
@@ -348,9 +358,11 @@ The same package installs `standard-coverage`, which reads the function inventor
 and the entries' `locations`, and prints for each analysed file the share of its functions and of
 their bytes that some entry cites, followed by the functions that no entry cites and that are not
 out of scope. `--require-complete` fails while any are left, which is the Audit stage's condition on
-functions. [The package README](../packages/standard-checker/README.md#coverage) gives the inventory
-format and what counts as citing a function. The figures change with every batch, so print them on
-demand rather than committing them.
+functions. An inventory with a row it cannot read gets no figures and is listed as not measured,
+so a file whose inventory is invalid never reads as one with nothing cited.
+[The package README](../packages/standard-checker/README.md#coverage) gives the inventory format and
+what counts as citing a function. The figures change with every batch, so print them on demand
+rather than committing them.
 
 ## Using setup-kaitai on its own
 
@@ -421,19 +433,36 @@ test in those files passed and none was skipped, record it:
 pnpm exec standard-checker --record-validation BLD-GOG-EN-1.1
 ```
 
-This writes `VALIDATION.md` at the root: the commit, the date, the builds the run used, and the
-SHA-256 of every marked test file a validated row lists, hashed with CRLF read as LF. The standard
-defines the commit as the commit the run tested, and the check writes HEAD there, so the run has to
-test HEAD as committed. The check refuses to record, and exits with 2, when the working tree differs
-from HEAD in anything other than `VALIDATION.md`, including untracked files that git does not
-ignore. A record cannot name the commit that contains it, so a change to a validated row's marked
-tests or the code they exercise goes in two commits on the same branch: first the change, then,
-after the run against that commit, the new `VALIDATION.md`. The record holds hashes of the marked
-test files only, so the check fails on the first commit when a marked test file changed, and passes
-it when only the code they exercise did. From then on the check, in CI as well, fails a validated
-row whose marked test file is missing from the record or has changed since, and a record that lists
-any other file. A restoration whose validated rows list no marked file needs no record. The checker
-cannot tell whether the tests passed; running them before recording is the maintainer's part.
+This writes a run file, `validation/<date>-<commit>.md`, where the date is the day of the run and
+the commit is the first 12 hex digits of HEAD. It holds the full commit, the date, the builds the
+run used, and the SHA-256 of every marked test file a validated row lists, hashed with CRLF read as
+LF. Recording then deletes every other run file, since the new run records every marked test file as
+it is now. It keeps a run file that lists a test file git tracks but the checkout does not hold, as
+a sparse checkout leaves its skip-worktree files absent, because that run may still be the one that
+validates the file in a full checkout. Runs recorded on other branches are not in the tree, so they
+come back when those branches merge.
+
+The standard defines the commit as the commit the run tested, and the check writes HEAD there, so
+the run has to test HEAD as committed. The check refuses to record, and exits with 2, when the
+working tree differs from HEAD in anything outside `validation/`, including untracked files that git
+does not ignore. A run file cannot name the commit that contains it, so a change to a validated
+row's marked tests or the code they exercise goes in two commits on the same branch: first the
+change, then, after the run against that commit, the new run file.
+
+A run file is never edited after it is written. Two branches that each record a run add two files
+with different names, and when they merge, each run keeps counting for the test files it still
+matches. A marked test file of a validated row passes while any run file records the hash it has
+now. The check, in CI as well, fails a validated row whose marked test file no run records, or no
+run records as it is now; a run file none of whose files has the hash it recorded, unless it lists
+a tracked file the checkout does not hold; a run file whose
+name does not match its Date and Commit; any other file in `validation/`; and a `VALIDATION.md` at
+the root. A run file can also come to match nothing without a new run: after a merge of two
+branches that between them changed every file it matched, or when the rows whose files it matched
+stop being `validated`. Delete such a file by hand; that needs no run against the original's files.
+A restoration whose validated rows list no marked file needs no run file. The run files
+hold hashes of the marked test files only, so the check fails on the first commit when a marked
+test file changed, and passes it when only the code they exercise did. The checker cannot tell
+whether the tests passed; running them before recording is the maintainer's part.
 
 ## Moving a restoration onto it
 
@@ -702,6 +731,12 @@ Each item has a `path` and exactly one of `size`, `link` and `stopped`. The chec
 listed twice, items out of order when paths are compared byte by byte, an item on a medium that
 `media` does not name, and an archive member (`archive|member`) whose outermost archive `archives`
 does not list or that lies deeper than that archive's depth.
+
+`BuildListing.Make` in the `RefurbishedDinosaurs.LegacyFormats` NuGet package writes such a record
+from an installation directory and `.iso` or cue/bin disc images, with disc paths in the form
+ENTRY-TYPES-11 gives. Its README's
+[Listing a build](../packages/dotnet/README.md#listing-a-build) says what it lists and what it
+refuses.
 
 It then compares the record with the manifest and the list of other files, as ENTRY-TYPES-18 says,
 and fails, naming the path:

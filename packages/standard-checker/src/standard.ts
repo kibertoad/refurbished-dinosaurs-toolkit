@@ -155,6 +155,8 @@ export const DEV_RE = /\bDEV-[A-Z][A-Z0-9]*-\d{3,}\b/g;
 
 /** Every Markdown file the standard defines, generated or not, is at most this many lines long. */
 export const LINE_LIMIT = 1000;
+/** The directory of validation run files, at the root of the game repository. */
+export const VALIDATION_DIR = "validation";
 /**
  * A list written out in a procedure or a table definition holds at most this many values. A longer
  * one takes them from a value file.

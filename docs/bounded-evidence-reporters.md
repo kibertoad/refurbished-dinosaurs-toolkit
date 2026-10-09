@@ -103,8 +103,9 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 |---|---|---|
 | `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; follows an indirect far call or jump whose pointer the path produced; declared-table continuations run on their own `continuationBudget`; checks `relationalControls`; `entryFrame` starts an entry inside its function's frame | this section, [narrower entries](#a-narrower-entry-inside-its-functions-frame), [indirect far transfers](#indirect-far-transfers-through-a-traced-pointer), [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
-| `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; a stop inside a called function also continues the inventory at the return site of each call open at the stop, named in `dependsOn` | this section, [hardware boundaries](#hardware-boundaries) |
+| `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; the inventory continues past interrupts, which it assumes return to the next instruction, and a stop inside a called function also continues it at the return site of each call open at the stop, each named in `dependsOn` | this section, [hardware boundaries](#hardware-boundaries) |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
+| `inventory-check` | every resolved direct call target in the searched regions that a function inventory does not list as a start, with one calling site each and counts for a coverage report | [inventory call targets](#call-targets-a-function-inventory-lacks) |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
 | `dispatch` | the target of each input through a switch's jump table | this section, [jump tables](#evidenced-indirect-jump-tables) |
 | `allocation` | allocation requests, returned pointers and later writes; checks `relationalControls` | this section, [relational controls](#relational-controls) |
@@ -118,6 +119,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
 | `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables and checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots) |
+| `unpack` | writes the unpacked form of an LZEXE 0.90 or 0.91 executable and gives the `size`, `xxh3`, `format` and `tool` of a build's `unpacked` item (reader only, no engine) | [unpacking packed executables](#unpacking-packed-executables) |
 
 The engine also has `scientific-method-engine ghidra-scripts`, which prints the directory of the
 packaged Ghidra scripts (see the engine's README for the list).
@@ -294,15 +296,20 @@ numeric `segment`. It traces each established entry instead of linearly decoding
 a region. `controls` names known matching instruction offsets; a missed control
 is an error. The report separates matching accesses, possible unknown aliases,
 raw operand candidates and undecoded ranges. After a stopped effect trace,
-explicit memory operands reached from the stops are still inventoried (in the PE32
-model also those reached only by continuing past a port access, see
-[hardware boundaries](#hardware-boundaries)), in
+explicit memory operands reached from the stops are still inventoried (also those
+reached only by continuing past an interrupt, which the inventory assumes returns
+to the next instruction, and in the PE32 model those reached only by continuing
+past a port access, see [hardware boundaries](#hardware-boundaries)), in
 `conditionalAccesses` rather than `matches`, with unknown values and segment state.
 Their default or overridden segment-register name is retained, and x87 and
 INS/OUTS operands take their access direction from the mnemonic. Each one's
-`dependsOn` names the stops whose CFG reaches it (an unread call, an unsupported
-instruction, an exhausted budget) and every call, and in the PE32 model every
-port access, it is reached past, since those were never traced either. Once a
+`dependsOn` names the stops whose CFG reaches it (an unread call, an unmodeled
+interrupt, an unsupported instruction, an exhausted budget) and every call and
+interrupt, and in the PE32 model every port access, it is reached past, since
+those were never traced either. An interrupt it is reached past has the reason
+`interrupt past a stop; assumed to return to the next instruction`, or, when the
+query's `callModels` model it, `modeled interrupt past a stop; returns to the next
+instruction as its call model declares`. Once a
 named callee has been read, those are the accesses to re-check.
 
 A stop inside a directly called function does not end the inventory at that
@@ -311,14 +318,14 @@ continues at the call's return site in the caller, and for a nested stop at the
 return site of every open call out to the entry. A path dropped at a path limit
 inside a called function counts as a stop there. A return site is continued only
 when the called function's CFG from the stop (or from the inner return site)
-reaches a return instruction, with calls inside it stepped over; a callee that
+reaches a return instruction, with calls and interrupts inside it stepped over; a callee that
 cannot return on its encoded CFG leaves its caller's continuation out. In the
 PE32 model an IRET stops the trace, so it is no such return. A stop at a
 return instruction is that return failing, so it continues no caller. The
 `dependsOn` of a row reached this way names the stop, each open call between the
 stop and the row with `call open at a stop inside its callee; continued at its
-return site, assumed to return`, and every call and PE32 port access stepped
-over on the way to those returns. In the PE32 model such a row counts as reached
+return site, assumed to return`, and every call, interrupt and PE32 port access
+stepped over on the way to those returns. In the PE32 model such a row counts as reached
 past a port access when the stop is one or when every route to a callee's return
 crosses one. A walk to a callee's return that exhausts `instructionLimit` records
 an `instruction limit` gap at its start and continues no caller beyond it.
@@ -354,7 +361,9 @@ ranges reach the report. A declared segment counts when it overlaps a searched
 region, even if the region crosses its bounds. A domain the bytes actually scanned
 do not cover (including bytes a `scanLimit` stopped short of) lists its
 `unsearched` ranges and sets `partialSearch`, which makes `negativeUsable` false.
-Regions with no known domain are reported as covering only themselves. Each
+Regions with no known domain are compared with their own extent, so a
+`scanLimit` that stops short of one also lists its `unsearched` ranges and sets
+`partialSearch`. Each
 unverified candidate carries a `position`: inside a reached instruction (bytes
 of that instruction, so a call there needs an overlapping start) or in an
 undecoded range that no established path reaches. `unresolvedTransfers` lists
@@ -768,8 +777,16 @@ return and leaves the interrupt's FLAGS word on the stack, as DOS INT 25h and 26
 and the word at SS:SP is the pre-interrupt FLAGS, reported as a `flags-save` event, so a later
 `popf` restores them. `leavesFlags` is rejected on any other model and with any value but `true`.
 A model at INT1, INT3 (also written as `INT 1` or `INT 3`), INTO or at any interrupt in the PE32
-model is not used, and the path stops there as without it. A path that stops on the model's `preservesMemory` scopes reports the boundary event
-without `modeled`.
+model is not used, and the path stops there as without it. A path that stops on the model's
+`preservesMemory` scopes reports the boundary event without `modeled`.
+
+The entry walk behind `uses` and the boundary walk for declared table targets continue past an
+interrupt whose model the trace uses, so an access traced after it is a `uses` match, and a table
+target after it is a verified boundary. Like a call's return site, the instruction after the
+interrupt is reached only if the handler returns, so that fall-through never proves an overlapping
+instruction start. Without a model, `uses` lists an operand after the interrupt in
+`conditionalAccesses` with the interrupt in `dependsOn`, and the walk's
+`hardware or interrupt boundary` gap at the interrupt stays.
 
 `trace` and every command built on it return `hardwareBoundaries`, one row per
 boundary site with the `paths` and `declaredContinuationPaths` that reach it,
@@ -1048,6 +1065,55 @@ instruction, each leaf calls nothing for its stated reason, and each declared ta
 routes its declaration gives. `throughEveryRoute` describes the routes the walk read; an
 unresolved transfer may add a route that passes none of those routines. None of this proves
 runtime reachability.
+
+## Call targets a function inventory lacks
+
+`inventory-check` compares the direct call targets the code resolves with a committed function
+inventory, the `coverage/<build>/<file>.tsv` that coverage is measured against, so a project can
+state how many called routines the inventory misses next to its coverage figure
+([ADR 0024](decisions/0024-call-targets-a-function-inventory-lacks.md)). It takes:
+
+| Field | Meaning |
+|---|---|
+| `inventory` | the inventory TSV, relative to the config file's directory as `source` is (a Python caller of `run_report` passes an absolute path, and a relative one is refused). Its columns are `start` and `size`, then optionally `name`, `out_of_scope` and `ranges`, as the work protocol gives them; a row that does not parse fails the report with its line number |
+| `searchRegions`, `scanLimit`, `instructionLimit` | as for `incoming`: the regions scanned (all by default), the bytes the raw scan reads (1..1048576, default 65536) and the instructions the entry-path walk decodes. Raise `scanLimit` to the size of the declared code, or the search is partial |
+| `controls` | optional, at most 256 call sites that must be entry-path calls with a resolved target; a missed one fails the report |
+| `limit` | rows kept in each of `targets`, `unresolved` and `rowsOutsideDeclaredCode` (1..10000, default 1000) |
+
+The calls are the ones `incoming` reads: every E8 and 9A call start in the searched regions, and
+every call the entry-path walk from the established region entries reaches. Each resolves as
+`target` describes, near calls through the region mapping and far calls through an MZ relocation
+or an FBOV fixup and its trampoline to the overlay entry. Each distinct target is then placed in
+the inventory's notation: by `segment:ip` through its region's mapping for segmented code, by
+file offset for a region with a `container` (an overlay the reader declared, which the work
+protocol locates by offset), and by virtual address for flat32 code. Segmented addresses compare
+by `segment * 16 + offset`, so two spellings of one byte are the same start.
+
+Each target that is not a row's start is a row of `targets`:
+
+| Field | Meaning |
+|---|---|
+| `target`, `address` | the file offset, and the place in the inventory's notation |
+| `status` | `inside another row's body` (with `rows`, the rows whose body holds it), `outside every row`, or `outside declared code` (a canonical target no declared region maps, with a `null` address) |
+| `evidence` | the best of its calling sites: `entry-path call`, `contested call only` or `raw byte candidate only`. A target that only raw byte candidates or contested instructions call is not shown to be code |
+| `site`, `call`, `siteClassification`, `region`, `provenance` | one calling site of that evidence, the lowest, with `near` or `far` and the site's resolution |
+| `callSites` | how many calling sites of each kind the search found |
+
+`counts` gives `callTargets` and, under each evidence, the targets, the inventory starts among
+them and how many are inside another row, outside every row or outside declared code. It also
+counts the unresolved calls, the inventory rows and the rows outside declared code. `summary`
+states the entry-path counts in one sentence for a coverage report, leaving the targets outside
+declared code out of its total and naming them apart. It adds the targets from weaker evidence, the
+unresolved calls with how many of them the entry path reaches, a partial search (including a scan
+that `scanLimit` stopped) and a walk that `instructionLimit` stopped when there are any.
+`rowsOutsideDeclaredCode` lists the starts of rows no declared region places, such as overlay code
+written by an analysis segment, which no target can match. `unresolved`, `coverage`,
+`partialSearch` and `gaps` are as in `incoming`.
+
+The counts are lower bounds on what the inventory lacks. Computed calls, far calls with no
+relocation or fixup, calls the walk does not reach that start with a prefix, and routines reached
+only by jumps are not targets of this search. The report writes no inventory rows: a row needs the
+size an analyzer gives it, and the `address` column is the list to seed discovery with.
 
 ## Evidenced indirect jump tables
 
@@ -1418,6 +1484,64 @@ The import directory holds only what the loader resolves when it loads the file.
 imports and functions found through `GetProcAddress` are named in `exclusions`;
 `delayImportDirectory` gives the delay-load directory when the file has one, unread. The report
 never shows that the code calls nothing else, and it does not read which code calls through a slot.
+
+## Unpacking packed executables
+
+`scientific-method unpack <config.json>` decodes a packed DOS executable and writes its unpacked
+form, so that every restoration reading the same packed file gets the same bytes and the same
+`unpacked.xxh3`. It runs in the reader without the engine, and it never runs the decompressor in
+the file: it reads the decompressor's header words and its relocation table, and decodes the
+compressed stream itself. The config is `source`, its `xxh3`, `sourceKind: "mz"` and `output`, the
+path to write, relative to the config file. An existing output that already holds the same bytes
+is left alone (`outputWritten: false`); one that holds other bytes is refused.
+
+The reader unpacks LZEXE 0.91 and 0.90, recognized by `LZ91` or `LZ09` at offset 0x1C. A file with
+neither is refused with an error that says so; that does not show it is not packed. The signature
+names the format, so builds of LZEXE that write the same format are not told apart.
+
+The report gives `packer` (`LZEXE 0.91` or `LZEXE 0.90`), `unpacked` (`size`, `xxh3`, `format: "MZ"`
+and `tool`, the reader's package name and version), `layout`, the rebuilt `header`,
+`loadModuleSize`, `sourceIdentity`, and under `packed` the file offsets it read: the
+decompressor's header (`decompressor`), the compressed `stream` from its first flag word to the
+byte after its end mark, the `slack` between the end mark and the decompressor's CS:0, and the
+`relocationTable`. `setByLayout` names the header fields the packed file did not supply.
+
+Every read is bounded, and each failure names the file offset:
+
+- The packed file holds at most 1 MiB, and no data may follow its MZ image.
+- The compressed stream starts at the decompressor's CS:0 less the paragraph count its header
+  gives, which must lie inside the load module, and it must reach its end mark before CS:0. A
+  token or flag word that would cross CS:0 fails.
+- A copy may not reach before the start of the output, and the unpacked load module may not pass
+  1 MiB, the real-mode address space.
+- The relocation table must end inside the load module, and every relocation must name a whole
+  word inside the unpacked load module. A 0.90 table that names a word twice is refused, because
+  the reader's MZ parser does not read a file that relocates a word twice.
+
+### Layout rule 1
+
+The unpacked file is a 28-byte MZ header, the relocation table at 0x1C, zeros up to the next
+multiple of 16 bytes, then the load module. Nothing else is written.
+
+| Field | Value |
+|---|---|
+| bytes in last page, pages | from the file's total size |
+| relocations | the number of entries |
+| header paragraphs | the header size above, divided by 16 |
+| minimum allocation | the packed file's load module in paragraphs plus its minimum allocation, less the unpacked load module in paragraphs, at least 0 |
+| maximum allocation | 0xFFFF when the packed file's is 0xFFFF; otherwise the same sum with the packed file's maximum allocation, at least the minimum |
+| SS, SP, IP, CS | the words at CS:6, CS:4, CS:0 and CS:2 of the decompressor |
+| checksum | 0 |
+| relocation table offset | 0x1C |
+| overlay number | 0 |
+
+Each relocation is written as offset word then segment word, with the offset 0..15 and the segment
+holding the rest of the load-module offset, in the order the packed table lists them. The
+allocation fields make the unpacked file ask DOS for the memory the packed file asked for; the
+values the file had before it was packed are not recovered. `layout` in the report names the rule.
+A release that changes the rule changes the bytes and the `xxh3` of every unpacked file, so it
+increments `layout` and is a major release of the reader
+([ADR 0025](decisions/0025-reader-unpacking-and-its-layout-rule.md)).
 
 ## Return widths, declared encodings and caller dependencies
 

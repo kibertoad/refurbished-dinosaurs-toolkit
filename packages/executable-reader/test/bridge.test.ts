@@ -255,6 +255,40 @@ test("PE32 uses continues at the caller's return site when the trace stops insid
   assert.equal(report.negativeUsable, false);
 });
 
+test("uses inventories an operand past an unmodeled interrupt conditionally and traces it under a model", (t) => {
+  const { dir, config } = fixture(t);
+  // mov ah, 35h; int 21h; mov dx, [2]; ret
+  const source = Buffer.from([0xb4, 0x35, 0xcd, 0x21, 0x8b, 0x16, 0x02, 0x00, 0xc3]);
+  writeFileSync(join(dir, "source.bin"), source);
+  const query = {
+    source: "source.bin",
+    sourceKind: "synthetic-raw",
+    xxh3: sourceXxh3(source),
+    entry: 0,
+    regions: [{ ...config.regions[0]!, start: 0, end: source.length, entries: [0] }],
+    query: { offset: 2, width: 2, access: "read" },
+    controls: [4],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const report = run(["uses", join(dir, "config.json")]);
+  assert.deepEqual(report.matches, []);
+  assert.deepEqual(
+    report.conditionalAccesses.map((r: Report) => [r.site, r.dependsOn.map((d: Report) => d.site)]),
+    [[4, [2]]],
+  );
+  assert.equal(report.negativeUsable, false);
+  // A call model at the interrupt continues the trace, and the read is a traced match.
+  const callModels = [{ site: 2, evidence: "synthetic service returns", cases: [{}] }];
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ ...query, callModels }));
+  const modeled = run(["uses", join(dir, "config.json")]);
+  assert.deepEqual(
+    modeled.matches.map((e: Report) => e.site),
+    [4],
+  );
+  assert.deepEqual(modeled.unresolvedAccesses, []);
+  assert.deepEqual(modeled.conditionalAccesses, []);
+});
+
 test("PE32 uses takes the access direction of an x87 or INS operand from its mnemonic", (t) => {
   const kinds = (code: number[], access: string) => {
     const { dir, config } = pe32Fixture(t, code);
@@ -720,6 +754,27 @@ test("reach follows a resident far call and an overlay fixup call through the FB
   const leafReport = run(["reach", path]);
   assert.equal(leafReport.targets[0].leaf, true);
   assert.deepEqual(leafReport.leaves, [{ routine: 528, reason: leaf, reached: true, callSites: [532] }]);
+});
+
+test("inventory-check places an overlay entry two FBOV trampoline calls reach by its file offset", (t) => {
+  const { dir, config } = overlayFixture(t);
+  const path = join(dir, "config.json");
+  // 1000:0010 is the resident caller at file offset 80; 0x214 is the overlay caller at 532. No row starts at 528.
+  writeFileSync(join(dir, "inventory.tsv"), "start\tsize\n1000:0010\t6\n0x214\t6\n");
+  writeFileSync(path, JSON.stringify({ ...config, inventory: "inventory.tsv", controls: [80, 532] }));
+  const r = run(["inventory-check", path]);
+  assert.deepEqual(
+    r.targets.map((row: Report) => [row.target, row.address, row.status, row.call, row.site, row.callSites]),
+    [[528, "0x210", "outside every row", "far", 80, { entryPath: 2, contested: 0, rawCandidates: 0 }]],
+  );
+  assert.equal(r.targets[0].provenance.relocation.trampoline, 288);
+  assert.equal(r.inventory.path, join(dir, "inventory.tsv"));
+  assert.equal(r.counts["entry-path call"].outsideEveryRow, 1);
+  // With the overlay entry listed, every target is a start.
+  writeFileSync(join(dir, "inventory.tsv"), "start\tsize\n1000:0010\t6\n0x210\t1\n0x214\t6\n");
+  const listed = run(["inventory-check", path]);
+  assert.deepEqual(listed.targets, []);
+  assert.equal(listed.counts["entry-path call"].inventoryStarts, 1);
 });
 
 test("callee graph through the source bridge compares its edges with a Ghidra export", (t) => {

@@ -192,9 +192,11 @@ public abstract class OriginalContentSource : IDisposable
     /// <summary>
     /// Opens an ISO 9660 image with 2048-byte sectors. It is checked when opened: block size, volume size
     /// against the file, both-endian fields agreeing, and every directory and file extent inside the
-    /// volume. Each directory and file name reads byte for byte as Latin-1 (ISO-8859-1), and without
-    /// its <c>;</c> version suffix and trailing dots must pass <see cref="PortableAssetPath.Relative"/>
-    /// as one component, or opening throws <see cref="InvalidDataException"/> naming it. The source records the image's length and last-write time here, and every later read
+    /// volume. Each directory and file name reads byte for byte as Latin-1 (ISO-8859-1) and loses its
+    /// <c>;</c> version suffix and trailing dots, unless that would give two entries of one directory the
+    /// same name ignoring case, as <c>README.;1</c> and <c>README.;2</c> would: those keep their whole identifiers. The
+    /// name must pass <see cref="PortableAssetPath.Relative"/> as one component, or opening throws
+    /// <see cref="InvalidDataException"/> naming it. The source records the image's length and last-write time here, and every later read
     /// of the image through it (<see cref="OpenRead"/> and <see cref="OpenVolume"/>) compares them with
     /// the file when it opens it and fails with an <see cref="IOException"/> when either has changed.
     /// A rewrite that keeps both the length and the last-write time is not detected.
@@ -248,8 +250,17 @@ public abstract class OriginalContentSource : IDisposable
     /// <see cref="IOException"/> when either has changed. A rewrite that keeps both the length and the
     /// last-write time is not detected.
     /// The sheet is checked as <see cref="CueBinSheet.Parse"/> and <see cref="CueBinSheet.ValidateBin"/>
-    /// describe, the data track ends where the second track's pregap or audio begins, every raw sector
-    /// read is checked to be MODE1, and the volume is checked as <see cref="OpenIso9660(string)"/> describes.
+    /// describe, the data track ends where the second track's pregap or audio begins, and the volume is
+    /// checked as <see cref="OpenIso9660(string)"/> describes. Every raw sector read is checked against
+    /// the type the sheet declares for the data track: for <c>MODE1/2352</c> the sync pattern and mode
+    /// byte 1, and for <c>MODE2/2352</c> the sync pattern, mode byte 2, and a CD-XA subheader whose two
+    /// copies agree and whose submode marks Form 1. The user data is the 2048 bytes after the header
+    /// for MODE1 and after the subheader for MODE2 Form 1, so one disc reads the same files and volume
+    /// bytes in either layout. A sector that fails a check, such as a Form 2 sector of a file stored
+    /// as interleaved audio or video, throws <see cref="InvalidDataException"/> naming the sector when
+    /// it is read: while opening for the descriptors and directories, and from the stream
+    /// <see cref="OpenRead"/> or <see cref="OpenVolume"/> returns for a file's or the volume's sectors.
+    /// The EDC, the ECC and the address in each sector's header are not checked.
     /// </summary>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="IOException">The BIN changed while the source was being opened.</exception>
@@ -269,7 +280,7 @@ public abstract class OriginalContentSource : IDisposable
         if (dataSectors <= 16 || dataSectors > sectors)
             throw new InvalidDataException("Cue data track does not hold an ISO 9660 volume inside the BIN image.");
         return new Iso9660ContentSource(
-            () => new RawMode1UserDataStream(bin.OpenBuffered(), dataSectors),
+            () => new RawDataTrackUserDataStream(bin.OpenBuffered(), dataSectors, sheet.DataTrackMode),
             ContentSourceKinds.CueBin, new CueBinFiles(sheet, cuePath, cueBytes, bin));
     }
 
@@ -605,6 +616,7 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
         var data = new byte[checked((int)directory.DataLength)];
         stream.Position = checked((long)directory.Extent * SectorSize);
         ReadExactly(stream, data);
+        var records = new List<DirectoryRecord>();
         var offset = 0;
         while (offset < data.Length)
         {
@@ -621,7 +633,20 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
             if (record.Identifier is "\0" or "\u0001") continue;
             if (record.IsMultiExtent)
                 throw new InvalidDataException($"Multi-extent ISO9660 entry is unsupported: '{record.Identifier}'.");
-            var name = NormalizeIsoName(record.Identifier);
+            records.Add(record);
+        }
+        // A name loses its version suffix and trailing dots unless that gives it the name of another
+        // entry in the directory, as README.;1 and README.;2 would. Then every entry of that name keeps
+        // its whole identifier, as the documentation standard writes disc paths (ENTRY-TYPES-11). Names
+        // are compared ignoring case, as the source looks paths up.
+        var shortened = records.Select(record => ShortIsoName(record.Identifier)).ToArray();
+        var shared = shortened.GroupBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < records.Count; index++)
+        {
+            var record = records[index];
+            var name = CheckedIsoName(record.Identifier,
+                shared.Contains(shortened[index]) ? record.Identifier : shortened[index]);
             var relative = string.IsNullOrEmpty(parent) ? name : $"{parent}/{name}";
             ValidateExtent(record.Extent, record.DataLength);
             if (record.IsDirectory)
@@ -678,11 +703,15 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
         return little;
     }
 
-    private static string NormalizeIsoName(string identifier)
+    // The identifier without its version suffix and the dots that end it.
+    private static string ShortIsoName(string identifier)
     {
         var separator = identifier.LastIndexOf(';');
-        var name = separator >= 0 ? identifier[..separator] : identifier;
-        name = name.TrimEnd('.');
+        return (separator >= 0 ? identifier[..separator] : identifier).TrimEnd('.');
+    }
+
+    private static string CheckedIsoName(string identifier, string name)
+    {
         // A separator inside one identifier would read as two components.
         if (name.Contains('/') || name.Contains('\\'))
             throw new InvalidDataException(
