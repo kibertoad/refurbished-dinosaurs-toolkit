@@ -37,7 +37,7 @@ for the other report scripts, a result count equal to the cap means the same.
 script's own result lines ([the Ghidra workflow](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/ghidra-workflow.md)
 says what a run must show). The scripts compile against Ghidra 12.1. `ReportConstantFirstArgumentCalls`,
 `ReportFirstArgumentCallSummary`, `ReportCallSitesWithScalars`, `ReportScalarConstants`,
-`ReportFunctionScalarConstants`, `ReportInstructionWindow` and `ExportBoundedFlow` load shared helpers from the `scientificmethod/` directory beside them, so pass the directory the command prints as `-scriptPath`,
+`ReportFunctionScalarConstants`, `ReportInstructionWindow`, `ExportBoundedFlow` and `ExportFunctionInventory` load shared helpers from the `scientificmethod/` directory beside them, so pass the directory the command prints as `-scriptPath`,
 or copy that subdirectory along with the scripts.
 
 Reading code and data:
@@ -77,7 +77,7 @@ Exporting for comparison (each writes one file and refuses to overwrite where no
 | Script | Arguments | Writes |
 |---|---|---|
 | `ExportBoundedFlow` | entry where an instruction starts, instruction limit (1..10000, the most instruction records exported), output path under `analysis/original/` | instruction metadata of one bounded flow as JSON, with `limitReached` (the walk stopped at the limit with flow left unread) and `noInstruction` (flow targets where no instruction starts). An entry where no instruction starts fails the script and writes nothing |
-| `ExportFunctionInventory` | output TSV path (must not exist) | every function's start and body size, the inventory `inventory-check` compares call targets with |
+| `ExportFunctionInventory` | output path `coverage/<build>/<file>.tsv` (must not exist, nor its `.provenance.tsv`), identifier of the database snapshot the export reads | the function inventory that `standard-coverage` and `inventory-check` read: each function's start in the Standard's notation, its body size and, for a body that is not one range from the start, its ranges; and beside it a `.provenance.tsv` with the imported file's `xxh3` and SHA-256, the Ghidra version, the snapshot and the script's SHA-256. A body byte it cannot place in the notation fails the export, which then writes nothing ([Exporting a function inventory](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/ghidra-workflow.md#exporting-a-function-inventory)) |
 | `ExportCallEdges` | output JSON path (must not exist), function limit (1..128), one or more function entries | the call and tail-jump edges of the functions Ghidra reaches breadth-first from the entries, with file offsets, Ghidra's flow type (after any flow override), `fallsThrough` (whether Ghidra continues to the next instruction at the site, after any fall-through override) and `fallsThroughTo`/`fallsThroughToAddress` (where a fall-through override sends Ghidra instead, or null), as the `ghidraCallEdges` input of `callees` |
 | `ExportFunctionFingerprints` | output TSV path (replaced only when the export completes) | per-function and per-instruction fingerprints with addresses normalized, for matching functions across versions |
 

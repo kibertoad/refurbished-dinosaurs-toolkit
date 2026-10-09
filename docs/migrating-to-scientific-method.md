@@ -432,6 +432,7 @@ not in the table has no entry.
 
 | Engine | Entry |
 |---|---|
+| 14.0.0 | [`ExportFunctionInventory` writes the Standard's notation and a provenance file](#engine-1400-exportfunctioninventory-writes-the-standards-notation-and-a-provenance-file) |
 | 13.0.0 | [The scalar constant scripts match absolute memory operands](#engine-1300-the-scalar-constant-scripts-match-absolute-memory-operands) |
 | 12.0.0 | [A callee's converted return frame returns to its caller](#engine-1200-a-callees-converted-return-frame-returns-to-its-caller) |
 | 11.0.0 | [A failed return check names which check failed](#engine-1100-a-failed-return-check-names-which-check-failed) |
@@ -450,6 +451,31 @@ not in the table has no entry.
 | 3.0.0 | [The Ghidra report scripts state coverage](#engine-300-the-ghidra-report-scripts-state-coverage) |
 | 2.0.0 | [Prepared-config protocol 3, with reader 2.0.0](#prepared-config-protocol-3-scoped-memory-on-call-models) |
 | 1.0.0 | [Prepared-config protocol 2, with reader 1.0.0](#prepared-config-protocol-2) |
+
+### Engine 14.0.0: `ExportFunctionInventory` writes the Standard's notation and a provenance file
+
+`ExportFunctionInventory` wrote each function's entry in Ghidra's address text (`00401000`,
+`1000:0040`, `ovl::1000:0010`) and its body's byte count, so `standard-coverage` and
+`inventory-check` refused its rows, and a discontiguous body read as one range from its start. It
+now writes the inventory the work protocol describes
+([Exporting a function inventory](ghidra-workflow.md#exporting-a-function-inventory)):
+
+- It takes a second argument, the identifier of the database snapshot the export reads. A call with
+  only the output path is refused.
+- The header is `start`, `size`, `ranges`. Starts and range ends are in the Standard's notation:
+  `0x00401000` for a flat program, `1000:0040` for a segmented one, and the file offset for a
+  function in an overlay block of a segmented program. `ranges` lists a body that is not the `size`
+  bytes from its start.
+- It writes `<file>.provenance.tsv` beside the inventory and refuses to run when either file exists.
+- A function it cannot write in full, or an NE program, fails the export and writes nothing, where
+  the old script wrote every row.
+- It loads `scientificmethod/Xxh3.java`, so run it with the package's script directory as
+  `-scriptPath`, or copy the `scientificmethod/` directory along with it.
+
+To migrate, export each inventory again into an empty path and compare it with the old one. Sizes
+are unchanged, since both count the body's bytes. A start differs only in spelling, except in an
+overlay block, where an address becomes a file offset. A tool that read the old two-column file
+reads `ranges` as well.
 
 ### Engine 13.0.0: the scalar constant scripts match absolute memory operands
 

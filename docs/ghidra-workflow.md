@@ -218,6 +218,66 @@ otherwise. Derive the map from the section table, never from a hand-entered base
 and `operand-candidates` commands scan declared regions for calls and encoded operands with
 coverage and controls.
 
+## Exporting a function inventory
+
+`ExportFunctionInventory` writes the function inventory that the work protocol's
+[Measuring progress](https://dinorefurb.com/work-protocol/#measuring-progress) section describes,
+which `standard-coverage` and the engine's `inventory-check` read. It takes the inventory's path and
+an identifier of your own for the database snapshot the export reads:
+
+```powershell
+& $analyzeHeadless $projectRoot Restoration -process 'GAME.EXE' -readOnly -noanalysis `
+  -scriptPath (scientific-method-engine ghidra-scripts) `
+  -postScript ExportFunctionInventory.java 'coverage/BLD-CD-EN-1.0/@CD/GAME.EXE.tsv' 'game-2026-10-09'
+```
+
+The inventory has the columns `start`, `size` and `ranges`, one row per function in Ghidra's
+address order, so two exports of one snapshot are identical byte for byte. It holds no names, since
+Ghidra's names can come from the original's symbols. A start and a range end are written in the
+Standard's notation for the program:
+
+- a 32-bit flat program (PE, LE, LX, 32-bit ELF) as `0x` and 8 upper-case hex digits, and a 64-bit
+  ELF program with 16;
+- a segmented program (MZ, COM) as `SSSS:OOOO`, with the segment Ghidra holds. The segments are
+  those of the load segment the program was imported at, 1000 for Ghidra's MZ loader and the
+  reader's default, so import at the load segment the spec's addresses use. A range whose end
+  offset would pass FFFF ends in the lowest segment that holds it: a range ending at linear 0x20000
+  from `1000:FFF0` is `1000:FFF0..1001:FFF0`;
+- in a segmented program, a function in an overlay block (a Ghidra overlay address space) by its
+  offset in the imported file, `0x` and at least two upper-case hex digits, as the Standard writes
+  overlay code outside the load image. The checker accepts such a row only inside a Code range of
+  the build. Overlay bytes loaded into an ordinary block are written as addresses.
+
+`size` is the number of bytes in the body. `ranges` is empty when the body is the `size` bytes
+from the start; otherwise it lists every range of the body, half-open `start..end`, in address order
+and separated by spaces.
+
+Beside the inventory, the script writes `<file>.provenance.tsv`, one name and value per line:
+
+| Name | Value |
+|---|---|
+| `xxh3` | the imported file's XXH3-128, as the spec's build entry gives it |
+| `sha256` | the imported file's SHA-256 |
+| `tool`, `tool_version` | `Ghidra` and the running version |
+| `snapshot` | the identifier you passed |
+| `script`, `script_sha256` | `ExportFunctionInventory` and the SHA-256 of the script source that ran |
+
+The hashes are of the file bytes the program holds, used only when their SHA-256 equals the one
+Ghidra recorded at import. A program that holds no such bytes, or only more than 256 MiB of them,
+fails the export. The script does not write the `.regions.tsv` file the protocol also puts beside an
+inventory.
+
+The export fails and writes nothing when the program is NE (Ghidra places NE segments at paragraphs
+of its own choosing, and the script does not convert them to the Standard's NE segments), when the
+Standard has no notation for its address space, or when any function cannot be written in full. The
+log names each such function, up to 1000 lines, with the body range and the reason: a body in an
+overlay block of a flat program, overlay bytes from no file or from a file other than the imported
+one, a body outside every memory block, an end past `FFFF:FFFF`, or a start another function
+already has, as when two overlay blocks view the same file bytes. An inventory never leaves out part
+of a body, so fix the analysis or the import and export again. Neither output may exist before the
+run. Both are written to temporary files, and the inventory is moved into place last, so a run
+without the `Exported` line and the inventory is a failed export.
+
 ## Addresses outside code
 
 Ghidra's PE loader maps the `SizeOfHeaders` bytes at the image base as a header block
