@@ -358,9 +358,11 @@ The same package installs `standard-coverage`, which reads the function inventor
 and the entries' `locations`, and prints for each analysed file the share of its functions and of
 their bytes that some entry cites, followed by the functions that no entry cites and that are not
 out of scope. `--require-complete` fails while any are left, which is the Audit stage's condition on
-functions. [The package README](../packages/standard-checker/README.md#coverage) gives the inventory
-format and what counts as citing a function. The figures change with every batch, so print them on
-demand rather than committing them.
+functions. An inventory with a row it cannot read gets no figures and is listed as not measured,
+so a file whose inventory is invalid never reads as one with nothing cited.
+[The package README](../packages/standard-checker/README.md#coverage) gives the inventory format and
+what counts as citing a function. The figures change with every batch, so print them on demand
+rather than committing them.
 
 ## Using setup-kaitai on its own
 

@@ -118,6 +118,13 @@ entry's body. Real-mode segmented addresses (`MZ`, `COM`) are compared by the li
 name, and each `NE` segment is a space of its own. A row without `ranges` is measured as if its body
 were contiguous. The shares count functions and bytes of the functions not out of scope.
 
+An inventory that cannot be read, or that has a row that cannot be read, gets no figures. It is
+printed as `<path>: not measured, <reason>` (for a bad row, `2 of 40 rows are invalid`), each
+problem is printed after the figures, and `--json` lists it under `unmeasured` with `path` and
+`reason` instead of under `inventories`. Figures over the readable rows alone would leave the
+other functions out of both counts, and an inventory whose rows are all invalid would read as a
+file with no functions.
+
 It exits with 0, with 1 when an inventory is invalid or `--require-complete` finds an uncited
 function or no inventory at all, and with 2 when the options are invalid. Problems with the spec
 itself are left to `standard-checker`; a warning gives how many there were while loading it and how
