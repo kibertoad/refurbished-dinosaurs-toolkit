@@ -120,7 +120,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
 | `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (load image, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own and an optional comparison with a candidate body (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
 | `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables and checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots) |
-| `unpack` | writes the unpacked form of an LZEXE 0.90 or 0.91 executable and gives the `size`, `xxh3`, `format` and `tool` of a build's `unpacked` item (reader only, no engine) | [unpacking packed executables](#unpacking-packed-executables) |
+| `unpack` | writes the unpacked form of an LZEXE 0.90 or 0.91 or an EXEPACK executable and gives the `size`, `xxh3`, `format` and `tool` of a build's `unpacked` item (reader only, no engine) | [unpacking packed executables](#unpacking-packed-executables) |
 
 The engine also has `scientific-method-engine ghidra-scripts`, which prints the directory of the
 packaged Ghidra scripts (see the engine's README for the list).
@@ -1556,32 +1556,54 @@ never shows that the code calls nothing else, and it does not read which code ca
 form, so that every restoration reading the same packed file gets the same bytes and the same
 `unpacked.xxh3`. It runs in the reader without the engine, and it never runs the decompressor in
 the file: it reads the decompressor's header words and its relocation table, and decodes the
-compressed stream itself. The config is `source`, its `xxh3`, `sourceKind: "mz"` and `output`, the
+compressed stream itself. For EXEPACK it also reads the message that ends the decompressor, to find
+where the relocation table starts. The config is `source`, its `xxh3`, `sourceKind: "mz"` and `output`, the
 path to write, relative to the config file. An existing output that already holds the same bytes
 is left alone (`outputWritten: false`); one that holds other bytes is refused.
 
-The reader unpacks LZEXE 0.91 and 0.90, recognized by `LZ91` or `LZ09` at offset 0x1C. A file with
-neither is refused with an error that says so; that does not show it is not packed. The signature
-names the format, so builds of LZEXE that write the same format are not told apart.
+The reader unpacks LZEXE 0.91 and 0.90, recognized by `LZ91` or `LZ09` at offset 0x1C, and EXEPACK,
+recognized by `RB` at the end of an EXEPACK header that starts at CS:0 and ends at CS:IP, 16, 18
+or 20 bytes long. A file with none of these is refused with an error that says so; that does not
+show it is not packed. The signature names the format, so builds of LZEXE that write the same
+format are not told apart, and neither are the versions of EXEPACK and LINK `/EXEPACK`.
 
-The report gives `packer` (`LZEXE 0.91` or `LZEXE 0.90`), `unpacked` (`size`, `xxh3`, `format: "MZ"`
-and `tool`, the reader's package name and version), `layout`, the rebuilt `header`,
+The report gives `packer` (`LZEXE 0.91`, `LZEXE 0.90` or `EXEPACK`), `unpacked` (`size`, `xxh3`,
+`format: "MZ"` and `tool`, the reader's package name and version), `layout`, the rebuilt `header`,
 `loadModuleSize`, `sourceIdentity`, and under `packed` the file offsets it read: the
-decompressor's header (`decompressor`), the compressed `stream` from its first flag word to the
-byte after its end mark, the `slack` between the end mark and the decompressor's CS:0, and the
-`relocationTable`. `setByLayout` names the header fields the packed file did not supply.
+decompressor's header (`decompressor`), the compressed `stream`, the `slack` between the stream's
+end and the decompressor's CS:0, and the `relocationTable`. For LZEXE the stream runs from its
+first flag word to the byte after its end mark. `setByLayout` names the header fields the packed
+file did not supply.
+
+EXEPACK's stream is read backwards. It ends `skip_len - 1` paragraphs before CS:0 (`skip_len` is 1
+with a 16-byte header), less any 0xFF padding, and `stream` runs from the last byte its final
+command read to the byte after its first command. Reading down from the end, each command is an
+opcode byte, then a length word, high byte first: 0xB0 fills that many bytes with the byte read
+next, 0xB2 copies that many bytes, and the low bit marks the final command. The reader decodes it as the stub
+does, in place in one buffer that starts with the compressed bytes, writing the unpacked load
+module of `dest_len - skip_len + 1` paragraphs down from its end. Bytes below the final command's
+last write are never written and keep the packed load module's bytes; `packed.leftInPlace` counts
+them. No header field gives the stub's length, so the relocation table is found after the message
+`Packed file is corrupt` that ends every known stub, and it has to end where `exepack_size` says
+the EXEPACK block ends. Its 16 groups are a count word and that many offset words for segments
+0000, 1000, ... F000. A stub whose message is localized is refused.
 
 Every read is bounded, and each failure names the file offset:
 
 - The packed file holds at most 1 MiB, and no data may follow its MZ image.
-- The compressed stream starts at the decompressor's CS:0 less the paragraph count its header
+- An LZEXE stream starts at the decompressor's CS:0 less the paragraph count its header
   gives, which must lie inside the load module, and it must reach its end mark before CS:0. A
   token or flag word that would cross CS:0 fails.
 - A copy may not reach before the start of the output, and the unpacked load module may not pass
   1 MiB, the real-mode address space.
-- The relocation table must end inside the load module, and every relocation must name a whole
-  word inside the unpacked load module. A 0.90 table that names a word twice is refused, because
-  the reader's MZ parser does not read a file that relocates a word twice.
+- An EXEPACK stream must reach a final command before the start of the load module, every opcode
+  must be 0xB0 to 0xB3, and no command may write before the start of the unpacked load module.
+  `skip_len` must be at least 1, and the EXEPACK block must lie inside the load module.
+- A packed file with MZ relocations of its own is refused.
+- The relocation table must end inside the load module (for EXEPACK, exactly at the end of the
+  EXEPACK block), and every relocation must name a whole word inside the unpacked load module. A
+  table that names a word twice is refused, because the reader's MZ parser does not read a file
+  that relocates a word twice.
 
 ### Layout rule 1
 
@@ -1595,7 +1617,7 @@ multiple of 16 bytes, then the load module. Nothing else is written.
 | header paragraphs | the header size above, divided by 16 |
 | minimum allocation | the packed file's load module in paragraphs plus its minimum allocation, less the unpacked load module in paragraphs, at least 0 |
 | maximum allocation | 0xFFFF when the packed file's is 0xFFFF; otherwise the same sum with the packed file's maximum allocation, at least the minimum |
-| SS, SP, IP, CS | the words at CS:6, CS:4, CS:0 and CS:2 of the decompressor |
+| SS, SP, IP, CS | LZEXE: the words at CS:6, CS:4, CS:0 and CS:2 of the decompressor; EXEPACK: `real_ss`, `real_sp`, `real_ip` and `real_cs` from its header |
 | checksum | 0 |
 | relocation table offset | 0x1C |
 | overlay number | 0 |
