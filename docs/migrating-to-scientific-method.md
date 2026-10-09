@@ -464,7 +464,7 @@ now writes the inventory the work protocol describes
   only the output path is refused.
 - The header is `start`, `size`, `ranges`. Starts and range ends are in the Standard's notation:
   `0x00401000` for a flat program, `1000:0040` for a segmented one, and the file offset for a
-  function in an overlay block of a segmented program. `ranges` lists a body that is not the `size`
+  function in an overlay block of an MZ program. `ranges` lists a body that is not the `size`
   bytes from its start.
 - It writes `<file>.provenance.tsv` beside the inventory and refuses to run when either file exists.
 - A function it cannot write in full, or an NE program, fails the export and writes nothing, where

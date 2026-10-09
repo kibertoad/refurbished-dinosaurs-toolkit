@@ -37,11 +37,16 @@ public class ExportFunctionInventory extends GhidraScript {
 
     private enum Notation { SEGMENTED, FLAT32, FLAT64 }
 
-    /** A placed stretch of a body: a half-open range of linear addresses or of file offsets. */
-    private record Piece(boolean offset, long start, long end, String startText) {
+    /**
+     * A placed stretch of a body: a half-open range of linear addresses or of file offsets, with the
+     * segment its start is written in (0 outside the segmented notation).
+     */
+    private record Piece(boolean offset, long start, long end, String startText, long segment) {
     }
 
     private Notation notation;
+    /** Whether the Standard lets this program's overlay code be written by file offset: only an MZ file. */
+    private boolean fileOffsets;
     private FileBytes imported;
     private final List<String> problems = new ArrayList<>();
 
@@ -62,10 +67,14 @@ public class ExportFunctionInventory extends GhidraScript {
         if (snapshot.isEmpty() || snapshot.length() > 200 || snapshot.chars().anyMatch(Character::isISOControl)) {
             throw new IllegalArgumentException("The snapshot identifier must be 1 to 200 characters with no tab or line break.");
         }
-        for (Path path : List.of(output, provenance)) {
-            if (Files.exists(path)) {
-                throw new IllegalArgumentException("Output already exists: " + path);
-            }
+        if (Files.exists(output)) {
+            throw new IllegalArgumentException("Output already exists: " + output);
+        }
+        if (Files.exists(provenance)) {
+            // The provenance moves into place first, so one without its inventory is left by an export
+            // that stopped between the two moves. It is not deleted here, since it may be the user's own.
+            throw new IllegalArgumentException("Output already exists: " + provenance + ". With no inventory beside"
+                + " it, an earlier export stopped before moving the inventory into place; remove it and export again.");
         }
 
         notation = notation();
@@ -87,17 +96,22 @@ public class ExportFunctionInventory extends GhidraScript {
             Address entry = function.getEntryPoint();
             List<Piece> pieces = place(memory, entry, function.getBody(), true);
             Piece first = place(memory, entry, new AddressSet(entry), false).stream().findFirst().orElse(null);
-            if (first == null) {
-                continue; // The body's problems include the byte at the start.
+            if (first == null || pieces.isEmpty()) {
+                continue; // The body's problems include the byte at the start, or every byte of the body.
             }
             // Ghidra keeps a body in one address space, and a space is an overlay or not as a whole, so
-            // every piece is placed the way the start is.
-            pieces.sort((a, b) -> Long.compare(a.start(), b.start()));
+            // every piece is placed the way the start is. A 64-bit address is compared unsigned.
+            pieces.sort((a, b) -> Long.compareUnsigned(a.start(), b.start()));
             List<Piece> body = new ArrayList<>();
             for (Piece piece : pieces) {
                 Piece last = body.isEmpty() ? null : body.get(body.size() - 1);
-                if (last != null && last.end() == piece.start()) {
-                    body.set(body.size() - 1, new Piece(last.offset(), last.start(), piece.end(), last.startText()));
+                if (last != null && Long.compareUnsigned(piece.start(), last.end()) < 0) {
+                    problems.add("Function at " + entry + ": body bytes at " + piece.startText()
+                        + " are placed where another part of the body already is, as when an overlay block views"
+                        + " the same file bytes twice.");
+                } else if (last != null && last.end() == piece.start()) {
+                    body.set(body.size() - 1,
+                        new Piece(last.offset(), last.start(), piece.end(), last.startText(), last.segment()));
                 } else {
                     body.add(piece);
                 }
@@ -133,9 +147,11 @@ public class ExportFunctionInventory extends GhidraScript {
         }
 
         Files.createDirectories(output.getParent());
-        Path inventoryPart = Files.createTempFile(output.getParent(), "inventory-", ".partial");
-        Path provenancePart = Files.createTempFile(output.getParent(), "provenance-", ".partial");
+        Path inventoryPart = null;
+        Path provenancePart = null;
         try {
+            inventoryPart = Files.createTempFile(output.getParent(), "inventory-", ".partial");
+            provenancePart = Files.createTempFile(output.getParent(), "provenance-", ".partial");
             try (BufferedWriter writer = Files.newBufferedWriter(inventoryPart, StandardCharsets.UTF_8)) {
                 writer.write("start\tsize\tranges\n");
                 for (String row : rows) {
@@ -158,8 +174,12 @@ public class ExportFunctionInventory extends GhidraScript {
                 throw e;
             }
         } finally {
-            Files.deleteIfExists(inventoryPart);
-            Files.deleteIfExists(provenancePart);
+            if (inventoryPart != null) {
+                Files.deleteIfExists(inventoryPart);
+            }
+            if (provenancePart != null) {
+                Files.deleteIfExists(provenancePart);
+            }
         }
         println("Exported " + rows.size() + " functions with " + bytes + " body bytes, " + withRanges
             + " of them with a ranges column, to " + output + ", and their provenance to " + provenance);
@@ -174,6 +194,7 @@ public class ExportFunctionInventory extends GhidraScript {
                 throw new IllegalStateException("This is an NE program. Ghidra places NE segments at paragraphs of"
                     + " its own choosing, and this script does not convert them to the Standard's NE segments.");
             }
+            fileOffsets = format != null && format.contains("(MZ)");
             return Notation.SEGMENTED;
         }
         if (space.getSize() == 32) {
@@ -188,7 +209,7 @@ public class ExportFunctionInventory extends GhidraScript {
 
     /**
      * The provenance lines: the imported file's xxh3 and SHA-256, the analyzer and its version, the
-     * snapshot the researcher names, and this script's SHA-256. The file's bytes are those the program
+     * snapshot the researcher names, and the SHA-256 of this script and of its Xxh3 helper. The file's bytes are those the program
      * holds, checked against the SHA-256 Ghidra recorded when it imported the file.
      */
     private Map<String, String> provenance(String snapshot) throws Exception {
@@ -217,10 +238,14 @@ public class ExportFunctionInventory extends GhidraScript {
         if (script == null || !script.exists()) {
             throw new IllegalStateException("This script cannot read its own source to record its revision.");
         }
-        byte[] scriptBytes;
-        try (InputStream in = script.getInputStream()) {
-            scriptBytes = in.readAllBytes();
+        byte[] scriptBytes = readAll(script);
+        // The xxh3 value comes from the helper, so its revision is recorded as well.
+        ResourceFile helper = new ResourceFile(new ResourceFile(script.getParentFile(), "scientificmethod"), "Xxh3.java");
+        if (!helper.exists()) {
+            throw new IllegalStateException("This script cannot read the source of its helper " + helper
+                + " to record its revision.");
         }
+        byte[] helperBytes = readAll(helper);
         Map<String, String> lines = new LinkedHashMap<>();
         lines.put("xxh3", Xxh3.hexDigest(file));
         lines.put("sha256", sha256(file));
@@ -229,12 +254,20 @@ public class ExportFunctionInventory extends GhidraScript {
         lines.put("snapshot", snapshot);
         lines.put("script", "ExportFunctionInventory");
         lines.put("script_sha256", sha256(scriptBytes));
+        lines.put("helper", "scientificmethod/Xxh3.java");
+        lines.put("helper_sha256", sha256(helperBytes));
         return lines;
+    }
+
+    private static byte[] readAll(ResourceFile file) throws Exception {
+        try (InputStream in = file.getInputStream()) {
+            return in.readAllBytes();
+        }
     }
 
     /**
      * The body split into placed pieces. A byte in an overlay block is placed by its offset in the
-     * imported file, which only the segmented notation allows; any other byte by its address. With
+     * imported file, which the Standard allows only in an MZ file; any other byte by its address. With
      * record, a byte that cannot be placed is recorded as a problem with the reason.
      */
     private List<Piece> place(Memory memory, Address entry, AddressSetView body, boolean record) {
@@ -242,6 +275,9 @@ public class ExportFunctionInventory extends GhidraScript {
         int before = problems.size();
         AddressSet left = new AddressSet(body);
         for (MemoryBlock block : memory.getBlocks()) {
+            if (left.isEmpty()) {
+                break;
+            }
             AddressSet part = left.intersectRange(block.getStart(), block.getEnd());
             if (part.isEmpty()) {
                 continue;
@@ -251,14 +287,14 @@ public class ExportFunctionInventory extends GhidraScript {
                 for (AddressRange range : part) {
                     Piece piece = addressPiece(range);
                     if (piece == null) {
-                        problem(entry, range, "cannot be written in four hex digits of segment and offset");
+                        problem(entry, range, noWrittenForm(range));
                     } else {
                         pieces.add(piece);
                     }
                 }
                 continue;
             }
-            if (notation != Notation.SEGMENTED) {
+            if (!fileOffsets) {
                 for (AddressRange range : part) {
                     problem(entry, range, "is in overlay block " + block.getName()
                         + ", and the Standard places code by file offset only in an MZ file");
@@ -276,7 +312,7 @@ public class ExportFunctionInventory extends GhidraScript {
                         continue;
                     }
                     long offset = info.getFileBytesOffset(range.getMinAddress());
-                    pieces.add(new Piece(true, offset, offset + range.getLength(), String.format("0x%02X", offset)));
+                    pieces.add(new Piece(true, offset, offset + range.getLength(), String.format("0x%02X", offset), 0));
                 }
             }
             for (AddressRange range : part) {
@@ -292,21 +328,41 @@ public class ExportFunctionInventory extends GhidraScript {
         return pieces;
     }
 
-    /** The piece an address range in a non-overlay block makes, or null when its start has no written form. */
+    /**
+     * The piece an address range in a non-overlay block makes, or null when it is outside the program's
+     * default address space or its start or end has no written form.
+     */
     private Piece addressPiece(AddressRange range) {
         Address start = range.getMinAddress();
+        if (!start.getAddressSpace().equals(currentProgram.getAddressFactory().getDefaultAddressSpace())) {
+            return null;
+        }
         long linear = start.getOffset();
         String text;
+        long segment = 0;
         if (notation == Notation.SEGMENTED) {
             if (!(start instanceof SegmentedAddress segmented)) {
                 return null;
             }
-            text = String.format("%04X:%04X", segmented.getSegment(), segmented.getSegmentOffset());
+            segment = segmented.getSegment();
+            text = String.format("%04X:%04X", segment, segmented.getSegmentOffset());
         } else {
             text = String.format(notation == Notation.FLAT32 ? "0x%08X" : "0x%016X", linear);
         }
-        Piece piece = new Piece(false, linear, linear + range.getLength(), text);
+        Piece piece = new Piece(false, linear, linear + range.getLength(), text, segment);
         return endText(piece) == null ? null : piece;
+    }
+
+    /** Why addressPiece has no piece for a range. */
+    private String noWrittenForm(AddressRange range) {
+        AddressSpace space = range.getMinAddress().getAddressSpace();
+        if (!space.equals(currentProgram.getAddressFactory().getDefaultAddressSpace())) {
+            return "is in address space " + space.getName() + ", which the Standard's notation does not cover";
+        }
+        if (notation == Notation.SEGMENTED) {
+            return "cannot be written in four hex digits of segment and offset";
+        }
+        return "ends past the highest address " + (notation == Notation.FLAT32 ? "8" : "16") + " hex digits can write";
     }
 
     /**
@@ -321,9 +377,10 @@ public class ExportFunctionInventory extends GhidraScript {
             return piece.end() >= 0x1_0000_0000L ? null : String.format("0x%08X", piece.end());
         }
         if (notation == Notation.FLAT64) {
-            return String.format("0x%016X", piece.end());
+            // A body that ends at the top of the space ends at 2^64, which wraps to 0.
+            return Long.compareUnsigned(piece.end(), piece.start()) <= 0 ? null : String.format("0x%016X", piece.end());
         }
-        long segment = Long.parseLong(piece.startText().substring(0, 4), 16);
+        long segment = piece.segment();
         long offset = piece.end() - segment * 16;
         if (offset > 0xFFFF) {
             segment = (piece.end() - 0xFFFF + 15) / 16;

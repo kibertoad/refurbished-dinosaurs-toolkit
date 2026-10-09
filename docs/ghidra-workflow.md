@@ -243,7 +243,7 @@ Standard's notation for the program:
   reader's default, so import at the load segment the spec's addresses use. A range whose end
   offset would pass FFFF ends in the lowest segment that holds it: a range ending at linear 0x20000
   from `1000:FFF0` is `1000:FFF0..1001:FFF0`;
-- in a segmented program, a function in an overlay block (a Ghidra overlay address space) by its
+- in an MZ program, a function in an overlay block (a Ghidra overlay address space) by its
   offset in the imported file, `0x` and at least two upper-case hex digits, as the Standard writes
   overlay code outside the load image. The checker accepts such a row only inside a Code range of
   the build. Overlay bytes loaded into an ordinary block are written as addresses.
@@ -261,6 +261,7 @@ Beside the inventory, the script writes `<file>.provenance.tsv`, one name and va
 | `tool`, `tool_version` | `Ghidra` and the running version |
 | `snapshot` | the identifier you passed |
 | `script`, `script_sha256` | `ExportFunctionInventory` and the SHA-256 of the script source that ran |
+| `helper`, `helper_sha256` | `scientificmethod/Xxh3.java` and the SHA-256 of that source, which computes `xxh3` |
 
 The hashes are of the file bytes the program holds, used only when their SHA-256 equals the one
 Ghidra recorded at import. A program that holds no such bytes, or only more than 256 MiB of them,
@@ -271,12 +272,15 @@ The export fails and writes nothing when the program is NE (Ghidra places NE seg
 of its own choosing, and the script does not convert them to the Standard's NE segments), when the
 Standard has no notation for its address space, or when any function cannot be written in full. The
 log names each such function, up to 1000 lines, with the body range and the reason: a body in an
-overlay block of a flat program, overlay bytes from no file or from a file other than the imported
-one, a body outside every memory block, an end past `FFFF:FFFF`, or a start another function
-already has, as when two overlay blocks view the same file bytes. An inventory never leaves out part
-of a body, so fix the analysis or the import and export again. Neither output may exist before the
-run. Both are written to temporary files, and the inventory is moved into place last, so a run
-without the `Exported` line and the inventory is a failed export.
+overlay block of a program other than MZ, overlay bytes from no file or from a file other than the
+imported one, a body outside every memory block or in an address space other than the program's
+default one, an end past `FFFF:FFFF` or past the top of the flat notation, body bytes placed twice
+in one body, or a start another function already has, as when two overlay blocks view the same
+file bytes. An inventory never leaves out part of a body, so fix the analysis or the import and
+export again. Neither output may exist before the run. Both are written to temporary files, and the
+inventory is moved into place last, so a run without the `Exported` line and the inventory is a
+failed export. A run stopped between the two moves leaves a provenance file with no inventory, and
+the next run refuses until you remove it.
 
 ## Addresses outside code
 
