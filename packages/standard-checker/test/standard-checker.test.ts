@@ -432,9 +432,9 @@ test("a superseded format entry without a layout table still names what replaced
 });
 
 // FMT-SCORE-002 at status, listing files, with BLD-EXAMPLE-1.0 keeping the paths its manifest leaves
-// out in BLD-EXAMPLE-1.0.other-files.yaml (others as the YAML list's text), or in its Other files
-// section as prose.
-function listingOfOtherFiles(status: string, files: string, others: string[] | { yaml: string } | "prose") {
+// out in BLD-EXAMPLE-1.0.other-files.yaml (others as the YAML list's text), in its Other files
+// section as prose, or in a BLD-EXAMPLE-1.0.other-files.yaml that the section names but that is missing.
+function listingOfOtherFiles(status: string, files: string, others: string[] | { yaml: string } | "prose" | "missing") {
   return (r: string) => {
     addListing(r, status, status === "superseded" ? "FMT-SCORE-001" : "");
     replaceIn(r, "spec/formats/FMT-SCORE-002.md", 'files: ["DATA/SCORES.BIN"]', `files: ${files}`);
@@ -443,7 +443,7 @@ function listingOfOtherFiles(status: string, files: string, others: string[] | {
         ? "Listed with `find` over the installation. The manifest leaves out the DEMO directory, another product."
         : "Listed with `find` over the installation. The paths the manifest leaves out are in `BLD-EXAMPLE-1.0.other-files.yaml`.";
     replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.md", "## Other files\n\nNone.\n", `## Other files\n\n${section}\n`);
-    if (others !== "prose")
+    if (others !== "prose" && others !== "missing")
       writeFileSync(
         join(r, "spec/builds/BLD-EXAMPLE-1.0.other-files.yaml"),
         Array.isArray(others)
@@ -482,11 +482,19 @@ test("a superseded format entry's files still match a file of the build", (t) =>
     /FMT-SCORE-002\.md: files pattern DEMO\/PLAY\.BIN matches no file of BLD-EXAMPLE-1\.0 in its manifest, and lies under the directory exclusion DEMO\/ of BLD-EXAMPLE-1\.0\.other-files\.yaml, which does not name the files under it; list them by their own paths among the other files$/m,
   );
 
+  // A wildcard in the directory part still finds the exclusion.
+  const wildDir = run(broken(t, listingOfOtherFiles("superseded", '["DEM?/*.BIN"]', ["DEMO/"])));
+  assert.equal(wildDir.status, 1);
+  assert.match(
+    wildDir.output,
+    /files pattern DEM\?\/\*\.BIN matches no file of BLD-EXAMPLE-1\.0 in its manifest, and lies under the directory exclusion DEMO\/ /,
+  );
+
   const prose = run(broken(t, listingOfOtherFiles("superseded", '["DEMO/PLAY.BIN"]', "prose")));
   assert.equal(prose.status, 1);
   assert.match(
     prose.output,
-    /FMT-SCORE-002\.md: files pattern DEMO\/PLAY\.BIN matches no file of BLD-EXAMPLE-1\.0 in its manifest, and the checker reads the build's other files only from BLD-EXAMPLE-1\.0\.other-files\.yaml$/m,
+    /FMT-SCORE-002\.md: files pattern DEMO\/PLAY\.BIN matches no file of BLD-EXAMPLE-1\.0 in its manifest, and its list of other files was not read \(the checker reads that list only from BLD-EXAMPLE-1\.0\.other-files\.yaml\)$/m,
   );
 
   const unreadable = run(
@@ -495,7 +503,28 @@ test("a superseded format entry's files still match a file of the build", (t) =>
   assert.equal(unreadable.status, 1);
   assert.match(
     unreadable.output,
-    /FMT-SCORE-002\.md: files pattern DEMO\/PLAY\.BIN matches no file of BLD-EXAMPLE-1\.0 in its manifest, and BLD-EXAMPLE-1\.0\.other-files\.yaml could not be read$/m,
+    /FMT-SCORE-002\.md: files pattern DEMO\/PLAY\.BIN matches no file of BLD-EXAMPLE-1\.0 in its manifest, and its list of other files was not read \(BLD-EXAMPLE-1\.0\.other-files\.yaml could not be read\)$/m,
+  );
+
+  const missing = run(broken(t, listingOfOtherFiles("superseded", '["DEMO/PLAY.BIN"]', "missing")));
+  assert.equal(missing.status, 1);
+  assert.match(
+    missing.output,
+    /FMT-SCORE-002\.md: files pattern DEMO\/PLAY\.BIN matches no file of BLD-EXAMPLE-1\.0 in its manifest, and its list of other files was not read \(BLD-EXAMPLE-1\.0\.other-files\.yaml does not exist\)$/m,
+  );
+
+  // A list on disk that the section does not name is still named as unreadable, not as no list.
+  const unnamed = run(
+    broken(t, (r) => {
+      addListing(r, "superseded", "FMT-SCORE-001");
+      replaceIn(r, "spec/formats/FMT-SCORE-002.md", 'files: ["DATA/SCORES.BIN"]', 'files: ["DEMO/PLAY.BIN"]');
+      writeFileSync(join(r, "spec/builds/BLD-EXAMPLE-1.0.other-files.yaml"), "other_files: DEMO/PLAY.BIN\n");
+    }),
+  );
+  assert.equal(unnamed.status, 1);
+  assert.match(
+    unnamed.output,
+    /FMT-SCORE-002\.md: files pattern DEMO\/PLAY\.BIN matches no file of BLD-EXAMPLE-1\.0 in its manifest, and its list of other files was not read \(BLD-EXAMPLE-1\.0\.other-files\.yaml could not be read\)$/m,
   );
 
   const noOthers = run(

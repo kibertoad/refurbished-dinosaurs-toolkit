@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { Context } from "../context.ts";
 import { checkResolves, checkStatusCitations, completeReading, rowFacts, statusIndex } from "../evidence.ts";
 import { asList, idsIn, kindOf } from "../ids.ts";
+import { otherFilesSection, otherFilesUnread } from "../load/builds.ts";
 import { readCsv, tables } from "../markdown.ts";
 import { BINARY_LAYOUT, CLAIM_STATUSES, ENUM_TABLE, ROW_STATUSES, TEXT_LAYOUT } from "../standard.ts";
 import type { Entry, Table } from "../types.ts";
@@ -47,7 +48,13 @@ function checkSupersededPattern(ctx: Context, file: string, pattern: string, re:
   const other = ctx.spec.otherFiles.get(b);
   if (other) {
     if (other.some((p) => !p.endsWith("/") && re.test(p))) return;
-    const dir = other.find((p) => p.endsWith("/") && pattern.startsWith(p));
+    // The pattern lies under an exclusion when its first segments match the exclusion's directory.
+    const segments = pattern.split("/");
+    const dir = other.find((p) => {
+      if (!p.endsWith("/")) return false;
+      const depth = p.split("/").length - 1;
+      return segments.length > depth && globRegExp(segments.slice(0, depth).join("/")).test(p.slice(0, -1));
+    });
     ctx.problem(
       file,
       dir
@@ -57,15 +64,29 @@ function checkSupersededPattern(ctx: Context, file: string, pattern: string, re:
     return;
   }
   const build = ctx.spec.entries.get(b);
-  const section = build?.sections.find((s) => s.title === "Other files")?.text.trim() ?? "";
-  if (!build || section === "None." || section === "") ctx.problem(file, missing);
-  else
-    ctx.problem(
-      file,
-      existsSync(join(dirname(build.file), `${b}.other-files.yaml`))
-        ? `${missing} in its manifest, and ${b}.other-files.yaml could not be read`
-        : `${missing} in its manifest, and the checker reads the build's other files only from ${b}.other-files.yaml`,
-    );
+  // A build that keeps no list of other files has its whole installation in its manifest.
+  const keepsNone =
+    !build ||
+    (["", "None."].includes(otherFilesSection(build).trim()) &&
+      !existsSync(join(dirname(build.file), `${b}.other-files.yaml`)));
+  ctx.problem(
+    file,
+    keepsNone
+      ? missing
+      : `${missing} in its manifest, and its list of other files was not read (${otherFilesUnread(b, build)})`,
+  );
+}
+
+/** A files pattern as a regular expression for a whole path: * and ? match within one segment. */
+function globRegExp(pattern: string) {
+  return new RegExp(
+    "^" +
+      pattern
+        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replaceAll("*", "[^/]*")
+        .replaceAll("?", "[^/]") +
+      "$",
+  );
 }
 
 /** Checks a format entry, adding the names its tables define to formatNames. */
@@ -92,14 +113,7 @@ export function checkFormat(ctx: Context, e: Entry, formatNames: FormatNames) {
     }
   }
   for (const pattern of asList(meta.files)) {
-    const re = new RegExp(
-      "^" +
-        String(pattern)
-          .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-          .replaceAll("*", "[^/]*")
-          .replaceAll("?", "[^/]") +
-        "$",
-    );
+    const re = globRegExp(String(pattern));
     for (const b of asList(meta.builds)) {
       if ((buildFiles.get(b) ?? []).some((f) => re.test(f.path))) continue;
       if (meta.status === "superseded") checkSupersededPattern(ctx, file, String(pattern), re, b);

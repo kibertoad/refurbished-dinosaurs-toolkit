@@ -631,10 +631,11 @@ Each pattern in a format entry's `files` must match a file of the manifest of ea
 lists. A superseded entry keeps the `files` it had when it was replaced, even after those files
 leave the manifest, for example because a Survey showed them to belong to another product on the
 disc. Its pattern also passes when it matches a path that the build's `<ID>.other-files.yaml` gives
-by its own path. It still fails when it matches neither, and when it matches only a directory
-exclusion, which does not show that a file under it exists. Where the build's list of other files
-is prose, or `<ID>.other-files.yaml` could not be read, the problem gives that reason, because the
-checker cannot see the list. An entry at any other status needs its files in the manifest.
+by its own path. It still fails when it matches neither, and when it lies under a directory
+exclusion and matches no path the list gives, because the exclusion does not show that a file under
+it exists. Where the build's list of other files is prose, or `<ID>.other-files.yaml` could not be
+read or does not exist, the problem gives that reason, because the checker cannot see the list. An
+entry at any other status needs its files in the manifest.
 
 ### Locations by file format
 
@@ -778,7 +779,8 @@ step, such as `comparison of BLD-X.listing.yaml with the list of other files of 
 reads that list only from BLD-X.other-files.yaml)`. Move the list to `<ID>.other-files.yaml` to
 have it compared. Where `<ID>.other-files.yaml` exists but could not be read, its problems are
 reported and the skipped step gives that reason instead: `(BLD-X.other-files.yaml could not be
-read)`.
+read)`, and where the section names a list that does not exist, `(BLD-X.other-files.yaml does not
+exist)`.
 
 A file in any other format fails the manifest check, and so does a packed file whose unpacked
 form is in any other format. Before such a file is documented, the Standard must decide how

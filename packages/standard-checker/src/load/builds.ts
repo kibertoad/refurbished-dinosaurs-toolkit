@@ -37,6 +37,24 @@ export function hasPath(f: Meta): boolean {
   return f.path !== undefined && f.path !== null && f.path !== "" && typeof f.path !== "object";
 }
 
+/** The text of a build entry's Other files section, or "" when it has none. */
+export function otherFilesSection(e: Entry): string {
+  return e.sections.find((s) => s.title === "Other files")?.text ?? "";
+}
+
+/**
+ * Why the checker has no paths for build id's list of other files, as a clause for a problem or a
+ * skipped step: builds/<ID>.other-files.yaml is on disk but could not be read, the Other files
+ * section names that file but it does not exist, or the list is not kept in that file. The load
+ * phase has reported the problems of the first two already.
+ */
+export function otherFilesUnread(id: string, e: Entry): string {
+  const name = `${id}.other-files.yaml`;
+  if (existsSync(join(dirname(e.file), name))) return `${name} could not be read`;
+  if (otherFilesSection(e).includes(name)) return `${name} does not exist`;
+  return `the checker reads that list only from ${name}`;
+}
+
 /** The rule that ties each kind of file beside a build entry to its build. */
 const BELONGS: Record<string, Rule> = {
   files: "ENTRY-TYPES-10",
@@ -139,7 +157,7 @@ export function checkOtherFiles(
     if (e.kind !== "BLD") continue;
     const name = `${id}.other-files.yaml`;
     const path = join(dirname(e.file), name);
-    const named = (e.sections.find((s) => s.title === "Other files")?.text ?? "").includes(name);
+    const named = otherFilesSection(e).includes(name);
     if (!existsSync(path)) {
       if (named) problem(e.file, `Other files names ${name}, which does not exist`, "ENTRY-TYPES-14");
       continue;
