@@ -88,18 +88,18 @@ function exepack(stream: Buffer, written: number, options: Packed = {}) {
 }
 
 // The stub's algorithm as the format's documentation gives it: backwards and in place, in a buffer
-// of the larger of the two sizes, then cut to the unpacked size.
-function reference(compressed: Buffer, unpacked: number): Buffer {
-  const buf = Buffer.alloc(Math.max(compressed.length, unpacked));
-  compressed.copy(buf);
-  let src = compressed.length,
+// of the larger of the two sizes that starts with the packed load module, then cut to the unpacked size.
+function reference(packedLoad: Buffer, compressed: number, unpacked: number): Buffer {
+  const buf = Buffer.alloc(Math.max(compressed, unpacked));
+  packedLoad.copy(buf, 0, 0, Math.min(packedLoad.length, buf.length));
+  let src = compressed,
     dst = unpacked;
   // Bounds checks only, so that a stream the stub would reject throws here too.
   const take = () => {
     if (src === 0) throw new Error("out of bounds");
     return buf[--src]!;
   };
-  while (buf[src - 1] === 0xff) src--;
+  for (let n = 0; n < 16 && buf[src - 1] === 0xff; n++) src--;
   let command: number;
   do {
     command = take();
@@ -158,6 +158,17 @@ test("the last command's final bit ends the stream, with any command as the last
   }
 });
 
+test("bytes left in place past the compressed data keep the packed load module's bytes", () => {
+  // One paragraph of compressed data and six of unpacked load module: the fill writes the top 32
+  // bytes, and the 64 below it keep what the packed file holds there, the EXEPACK header and stub.
+  const commands: Command[] = [{ fill: 0x33, length: 32 }];
+  const packed = exepack(encode(commands), 32, { destParagraphs: 6 });
+  const result = unpack(packed);
+  assert.equal(result.packed.leftInPlace, 64);
+  assert.deepEqual(loadModule(result).subarray(0, 64), packed.subarray(0x20, 0x60));
+  assert.deepEqual(loadModule(result).subarray(64), Buffer.alloc(32, 0x33));
+});
+
 test("the 0xFF padding before the first command is skipped, and the slack covers it and skip_len", () => {
   const commands: Command[] = [{ fill: 0x11, length: 32 }];
   // Four stream bytes, so twelve bytes of 0xFF fill the paragraph.
@@ -168,6 +179,21 @@ test("the 0xFF padding before the first command is skipped, and the slack covers
   assert.equal(result.packed.stream.end, 0x24);
   assert.equal(result.packed.slack, 12 + 16);
   assert.equal(result.packed.decompressor, 0x20 + 32);
+});
+
+test("at most 16 bytes of 0xFF padding are skipped, as the stub skips", () => {
+  const commands: Command[] = [{ fill: 0x22, length: 32 }];
+  // Two paragraphs of compressed data that end in 16 bytes of 0xFF: the stub skips them all.
+  const sixteen = Buffer.concat([Buffer.alloc(12), encode(commands), Buffer.alloc(16, 0xff)]);
+  const result = unpack(exepack(sixteen, 32));
+  assert.deepEqual(loadModule(result), Buffer.alloc(32, 0x22));
+  assert.equal(result.packed.stream.end, 0x30);
+  // With 17 the stub reads the 17th from the end, at 0x2F, as a command and stops.
+  const seventeen = Buffer.concat([Buffer.alloc(11), encode(commands), Buffer.alloc(17, 0xff)]);
+  assert.throws(
+    () => unpack(exepack(seventeen, 32)),
+    /The byte at 0x0000002F is 0xFF, which is not an EXEPACK command/,
+  );
 });
 
 test("random command streams match the stub's in-place algorithm, overlap included", () => {
@@ -183,7 +209,6 @@ test("random command streams match the stub's in-place algorithm, overlap includ
       );
     const prefix = Array.from({ length: next() % 20 }, () => next() & 0xfe);
     const stream = encode(commands, prefix);
-    const compressed = Buffer.concat([stream, Buffer.alloc(Math.ceil(stream.length / 16) * 16 - stream.length, 0xff)]);
     // Some rounds give the unpacked module fewer bytes than the compressed one, so the stub's writes
     // land on compressed bytes it has not read yet, as an in-place decoder does.
     const written = expand(commands, prefix).length;
@@ -194,7 +219,7 @@ test("random command streams match the stub's in-place algorithm, overlap includ
     const packed = exepack(stream, written, { destParagraphs: unpackedParagraphs });
     let expected: Buffer;
     try {
-      expected = reference(compressed, unpackedParagraphs * 16);
+      expected = reference(packed.subarray(0x20), Math.ceil(stream.length / 16) * 16, unpackedParagraphs * 16);
     } catch {
       // The overlap wrote over a command the stub had not read yet, and the stub would reject it.
       assert.throws(() => unpack(packed), `round ${round}`);
@@ -306,10 +331,10 @@ test("a stub whose closing message is missing or repeated is not read", () => {
   const localized = Buffer.concat([Buffer.alloc(40), Buffer.from("Fichero corrompido    ", "latin1")]);
   assert.throws(
     () => unpack(exepack(stream, 32, { stub: localized })),
-    /appears 0 times.*A stub with another message is not read/,
+    /appears nowhere.*A stub with another message, or with the message twice, is not read/,
   );
   const twice = Buffer.concat([STUB_END, Buffer.alloc(10), STUB_END]);
-  assert.throws(() => unpack(exepack(stream, 32, { stub: twice })), /appears 2 times/);
+  assert.throws(() => unpack(exepack(stream, 32, { stub: twice })), /appears more than once/);
 });
 
 test("header fields outside their bounds are refused", () => {
@@ -319,6 +344,14 @@ test("header fields outside their bounds are refused", () => {
   const noSkip = exepack(stream, 32);
   noSkip.writeUInt16LE(0, csZero + 14);
   assert.throws(() => unpack(noSkip), /skip_len at 0x0000003E is 0/);
+  // CS is one paragraph, so skip_len 3 would put the compressed data before the load module.
+  const pastCs = exepack(stream, 32);
+  pastCs.writeUInt16LE(3, csZero + 14);
+  assert.throws(() => unpack(pastCs), /skip_len at 0x0000003E is 3; .*CS \(1\)/);
+  // With skip_len 2 the EXEPACK header starts at 0x40; skip_len 2 fits CS of 2 but not dest_len 0.
+  const pastDest = exepack(stream, 32, { skip: 2 });
+  pastDest.writeUInt16LE(0, 0x40 + 12);
+  assert.throws(() => unpack(pastDest), /skip_len at 0x0000004E is 2; .*dest_len \(0\)/);
   const packed = exepack(stream, 32);
   packed.writeUInt16LE(0x4000, csZero + 6); // exepack_size
   assert.throws(() => unpack(packed), /The EXEPACK block of 0x4000 bytes .* outside its header and the load module/);
@@ -331,6 +364,10 @@ test("a file with RB at the wrong place, or an IP no header length gives, is ref
   const packed = exepack(encode([{ fill: 0, length: 32 }]), 32);
   packed.writeUInt16LE(0x30, 0x14);
   assert.throws(() => unpack(packed), /No packer the reader unpacks.*does not show that the file is not packed/);
+  // An 18-byte header read as a 16-byte one: the word at CS:14 is skip_len, not RB.
+  const short = exepack(encode([{ fill: 0, length: 32 }]), 32);
+  short.writeUInt16LE(16, 0x14);
+  assert.throws(() => unpack(short), /No packer the reader unpacks/);
 });
 
 test("the unpack command reports an EXEPACK file and the bytes it left in place", (t) => {

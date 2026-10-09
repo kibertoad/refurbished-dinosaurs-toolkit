@@ -344,6 +344,15 @@ test("a file without a recognized signature or with data after its image is refu
   const trailing = Buffer.concat([lzexe(encode([{ literal: 1 }, { mark: "end" }])), Buffer.alloc(4)]);
   assert.throws(() => unpack(trailing), /4 bytes follow the MZ image/);
   assert.throws(() => unpack(Buffer.from("not an executable at all, just text")), /expected MZ/);
+  const relocated = lzexe(encode([{ literal: 1 }, { mark: "end" }]));
+  relocated.writeUInt16LE(1, 6);
+  assert.throws(() => unpack(relocated), /has no MZ relocations; the word at 0x06 holds 0x0001/);
+  const tableAt = lzexe(encode([{ literal: 1 }, { mark: "end" }]));
+  tableAt.writeUInt16LE(0x40, 0x18);
+  assert.throws(
+    () => unpack(tableAt),
+    /An LZEXE file's relocation table offset is 0x1C; the word at 0x18 holds 0x0040/,
+  );
 });
 
 function harness(t: TestContext, data: Buffer) {

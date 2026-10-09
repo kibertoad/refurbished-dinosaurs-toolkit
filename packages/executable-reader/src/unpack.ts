@@ -47,7 +47,8 @@ export interface PackedParts {
   relocationTable: { start: number; end: number };
   /**
    * EXEPACK only: bytes at the start of the unpacked load module that no command wrote. The stub
-   * decodes in place, so these keep the bytes the packed load module has at the same offsets.
+   * decodes in place, so these keep the bytes the packed load module has at the same offsets, and
+   * are zeros where the unpacked load module is longer than the packed one.
    */
   leftInPlace?: number;
 }
@@ -362,6 +363,9 @@ function exepackHeaderLength(bytes: Buffer): number | undefined {
 
 // Every EXEPACK stub this reader knows of ends with this message, right before the relocation table.
 const EXEPACK_STUB_END = Buffer.from("Packed file is corrupt", "latin1");
+// The packer pads the compressed data to a paragraph with at most 15 bytes of 0xFF, and the stub
+// skips at most 16.
+const EXEPACK_MAX_PADDING = 16;
 
 function decodeExepack(image: Image, headerLength: number): Decoded {
   const { bytes, word, headerBytes, end } = image;
@@ -374,46 +378,48 @@ function decodeExepack(image: Image, headerLength: number): Decoded {
     );
   // The 20-byte header has an unused word after exepack_size.
   const field = (index: number) => word(decompressor + (headerLength === 20 && index >= 4 ? index + 1 : index) * 2);
-  const [ip, realCs, , blockSize, sp, ss, destParagraphs] = [0, 1, 2, 3, 4, 5, 6].map(field) as number[];
+  const ip = field(0),
+    realCs = field(1),
+    blockSize = field(3),
+    sp = field(4),
+    ss = field(5),
+    destParagraphs = field(6);
   const skip = headerLength === 16 ? 1 : field(7);
-  const blockEnd = decompressor + blockSize!;
+  const blockEnd = decompressor + blockSize;
   if (blockEnd > end || blockEnd < stubStart)
     throw new Error(
-      `The EXEPACK block of ${hex(blockSize!, 4)} bytes at ${hex(decompressor)} ends at ${hex(blockEnd)}, outside its header and the load module, which ends at ${hex(end)}`,
+      `The EXEPACK block of ${hex(blockSize, 4)} bytes at ${hex(decompressor)} ends at ${hex(blockEnd)}, outside its header and the load module, which ends at ${hex(end)}`,
     );
-  if (skip < 1 || skip - 1 > cs || skip - 1 > destParagraphs!)
+  if (skip < 1 || skip - 1 > cs || skip - 1 > destParagraphs)
     throw new Error(
       `skip_len at ${hex(decompressor + (headerLength - 4))} is ${skip}; it must be at least 1 and at most one more than both CS (${cs}) and dest_len (${destParagraphs})`,
     );
   const compressed = (cs - skip + 1) * 16;
-  const uncompressed = (destParagraphs! - skip + 1) * 16;
+  const uncompressed = (destParagraphs - skip + 1) * 16;
 
   // The stub's length differs between versions and no field gives it, so the relocation table is
   // found after the message that ends every known stub, and must end where the EXEPACK block does.
-  const found: number[] = [];
-  for (let at = bytes.indexOf(EXEPACK_STUB_END, stubStart); at >= 0 && at + EXEPACK_STUB_END.length <= blockEnd;) {
-    found.push(at);
-    at = bytes.indexOf(EXEPACK_STUB_END, at + 1);
-  }
-  if (found.length !== 1)
+  const block = bytes.subarray(stubStart, blockEnd);
+  const first = block.indexOf(EXEPACK_STUB_END);
+  if (first < 0 || block.lastIndexOf(EXEPACK_STUB_END) !== first)
     throw new Error(
-      `The relocation table is not located: the message "${EXEPACK_STUB_END.toString("latin1")}" that ends the stub appears ${found.length} times between ${hex(stubStart)} and ${hex(blockEnd)}. A stub with another message is not read.`,
+      `The relocation table is not located: the message "${EXEPACK_STUB_END.toString("latin1")}" that ends the stub appears ${first < 0 ? "nowhere" : "more than once"} between ${hex(stubStart)} and ${hex(blockEnd)}. A stub with another message, or with the message twice, is not read.`,
     );
-  const tableStart = found[0]! + EXEPACK_STUB_END.length;
+  const tableStart = stubStart + first + EXEPACK_STUB_END.length;
   const { linear, end: tableEnd } = relocationsBySegment(bytes, tableStart, blockEnd, "EXEPACK block");
   if (tableEnd !== blockEnd)
     throw new Error(
       `The relocation table at ${hex(tableStart)} ends at ${hex(tableEnd)}, not at the end of the EXEPACK block at ${hex(blockEnd)}`,
     );
 
-  const stream = decodeExepackStream(bytes, headerBytes, compressed, uncompressed);
+  const stream = decodeExepackStream(bytes, headerBytes, end, compressed, uncompressed);
   return {
     packer: "EXEPACK",
     data: stream.data,
-    ip: ip!,
-    cs: realCs!,
-    sp: sp!,
-    ss: ss!,
+    ip,
+    cs: realCs,
+    sp,
+    ss,
     linear,
     packed: {
       decompressor,
@@ -426,16 +432,18 @@ function decodeExepack(image: Image, headerLength: number): Decoded {
 }
 
 // Decodes the EXEPACK stream the way the stub does: backwards and in place, in one buffer holding
-// the compressed bytes at its start, from the end of the compressed bytes and of the unpacked load
-// module. 0xFF padding before the last command is skipped. Each command is read as an opcode byte,
+// the packed load module at its start, from the end of the compressed bytes and of the unpacked load
+// module. Up to 16 bytes of 0xFF padding before the first command are skipped, as many as the stub
+// skips; a 17th is read as a command and refused. Each command is read as an opcode byte,
 // then a length word high byte first: 0xB0 fills with the byte read next, 0xB2 copies that many
-// bytes, and the low bit marks the final command. Bytes no command writes keep the compressed bytes.
-function decodeExepackStream(bytes: Buffer, base: number, compressed: number, uncompressed: number) {
+// bytes, and the low bit marks the final command. Bytes no command writes keep the packed load
+// module's bytes at the same offsets, and zeros past the end of the packed image.
+function decodeExepackStream(bytes: Buffer, base: number, end: number, compressed: number, uncompressed: number) {
   const buf = Buffer.alloc(Math.max(compressed, uncompressed));
-  bytes.copy(buf, 0, base, base + compressed);
+  bytes.copy(buf, 0, base, Math.min(end, base + buf.length));
   let src = compressed,
     dst = uncompressed;
-  while (src > 0 && buf[src - 1] === 0xff) src--;
+  while (src > 0 && compressed - src < EXEPACK_MAX_PADDING && buf[src - 1] === 0xff) src--;
   const streamEnd = src;
   const read = (what: string) => {
     if (src === 0)

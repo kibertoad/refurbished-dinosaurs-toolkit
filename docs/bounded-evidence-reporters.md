@@ -1576,17 +1576,17 @@ first flag word to the byte after its end mark. `setByLayout` names the header f
 file did not supply.
 
 EXEPACK's stream is read backwards. It ends `skip_len - 1` paragraphs before CS:0 (`skip_len` is 1
-with a 16-byte header), less any 0xFF padding, and `stream` runs from the last byte its final
+with a 16-byte header), less the 0xFF padding (the stub skips at most 16 bytes of it), and `stream` runs from the last byte its final
 command read to the byte after its first command. Reading down from the end, each command is an
 opcode byte, then a length word, high byte first: 0xB0 fills that many bytes with the byte read
 next, 0xB2 copies that many bytes, and the low bit marks the final command. The reader decodes it as the stub
-does, in place in one buffer that starts with the compressed bytes, writing the unpacked load
+does, in place in one buffer that starts with the packed load module, writing the unpacked load
 module of `dest_len - skip_len + 1` paragraphs down from its end. Bytes below the final command's
-last write are never written and keep the packed load module's bytes; `packed.leftInPlace` counts
-them. No header field gives the stub's length, so the relocation table is found after the message
+last write are never written and keep the packed load module's bytes, or zeros where the unpacked
+load module is the longer; `packed.leftInPlace` counts them. No header field gives the stub's length, so the relocation table is found after the message
 `Packed file is corrupt` that ends every known stub, and it has to end where `exepack_size` says
 the EXEPACK block ends. Its 16 groups are a count word and that many offset words for segments
-0000, 1000, ... F000. A stub whose message is localized is refused.
+0000, 1000, ... F000. A stub whose message is localized, or that holds it twice, is refused.
 
 Every read is bounded, and each failure names the file offset:
 
@@ -1598,7 +1598,9 @@ Every read is bounded, and each failure names the file offset:
   1 MiB, the real-mode address space.
 - An EXEPACK stream must reach a final command before the start of the load module, every opcode
   must be 0xB0 to 0xB3, and no command may write before the start of the unpacked load module.
-  `skip_len` must be at least 1, and the EXEPACK block must lie inside the load module.
+  A 17th byte of 0xFF padding is read as an opcode and refused, as the stub refuses it.
+  `skip_len` must be at least 1 and at most one more than both CS and `dest_len`, and the EXEPACK
+  block must lie inside the load module.
 - A packed file with MZ relocations of its own is refused.
 - The relocation table must end inside the load module (for EXEPACK, exactly at the end of the
   EXEPACK block), and every relocation must name a whole word inside the unpacked load module. A
