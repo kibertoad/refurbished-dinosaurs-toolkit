@@ -32,13 +32,19 @@ and `sourceKind`: `mz` for DOS executables, `pe32` for 32-bit Windows executable
 
 Commands: `trace`, `arguments`, `effects`, `returns`, `memory`, `guards`, `uses`, `incoming`,
 `inventory-check`, `call-order`, `dispatch`, `allocation`, `operand`, `operand-candidates`, `target`, `bounds`,
-`owner`, `callees`, `reach`, `pointers`, `table`, `imports` and `unpack`. Their inputs, outputs and limits are in
+`owner`, `callees`, `reach`, `pointers`, `table`, `bodies`, `imports` and `unpack`. Their inputs, outputs and limits are in
 [the bounded evidence reporter guide](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md).
-`pointers`, `table`, `imports` and `unpack` run entirely in Node; every other command runs in the engine.
+`pointers`, `table`, `bodies`, `imports` and `unpack` run entirely in Node; every other command runs in the engine.
 `inventory-check` reads the function inventory TSV that `inventory` names, relative to the config file's
 directory as `source` is.
 `table` reads the entries of one pointer table from the bytes of an `mz` or `pe32` source and
 compares an analyzer's listing of the table with them.
+
+`bodies` takes function entries and body ranges as file offsets and says where each body byte
+lies in an `mz` source by its MZ and FBOV tables: the load image, an overlay stub, overlay code, a
+fixup table, zero padding or undeclared bytes. It places each entry on its own, keeps every
+fragment, marks the parts outside the entry's region, and can compare a body with a candidate body
+found another way. It needs `formatControls` and decodes no instruction.
 
 `imports` lists the import the file's import tables put in each slot of a PE32 or PE32+ import
 address table, by slot address, and needs at least one positive control: a slot with the import
@@ -78,6 +84,7 @@ import { pointerInventory } from "@scientific-method/executable-reader/pointer-i
 import { tableContents } from "@scientific-method/executable-reader/table-contents";
 import { importReport } from "@scientific-method/executable-reader/pe-imports";
 import { unpack, UNPACK_LAYOUT } from "@scientific-method/executable-reader/unpack";
+import { bodyLayout, fileLayout } from "@scientific-method/executable-reader/body-layout";
 ```
 
 | Export | Module | Purpose |
@@ -107,6 +114,10 @@ import { unpack, UNPACK_LAYOUT } from "@scientific-method/executable-reader/unpa
 | `importReport(bytes, config)` | `pe-imports` | The `imports` report over an already hash-checked buffer. |
 | `ImportConfig`, `ImportControl`, `ImportSlot`, `SlotImport`, `NamesFrom` | `pe-imports` | Types of the `imports` query, its controls and its slot rows. |
 | `IgnoredRawData` | `pe-imports` | A `rawIgnored` row: a section whose PointerToRawData is 0 and whose SizeOfRawData is not. |
+| `bodyLayout(bytes, config)` | `body-layout` | The `bodies` report over an already hash-checked buffer. |
+| `fileLayout(image)` | `body-layout` | The regions an `MzImage`'s tables declare, with the runs between them, covering the whole file. |
+| `MAX_BODY_FUNCTIONS`, `MAX_BODY_RANGES` | `body-layout` | The most functions one query takes (10000) and the most ranges in one body or candidate (4096). |
+| `BodyConfig`, `BodyFunction`, `ByteRange`, `BodyPart`, `LayoutRegion`, `RegionKind`, `RegionTotal` | `body-layout` | Types of the `bodies` query, the layout and the classified parts. |
 | `unpack(bytes)` | `unpack` | Unpacks an LZEXE 0.90 or 0.91 file in memory into an `UnpackResult`: the unpacked bytes, the rebuilt header and relocations, and the packed parts read. |
 | `UNPACK_LAYOUT` | `unpack` | The layout rule number the unpacked bytes are written by. |
 | `MAX_PACKED_BYTES`, `MAX_UNPACKED_BYTES` | `unpack` | The caps on the packed file and on the unpacked load module, 1 MiB each. |

@@ -13,6 +13,8 @@ import type { TableConfig } from "./table-contents.ts";
 import { importReport } from "./pe-imports.ts";
 import type { ImportConfig } from "./pe-imports.ts";
 import { unpack } from "./unpack.ts";
+import { bodyLayout } from "./body-layout.ts";
+import type { BodyConfig } from "./body-layout.ts";
 
 /**
  * A code region the researcher maps: file offsets `start..end` loaded at `segment:ip`. {@link prepare}
@@ -234,7 +236,7 @@ export const PREPARED_PROTOCOL = 3;
 
 /**
  * Runs one report, as the `scientific-method` command does. `args` is `[command, configPath]`.
- * `imports`, `pointers`, `table` and `unpack` run in Node, and `unpack` also writes the unpacked
+ * `imports`, `pointers`, `table`, `bodies` and `unpack` run in Node, and `unpack` also writes the unpacked
  * file its config names; every other command is prepared here and piped to
  * `python -m scientific_method_engine <command> -`, using `EVIDENCE_PYTHON` or `python`.
  * The engine gets 120 seconds and at most 32 MiB of output.
@@ -260,6 +262,11 @@ export function run(args: string[]): Report {
     // Unpacking decodes the packer's format in Node; the decompressor in the file is never run.
     const { source, bytes } = readVerifiedSource(supplied, base);
     return unpackReport(bytes, supplied as UnpackConfig, source, base);
+  }
+  if (command === "bodies") {
+    // The body layout reads the MZ/FBOV tables and classifies file offsets; it decodes no instruction.
+    const { bytes } = readVerifiedSource(supplied, base);
+    return bodyLayout(bytes, supplied as BodyConfig);
   }
   if (command === "table") {
     // The table report maps pointers through the file's own MZ or PE tables and reads the bytes itself.

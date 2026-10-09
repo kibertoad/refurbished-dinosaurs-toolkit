@@ -34,6 +34,10 @@
       "types": "./dist/src/pe-imports.d.ts",
       "default": "./dist/src/pe-imports.js"
     },
+    "./body-layout": {
+      "types": "./dist/src/body-layout.d.ts",
+      "default": "./dist/src/body-layout.js"
+    },
     "./unpack": {
       "types": "./dist/src/unpack.d.ts",
       "default": "./dist/src/unpack.js"
