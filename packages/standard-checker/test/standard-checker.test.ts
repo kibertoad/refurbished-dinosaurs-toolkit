@@ -3557,6 +3557,21 @@ test("a listing record beside a list of other files that could not be read names
   assert.doesNotMatch(result.output, /reads that list only from/);
 });
 
+test("a listing record beside a named list of other files that does not exist names the comparison as skipped for that reason", (t) => {
+  const root = broken(t, (r) => {
+    withListing(undefined, "other_files: []\n")(r);
+    rmSync(join(r, "spec/builds/BLD-EXAMPLE-1.0.other-files.yaml"));
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(result.output, /Other files names BLD-EXAMPLE-1\.0\.other-files\.yaml, which does not exist/);
+  assert.match(
+    result.output,
+    /comparison of BLD-EXAMPLE-1\.0\.listing\.yaml with the list of other files of BLD-EXAMPLE-1\.0 \(BLD-EXAMPLE-1\.0\.other-files\.yaml does not exist\)/,
+  );
+  assert.doesNotMatch(result.output, /reads that list only from/);
+});
+
 test("a disc the record's media leave out and audio tracks the listing did not read need not be in the record", (t) => {
   const root = broken(t, (r) => {
     withListing()(r);
