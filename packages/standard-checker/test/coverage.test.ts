@@ -179,6 +179,7 @@ test("--json gives the figures, and --list adds the entries that cite each funct
         uncited: [{ start: "0x00401100", size: 16, name: "" }],
       },
     ],
+    unmeasured: [],
     problems: [],
     unread: [],
   });
@@ -236,8 +237,58 @@ test("an invalid inventory is reported and fails", (t) => {
     "coverage/BLD-EXAMPLE-1.0/GAME.EXE.extra.tsv: GAME.EXE.extra is not in the manifest of BLD-EXAMPLE-1.0",
     "coverage/BLD-EXAMPLE-1.0/DATA/SCORES.BIN.tsv: DATA/SCORES.BIN is a data file, which holds no code to inventory",
     "coverage/BLD-OTHER-1.0/GAME.EXE.tsv: BLD-OTHER-1.0 is not a build of the spec",
+    "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: not measured, 3 of 4 rows are invalid",
+    "coverage/BLD-OTHER-1.0/GAME.EXE.tsv: not measured, BLD-OTHER-1.0 is not a build of the spec",
   ])
     assert.ok(output.includes(line), `${line}\n---\n${output}`);
+  assert.doesNotMatch(output, /functions cited/);
+});
+
+test("an inventory with an invalid row gets no figures, and a valid one beside it does", (t) => {
+  const root = copy(t);
+  const manifest = join(root, "spec", "builds", "BLD-EXAMPLE-1.0.files.yaml");
+  writeFileSync(
+    manifest,
+    readFileSync(manifest, "utf8") +
+      "  - path: OTHER.EXE\n    format: PE\n    size: 1024\n    xxh3: " +
+      "1".repeat(32) +
+      "\n",
+  );
+  finding(root, "FND-SCORE-001", at("0x00401000"));
+  // Every start is written in the wrong notation, as an inventory exported before the notation rule.
+  inventory(root, "start\tsize\n401000\t32\n401100\t16\n");
+  inventory(root, "start\tsize\n0x00401000\t32\n0x00401100\t16\n", "coverage/BLD-EXAMPLE-1.0/OTHER.EXE.tsv");
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.match(output, /^coverage\/BLD-EXAMPLE-1\.0\/GAME\.EXE\.tsv: not measured, 2 of 2 rows are invalid$/m);
+  assert.doesNotMatch(output, /GAME\.EXE\.tsv: \d+ of \d+ functions cited/);
+  assert.match(output, /^coverage\/BLD-EXAMPLE-1\.0\/OTHER\.EXE\.tsv: 0 of 2 functions cited/m);
+  assert.ok(output.includes("coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: line 2: start 401000 is not an address"), output);
+
+  // One bad row among good ones still withholds the figures: the good rows alone are not the file.
+  inventory(root, "start\tsize\n0x00401000\t32\n0x00401100\t0\n");
+  const partial = run(root, "--json");
+  assert.equal(partial.status, 1, partial.output);
+  const json = JSON.parse(partial.stdout);
+  assert.deepEqual(json.unmeasured, [
+    { path: "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv", reason: "1 of 2 rows are invalid" },
+  ]);
+  assert.deepEqual(
+    json.inventories.map((r: { path: string }) => r.path),
+    ["coverage/BLD-EXAMPLE-1.0/OTHER.EXE.tsv"],
+  );
+});
+
+test("an inventory with a header and no rows is measured as a file of no functions", (t) => {
+  const root = copy(t);
+  inventory(root, "start\tsize\n");
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.match(
+    output,
+    /^coverage\/BLD-EXAMPLE-1\.0\/GAME\.EXE\.tsv: 0 of 0 functions cited, 0 of 0 bytes; 0 out of scope$/m,
+  );
+  assert.doesNotMatch(output, /not measured/);
 });
 
 test("an offset start for overlay code must lie inside a row of the build's Code ranges", (t) => {

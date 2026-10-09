@@ -311,6 +311,18 @@ states it in `preservedMemoryScopes`; cite that hypothesis wherever the report i
 
 ## Standard checker upgrades
 
+### `standard-coverage` gives no figures for an inventory it could not read in full
+
+An inventory with a row that did not parse was measured over its other rows, so its figures left
+that row's function out of both counts, and an inventory whose rows all failed printed
+`0 of 0 functions cited` beside its problems. Such an inventory now prints
+`<path>: not measured, <n> of <m> rows are invalid`, and `--json` lists it under a new
+`unmeasured` array of `path` and `reason`, with the inventories that could not be read at all,
+instead of under `inventories`. The exit code is 1, as before.
+
+A script that reads `--json` takes `unmeasured` as files whose coverage is unknown, never as files
+with nothing cited, and one that matches the text output matches the `not measured` line.
+
 ### Validation runs move from `VALIDATION.md` to `validation/`
 
 `VALIDATION.md` held one record whose Commit and Date lines every new run rewrote, so two branches
