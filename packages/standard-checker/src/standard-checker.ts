@@ -44,8 +44,9 @@
 //   --max-range <bytes> the largest address range an entry can record an address by; a larger one,
 //                       such as a whole section, records only its two ends (default: 0x10000)
 //   --data-dirs <dirs>  comma-separated top-level directories of the original's data; a path into
-//                       one of them must name a file of some build with its exact case (default:
-//                       the top-level directories of the files the build entries list)
+//                       one of them must name, with its exact case, a file of some build's manifest
+//                       or a path of its builds/<ID>.other-files.yaml (default: the top-level
+//                       directories of the files the manifests list)
 //   --rebuild <dirs>    comma-separated directories that hold the rebuild; no Markdown file in spec/
 //                       may name a path in them or a source file found in them. In a source entry,
 //                       a path counts only when it exists, in any case, so the entry can cite the

@@ -1286,7 +1286,7 @@ test("a data path with a space is read whole", (t) => {
   replaceIn(root, "spec/formats/FMT-SCORE-001.md", "`DATA/OLD SCORES/SCORES2.BIN`", "`DATA/OLD SCORES/SCORES3.BIN`");
   const { status, output } = run(root, "--check");
   assert.equal(status, 1);
-  assert.match(output, /path DATA\/OLD SCORES\/SCORES3\.BIN is not a file of any build/);
+  assert.match(output, /path DATA\/OLD SCORES\/SCORES3\.BIN is in no build's manifest or list of other files/);
   assert.doesNotMatch(output, /path DATA\/OLD is/);
 });
 
@@ -2816,6 +2816,78 @@ for (const [items, named, error] of [
     assert.equal(result.status, error ? 1 : 0, result.output);
     if (error) assert.match(result.output, error);
   });
+
+// An entry may cite a path that the manifest leaves out and a build's list of other files gives.
+// The citation keeps passing once the first manifest file in its directory makes that directory
+// one of the data directories, which turns the check on for it.
+test("a data path in a list of other files passes, before and after its directory enters the manifest", (t) => {
+  const root = broken(t, (r) => {
+    otherFiles(
+      "other_files:\n  - path: WRAPPER/source-1.tar.gz\n    reason: source of the bundled interpreter\n  - path: WRAPPER/src/\n    reason: unpacked source of the bundled interpreter\n",
+    )(r);
+    replaceIn(
+      r,
+      "spec/sources/SRC-MANUAL.md",
+      "location: The printed manual in the box of BLD-EXAMPLE-1.0",
+      "location: The printed manual in the box of BLD-EXAMPLE-1.0, and WRAPPER/source-1.tar.gz",
+    );
+  });
+  const before = run(root);
+  assert.equal(before.status, 0, before.output);
+  replaceIn(
+    root,
+    "spec/builds/BLD-EXAMPLE-1.0.files.yaml",
+    "  - path: DATA/SCORES.BIN",
+    "  - path: WRAPPER/INTERP.EXE\n    format: data\n    size: 4\n    xxh3: 00112233445566778899aabbccddeeff\n  - path: DATA/SCORES.BIN",
+  );
+  const after = run(root);
+  assert.equal(after.status, 0, after.output);
+
+  replaceIn(root, "spec/sources/SRC-MANUAL.md", "WRAPPER/source-1.tar.gz", "WRAPPER/Source-1.tar.gz");
+  const folded = run(root);
+  assert.equal(folded.status, 1);
+  assert.match(
+    folded.output,
+    /SRC-MANUAL\.md: path WRAPPER\/Source-1\.tar\.gz is written WRAPPER\/source-1\.tar\.gz in BLD-EXAMPLE-1\.0\.other-files\.yaml$/m,
+  );
+
+  replaceIn(root, "spec/sources/SRC-MANUAL.md", "WRAPPER/Source-1.tar.gz", "WRAPPER/source-2.tar.gz");
+  const missing = run(root);
+  assert.equal(missing.status, 1);
+  assert.match(
+    missing.output,
+    /SRC-MANUAL\.md: path WRAPPER\/source-2\.tar\.gz is in no build's manifest or list of other files$/m,
+  );
+
+  // A directory exclusion accounts for the directory, and does not show that a file under it exists.
+  replaceIn(root, "spec/sources/SRC-MANUAL.md", "WRAPPER/source-2.tar.gz", "WRAPPER/src/main1.c in WRAPPER/src");
+  const excluded = run(root);
+  assert.equal(excluded.status, 1);
+  assert.match(
+    excluded.output,
+    /SRC-MANUAL\.md: path WRAPPER\/src\/main1\.c lies under the directory exclusion WRAPPER\/src\/ of BLD-EXAMPLE-1\.0\.other-files\.yaml, which does not name the files under it; list WRAPPER\/src\/main1\.c itself among the other files$/m,
+  );
+  assert.doesNotMatch(excluded.output, /path WRAPPER\/src is/);
+
+  // A directory in another case names the list whose path gives it.
+  replaceIn(root, "spec/sources/SRC-MANUAL.md", "WRAPPER/src/main1.c in WRAPPER/src", "WRAPPER/SRC");
+  const dirCase = run(root);
+  assert.equal(dirCase.status, 1);
+  assert.match(
+    dirCase.output,
+    /SRC-MANUAL\.md: directory WRAPPER\/SRC is written WRAPPER\/src in BLD-EXAMPLE-1\.0\.other-files\.yaml$/m,
+  );
+
+  // A path under the exclusion written in another case still names the exclusion.
+  replaceIn(root, "spec/sources/SRC-MANUAL.md", "WRAPPER/SRC", "WRAPPER/SRC/main1.c");
+  const underCase = run(root);
+  assert.equal(underCase.status, 1);
+  assert.match(
+    underCase.output,
+    /SRC-MANUAL\.md: path WRAPPER\/SRC\/main1\.c writes the directory exclusion WRAPPER\/src\/ of BLD-EXAMPLE-1\.0\.other-files\.yaml in another case, and the exclusion does not name the files under it; list the path itself among the other files with its exact case$/m,
+  );
+  assert.doesNotMatch(underCase.output, /is in no build's manifest/);
+});
 
 test("an Other files section that names a missing list is reported", (t) => {
   const root = broken(t, (r) =>
