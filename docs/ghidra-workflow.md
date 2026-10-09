@@ -99,6 +99,19 @@ the window stopped. A span names each instruction whose length the listing overr
 number of bytes it decodes, since those bytes run past the next instruction's start or the span's
 end. Spans are listed in address order. A span says nothing about which of its instructions run or
 about the bytes in a gap between two spans.
+
+To check many written ranges at once, list them one per line as `start..end` with a label (an
+entry id, or whether the range is a location or a window in the text) and run
+`ReportRangeBoundaries` on the file. It prints each range whose start or end falls inside an
+instruction or defined data, with the unit it cuts and the boundaries on either side. An end in
+undisassembled bytes is placed by decoding from the range's start in memory without changing the
+program; an end that decoding does not reach is printed as unplaced, which is not a pass. A start
+in undisassembled bytes is not judged, so an end placed by decoding from it holds only if an
+instruction starts there, and the counts give how many ends were placed that way. A
+location or a range claimed as code should have no line in the output. A window that a scan or
+listing was asked for may cut an instruction and still be the window that ran, so read each
+printed window against its entry instead of moving its end.
+
 `ExportBoundedFlow` lists flow targets where no instruction starts in `noInstruction`, and sets
 `limitReached` when it stopped at its instruction limit with flow left unread; either one means the
 export does not cover the whole flow from the entry.
