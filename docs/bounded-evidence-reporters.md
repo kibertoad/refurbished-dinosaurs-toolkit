@@ -307,7 +307,9 @@ INS/OUTS operands take their access direction from the mnemonic. Each one's
 interrupt, an unsupported instruction, an exhausted budget) and every call and
 interrupt, and in the PE32 model every port access, it is reached past, since
 those were never traced either. An interrupt it is reached past has the reason
-`interrupt past a stop; assumed to return to the next instruction`. Once a
+`interrupt past a stop; assumed to return to the next instruction`, or, when the
+query's `callModels` model it, `modeled interrupt past a stop; returns to the next
+instruction as its call model declares`. Once a
 named callee has been read, those are the accesses to re-check.
 
 A stop inside a directly called function does not end the inventory at that
@@ -775,12 +777,16 @@ return and leaves the interrupt's FLAGS word on the stack, as DOS INT 25h and 26
 and the word at SS:SP is the pre-interrupt FLAGS, reported as a `flags-save` event, so a later
 `popf` restores them. `leavesFlags` is rejected on any other model and with any value but `true`.
 A model at INT1, INT3 (also written as `INT 1` or `INT 3`), INTO or at any interrupt in the PE32
-model is not used, and the path stops there as without it. The entry walk behind `uses` and the
-boundary walk for declared table targets continue past an interrupt whose model the trace uses, so
-an access traced after it is a `uses` match, and a table target after it is a verified boundary.
-Without a model, `uses` lists an operand after the interrupt in `conditionalAccesses` with the
-interrupt in `dependsOn`, and the walk's `hardware or interrupt boundary` gap at the interrupt stays. A path that stops on the model's `preservesMemory` scopes reports the boundary event
-without `modeled`.
+model is not used, and the path stops there as without it. A path that stops on the model's
+`preservesMemory` scopes reports the boundary event without `modeled`.
+
+The entry walk behind `uses` and the boundary walk for declared table targets continue past an
+interrupt whose model the trace uses, so an access traced after it is a `uses` match, and a table
+target after it is a verified boundary. Like a call's return site, the instruction after the
+interrupt is reached only if the handler returns, so that fall-through never proves an overlapping
+instruction start. Without a model, `uses` lists an operand after the interrupt in
+`conditionalAccesses` with the interrupt in `dependsOn`, and the walk's
+`hardware or interrupt boundary` gap at the interrupt stays.
 
 `trace` and every command built on it return `hardwareBoundaries`, one row per
 boundary site with the `paths` and `declaredContinuationPaths` that reach it,

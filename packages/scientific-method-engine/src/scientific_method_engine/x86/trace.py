@@ -159,9 +159,9 @@ class Step(NamedTuple):
 
     ``successors`` are the sites the branch continues at, in the order a walk pushes them; the
     branch ends at the instruction when there are none. ``returns`` is true for a return
-    instruction. ``return_site`` is the site a call continues at once its callee returns, or None
-    for anything else and, when the call's target is followed, for a call whose target is that same
-    site. ``gaps`` and ``edges`` are the gap and transfer-edge rows ``walk`` reports for the
+    instruction. ``return_site`` is the site a call continues at once its callee returns, or an
+    interrupt the walk continues past once its handler returns, or None for anything else and, when
+    the call's target is followed, for a call whose target is that same site. ``gaps`` and ``edges`` are the gap and transfer-edge rows ``walk`` reports for the
     instruction. ``supplied`` is true when the successors are the rows of a declared indirect jump
     table, which never prove an instruction boundary.
     """
@@ -220,7 +220,8 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
     if m in PORTS and image.flat and not follow_flat_ports:
         gaps.append({"site": at, "reason": FLAT_PORT_REASON})
         return Step(successors, False, None, gaps, edges)
-    return_site = following if calls and following not in successors else None
+    # The site after an interrupt, like a call's return site, is reached only if the handler returns.
+    return_site = following if (calls or m in INTERRUPTS) and following not in successors else None
     successors.append(following)
     return Step(successors, False, return_site, gaps, edges)
 
@@ -240,7 +241,8 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
     integer(limit, 1, 100000, "instruction limit")
     pending, seen, gaps, edges = list(entries), {}, [], []
     # Decoded successors of each instruction, so a proof can be checked for independence below.
-    # A call's return site is reached only if the callee returns, so it never proves an overlapping start.
+    # A call's return site is reached only if the callee returns, and the site after an interrupt only
+    # if its handler returns, so neither proves an overlapping start.
     successors, returns, supplied_edges = {}, set(), set()
     while pending:
         at = pending.pop()
@@ -654,7 +656,8 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                     raise ValueError("Invalid model register")
     model_at = {model["site"]: model for model in models}
     # The boundary walk for declared table targets continues past the interrupts the trace continues past.
-    modeled_interrupts = modeled_interrupt_sites(image, models)
+    # Only that walk reads the set, so callers that skip declared tables do not decode the model sites.
+    modeled_interrupts = modeled_interrupt_sites(image, models) if continue_declared_jumps else frozenset()
     explicit_continuation_budget = validate_continuation_budget(config)
     observed_frame = entry_frame(image, config, entry) if arrive is None else None
     root = State(entry, image, config)

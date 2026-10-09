@@ -2666,6 +2666,12 @@ class ReporterTests(unittest.TestCase):
         self.assertEqual([(d["site"], d["reason"]) for d in later["dependsOn"]],
                          [(0, "unresolved call: outside mapped code"),
                           (3, "interrupt past a stop; assumed to return to the next instruction")])
+        # Under a call model the interrupt is named as modeled, since the query declares its return.
+        config["callModels"] = [{"site": 3, "evidence": "synthetic service returns", "cases": [{}]}]
+        [later] = run_report(data, config, "uses")["conditionalAccesses"]
+        self.assertEqual([(d["site"], d["reason"]) for d in later["dependsOn"]],
+                         [(0, "unresolved call: outside mapped code"),
+                          (3, "modeled interrupt past a stop; returns to the next instruction as its call model declares")])
 
     def test_interrupt_stop_inside_a_callee_continues_at_the_callers_return_site(self):
         # The wrapper stops at its interrupt; the caller's read after the call is still inventoried.
@@ -3126,6 +3132,15 @@ class ReporterTests(unittest.TestCase):
         code=Code().emit("90").label("call").emit("e8 05 00 c3 90 90 90 90").label("helper").emit("eb f8")
         result=report(code,"incoming",target=code.labels["helper"])
         self.assertEqual({g["site"] for g in result["gaps"] if "overlapping" in g["reason"]},{1,3,4})
+
+    def test_site_after_a_modeled_interrupt_does_not_prove_an_overlapping_start(self):
+        # The helper jumps into the interrupt's vector byte, so the RET after the interrupt is never a start.
+        data = bytes.fromhex("90 cd 21 c3 90 90 90 90 eb f8")
+        config = configuration(data, query={"offset": 0x200, "width": 2},
+                               callModels=[{"site": 1, "evidence": "synthetic service returns", "cases": [{}]}])
+        config["regions"][0]["entries"] = [0, 8]
+        result = run_report(data, config, "uses")
+        self.assertEqual({g["site"] for g in result["gaps"] if g.get("reason") == OVERLAP_REASON}, {1, 2, 3})
 
     def test_call_reached_only_through_rejected_start_is_contested_not_confirmed(self):
         # Entries 0 (mov ax) and 1 (nop) conflict; the call at 3 is reached from both but from no accepted start.

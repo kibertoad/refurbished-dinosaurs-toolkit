@@ -236,10 +236,16 @@ CFG_OPERAND = "entry-CFG operand past a stop; values and callee effects unresolv
 PORT_OPERAND = "operand past a PE32 port access; values and continuation unresolved"
 
 
-# dependsOn reasons in ``uses`` for the calls and port accesses a conditionalAccesses row is reached past.
+# dependsOn reasons in ``uses`` for the calls, interrupts and port accesses a conditionalAccesses row is reached past.
 STEPPED_CALL = "call past a stop; assumed to return"
 STEPPED_PORT = "port access past a stop; assumed to continue"
 STEPPED_INTERRUPT = "interrupt past a stop; assumed to return to the next instruction"
+STEPPED_MODELED_INTERRUPT = "modeled interrupt past a stop; returns to the next instruction as its call model declares"
+
+
+def _stepped_interrupt(at, modeled):
+    """The dependsOn row for the interrupt at ``at``, stepped over past a stop; ``modeled`` holds the sites the query models."""
+    return {"site": at, "reason": STEPPED_MODELED_INTERRUPT if at in modeled else STEPPED_INTERRUPT}
 OPEN_CALL = "call open at a stop inside its callee; continued at its return site, assumed to return"
 
 
@@ -288,14 +294,15 @@ def _function_exit(image, start, limit, follow_flat_ports, cache):
     return cache[key]
 
 
-def _caller_continuations(image, stop, reason, stack, limit, cache):
+def _caller_continuations(image, stop, reason, stack, limit, cache, modeled=frozenset()):
     """Return sites at which ``uses`` continues its inventory past a stop inside a called function.
 
     ``stack`` holds the traced calls still open at ``stop`` as (call site, return site) pairs,
     outermost first. A return site is continued only when the CFG from the stop, or from the
     return site inside it, reaches a return of the called function. Each continuation depends on
     the stop, on every open call from the stop out to that return site, and on every call,
-    interrupt or PE32 port access stepped over on the way to those returns. Returns (return site, dependsOn,
+    interrupt or PE32 port access stepped over on the way to those returns, an interrupt at a site in
+    ``modeled`` (the query's modeled interrupts) named as modeled. Returns (return site, dependsOn,
     reached without crossing a PE32 port access) rows and the gaps of walks that reached ``limit``.
     """
     rows = []
@@ -320,7 +327,7 @@ def _caller_continuations(image, stop, reason, stack, limit, cache):
             if ins.mnemonic in ("call", "lcall"):
                 depends.append({"site": at, "reason": STEPPED_CALL})
             elif base_mnemonic(ins) in INTERRUPTS:
-                depends.append({"site": at, "reason": STEPPED_INTERRUPT})
+                depends.append(_stepped_interrupt(at, modeled))
             elif image.flat and base_mnemonic(ins) in PORTS:
                 depends.append({"site": at, "reason": STEPPED_PORT})
         depends.append({"site": call_site, "reason": OPEN_CALL})
@@ -349,8 +356,9 @@ def uses(image, config):
     result_limit = integer(config.get("limit", 100), 1, 10000, "result limit")
     # The entry walk continues past the interrupts the trace continues past under a call model, so
     # the accesses traced after one are on the entry path.
+    modeled = modeled_interrupt_sites(image, config.get("callModels", []))
     seen, gaps, _, undecoded, contested = walk(image, entries(image), config.get("instructionLimit", 10000),
-                                               modeled_interrupts=modeled_interrupt_sites(image, config.get("callModels", [])))
+                                               modeled_interrupts=modeled)
     # A site reached only through a rejected start is as unverified as the start itself.
     unverified = {g["site"] for g in gaps if g.get("reason") == OVERLAP_REASON} | set(contested)
     matches, unresolved, unique = [], [], set()
@@ -426,7 +434,7 @@ def uses(image, config):
     returning, exit_walks = [], {}
     for root, stacks in sorted(open_calls.items()):
         for stack in sorted(stacks):
-            rows, frame_gaps = _caller_continuations(image, root, stops[root], stack, instruction_limit, exit_walks)
+            rows, frame_gaps = _caller_continuations(image, root, stops[root], stack, instruction_limit, exit_walks, modeled)
             returning.extend(rows)
             gaps.extend(g for g in frame_gaps if g not in gaps)
     seeds = list(stops) + [start for start, _, _ in returning]
@@ -448,7 +456,7 @@ def uses(image, config):
     starts = [(root, [{"site": root, "reason": reason}]) for root, reason in stops.items()]
     starts += [(at + ins.size, [{"site": at, "reason": STEPPED_CALL}])
                for at, ins in after_stop.items() if ins.mnemonic in ("call", "lcall") and at not in stops]
-    starts += [(at + ins.size, [{"site": at, "reason": STEPPED_INTERRUPT}])
+    starts += [(at + ins.size, [_stepped_interrupt(at, modeled)])
                for at, ins in after_stop.items() if base_mnemonic(ins) in INTERRUPTS and at not in stops]
     if image.flat:
         starts += [(at + ins.size, [{"site": at, "reason": STEPPED_PORT}])

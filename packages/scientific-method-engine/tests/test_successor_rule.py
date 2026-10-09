@@ -4,7 +4,7 @@ from test_x86 import configuration
 from test_pe import CODE_RAW, fixture as pe_fixture
 from scientific_method_engine.x86.image import Image
 from scientific_method_engine.x86.reports import _function_exit
-from scientific_method_engine.x86.trace import walk
+from scientific_method_engine.x86.trace import walk, modeled_interrupt_sites
 
 
 def table(code, targets, exhaustive):
@@ -91,6 +91,26 @@ class SuccessorRuleTests(unittest.TestCase):
             for follow in (False, True):
                 with self.subTest(exhaustive=exhaustive, follow_flat_ports=follow):
                     self.check(Image(data, configuration(data, **extra)), 0, {3, 4}, (), False, follow)
+
+    def test_entry_walk_continues_past_modeled_interrupts_only(self):
+        # (code, whether a call model at 0 is used, sites walked without and with the model at 0)
+        cases = [("cd 21 c3", True, {0}, {0, 2}), ("cc c3", False, {0}, {0}), ("ce c3", False, {0}, {0})]
+        for code, used, without, with_model in cases:
+            data = bytes.fromhex(code)
+            image = Image(data, configuration(data))
+            modeled = modeled_interrupt_sites(image, [{"site": 0}])
+            with self.subTest(code):
+                self.assertEqual(modeled, frozenset({0}) if used else frozenset())
+                seen, gaps, _, _, _ = walk(image, [0])
+                self.assertEqual(set(seen), without)
+                self.assertIn({"site": 0, "reason": "hardware or interrupt boundary"}, gaps)
+                seen, gaps, _, _, _ = walk(image, [0], modeled_interrupts=modeled)
+                self.assertEqual(set(seen), with_model)
+                self.assertEqual(any(g["reason"] == "hardware or interrupt boundary" for g in gaps), not used)
+        # In the PE32 model a call model at an interrupt is not used.
+        data, config = pe_fixture("cd 2e c3")
+        image = Image(data, config)
+        self.assertEqual(modeled_interrupt_sites(image, [{"site": CODE_RAW}]), frozenset())
 
     def test_flat_model_walks_continue_at_the_same_sites(self):
         for name, code, without, with_ports, stepped, returns in FLAT:
