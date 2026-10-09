@@ -1,6 +1,6 @@
 {
   "name": "@scientific-method/standard-checker",
-  "version": "4.1.0",
+  "version": "4.1.1",
   "description": "Checks a restoration's spec/, parity/ and deviations/ against version 1 of the dinorefurb documentation standard.",
   "type": "module",
   "license": "MIT",
