@@ -103,6 +103,19 @@ def modeled_interrupt(image, ins, site):
     return None if vector in (1, 3) else vector
 
 
+def modeled_interrupt_sites(image, models):
+    """The sites in ``models`` (a query's ``callModels``) of the interrupts ``trace`` continues past.
+
+    Each is an ``INT n`` that ``modeled_interrupt`` accepts. A malformed row is skipped here, since
+    ``trace`` rejects it with its own message.
+    """
+    if not isinstance(models, list):
+        return frozenset()
+    sites = (m.get("site") for m in models if isinstance(m, dict))
+    return frozenset(at for at in sites if type(at) is int and 0 <= at < len(image.data)
+                     and modeled_interrupt(image, image.decode(at), at) is not None)
+
+
 def base_mnemonic(ins):
     # Capstone names REP/REPNE/BND prefixes in the mnemonic ("repz ret", "rep insb", "bnd jmp").
     return ins.mnemonic.split()[-1]
@@ -160,12 +173,13 @@ class Step(NamedTuple):
     supplied: bool = False
 
 
-def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, follow_interrupts=False):
+def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, follow_interrupts=False,
+             modeled_interrupts=frozenset()):
     """The successors of ``ins`` decoded at ``at``, under the rule ``walk`` and the ``uses`` caller continuation share.
 
     An unsupported transfer encoding, a return, an unconditional jump without a resolved target,
-    ``hlt``, an interrupt unless ``follow_interrupts`` (which continues at the next instruction, as
-    ``body()`` does) and, unless ``follow_flat_ports``, a PE32 port access end the branch. A
+    ``hlt``, an interrupt unless ``follow_interrupts`` or its site is in ``modeled_interrupts`` (either
+    continues at the next instruction, as ``body()`` does) and, unless ``follow_flat_ports``, a PE32 port access end the branch. A
     conditional jump or loop continues at its resolved target and at the next instruction. A declared
     indirect jump continues at its table rows only. A call continues at its resolved target and at
     its return site; with ``step_over_calls`` it continues at its return site only and its target
@@ -198,7 +212,7 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
             successors.append(target)
         if m in ("jmp", "ljmp"):
             return Step(successors, False, None, gaps, edges)
-    if m == "hlt" or (m in INTERRUPTS and not follow_interrupts):
+    if m == "hlt" or (m in INTERRUPTS and not follow_interrupts and at not in modeled_interrupts):
         gaps.append({"site": at, "reason": "hardware or interrupt boundary"})
         return Step(successors, False, None, gaps, edges)
     # In the flat model I/O privilege decides whether a port access faults, so the walk claims nothing after it.
@@ -211,13 +225,16 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
     return Step(successors, False, return_site, gaps, edges)
 
 
-def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts=False, stops=frozenset()):
+def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts=False, stops=frozenset(),
+         modeled_interrupts=frozenset()):
     """Decode the CFG reached from ``entries`` and check its instruction boundaries.
 
     A port access in the flat model records a gap and ends that branch, as ``trace`` stops there.
     ``follow_flat_ports`` continues past it instead, for callers that name each port access their
     results depend on. ``follow_interrupts`` continues past an interrupt at the next instruction,
-    for callers that list each interrupt as an assumption. A site in ``stops`` is never decoded:
+    for callers that list each interrupt as an assumption. ``modeled_interrupts`` continues past the
+    interrupts at those sites only, the ones ``modeled_interrupt_sites`` names, which ``trace``
+    continues past under a call model (ADR 0017). A site in ``stops`` is never decoded:
     the walk reaches it and goes no further, so it is in no returned set.
     """
     integer(limit, 1, 100000, "instruction limit")
@@ -237,7 +254,8 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
             gaps.append({"site": at, "reason": "undecoded or unmapped edge"})
             continue
         seen[at] = ins
-        step = cfg_step(image, at, ins, follow_flat_ports, follow_interrupts=follow_interrupts)
+        step = cfg_step(image, at, ins, follow_flat_ports, follow_interrupts=follow_interrupts,
+                        modeled_interrupts=modeled_interrupts)
         successors[at] = step.successors
         gaps.extend(step.gaps)
         edges.extend(step.edges)
@@ -635,6 +653,8 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                 if r not in ALIASES or type(n) is not int or not 0 <= n < 1 << ALIASES[r][2]:
                     raise ValueError("Invalid model register")
     model_at = {model["site"]: model for model in models}
+    # The boundary walk for declared table targets continues past the interrupts the trace continues past.
+    modeled_interrupts = modeled_interrupt_sites(image, models)
     explicit_continuation_budget = validate_continuation_budget(config)
     observed_frame = entry_frame(image, config, entry) if arrive is None else None
     root = State(entry, image, config)
@@ -811,7 +831,8 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
             if boundary_budget < 1:
                 global_gaps.append({"site": s.at, "reason": "conditional table boundary instruction limit"})
                 return
-            seen, walk_gaps, _, _, contested = walk(image, [root_entry], boundary_budget)
+            seen, walk_gaps, _, _, contested = walk(image, [root_entry], boundary_budget,
+                                                    modeled_interrupts=modeled_interrupts)
             # walk drops rejected overlapping starts and contested instructions from seen,
             # but it decoded them, so they are charged with the established ones.
             overlapping = sum(g["reason"] == OVERLAP_REASON for g in walk_gaps)

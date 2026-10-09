@@ -2636,6 +2636,91 @@ class ReporterTests(unittest.TestCase):
         self.assertIsNone(later["value"]["value"])
         self.assertFalse(result["negativeUsable"])
 
+    def test_access_past_an_unmodeled_interrupt_is_conditional_and_satisfies_a_control(self):
+        # mov ah,35h; int 21h; mov dx,[0002h]; ret
+        data = bytes.fromhex("b4 35 cd 21 8b 16 02 00 c3")
+        config = configuration(data, query={"offset": 2, "width": 2, "access": "read"}, controls=[4])
+        result = run_report(data, config, "uses")
+        self.assertEqual(result["matches"], [])
+        self.assertEqual(result["unresolvedAccesses"], [])
+        [later] = result["conditionalAccesses"]
+        self.assertEqual((later["site"], later["address"]), (4, "overlaps query"))
+        self.assertEqual(later["dependsOn"], [{"site": 2, "reason": "interrupt handler is not modeled; later effects are not read"}])
+        self.assertIsNone(later["segment"]["value"])
+        self.assertIsNone(later["value"]["value"])
+        self.assertIn({"site": 2, "reason": "hardware or interrupt boundary"}, result["gaps"])
+        self.assertFalse(result["negativeUsable"])
+        # The inventory claims nothing about an instruction that is no use of the query.
+        config["controls"] = [0]
+        with self.assertRaisesRegex(ValueError, "control 0 missed"):
+            run_report(data, config, "uses")
+
+    def test_interrupt_past_a_stop_is_named_and_stepped(self):
+        # An unread call stops the trace; the interrupt after it is stepped over and named.
+        code = Code().branch("e8", "external").emit("cd 21 8b 16 02 00 c3").label("external").emit("c3")
+        data = code.bytes()
+        config = configuration(data, query={"offset": 2, "width": 2}, controls=[5])
+        config["regions"][0]["end"] = code.labels["external"]
+        [later] = run_report(data, config, "uses")["conditionalAccesses"]
+        self.assertEqual(later["site"], 5)
+        self.assertEqual([(d["site"], d["reason"]) for d in later["dependsOn"]],
+                         [(0, "unresolved call: outside mapped code"),
+                          (3, "interrupt past a stop; assumed to return to the next instruction")])
+
+    def test_interrupt_stop_inside_a_callee_continues_at_the_callers_return_site(self):
+        # The wrapper stops at its interrupt; the caller's read after the call is still inventoried.
+        code = Code().branch("e8", "wrapper").emit("8b 16 02 00 c3").label("wrapper").emit("b4 35 cd 21 c3")
+        data = code.bytes()
+        wrapper = code.labels["wrapper"]
+        result = run_report(data, configuration(data, query={"offset": 2, "width": 2}, controls=[3]), "uses")
+        later = next(e for e in result["conditionalAccesses"] if e["site"] == 3)
+        self.assertEqual([(d["site"], d["reason"]) for d in later["dependsOn"]],
+                         [(0, "call open at a stop inside its callee; continued at its return site, assumed to return"),
+                          (wrapper + 2, "interrupt handler is not modeled; later effects are not read")])
+        # A stop before the interrupt names the interrupt it steps over on the way to the return.
+        code = Code().branch("e8", "wrapper").emit("8b 16 02 00 c3").label("wrapper").emit("0f 20 c0 cd 21 c3")
+        data = code.bytes()
+        wrapper = code.labels["wrapper"]
+        result = run_report(data, configuration(data, query={"offset": 2, "width": 2}, controls=[3]), "uses")
+        later = next(e for e in result["conditionalAccesses"] if e["site"] == 3)
+        self.assertEqual([(d["site"], d["reason"]) for d in later["dependsOn"]],
+                         [(0, "call open at a stop inside its callee; continued at its return site, assumed to return"),
+                          (wrapper, "Unsupported register: cr0"),
+                          (wrapper + 3, "interrupt past a stop; assumed to return to the next instruction")])
+
+    def test_access_traced_past_a_modeled_interrupt_is_on_the_entry_path(self):
+        data = bytes.fromhex("b4 35 cd 21 8b 16 02 00 c3")
+        config = configuration(data, query={"offset": 2, "width": 2, "access": "read"}, controls=[4],
+                               callModels=[{"site": 2, "evidence": "synthetic service returns", "cases": [{}]}])
+        result = run_report(data, config, "uses")
+        [match] = result["matches"]
+        self.assertEqual(match["site"], 4)
+        self.assertEqual(tuple(match["segment"]["expression"]), ("unknown", "modeled-call:2:ds"))
+        self.assertEqual(result["unresolvedAccesses"], [])
+        self.assertEqual(result["conditionalAccesses"], [])
+        self.assertNotIn({"site": 2, "reason": "hardware or interrupt boundary"}, result["gaps"])
+        self.assertFalse(result["negativeUsable"])
+        # A model at INT 3 is not used, so the walk stops there and the access stays conditional.
+        data = bytes.fromhex("cd 03 8b 16 02 00 c3")
+        config = configuration(data, query={"offset": 2, "width": 2}, controls=[2],
+                               callModels=[{"site": 0, "evidence": "synthetic", "cases": [{}]}])
+        result = run_report(data, config, "uses")
+        self.assertEqual(result["matches"], [])
+        self.assertEqual([e["site"] for e in result["conditionalAccesses"]], [2])
+        self.assertIn({"site": 0, "reason": "hardware or interrupt boundary"}, result["gaps"])
+
+    def test_declared_table_target_past_a_modeled_interrupt_is_a_verified_boundary(self):
+        c = Code().emit("cd 21 ff e3").label("target").emit("c3").label("table")
+        data = c.bytes() + c.labels["target"].to_bytes(2, "little")
+        cfg = configuration(data, callModels=[{"site": 0, "evidence": "synthetic service returns", "cases": [{}]}],
+                            indirectJumps=[{"site": 2, "evidence": "synthetic table consumer", "exhaustive": True,
+                                            "table": {"start": c.labels["table"], "count": 1, "stride": 2,
+                                                      "evidence": "synthetic table words"}}])
+        cfg["regions"][0]["end"] = c.labels["table"]
+        r = run_report(data, cfg, "trace")
+        self.assertEqual(len(r["declaredContinuationPaths"]), 1)
+        self.assertFalse([g for g in r["gaps"] if "boundary is unresolved" in g["reason"]])
+
     def test_access_past_two_unread_calls_names_both(self):
         code = Code().branch("e8", "external").branch("e8", "external").emit("a0 20 02 c3").label("external").emit("c3")
         data = code.bytes()

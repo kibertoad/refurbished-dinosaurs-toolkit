@@ -37,9 +37,9 @@ REAL_MODE = [
     ("call to its return site", "e8 00 00 c3", {}, {3}, {3}, (), False),
     ("far call", "9a 06 00 00 10 c3 c3", FAR_FIXUP, {5}, {5}, {6}, False),
     ("far jump", "ea 06 00 00 10 c3 c3", FAR_FIXUP, {6}, {6}, (), False),
-    ("interrupt", "cd 21 c3", {}, set(), set(), (), False),
-    ("breakpoint", "cc c3", {}, set(), set(), (), False),
-    ("overflow interrupt", "ce c3", {}, set(), set(), (), False),
+    ("interrupt", "cd 21 c3", {}, {2}, {2}, (), False),
+    ("breakpoint", "cc c3", {}, {1}, {1}, (), False),
+    ("overflow interrupt", "ce c3", {}, {1}, {1}, (), False),
     ("hlt", "f4 c3", {}, set(), set(), (), False),
     ("port input", "ec c3", {}, {1}, {1}, (), False),
     ("port output", "e6 60 c3", {}, {2}, {2}, (), False),
@@ -59,14 +59,15 @@ FLAT = [
     ("port input", "ec c3", set(), {1}, (), False),
     ("port output", "e6 60 c3", set(), {2}, (), False),
     ("string port output", "f3 6e c3", set(), {2}, (), False),
-    ("interrupt", "cd 2e c3", set(), set(), (), False),
+    ("interrupt", "cd 2e c3", {2}, {2}, (), False),
     ("hlt", "f4 c3", set(), set(), (), False),
 ]
 
 
 class SuccessorRuleTests(unittest.TestCase):
     def check(self, image, start, expected, stepped, returns, follow):
-        seen, _, _, _, _ = walk(image, [start], follow_flat_ports=follow)
+        # The uses inventory past a stop follows interrupts in both walks.
+        seen, _, _, _, _ = walk(image, [start], follow_flat_ports=follow, follow_interrupts=True)
         route, exits, truncated = _function_exit(image, start, 10000, follow, {})
         walked = {at - start for at in seen} - {0}
         routed = {at - start for at in route}
