@@ -39,12 +39,13 @@ engine.
   fixups and trampolines. Rejects NE, LE, LX and PE behind an MZ stub.
 - Derives relocation membership, canonical trampoline targets, overlay exports and format-table
   counts from the source, and enforces `formatControls`. A query may not supply any of these.
-- Owns the `pointers` inventory, the `table` contents report, the `imports` report on PE32
+- Owns the `pointers` inventory, the `table` contents report, the `bodies` report on where function
+  bodies lie by file region, the `imports` report on PE32
   and PE32+ import tables, and `unpack`, which writes the unpacked form of an LZEXE executable by
   a documented layout rule. These run without the engine.
 - Provides the `scientific-method` command. For every other command it builds a prepared config
   and pipes it to `python -m scientific_method_engine <command> -`.
-- Exports `legacy-image`, `pointer-inventory`, `table-contents`, `pe-imports` and `unpack` as a library for
+- Exports `legacy-image`, `pointer-inventory`, `table-contents`, `body-layout`, `pe-imports` and `unpack` as a library for
   restoration repositories' own Node tools.
 
 This is the required entry point for original MZ/FBOV executables. PE32 and synthetic sources pass

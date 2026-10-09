@@ -118,6 +118,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved | [reachability](#reachability-from-starts-to-targets) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
+| `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (load image, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own and an optional comparison with a candidate body (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
 | `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables and checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots) |
 | `unpack` | writes the unpacked form of an LZEXE 0.90 or 0.91 executable and gives the `size`, `xxh3`, `format` and `tool` of a build's `unpacked` item (reader only, no engine) | [unpacking packed executables](#unpacking-packed-executables) |
 
@@ -125,7 +126,7 @@ The engine also has `scientific-method-engine ghidra-scripts`, which prints the 
 packaged Ghidra scripts (see the engine's README for the list).
 
 All engine commands return JSON with the input fingerprint and schema `bounded-x86-v1`;
-`pointers`, `table` and `imports` return their own objects, described in their sections.
+`pointers`, `table`, `bodies` and `imports` return their own objects, described in their sections.
 `target` is described under [Call-target provenance](#call-target-provenance), and `bounds`
 and `owner` under [Function bounds and site ownership](#function-bounds-and-site-ownership).
 `trace` follows direct calls and local branches, records ordered effects and keeps
@@ -1439,6 +1440,70 @@ other than entry 0 that holds a non-empty string, so that a wrong address, strid
 pass it. With `entries`, `coverage.read` lists the indices read and the report claims nothing about
 the others. The report reads the bytes as the file stores them at load; writes the code makes to the
 table or its strings before reading them are outside it.
+
+## Function bodies by file region
+
+Run `scientific-method bodies <config.json>` to see where the bytes of an analyzer's function bodies
+lie in an `mz` source, by the file's own MZ and FBOV tables. It runs in the reader and needs no
+engine. Use it on a function inventory whose rows fail a check such as the Code ranges one, to
+tell an entry outside code from a body fragment that runs into a fixup table, padding or another
+overlay. It decodes no instruction.
+
+| Field | Meaning |
+|---|---|
+| `formatControls` | Required. The counts the build is known to have (see [format-table controls](#format-table-controls)). The classification rests on the tables, so a count that differs fails the report before anything is classified. |
+| `functions` | 1..10000 objects `{ name?, entry, body, candidate? }`. `entry` is a file offset in the file. `body` is 1..4096 half-open ranges `{ start, end }` of file offsets, in any order, none overlapping another; ranges that touch are kept as given. |
+| `functions[].candidate` | Optional `{ ranges, evidence }`: a body found another way, such as the `intervals` of a `bounds` report, and where it comes from. Same range rules as `body`. |
+
+A range outside the file, an empty or reversed range, an unknown field and overlapping ranges in one
+body or candidate fail the report.
+
+`layout` partitions the whole file, offset 0 to its length, into regions in file order, each with
+`kind`, `descriptor` (the FBOV descriptor index, or null) and `start..end`:
+
+| Kind | Bytes |
+|---|---|
+| `mz-header` | the MZ header and its relocation table |
+| `resident` | the MZ load image, less the FBOV descriptor table and the overlay stubs |
+| `fbov-descriptors` | the FBOV descriptor table in the load image, 8 bytes per descriptor |
+| `overlay-stub` | one overlay's stub in the load image: its 32-byte header and its trampolines |
+| `fbov-header` | the 16-byte FBOV envelope header |
+| `overlay-code` | one overlay's code |
+| `fixup-table` | the fixup table after one overlay's code |
+| `zero-padding` | a run between declared regions whose every byte is zero |
+| `undeclared` | a run between declared regions with at least one nonzero byte; `nonzeroBytes` counts them |
+
+A run between declared regions is one region, so a single nonzero byte makes the whole run
+`undeclared`, and none of it is called padding. Each such run also has `trailing`, true when it lies
+past everything the tables declare: past the end of the FBOV payload, or past the load image of a
+file without an envelope. A run is split there, so a body that runs past the last overlay into
+bytes appended after the envelope shows apart from one that runs into a gap inside the payload.
+Stubs of two overlays that overlap, or a stub that overlaps the descriptor table, fail the MZ/FBOV
+loader, so they fail this report and every other command that reads an `mz` source.
+
+Each function's `entry` gives its `offset`, the `kind` and `descriptor` of the region holding it,
+`inBody` (whether a body range holds it) and `trampolines`, the stub trampolines whose target it
+is. Each body range is a `fragments` row with `start`, `end`, `size`, `crossesRegions` and `parts`:
+the range cut at every region boundary, each part with its `kind`, `descriptor`, size and
+`outsideEntryRegion`, true when its kind or descriptor differs from the entry's, or when the entry
+lies in a `zero-padding` or `undeclared` run and the part lies in another run. Code of another
+overlay is outside the entry's region, since being code says nothing about which procedure owns it.
+Every fragment is kept, however much of it lies outside. The parts of a range add up to the range,
+and the report fails rather than give a partition that does not. Per function, `bytes`, `regions`
+(bytes per kind and descriptor) and `outsideEntryRegion` total the fragments. `counts` totals the
+functions: entries outside resident or overlay code, entries in no body range, functions with bytes
+outside their entry's region, and fragments outside it or crossing regions.
+
+With a `candidate`, the function's `candidate` row gives the candidate's joined `ranges`,
+`entryInCandidate`, and three range sets, each with `ranges`, `bytes`, `regions` and
+`outsideEntryRegion`: `both` (bytes the body and the candidate hold), `bodyOnly` and
+`candidateOnly`. Neither side is taken as right: the report gives the bytes each side holds that
+the other does not.
+
+The report says where bytes lie in the file. It does not say which code runs them, which function
+owns them, what segment the code runs at, or whether an instruction starts anywhere in them:
+`bounds`, `owner` and the Ghidra scripts answer those. Bytes the program writes at run time are
+outside it.
 
 ## PE import slots
 

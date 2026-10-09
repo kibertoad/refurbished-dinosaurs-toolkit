@@ -46,6 +46,16 @@ export type ResolvedOperand =
       canonicalTarget: string;
       trampoline: string | null;
     };
+/**
+ * Where an FBOV envelope's own tables lie, as file offsets. `header` is the 16-byte envelope header,
+ * `payloadEnd` the end of the payload it declares, and `descriptorTable` the start of its
+ * `descriptors.length` 8-byte descriptors in the load image.
+ */
+export interface FbovEnvelope {
+  header: number;
+  payloadEnd: number;
+  descriptorTable: number;
+}
 /** A checked MZ image with its relocation table and any Borland FBOV overlay envelope, as returned by {@link readMz}. */
 export interface MzImage {
   header: number;
@@ -55,6 +65,8 @@ export interface MzImage {
   relocations: Set<number>;
   overlays: Overlay[];
   descriptors: Descriptor[];
+  /** The FBOV envelope, or null when the file has none. See {@link FbovEnvelope}. */
+  envelope: FbovEnvelope | null;
   bytes: Buffer;
   /** File offset of a resident `segment:offset`, relative to `loadSegment`. Throws outside the resident image. */
   address(segment: number, offset: number): number;
@@ -78,7 +90,8 @@ export function span(start: number, size: number, end: number, label: string): v
 }
 /**
  * Parses an MZ executable and its optional FBOV overlay envelope. Every table and range is
- * bounds-checked, and NE, LE, LX and PE executables behind an MZ stub are refused. The word at 0x3C
+ * bounds-checked, overlays whose payload ranges overlap, or whose stubs overlap each other or the
+ * descriptor table, are refused, and NE, LE, LX and PE executables behind an MZ stub are refused. The word at 0x3C
  * is read as the offset of such a header only when the header is at least 64 bytes and the
  * relocation table does not cover 0x3C..0x3F.
  * @param bytes The whole executable, at most 256 MiB.
@@ -130,6 +143,7 @@ export function readMz(bytes: Buffer, loadSegment = 0x1000): MzImage {
   const overlays: Overlay[] = [],
     descriptors: Descriptor[] = [],
     fbov = Math.ceil(end / 16) * 16;
+  let envelope: FbovEnvelope | null = null;
   if (fbov + 4 <= bytes.length && bytes.toString("ascii", fbov, fbov + 4) === "FBOV") {
     span(fbov, 16, bytes.length, "FBOV header");
     const payloadEnd = fbov + 16 + u32(fbov + 4),
@@ -139,6 +153,7 @@ export function readMz(bytes: Buffer, loadSegment = 0x1000): MzImage {
     span(fbov + 16, payloadEnd - fbov - 16, bytes.length, "FBOV payload");
     span(dt, dc * 8, end, "FBOV descriptors");
     if (dt < header) throw new Error("FBOV descriptors overlap MZ header");
+    envelope = { header: fbov, payloadEnd, descriptorTable: dt };
     for (let i = 0; i < dc; i++) descriptors.push({ index: i, segment: u16(dt + i * 8), flags: u16(dt + i * 8 + 4) });
     for (const d of descriptors) {
       if (!(d.flags & 2)) continue;
@@ -180,6 +195,18 @@ export function readMz(bytes: Buffer, loadSegment = 0x1000): MzImage {
         throw new Error("Overlapping FBOV payload ranges");
       overlays.push(overlay);
     }
+    // The tables the envelope keeps in the load image. Bytes read as two of them have no single meaning.
+    const tables = [
+      { name: "the FBOV descriptor table", start: dt, end: dt + dc * 8 },
+      ...overlays.map((o) => ({
+        name: `the FBOV stub of descriptor ${o.descriptor}`,
+        start: o.header,
+        end: o.header + 32 + o.trampolines.length * 5,
+      })),
+    ].sort((a, b) => a.start - b.start);
+    for (let i = 1; i < tables.length; i++)
+      if (tables[i]!.start < tables[i - 1]!.end)
+        throw new Error(`${tables[i - 1]!.name} and ${tables[i]!.name} overlap`);
   }
   const ranges: SourceRange[] = [
     { view: "resident", start: header, end },
@@ -229,7 +256,19 @@ export function readMz(bytes: Buffer, loadSegment = 0x1000): MzImage {
       trampoline: trampoline ? hex(target) : null,
     };
   }
-  return { header, end, loadSegment, ranges, relocations, overlays, descriptors, address, resolveOperand, bytes };
+  return {
+    header,
+    end,
+    loadSegment,
+    ranges,
+    relocations,
+    overlays,
+    descriptors,
+    envelope,
+    address,
+    resolveOperand,
+    bytes,
+  };
 }
 /**
  * Counts the format's own tables yield. A build's known counts act as positive controls: a
