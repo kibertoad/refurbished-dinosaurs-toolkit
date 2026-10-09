@@ -217,8 +217,10 @@ A source entry in `spec/sources/` describes a source outside the rebuild, such a
 project's repository or a shipped archive, and may cite that source's own files by their paths,
 such as `src/gpl/state.c` or a table of an archive's members. In a source entry a path counts only
 when it exists in the restoration, so a source's file that shares its path with a file of the
-rebuild still fails; qualify it with the source's directory or cite it as a full link. A file name
-of the rebuild written alone fails in every entry. Elsewhere in the spec, cite the source entry's
+rebuild still fails; qualify it with the source's directory or cite it as a full link. The
+comparison ignores case on every platform, so `src/Score.cs` fails when the rebuild has
+`src/score.cs`, on Linux as on Windows. A file name of the rebuild written alone fails in every
+entry. Elsewhere in the spec, cite the source entry's
 ID instead of the source's paths.
 
 Tools that read the original, such as a research script in `tools/` or a probe that runs the

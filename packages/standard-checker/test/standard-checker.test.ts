@@ -3767,6 +3767,8 @@ for (const [text, why] of [
 for (const [text, why] of [
   ["The rebuild's tests/Score.Tests/ScoreTests.cs replays the manual's example.", "an existing rebuild path"],
   ["See ../../tests/Score.Tests/ScoreTests.cs.", "an existing rebuild path written relative"],
+  // Fails on Linux too, where the file system tells the two cases apart.
+  ["The source's tests/score.tests/scoretests.cs is the original.", "an existing rebuild path in another case"],
   ["ScoreTests.cs replays the manual's example.", "a source file of the rebuild by its name"],
 ] as Array<[string, string]>)
   test(`a source entry that names ${why} fails`, (t) => {
@@ -3779,6 +3781,22 @@ for (const [text, why] of [
     assert.equal(result.status, 1, result.output);
     assert.match(result.output, /spec\/sources\/SRC-MANUAL\.md: line \d+ names .*, which belongs to the rebuild/);
   });
+
+test("Markdown under spec/sources/ that is no source entry keeps the forward-slash rule", (t) => {
+  const root = broken(t, (r) => {
+    mkdirSync(join(r, "spec", "sources", "notes"), { recursive: true });
+    writeFileSync(
+      join(r, "spec", "sources", "notes", "draft.md"),
+      "The rebuild's src/gpl/state.c resets the variables.\n",
+    );
+  });
+  const result = run(root, "--data-dirs", "");
+  assert.equal(result.status, 1, result.output);
+  assert.match(
+    result.output,
+    /spec\/sources\/notes\/draft\.md: line 1 names src\/gpl\/state\.c, which belongs to the rebuild/,
+  );
+});
 
 for (const dir of ["bin", "obj", "dist", "node_modules", "artifacts"])
   test(`a source file name that only ${dir} in a --rebuild directory has stays free to use`, (t) => {
