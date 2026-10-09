@@ -432,6 +432,7 @@ not in the table has no entry.
 
 | Engine | Entry |
 |---|---|
+| 15.0.0 | [`ExportFunctionInventory` writes a regions file](#engine-1500-exportfunctioninventory-writes-a-regions-file) |
 | 14.0.0 | [`ExportFunctionInventory` writes the Standard's notation and a provenance file](#engine-1400-exportfunctioninventory-writes-the-standards-notation-and-a-provenance-file) |
 | 13.0.0 | [The scalar constant scripts match absolute memory operands](#engine-1300-the-scalar-constant-scripts-match-absolute-memory-operands) |
 | 12.0.0 | [A callee's converted return frame returns to its caller](#engine-1200-a-callees-converted-return-frame-returns-to-its-caller) |
@@ -451,6 +452,23 @@ not in the table has no entry.
 | 3.0.0 | [The Ghidra report scripts state coverage](#engine-300-the-ghidra-report-scripts-state-coverage) |
 | 2.0.0 | [Prepared-config protocol 3, with reader 2.0.0](#prepared-config-protocol-3-scoped-memory-on-call-models) |
 | 1.0.0 | [Prepared-config protocol 2, with reader 1.0.0](#prepared-config-protocol-2) |
+
+### Engine 15.0.0: `ExportFunctionInventory` writes a regions file
+
+`ExportFunctionInventory` writes `<file>.regions.tsv` beside the inventory and its provenance, the
+denominator audit the work protocol describes
+([Exporting a function inventory](ghidra-workflow.md#exporting-a-function-inventory)). An export
+needs two changes in the restoration:
+
+- Clear the `.regions.tsv` path as well before the run. The script refuses when it exists.
+- An initialized executable block the Standard's notation cannot write now fails the export, even
+  with no function in it: an executable overlay block in a program other than MZ, an overlay block
+  whose bytes come from no file or from another file, or a block outside the program's default
+  address space. Remove the execute permission of such a block, or import the overlay from the
+  file, and export again.
+
+A tool that compares the side files of two exports compares `.regions.tsv` as well. The
+`standard-coverage` check does not read it.
 
 ### Engine 14.0.0: `ExportFunctionInventory` writes the Standard's notation and a provenance file
 

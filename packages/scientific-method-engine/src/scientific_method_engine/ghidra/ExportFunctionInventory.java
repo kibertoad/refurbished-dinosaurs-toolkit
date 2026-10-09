@@ -1,4 +1,4 @@
-// Exports every function's start, size and body ranges in the Standard's notation, with a provenance file.
+// Exports every function's start, size and body ranges in the Standard's notation, with provenance and regions files.
 // @category Restoration
 
 import java.io.BufferedWriter;
@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HexFormat;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,8 +25,10 @@ import ghidra.program.model.address.AddressSetView;
 import ghidra.program.model.address.AddressSpace;
 import ghidra.program.model.address.SegmentedAddress;
 import ghidra.program.model.address.SegmentedAddressSpace;
+import ghidra.program.model.listing.CodeUnit;
 import ghidra.program.model.listing.Function;
 import ghidra.program.model.listing.FunctionIterator;
+import ghidra.program.model.listing.Listing;
 import ghidra.program.model.mem.Memory;
 import ghidra.program.model.mem.MemoryBlock;
 import ghidra.program.model.mem.MemoryBlockSourceInfo;
@@ -62,7 +65,9 @@ public class ExportFunctionInventory extends GhidraScript {
         if (!name.endsWith(".tsv") || name.endsWith(".provenance.tsv") || name.endsWith(".regions.tsv")) {
             throw new IllegalArgumentException("The inventory path must end in .tsv and not be a side file: " + output);
         }
-        Path provenance = output.resolveSibling(name.substring(0, name.length() - 4) + ".provenance.tsv");
+        String stem = name.substring(0, name.length() - 4);
+        Path provenance = output.resolveSibling(stem + ".provenance.tsv");
+        Path regions = output.resolveSibling(stem + ".regions.tsv");
         String snapshot = arguments[1];
         if (snapshot.isEmpty() || snapshot.length() > 200 || snapshot.chars().anyMatch(Character::isISOControl)) {
             throw new IllegalArgumentException("The snapshot identifier must be 1 to 200 characters with no tab or line break.");
@@ -70,11 +75,14 @@ public class ExportFunctionInventory extends GhidraScript {
         if (Files.exists(output)) {
             throw new IllegalArgumentException("Output already exists: " + output);
         }
-        if (Files.exists(provenance)) {
-            // The provenance moves into place first, so one without its inventory is left by an export
-            // that stopped between the two moves. It is not deleted here, since it may be the user's own.
-            throw new IllegalArgumentException("Output already exists: " + provenance + ". With no inventory beside"
-                + " it, an earlier export stopped before moving the inventory into place; remove it and export again.");
+        for (Path side : List.of(provenance, regions)) {
+            if (Files.exists(side)) {
+                // The side files move into place before the inventory, so one without its inventory is left
+                // by an export that stopped between the moves. It is not deleted here, since it may be the
+                // user's own.
+                throw new IllegalArgumentException("Output already exists: " + side + ". With no inventory beside"
+                    + " it, an earlier export stopped before moving the inventory into place; remove it and export again.");
+            }
         }
 
         notation = notation();
@@ -85,6 +93,8 @@ public class ExportFunctionInventory extends GhidraScript {
         Memory memory = currentProgram.getMemory();
         List<String> rows = new ArrayList<>();
         Map<String, Address> starts = new LinkedHashMap<>();
+        AddressSet bodies = new AddressSet();
+        List<Address> entries = new ArrayList<>();
         long bytes = 0;
         long withRanges = 0;
         FunctionIterator functions = currentProgram.getFunctionManager().getFunctions(true);
@@ -94,8 +104,11 @@ public class ExportFunctionInventory extends GhidraScript {
             }
             Function function = functions.next();
             Address entry = function.getEntryPoint();
-            List<Piece> pieces = place(memory, entry, function.getBody(), true);
-            Piece first = place(memory, entry, new AddressSet(entry), false).stream().findFirst().orElse(null);
+            bodies.add(function.getBody());
+            entries.add(entry);
+            String owner = "Function at " + entry + ": body";
+            List<Piece> pieces = place(memory, owner, function.getBody(), true);
+            Piece first = place(memory, owner, new AddressSet(entry), false).stream().findFirst().orElse(null);
             if (first == null || pieces.isEmpty()) {
                 continue; // The body's problems include the byte at the start, or every byte of the body.
             }
@@ -135,6 +148,8 @@ public class ExportFunctionInventory extends GhidraScript {
             bytes += size;
         }
 
+        List<String> regionRows = regionRows(memory, bodies, entries);
+
         if (!problems.isEmpty()) {
             for (String line : problems.subList(0, Math.min(problems.size(), MAX_PROBLEM_LINES))) {
                 printerr(line);
@@ -143,15 +158,17 @@ public class ExportFunctionInventory extends GhidraScript {
                 printerr("Output stopped after " + MAX_PROBLEM_LINES + " of " + problems.size() + " problems.");
             }
             throw new IllegalStateException((problems.size() == 1 ? "1 problem keeps" : problems.size() + " problems keep")
-                + " the inventory from listing every function's body in the Standard's notation. Nothing was written.");
+                + " the inventory and its regions from being written in the Standard's notation. Nothing was written.");
         }
 
         Files.createDirectories(output.getParent());
         Path inventoryPart = null;
         Path provenancePart = null;
+        Path regionsPart = null;
         try {
             inventoryPart = Files.createTempFile(output.getParent(), "inventory-", ".partial");
             provenancePart = Files.createTempFile(output.getParent(), "provenance-", ".partial");
+            regionsPart = Files.createTempFile(output.getParent(), "regions-", ".partial");
             try (BufferedWriter writer = Files.newBufferedWriter(inventoryPart, StandardCharsets.UTF_8)) {
                 writer.write("start\tsize\tranges\n");
                 for (String row : rows) {
@@ -164,12 +181,27 @@ public class ExportFunctionInventory extends GhidraScript {
                     writer.write(line.getKey() + "\t" + line.getValue() + "\n");
                 }
             }
+            try (BufferedWriter writer = Files.newBufferedWriter(regionsPart, StandardCharsets.UTF_8)) {
+                writer.write(String.join("\t", "kind", "start", "size", "instructions", "instructions_outside", "data",
+                    "data_outside", "undefined", "undefined_outside") + "\n");
+                for (String row : regionRows) {
+                    writer.write(row);
+                    writer.write('\n');
+                }
+            }
             // No replacement. The inventory moves last, so a run that stops before it leaves no
-            // inventory, and a provenance file without its inventory is removed.
+            // inventory, and side files moved without their inventory are removed.
             Files.move(provenancePart, provenance);
+            boolean regionsMoved = false;
             try {
+                Files.move(regionsPart, regions);
+                regionsMoved = true;
                 Files.move(inventoryPart, output);
             } catch (Exception e) {
+                // A regions file that was there when its move failed is not this run's.
+                if (regionsMoved) {
+                    Files.deleteIfExists(regions);
+                }
                 Files.deleteIfExists(provenance);
                 throw e;
             }
@@ -180,9 +212,13 @@ public class ExportFunctionInventory extends GhidraScript {
             if (provenancePart != null) {
                 Files.deleteIfExists(provenancePart);
             }
+            if (regionsPart != null) {
+                Files.deleteIfExists(regionsPart);
+            }
         }
         println("Exported " + rows.size() + " functions with " + bytes + " body bytes, " + withRanges
-            + " of them with a ranges column, to " + output + ", and their provenance to " + provenance);
+            + " of them with a ranges column, to " + output + ", their provenance to " + provenance + ", and "
+            + regionRows.size() + " region and anomaly rows to " + regions);
     }
 
     /** The Standard's address notation for this program, or an exception naming why it has none here. */
@@ -266,11 +302,11 @@ public class ExportFunctionInventory extends GhidraScript {
     }
 
     /**
-     * The body split into placed pieces. A byte in an overlay block is placed by its offset in the
+     * The addresses split into placed pieces. A byte in an overlay block is placed by its offset in the
      * imported file, which the Standard allows only in an MZ file; any other byte by its address. With
-     * record, a byte that cannot be placed is recorded as a problem with the reason.
+     * record, a byte that cannot be placed is recorded as a problem with the reason, after owner.
      */
-    private List<Piece> place(Memory memory, Address entry, AddressSetView body, boolean record) {
+    private List<Piece> place(Memory memory, String owner, AddressSetView body, boolean record) {
         List<Piece> pieces = new ArrayList<>();
         int before = problems.size();
         AddressSet left = new AddressSet(body);
@@ -287,7 +323,7 @@ public class ExportFunctionInventory extends GhidraScript {
                 for (AddressRange range : part) {
                     Piece piece = addressPiece(range);
                     if (piece == null) {
-                        problem(entry, range, noWrittenForm(range));
+                        problem(owner, range, noWrittenForm(range));
                     } else {
                         pieces.add(piece);
                     }
@@ -296,7 +332,7 @@ public class ExportFunctionInventory extends GhidraScript {
             }
             if (!fileOffsets) {
                 for (AddressRange range : part) {
-                    problem(entry, range, "is in overlay block " + block.getName()
+                    problem(owner, range, "is in overlay block " + block.getName()
                         + ", and the Standard places code by file offset only in an MZ file");
                 }
                 continue;
@@ -307,7 +343,7 @@ public class ExportFunctionInventory extends GhidraScript {
                 for (AddressRange range : sourced) {
                     FileBytes from = info.getFileBytes().orElse(null);
                     if (from == null || !from.equals(imported)) {
-                        problem(entry, range, "is in overlay block " + block.getName() + ", whose bytes there come "
+                        problem(owner, range, "is in overlay block " + block.getName() + ", whose bytes there come "
                             + (from == null ? "from no file" : "from " + from.getFilename() + ", not the imported file"));
                         continue;
                     }
@@ -316,11 +352,11 @@ public class ExportFunctionInventory extends GhidraScript {
                 }
             }
             for (AddressRange range : part) {
-                problem(entry, range, "is in overlay block " + block.getName() + ", which gives it no source");
+                problem(owner, range, "is in overlay block " + block.getName() + ", which gives it no source");
             }
         }
         for (AddressRange range : left) {
-            problem(entry, range, "is in no memory block");
+            problem(owner, range, "is in no memory block");
         }
         if (!record) {
             problems.subList(before, problems.size()).clear();
@@ -389,8 +425,121 @@ public class ExportFunctionInventory extends GhidraScript {
         return segment > 0xFFFF ? null : String.format("%04X:%04X", segment, offset);
     }
 
-    private void problem(Address entry, AddressRange range, String why) {
-        problems.add("Function at " + entry + ": body " + range.getMinAddress() + ".." + range.getMaxAddress()
+    /**
+     * The rows of the regions file: a region row for each initialized executable block, or for each
+     * part of an overlay block that one file range supplies; then an outside row for each stretch of a
+     * function body in no region, split the same way at block and source boundaries; then an entry row
+     * for each function start where no instruction starts. Each row counts the instruction, defined-data and undefined bytes of its range, in all
+     * and outside every function body. A range that cannot be written in the notation is a problem.
+     * The outside and entry rows lie in function bodies, so when a body could not be placed they would
+     * repeat its problem, and only the region rows are checked.
+     */
+    private List<String> regionRows(Memory memory, AddressSet bodies, List<Address> entries) {
+        boolean bodiesPlaced = problems.isEmpty();
+        List<String> rows = new ArrayList<>();
+        AddressSet measured = new AddressSet();
+        for (MemoryBlock block : memory.getBlocks()) {
+            if (!block.isInitialized() || !block.isExecute()) {
+                continue;
+            }
+            AddressSet whole = new AddressSet(block.getStart(), block.getEnd());
+            measured.add(whole);
+            for (AddressSet part : blockParts(memory, whole)) {
+                row(rows, memory, "region", "Executable block " + block.getName() + ":", part, bodies);
+            }
+        }
+        if (!bodiesPlaced) {
+            return rows;
+        }
+        for (AddressSet part : blockParts(memory, bodies.subtract(measured))) {
+            row(rows, memory, "outside", "Function body outside every executable block:", part, bodies);
+        }
+        Listing listing = currentProgram.getListing();
+        for (Address entry : entries) {
+            if (listing.getInstructionAt(entry) == null) {
+                row(rows, memory, "entry", "Function start without an instruction:", new AddressSet(entry), bodies);
+            }
+        }
+        return rows;
+    }
+
+    /**
+     * The set split into the contiguous parts that place() writes as one piece each: a part per memory
+     * block and, in an overlay block, per source range, then the parts in no block.
+     */
+    private static List<AddressSet> blockParts(Memory memory, AddressSetView set) {
+        List<AddressSet> parts = new ArrayList<>();
+        AddressSet left = new AddressSet(set);
+        for (MemoryBlock block : memory.getBlocks()) {
+            if (left.isEmpty()) {
+                break;
+            }
+            AddressSet part = left.intersectRange(block.getStart(), block.getEnd());
+            if (part.isEmpty()) {
+                continue;
+            }
+            left.delete(part);
+            if (block.getStart().getAddressSpace().isOverlaySpace()) {
+                for (MemoryBlockSourceInfo info : block.getSourceInfos()) {
+                    AddressSet sourced = part.intersectRange(info.getMinAddress(), info.getMaxAddress());
+                    part.delete(sourced);
+                    for (AddressRange range : sourced) {
+                        parts.add(new AddressSet(range));
+                    }
+                }
+            }
+            for (AddressRange range : part) {
+                parts.add(new AddressSet(range));
+            }
+        }
+        for (AddressRange range : left) {
+            parts.add(new AddressSet(range));
+        }
+        return parts;
+    }
+
+    /**
+     * Adds the row of one part from blockParts(), or records the problem that keeps it from being
+     * written. Such a part places as one piece or not at all.
+     */
+    private void row(List<String> rows, Memory memory, String kind, String what, AddressSet range, AddressSet bodies) {
+        List<Piece> pieces = place(memory, what, range, true);
+        if (pieces.size() != 1) {
+            return; // place() recorded why the range has no written form.
+        }
+        AddressSet outside = range.subtract(bodies.intersectRange(range.getMinAddress(), range.getMaxAddress()));
+        AddressSet instructions = covered(range, true);
+        AddressSet data = covered(range, false);
+        AddressSet undefined = range.subtract(instructions).subtract(data);
+        rows.add(String.join("\t", kind, pieces.get(0).startText(), Long.toString(range.getNumAddresses()),
+            count(instructions), count(instructions.intersect(outside)), count(data), count(data.intersect(outside)),
+            count(undefined), count(undefined.intersect(outside))));
+    }
+
+    /** The bytes of the range that instructions, or defined data, cover, including a unit that starts before it. */
+    private AddressSet covered(AddressSet range, boolean instructions) {
+        Listing listing = currentProgram.getListing();
+        AddressSet covered = new AddressSet();
+        Address first = range.getMinAddress();
+        CodeUnit before = instructions ? listing.getInstructionContaining(first) : listing.getDefinedDataContaining(first);
+        if (before != null) {
+            covered.add(before.getMinAddress(), before.getMaxAddress());
+        }
+        Iterator<? extends CodeUnit> units = instructions ? listing.getInstructions(range, true)
+            : listing.getDefinedData(range, true);
+        while (units.hasNext()) {
+            CodeUnit unit = units.next();
+            covered.add(unit.getMinAddress(), unit.getMaxAddress());
+        }
+        return covered.intersect(range);
+    }
+
+    private static String count(AddressSetView set) {
+        return Long.toString(set.getNumAddresses());
+    }
+
+    private void problem(String owner, AddressRange range, String why) {
+        problems.add(owner + " " + range.getMinAddress() + ".." + range.getMaxAddress()
             + " (" + range.getLength() + " bytes) " + why + ".");
     }
 
