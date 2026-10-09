@@ -176,6 +176,7 @@ test("--json gives the figures, and --list adds the entries that cite each funct
         cited: 1,
         bytes: 48,
         citedBytes: 32,
+        sharedBytes: 0,
         uncited: [{ start: "0x00401100", size: 16, name: "" }],
       },
     ],
@@ -360,6 +361,53 @@ test("a body given as ranges is cited through any of its ranges and not through 
       ["0x00401100", []],
     ],
   );
+});
+
+test("bytes two functions share are counted once, and a location in them cites both", (t) => {
+  const root = copy(t);
+  // 0x00401000 holds 0x00401000..0x00401010 and the tail 0x00401100..0x00401110, which
+  // 0x00401100 lists as its whole body, so 16 of the 64 listed bytes are shared.
+  finding(root, "FND-SCORE-001", at("0x00401104"));
+  inventory(
+    root,
+    "start\tsize\tranges\n0x00401000\t32\t0x00401000..0x00401010 0x00401100..0x00401110\n0x00401100\t16\t\n" +
+      "0x00401200\t16\t\n",
+  );
+  const json = JSON.parse(run(root, "--json", "--list").stdout).inventories[0];
+  assert.equal(json.cited, 2);
+  assert.equal(json.bytes, 48);
+  assert.equal(json.citedBytes, 32);
+  assert.equal(json.sharedBytes, 16);
+  assert.deepEqual(
+    json.list.map((f: { start: string; citedBy: string[] }) => [f.start, f.citedBy]),
+    [
+      ["0x00401000", ["FND-SCORE-001"]],
+      ["0x00401100", ["FND-SCORE-001"]],
+      ["0x00401200", []],
+    ],
+  );
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.match(
+    output,
+    /^coverage\/BLD-EXAMPLE-1\.0\/GAME\.EXE\.tsv: 2 of 3 functions cited \(66\.7%\), 32 of 48 bytes \(66\.7%\); 0 out of scope; 16 bytes listed by more than one function$/m,
+  );
+});
+
+test("a byte three functions list counts once, and an out-of-scope function's bytes are not shared", (t) => {
+  const root = copy(t);
+  inventory(
+    root,
+    "start\tsize\tout_of_scope\tranges\n" +
+      "0x00401000\t24\t\t0x00401000..0x00401008 0x00401100..0x00401110\n" +
+      "0x00401008\t24\t\t0x00401008..0x00401010 0x00401100..0x00401110\n" +
+      "0x00401100\t16\t\t\n" +
+      "0x00401300\t24\tlibrary code\t0x00401300..0x00401308 0x00401100..0x00401110\n",
+  );
+  const json = JSON.parse(run(root, "--json").stdout).inventories[0];
+  assert.equal(json.bytes, 32);
+  assert.equal(json.sharedBytes, 16);
+  assert.equal(json.citedBytes, 0);
 });
 
 test("a ranges column that does not describe the body is a problem", (t) => {

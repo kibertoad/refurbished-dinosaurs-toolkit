@@ -118,6 +118,12 @@ entry's body. Real-mode segmented addresses (`MZ`, `COM`) are compared by the li
 name, and each `NE` segment is a space of its own. A row without `ranges` is measured as if its body
 were contiguous. The shares count functions and bytes of the functions not out of scope.
 
+Two rows may list the same bytes, as an analyzer that gives one chunk to several functions (a
+shared function tail) writes them. A location in those bytes cites every function that lists them,
+and the byte figures count each byte once: `bytes` and `citedBytes` are over the union of the
+bodies. The bytes that two or more in-scope functions list are `sharedBytes` in `--json`, and the
+text line ends with `; <n> bytes listed by more than one function` when there are any.
+
 An inventory that cannot be read, or that has a row that cannot be read, gets no figures. It is
 printed as `<path>: not measured, <reason>` (for a bad row, `2 of 40 rows are invalid`), each
 problem is printed after the figures, and `--json` lists it under `unmeasured` with `path` and
@@ -134,7 +140,7 @@ many locations in files of code did not parse, since those cite nothing.
 inventoried function's last byte (`start` plus `size` minus one, or for a row with `ranges` the last
 byte of each range, with ranges that touch taken as one) stops a byte short, the usual slip when a
 range is copied from an analyzer that gives last bytes, and the check fails it with the end it
-should have. It checks every range a location of a current entry gives in that build and file,
+should have, naming every function whose range ends on that byte. It checks every range a location of a current entry gives in that build and file,
 by address or by offset, and the address ranges written in the body of an entry whose locations all
 name that one build and file. Without inventories it checks nothing and reports no skipped step.
 

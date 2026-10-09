@@ -42,22 +42,32 @@ export function checkRangeEnds(ctx: Context) {
   // A malformed inventory is standard-coverage's to report; the rows that could be read still count.
   const { inventories } = readInventories(config.repoDir, spec);
   if (!inventories.length) return;
-  // Build, file and space -> the last byte of each range of a function's body -> the function. A
-  // body that is not contiguous has a last byte at the end of each of its ranges.
-  const lastBytes = new Map<string, Map<bigint, { fn: InventoryRow; path: string }>>();
+  // Build, file and space -> the last byte of each range of a function's body -> the functions, in
+  // start order. A body that is not contiguous has a last byte at the end of each of its ranges, and
+  // functions that share bytes can end on the same one.
+  const lastBytes = new Map<string, Map<bigint, { fns: InventoryRow[]; path: string }>>();
   for (const inv of inventories)
     for (const fn of inv.functions) {
       const key = `${inv.build}\0${inv.file}\0${fn.space}`;
       if (!lastBytes.has(key)) lastBytes.set(key, new Map());
-      for (const r of fn.body) lastBytes.get(key)!.set(r.end - 1n, { fn, path: inv.path });
+      const ends = lastBytes.get(key)!;
+      for (const r of fn.body) {
+        const hit = ends.get(r.end - 1n);
+        if (hit) hit.fns.push(fn);
+        else ends.set(r.end - 1n, { fns: [fn], path: inv.path });
+      }
     }
   const endsFunction = (build: Yaml, file: Yaml, space: Space, end: bigint) =>
     lastBytes.get(`${build}\0${file}\0${space}`)?.get(end);
-  const message = (what: string, end: string, hit: { fn: InventoryRow; path: string }) => {
+  const message = (what: string, end: string, hit: { fns: InventoryRow[]; path: string }) => {
     const next = nextInNotation(end);
+    const [fn] = hit.fns;
+    const whose =
+      hit.fns.length > 1
+        ? `the functions at ${hit.fns.map((f) => f.start).join(", ")}`
+        : `${fn.body.length > 1 ? "a range of " : ""}the function at ${fn.start}`;
     return (
-      `${what} ends on the last byte of ${hit.fn.body.length > 1 ? "a range of " : ""}the function at ` +
-      `${hit.fn.start} in ${hit.path}; ranges are half-open, ` +
+      `${what} ends on the last byte of ${whose} in ${hit.path}; ranges are half-open, ` +
       (next ? `so it ends at ${next}` : "so it ends one past that byte")
     );
   };
