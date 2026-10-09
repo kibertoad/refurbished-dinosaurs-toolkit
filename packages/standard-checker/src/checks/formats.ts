@@ -34,6 +34,40 @@ export function tableIds(e: Entry, sectionTitles?: string[]) {
   return ids;
 }
 
+/**
+ * Checks a files pattern of a superseded format entry that matches no file of build b's manifest.
+ * The entry keeps the files it had when it was replaced (IDENTIFIERS-7), and those files may since
+ * have left the manifest for the build's list of other files, so the pattern passes when it matches
+ * a path that builds/<ID>.other-files.yaml gives by its own path. A directory exclusion does not
+ * show that a file under it exists, and a list written as prose is not read, so neither lets the
+ * pattern pass, and the problem says which one stopped it.
+ */
+function checkSupersededPattern(ctx: Context, file: string, pattern: string, re: RegExp, b: string) {
+  const missing = `files pattern ${pattern} matches no file of ${b}`;
+  const other = ctx.spec.otherFiles.get(b);
+  if (other) {
+    if (other.some((p) => !p.endsWith("/") && re.test(p))) return;
+    const dir = other.find((p) => p.endsWith("/") && pattern.startsWith(p));
+    ctx.problem(
+      file,
+      dir
+        ? `${missing} in its manifest, and lies under the directory exclusion ${dir} of ${b}.other-files.yaml, which does not name the files under it; list them by their own paths among the other files`
+        : `${missing} in its manifest or its list of other files`,
+    );
+    return;
+  }
+  const build = ctx.spec.entries.get(b);
+  const section = build?.sections.find((s) => s.title === "Other files")?.text.trim() ?? "";
+  if (!build || section === "None." || section === "") ctx.problem(file, missing);
+  else
+    ctx.problem(
+      file,
+      existsSync(join(dirname(build.file), `${b}.other-files.yaml`))
+        ? `${missing} in its manifest, and ${b}.other-files.yaml could not be read`
+        : `${missing} in its manifest, and the checker reads the build's other files only from ${b}.other-files.yaml`,
+    );
+}
+
 /** Checks a format entry, adding the names its tables define to formatNames. */
 export function checkFormat(ctx: Context, e: Entry, formatNames: FormatNames) {
   const { problem } = ctx;
@@ -66,9 +100,11 @@ export function checkFormat(ctx: Context, e: Entry, formatNames: FormatNames) {
           .replaceAll("?", "[^/]") +
         "$",
     );
-    for (const b of asList(meta.builds))
-      if (!(buildFiles.get(b) ?? []).some((f) => re.test(f.path)))
-        problem(file, `files pattern ${pattern} matches no file of ${b}`);
+    for (const b of asList(meta.builds)) {
+      if ((buildFiles.get(b) ?? []).some((f) => re.test(f.path))) continue;
+      if (meta.status === "superseded") checkSupersededPattern(ctx, file, String(pattern), re, b);
+      else problem(file, `files pattern ${pattern} matches no file of ${b}`);
+    }
   }
   const layout = e.sections.find((s) => s.title === "Layout");
   const enums = e.sections.find((s) => s.title === "Enumerations and flags");

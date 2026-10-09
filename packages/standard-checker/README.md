@@ -52,6 +52,12 @@ file or that the listing missed nothing. Where the list of other files is prose 
 section, or `<ID>.other-files.yaml` could not be read, the comparison with it is a skipped step on
 the result line that gives the reason, and only a readable `<ID>.other-files.yaml` is compared.
 
+Each pattern in a format entry's `files` matches a file of the manifest of each build it lists. A
+superseded format entry keeps the `files` it had when it was replaced (IDENTIFIERS-7), so its
+pattern also passes when it matches a path that `<ID>.other-files.yaml` gives by its own path. A
+directory exclusion, a list written as prose and a list that could not be read do not let it pass,
+and the problem names which of them stopped it.
+
 ## Options
 
 | Option | Meaning | Default |

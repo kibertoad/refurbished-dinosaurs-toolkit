@@ -431,6 +431,86 @@ test("a superseded format entry without a layout table still names what replaced
   assert.doesNotMatch(unresolved.output, /Layout has no table/);
 });
 
+// FMT-SCORE-002 at status, listing files, with BLD-EXAMPLE-1.0 keeping the paths its manifest leaves
+// out in BLD-EXAMPLE-1.0.other-files.yaml (others as the YAML list's text), or in its Other files
+// section as prose.
+function listingOfOtherFiles(status: string, files: string, others: string[] | { yaml: string } | "prose") {
+  return (r: string) => {
+    addListing(r, status, status === "superseded" ? "FMT-SCORE-001" : "");
+    replaceIn(r, "spec/formats/FMT-SCORE-002.md", 'files: ["DATA/SCORES.BIN"]', `files: ${files}`);
+    const section =
+      others === "prose"
+        ? "Listed with `find` over the installation. The manifest leaves out the DEMO directory, another product."
+        : "Listed with `find` over the installation. The paths the manifest leaves out are in `BLD-EXAMPLE-1.0.other-files.yaml`.";
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.md", "## Other files\n\nNone.\n", `## Other files\n\n${section}\n`);
+    if (others !== "prose")
+      writeFileSync(
+        join(r, "spec/builds/BLD-EXAMPLE-1.0.other-files.yaml"),
+        Array.isArray(others)
+          ? `other_files:\n${others.map((p) => `  - path: ${p}\n    reason: another product on the disc\n`).join("")}`
+          : others.yaml,
+      );
+  };
+}
+
+test("a live format entry's files must match the manifest, and the list of other files does not count", (t) => {
+  const { status, output } = run(broken(t, listingOfOtherFiles("unknown", '["DEMO/PLAY.BIN"]', ["DEMO/PLAY.BIN"])));
+  assert.equal(status, 1, output);
+  assert.match(output, /FMT-SCORE-002\.md: files pattern DEMO\/PLAY\.BIN matches no file of BLD-EXAMPLE-1\.0$/m);
+});
+
+test("a superseded format entry keeps files that moved to the list of other files", (t) => {
+  const others = ["DEMO/PLAY.BIN", "DEMO/INTRO.BIN"];
+  const { status, output } = run(
+    broken(t, listingOfOtherFiles("superseded", '["DEMO/PLAY.BIN", "DEMO/*.BIN", "DATA/SCORES.BIN"]', others)),
+  );
+  assert.equal(status, 0, output);
+});
+
+test("a superseded format entry's files still match a file of the build", (t) => {
+  const neither = run(broken(t, listingOfOtherFiles("superseded", '["DEMO/GONE.BIN"]', ["DEMO/PLAY.BIN"])));
+  assert.equal(neither.status, 1);
+  assert.match(
+    neither.output,
+    /FMT-SCORE-002\.md: files pattern DEMO\/GONE\.BIN matches no file of BLD-EXAMPLE-1\.0 in its manifest or its list of other files$/m,
+  );
+
+  const excluded = run(broken(t, listingOfOtherFiles("superseded", '["DEMO/PLAY.BIN"]', ["DEMO/"])));
+  assert.equal(excluded.status, 1);
+  assert.match(
+    excluded.output,
+    /FMT-SCORE-002\.md: files pattern DEMO\/PLAY\.BIN matches no file of BLD-EXAMPLE-1\.0 in its manifest, and lies under the directory exclusion DEMO\/ of BLD-EXAMPLE-1\.0\.other-files\.yaml, which does not name the files under it; list them by their own paths among the other files$/m,
+  );
+
+  const prose = run(broken(t, listingOfOtherFiles("superseded", '["DEMO/PLAY.BIN"]', "prose")));
+  assert.equal(prose.status, 1);
+  assert.match(
+    prose.output,
+    /FMT-SCORE-002\.md: files pattern DEMO\/PLAY\.BIN matches no file of BLD-EXAMPLE-1\.0 in its manifest, and the checker reads the build's other files only from BLD-EXAMPLE-1\.0\.other-files\.yaml$/m,
+  );
+
+  const unreadable = run(
+    broken(t, listingOfOtherFiles("superseded", '["DEMO/PLAY.BIN"]', { yaml: "other_files: DEMO/PLAY.BIN\n" })),
+  );
+  assert.equal(unreadable.status, 1);
+  assert.match(
+    unreadable.output,
+    /FMT-SCORE-002\.md: files pattern DEMO\/PLAY\.BIN matches no file of BLD-EXAMPLE-1\.0 in its manifest, and BLD-EXAMPLE-1\.0\.other-files\.yaml could not be read$/m,
+  );
+
+  const noOthers = run(
+    broken(t, (r) => {
+      addListing(r, "superseded", "FMT-SCORE-001");
+      replaceIn(r, "spec/formats/FMT-SCORE-002.md", 'files: ["DATA/SCORES.BIN"]', 'files: ["DEMO/PLAY.BIN"]');
+    }),
+  );
+  assert.equal(noOthers.status, 1);
+  assert.match(
+    noOthers.output,
+    /FMT-SCORE-002\.md: files pattern DEMO\/PLAY\.BIN matches no file of BLD-EXAMPLE-1\.0$/m,
+  );
+});
+
 test("a format entry above unknown needs a layout table", (t) => {
   const root = broken(t, (r) => {
     const fmt = join(r, "spec", "formats", "FMT-SCORE-001.md");
