@@ -120,7 +120,7 @@ export function parseOptions(argv: string[]): Config {
   const specDir = join(repoDir, "spec");
   const checkOnly = options.check === true;
   if (checkOnly && options["record-validation"] !== undefined) {
-    console.error("--record-validation writes VALIDATION.md, so it cannot be combined with --check");
+    console.error("--record-validation writes a run file to validation/, so it cannot be combined with --check");
     process.exit(2);
   }
   const scheduledGeneration = options["scheduled-generation"] === true;

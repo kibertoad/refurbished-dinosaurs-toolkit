@@ -44,7 +44,7 @@ Reading code and data:
 | Script | Arguments | Prints |
 |---|---|---|
 | `ReportInstructionContext` | one or more instruction addresses | a bounded instruction window around the instruction containing each address; the header names the requested address when it is inside that instruction |
-| `ReportInstructionWindow` | address where an instruction starts, instruction count (1..200) | a header, the instructions from the address onward with a `gap:` line wherever the listing skips bytes, then the count printed or where the listing ended. An address inside an instruction, in data, in undisassembled bytes or outside memory prints an error naming what is there and the next instruction start, and no window |
+| `ReportInstructionWindow` | address where an instruction starts, instruction count (1..200) | a header, the instructions from the address onward with a `gap:` line wherever the listing skips bytes, a `span:` line for each run of instructions with no gap (its half-open range ending after the last instruction's final byte, byte count, last byte and instruction count, or that it reaches the end of its address space and has no exclusive end; the next instruction's start when the count closed the span and the run goes on; each instruction whose length the listing overrides, with the bytes it decodes), then the count printed or where the listing ended. An address inside an instruction, in data, in undisassembled bytes or outside memory prints an error naming what is there and the next instruction start, and no window |
 | `ReportDataBytes` | address, byte count (1..256) | the bytes at the address |
 | `ReportFunctionSummary` | one or more addresses | focused decompiler output of each containing function, its body ranges and each call without a fall-through (a sign of a wrong no-return flag), then the addresses with no function or a failed decompile |
 | `ReportDecompileWindow` | address, first line (1-based), line count (a count above 160 is cut to 160) | a window of one function's decompilation, its total line count and where the next window starts |
@@ -57,7 +57,7 @@ Finding references and calls:
 
 | Script | Arguments | Prints |
 |---|---|---|
-| `ReportReferences` | one or more addresses | references to each, with the referring instruction, function and Ghidra reference type. The type is not the access: `DATA` covers indexed reads and writes and address formation, and a memory operand Ghidra gave no reference is not listed |
+| `ReportReferences` | one or more addresses | references to each, with the referring instruction, function and Ghidra reference type. The type is not the access: `DATA` covers indexed reads and writes and address formation, and a memory operand Ghidra gave no reference is not listed, nor are bytes Ghidra neither disassembled nor defined as a pointer |
 | `ReportStringReferences` | one or more literal string fragments | strings containing a fragment and their references |
 | `ReportSymbolReferences` | one or more symbol-name fragments, matched as case-insensitive substrings of the full name | matching symbols, default labels included, and their references. Default labels end in their address, so an address fragment such as `0089d4a4` finds the `PTR_<name>_0089d4a4` import slot there |
 | `ReportScalarConstants` | optional operand kind (`immediate` or `memory`), one or more scalar values | instructions using any of them, unsigned or signed, as an immediate or inside a memory operand (a displacement such as `[ECX + 0x44]`, an absolute address such as `[0x41c000]`, or an index scale), with the kind on each line |
@@ -75,7 +75,7 @@ Exporting for comparison (each writes one file and refuses to overwrite where no
 | Script | Arguments | Writes |
 |---|---|---|
 | `ExportBoundedFlow` | entry where an instruction starts, instruction limit (1..10000, the most instruction records exported), output path under `analysis/original/` | instruction metadata of one bounded flow as JSON, with `limitReached` (the walk stopped at the limit with flow left unread) and `noInstruction` (flow targets where no instruction starts). An entry where no instruction starts fails the script and writes nothing |
-| `ExportFunctionInventory` | output TSV path (must not exist) | every function's start and body size |
+| `ExportFunctionInventory` | output TSV path (must not exist) | every function's start and body size, the inventory `inventory-check` compares call targets with |
 | `ExportCallEdges` | output JSON path (must not exist), function limit (1..128), one or more function entries | the call and tail-jump edges of the functions Ghidra reaches breadth-first from the entries, with file offsets, Ghidra's flow type (after any flow override), `fallsThrough` (whether Ghidra continues to the next instruction at the site, after any fall-through override) and `fallsThroughTo`/`fallsThroughToAddress` (where a fall-through override sends Ghidra instead, or null), as the `ghidraCallEdges` input of `callees` |
 | `ExportFunctionFingerprints` | output TSV path (replaced only when the export completes) | per-function and per-instruction fingerprints with addresses normalized, for matching functions across versions |
 

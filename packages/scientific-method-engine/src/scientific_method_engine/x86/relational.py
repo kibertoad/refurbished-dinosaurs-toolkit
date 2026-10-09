@@ -432,6 +432,9 @@ def _field(event, path):
             raise _Unresolved(f"event {event['kind']} at {event['site']} has no field {path}")
     if not isinstance(value, dict) or "expression" not in value or "bits" not in value:
         raise _Unresolved(f"field {path} of event {event['kind']} at {event['site']} is not a value")
+    if value["expression"] is None:
+        # A register row the snapshot could not form names why; it has no expression to compare.
+        raise _Unresolved(f"field {path} of event {event['kind']} at {event['site']} was not formed: {value['unresolved']}")
     return value
 
 

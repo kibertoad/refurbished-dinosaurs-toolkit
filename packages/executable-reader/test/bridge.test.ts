@@ -722,6 +722,27 @@ test("reach follows a resident far call and an overlay fixup call through the FB
   assert.deepEqual(leafReport.leaves, [{ routine: 528, reason: leaf, reached: true, callSites: [532] }]);
 });
 
+test("inventory-check places an overlay entry two FBOV trampoline calls reach by its file offset", (t) => {
+  const { dir, config } = overlayFixture(t);
+  const path = join(dir, "config.json");
+  // 1000:0010 is the resident caller at file offset 80; 0x214 is the overlay caller at 532. No row starts at 528.
+  writeFileSync(join(dir, "inventory.tsv"), "start\tsize\n1000:0010\t6\n0x214\t6\n");
+  writeFileSync(path, JSON.stringify({ ...config, inventory: "inventory.tsv", controls: [80, 532] }));
+  const r = run(["inventory-check", path]);
+  assert.deepEqual(
+    r.targets.map((row: Report) => [row.target, row.address, row.status, row.call, row.site, row.callSites]),
+    [[528, "0x210", "outside every row", "far", 80, { entryPath: 2, contested: 0, rawCandidates: 0 }]],
+  );
+  assert.equal(r.targets[0].provenance.relocation.trampoline, 288);
+  assert.equal(r.inventory.path, join(dir, "inventory.tsv"));
+  assert.equal(r.counts["entry-path call"].outsideEveryRow, 1);
+  // With the overlay entry listed, every target is a start.
+  writeFileSync(join(dir, "inventory.tsv"), "start\tsize\n1000:0010\t6\n0x210\t1\n0x214\t6\n");
+  const listed = run(["inventory-check", path]);
+  assert.deepEqual(listed.targets, []);
+  assert.equal(listed.counts["entry-path call"].inventoryStarts, 1);
+});
+
 test("callee graph through the source bridge compares its edges with a Ghidra export", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);
@@ -1445,6 +1466,34 @@ test("a value past the engine's term limit stops its own path and keeps the othe
   assert.equal(r.completeWithinModel, false);
   assert.equal(r.relationalControls.controls[0].verdict, "held");
   assert.equal(r.relationalControls.controls[0].occurrences, 2);
+});
+
+test("a register part of a root at the engine's term limit is an unformed row through the source bridge", (t) => {
+  const { dir, config } = fixture(t);
+  // mov eax, [100h]; not eax (509 times, leaving EAX at the limit); retf
+  const head = Buffer.from([0x66, 0xa1, 0x00, 0x01]);
+  const source = Buffer.concat([head, Buffer.alloc(3 * 509, Buffer.from([0x66, 0xf7, 0xd0])), Buffer.from([0xcb])]);
+  writeFileSync(join(dir, "source.bin"), source);
+  const query = {
+    source: "source.bin",
+    sourceKind: "synthetic-raw",
+    xxh3: sourceXxh3(source),
+    entry: 0,
+    returnBytes: 4,
+    registers: { ds: 0x3000, ss: 0x9000, sp: 0xe000 },
+    maxSteps: 509 + 16,
+    regions: [{ ...config.regions[0]!, start: 0, end: source.length, entries: [0] }],
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const r = run(["trace", join(dir, "config.json")]);
+  const [path] = r.paths;
+  assert.equal(path.returned, true);
+  assert.equal(r.completeWithinModel, true);
+  assert.notEqual(path.registers.eax.expression, null);
+  const ax = path.registers.ax;
+  assert.deepEqual([ax.bits, ax.expression, ax.value], [16, null, null]);
+  assert.deepEqual(ax.producers, path.registers.eax.producers);
+  assert.match(ax.unresolved, /^expression term limit: a value's expression would hold more than 1024 terms/);
 });
 
 test("trace names the failed root return check and the unread root return words through the source bridge", (t) => {

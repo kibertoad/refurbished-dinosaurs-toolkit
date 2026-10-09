@@ -86,7 +86,19 @@ requested address when the two differ.
 `ReportInstructionWindow` prints a `gap:` line wherever the listing skips bytes between two
 instructions, and ends with the number printed or the point where the listing ended. A gap
 holds data, bytes Ghidra did not disassemble, or addresses between two memory blocks. It never
-says that the bytes are not code.
+says that the bytes are not code. Before that last line it prints a `span:` line for each run of
+printed instructions with no gap between them: the half-open range from the first instruction's
+start to the byte after the last instruction's final byte, then the byte count, the last byte and
+the instruction count. Copy a range's end from a span, or from the next instruction's start inside
+one, never from the start or last byte of the instruction that ends it: a range that stops at an
+instruction's start drops that instruction, which for a closing `RET` still ends on an
+instruction boundary. A span that reaches the end of its address space has no exclusive end, and
+says so. A span the instruction count closed names the next instruction's start when that
+instruction follows at the span's end: the run goes on past the window, so the span's end is where
+the window stopped. A span names each instruction whose length the listing overrides, with the
+number of bytes it decodes, since those bytes run past the next instruction's start or the span's
+end. Spans are listed in address order. A span says nothing about which of its instructions run or
+about the bytes in a gap between two spans.
 `ExportBoundedFlow` lists flow targets where no instruction starts in `noInstruction`, and sets
 `limitReached` when it stopped at its instruction limit with flow left unread; either one means the
 export does not cover the whole flow from the entry.
@@ -138,6 +150,33 @@ next to any "no callers", "no references" or "exactly N sites" claim:
   `ReportScalarConstants memory <address>` is the Ghidra-side
   search for the same memory operands, direct and indexed, without access. Neither sees a write
   through a pointer computed at run time.
+- Each search for an address reads one of three layers, and a complete search of one says nothing
+  about the next. Name the layer next to the claim:
+  1. Recorded references. `ReportReferences` and the call scripts above list what Ghidra's
+     analysis recorded a reference for. References start only at instructions and at data Ghidra
+     defined as a pointer, alone or inside a structure or array, so a value in bytes it left
+     undefined or typed as anything else has none.
+  2. Decoded operands. `ReportScalarConstants` reads every instruction Ghidra disassembled and
+     nothing else. The engine's `operand-candidates` decodes at each byte of the declared regions
+     up to its `scanLimit` (`regionCoverage` names the bytes it did not reach). It counts a memory
+     operand as a use only at an instruction start on a path from a declared entry, lists any
+     other operand at such a start as `verifiedOtherOperands`, and lists a decode off those paths,
+     or at a start whose boundary the walk found contested, as `rejectedOverlap` or
+     `unresolvedBoundary`.
+  3. Literal bytes. A byte scan of the mapped file for the value, with the positive control that
+     the paragraph after this list asks for, finds it wherever it occurs: in code, in data and in
+     bytes no analysis disassembled. A hit has code provenance only when the second layer places
+     it: as the operand of an instruction `ReportScalarConstants` lists for the value, or in an
+     `operand-candidates` row classified `verifiedMemoryUses` or `verifiedOtherOperands`. Any
+     other hit has none yet, including one that `ReportInstructionContext` places inside an
+     instruction whose operand is something else, or across an instruction boundary. It
+     establishes no instruction boundary, no reachability and no access kind, so it stays an
+     unclassified candidate: counting it as a writer and dropping it from the count both claim
+     more than the scan showed.
+
+  No layer sees an address computed at run time, an operand whose literal is another address
+  that the access still covers (an array or structure base, or a wider access starting below the
+  address), an access through an aliased pointer or segment, or a write from outside the program.
 - The first-argument scripts take the nearest `PUSH` before the call. A value moved into a
   register after the last push (`PUSH ESI; MOV ESI,0x23; CALL`) is not the first stack argument;
   if the callee reads it, it is a register argument, and the scripts list the call as non-literal.
@@ -145,6 +184,14 @@ next to any "no callers", "no references" or "exactly N sites" claim:
   `LEA EAX,[ESP]` then `MOV [EAX],ECX`) can replace the pushed value, so the call is non-literal too.
 - Ghidra spells a repeat-prefixed string instruction with a suffix: `MOVSD.REP`, `CMPSB.REPE`,
   `SCASB.REPNE`. A search for the bare mnemonic misses them.
+- A text search of a listing matches spellings, not values. Ghidra writes one value differently
+  by operand kind: an absolute memory operand as a zero-padded address (`[0x0041c000]`), an
+  immediate or a displacement without leading zeros (`PUSH 0x41c000`, `[EAX*4 + 0x41c000]`). A
+  filter on one spelling misses the others. `ReportScalarConstants` compares operand values as
+  numbers, so spelling does not matter, and names each match `immediate` or `memory`. It matches
+  exact values only: an access through a base below the value, or a wider access that covers it,
+  is not a match. A local search over rendered text needs a positive control for each operand
+  kind it claims to cover.
 - `ReportSymbolReferences` matches each fragment as a case-insensitive substring of a symbol's
   full name, including Ghidra's default labels, which end in the address (`DAT_0041c000`,
   `PTR_FindExecutableA_0089d4a4`). An address fragment therefore names whatever is labelled there,

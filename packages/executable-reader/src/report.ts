@@ -45,6 +45,11 @@ export interface ReportConfig {
   regions?: Region[];
   overlayExports?: unknown;
   formatTables?: unknown;
+  /**
+   * The function inventory TSV that `inventory-check` compares call targets with, resolved against
+   * the config file's directory as `source` is.
+   */
+  inventory?: string;
   [key: string]: unknown;
 }
 /**
@@ -87,11 +92,13 @@ function readVerifiedSource(config: ReportConfig, base: string) {
 /**
  * Verifies the source hash and, for `mz` sources, derives relocations, format-table counts, overlay
  * exports and region containers from the source tables. `pe32` and `synthetic-raw` sources pass
- * through for the engine to parse. Throws when the query supplies a field only the source may provide.
+ * through for the engine to parse. An `inventory` path is resolved against `base`. Throws when the query supplies a field only the source may provide.
  * @param base Directory that `config.source` is relative to.
  */
 export function prepare(config: ReportConfig, base: string): PreparedConfig {
   const { source, bytes } = readVerifiedSource(config, base);
+  // The engine reads the pipe from another directory, so it refuses an inventory path not resolved here.
+  if (typeof config.inventory === "string") config = { ...config, inventory: resolve(base, config.inventory) };
   if (config.sourceKind !== "mz" && config.formatControls !== undefined)
     throw new Error("formatControls apply only to mz sources");
   if (config.sourceKind === "synthetic-raw") return { ...config, source };

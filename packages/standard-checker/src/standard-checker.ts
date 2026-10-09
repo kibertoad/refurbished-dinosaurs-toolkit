@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Checks a restoration's spec/, parity/ and deviations/ against version 1 of the documentation
 // standard (https://dinorefurb.com/documentation-standard/#checks), and writes the four indexes in
-// spec/index/ and PARITY.md. With --record-validation it also writes VALIDATION.md.
+// spec/index/ and PARITY.md. With --record-validation it also writes a run file to validation/.
 //
 // Usage:
 //   standard-checker [options]
@@ -51,12 +51,13 @@
 //   --message <file>    check only the commit message in file: every address it gives must be
 //                       recorded in an entry it cites, as for a code comment. For a commit-msg hook
 //   --record-validation <builds>
-//                       write VALIDATION.md for the test files of the validated rows that carry a
-//                       "needs: GAME_DIR" comment, naming the comma-separated build IDs the run
-//                       used and HEAD as the commit the run tested. Run it only after every test
-//                       in those files passed, with none skipped, against the original's files
-//                       and HEAD as committed; it refuses when the working tree differs from HEAD
-//                       in anything other than VALIDATION.md
+//                       write validation/<date>-<commit>.md for the test files of the validated
+//                       rows that carry a "needs: GAME_DIR" comment, naming the comma-separated
+//                       build IDs the run used and HEAD as the commit the run tested, and delete
+//                       the run files that no longer record any of those files as they are now.
+//                       Run it only after every test in those files passed, with none skipped,
+//                       against the original's files and HEAD as committed; it refuses when the
+//                       working tree differs from HEAD in anything outside validation/
 //
 // Each problem is one line that starts with the path it concerns, or spec for the spec as a whole.
 // A problem that breaks a numbered rule of the standard ends with the rule's label, such as
@@ -75,10 +76,11 @@
 // scalars, flow lists, and block lists of flat maps.
 //
 // This file reads the options and runs the phases in order: load the spec, check the entries, the
-// rules, the field names in their procedures and what crosses entries, compile the Kaitai
-// definitions, check the deviations, parity, VALIDATION.md, the code's references and comments, the
-// range ends against the function inventories in coverage/, and the base ref, then write or check
-// the generated files, or with --scheduled-generation check that the change leaves them alone.
+// builds' listing records, the rules, the field names in their procedures and what crosses entries,
+// compile the Kaitai definitions, check the deviations, parity, validation/, the code's references
+// and comments, the range ends against the function inventories in coverage/, and the base ref, then
+// write or check the generated files, or with --scheduled-generation check that the change leaves
+// them alone.
 // Every phase reports into one collector, which prints the problems at the end in the order they
 // were found.
 
@@ -92,6 +94,7 @@ import { checkAcrossEntries } from "./checks/cross-entry.ts";
 import { checkDeviations } from "./checks/deviations.ts";
 import { checkEntries } from "./checks/entries.ts";
 import { checkFieldNames } from "./checks/fields.ts";
+import { checkListings } from "./checks/listings.ts";
 import { checkMessageAddresses } from "./checks/message-addresses.ts";
 import { checkRangeEnds } from "./checks/range-ends.ts";
 import { checkRebuildPaths } from "./checks/rebuild-paths.ts";
@@ -130,6 +133,7 @@ const spec = loadSpec({ config, problem });
 const ctx: Context = { config, problem, skip, spec, codeFiles: createCodeFiles(config, dirname(selfPath)) };
 
 const formatNames = checkEntries(ctx);
+checkListings(ctx);
 checkRules(ctx, formatNames);
 checkArgumentCounts(ctx);
 checkFieldNames(ctx, formatNames);

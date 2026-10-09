@@ -3,7 +3,7 @@
 Checks a game restoration's `spec/`, `parity/` and `deviations/` against version 1 of the
 [dinorefurb documentation standard](https://dinorefurb.com/documentation-standard/#checks), and
 writes what the standard says is generated: the four indexes in `spec/index/`, the totals in
-`PARITY.md`, and on request `VALIDATION.md`. It has no dependencies and needs Node 22 or later.
+`PARITY.md`, and on request a validation run file in `validation/`. It has no dependencies and needs Node 22 or later.
 
 ```sh
 pnpm add -D @scientific-method/standard-checker
@@ -37,8 +37,20 @@ the run fails.
 A problem that breaks a numbered rule of the standard ends with the rule's label in brackets, such
 as `[STATUS-14]`. The standard opens that rule with the heading `###### STATUS-14`, anchored at
 `#status-14` on the site and in the copies restorations vendor, so the rule can be read on its
-own. Rules are numbered in Identifiers, Status and the shared part of Entry types so far, and
-problems under other sections carry no label yet.
+own. Rules are numbered in Identifiers, Status and Entry types up to the end of Builds so far,
+and problems under other sections carry no label yet.
+
+A build that keeps a listing record, `spec/builds/<ID>.listing.yaml` named by the entry's `listing`
+field, has it checked against its manifest and its list of other files (ENTRY-TYPES-18): every file
+the record lists is in the manifest with the manifest's size, in the list of other files, or under
+a directory exclusion; every manifest path and every listed other file is in the record; and every
+link or stopped path is in the list of other files by its own path. A disc read from an image names
+that image in `source` by a path the manifest or the list of other files gives (ENTRY-TYPES-16).
+Each problem names the path.
+Agreement shows only that the three name the same paths. It does not show that the game uses a
+file or that the listing missed nothing. Where the list of other files is prose in the Other files
+section, or `<ID>.other-files.yaml` could not be read, the comparison with it is a skipped step on
+the result line that gives the reason, and only a readable `<ID>.other-files.yaml` is compared.
 
 ## Options
 
@@ -60,7 +72,7 @@ problems under other sections carry no label yet.
 | `--data-dirs <dirs>` | Comma-separated top-level directories of the original's data. A path into one must name a file of some build, with its exact case. | the top-level directories of the files the build entries list |
 | `--rebuild <dirs>` | Comma-separated directories that hold the rebuild. No Markdown file in `spec/` may name a path in them, or a source file found in them by its file name. An empty value turns the check off. | `src,tests` |
 | `--message <file>` | Check only the commit message in the file: every address it gives must be recorded in an entry it cites, as for a code comment. Everything from the scissors line of `git commit --verbose` on is left out; comment lines before it are checked, since git keeps them under `git commit -m`. Exits with 0 or 1, or 2 when the file cannot be read. For a `commit-msg` hook. | not checked |
-| `--record-validation <builds>` | Write `VALIDATION.md` for the marked test files of validated parity rows, naming the comma-separated build IDs the run used and HEAD as the commit the run tested. Run it only after every test in those files passed with none skipped, against HEAD as committed: it refuses, with exit code 2, when the working tree differs from HEAD in anything other than `VALIDATION.md`, counting untracked files that git does not ignore. | not written |
+| `--record-validation <builds>` | Write `validation/<date>-<commit>.md` for the marked test files of validated parity rows, naming the comma-separated build IDs the run used and HEAD as the commit the run tested, and delete every other run file, except one that lists a test file git tracks but a sparse checkout does not hold. Run it only after every test in those files passed with none skipped, against HEAD as committed: it refuses, with exit code 2, when the working tree differs from HEAD in anything outside `validation/`, counting untracked files that git does not ignore. | not written |
 | `--help` | Print the options. | |
 
 The `KSC` environment variable names the Kaitai Struct compiler. Without it, the checker looks for
