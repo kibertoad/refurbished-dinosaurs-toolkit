@@ -4,9 +4,9 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Context } from "../context.ts";
-import { hasPath, pathText } from "../load/builds.ts";
+import { hasPath, otherFilesUnread, pathText } from "../load/builds.ts";
 import { readText } from "../markdown.ts";
-import type { Meta, Yaml } from "../types.ts";
+import type { Entry, Meta, Yaml } from "../types.ts";
 import { parseYaml } from "../yaml.ts";
 
 const KEYS = ["tool", "date", "links", "cycles", "media", "archives", "items"];
@@ -59,7 +59,7 @@ export function checkListings(ctx: Context) {
     const listing = readRecord(ctx, path);
     // A build whose manifest could not be read has that reported already, and nothing to compare.
     const manifest = buildFiles.get(id);
-    if (listing && manifest) reconcile(ctx, id, e.file, path, listing, manifest, otherFiles.get(id));
+    if (listing && manifest) reconcile(ctx, id, e, path, listing, manifest, otherFiles.get(id));
   }
 }
 
@@ -224,14 +224,14 @@ function maps(list: Yaml): Meta[] {
 function reconcile(
   { problem, skip }: Context,
   id: string,
-  entryFile: string,
+  entry: Entry,
   path: string,
   { items, media, sources }: Listing,
   manifestFiles: Meta[],
   other: string[] | undefined,
 ) {
-  const manifestPath = join(dirname(entryFile), `${id}.files.yaml`);
-  const otherPath = join(dirname(entryFile), `${id}.other-files.yaml`);
+  const manifestPath = join(dirname(entry.file), `${id}.files.yaml`);
+  const otherPath = join(dirname(entry.file), `${id}.other-files.yaml`);
   const manifest = new Map<string, Meta>();
   // A manifest item without a path has that reported already, and is not a path the record lacks.
   for (const f of manifestFiles.filter(hasPath)) manifest.set(String(f.path), f);
@@ -307,10 +307,7 @@ function reconcile(
     // A list that is on disk but could not be read has its problems reported already, and a prose
     // list is not read at all. Either way the rest of the comparison, the media sources included,
     // is named as skipped.
-    const why = existsSync(otherPath)
-      ? `${id}.other-files.yaml could not be read`
-      : `the checker reads that list only from ${id}.other-files.yaml`;
-    skip(`comparison of ${id}.listing.yaml with the list of other files of ${id} (${why})`);
+    skip(`comparison of ${id}.listing.yaml with the list of other files of ${id} (${otherFilesUnread(id, entry)})`);
     return;
   }
   // A disc read from an image names that image as the manifest or the list of other files writes it.

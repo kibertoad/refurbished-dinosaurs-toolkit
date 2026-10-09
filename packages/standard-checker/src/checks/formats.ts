@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import type { Context } from "../context.ts";
 import { checkResolves, checkStatusCitations, completeReading, rowFacts, statusIndex } from "../evidence.ts";
 import { asList, idsIn, kindOf } from "../ids.ts";
+import { otherFilesSection, otherFilesUnread } from "../load/builds.ts";
 import { readCsv, tables } from "../markdown.ts";
 import { BINARY_LAYOUT, CLAIM_STATUSES, ENUM_TABLE, ROW_STATUSES, TEXT_LAYOUT } from "../standard.ts";
 import type { Entry, Table } from "../types.ts";
@@ -34,6 +35,60 @@ export function tableIds(e: Entry, sectionTitles?: string[]) {
   return ids;
 }
 
+/**
+ * Checks a files pattern of a superseded format entry that matches no file of build b's manifest.
+ * The entry keeps the files it had when it was replaced (IDENTIFIERS-7), and those files may since
+ * have left the manifest for the build's list of other files, so the pattern passes when it matches
+ * a path that builds/<ID>.other-files.yaml gives by its own path. A directory exclusion does not
+ * show that a file under it exists, and a list written as prose is not read, so neither lets the
+ * pattern pass, and the problem says which one stopped it.
+ */
+function checkSupersededPattern(ctx: Context, file: string, pattern: string, re: RegExp, b: string) {
+  const missing = `files pattern ${pattern} matches no file of ${b}`;
+  const other = ctx.spec.otherFiles.get(b);
+  if (other) {
+    if (other.some((p) => !p.endsWith("/") && re.test(p))) return;
+    // The pattern lies under an exclusion when its first segments match the exclusion's directory.
+    const segments = pattern.split("/");
+    const dir = other.find((p) => {
+      if (!p.endsWith("/")) return false;
+      const depth = p.split("/").length - 1;
+      return segments.length > depth && globRegExp(segments.slice(0, depth).join("/")).test(p.slice(0, -1));
+    });
+    ctx.problem(
+      file,
+      dir
+        ? `${missing} in its manifest, and lies under the directory exclusion ${dir} of ${b}.other-files.yaml, which does not name the files under it; list them by their own paths among the other files`
+        : `${missing} in its manifest or its list of other files`,
+    );
+    return;
+  }
+  const build = ctx.spec.entries.get(b);
+  // A build that keeps no list of other files has its whole installation in its manifest.
+  const keepsNone =
+    !build ||
+    (["", "None."].includes(otherFilesSection(build).trim()) &&
+      !existsSync(join(dirname(build.file), `${b}.other-files.yaml`)));
+  ctx.problem(
+    file,
+    keepsNone
+      ? missing
+      : `${missing} in its manifest, and its list of other files was not read (${otherFilesUnread(b, build)})`,
+  );
+}
+
+/** A files pattern as a regular expression for a whole path: * and ? match within one segment. */
+function globRegExp(pattern: string) {
+  return new RegExp(
+    "^" +
+      pattern
+        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replaceAll("*", "[^/]*")
+        .replaceAll("?", "[^/]") +
+      "$",
+  );
+}
+
 /** Checks a format entry, adding the names its tables define to formatNames. */
 export function checkFormat(ctx: Context, e: Entry, formatNames: FormatNames) {
   const { problem } = ctx;
@@ -58,17 +113,12 @@ export function checkFormat(ctx: Context, e: Entry, formatNames: FormatNames) {
     }
   }
   for (const pattern of asList(meta.files)) {
-    const re = new RegExp(
-      "^" +
-        String(pattern)
-          .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-          .replaceAll("*", "[^/]*")
-          .replaceAll("?", "[^/]") +
-        "$",
-    );
-    for (const b of asList(meta.builds))
-      if (!(buildFiles.get(b) ?? []).some((f) => re.test(f.path)))
-        problem(file, `files pattern ${pattern} matches no file of ${b}`);
+    const re = globRegExp(String(pattern));
+    for (const b of asList(meta.builds)) {
+      if ((buildFiles.get(b) ?? []).some((f) => re.test(f.path))) continue;
+      if (meta.status === "superseded") checkSupersededPattern(ctx, file, String(pattern), re, b);
+      else problem(file, `files pattern ${pattern} matches no file of ${b}`);
+    }
   }
   const layout = e.sections.find((s) => s.title === "Layout");
   const enums = e.sections.find((s) => s.title === "Enumerations and flags");
