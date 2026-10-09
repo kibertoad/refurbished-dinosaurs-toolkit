@@ -105,7 +105,9 @@ entry id, or whether the range is a location or a window in the text) and run
 `ReportRangeBoundaries` on the file. It prints each range whose start or end falls inside an
 instruction or defined data, with the unit it cuts and the boundaries on either side. An end in
 undisassembled bytes is placed by decoding from the range's start in memory without changing the
-program; an end that decoding does not reach is printed as unplaced, which is not a pass. A
+program; an end that decoding does not reach is printed as unplaced, which is not a pass. A start
+in undisassembled bytes is not judged, so an end placed by decoding from it holds only if an
+instruction starts there, and the counts give how many ends were placed that way. A
 location or a range claimed as code should have no line in the output. A window that a scan or
 listing was asked for may cut an instruction and still be the window that ran, so read each
 printed window against its entry instead of moving its end.

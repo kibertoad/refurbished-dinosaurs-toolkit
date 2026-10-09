@@ -26,16 +26,23 @@ public class ReportRangeBoundaries extends GhidraScript {
     private static final int MAX_DECODED = 10000;
     private static final Pattern RANGE = Pattern.compile("(\\S+?)\\.\\.(\\S+)(?:\\s+(.*))?");
 
+    // Where a range's start falls: where an instruction or defined data starts, inside one, or in
+    // undisassembled bytes or outside memory, where it is not judged.
+    private enum Start { ON_BOUNDARY, CUT, UNJUDGED }
+
     private Listing listing;
+    private PseudoDisassembler decoder;
     private int printed;
 
     private int ends;
     private int endsDecoded;
+    private int endsDecodedFromUnjudged;
     private int endsInInstruction;
     private int endsInData;
     private int endsUnplaced;
     private int startsInInstruction;
     private int startsInData;
+    private int startsUnjudged;
     private int unread;
 
     @Override
@@ -53,10 +60,20 @@ public class ReportRangeBoundaries extends GhidraScript {
             return;
         }
         listing = currentProgram.getListing();
+        decoder = new PseudoDisassembler(currentProgram);
 
         int ranges = 0;
-        for (int number = 1; number <= lines.size() && !monitor.isCancelled(); number++) {
-            String line = lines.get(number - 1).strip();
+        int number = 1;
+        for (; number <= lines.size(); number++) {
+            if (monitor.isCancelled()) {
+                break;
+            }
+            String line = lines.get(number - 1);
+            // A file saved with a UTF-8 byte order mark keeps it on its first line.
+            if (number == 1 && line.startsWith("\uFEFF")) {
+                line = line.substring(1);
+            }
+            line = line.strip();
             if (line.isEmpty() || line.startsWith("#")) {
                 continue;
             }
@@ -79,26 +96,37 @@ public class ReportRangeBoundaries extends GhidraScript {
             ranges++;
             String label = matcher.group(3) == null ? "" : " " + matcher.group(3).strip();
             String range = start + ".." + end + label;
-            boolean startCut = checkStart(range, start);
-            checkEnd(range, start, end, startCut);
+            Start judged = checkStart(range, start);
+            checkEnd(range, start, end, judged);
         }
 
+        if (number <= lines.size()) {
+            println("Cancelled before line " + number + " of " + lines.size()
+                + "; the counts below cover only the lines before it.");
+        }
         if (printed > MAX_PRINTED) {
-            println("Printed the first " + MAX_PRINTED + " lines; the counts below cover every range.");
+            println("Printed the first " + MAX_PRINTED + " lines; the counts below cover every range read.");
         }
         println("Checked " + ranges + (ranges == 1 ? " range: " : " ranges: ") + ends
-            + " ends on an instruction or data boundary (" + endsDecoded + " of them placed by decoding in memory), "
+            + " ends on an instruction or data boundary (" + endsDecoded + " of them placed by decoding in memory, "
+            + endsDecodedFromUnjudged + " of those from a start that was not judged), "
             + endsInInstruction + " inside an instruction, " + endsInData + " inside defined data, "
             + endsUnplaced + " unplaced; " + startsInInstruction + " starts inside an instruction, "
-            + startsInData + " inside defined data; " + unread + (unread == 1 ? " line" : " lines") + " not read.");
+            + startsInData + " inside defined data, " + startsUnjudged
+            + " in undisassembled bytes or outside memory and not judged; "
+            + unread + (unread == 1 ? " line" : " lines") + " not read.");
     }
 
     // A start where no instruction or defined data starts, but inside one, cuts it. A start in
     // undisassembled bytes is not judged: nothing in the listing says where an instruction there starts.
-    private boolean checkStart(String range, Address start) {
+    private Start checkStart(String range, Address start) {
         CodeUnit cut = containingUnit(start);
         if (cut == null) {
-            return false;
+            if (listing.getInstructionAt(start) != null || isDataStart(start)) {
+                return Start.ON_BOUNDARY;
+            }
+            startsUnjudged++;
+            return Start.UNJUDGED;
         }
         if (cut instanceof Instruction) {
             startsInInstruction++;
@@ -107,10 +135,10 @@ public class ReportRangeBoundaries extends GhidraScript {
             startsInData++;
             report("start inside data: " + range + ": the start is " + into(start, cut));
         }
-        return true;
+        return Start.CUT;
     }
 
-    private void checkEnd(String range, Address start, Address end, boolean startCut) {
+    private void checkEnd(String range, Address start, Address end, Start judged) {
         // An end is a boundary where an instruction or defined data starts, or where the byte
         // before it is the last byte of one. Padding after a RET is undisassembled, so an end there
         // is placed by the RET.
@@ -129,19 +157,21 @@ public class ReportRangeBoundaries extends GhidraScript {
             report("end inside data: " + range + ": the end is " + into(end, cut));
             return;
         }
-        if (startCut) {
+        if (judged == Start.CUT) {
             unplaced(range, "the end is in undisassembled bytes, and the start is inside a code unit, so "
                 + "decoding from it would not follow the program's instructions");
             return;
         }
-        decodeTo(range, start, end);
+        decodeTo(range, start, end, judged == Start.UNJUDGED);
     }
 
     // The end is in undisassembled bytes. Decode from the range's start in fall-through order,
     // taking each instruction from the listing where it has one and decoding the bytes in memory
     // otherwise. PseudoDisassembler writes nothing to the program, so the database is unchanged.
-    private void decodeTo(String range, Address start, Address end) {
-        PseudoDisassembler decoder = new PseudoDisassembler(currentProgram);
+    // From a start that was not judged, the result holds only if an instruction starts there, so
+    // the report and the counts say which ends were placed that way.
+    private void decodeTo(String range, Address start, Address end, boolean fromUnjudged) {
+        String unjudgedNote = fromUnjudged ? ", a start that was not judged" : "";
         Address at = start;
         for (int decoded = 0; ; decoded++) {
             if (decoded == MAX_DECODED) {
@@ -152,9 +182,9 @@ public class ReportRangeBoundaries extends GhidraScript {
             Instruction instruction = listing.getInstructionAt(at);
             boolean listed = instruction != null;
             if (!listed) {
-                CodeUnit unit = containingUnit(at);
+                CodeUnit unit = listing.getInstructionContaining(at);
                 if (unit == null) {
-                    unit = listing.getDefinedDataAt(at);
+                    unit = listing.getDefinedDataContaining(at);
                 }
                 if (unit != null) {
                     unplaced(range, "decoding from " + start + " reaches " + at + ", inside the "
@@ -175,18 +205,27 @@ public class ReportRangeBoundaries extends GhidraScript {
                     unplaced(range, "decoding from " + start + " reaches " + at + ", where the bytes do not decode");
                     return;
                 }
+                CodeUnit overlapped = listedUnitWithin(at.next(), instruction.getMaxAddress());
+                if (overlapped != null) {
+                    unplaced(range, "decoding from " + start + " decodes the instruction at " + at + ", " + instruction
+                        + ", whose bytes run into the " + describe(overlapped) + " at " + overlapped.getAddress());
+                    return;
+                }
             }
             Address last = instruction.getMaxAddress();
             if (end.compareTo(instruction.getAddress()) > 0 && end.compareTo(last) <= 0) {
                 endsInInstruction++;
                 report("end inside instruction: " + range + ": the end is " + into(end, instruction)
-                    + (listed ? "" : ", decoded in memory from " + start));
+                    + (listed ? "" : ", decoded in memory from " + start + unjudgedNote));
                 return;
             }
             Address next = last.next();
             if (end.equals(next)) {
                 ends++;
                 endsDecoded++;
+                if (fromUnjudged) {
+                    endsDecodedFromUnjudged++;
+                }
                 return;
             }
             Address fallThrough = instruction.getFallThrough();
@@ -213,6 +252,28 @@ public class ReportRangeBoundaries extends GhidraScript {
         }
         Data data = listing.getDefinedDataContaining(address);
         return data == null || data.getAddress().equals(address) ? null : data;
+    }
+
+    // The first listed instruction or defined data that starts from the first address through the
+    // last, or null. A decoded instruction over such a unit contradicts the listing.
+    private CodeUnit listedUnitWithin(Address first, Address last) {
+        if (first == null || first.compareTo(last) > 0) {
+            return null;
+        }
+        Instruction instruction = listing.getInstructionAt(first);
+        if (instruction == null) {
+            instruction = listing.getInstructionAfter(first);
+        }
+        Data data = listing.getDefinedDataAt(first);
+        if (data == null) {
+            data = listing.getDefinedDataAfter(first);
+        }
+        CodeUnit unit = instruction;
+        if (data != null && (unit == null || data.getAddress().compareTo(unit.getAddress()) < 0)) {
+            unit = data;
+        }
+        return unit == null || !unit.getAddress().getAddressSpace().equals(last.getAddressSpace())
+            || unit.getAddress().compareTo(last) > 0 ? null : unit;
     }
 
     private boolean isDataStart(Address address) {
