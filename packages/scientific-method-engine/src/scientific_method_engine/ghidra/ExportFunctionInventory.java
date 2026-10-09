@@ -192,11 +192,16 @@ public class ExportFunctionInventory extends GhidraScript {
             // No replacement. The inventory moves last, so a run that stops before it leaves no
             // inventory, and side files moved without their inventory are removed.
             Files.move(provenancePart, provenance);
+            boolean regionsMoved = false;
             try {
                 Files.move(regionsPart, regions);
+                regionsMoved = true;
                 Files.move(inventoryPart, output);
             } catch (Exception e) {
-                Files.deleteIfExists(regions);
+                // A regions file that was there when its move failed is not this run's.
+                if (regionsMoved) {
+                    Files.deleteIfExists(regions);
+                }
                 Files.deleteIfExists(provenance);
                 throw e;
             }
@@ -423,8 +428,8 @@ public class ExportFunctionInventory extends GhidraScript {
     /**
      * The rows of the regions file: a region row for each initialized executable block, or for each
      * part of an overlay block that one file range supplies; then an outside row for each stretch of a
-     * function body in no region; then an entry row for each function start where no instruction
-     * starts. Each row counts the instruction, defined-data and undefined bytes of its range, in all
+     * function body in no region, split the same way at block and source boundaries; then an entry row
+     * for each function start where no instruction starts. Each row counts the instruction, defined-data and undefined bytes of its range, in all
      * and outside every function body. A range that cannot be written in the notation is a problem.
      * The outside and entry rows lie in function bodies, so when a body could not be placed they would
      * repeat its problem, and only the region rows are checked.
@@ -437,25 +442,17 @@ public class ExportFunctionInventory extends GhidraScript {
             if (!block.isInitialized() || !block.isExecute()) {
                 continue;
             }
-            List<AddressSet> parts = new ArrayList<>();
-            if (block.getStart().getAddressSpace().isOverlaySpace()) {
-                for (MemoryBlockSourceInfo info : block.getSourceInfos()) {
-                    parts.add(new AddressSet(info.getMinAddress(), info.getMaxAddress()));
-                }
-            } else {
-                parts.add(new AddressSet(block.getStart(), block.getEnd()));
-            }
-            for (AddressSet part : parts) {
-                measured.add(part);
+            AddressSet whole = new AddressSet(block.getStart(), block.getEnd());
+            measured.add(whole);
+            for (AddressSet part : blockParts(memory, whole)) {
                 row(rows, memory, "region", "Executable block " + block.getName() + ":", part, bodies);
             }
         }
         if (!bodiesPlaced) {
             return rows;
         }
-        for (AddressRange range : bodies.subtract(measured)) {
-            row(rows, memory, "outside", "Function body outside every executable block:", new AddressSet(range),
-                bodies);
+        for (AddressSet part : blockParts(memory, bodies.subtract(measured))) {
+            row(rows, memory, "outside", "Function body outside every executable block:", part, bodies);
         }
         Listing listing = currentProgram.getListing();
         for (Address entry : entries) {
@@ -466,18 +463,57 @@ public class ExportFunctionInventory extends GhidraScript {
         return rows;
     }
 
-    /** Adds the row of one contiguous range, or records the problem that keeps it from being written. */
+    /**
+     * The set split into the contiguous parts that place() writes as one piece each: a part per memory
+     * block and, in an overlay block, per source range, then the parts in no block.
+     */
+    private static List<AddressSet> blockParts(Memory memory, AddressSetView set) {
+        List<AddressSet> parts = new ArrayList<>();
+        AddressSet left = new AddressSet(set);
+        for (MemoryBlock block : memory.getBlocks()) {
+            if (left.isEmpty()) {
+                break;
+            }
+            AddressSet part = left.intersectRange(block.getStart(), block.getEnd());
+            if (part.isEmpty()) {
+                continue;
+            }
+            left.delete(part);
+            if (block.getStart().getAddressSpace().isOverlaySpace()) {
+                for (MemoryBlockSourceInfo info : block.getSourceInfos()) {
+                    AddressSet sourced = part.intersectRange(info.getMinAddress(), info.getMaxAddress());
+                    part.delete(sourced);
+                    for (AddressRange range : sourced) {
+                        parts.add(new AddressSet(range));
+                    }
+                }
+            }
+            for (AddressRange range : part) {
+                parts.add(new AddressSet(range));
+            }
+        }
+        for (AddressRange range : left) {
+            parts.add(new AddressSet(range));
+        }
+        return parts;
+    }
+
+    /**
+     * Adds the row of one part from blockParts(), or records the problem that keeps it from being
+     * written. Such a part places as one piece or not at all.
+     */
     private void row(List<String> rows, Memory memory, String kind, String what, AddressSet range, AddressSet bodies) {
         List<Piece> pieces = place(memory, what, range, true);
         if (pieces.size() != 1) {
-            return; // place() recorded why the range has no single written form.
+            return; // place() recorded why the range has no written form.
         }
+        AddressSet outside = range.subtract(bodies.intersectRange(range.getMinAddress(), range.getMaxAddress()));
         AddressSet instructions = covered(range, true);
         AddressSet data = covered(range, false);
         AddressSet undefined = range.subtract(instructions).subtract(data);
         rows.add(String.join("\t", kind, pieces.get(0).startText(), Long.toString(range.getNumAddresses()),
-            count(instructions, null), count(instructions, bodies), count(data, null), count(data, bodies),
-            count(undefined, null), count(undefined, bodies)));
+            count(instructions), count(instructions.intersect(outside)), count(data), count(data.intersect(outside)),
+            count(undefined), count(undefined.intersect(outside))));
     }
 
     /** The bytes of the range that instructions, or defined data, cover, including a unit that starts before it. */
@@ -498,9 +534,8 @@ public class ExportFunctionInventory extends GhidraScript {
         return covered.intersect(range);
     }
 
-    /** The number of bytes in the set, or of those outside every body when bodies is given. */
-    private static String count(AddressSet set, AddressSet bodies) {
-        return Long.toString((bodies == null ? set : set.subtract(bodies)).getNumAddresses());
+    private static String count(AddressSetView set) {
+        return Long.toString(set.getNumAddresses());
     }
 
     private void problem(String owner, AddressRange range, String why) {

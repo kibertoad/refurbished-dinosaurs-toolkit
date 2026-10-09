@@ -277,7 +277,7 @@ written as in the inventory. The rows are, in this order and each kind in addres
 | `kind` | One row for |
 |---|---|
 | `region` | each initialized executable memory block, and for an overlay block each part one range of a file supplies |
-| `outside` | each stretch of a function body that lies in no `region`, such as a body in a block without execute permission; its outside counts are 0 |
+| `outside` | each stretch of a function body that lies in no `region`, such as a body in a block without execute permission, split where a memory block or an overlay block's file range ends; its outside counts are 0 |
 | `entry` | each function start where no instruction starts, counting that one byte: an `instructions` of 1 means the start is inside an instruction, a `data` of 1 that it is inside data |
 
 The regions are the blocks Ghidra marks executable, so they are an upper bound on the code. Ghidra's
@@ -289,12 +289,11 @@ The export fails and writes nothing when the program is NE (Ghidra places NE seg
 of its own choosing, and the script does not convert them to the Standard's NE segments), when the
 Standard has no notation for its address space, or when any function or executable region cannot be
 written in full. The log names each one, up to 1000 lines, with the range and the reason: a body or
-region in an
-overlay block of a program other than MZ, overlay bytes from no file or from a file other than the
-imported one, a body outside every memory block or in an address space other than the program's
-default one, an end past `FFFF:FFFF` or past the top of the flat notation, body bytes placed twice
-in one body, or a start another function already has, as when two overlay blocks view the same
-file bytes. An inventory never leaves out part of a body, so fix the analysis or the import and
+region in an overlay block of a program other than MZ, overlay bytes from no file or from a file
+other than the imported one, a body outside every memory block, a body or region in an address
+space other than the program's default one, an end past `FFFF:FFFF` or past the top of the flat
+notation, body bytes placed twice in one body, or a start another function already has, as when two
+overlay blocks view the same file bytes. An inventory never leaves out part of a body, so fix the analysis or the import and
 export again. No output may exist before the run. All three are written to temporary files, and the
 inventory is moved into place last, so a run without the `Exported` line and the inventory is a
 failed export. A run stopped between the moves leaves a provenance or regions file with no
