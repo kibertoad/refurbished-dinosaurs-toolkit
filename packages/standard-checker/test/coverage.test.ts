@@ -242,6 +242,20 @@ test("an invalid inventory is reported and fails", (t) => {
   ])
     assert.ok(output.includes(line), `${line}\n---\n${output}`);
   assert.doesNotMatch(output, /functions cited/);
+  const json = JSON.parse(run(root, "--json").stdout);
+  assert.deepEqual(json.inventories, []);
+  assert.deepEqual(json.unmeasured, [
+    {
+      path: "coverage/BLD-EXAMPLE-1.0/DATA/SCORES.BIN.tsv",
+      reason: "DATA/SCORES.BIN is a data file, which holds no code to inventory",
+    },
+    {
+      path: "coverage/BLD-EXAMPLE-1.0/GAME.EXE.extra.tsv",
+      reason: "GAME.EXE.extra is not in the manifest of BLD-EXAMPLE-1.0",
+    },
+    { path: "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv", reason: "3 of 4 rows are invalid" },
+    { path: "coverage/BLD-OTHER-1.0/GAME.EXE.tsv", reason: "BLD-OTHER-1.0 is not a build of the spec" },
+  ]);
 });
 
 test("an inventory with an invalid row gets no figures, and a valid one beside it does", (t) => {

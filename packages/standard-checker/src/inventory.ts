@@ -50,6 +50,7 @@ export interface Inventory {
 export interface UnreadInventory {
   /** The inventory's path, relative to the root. */
   path: string;
+  /** Why it could not be read, the problem without the path. */
   reason: string;
 }
 
@@ -187,8 +188,6 @@ export function readInventories(
     const ranges: CodeRange[] = (codeRanges.get(build) ?? []).filter((r) => r.file === file);
     const functions: InventoryRow[] = [];
     const seen = new Set<string>();
-    // Each row that cannot be read adds exactly one problem.
-    const problemsBefore = problems.length;
     lines.forEach((line, k) => {
       const at = `line ${k + 2}`;
       const cells = line.split("\t");
@@ -293,7 +292,8 @@ export function readInventories(
       format,
       functions,
       rows: lines.length,
-      invalidRows: problems.length - problemsBefore,
+      // Every row is either read into functions or rejected with a problem.
+      invalidRows: lines.length - functions.length,
     });
   }
   return { inventories, unread, problems };

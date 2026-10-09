@@ -53,9 +53,20 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type InventoryRow, type UnreadInventory, codeLocations, readInventories } from "./inventory.ts";
+import { type InventoryRow, codeLocations, readInventories } from "./inventory.ts";
 import { loadSpec } from "./load/spec.ts";
 import { parseOptions } from "./options.ts";
+
+/**
+ * An inventory that gets no figures: one that could not be read at all, or one with a row that
+ * could not be read.
+ */
+interface UnmeasuredInventory {
+  /** The inventory's path, relative to the root. */
+  path: string;
+  /** Why it is not measured: the file-level problem, or how many of its rows are invalid. */
+  reason: string;
+}
 
 /** One row of an inventory, with the entries that cite it. */
 interface InventoryFunction extends InventoryRow {
@@ -157,7 +168,7 @@ function measure(root: string) {
   // An inventory with a row that could not be read is not measured: figures over the other rows
   // would count that row's function as neither cited nor uncited, and with every row invalid they
   // would read as a file of no functions.
-  const unmeasured: UnreadInventory[] = [
+  const unmeasured: UnmeasuredInventory[] = [
     ...read.unread,
     ...read.inventories
       .filter((inv) => inv.invalidRows)
@@ -230,7 +241,8 @@ function main(argv: string[]) {
   const { inventories, unmeasured, problems, specProblems, unreadLocations } = measure(root);
   const reports = inventories.map(summarize);
   const incomplete = reports.filter((r) => r.uncited.length);
-  // With nothing measured there is nothing complete, so --require-complete does not pass vacuously.
+  // With no inventory there is nothing complete, so --require-complete does not pass vacuously. An
+  // inventory that is not measured fails the run through its problems.
   const noInventories = !reports.length && !unmeasured.length;
   const unread = [
     ...(specProblems
