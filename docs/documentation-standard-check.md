@@ -213,6 +213,16 @@ does a path of the original's own sources quoted as evidence with backslashes, s
 `src\game\score.cpp` from an assert string. Describe the comparison in the entry without the file, and list
 the test in the parity row, which is where the rebuild points at the spec.
 
+A source entry in `spec/sources/` describes a source outside the rebuild, such as another
+project's repository or a shipped archive, and may cite that source's own files by their paths,
+such as `src/gpl/state.c` or a table of an archive's members. In a source entry a path counts only
+when it exists in the restoration, so a source's file that shares its path with a file of the
+rebuild still fails; qualify it with the source's directory or cite it as a full link. The
+comparison ignores case on every platform, so `src/Score.cs` fails when the rebuild has
+`src/score.cs`, on Linux as on Windows. A file name of the rebuild written alone fails in every
+entry. Elsewhere in the spec, cite the source entry's
+ID instead of the source's paths.
+
 Tools that read the original, such as a research script in `tools/` or a probe that runs the
 original, are not part of the rebuild, and a finding's How to reproduce section may name them, so
 `tools` is not in the default. A restoration whose rebuild has more directories adds them:

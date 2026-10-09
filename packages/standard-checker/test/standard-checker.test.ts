@@ -3954,6 +3954,70 @@ test("--rebuild takes a directory written with ./ in front, and a nested one cou
   assert.equal(run(prose, "--rebuild", "server/src").status, 0);
 });
 
+// Adds text to SRC-MANUAL's Use section.
+function inSourceUse(root: string, text: string) {
+  replaceIn(root, "spec/sources/SRC-MANUAL.md", "## Use\n\n", `## Use\n\n${text}\n\n`);
+}
+
+const MEMBERS = [
+  "| Member | xxh3 |",
+  "|---|---|",
+  "| `src/shell/shell_misc.cpp` | `0123456789abcdef` |",
+  "| src/misc/support.cpp | `fedcba9876543210` |",
+].join("\n");
+
+for (const [text, why] of [
+  ["Another reimplementation's `src/gpl/state.c` resets the variables.", "a file of an external repository"],
+  [MEMBERS, "the members of a shipped archive in a table"],
+] as Array<[string, string]>)
+  test(`a source entry that names ${why} under a --rebuild directory passes, and a rule naming it fails`, (t) => {
+    const source = broken(t, (r) => inSourceUse(r, text));
+    const result = run(source, "--data-dirs", "");
+    assert.equal(result.status, 0, result.output);
+    // The same text outside spec/sources/ is still read as the rebuild's.
+    const rule = broken(t, (r) => inSummary(r, text));
+    const control = run(rule, "--data-dirs", "");
+    assert.equal(control.status, 1, control.output);
+    assert.match(
+      control.output,
+      /spec\/rules\/RULE-SCORE-001\.md: line \d+ names src\/.*, which belongs to the rebuild/,
+    );
+  });
+
+for (const [text, why] of [
+  ["The rebuild's tests/Score.Tests/ScoreTests.cs replays the manual's example.", "an existing rebuild path"],
+  ["See ../../tests/Score.Tests/ScoreTests.cs.", "an existing rebuild path written relative"],
+  // Fails on Linux too, where the file system tells the two cases apart.
+  ["The source's tests/score.tests/scoretests.cs is the original.", "an existing rebuild path in another case"],
+  ["ScoreTests.cs replays the manual's example.", "a source file of the rebuild by its name"],
+] as Array<[string, string]>)
+  test(`a source entry that names ${why} fails`, (t) => {
+    const root = broken(t, (r) => {
+      mkdirSync(join(r, "tests", "Score.Tests"), { recursive: true });
+      writeFileSync(join(r, "tests", "Score.Tests", "ScoreTests.cs"), "// RULE-SCORE-001\n");
+      inSourceUse(r, text);
+    });
+    const result = run(root, "--data-dirs", "");
+    assert.equal(result.status, 1, result.output);
+    assert.match(result.output, /spec\/sources\/SRC-MANUAL\.md: line \d+ names .*, which belongs to the rebuild/);
+  });
+
+test("Markdown under spec/sources/ that is no source entry keeps the forward-slash rule", (t) => {
+  const root = broken(t, (r) => {
+    mkdirSync(join(r, "spec", "sources", "notes"), { recursive: true });
+    writeFileSync(
+      join(r, "spec", "sources", "notes", "draft.md"),
+      "The rebuild's src/gpl/state.c resets the variables.\n",
+    );
+  });
+  const result = run(root, "--data-dirs", "");
+  assert.equal(result.status, 1, result.output);
+  assert.match(
+    result.output,
+    /spec\/sources\/notes\/draft\.md: line 1 names src\/gpl\/state\.c, which belongs to the rebuild/,
+  );
+});
+
 for (const dir of ["bin", "obj", "dist", "node_modules", "artifacts"])
   test(`a source file name that only ${dir} in a --rebuild directory has stays free to use`, (t) => {
     const withName = (source: string) =>

@@ -47,7 +47,9 @@
 //                       one of them must name a file of some build with its exact case (default:
 //                       the top-level directories of the files the build entries list)
 //   --rebuild <dirs>    comma-separated directories that hold the rebuild; no Markdown file in spec/
-//                       may name a path in them or a source file found in them (default: src,tests)
+//                       may name a path in them or a source file found in them. In a source entry,
+//                       a path counts only when it exists, in any case, so the entry can cite the
+//                       external source's own paths (default: src,tests)
 //   --message <file>    check only the commit message in file: every address it gives must be
 //                       recorded in an entry it cites, as for a code comment. For a commit-msg hook
 //   --record-validation <builds>
