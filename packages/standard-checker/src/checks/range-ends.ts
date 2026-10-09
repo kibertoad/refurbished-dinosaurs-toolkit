@@ -61,11 +61,9 @@ export function checkRangeEnds(ctx: Context) {
     lastBytes.get(`${build}\0${file}\0${space}`)?.get(end);
   const message = (what: string, end: string, hit: { fns: InventoryRow[]; path: string }) => {
     const next = nextInNotation(end);
-    const [fn] = hit.fns;
-    const whose =
-      hit.fns.length > 1
-        ? `the functions at ${hit.fns.map((f) => f.start).join(", ")}`
-        : `${fn.body.length > 1 ? "a range of " : ""}the function at ${fn.start}`;
+    // Each function the byte ends, as the last byte of a range of it when its body has several.
+    const each = hit.fns.map((f) => `${f.body.length > 1 ? "a range of " : ""}the function at ${f.start}`);
+    const whose = each.length > 1 ? `${each.slice(0, -1).join(", ")} and ${each.at(-1)}` : each[0];
     return (
       `${what} ends on the last byte of ${whose} in ${hit.path}; ranges are half-open, ` +
       (next ? `so it ends at ${next}` : "so it ends one past that byte")

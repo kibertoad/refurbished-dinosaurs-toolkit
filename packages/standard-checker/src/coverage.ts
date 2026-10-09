@@ -194,30 +194,35 @@ function measure(root: string) {
 }
 
 /**
- * The bytes the functions' bodies cover, each counted once, and those two or more of them list. A
- * sweep over each space's range ends: a byte counts once while any body covers it, and as shared
- * while two or more do.
+ * The bytes the functions' bodies cover and the bytes the cited ones cover, each counted once, and
+ * the bytes two or more of them list. A sweep over each space's range ends: a byte counts once while
+ * any body covers it, as cited while a cited body does, and as shared while two or more bodies do.
  */
-function byteCounts(fs: InventoryFunction[]): { union: number; shared: number } {
-  const edges = new Map<string, Array<[bigint, number]>>();
+function byteCounts(fs: InventoryFunction[]): { union: number; cited: number; shared: number } {
+  const edges = new Map<string, Array<[bigint, number, boolean]>>();
   for (const f of fs) {
     if (!edges.has(f.space)) edges.set(f.space, []);
-    for (const r of f.body) edges.get(f.space)!.push([r.start, 1], [r.end, -1]);
+    const cited = f.citedBy.length > 0;
+    for (const r of f.body) edges.get(f.space)!.push([r.start, 1, cited], [r.end, -1, cited]);
   }
   let union = 0n;
+  let cited = 0n;
   let shared = 0n;
   for (const list of edges.values()) {
-    list.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1]));
+    list.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
     let depth = 0;
+    let citedDepth = 0;
     let at = 0n;
-    for (const [point, step] of list) {
+    for (const [point, step, isCited] of list) {
       if (depth >= 1) union += point - at;
+      if (citedDepth >= 1) cited += point - at;
       if (depth >= 2) shared += point - at;
       depth += step;
+      if (isCited) citedDepth += step;
       at = point;
     }
   }
-  return { union: Number(union), shared: Number(shared) };
+  return { union: Number(union), cited: Number(cited), shared: Number(shared) };
 }
 
 /** The figures of one measured inventory. */
@@ -229,7 +234,7 @@ function summarize(inv: {
 }): InventoryReport {
   const inScope = inv.functions.filter((f) => !f.outOfScope);
   const citedFns = inScope.filter((f) => f.citedBy.length);
-  const all = byteCounts(inScope);
+  const counts = byteCounts(inScope);
   return {
     path: inv.path,
     build: inv.build,
@@ -237,9 +242,9 @@ function summarize(inv: {
     functions: inv.functions.length,
     outOfScope: inv.functions.length - inScope.length,
     cited: citedFns.length,
-    bytes: all.union,
-    citedBytes: byteCounts(citedFns).union,
-    sharedBytes: all.shared,
+    bytes: counts.union,
+    citedBytes: counts.cited,
+    sharedBytes: counts.shared,
     uncited: inScope.filter((f) => !f.citedBy.length).map((f) => ({ start: f.start, size: f.size, name: f.name })),
   };
 }
@@ -320,7 +325,7 @@ function main(argv: string[]) {
       console.log(
         `${r.path}: ${r.cited} of ${r.functions - r.outOfScope} functions cited${share(r.cited, r.functions - r.outOfScope)}, ` +
           `${r.citedBytes} of ${r.bytes} bytes${share(r.citedBytes, r.bytes)}; ${r.outOfScope} out of scope` +
-          (r.sharedBytes ? `; ${r.sharedBytes} bytes listed by more than one function` : ""),
+          (r.sharedBytes ? `; ${r.sharedBytes} bytes listed by more than one in-scope function` : ""),
       );
       for (const f of r.uncited) console.log(`  uncited: ${f.start} (${f.size} bytes${f.name ? `, ${f.name}` : ""})`);
       if (flags.has("--list"))

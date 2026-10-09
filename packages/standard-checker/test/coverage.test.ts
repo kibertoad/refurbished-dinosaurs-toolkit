@@ -390,24 +390,45 @@ test("bytes two functions share are counted once, and a location in them cites b
   assert.equal(status, 0, output);
   assert.match(
     output,
-    /^coverage\/BLD-EXAMPLE-1\.0\/GAME\.EXE\.tsv: 2 of 3 functions cited \(66\.7%\), 32 of 48 bytes \(66\.7%\); 0 out of scope; 16 bytes listed by more than one function$/m,
+    /^coverage\/BLD-EXAMPLE-1\.0\/GAME\.EXE\.tsv: 2 of 3 functions cited \(66\.7%\), 32 of 48 bytes \(66\.7%\); 0 out of scope; 16 bytes listed by more than one in-scope function$/m,
   );
 });
 
 test("a byte three functions list counts once, and an out-of-scope function's bytes are not shared", (t) => {
   const root = copy(t);
+  // The out-of-scope 0x00401300 also lists 0x00401000..0x00401008, which only 0x00401000 lists in
+  // scope, so those 8 bytes are not shared.
   inventory(
     root,
     "start\tsize\tout_of_scope\tranges\n" +
       "0x00401000\t24\t\t0x00401000..0x00401008 0x00401100..0x00401110\n" +
       "0x00401008\t24\t\t0x00401008..0x00401010 0x00401100..0x00401110\n" +
       "0x00401100\t16\t\t\n" +
-      "0x00401300\t24\tlibrary code\t0x00401300..0x00401308 0x00401100..0x00401110\n",
+      "0x00401300\t32\tlibrary code\t0x00401000..0x00401008 0x00401100..0x00401110 0x00401300..0x00401308\n",
   );
   const json = JSON.parse(run(root, "--json").stdout).inventories[0];
   assert.equal(json.bytes, 32);
   assert.equal(json.sharedBytes, 16);
   assert.equal(json.citedBytes, 0);
+});
+
+test("bytes a cited function lists are cited, while a function inside them stays uncited", (t) => {
+  const root = copy(t);
+  // A location in 0x00401000's first range cites it alone. 0x00401100's whole body is the tail
+  // 0x00401000 also lists, so every byte is cited and 0x00401100 is not.
+  finding(root, "FND-SCORE-001", at("0x00401004"));
+  inventory(
+    root,
+    "start\tsize\tranges\n0x00401000\t32\t0x00401000..0x00401010 0x00401100..0x00401110\n0x00401100\t16\t\n",
+  );
+  const json = JSON.parse(run(root, "--json").stdout).inventories[0];
+  assert.equal(json.cited, 1);
+  assert.equal(json.bytes, 32);
+  assert.equal(json.citedBytes, 32);
+  assert.deepEqual(json.uncited, [{ start: "0x00401100", size: 16, name: "" }]);
+  const { status, output } = run(root, "--require-complete");
+  assert.equal(status, 1, output);
+  assert.match(output, /: 1 of 2 functions cited \(50\.0%\), 32 of 32 bytes \(100\.0%\); 0 out of scope; 16 bytes/m);
 });
 
 test("a ranges column that does not describe the body is a problem", (t) => {

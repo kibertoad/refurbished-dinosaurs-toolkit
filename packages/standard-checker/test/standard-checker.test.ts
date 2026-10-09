@@ -4845,7 +4845,7 @@ test("a range that ends where two functions share their last byte names both", (
   assert.equal(status, 1, output);
   assert.ok(
     output.includes(
-      "location address 0x00401100..0x0040110F ends on the last byte of the functions at 0x00401000, 0x00401100 " +
+      "location address 0x00401100..0x0040110F ends on the last byte of a range of the function at 0x00401000 and the function at 0x00401100 " +
         "in coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv; ranges are half-open, so it ends at 0x00401110",
     ),
     output,
