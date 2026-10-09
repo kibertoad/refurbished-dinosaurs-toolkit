@@ -118,7 +118,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved | [reachability](#reachability-from-starts-to-targets) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
-| `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (load image, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own and an optional comparison with a candidate body (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
+| `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (load image, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own and an optional comparison with a candidate body (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
 | `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables and checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots) |
 | `unpack` | writes the unpacked form of an LZEXE 0.90 or 0.91 executable and gives the `size`, `xxh3`, `format` and `tool` of a build's `unpacked` item (reader only, no engine) | [unpacking packed executables](#unpacking-packed-executables) |
 
@@ -1451,7 +1451,8 @@ body or candidate fail the report.
 | Kind | Bytes |
 |---|---|
 | `mz-header` | the MZ header and its relocation table |
-| `resident` | the MZ load image, less the overlay stubs |
+| `resident` | the MZ load image, less the FBOV descriptor table and the overlay stubs |
+| `fbov-descriptors` | the FBOV descriptor table in the load image, 8 bytes per descriptor |
 | `overlay-stub` | one overlay's stub in the load image: its 32-byte header and its trampolines |
 | `fbov-header` | the 16-byte FBOV envelope header |
 | `overlay-code` | one overlay's code |
@@ -1460,13 +1461,19 @@ body or candidate fail the report.
 | `undeclared` | a run between declared regions with at least one nonzero byte; `nonzeroBytes` counts them |
 
 A run between declared regions is one region, so a single nonzero byte makes the whole run
-`undeclared`, and none of it is called padding. Stubs of two overlays that overlap fail the report.
+`undeclared`, and none of it is called padding. Each such run also has `trailing`, true when it lies
+past everything the tables declare: past the end of the FBOV payload, or past the load image of a
+file without an envelope. A run is split there, so a body that runs past the last overlay into
+bytes appended after the envelope shows apart from one that runs into a gap inside the payload.
+Stubs of two overlays that overlap, or a stub that overlaps the descriptor table, fail the MZ/FBOV
+loader, so they fail this report and every other command that reads an `mz` source.
 
 Each function's `entry` gives its `offset`, the `kind` and `descriptor` of the region holding it,
 `inBody` (whether a body range holds it) and `trampolines`, the stub trampolines whose target it
 is. Each body range is a `fragments` row with `start`, `end`, `size`, `crossesRegions` and `parts`:
 the range cut at every region boundary, each part with its `kind`, `descriptor`, size and
-`outsideEntryRegion`, true when its kind or descriptor differs from the entry's. Code of another
+`outsideEntryRegion`, true when its kind or descriptor differs from the entry's, or when the entry
+lies in a `zero-padding` or `undeclared` run and the part lies in another run. Code of another
 overlay is outside the entry's region, since being code says nothing about which procedure owns it.
 Every fragment is kept, however much of it lies outside. The parts of a range add up to the range,
 and the report fails rather than give a partition that does not. Per function, `bytes`, `regions`

@@ -25,8 +25,8 @@ function harness(t: TestContext, data: Buffer, base: Record<string, unknown>) {
 
 // An MZ image with an FBOV envelope and two overlays:
 //   0..64     MZ header (one relocation, at 83)
-//   64..512   load image, with the stub of descriptor 1 at 256..293 (one trampoline at 288, naming
-//             544) and the stub of descriptor 2 at 320..352
+//   64..512   load image, with the three FBOV descriptors at 128..152, the stub of descriptor 1 at
+//             256..293 (one trampoline at 288, naming 544) and the stub of descriptor 2 at 320..352
 //   512..528  FBOV header
 //   528..560  overlay 1 code, 560..568 its fixup table (four fixups)
 //   568..576  zero bytes
@@ -80,7 +80,9 @@ test("the layout partitions the whole file by the MZ and FBOV tables", () => {
     layout.map((r) => [r.kind, r.descriptor, r.start, r.end]),
     [
       ["mz-header", null, 0, 64],
-      ["resident", null, 64, 256],
+      ["resident", null, 64, 128],
+      ["fbov-descriptors", null, 128, 152],
+      ["resident", null, 152, 256],
       ["overlay-stub", 1, 256, 293],
       ["resident", null, 293, 320],
       ["overlay-stub", 2, 320, 352],
@@ -115,7 +117,7 @@ test("a body that runs from overlay code through its fixups into padding is spli
   assert.equal(f.name, "f");
   // The entry is placed on its own: it is overlay code a trampoline names, and no fragment holds it.
   assert.deepEqual(f.entry, { offset: 544, kind: "overlay-code", descriptor: 1, inBody: false, trampolines: [288] });
-  // The resident fragment is kept whole and marked, not dropped.
+  // The resident fragment is kept whole and marked.
   assert.deepEqual(f.fragments[0].parts, [
     { start: 80, end: 84, size: 4, kind: "resident", descriptor: null, outsideEntryRegion: true },
   ]);
@@ -153,13 +155,20 @@ test("a body that runs from overlay code through its fixups into padding is spli
   });
 });
 
-test("a nonzero byte between declared regions makes the whole run undeclared, not padding", (t) => {
+test("a nonzero byte between declared regions makes the whole run undeclared", (t) => {
   const data = overlays();
   data[574] = 0x55;
   const { query } = harness(t, data, { formatControls: controls });
   const r = query({ functions: [{ entry: 544, body: [{ start: 552, end: 572 }] }] });
   const run = r.layout.find((g: Report) => g.start === 568);
-  assert.deepEqual(run, { kind: "undeclared", descriptor: null, start: 568, end: 576, nonzeroBytes: 1 });
+  assert.deepEqual(run, {
+    kind: "undeclared",
+    descriptor: null,
+    start: 568,
+    end: 576,
+    nonzeroBytes: 1,
+    trailing: false,
+  });
   assert.equal(r.functions[0].fragments[0].parts[2].kind, "undeclared");
   assert.ok(!r.functions[0].regions.some((g: Report) => g.kind === "zero-padding"));
 });
@@ -197,6 +206,42 @@ test("another overlay's code counts as outside the entry's region, and so does a
   assert.equal(outside.entry.inBody, false);
   assert.equal(r.counts.entriesOutsideCode, 1);
   assert.equal(r.counts.entriesNotInBody, 1);
+});
+
+test("a resident body that runs into the FBOV descriptor table is outside its entry's region there", (t) => {
+  const { query } = harness(t, overlays(), { formatControls: controls });
+  const r = query({ functions: [{ entry: 120, body: [{ start: 120, end: 136 }] }] });
+  assert.deepEqual(
+    r.functions[0].fragments[0].parts.map((p: Report) => [p.kind, p.start, p.end, p.outsideEntryRegion]),
+    [
+      ["resident", 120, 128, false],
+      ["fbov-descriptors", 128, 136, true],
+    ],
+  );
+  assert.equal(r.functions[0].outsideEntryRegion, 8);
+});
+
+test("an entry in one run of padding counts another run of padding as outside its region", (t) => {
+  const { query } = harness(t, overlays(), { formatControls: controls });
+  const r = query({
+    functions: [
+      {
+        entry: 570,
+        body: [
+          { start: 570, end: 572 },
+          { start: 586, end: 590 },
+        ],
+      },
+    ],
+  });
+  const [f] = r.functions;
+  assert.equal(f.entry.kind, "zero-padding");
+  assert.equal(f.fragments[0].outsideEntryRegion, 0);
+  assert.deepEqual(
+    f.fragments[1].parts.map((p: Report) => [p.kind, p.start, p.end, p.outsideEntryRegion]),
+    [["zero-padding", 586, 590, true]],
+  );
+  assert.equal(f.outsideEntryRegion, 4);
 });
 
 test("a candidate body is compared with the analyzer's: bytes in both and in only one, each classified", (t) => {
@@ -258,11 +303,40 @@ test("a file without an envelope ends in undeclared bytes after its load image",
       },
     ],
   });
-  assert.deepEqual(r.layout.at(-1), { kind: "undeclared", descriptor: null, start: 512, end: 600, nonzeroBytes: 1 });
+  assert.deepEqual(r.layout.at(-1), {
+    kind: "undeclared",
+    descriptor: null,
+    start: 512,
+    end: 600,
+    nonzeroBytes: 1,
+    trailing: true,
+  });
   assert.deepEqual(r.functions[0].regions, [
     { kind: "resident", descriptor: null, bytes: 12 },
     { kind: "undeclared", descriptor: null, bytes: 3 },
   ]);
+});
+
+test("bytes appended after the FBOV payload are a trailing run, split from the padding inside it", (t) => {
+  const data = Buffer.concat([overlays(), Buffer.alloc(8)]);
+  const { query } = harness(t, data, { formatControls: controls });
+  // The body runs from overlay 2's code through the padding inside the payload into the appended bytes.
+  const r = query({ functions: [{ entry: 576, body: [{ start: 576, end: 600 }] }] });
+  assert.deepEqual(
+    r.layout.slice(-2).map((g: Report) => [g.kind, g.start, g.end, g.trailing]),
+    [
+      ["zero-padding", 584, 592, false],
+      ["zero-padding", 592, 600, true],
+    ],
+  );
+  assert.deepEqual(
+    r.functions[0].fragments[0].parts.map((p: Report) => [p.kind, p.start, p.end, p.outsideEntryRegion]),
+    [
+      ["overlay-code", 576, 584, false],
+      ["zero-padding", 584, 592, true],
+      ["zero-padding", 592, 600, true],
+    ],
+  );
 });
 
 test("invalid ranges, entries and missing or failed format controls are refused", (t) => {
@@ -306,7 +380,7 @@ test("invalid ranges, entries and missing or failed format controls are refused"
   );
 });
 
-test("stubs that overlap are refused before any body is classified", () => {
+test("stubs that overlap are refused by the loader", () => {
   const data = overlays();
   // Descriptor 2's stub moves to 288, inside descriptor 1's.
   data.writeUInt16LE(14, 144);
@@ -315,5 +389,13 @@ test("stubs that overlap are refused before any body is classified", () => {
   data.writeUInt16LE(8, 296);
   data.writeUInt16LE(0, 298);
   data.writeUInt16LE(0, 300);
-  assert.throws(() => fileLayout(readMz(data)), /stubs of descriptors 1 and 2 overlap/);
+  assert.throws(() => readMz(data), /the FBOV stub of descriptor 1 and the FBOV stub of descriptor 2 overlap/);
+});
+
+test("a descriptor table that overlaps a stub is refused by the loader", () => {
+  const data = overlays();
+  // The descriptors move to 334..358, over the unused tail of descriptor 2's stub header at 320..352.
+  data.writeUInt32LE(334, 520);
+  data.copy(data, 334, 128, 152);
+  assert.throws(() => readMz(data), /the FBOV stub of descriptor 2 and the FBOV descriptor table overlap/);
 });

@@ -41,8 +41,9 @@ directory as `source` is.
 compares an analyzer's listing of the table with them.
 
 `bodies` takes function entries and body ranges as file offsets and says where each body byte
-lies in an `mz` source by its MZ and FBOV tables: the load image, an overlay stub, overlay code, a
-fixup table, zero padding or undeclared bytes. It places each entry on its own, keeps every
+lies in an `mz` source by its MZ and FBOV tables: the load image, the FBOV descriptor table, an
+overlay stub, overlay code, a fixup table, zero padding or undeclared bytes, with bytes past
+everything the tables declare marked `trailing`. It places each entry on its own, keeps every
 fragment, marks the parts outside the entry's region, and can compare a body with a candidate body
 found another way. It needs `formatControls` and decodes no instruction.
 
@@ -97,9 +98,10 @@ import { bodyLayout, fileLayout } from "@scientific-method/executable-reader/bod
 | `readerTool()` | `.` | The reader's package name and version, the `tool` the `unpack` report gives. |
 | `UnpackConfig` | `.` | Type of the `unpack` config. |
 | `Region`, `ReportConfig`, `PreparedConfig`, `Report` | `.` | Types of the query, the prepared config and the report. |
-| `readMz(bytes, loadSegment?)` | `legacy-image` | Parses and bounds-checks an MZ executable and its FBOV envelope into an `MzImage`. |
+| `readMz(bytes, loadSegment?)` | `legacy-image` | Parses and bounds-checks an MZ executable and its FBOV envelope into an `MzImage`. Overlapping overlay payloads, stubs or descriptor table are refused. |
 | `MzImage.address(segment, offset)` | `legacy-image` | File offset of a resident loaded address. |
 | `MzImage.resolveOperand(site, targetOffset?)` | `legacy-image` | Resolves a stored segment word through the relocation or fixup tables. |
+| `MzImage.envelope`, `FbovEnvelope` | `legacy-image` | File offsets of the FBOV envelope header, the end of its payload and its descriptor table, or null without an envelope. |
 | `formatCounts(image)` | `legacy-image` | Counts of relocations, descriptors, overlays, fixups and trampolines. |
 | `checkFormatControls(image, expected)` | `legacy-image` | Throws unless the source yields the expected counts. |
 | `selectedTarget(image, selector, target?)` | `legacy-image` | Canonical overlay entry named by a descriptor and trampoline. |

@@ -5,14 +5,16 @@ import type { MzImage } from "./legacy-image.ts";
 
 /**
  * What the file's tables make of a run of bytes. `mz-header` is the MZ header with its relocation
- * table, `resident` the MZ load image outside the overlay stubs, `overlay-stub` an FBOV overlay's
- * stub header and trampolines in the load image, `fbov-header` the 16-byte FBOV envelope header,
- * `overlay-code` and `fixup-table` an overlay's code and the fixup table after it. Bytes no table
- * declares are `zero-padding` when every byte of the run is zero and `undeclared` otherwise.
+ * table, `resident` the MZ load image outside the FBOV tables kept in it, `fbov-descriptors` the
+ * FBOV descriptor table in the load image, `overlay-stub` an FBOV overlay's stub header and
+ * trampolines in the load image, `fbov-header` the 16-byte FBOV envelope header, `overlay-code` and
+ * `fixup-table` an overlay's code and the fixup table after it. Bytes no table declares are
+ * `zero-padding` when every byte of the run is zero and `undeclared` otherwise.
  */
 export type RegionKind =
   | "mz-header"
   | "resident"
+  | "fbov-descriptors"
   | "overlay-stub"
   | "fbov-header"
   | "overlay-code"
@@ -23,7 +25,9 @@ export type RegionKind =
 /**
  * One run of the file's layout, as half-open file offsets. `descriptor` is the FBOV descriptor index
  * of an overlay's stub, code or fixup table, and null otherwise. A run no table declares carries
- * `nonzeroBytes`, which is 0 exactly for `zero-padding`.
+ * `nonzeroBytes`, which is 0 exactly for `zero-padding`, and `trailing`, true when the run lies past
+ * everything the tables declare: past the end of the FBOV payload, or past the load image when the
+ * file has no FBOV envelope. A run never crosses that boundary.
  */
 export interface LayoutRegion {
   kind: RegionKind;
@@ -31,6 +35,7 @@ export interface LayoutRegion {
   start: number;
   end: number;
   nonzeroBytes?: number;
+  trailing?: boolean;
 }
 
 /** A half-open range of file offsets, `start` included and `end` excluded. */
@@ -65,7 +70,10 @@ export interface BodyPart extends ByteRange {
   size: number;
   kind: RegionKind;
   descriptor: number | null;
-  /** True when the part's kind or descriptor differs from the entry's. */
+  /**
+   * True when the part's kind or descriptor differs from the entry's, or when the entry lies in a
+   * `zero-padding` or `undeclared` run and the part lies in another run.
+   */
   outsideEntryRegion: boolean;
 }
 
@@ -84,6 +92,7 @@ export const MAX_BODY_RANGES = 4096;
 const KIND_ORDER: RegionKind[] = [
   "mz-header",
   "resident",
+  "fbov-descriptors",
   "overlay-stub",
   "fbov-header",
   "overlay-code",
@@ -91,51 +100,62 @@ const KIND_ORDER: RegionKind[] = [
   "zero-padding",
   "undeclared",
 ];
+// Kinds of the runs no table declares. Each run is its own region, so a part in another run of
+// the same kind is outside an entry's run.
+const GAP_KINDS: ReadonlySet<RegionKind> = new Set(["zero-padding", "undeclared"]);
 
 /**
  * Partitions the whole file, from offset 0 to its length, into the regions its MZ and FBOV tables
- * declare, in file order. Runs between declared regions are `zero-padding` or `undeclared`. Throws
- * when two overlays' stubs overlap, since a byte would then have two declared meanings.
+ * declare, in file order. Runs between declared regions are `zero-padding` or `undeclared`, split
+ * where the declared file ends (see {@link LayoutRegion}). {@link readMz} has already refused
+ * tables that overlap, so each byte has at most one declared meaning.
  */
 export function fileLayout(image: MzImage): LayoutRegion[] {
-  const stubs = image.overlays
-    .map((o) => ({
-      kind: "overlay-stub" as const,
-      descriptor: o.descriptor,
-      start: o.header,
-      end: o.header + 32 + o.trampolines.length * 5,
-    }))
-    .sort((a, b) => a.start - b.start);
-  for (let i = 1; i < stubs.length; i++)
-    if (stubs[i]!.start < stubs[i - 1]!.end)
-      throw new Error(
-        `FBOV stubs of descriptors ${stubs[i - 1]!.descriptor} and ${stubs[i]!.descriptor} overlap; no body is classified`,
-      );
+  // The tables the FBOV envelope keeps in the load image: each overlay's stub and the descriptors.
+  const tables: LayoutRegion[] = image.overlays.map((o) => ({
+    kind: "overlay-stub" as const,
+    descriptor: o.descriptor,
+    start: o.header,
+    end: o.header + 32 + o.trampolines.length * 5,
+  }));
+  if (image.envelope) {
+    const start = image.envelope.descriptorTable;
+    tables.push({ kind: "fbov-descriptors", descriptor: null, start, end: start + image.descriptors.length * 8 });
+  }
+  tables.sort((a, b) => a.start - b.start);
   const declared: LayoutRegion[] = [{ kind: "mz-header", descriptor: null, start: 0, end: image.header }];
-  // The load image is resident except where an overlay's stub sits in it.
+  // The load image is resident except where the envelope's tables sit in it.
   let at = image.header;
-  for (const stub of stubs) {
-    if (stub.start > at) declared.push({ kind: "resident", descriptor: null, start: at, end: stub.start });
-    declared.push(stub);
-    at = stub.end;
+  for (const table of tables) {
+    if (table.start > at) declared.push({ kind: "resident", descriptor: null, start: at, end: table.start });
+    declared.push(table);
+    at = table.end;
   }
   if (image.end > at) declared.push({ kind: "resident", descriptor: null, start: at, end: image.end });
-  if (image.overlays.length || image.descriptors.length) {
-    // readMz found the envelope at the first paragraph boundary at or after the load image.
-    const fbov = Math.ceil(image.end / 16) * 16;
+  if (image.envelope) {
+    const fbov = image.envelope.header;
     declared.push({ kind: "fbov-header", descriptor: null, start: fbov, end: fbov + 16 });
   }
-  for (const o of [...image.overlays].sort((a, b) => a.start - b.start)) {
+  for (const o of image.overlays) {
     declared.push({ kind: "overlay-code", descriptor: o.descriptor, start: o.start, end: o.end });
     if (o.storageEnd > o.end)
       declared.push({ kind: "fixup-table", descriptor: o.descriptor, start: o.end, end: o.storageEnd });
   }
   declared.sort((a, b) => a.start - b.start);
   const layout: LayoutRegion[] = [];
-  const gap = (start: number, end: number) => {
+  // Where the tables stop declaring anything. Bytes past it were appended to what they describe.
+  const declaredEnd = image.envelope ? image.envelope.payloadEnd : image.end;
+  const run = (start: number, end: number) => {
     let nonzero = 0;
     for (let p = start; p < end; p++) if (image.bytes[p] !== 0) nonzero++;
-    layout.push({ kind: nonzero ? "undeclared" : "zero-padding", descriptor: null, start, end, nonzeroBytes: nonzero });
+    const kind: RegionKind = nonzero ? "undeclared" : "zero-padding";
+    layout.push({ kind, descriptor: null, start, end, nonzeroBytes: nonzero, trailing: start >= declaredEnd });
+  };
+  const gap = (start: number, end: number) => {
+    if (start < declaredEnd && declaredEnd < end) {
+      run(start, declaredEnd);
+      run(declaredEnd, end);
+    } else run(start, end);
   };
   at = 0;
   for (const region of declared) {
@@ -201,13 +221,17 @@ function normalize(ranges: ByteRange[]): ByteRange[] {
   return out;
 }
 
-// The bytes of `a` that are in `b` (keep = true) or not in `b` (keep = false). Both are normalized.
+// The bytes of `a` that are in `b` (keep = true) or not in `b` (keep = false). Both are normalized,
+// so one pass over each suffices: a range of `b` that ends before a range of `a` ends before every
+// later one too.
 function overlap(a: ByteRange[], b: ByteRange[], keep: boolean): ByteRange[] {
   const out: ByteRange[] = [];
+  let first = 0;
   for (const r of a) {
+    while (first < b.length && b[first]!.end <= r.start) first++;
     let at = r.start;
-    for (const s of b) {
-      if (s.end <= at || s.start >= r.end) continue;
+    for (let j = first; j < b.length && b[j]!.start < r.end; j++) {
+      const s = b[j]!;
       const from = Math.max(at, s.start),
         to = Math.min(r.end, s.end);
       if (keep) out.push({ start: from, end: to });
@@ -222,7 +246,7 @@ function overlap(a: ByteRange[], b: ByteRange[], keep: boolean): ByteRange[] {
 /**
  * Classifies each function's entry and every byte of its body by the regions the file's MZ and
  * FBOV tables declare (see {@link fileLayout}). Each body range is split into parts at region
- * boundaries; a part whose kind or descriptor differs from the entry's is marked. The parts of each
+ * boundaries; a part outside the entry's region (see {@link BodyPart}) is marked. The parts of each
  * range add up to the range, and the report fails rather than give a partition that does not. With
  * a `candidate`, the report gives the bytes both sets hold and those only one holds, each classified
  * the same way. The report says where bytes lie in the file; it decodes no instruction and does not
@@ -240,8 +264,10 @@ export function bodyLayout(bytes: Buffer, config: BodyConfig) {
   if (!Array.isArray(functions) || functions.length < 1 || functions.length > MAX_BODY_FUNCTIONS)
     throw new Error(`functions must be 1..${MAX_BODY_FUNCTIONS} objects`);
 
-  const where = (offset: number) => layout[regionAt(layout, offset)]!;
-  const split = (range: ByteRange, entry: { kind: RegionKind; descriptor: number | null }): BodyPart[] => {
+  // The entry's own region: parts of another kind or descriptor, or of another undeclared run, lie outside it.
+  const outside = (region: LayoutRegion, home: LayoutRegion) =>
+    region.kind !== home.kind || region.descriptor !== home.descriptor || (GAP_KINDS.has(home.kind) && region !== home);
+  const split = (range: ByteRange, home: LayoutRegion): BodyPart[] => {
     const parts: BodyPart[] = [];
     for (let i = regionAt(layout, range.start), at = range.start; at < range.end; i++) {
       const region = layout[i]!;
@@ -252,7 +278,7 @@ export function bodyLayout(bytes: Buffer, config: BodyConfig) {
         size: end - at,
         kind: region.kind,
         descriptor: region.descriptor,
-        outsideEntryRegion: region.kind !== entry.kind || region.descriptor !== entry.descriptor,
+        outsideEntryRegion: outside(region, home),
       });
       at = end;
     }
@@ -272,15 +298,17 @@ export function bodyLayout(bytes: Buffer, config: BodyConfig) {
       (a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || (a.descriptor ?? -1) - (b.descriptor ?? -1),
     );
   };
-  const summary = (ranges: ByteRange[], entry: { kind: RegionKind; descriptor: number | null }) => {
-    const parts = ranges.flatMap((r) => split(r, entry));
-    return {
-      ranges,
-      bytes: ranges.reduce((n, r) => n + r.end - r.start, 0),
-      regions: totals(parts),
-      outsideEntryRegion: parts.filter((p) => p.outsideEntryRegion).reduce((n, p) => n + p.size, 0),
-    };
-  };
+  const outsideBytes = (parts: BodyPart[]) => parts.filter((p) => p.outsideEntryRegion).reduce((n, p) => n + p.size, 0);
+  const summary = (ranges: ByteRange[], home: LayoutRegion, parts = ranges.flatMap((r) => split(r, home))) => ({
+    ranges,
+    bytes: ranges.reduce((n, r) => n + r.end - r.start, 0),
+    regions: totals(parts),
+    outsideEntryRegion: outsideBytes(parts),
+  });
+  // Trampoline sites by the overlay entry they name.
+  const trampolineSites = new Map<number, number[]>();
+  for (const o of image.overlays)
+    for (const t of o.trampolines) trampolineSites.set(t.target, [...(trampolineSites.get(t.target) ?? []), t.site]);
 
   const counts = {
     functions: functions.length,
@@ -301,27 +329,31 @@ export function bodyLayout(bytes: Buffer, config: BodyConfig) {
     if (!Number.isSafeInteger(fn.entry) || fn.entry! < 0 || fn.entry! >= bytes.length)
       throw new Error(`${label}.entry must be a file offset inside the file`);
     const body = readRanges(fn.body, bytes.length, `${label}.body`);
-    const entryRegion = where(fn.entry!);
+    const home = layout[regionAt(layout, fn.entry!)]!;
     const entry = {
       offset: fn.entry!,
-      kind: entryRegion.kind,
-      descriptor: entryRegion.descriptor,
+      kind: home.kind,
+      descriptor: home.descriptor,
       inBody: body.some((r) => r.start <= fn.entry! && fn.entry! < r.end),
       // Stubs whose trampolines name the entry: the FBOV's own record of it as an overlay entry.
-      trampolines: image.overlays.flatMap((o) => o.trampolines.filter((t) => t.target === fn.entry).map((t) => t.site)),
+      trampolines: trampolineSites.get(fn.entry!) ?? [],
     };
     const fragments = body.map((r) => {
-      const parts = split(r, entry);
+      const parts = split(r, home);
       return {
         start: r.start,
         end: r.end,
         size: r.end - r.start,
         crossesRegions: parts.length > 1,
-        outsideEntryRegion: parts.filter((p) => p.outsideEntryRegion).reduce((n, p) => n + p.size, 0),
+        outsideEntryRegion: outsideBytes(parts),
         parts,
       };
     });
-    const whole = summary(body, entry);
+    const whole = summary(
+      body,
+      home,
+      fragments.flatMap((g) => g.parts),
+    );
     if (entry.kind !== "resident" && entry.kind !== "overlay-code") counts.entriesOutsideCode++;
     if (!entry.inBody) counts.entriesNotInBody++;
     if (whole.outsideEntryRegion) counts.functionsWithBytesOutsideEntryRegion++;
@@ -346,11 +378,11 @@ export function bodyLayout(bytes: Buffer, config: BodyConfig) {
       const analyzer = normalize(body);
       row.candidate = {
         evidence: c.evidence,
-        ...summary(candidate, entry),
+        ...summary(candidate, home),
         entryInCandidate: candidate.some((r) => r.start <= fn.entry! && fn.entry! < r.end),
-        both: summary(overlap(analyzer, candidate, true), entry),
-        bodyOnly: summary(overlap(analyzer, candidate, false), entry),
-        candidateOnly: summary(overlap(candidate, analyzer, false), entry),
+        both: summary(overlap(analyzer, candidate, true), home),
+        bodyOnly: summary(overlap(analyzer, candidate, false), home),
+        candidateOnly: summary(overlap(candidate, analyzer, false), home),
       };
     }
     return row;
