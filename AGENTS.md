@@ -93,21 +93,24 @@ Update in the same PR:
 
 ### Gates
 
-Run what CI runs before pushing:
+CI is the full gate. Before pushing, run only the fast checks for the area you changed, and leave
+the rest to CI. A red CI run is fixed with a follow-up commit on the same PR.
 
-```sh
-pnpm install --frozen-lockfile
-pnpm lint && pnpm format:check && pnpm typecheck && pnpm exec tsc -p tools/tsconfig.json
-pnpm test && node tools/ci/run-tests.ts && pnpm build
-python -m pip install -e "packages/scientific-method-engine[test]"
-cd packages/scientific-method-engine && python -B -m unittest discover -s tests -p "test*.py"
-python -m pip install -e packages/disc-archiver
-cd packages/disc-archiver && xvfb-run -a python -B -m unittest discover -s tests -p "test*.py"
-# when packaging/ or an import changes: python packaging/build_bundle.py --out dist
-dotnet build packages/dotnet/RefurbishedDinosaurs.slnx
-dotnet test --project packages/dotnet/RefurbishedDinosaurs.Core.Tests/RefurbishedDinosaurs.Core.Tests.csproj
-pwsh tools/Verify-Repository.ps1
-```
+| Changed | Run before pushing |
+|---|---|
+| Any TypeScript | `pnpm lint && pnpm format:check` |
+| `packages/executable-reader/` or `packages/standard-checker/` | `pnpm --filter <package> typecheck` and `pnpm --filter <package> test` |
+| `tools/` or `actions/` | `pnpm exec tsc -p tools/tsconfig.json` and `node --test` on the test files beside the change |
+| `packages/scientific-method-engine/` | the engine test modules covering the change: `python -B -m unittest discover -s tests -p "test_<module>.py"` from the package directory |
+| `packages/disc-archiver/` | the archiver test modules covering the change, the same way |
+| `packages/dotnet/` | `dotnet build packages/dotnet/RefurbishedDinosaurs.slnx` (it fails on missing XML docs) and the tests of the changed area |
+| Docs, ADRs, plans, skills | nothing |
+
+Left to CI unless a check above points at them: the full `pnpm test`, `node tools/ci/run-tests.ts`,
+`pnpm build`, the full engine and archiver suites (the archiver's needs `xvfb-run`), the bundle
+build (`python packaging/build_bundle.py --out dist`), the full .NET test run, the Ghidra script
+compile and `pwsh tools/Verify-Repository.ps1`. Run one of them locally only when you are
+debugging its failure.
 
 CI runs a job only when the change touches a path the job tests, as `AREAS` and `AREA_SUFFIXES`
 in `tools/ci/changes.ts` list them, and runs the repository policy check on every change. Any
@@ -117,8 +120,8 @@ non-TypeScript file that a tool's tests read, or a test that starts reading a fi
 package adds the path to `AREAS`.
 
 A change to the Ghidra scripts runs the `ghidra-scripts` CI job, which compiles them against the
-jars of the Ghidra 12.1.3 release pinned in `.github/workflows/ci.yml`. To compile them before
-pushing, run the same command against a Ghidra 12.1 install (use `:` in place of `;` outside
+jars of the Ghidra 12.1.3 release pinned in `.github/workflows/ci.yml`. To compile them locally,
+run the same command against a Ghidra 12.1 install (use `:` in place of `;` outside
 Windows). The second glob takes in the helper classes the scripts share, which sit in package
 directories beside them so that Ghidra does not list them as scripts. A change to the command,
 such as a new glob, goes into both copies:
