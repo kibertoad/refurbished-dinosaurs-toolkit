@@ -265,22 +265,40 @@ Beside the inventory, the script writes `<file>.provenance.tsv`, one name and va
 
 The hashes are of the file bytes the program holds, used only when their SHA-256 equals the one
 Ghidra recorded at import. A program that holds no such bytes, or only more than 256 MiB of them,
-fails the export. The script does not write the `.regions.tsv` file the protocol also puts beside an
-inventory.
+fails the export.
+
+It also writes `<file>.regions.tsv`, the totals of the denominator audit. Its columns are `kind`,
+`start`, `size`, then `instructions`, `data` and `undefined`, each followed by the same count of
+the bytes outside every function body (`instructions_outside`, `data_outside`,
+`undefined_outside`). The three totals of a row add up to its `size`. `instructions` counts bytes
+inside a decoded instruction, `data` bytes inside defined data, and `undefined` the rest. Starts are
+written as in the inventory. The rows are, in this order and each kind in address order:
+
+| `kind` | One row for |
+|---|---|
+| `region` | each initialized executable memory block, and for an overlay block each part one range of a file supplies |
+| `outside` | each stretch of a function body that lies in no `region`, such as a body in a block without execute permission; its outside counts are 0 |
+| `entry` | each function start where no instruction starts, counting that one byte: an `instructions` of 1 means the start is inside an instruction, a `data` of 1 that it is inside data |
+
+The regions are the blocks Ghidra marks executable, so they are an upper bound on the code. Ghidra's
+MZ loader marks the whole load image executable, so its region holds the program's data and padding
+as well, which its `data` and `undefined` counts show. Which of those bytes are code is for the
+spec's Code ranges and the reader's `bodies` command to say.
 
 The export fails and writes nothing when the program is NE (Ghidra places NE segments at paragraphs
 of its own choosing, and the script does not convert them to the Standard's NE segments), when the
-Standard has no notation for its address space, or when any function cannot be written in full. The
-log names each such function, up to 1000 lines, with the body range and the reason: a body in an
+Standard has no notation for its address space, or when any function or executable region cannot be
+written in full. The log names each one, up to 1000 lines, with the range and the reason: a body or
+region in an
 overlay block of a program other than MZ, overlay bytes from no file or from a file other than the
 imported one, a body outside every memory block or in an address space other than the program's
 default one, an end past `FFFF:FFFF` or past the top of the flat notation, body bytes placed twice
 in one body, or a start another function already has, as when two overlay blocks view the same
 file bytes. An inventory never leaves out part of a body, so fix the analysis or the import and
-export again. Neither output may exist before the run. Both are written to temporary files, and the
+export again. No output may exist before the run. All three are written to temporary files, and the
 inventory is moved into place last, so a run without the `Exported` line and the inventory is a
-failed export. A run stopped between the two moves leaves a provenance file with no inventory, and
-the next run refuses until you remove it.
+failed export. A run stopped between the moves leaves a provenance or regions file with no
+inventory, and the next run refuses until you remove it.
 
 ## Addresses outside code
 
