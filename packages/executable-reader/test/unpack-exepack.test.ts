@@ -279,6 +279,17 @@ test("a relocation past the load module fails naming the offset", () => {
   );
 });
 
+test("a relocation listed twice is refused", () => {
+  const table = Buffer.alloc(32 + 4);
+  table.writeUInt16LE(2, 0);
+  table.writeUInt16LE(0x0010, 2);
+  table.writeUInt16LE(0x0010, 4);
+  assert.throws(
+    () => unpack(exepack(encode([{ fill: 0, length: 32 }]), 32, { table })),
+    /names load-module offset 0x00000010, which an earlier entry already names/,
+  );
+});
+
 test("a relocation table that does not end with the EXEPACK block is refused", () => {
   const stream = encode([{ fill: 0, length: 32 }]);
   const short = Buffer.alloc(30);
