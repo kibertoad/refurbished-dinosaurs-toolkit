@@ -51,7 +51,7 @@ found another way. It needs `formatControls` and decodes no instruction.
 address table, by slot address, and needs at least one positive control: a slot with the import
 other evidence shows. A control that maps to anything else rejects the report.
 
-`unpack` decodes an LZEXE 0.90 or 0.91 executable (an `mz` source) and writes its unpacked form to
+`unpack` decodes an LZEXE 0.90 or 0.91 or an EXEPACK executable (an `mz` source) and writes its unpacked form to
 the config's `output`, a path relative to the config file. It prints the `size`, `xxh3`, `format`
 and `tool` a build's `unpacked` item gives, and never runs the decompressor in the file. The
 unpacked file is written by a documented layout rule, so every run of a reader major version gives
@@ -120,7 +120,7 @@ import { bodyLayout, fileLayout } from "@scientific-method/executable-reader/bod
 | `fileLayout(image)` | `body-layout` | The regions an `MzImage`'s tables declare, with the runs between them, covering the whole file. |
 | `MAX_BODY_FUNCTIONS`, `MAX_BODY_RANGES` | `body-layout` | The most functions one query takes (10000) and the most ranges in one body or candidate (4096). |
 | `BodyConfig`, `BodyFunction`, `ByteRange`, `BodyPart`, `LayoutRegion`, `RegionKind`, `RegionTotal` | `body-layout` | Types of the `bodies` query, the layout and the classified parts. |
-| `unpack(bytes)` | `unpack` | Unpacks an LZEXE 0.90 or 0.91 file in memory into an `UnpackResult`: the unpacked bytes, the rebuilt header and relocations, and the packed parts read. |
+| `unpack(bytes)` | `unpack` | Unpacks an LZEXE 0.90 or 0.91 or an EXEPACK file in memory into an `UnpackResult`: the unpacked bytes, the rebuilt header and relocations, and the packed parts read. |
 | `UNPACK_LAYOUT` | `unpack` | The layout rule number the unpacked bytes are written by. |
 | `MAX_PACKED_BYTES`, `MAX_UNPACKED_BYTES` | `unpack` | The caps on the packed file and on the unpacked load module, 1 MiB each. |
 | `UnpackResult`, `UnpackedHeader`, `UnpackedRelocation`, `PackedParts` | `unpack` | Types of the result. |

@@ -49,4 +49,7 @@ Two parts of the request were not taken:
 - An unpacked form recorded with another tool keeps its own `tool`; switching it to the reader
   changes its `xxh3`, so the build entry and every config naming the old hash change with it.
 - LZEXE 0.90 and 0.91 come first. PKLITE and EXEPACK follow as their own changes.
+- EXEPACK gives no field for the length of its stub, so the reader finds the relocation table
+  after the message that ends every known stub, and checks that the table ends where the header
+  says the EXEPACK block ends. It reads that message and nothing else of the stub's code.
 - The prepared config is unchanged: `unpack` runs in Node and does not reach the engine.
