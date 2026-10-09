@@ -4832,6 +4832,26 @@ test("a location range that ends on a function's last byte fails", (t) => {
   assert.ok(output.includes(LAST_BYTE("location address 0x00401000..0x0040101F")), output);
 });
 
+test("a range that ends where two functions share their last byte names both", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401100..0x0040110F"));
+    inventory(
+      r,
+      "0x00401000\t32\t0x00401000..0x00401010 0x00401100..0x00401110\n0x00401100\t16\t\n",
+      "start\tsize\tranges",
+    );
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(
+    output.includes(
+      "location address 0x00401100..0x0040110F ends on the last byte of a range of the function at 0x00401000 and the function at 0x00401100 " +
+        "in coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv; ranges are half-open, so it ends at 0x00401110",
+    ),
+    output,
+  );
+});
+
 test("a half-open range that ends one past a function's last byte passes", (t) => {
   const root = broken(t, (r) => {
     rangeFinding(r, locatedAt("0x00401000..0x00401020"), "The handler, `0x00401000..0x00401020`, adds 1 to the score.");
