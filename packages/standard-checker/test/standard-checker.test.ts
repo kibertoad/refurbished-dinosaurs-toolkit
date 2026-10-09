@@ -2668,6 +2668,25 @@ test("a data path in a list of other files passes, before and after its director
     /SRC-MANUAL\.md: path WRAPPER\/src\/main1\.c lies under the directory exclusion WRAPPER\/src\/ of BLD-EXAMPLE-1\.0\.other-files\.yaml, which does not name the files under it; list WRAPPER\/src\/main1\.c itself among the other files$/m,
   );
   assert.doesNotMatch(excluded.output, /path WRAPPER\/src is/);
+
+  // A directory in another case names the list whose path gives it.
+  replaceIn(root, "spec/sources/SRC-MANUAL.md", "WRAPPER/src/main1.c in WRAPPER/src", "WRAPPER/SRC");
+  const dirCase = run(root);
+  assert.equal(dirCase.status, 1);
+  assert.match(
+    dirCase.output,
+    /SRC-MANUAL\.md: directory WRAPPER\/SRC is written WRAPPER\/src in BLD-EXAMPLE-1\.0\.other-files\.yaml$/m,
+  );
+
+  // A path under the exclusion written in another case still names the exclusion.
+  replaceIn(root, "spec/sources/SRC-MANUAL.md", "WRAPPER/SRC", "WRAPPER/SRC/main1.c");
+  const underCase = run(root);
+  assert.equal(underCase.status, 1);
+  assert.match(
+    underCase.output,
+    /SRC-MANUAL\.md: path WRAPPER\/SRC\/main1\.c writes the directory exclusion WRAPPER\/src\/ of BLD-EXAMPLE-1\.0\.other-files\.yaml in another case, and the exclusion does not name the files under it; list the path itself among the other files with its exact case$/m,
+  );
+  assert.doesNotMatch(underCase.output, /is in no build's manifest/);
 });
 
 test("an Other files section that names a missing list is reported", (t) => {

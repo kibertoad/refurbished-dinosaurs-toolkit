@@ -33,17 +33,25 @@ export function checkAcrossEntries(ctx: Context, { enumNames }: FormatNames) {
   // manifest or a path of some build's list of other files. A directory, or a pattern whose last
   // part holds a placeholder such as nn or xxx, is left alone. The data directories are the
   // top-level directories of the manifests' files unless --data-dirs names them; the lists of other
-  // files add no data directory. A directory exclusion in a list of other files is a directory: it
-  // does not stand for a file under it. A build path that holds a space is matched whole, longest
-  // first, together with any path that follows it, so Dir/With Space/file.ext is read as one path.
+  // files add no data directory. A directory exclusion accounts for the files under it in the
+  // inventory, but a citation of one of those files passes only where the list also gives that file
+  // by its own path, since the exclusion does not show that the file exists. A build path that holds
+  // a space is matched whole, longest first, together with any path that follows it, so
+  // Dir/With Space/file.ext is read as one path.
   {
     const exact = new Set<string>();
     // Folded path -> the path as written and the file that writes it.
     const folded = new Map<string, { path: string; where: string }>();
     const topDirs = new Set<string>();
+    // Folded directory -> the directory as written and the file whose path gives it.
+    const dirsFolded = new Map<string, { path: string; where: string }>();
     const exclusions: { dir: string; list: string }[] = [];
-    const addParents = (parts: string[]) => {
-      for (let i = 1; i < parts.length; i++) exact.add(parts.slice(0, i).join("/"));
+    const addDir = (dir: string, where: string) => {
+      exact.add(dir);
+      if (!dirsFolded.has(dir.toLowerCase())) dirsFolded.set(dir.toLowerCase(), { path: dir, where });
+    };
+    const addParents = (parts: string[], where: string) => {
+      for (let i = 1; i < parts.length; i++) addDir(parts.slice(0, i).join("/"), where);
     };
     for (const files of buildFiles.values())
       for (const f of files) {
@@ -53,18 +61,24 @@ export function checkAcrossEntries(ctx: Context, { enumNames }: FormatNames) {
         folded.set(p.toLowerCase(), { path: p, where: "the build entry" });
         const parts = p.split("/");
         if (parts.length > 1) topDirs.add(parts[0]);
-        addParents(parts);
+        addParents(parts, "the build entry");
       }
-    for (const [id, paths] of otherFiles)
+    for (const [id, paths] of otherFiles) {
+      const list = `${id}.other-files.yaml`;
       for (const o of paths) {
-        const list = `${id}.other-files.yaml`;
-        const p = o.endsWith("/") ? o.slice(0, -1) : o;
+        const isDir = o.endsWith("/");
+        const p = isDir ? o.slice(0, -1) : o;
         if (!p) continue;
-        exact.add(p);
-        if (o.endsWith("/")) exclusions.push({ dir: o, list });
-        else if (!folded.has(p.toLowerCase())) folded.set(p.toLowerCase(), { path: p, where: list });
-        addParents(p.split("/"));
+        if (isDir) {
+          addDir(p, list);
+          exclusions.push({ dir: o, list });
+        } else {
+          exact.add(p);
+          if (!folded.has(p.toLowerCase())) folded.set(p.toLowerCase(), { path: p, where: list });
+        }
+        addParents(p.split("/"), list);
       }
+    }
     const dataDirs = config.dataDirs ?? [...topDirs].sort();
     const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const tail = String.raw`[A-Za-z0-9_./-]*[A-Za-z0-9]`;
@@ -73,22 +87,25 @@ export function checkAcrossEntries(ctx: Context, { enumNames }: FormatNames) {
       .sort((a, b) => b.length - a.length);
     const whole = spaced.length ? `(?:${spaced.map(escapeRe).join("|")})(?:${tail})?|` : "";
     const dataPath = new RegExp(String.raw`(?<!\w)(?:${whole}(?:${dataDirs.map(escapeRe).join("|")})\/${tail})`, "g");
-    const dirsFolded = new Set([...exact].map((p) => p.toLowerCase()));
     const checkPaths = (file: string, text: string) => {
       for (const m of text.matchAll(dataPath)) {
         const p = m[0];
         if (exact.has(p)) continue;
         const last = p.split("/").pop()!;
         const written = folded.get(p.toLowerCase());
+        const dir = dirsFolded.get(p.toLowerCase());
         if (written) problem(file, `path ${p} is written ${written.path} in ${written.where}`);
-        else if (dirsFolded.has(p.toLowerCase())) problem(file, `directory ${p} differs in case from the build entry`);
+        else if (dir) problem(file, `directory ${p} is written ${dir.path} in ${dir.where}`);
         else if (/\d/.test(last) && !/nn|NN|xx|XX/.test(last)) {
           const under = exclusions.find((x) => p.startsWith(x.dir));
+          const underFolded = under ?? exclusions.find((x) => p.toLowerCase().startsWith(x.dir.toLowerCase()));
           problem(
             file,
             under
               ? `path ${p} lies under the directory exclusion ${under.dir} of ${under.list}, which does not name the files under it; list ${p} itself among the other files`
-              : `path ${p} is in no build's manifest or list of other files`,
+              : underFolded
+                ? `path ${p} writes the directory exclusion ${underFolded.dir} of ${underFolded.list} in another case, and the exclusion does not name the files under it; list the path itself among the other files with its exact case`
+                : `path ${p} is in no build's manifest or list of other files`,
           );
         }
       }
