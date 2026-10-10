@@ -12,7 +12,7 @@ from .argument_frames import WINDOW_BYTES, argument_frames, stack_cleanup
 from .memory_scopes import model_scopes
 from .result_flow import return_flows
 from .image import Image, integer
-from .trace import (trace, walk, cfg_step, call_target, unsupported_transfer, uncovered, holding_instruction, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
+from .trace import (trace, walk, cfg_step, call_target, unsupported_transfer, uncovered, holding_instruction, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON, LIMIT_REASON,
                     RETURNS, INTERRUPTS, PORTS, PORT_INPUTS, port_width, budget_input, modeled_interrupt_sites)
 from .pcode_backend import interrupt_vector
 
@@ -315,7 +315,7 @@ def _caller_continuations(image, stop, reason, stack, limit, cache, modeled=froz
     for call_site, return_site in reversed(stack):
         route, exits, truncated = _function_exit(image, start, limit, True, cache)
         if truncated:
-            return rows, [{"site": start, "reason": "instruction limit"}]
+            return rows, [{"site": start, "reason": LIMIT_REASON}]
         if not exits:
             break
         if port_free:
@@ -440,7 +440,7 @@ def uses(image, config):
     seeds = list(stops) + [start for start, _, _ in returning]
     after_stop, stop_gaps, _, _, _ = (walk(image, seeds, instruction_limit, follow_flat_ports=True, follow_interrupts=True)
                                       if seeds else ({}, [], None, None, None))
-    gaps.extend(g for g in stop_gaps if g["reason"] == "instruction limit")
+    gaps.extend(g for g in stop_gaps if g["reason"] == LIMIT_REASON)
     # In PE32 a site the stops reach only by continuing past a port access is named as such, even when
     # it also depends on an unread call. The walk that ends at port accesses must finish within the
     # limit for that claim; otherwise every row keeps the shared value. A return site counts as
@@ -450,7 +450,7 @@ def uses(image, config):
                        or any(not port_free for _, _, port_free in returning)):
         port_free_seeds = list(stops) + [start for start, _, port_free in returning if port_free]
         before_ports, port_gaps, _, _, _ = walk(image, port_free_seeds, instruction_limit, follow_interrupts=True)
-        if not any(g["reason"] == "instruction limit" for g in port_gaps):
+        if not any(g["reason"] == LIMIT_REASON for g in port_gaps):
             port_only = set(after_stop) - set(before_ports)
     # A call or interrupt past a stop was never traced either, so code after it also depends on it returning.
     starts = [(root, [{"site": root, "reason": reason}]) for root, reason in stops.items()]
@@ -877,7 +877,7 @@ def call_target_report(image, config):
             raise ValueError("Only the ptr16:16 far transfer encoding is supported")
     seen, gaps, _, _, contested = walk(image, entries(image), config.get("instructionLimit", 10000))
     # A walk stopped by its instruction limit leaves later boundaries unverified, not disproved.
-    truncated = any(g.get("reason") == "instruction limit" for g in gaps)
+    truncated = any(g.get("reason") == LIMIT_REASON for g in gaps)
     boundary = ("entry-path instruction" if site in seen else CONTESTED_REASON if site in contested
                 else "raw byte candidate; instruction boundary unverified"
                 + ("; the entry walk stopped at its instruction limit" if truncated else ""))
@@ -940,7 +940,7 @@ def call_target_report(image, config):
                               "interpretation": ("equal only to the raw operand, which names unrelocated bytes"
                                                  if matched == ["raw operand"] else
                                                  "kept beside the derived chain; it never replaces the relocation, descriptor or trampoline identities")}
-    result["gaps"] = [g for g in gaps if g.get("site") == site or g.get("reason") == "instruction limit"]
+    result["gaps"] = [g for g in gaps if g.get("site") == site or g.get("reason") == LIMIT_REASON]
     result["walkComplete"] = not truncated
     return result
 
@@ -985,7 +985,7 @@ def body(image, entry, limit=10000):
         if at in seen:
             continue
         if len(seen) >= limit:
-            gaps.append({"site": at, "reason": "instruction limit"})
+            gaps.append({"site": at, "reason": LIMIT_REASON})
             break
         ins = image.decode(at)
         if ins is None:
@@ -1210,7 +1210,7 @@ def callees(image, config):
         edge["calleeSummary"] = edge["target"] if edge["target"] in summaries else None
     # A reused node that reaches the active path, or whose reached bodies were capped or are unusable, may lead
     # back into the active path, so such reuse is no shared-node control.
-    capped = {"depth limit", "node limit", "instruction limit"}
+    capped = {"depth limit", "node limit", LIMIT_REASON}
 
     def shared_control(e):
         if e["classification"] != "sharedNodeReuse":

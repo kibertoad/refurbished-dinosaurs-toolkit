@@ -145,7 +145,8 @@ class ReachTests(unittest.TestCase):
         self.assertFalse(r["negativeUsable"])
 
     def test_the_instruction_limit_is_a_gap(self):
-        r = reach(indirectJumps=[TABLE], instructionLimit=3)
+        # The control at 0000 is read before the stop, so missing controls do not decide negativeUsable.
+        r = reach(indirectJumps=[TABLE], instructionLimit=3, controls=[0x0])
         self.assertIn("instruction limit", [g["reason"] for g in r["gaps"]])
         self.assertFalse(r["negativeUsable"])
         self.assertTrue(r["instructionLimitReached"])

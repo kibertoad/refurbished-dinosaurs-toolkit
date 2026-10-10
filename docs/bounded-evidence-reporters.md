@@ -1066,12 +1066,12 @@ before the stop, and which part that is depends on the walk order, so adding sta
 counts. A target that is not reached may lie past the stop.
 
 `negativeUsable` holds when `controls` were given, the walk did not stop at its instruction limit,
-nothing is unresolved, no gap was recorded and no instruction is contested. Even then a target that is not reached is unreached only on the
-walk's assumptions, which the report lists: each call and interrupt returns to the next
-instruction, each leaf calls nothing for its stated reason, and each declared table holds the
-routes its declaration gives. `throughEveryRoute` describes the routes the walk read; an
-unresolved transfer may add a route that passes none of those routines. None of this proves
-runtime reachability.
+nothing is unresolved, no gap was recorded and no instruction is contested. Even then a target
+that is not reached is unreached only on the walk's assumptions, which the report lists: each call
+and interrupt returns to the next instruction, each leaf calls nothing for its stated reason, and
+each declared table holds the routes its declaration gives. `throughEveryRoute` describes the
+routes the walk read; an unresolved transfer may add a route that passes none of those routines.
+None of this proves runtime reachability.
 
 ## Call targets a function inventory lacks
 
