@@ -61,6 +61,19 @@ def mode1_sector(lba: int, user: bytes, mode: int = 1) -> bytes:
     return SYNC + header + user + bytes(2352 - 16 - len(user))
 
 
+def form2_sector(lba: int, data: bytes = b"", subheader: bytes = b"\x00\x00\x20\x00", edc: bytes = b"\x12\x34\x56\x78") -> bytes:
+    """A raw CD-ROM XA form 2 sector: ``subheader`` twice, then ``data`` padded with zeros to 2,324
+    bytes, then ``edc``. With the defaults it is an empty form 2 padding sector with a nonzero EDC."""
+    m, s, f = msf(lba + MSF_OFFSET)
+    header = bytes([bcd(m), bcd(s), bcd(f), 2])
+    return SYNC + header + subheader * 2 + data + bytes(2324 - len(data)) + edc
+
+
+def mode2_raw(iso: bytes) -> bytes:
+    """An ISO image as raw MODE2 form 1 sectors."""
+    return b"".join(mode1_sector(lba, iso[lba * 2048 : (lba + 1) * 2048], mode=2) for lba in range(len(iso) // 2048))
+
+
 def audio(track: int, sectors: int, salt: str = "") -> bytes:
     """Deterministic, distinct-per-track sample bytes."""
     block = b"".join(hashlib.sha256(f"{salt}{track}:{i}".encode()).digest() for i in range(74))[:2352]

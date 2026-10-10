@@ -12,7 +12,7 @@ from pathlib import Path
 import pycdlib
 from pycdlib.pycdlibexception import PyCdlibException
 
-from .disc import COOKED_SECTOR, FRAMES_PER_SECOND, MSF_OFFSET, DiscError, NotDataSector, Track, user_data
+from .disc import COOKED_SECTOR, FRAMES_PER_SECOND, MSF_OFFSET, DiscError, NotDataSector, Track, block_data, user_data
 
 PVD_SECTOR = 16
 MAXIMUM_FILES = 200_000
@@ -51,7 +51,15 @@ class UserDataStream(io.RawIOBase):
     descriptors, which sit at sector 16 of the track) at their own place, and every later sector
     at its address, so track sector ``i`` is read at sector ``i + base``. A read between the two
     ranges raises :class:`UnsupportedFileSystem`.
+
+    An empty MODE2 form 2 sector reads as 2,048 zero bytes, as it does in an ISO file, until
+    ``files`` is set. From then on it raises :class:`NotDataSector`: :func:`walk` sets it once the
+    file system's descriptors and directories are read, so a file whose extent covers such a sector
+    fails, as the toolkit's ``OriginalContentSource.OpenRead`` does, since a file stored in form 2
+    is not ISO 9660 user data.
     """
+
+    files = False
 
     def __init__(self, track: Track, volume: Volume | None = None) -> None:
         if track.is_audio:
@@ -62,7 +70,7 @@ class UserDataStream(io.RawIOBase):
         self._size = (track.length + self._base) * COOKED_SECTOR
         self._position = 0
         self._handle = track.source.open("rb")
-        self._cached: tuple[int, bytes] | None = None
+        self._cached: tuple[int, bool, bytes] | None = None
 
     def readable(self) -> bool:
         return True
@@ -93,8 +101,8 @@ class UserDataStream(io.RawIOBase):
         return address - self._base, self._track.length + self._base
 
     def _sector(self, index: int) -> bytes:
-        if self._cached and self._cached[0] == index:
-            return self._cached[1]
+        if self._cached and self._cached[:2] == (index, self.files):
+            return self._cached[2]
         track = self._track
         stored_first, _ = track.stored_range()
         size = track.stored_sector_size
@@ -103,8 +111,11 @@ class UserDataStream(io.RawIOBase):
         if len(data) < size:
             raise DiscError(f"{track.source} ends inside track {track.number}")
         if track.storage == "raw":
-            data = user_data(data, track.mode, track.index1 + index)
-        self._cached = (index, data)
+            if self.files:
+                data = user_data(data, track.mode, track.index1 + index)
+            else:
+                data, _ = block_data(data, track.mode, track.index1 + index)
+        self._cached = (index, self.files, data)
         return data
 
     def read_sector(self, index: int) -> bytes:
@@ -356,6 +367,9 @@ def walk(track: Track, destination: Path | None = None) -> list[FileEntry]:
     iso = pycdlib.PyCdlib()
     try:
         iso.open_fp(stream)
+        # pycdlib has read the system area, the descriptors and every directory; what it reads
+        # from here on is file data.
+        stream.files = True
         joliet = iso.has_joliet()
         key = "joliet_path" if joliet else "iso_path"
         for root, _, files in iso.walk(**{key: "/"}):
