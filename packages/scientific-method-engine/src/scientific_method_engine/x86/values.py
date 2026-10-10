@@ -183,9 +183,12 @@ def op(name, a, b, site=None):
         elif name == "and": n = x & y
         elif name == "or": n = x | y
         elif name == "xor": n = x ^ y
-        elif name == "shl": n = x << (y & 31)
-        elif name == "shr": n = x >> (y & 31)
-        elif name == "sar": n = (x - (1 << bits) if x & (1 << (bits - 1)) else x) >> (y & 31)
+        # P-code shifts take the whole count: SLEIGH masks an x86 count itself, and its 33-bit
+        # rotate through CF shifts a 64-bit temporary by 32. A count of the width or more leaves 0,
+        # or the sign for an arithmetic shift.
+        elif name == "shl": n = x << min(y, bits)
+        elif name == "shr": n = x >> min(y, bits)
+        elif name == "sar": n = (x - (1 << bits) if x & (1 << (bits - 1)) else x) >> min(y, bits)
         elif name == "mul": n = x * y
         else: raise ValueError("Unsupported expression operation: " + name)
         return Value(bits, const(n, bits).term, origin)

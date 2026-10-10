@@ -823,6 +823,19 @@ test("reach follows a resident far call and an overlay fixup call through the FB
   assert.deepEqual(r.reachedRoutines, [80, 528, 532]);
   assert.equal(r.negativeUsable, true);
   assert.equal(r.instructionLimitReached, false);
+  // The overlay entry is no call, so it is refused as a call-site control and holds as an instruction control.
+  writeFileSync(path, JSON.stringify({ ...config, starts: [80], targets: [528], controls: [528] }));
+  assert.throws(() => run(["reach", path]), /control 528 is not a call site/);
+  writeFileSync(
+    path,
+    JSON.stringify({ ...config, starts: [80], targets: [528], controls: [], instructionControls: [528] }),
+  );
+  const instruction = run(["reach", path]);
+  assert.deepEqual(
+    instruction.instructionControls.map((c: Report) => [c.site, c.routine]),
+    [[528, 528]],
+  );
+  assert.equal(instruction.negativeUsable, true);
   // Stopped after its first instruction, the walk says so at the top level and claims no negative,
   // though the control it read holds.
   writeFileSync(path, JSON.stringify({ ...config, starts: [80], targets: [528], controls: [80], instructionLimit: 1 }));
@@ -901,6 +914,72 @@ test("inventory-check places a target in an overlay region that lists no entries
     [[528, "0x210", "outside every row", "entry-path call", { entryPath: 1, contested: 0, rawCandidates: 1 }]],
   );
   assert.deepEqual(r.gaps, []);
+});
+
+test("inventory-check runs over code regions taken from the FBOV descriptor spans the bodies report gives", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "bounded-spans-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // Header 0..64 with one relocation (the far call's segment word at 70), load image 64..200 cut by
+  // five descriptors (segment, maxOffset, flags, minOffset), FBOV header 208..224.
+  const data = Buffer.alloc(224),
+    w = (p: number, n: number) => data.writeUInt16LE(n, p);
+  data.write("MZ");
+  w(2, 200);
+  w(4, 1);
+  w(6, 1);
+  w(8, 4);
+  w(24, 28);
+  w(28, 6);
+  data.write("FBOV", 208);
+  data.writeUInt32LE(160, 216);
+  data.writeUInt32LE(5, 220);
+  [
+    [0, 0x21, 1, 0],
+    [3, 0x10, 0, 0],
+    [4, 0x20, 1, 0],
+    [5, 3, 4, 4],
+    [6, 0x28, 0, 0],
+  ].forEach((words, i) => words.forEach((word, j) => w(160 + i * 8 + j * 2, word)));
+  // Segment 0: call 0010; call far 0004:0000; ret. 0010: ret. Segment 3 holds 0xFF data, segment 4 a retf.
+  data.set([0xe8, 0x0d, 0x00, 0x9a, 0x00, 0x00, 0x04, 0x00, 0xc3], 64);
+  data[80] = 0xc3;
+  data.fill(0xff, 112, 128);
+  data[128] = 0xcb;
+  writeFileSync(join(dir, "source.bin"), data);
+  const base = { source: "source.bin", sourceKind: "mz", xxh3: sourceXxh3(data) };
+  const path = join(dir, "config.json");
+  writeFileSync(path, JSON.stringify({ ...base, formatControls: { relocations: 1, descriptors: 5, overlays: 0 } }));
+  const tables = run(["bodies", path]);
+  // The caller decides which flags mark code; here, flags 1.
+  const regions = tables.descriptors
+    .filter((d: Report) => d.flags === 1 && d.extent === "bytes")
+    .map((d: Report) => ({
+      name: `descriptor-${d.index}`,
+      start: d.start,
+      end: d.end,
+      ip: d.ip,
+      segment: d.loadedSegment,
+      entries: d.index === 0 ? [64] : [],
+      evidence: `FBOV descriptor ${d.index} span`,
+    }));
+  assert.deepEqual(
+    regions.map((r: Region) => [r.name, r.start, r.end, r.segment, r.ip]),
+    [
+      ["descriptor-0", 64, 97, 0x1000, 0],
+      ["descriptor-2", 128, 160, 0x1004, 0],
+    ],
+  );
+  writeFileSync(join(dir, "inventory.tsv"), "start\tsize\n1000:0000\t9\n");
+  writeFileSync(path, JSON.stringify({ ...base, regions, inventory: "inventory.tsv", controls: [64, 67] }));
+  const r = run(["inventory-check", path]);
+  assert.deepEqual(
+    r.targets.map((row: Report) => [row.target, row.address, row.status, row.call, row.evidence]),
+    [
+      [80, "1000:0010", "outside every row", "near", "entry-path call"],
+      [128, "1004:0000", "outside every row", "far", "entry-path call"],
+    ],
+  );
+  assert.deepEqual(r.rowsOutsideDeclaredCode, []);
 });
 
 test("callee graph through the source bridge compares its edges with a Ghidra export", (t) => {

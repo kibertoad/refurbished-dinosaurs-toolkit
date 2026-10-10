@@ -18,7 +18,9 @@ sys.path.insert(0, str(SRC))
 ENGINE = [sys.executable, "-B", "-m", "scientific_method_engine"]
 ENGINE_ENV = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(SRC), os.environ.get("PYTHONPATH")]))}
 import capstone
+from importlib import metadata
 import pypcode
+from scientific_method_engine.x86 import image as image_module
 from scientific_method_engine.x86.image import Image
 from scientific_method_engine.x86 import reports
 from scientific_method_engine.x86.reports import run_report
@@ -2292,6 +2294,22 @@ class ReporterTests(unittest.TestCase):
         unknown_divisor = report("f7 f3 c3")
         self.assertEqual(unknown_divisor["paths"][0]["conditionalModels"][0]["assumption"], "no divide error")
 
+    def test_overflow_after_a_shift_or_rotate_is_read_only_for_a_count_of_one(self):
+        # CMP AX,AX clears OF first, so a branch that read a stale OF would be decided.
+        def branches(shift):
+            return events(report(f"b8 00 40 b1 01 39 c0 {shift} 70 01 43 c3"), "branch")
+        for shift in ("d1 e0", "d1 e8", "d1 f8", "d1 c0", "d1 c8", "d1 d0", "d1 d8", "d0 e8",
+                      "c1 e0 01", "c1 f8 01", "c1 c0 01", "c1 c8 01", "c1 d0 01", "c1 d8 01", "d3 e0", "d3 d8"):
+            with self.subTest(shift=shift):
+                branch, = branches(shift)
+                self.assertEqual(branch["decidedBy"], "p-code flags")
+        # The CPU leaves OF undefined past a count of 1. SLEIGH's SHR with a count operand writes OF
+        # as 0 for a count of 1, where the CPU writes the operand's top bit.
+        for shift in ("c1 e0 03", "c1 e8 02", "c1 f8 02", "c1 c0 03", "c1 c8 03", "c1 d0 03", "c1 d8 03",
+                      "c1 e8 01", "d3 e8", "c0 e8 01", "d2 e8", "66 c1 e8 01"):
+            with self.subTest(shift=shift):
+                self.assertEqual([b.get("decidedBy") for b in branches(shift)], [None, None])
+
     def test_carry_review_regressions(self):
         # A wide rotate of an unknown value stays a bounded expression.
         self.assertIsNone(report("c1 c0 08 c3")["paths"][0]["stop"])
@@ -2958,6 +2976,30 @@ class ReporterTests(unittest.TestCase):
                 result = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True, env=ENGINE_ENV)
                 self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_decoder_identity_is_the_installed_capstone_distribution(self):
+        # The Capstone 5.0.8 and 5.0.9 bindings report 5.0.7 as capstone.__version__, so the guard and
+        # the report header read the distribution's own version.
+        self.assertEqual(image_module.CAPSTONE_VERSION, metadata.version("capstone"))
+        self.assertEqual(image_module.CAPSTONE_VERSION, image_module.REQUIRED_CAPSTONE)
+        data = bytes.fromhex("c3")
+        with mock.patch.object(image_module, "CAPSTONE_VERSION", "5.0.7"):
+            with self.assertRaisesRegex(ValueError, r"requires capstone==5\.0\.9; capstone 5\.0\.7 is installed"):
+                Image(data, configuration(data))
+        with mock.patch.object(image_module, "CAPSTONE_VERSION", None):
+            with self.assertRaisesRegex(ValueError, r"requires capstone==5\.0\.9; the installed capstone has no distribution metadata"):
+                Image(data, configuration(data))
+        with mock.patch.object(image_module.metadata, "version", side_effect=metadata.PackageNotFoundError("capstone")):
+            self.assertIsNone(image_module.installed("capstone"))
+
+    def test_pypcode_guard_refuses_another_sleigh_specification(self):
+        # Which flags the engine keeps after a shift is checked against pypcode 4.0.1's SLEIGH files;
+        # pypcode 4.0.0 writes the OF of SHR by one as 0.
+        self.assertEqual(image_module.PYPCODE_VERSION, image_module.REQUIRED_PYPCODE)
+        data = bytes.fromhex("c3")
+        with mock.patch.object(image_module, "PYPCODE_VERSION", "4.0.0"):
+            with self.assertRaisesRegex(ValueError, r"requires pypcode==4\.0\.1; pypcode 4\.0\.0 is installed"):
+                Image(data, configuration(data))
+
     def test_cli_identity_and_errors(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); data = bytes.fromhex("b8 01 00 c3")
@@ -2970,7 +3012,7 @@ class ReporterTests(unittest.TestCase):
             header = json.loads(result.stdout)
             self.assertEqual(header["sourceIdentity"], {"size": 4, "xxh3": cfg["xxh3"]})
             self.assertEqual((header["decoder"], header["instructionSemantics"]),
-                             ("capstone " + capstone.__version__, f"pypcode {pypcode.__version__} (Ghidra SLEIGH x86)"))
+                             ("capstone " + metadata.version("capstone"), f"pypcode {pypcode.__version__} (Ghidra SLEIGH x86)"))
             cfg["xxh3"] = "0" * 32; path.write_text(json.dumps(cfg))
             result = subprocess.run(args, capture_output=True, text=True, env=ENGINE_ENV)
             self.assertEqual(result.returncode, 1)

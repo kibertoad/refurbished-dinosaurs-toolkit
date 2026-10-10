@@ -172,7 +172,75 @@ class ReachTests(unittest.TestCase):
         self.assertEqual(r["counts"]["unresolved"], 2)
         self.assertTrue(r["truncated"])
 
+    def test_a_control_that_is_no_call_is_refused_before_the_walk_and_an_instruction_control_takes_it(self):
+        # 0000 calls 0004, which stores AX at [0100] and returns.
+        data = bytes.fromhex("e80100c3" "a30001" "c3")
+        with self.assertRaisesRegex(ValueError, r"control 4 is not a call site \(decodes as mov .*\); controls are "
+                                                r"call sites the walk must reach and resolve"):
+            run_report(data, config(data, targets=[7], controls=[4]), "reach")
+        r = run_report(data, config(data, targets=[7], instructionControls=[4]), "reach")
+        self.assertEqual(r["instructionControls"], [{"site": 4, "instruction": "mov word ptr [0x100], ax", "routine": 4}])
+        self.assertEqual(r["controls"], [])
+        self.assertTrue(r["negativeUsable"])
+        # The call that enters the store's routine passes as a call-site control.
+        r = run_report(data, config(data, targets=[7], controls=[0]), "reach")
+        self.assertEqual(r["controls"], [{"site": 0, "target": 4}])
+        self.assertEqual(r["instructionControls"], [])
+
+    def test_a_control_that_does_not_decode_is_refused_before_the_walk(self):
+        data = bytes.fromhex("e80100c3" "0f")
+        with self.assertRaisesRegex(ValueError, r"control 4 is not a call site \(does not decode\)"):
+            run_report(data, config(data, targets=[3], controls=[4]), "reach")
+
+    def test_a_site_the_walk_reaches_but_cannot_decode_is_not_called_unreached(self):
+        # 0000 calls 0004, whose single byte does not decode.
+        data = bytes.fromhex("e80100c3" "0f")
+        r = run_report(data, config(data, targets=[4]), "reach")
+        self.assertEqual(r["targets"][0]["status"], "reached but not decodable")
+        with self.assertRaisesRegex(ValueError, r"Positive controls failed: instruction control 4 is reached but not "
+                                                r"decodable$"):
+            run_report(data, config(data, targets=[3], instructionControls=[4]), "reach")
+
+    def test_each_failed_control_says_whether_it_was_reached(self):
+        LEAF = {"routine": 0x18, "reason": "synthetic leaf"}
+        cases = [({"controls": [0x6]}, "control 6 is reached but its call target is unresolved "
+                                       r"\(computed transfer remains unresolved\)"),
+                 # Without the table declaration the walk never arrives at 0020.
+                 ({"controls": [0x20]}, r"control 32 is not reached$"),
+                 # With 0018 a leaf and no table, nothing reaches 0028.
+                 ({"instructionControls": [0x28], "leaves": [LEAF]}, r"instruction control 40 is not reached$"),
+                 ({"indirectJumps": [TABLE], "instructionControls": [0x29]},
+                  "instruction control 41 is inside the reached instruction at 40"),
+                 ({"indirectJumps": [TABLE], "instructionControls": [0x18], "leaves": [LEAF]},
+                  "instruction control 24 is the start of a leaf, which the walk reaches but does not decode"),
+                 ({"indirectJumps": [TABLE], "instructionLimit": 3, "instructionControls": [0x28]},
+                  r"instruction control 40 is not reached \(the walk stopped at its instruction limit\)")]
+        for extra, message in cases:
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, "Positive controls failed: " + message):
+                reach(**extra)
+        # No table declaration means nothing reaches 0020, so the leaf there is not reached either.
+        with self.assertRaisesRegex(ValueError, r"Positive controls failed: control 32 is not reached$"):
+            reach(controls=[0x20], leaves=[{"routine": 0x20, "reason": "synthetic leaf"}])
+        # Every failed control is named at once, in both lists.
+        with self.assertRaisesRegex(ValueError, "control 6 is reached but .*; control 32 is not reached; "
+                                                "instruction control 40 is not reached"):
+            reach(controls=[0x3, 0x6, 0x20], instructionControls=[0x3, 0x28], leaves=[LEAF])
+
+    def test_the_starts_of_an_unresolved_overlap_are_decoded_and_not_called_unreached(self):
+        # 0000 calls 0007, which jumps through a one-row table to 0005, inside the mov at 0003 (the return site).
+        # Neither boundary is proven, so the walk keeps neither instruction.
+        data = bytes.fromhex("e80400" "b890c3" "c3" "2effa71000" "90909090" "0500")
+        table = {"site": 7, "exhaustive": True, "evidence": "synthetic: one row",
+                 "table": {"start": 0x10, "count": 1, "stride": 2, "evidence": "synthetic: one row"}}
+        r = run_report(data, config(data, targets=[3, 5], indirectJumps=[table]), "reach")
+        self.assertEqual([t["status"] for t in r["targets"]], ["start of an unresolved overlapping instruction"] * 2)
+        with self.assertRaisesRegex(ValueError, "Positive controls failed: instruction control 3 is the start of an "
+                                                "unresolved overlapping instruction; instruction control 5 is the "
+                                                "start of an unresolved overlapping instruction$"):
+            run_report(data, config(data, targets=[6], indirectJumps=[table], instructionControls=[3, 5]), "reach")
+
     def test_rejected_inputs(self):
+        too_many = list(range(257))
         for extra, message in [({"starts": [0x18]}, "established region entry"),
                                ({"starts": []}, "starts must be"),
                                ({"targets": [0x1000]}, "targets"),
@@ -180,8 +248,12 @@ class ReachTests(unittest.TestCase):
                                ({"leaves": [{"routine": 0x18, "reason": " "}]}, "nonempty reason"),
                                ({"leaves": [{"routine": 0, "reason": "x"}]}, "start cannot be a leaf"),
                                ({"controls": [0x3, 0x3]}, "distinct file offsets"),
-                               ({"controls": [0x6]}, "Positive control 6 missed"),
-                               ({"controls": [0x10]}, "Positive control 16 missed")]:
+                               ({"controls": [0x1000]}, "controls must be an integer"),
+                               ({"instructionControls": [0x3, 0x3]}, "distinct file offsets"),
+                               ({"instructionControls": [0x1000]}, "instructionControls must be an integer"),
+                               ({"instructionControls": [0x0]}, "instruction control 0 is a start"),
+                               ({"controls": too_many}, r"controls must be a list of 0\.\.256"),
+                               ({"instructionControls": too_many}, r"instructionControls must be a list of 0\.\.256")]:
             with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, message):
                 reach(**extra)
 
