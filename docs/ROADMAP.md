@@ -1,6 +1,6 @@
 # Roadmap
 
-As of 2026-10-04. This file orders the toolkit work that follows the ADR 0003 cutover. When a
+As of 2026-10-10. This file orders the toolkit work that follows the ADR 0003 cutover. When a
 milestone that takes several PRs starts, it gets a tracking issue stating its tests and exit
 condition. Remove a milestone from this file once it lands.
 
@@ -102,6 +102,26 @@ Ghidra call-edge cross-check from engine 0.9.0. In the same milestone, triage su
 and enemy-reinfestation's open requests against this toolkit's Ghidra scripts. In sub-culture-max
 these are items 12, 13, 20 to 27 and 32. Some name scripts the toolkit does not ship. Re-verify
 each against main and fix the ones that belong here.
+
+### M7. Owned DOSBox-X debugger sessions (issue 403)
+
+Build `dinorefurb-dosbox-session` as [ADR 0026](decisions/0026-dosbox-x-session-package.md)
+sets out. Each slice is one PR with synthetic tests against a stand-in emulator and a stand-in
+client, and no game or DOSBox-X in CI:
+
+1. The package, its CI area, release path and catalog rows, with the owned process, run lock,
+   drives, muted host audio, session records, request IDs and operation observation. Tests cover
+   readiness, an early exit, an expired observation, a transport error, a refused capability, an
+   existing lock and cleanup that fails while the process lives. The owner-local native procedure
+   passes on the pinned revision.
+2. Guarded writes to stopped state against a caller-supplied field contract. Tests cover a write
+   outside the contract, an expected-hash mismatch and a readback mismatch.
+3. The event log, with caller-supplied event schemas and module hashes. Tests cover a log cut off
+   mid-run, an event that fails its schema and a named module imported after the session started.
+
+What must stay explicit: an expired observation is pending, a log without its final outcome is
+incomplete, and no write is supported unless the caller's contract says so. The milestone ends
+when issue 403 closes, after reconqueror reruns its own startup probe on the released package.
 
 ### Writing rules
 
