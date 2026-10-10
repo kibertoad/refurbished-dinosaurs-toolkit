@@ -1333,6 +1333,124 @@ test("the fork point during an octopus merge takes in every head being merged", 
   assert.doesNotMatch(output, /RULE-SCORE-001 exists at/);
 });
 
+// A copy of RULE-SCORE-001 under id with its own title, and its parity row after the last rule's.
+function addRule(root: string, id: string, title: string) {
+  copyRule(root, id, (text) => text.replace(/^title: .*$/m, `title: ${title}`));
+  const parity = join(root, "parity", "SCORE.md");
+  const lines = readFileSync(parity, "utf8").split("\n");
+  const last = lines.findLastIndex((line) => line.startsWith("| `RULE-SCORE-"));
+  lines.splice(last + 1, 0, row(id).replace("A kill adds one point to the score", title));
+  writeFileSync(parity, lines.join("\n"));
+}
+
+// Commits everything in root on the branch checked out, with message.
+function commitEverything(root: string, message: string) {
+  const git = gitAt(root);
+  git("add", "-A");
+  git("commit", "-q", "-m", message);
+}
+
+const TAKEN = (id: string, ref: string) =>
+  new RegExp(
+    `${id}\\.md: ${id} also exists at ${ref} with content this branch never held; renumber this one before it is merged \\[IDENTIFIERS-6\\]$`,
+    "m",
+  );
+
+test("an ID the change adds that the base branch's tip took for another entry is reported", (t) => {
+  const root = broken(t, (r) => withForkPoint(r));
+  const git = gitAt(root);
+  git("checkout", "-q", "-b", "feature");
+  // The base branch takes RULE-SCORE-002 after this branch forked.
+  git("checkout", "-q", "-b", "other", "origin/main");
+  addRule(root, "RULE-SCORE-002", "A combo adds two points to the score");
+  commitEverything(root, "other");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "feature");
+  // Before it is committed, as a pre-commit hook runs it.
+  addRule(root, "RULE-SCORE-002", "A bonus adds ten points to the score");
+  const draft = run(root, "--require-base");
+  assert.equal(draft.status, 1, draft.output);
+  assert.match(draft.output, TAKEN("RULE-SCORE-002", "origin/main"));
+  // After it is committed.
+  commitEverything(root, "feature");
+  const committed = run(root, "--check", "--require-base");
+  assert.equal(committed.status, 1, committed.output);
+  assert.match(committed.output, TAKEN("RULE-SCORE-002", "origin/main"));
+  // Renumbered, it passes.
+  git("mv", "spec/rules/RULE-SCORE-002.md", "spec/rules/RULE-SCORE-003.md");
+  replaceIn(root, "spec/rules/RULE-SCORE-003.md", "id: RULE-SCORE-002", "id: RULE-SCORE-003");
+  replaceIn(root, "parity/SCORE.md", "| `RULE-SCORE-002` |", "| `RULE-SCORE-003` |");
+  const renumbered = run(root, "--require-base");
+  assert.equal(renumbered.status, 0, renumbered.output);
+});
+
+test("a new ID whose copy at the base branch's tip this branch once held is its own entry", (t) => {
+  const root = broken(t, (r) => withForkPoint(r));
+  const git = gitAt(root);
+  git("checkout", "-q", "-b", "feature");
+  addRule(root, "RULE-SCORE-002", "A bonus adds ten points to the score");
+  commitEverything(root, "first");
+  // The base branch took the entry as the branch first wrote it, as a squash merge of an earlier
+  // pull request does; the branch went on to edit it.
+  git("checkout", "-q", "-b", "squashed", "origin/main");
+  git("checkout", "feature", "--", "spec/rules/RULE-SCORE-002.md", "parity/SCORE.md");
+  commitEverything(root, "squashed");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "feature");
+  replaceIn(root, "spec/rules/RULE-SCORE-002.md", "title: A bonus adds", "title: A bonus always adds");
+  replaceIn(root, "parity/SCORE.md", "| A bonus adds", "| A bonus always adds");
+  commitEverything(root, "second");
+  const { status, output } = run(root, "--require-base");
+  assert.equal(status, 0, output);
+  assert.doesNotMatch(output, /also exists at/);
+});
+
+test("--base names the branch a change merges into: its newer entries are not deletions, and its IDs are taken", (t) => {
+  const root = broken(t, (r) => withForkPoint(r));
+  const git = gitAt(root);
+  git("branch", "goal");
+  git("checkout", "-q", "-b", "session");
+  addRule(root, "RULE-SCORE-002", "A bonus adds ten points to the score");
+  commitEverything(root, "session");
+  // The goal branch moves on with an entry under the same ID and one more.
+  git("checkout", "-q", "goal");
+  addRule(root, "RULE-SCORE-002", "A combo adds two points to the score");
+  addRule(root, "RULE-SCORE-004", "A miss takes one point from the score");
+  commitEverything(root, "goal");
+  git("checkout", "-q", "session");
+  const { status, output } = run(root, "--base", "goal");
+  assert.equal(status, 1, output);
+  assert.match(output, TAKEN("RULE-SCORE-002", "goal"));
+  assert.doesNotMatch(output, /RULE-SCORE-004 exists at/);
+  // origin/main has not moved, so the default comparison finds nothing.
+  assert.doesNotMatch(run(root, "--require-base").output, /also exists at/);
+  // A deletion since the fork point names the commit and the ref.
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-001.md"));
+  assert.match(
+    run(root, "--base", "goal").output,
+    /^spec: RULE-SCORE-001 exists at [0-9a-f]{40} \(where HEAD forked from goal\) and has been deleted or renamed \[IDENTIFIERS-6\]$/m,
+  );
+});
+
+test("a deviation ID the base branch's tip took for another deviation is reported", (t) => {
+  const root = broken(t, (r) => withForkPoint(r));
+  const git = gitAt(root);
+  git("checkout", "-q", "-b", "feature");
+  git("checkout", "-q", "-b", "other", "origin/main");
+  withDeviation(root);
+  commitEverything(root, "other");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "feature");
+  withDeviation(root);
+  replaceIn(root, "deviations/DEV-SCORE-001.md", "Counts two points.", "Counts three points.");
+  const { status, output } = run(root, "--require-base");
+  assert.equal(status, 1, output);
+  assert.match(
+    output,
+    /DEV-SCORE-001\.md: DEV-SCORE-001 also exists at origin\/main with content this branch never held; renumber this one before it is merged$/m,
+  );
+});
+
 test("--scheduled-generation passes the base branch's newer generated files taken by a squash merge", (t) => {
   const root = broken(t, (r) => withForkPoint(r));
   const git = gitAt(root);

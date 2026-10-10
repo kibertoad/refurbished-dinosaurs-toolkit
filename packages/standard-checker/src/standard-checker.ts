@@ -15,9 +15,11 @@
 //                       edits, adds or removes one; a file that matches the base branch's tip,
 //                       or a change that only regenerates them, passes; the result line names
 //                       the comparison with the spec as skipped
-//   --base <ref>        also fail when an ID or area that exists at <ref> is gone (default: where
-//                       HEAD forked from origin/$GITHUB_BASE_REF or origin/main; when that does not
-//                       resolve, the result line names the comparison as skipped)
+//   --base <ref>        the branch this one merges into: fail when an ID or area that exists where
+//                       HEAD forked from <ref> is gone, or when an ID this change adds exists at
+//                       <ref> with content this branch never held, so it must be renumbered
+//                       (default: origin/$GITHUB_BASE_REF or origin/main; when HEAD's fork point
+//                       with it does not resolve, the result line names the comparison as skipped)
 //   --require-base      fail when no --base is given and the fork point does not resolve, instead
 //                       of passing with the comparison skipped
 //   --squashed <list>   comma-separated OLD=NEW or OLD=NEW+NEW items: superseded entries this change
