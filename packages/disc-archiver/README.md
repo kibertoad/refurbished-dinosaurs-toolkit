@@ -221,13 +221,13 @@ My Game/
   the data hash, the block a MODE1 image of the disc and an ISO hold there and the bytes the
   toolkit's `OriginalContentSource.OpenVolume` reads for it. `data.emptyForm2Sectors` lists those
   sectors as `[first, stop)` ranges counted from INDEX 01 (`[]` when there are none), since no ISO
-  keeps the fact that they were form 2. A form 2 sector with any nonzero data byte, or with
-  subheader copies that differ, holds no user data. A file whose extent covers an empty form 2
-  sector is not read: the `files` format stops the run with its sector number before any format
-  is written.
+  keeps the fact that they were form 2. A form 2 sector with any nonzero data byte, and a mode 2
+  sector of either form whose two subheader copies differ, holds no user data. A file whose extent covers an empty form 2
+  sector is not read: the `files` format, or a profile that lists expected paths (whose check
+  reads the files), stops the run with its sector number before any format is written.
   A raw data track can run on past the ISO 9660 volume its primary volume descriptor declares,
-  and some discs hold sectors there with no user data: no sync pattern, another mode, or a form 2
-  sector that carries data.
+  and some discs hold sectors there with no user data: no sync pattern, another mode, a form 2
+  sector that carries data, or subheader copies that differ.
   `data.nonDataSectors` lists those sectors as `[first, stop)` ranges counted from INDEX 01, and
   `data.nonDataSha256` is the SHA-256 of their raw 2,352 bytes in order (`[]` and `null` when there
   are none). They add nothing to `data.sha256`. Inside the declared volume, or on a track with no

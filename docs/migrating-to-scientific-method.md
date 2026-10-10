@@ -459,7 +459,16 @@ A restoration that recorded `data.sha256`, `data.nonDataSectors` or `data.nonDat
 MODE2 disc with a form 2 postgap or padding runs `disc-archiver check` on its dump again and
 records the new values. On a track with no other sectors in `data.nonDataSectors`, the data hash
 is the SHA-256 of an ISO of the track that holds zero blocks for those sectors, as the archiver's
-own `iso` format does. Discs without empty form 2 sectors keep every value.
+own `iso` format does.
+
+A MODE2 sector whose two subheader copies differ now holds no user data whatever its form, as
+`OriginalContentSource` reads it. Earlier versions read such a sector as form 1 user data when its first
+copy marked form 1. Inside the declared volume it now stops the run with its sector number, and past
+the volume it is listed in `data.nonDataSectors` and hashed raw into `data.nonDataSha256`. A disc
+whose dump `check` refuses for this reason is dumped again.
+
+Discs without empty form 2 sectors or MODE2 sectors with differing subheader copies keep every
+value.
 
 ## Engine upgrades
 

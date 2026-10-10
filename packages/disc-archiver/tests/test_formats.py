@@ -17,7 +17,7 @@ from synthetic import FILES, SyntheticCdExtra, SyntheticDisc, form2_sector, iso_
 
 from dinorefurb_disc_archiver import ccd, formats, isofs, pipeline
 from dinorefurb_disc_archiver.cue import read_cue, read_iso
-from dinorefurb_disc_archiver.disc import RAW_SECTOR, DiscError
+from dinorefurb_disc_archiver.disc import DESCRIBED_RANGES, RAW_SECTOR, DiscError, describe_ranges
 from dinorefurb_disc_archiver.formats import FormatUnavailable, write_format
 from dinorefurb_disc_archiver.pipeline import archive, derive, fingerprint, open_source
 from dinorefurb_disc_archiver.profile import BUILTIN_PROFILES
@@ -459,7 +459,8 @@ class EmptyForm2Tests(FormatTestCase):
             verification = outputs[identifier]["verification"]
             self.assertEqual(verification["differences"], [])
             self.assertIn(
-                f"which data track sectors are empty MODE2 form 2 sectors (in the source, {self.PAD}, {v}-{v + self.TAIL - 1}), "
+                f"which data track sectors are empty MODE2 form 2 sectors (in the source, {self.PAD}, {v}-{v + self.TAIL - 1} "
+                "counted from INDEX 01), "
                 "which an ISO holds as zero blocks",
                 verification["notCompared"],
             )
@@ -468,6 +469,13 @@ class EmptyForm2Tests(FormatTestCase):
         self.assertEqual(
             (self.dir / "out" / "bincue-split" / "Synth (Track 1).bin").read_bytes(), (self.source / "Synth (Track 1).bin").read_bytes()
         )
+
+    def test_ranges_in_notes_stop_at_a_limit(self) -> None:
+        self.assertEqual(describe_ranges([[5, 6], [8, 11]]), "5, 8-10")
+        ranges = [[i * 2, i * 2 + 1] for i in range(DESCRIBED_RANGES + 3)]
+        text = describe_ranges(ranges)
+        self.assertTrue(text.startswith("0, 2, 4"))
+        self.assertTrue(text.endswith(f"{(DESCRIBED_RANGES - 1) * 2} and 3 more ranges"))
 
     def test_a_copy_that_loses_the_form2_sectors_is_a_mismatch(self) -> None:
         reference = fingerprint(read_cue(self.sheet))
@@ -504,8 +512,20 @@ class EmptyForm2Tests(FormatTestCase):
     def test_a_form2_sector_whose_subheader_copies_differ_is_refused(self) -> None:
         sector = bytearray(form2_sector(self.PAD))
         sector[21] = 1
-        with self.assertRaisesRegex(DiscError, f"sector {self.PAD} is a MODE2 form 2 sector whose two subheader copies differ"):
+        with self.assertRaisesRegex(DiscError, f"sector {self.PAD} is a MODE2 sector whose two subheader copies differ"):
             fingerprint(self.disc_with(bytes(sector)))
+
+    def test_a_form1_sector_whose_subheader_copies_differ_is_refused(self) -> None:
+        # The first copy marks form 1; the second differs in another byte, then in the form 2 bit.
+        for byte, value in ((21, 1), (22, 0x20)):
+            sector = bytearray(mode1_sector(self.PAD, bytes(2048), mode=2))
+            sector[byte] = value
+            disc = self.disc_with(bytes(sector))
+            with self.assertRaisesRegex(DiscError, f"sector {self.PAD} is a MODE2 sector whose two subheader copies differ"):
+                fingerprint(disc)
+            with self.assertRaisesRegex(DiscError, f"sector {self.PAD} is a MODE2 sector whose two subheader copies differ") as raised:
+                self.write("iso", disc)
+            self.assertNotIsInstance(raised.exception, FormatUnavailable)
 
     def test_a_mode1_track_does_not_read_form2_sectors(self) -> None:
         raw = bytearray(self.synthetic.data_raw)

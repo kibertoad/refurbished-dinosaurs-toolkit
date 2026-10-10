@@ -142,8 +142,9 @@ def fingerprint(disc: Disc) -> dict[str, object]:
     """The disc's layout and content hashes, the same whichever format holds it.
 
     The data hash covers the first data track's user data from INDEX 01 to the track's end, apart
-    from the sectors past the volume described below, with empty form 2 sectors read as zeros. Each audio hash covers the track's raw
-    samples from INDEX 01 to the next track's INDEX 00, the range restorations fingerprint.
+    from the sectors past the volume described below, with empty form 2 sectors read as zeros.
+    Each audio hash covers the track's raw samples from INDEX 01 to the next track's INDEX 00, the
+    range restorations fingerprint.
 
     An empty MODE2 form 2 sector of a raw MODE2 track (see ``disc.is_empty_form2``), anywhere on
     the track, adds 2,048 zero bytes to ``data.sha256``: the block a MODE1 image of the disc and an
@@ -160,8 +161,9 @@ def fingerprint(disc: Disc) -> dict[str, object]:
     the disc's addresses (a CD-Extra disc's second session), from the start of the disc;
     ``isofs.locate`` finds which from the root directory. Every sector inside the declared volume,
     and every sector of a track whose volume cannot be located, must hold user data or be an empty
-    form 2 sector, or a :class:`DiscError` names the first that is neither. The sector headers' stored addresses are
-    not checked; the address in the header of sector 16 is one of the bases ``isofs.locate`` tries.
+    form 2 sector, or a :class:`DiscError` names the first that is neither. The sector headers'
+    stored addresses are not checked; the address in the header of sector 16 is one of the bases
+    ``isofs.locate`` tries.
     """
     data = None
     volume = None
@@ -250,7 +252,7 @@ def _compare(reference: dict, found: dict, result: Verification, layout: bool, a
             if mine["emptyForm2Sectors"]:
                 result.not_compared.append(
                     "which data track sectors are empty MODE2 form 2 sectors (in the source, "
-                    f"{describe_ranges(mine['emptyForm2Sectors'])}), which an ISO holds as zero blocks"
+                    f"{describe_ranges(mine['emptyForm2Sectors'])} counted from INDEX 01), which an ISO holds as zero blocks"
                 )
         elif mine["emptyForm2Sectors"] or (theirs is not None and theirs["emptyForm2Sectors"]):
             result.compared.append("which data track sectors are empty MODE2 form 2 sectors")

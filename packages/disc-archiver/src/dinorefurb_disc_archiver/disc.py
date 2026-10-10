@@ -187,11 +187,18 @@ def user_data(sector: memoryview | bytes, mode: str, lba: int) -> bytes:
         return bytes(sector[16:2064])
     if sector_mode != 2:
         raise NotDataSector(f"sector {lba} is mode {sector_mode}, not the MODE2 its track declares")
-    # CD-ROM XA: the submode byte repeats at 18 and 22. Bit 5 marks a form 2 sector, whose 2,324
-    # bytes of data are not ISO 9660 user data. block_data reads an empty one as zeros.
+    # CD-ROM XA: the 4-byte subheader is stored twice, at 16 and 20; copies that differ leave the
+    # sector's form unknown, as the .NET reader holds for every MODE2 sector. Bit 5 of the submode
+    # byte (18) marks a form 2 sector, whose 2,324 bytes of data are not ISO 9660 user data.
+    # block_data reads an empty one as zeros.
+    if bytes(sector[16:20]) != bytes(sector[20:24]):
+        raise NotDataSector(f"sector {lba} is a MODE2 sector whose two subheader copies differ")
     if sector[18] & 0x20:
         raise NotDataSector(f"sector {lba} is a MODE2 form 2 sector, whose data is not ISO 9660 user data")
     return bytes(sector[24:2072])
+
+
+_EMPTY_FORM2_DATA = bytes(2324)
 
 
 def is_empty_form2(sector: memoryview | bytes) -> bool:
@@ -206,7 +213,7 @@ def is_empty_form2(sector: memoryview | bytes) -> bool:
         and sector[15] == 2
         and bytes(sector[16:20]) == bytes(sector[20:24])
         and bool(sector[18] & 0x20)
-        and not any(sector[24:2348])
+        and bytes(sector[24:2348]) == _EMPTY_FORM2_DATA
     )
 
 
@@ -221,13 +228,12 @@ def block_data(sector: memoryview | bytes, mode: str, lba: int) -> tuple[bytes, 
     try:
         return user_data(sector, mode, lba), False
     except NotDataSector:
-        # Only a mode 2 sector with its sync pattern gets here for its form 2 bit.
-        if mode != "MODE2" or bytes(sector[:12]) != SYNC or sector[15] != 2:
+        # Only a mode 2 sector with its sync pattern and equal subheader copies gets here for its
+        # form 2 bit.
+        if mode != "MODE2" or bytes(sector[:12]) != SYNC or sector[15] != 2 or bytes(sector[16:20]) != bytes(sector[20:24]):
             raise
     if is_empty_form2(sector):
         return bytes(COOKED_SECTOR), True
-    if bytes(sector[16:20]) != bytes(sector[20:24]):
-        raise NotDataSector(f"sector {lba} is a MODE2 form 2 sector whose two subheader copies differ")
     raise NotDataSector(f"sector {lba} is a MODE2 form 2 sector that carries data, which an ISO file cannot hold")
 
 
@@ -239,9 +245,17 @@ def add_to_ranges(ranges: list[list[int]], index: int) -> None:
         ranges.append([index, index + 1])
 
 
+DESCRIBED_RANGES = 20
+
+
 def describe_ranges(ranges: list[list[int]]) -> str:
-    """``[first, stop)`` sector ranges as text such as ``5-9, 12``, each range's last sector included."""
-    return ", ".join(str(first) if stop == first + 1 else f"{first}-{stop - 1}" for first, stop in ranges)
+    """``[first, stop)`` sector ranges as text such as ``5-9, 12``, each range's last sector included.
+
+    Past the first :data:`DESCRIBED_RANGES` ranges, the text gives how many more there are.
+    """
+    text = ", ".join(str(first) if stop == first + 1 else f"{first}-{stop - 1}" for first, stop in ranges[:DESCRIBED_RANGES])
+    more = len(ranges) - DESCRIBED_RANGES
+    return f"{text} and {more} more ranges" if more > 0 else text
 
 
 @dataclass
