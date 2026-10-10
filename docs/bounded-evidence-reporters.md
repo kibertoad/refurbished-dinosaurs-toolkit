@@ -1185,7 +1185,7 @@ state how many called routines the inventory misses next to its coverage figure
 | `inventory` | the inventory TSV, relative to the config file's directory as `source` is (a Python caller of `run_report` passes an absolute path, and a relative one is refused). Its columns are `start` and `size`, then optionally `name`, `out_of_scope` and `ranges`, as the work protocol gives them; a row that does not parse fails the report with its line number |
 | `searchRegions`, `scanLimit`, `instructionLimit` | as for `incoming`: the regions scanned (all by default), the bytes the raw scan reads (1 to 1,048,576 or the declared code size, whichever is larger; default 65536) and the instructions the entry-path walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000). Raise `scanLimit` to the size of the declared code, or the search is partial, and raise `instructionLimit` to it for a walk that cannot stop at its limit. A region with no `entries` can declare an overlay no inventory row starts, so targets in it are placed rather than `outside declared code` |
 | `controls` | optional, at most 256 call sites that must be entry-path calls with a resolved target; a missed one fails the report |
-| `noReturn` | optional, the declarations `reach` takes, in the same shape and with the same validation ([ADR 0030](decisions/0030-inventory-boundaries-against-the-entry-path-walk.md)): at most 256 `{ "routine", "reason" }` or `{ "interrupt", "reason" }` objects. The entry-path walk does not continue past a resolved call to a declared routine, and a declared interrupt is no `hardware or interrupt boundary` gap |
+| `noReturn` | optional, the declarations `reach` takes, in the same shape and with the same validation ([ADR 0031](decisions/0031-inventory-boundaries-against-the-entry-path-walk.md)): at most 256 `{ "routine", "reason" }` or `{ "interrupt", "reason" }` objects. The entry-path walk does not continue past a resolved call to a declared routine, and a declared interrupt is no `hardware or interrupt boundary` gap |
 | `limit` | rows kept in each of `targets`, `unresolved`, `rowsOutsideDeclaredCode`, `rowStarts` and `rowsPastNoReturn` (1..10000, default 1000) |
 
 The calls are the ones `incoming` reads: every E8 and 9A call start in the searched regions, and
@@ -1243,12 +1243,13 @@ walk established. A row whose start lies past the first byte of one of them is a
 
 `counts.rowStarts` counts the rows that start at an established instruction
 (`instructionStarts`), inside one (`insideAnInstruction`), at an overlapping instruction
-(`overlappingInstructionStarts`), and in bytes the walk did not decode (`notRead`). The check
+(`overlappingInstructionStarts`), at or inside an instruction the walk decoded but rejected as
+contested (`contested`), and in bytes where the walk established no instruction (`notRead`). The check
 decodes nothing the walk did not: a row start in bytes the walk never reached, such as one after
 data that a linear decode would run over, is counted as `notRead` and not placed, whatever a
 linear decode of those bytes would show. Raise `instructionLimit` to the size of the declared code
 so that a stop does not add to `notRead`. The summary states the rows inside an instruction and
-the rows not read.
+the rows not read and, when there are any, the rows at contested instructions.
 
 ### Rows past a call that does not return
 
@@ -1268,18 +1269,26 @@ evidence, or a declared interrupt site, and also holds the byte after it:
 | `followingRead` | whether the walk established an instruction at `following` by another route, such as a branch around an error exit. Without one, nothing the walk read shows the bytes after the call to be code |
 | `bytesAfter` | the bytes of the row's body range from `following` to the range's end |
 
-`noReturn` repeats each declaration as `reach` does: a routine row gives whether the walk
-`reached` it, its `returnSites`, `contradicted` and its entry-path `callSites` (each with
-`following` and `followingRead`); an interrupt row gives its `vector`, `reached`, `following` and
-`followingRead`. The entry-path walk ends a branch at every interrupt, so the return check reads
-each declared routine with a walk of its own that starts at the declared routines and continues
-past every interrupt except a declared one, as `reach` does. A routine that ends in an interrupt
-that returns is then contradicted by what follows it, unless that interrupt is declared too. This
-walk spends its own `instructionLimit`, and `noReturnCheckLimitReached` says when it stopped; an
-empty `returnSites` then may miss a return past the stop. `counts.rowsPastNoReturn` counts the
-rows and `counts.rowsPastNoReturnUnreadAfter` those whose `following` the walk did not read.
-`assumptions` lists what the walk rests on: each reached call returns to its next instruction
-except a call to a declared routine, and each declaration holds for its reason.
+`noReturn` repeats each declaration as `reach` does: a routine row gives whether the entry-path
+walk `reached` it, whether the return check `read` it, its `returnSites`, `contradicted` and its
+entry-path `callSites` (each with `following` and `followingRead`); an interrupt row gives its
+`vector`, `reached`, `following` and `followingRead`. The entry-path walk ends a branch at every
+interrupt, so the return check reads each declared routine with a walk of its own that starts at
+the declared routines and continues past every interrupt except a declared one, as `reach` does.
+A routine that ends in an interrupt that returns is then contradicted by what follows it, unless
+that interrupt is declared too. This walk spends its own `instructionLimit`, and
+`noReturnCheckLimitReached` says when it stopped; an empty `returnSites` then may miss a return
+past the stop. A routine the check did not read (its start does not decode, or a rejected overlap
+removed it) has an empty `returnSites` that shows nothing, and the summary counts it. A row with
+several declared calls or interrupts in its body is listed once for each. `counts.rowsPastNoReturn`
+counts the distinct rows with such a call or interrupt at an entry-path instruction, and
+`counts.rowsPastNoReturnUnreadAfter` those of them with a listed `following` the walk did not read.
+A row listed only for sites that are not entry-path instructions (a raw byte candidate, a contested
+instruction, or an interrupt the walk did not reach) is not shown to run past anything: it is
+counted apart in `counts.rowsPastNoReturnUnverified`, and the summary states it separately. `assumptions` lists what the walks rest on: each reached call returns to
+its next instruction except a call to a declared routine, each interrupt the return check reads
+returns to its next instruction except at a declared site, and each declaration holds for its
+reason.
 
 ## Evidenced indirect jump tables
 

@@ -183,7 +183,8 @@ class InventoryCheckTests(unittest.TestCase):
             "insideInstruction": 7, "insideInstructionAddress": "1000:0007", "insideInstructionSize": 5,
             "insideInstructionText": "lcall 0x1000, 0xe", "routine": 4, "routineAddress": "1000:0004", "routineIsRow": False}])
         self.assertEqual(r["counts"]["rowStarts"],
-                         {"instructionStarts": 2, "insideAnInstruction": 1, "overlappingInstructionStarts": 0, "notRead": 0})
+                         {"instructionStarts": 2, "insideAnInstruction": 1, "overlappingInstructionStarts": 0,
+                          "contested": 0, "notRead": 0})
         self.assertIn(" 1 row start lies inside an instruction the entry-path walk established.", r["summary"])
         # The routine's real entry is still a call target no row starts at.
         self.assertEqual([(t["address"], t["status"]) for t in r["targets"]], [("1000:0004", "outside every row")])
@@ -206,8 +207,9 @@ class InventoryCheckTests(unittest.TestCase):
         r = self.check("start\tsize\n1000:0000\t4\n1000:0005\t1\n1000:0007\t1\n", data=data)
         self.assertEqual(r["rowStarts"], [])
         self.assertEqual(r["counts"]["rowStarts"],
-                         {"instructionStarts": 2, "insideAnInstruction": 0, "overlappingInstructionStarts": 0, "notRead": 1})
-        self.assertIn(" 1 row start in declared code lies in bytes the walk did not decode, so its boundary is not checked.",
+                         {"instructionStarts": 2, "insideAnInstruction": 0, "overlappingInstructionStarts": 0,
+                          "contested": 0, "notRead": 1})
+        self.assertIn(" 1 row start in declared code lies in bytes where the walk established no instruction, so its boundary is not checked.",
                       r["summary"])
         self.assertNotIn("inside an instruction the entry-path walk established", r["summary"])
 
@@ -236,13 +238,15 @@ class InventoryCheckTests(unittest.TestCase):
             "start": "1000:0000", "size": 8, "kind": "call", "site": 0, "siteAddress": "1000:0000",
             "siteClassification": "entry-path instruction", "routine": 8, "following": 3, "followingAddress": "1000:0003",
             "followingRead": False, "bytesAfter": 5}])
-        self.assertEqual(r["noReturn"], [{"routine": 8, "reason": "synthetic exit", "reached": True, "returnSites": [],
-                                          "contradicted": False,
+        self.assertEqual(r["noReturn"], [{"routine": 8, "reason": "synthetic exit", "reached": True, "read": True,
+                                          "returnSites": [], "contradicted": False,
                                           "callSites": [{"site": 0, "following": 3, "followingRead": False}]}])
         self.assertEqual((r["counts"]["rowsPastNoReturn"], r["counts"]["rowsPastNoReturnUnreadAfter"]), (1, 1))
         self.assertIn(" 1 row continues past a call or interrupt declared noReturn, 1 of them where the walk read no "
                       "instruction after it by another route.", r["summary"])
         self.assertEqual(r["assumptions"], ["each reached call returns to its next instruction, except a call to a noReturn routine",
+                                            "each interrupt the noReturn check reads returns to its next instruction; "
+                                            "interrupt handlers are not read",
                                             "each noReturn routine and interrupt never returns, for the reason it gives"])
         # The call in the bytes after the exit call is only a raw byte candidate once the routine is declared.
         self.assertEqual([(t["target"], t["evidence"]) for t in r["targets"]], [(3, "raw byte candidate only")])
@@ -253,6 +257,29 @@ class InventoryCheckTests(unittest.TestCase):
         # A row that ends at the call's last byte does not continue past it.
         ended = self.check("start\tsize\n1000:0000\t3\n1000:0008\t4\n", data=data, noReturn=exit_routine)
         self.assertEqual(ended["rowsPastNoReturn"], [])
+
+    def test_a_row_with_two_calls_to_a_no_return_routine_lists_both_and_counts_one_row(self):
+        # 0000 jz 0005; 0002 call 000C; 0005 jnz 000A; 0007 call 000C; 000A ret; 000B nop; 000C mov ah,4Ch; int 21h.
+        data = bytes.fromhex("7403" "e80700" "7503" "e80200" "c3" "90" "b44c" "cd21")
+        exit_routine = [{"routine": 12, "reason": "synthetic exit"}]
+        r = self.check("start\tsize\n1000:0000\t12\n1000:000C\t4\n", data=data, noReturn=exit_routine)
+        self.assertEqual([(row["start"], row["site"], row["followingRead"]) for row in r["rowsPastNoReturn"]],
+                         [("1000:0000", 2, True), ("1000:0000", 7, True)])
+        self.assertEqual((r["counts"]["rowsPastNoReturn"], r["counts"]["rowsPastNoReturnUnreadAfter"]), (1, 0))
+        self.assertIn(" 1 row continues past a call or interrupt declared noReturn, 0 of them where", r["summary"])
+        # The result limit cuts the list, not the count.
+        cut = self.check("start\tsize\n1000:0000\t12\n1000:000C\t4\n", data=data, noReturn=exit_routine, limit=1)
+        self.assertEqual([row["site"] for row in cut["rowsPastNoReturn"]], [2])
+        self.assertEqual(cut["counts"]["rowsPastNoReturn"], 1)
+        self.assertTrue(cut["truncated"])
+
+    def test_a_no_return_routine_the_check_walk_does_not_establish_is_not_read(self):
+        # 0000 ret; 0001 is a 0F byte that does not decode, declared as a routine that never returns.
+        r = self.check("start\tsize\n1000:0000\t1\n", data=bytes.fromhex("c3" "0f"),
+                       noReturn=[{"routine": 1, "reason": "synthetic exit"}])
+        self.assertEqual([(row["read"], row["returnSites"], row["contradicted"]) for row in r["noReturn"]], [(False, [], False)])
+        self.assertIn(" 1 noReturn routine is not an instruction the check walk established, so its return check reads nothing.",
+                      r["summary"])
 
     def test_a_row_past_a_no_return_interrupt_is_listed_and_the_interrupt_is_no_boundary_gap(self):
         # mov ah,4Ch; int 21h; three data bytes; ret. The row covers all eight bytes.
@@ -306,6 +333,25 @@ class InventoryCheckTests(unittest.TestCase):
                          [(4, "raw byte candidate only"), (10, "contested call only")])
         self.assertTrue(all("insideInstruction" not in t for t in r["targets"]))
         self.assertEqual(sum(t["insideAnInstruction"] for t in r["counts"].values() if isinstance(t, dict)), 0)
+        # A row starting at the contested call is counted as contested. The row at 0000, an entry of the
+        # unresolved overlapping pair, is not read: the walk established no instruction there.
+        rows = self.inventory("start\tsize\n1000:0000\t3\n1000:0003\t14\n", name="contested.tsv")
+        r = run_report(data, config(data, regions, inventory=rows), "inventory-check")
+        self.assertEqual((r["counts"]["rowStarts"]["contested"], r["counts"]["rowStarts"]["notRead"]), (1, 1))
+        self.assertIn(" 1 row start lies at or inside an instruction the walk rejected as contested, so its boundary "
+                      "is not checked.", r["summary"])
+
+    def test_a_raw_byte_call_to_a_no_return_routine_is_listed_but_not_counted_as_a_row_past_it(self):
+        # 0000 ret; 0001 E8 01 00 are data bytes that decode as a call to the exit routine at 0005; 0004 data.
+        data = bytes.fromhex("c3" "e80100" "00" "b44c" "cd21")
+        r = self.check("start\tsize\n1000:0000\t5\n1000:0005\t4\n", data=data,
+                       noReturn=[{"routine": 5, "reason": "synthetic exit"}])
+        self.assertEqual([(row["site"], row["siteClassification"]) for row in r["rowsPastNoReturn"]],
+                         [(1, "raw byte candidate")])
+        self.assertEqual((r["counts"]["rowsPastNoReturn"], r["counts"]["rowsPastNoReturnUnverified"]), (0, 1))
+        self.assertNotIn("row continues past", r["summary"])
+        self.assertIn(" 1 more row holds such a call or interrupt that only raw bytes, a contested instruction or an "
+                      "unreached declaration show, so it is not shown to run.", r["summary"])
 
     def test_a_scan_limit_short_of_the_code_makes_the_search_partial(self):
         # The region lies in no container or declared segment, so only the scan gap shows the stop.

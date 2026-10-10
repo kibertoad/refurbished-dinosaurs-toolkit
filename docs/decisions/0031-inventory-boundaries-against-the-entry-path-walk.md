@@ -1,4 +1,4 @@
-# ADR 0030: inventory boundaries against the entry-path walk
+# ADR 0031: inventory boundaries against the entry-path walk
 
 Status: accepted. Extends [ADR 0024](0024-call-targets-a-function-inventory-lacks.md) with row
 checks, and [ADR 0029](0029-declared-non-returning-routines-and-interrupts.md) with `noReturn`
@@ -28,11 +28,14 @@ row start that falls inside an instruction of that decode.
 2. No linear decode. Decoding forward from a row start runs through data as readily as through
    code, so a start after a data word would be reported inside an instruction nothing executes.
    Bytes the walk did not decode are not decoded for the check: a row start in them is counted as
-   not read, and the summary says how many there are.
+   not read, a start at an instruction the walk rejected as contested is counted as contested, and
+   the summary says how many there are.
 3. `inventory-check` takes `noReturn` declarations in `reach`'s shape. The walk does not continue
    past a resolved call to a declared routine or past a declared interrupt. Each row whose body
    holds such a call or interrupt and the byte after it is reported, with whether the walk read
-   that byte by another route.
+   that byte by another route. Only a call or interrupt the entry-path walk established counts the
+   row as running past it; one that only raw bytes, a contested instruction or an unreached
+   declaration show is listed with its evidence and counted apart.
 4. The return check of ADR 0029 applies unchanged. The entry-path walk of `inventory-check` ends a
    branch at every interrupt, so it would read nothing after an interrupt that returns. The check
    therefore reads the declared routines with a walk of its own that continues past every

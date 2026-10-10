@@ -121,6 +121,30 @@ def successor_kinds(at, ins, step):
     return rows
 
 
+def successor_graph(image, seen, **step):
+    """Each site of ``seen`` mapped to its ``successor_kinds`` rows that stay in ``seen``, under ``cfg_step``'s ``step`` options."""
+    return {at: [(s, kind) for s, kind in successor_kinds(at, ins, cfg_step(image, at, ins, **step)) if s in seen]
+            for at, ins in seen.items()}
+
+
+def no_return_rows(routines, interrupts, returns, call_sites, seen, reached, read):
+    """The ``noReturn`` report rows of the declared ``routines`` and ``interrupts``.
+
+    ``returns`` gives each routine's return sites, ``call_sites`` the reached calls to each routine,
+    ``seen`` the instructions the calls and interrupts were read in, ``reached`` the sites a walk from
+    the starts reached and ``read`` the sites the return check decoded.
+    """
+    rows = [{"routine": at, "reason": reason, "reached": at in reached, "read": at in read,
+             "returnSites": returns[at], "contradicted": bool(returns[at]),
+             "callSites": [{"site": site, "following": site + seen[site].size,
+                            "followingRead": site + seen[site].size in seen}
+                           for site in call_sites.get(at, [])]}
+            for at, reason in routines.items()]
+    return rows + [{"interrupt": at, "reason": row["reason"], "vector": row["vector"], "reached": at in seen,
+                    "following": row["following"], "followingRead": row["following"] in seen}
+                   for at, row in interrupts.items()]
+
+
 def fewest_calls(graph, starts):
     """``(distance, parent, routine)`` for every site ``graph`` reaches from ``starts`` by the route with the fewest calls.
 
@@ -345,18 +369,10 @@ def reach(image, config):
     leaf_rows = [{"routine": at, "reason": reason, "reached": at in distance, "callSites": call_sites.get(at, [])}
                  for at, reason in leaves.items()]
     # Each call the declaration kept from its return site, so a reviewer can check what follows it.
-    no_return_rows, returning_leaves = [], set(leaves) - set(no_return_routines)
-    for at, reason in no_return_routines.items():
-        returns = returns_from(graph, seen, returning_leaves, at)
-        no_return_rows.append({"routine": at, "reason": reason, "reached": at in distance, "read": at in seen,
-                               "returnSites": returns, "contradicted": bool(returns),
-                               "callSites": [{"site": site, "following": site + seen[site].size,
-                                              "followingRead": site + seen[site].size in seen}
-                                             for site in call_sites.get(at, [])]})
-    no_return_rows += [{"interrupt": at, "reason": row["reason"], "vector": row["vector"], "reached": at in seen,
-                        "following": row["following"], "followingRead": row["following"] in seen}
-                       for at, row in no_return_interrupts.items()]
-    contradicted = any(row.get("contradicted") for row in no_return_rows)
+    returning_leaves = set(leaves) - set(no_return_routines)
+    returns = {at: returns_from(graph, seen, returning_leaves, at) for at in no_return_routines}
+    no_return = no_return_rows(no_return_routines, no_return_interrupts, returns, call_sites, seen, distance, seen)
+    contradicted = any(row.get("contradicted") for row in no_return)
     counts = {"routines": len(routine_starts), "instructions": len(seen), "unresolved": len(unresolved),
               "interrupts": len(interrupts), "gaps": len(gaps), "contested": len(contested)}
     assumptions = ["each reached call returns to its next instruction"
@@ -366,9 +382,9 @@ def reach(image, config):
                    + "; interrupt handlers are not read",
                    "each leaf calls nothing, for the reason it gives",
                    "each declared indirect jump table holds the routes its declaration gives"]
-    if no_return_rows:
+    if no_return:
         assumptions.append("each noReturn routine and interrupt never returns, for the reason it gives")
-    return {"starts": starts, "targets": rows, "leaves": leaf_rows, "noReturn": no_return_rows,
+    return {"starts": starts, "targets": rows, "leaves": leaf_rows, "noReturn": no_return,
             "reachedRoutines": sorted(routine_starts), "counts": counts,
             "unresolved": unresolved[:limit], "interrupts": interrupts[:limit], "gaps": gaps[:limit],
             "contested": sorted(contested)[:limit],
