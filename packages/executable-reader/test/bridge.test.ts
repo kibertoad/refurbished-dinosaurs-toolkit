@@ -931,6 +931,50 @@ test("inventory-check names the instruction a call target lies inside", (t) => {
   );
 });
 
+test("inventory-check reports a row start inside a far call and a row past a noReturn call through the real MZ prepared bridge", (t) => {
+  const { dir, config } = fixture(t);
+  const path = join(dir, "config.json");
+  const reason = "synthetic: declared to end the program";
+  // 1000:0000 (file 64) calls 1000:0010 (file 80) far through its relocation, then returns at 69. The row
+  // 1000:0003 starts three bytes into that call, and the row 1000:0000 covers the RET after it.
+  writeFileSync(join(dir, "inventory.tsv"), "start\tsize\n1000:0000\t6\n1000:0003\t3\n1000:0010\t4\n");
+  writeFileSync(path, JSON.stringify({ ...config, inventory: "inventory.tsv", noReturn: [{ routine: 80, reason }] }));
+  const r = run(["inventory-check", path]);
+  assert.deepEqual(
+    r.rowStarts.map((row: Report) => [
+      row.start,
+      row.status,
+      row.insideInstruction,
+      row.insideInstructionAddress,
+      row.insideInstructionSize,
+      row.routineAddress,
+      row.routineIsRow,
+    ]),
+    [["1000:0003", "inside an instruction", 64, "1000:0000", 5, "1000:0000", true]],
+  );
+  assert.deepEqual(r.rowsPastNoReturn, [
+    {
+      start: "1000:0000",
+      size: 6,
+      kind: "call",
+      site: 64,
+      siteAddress: "1000:0000",
+      siteClassification: "entry-path instruction",
+      routine: 80,
+      following: 69,
+      followingAddress: "1000:0005",
+      followingRead: false,
+      bytesAfter: 1,
+    },
+  ]);
+  // The declared routine ends in a far return, so the declaration is contradicted.
+  assert.deepEqual(
+    r.noReturn.map((row: Report) => [row.routine, row.returnSites, row.contradicted]),
+    [[80, [83], true]],
+  );
+  assert.match(r.summary, /1 noReturn routine has a return on its own read paths/);
+});
+
 test("inventory-check places a target in an overlay region that lists no entries", (t) => {
   const { dir, config } = overlayFixture(t);
   const path = join(dir, "config.json");

@@ -1,7 +1,8 @@
 # ADR 0029: declared non-returning routines and interrupts
 
 Status: accepted. Extends [ADR 0023](0023-reachability-over-the-entry-path-cfg.md) with a
-`noReturn` input to `reach`.
+`noReturn` input to `reach`. [ADR 0031](0031-inventory-boundaries-against-the-entry-path-walk.md)
+extends the input to `inventory-check`.
 
 ## Context
 

@@ -85,19 +85,21 @@ def search_coverage(image, spans):
     return rows
 
 
-def direct_calls(image, config):
+def direct_calls(image, config, no_return_calls=frozenset(), no_return_interrupts=frozenset()):
     """Every direct call site in the searched regions, as ``incoming`` and ``inventory-check`` read them.
 
-    Walks the entry-path CFG from every established entry, then scans every byte of the regions
-    ``searchRegions`` names (all regions by default) for E8 and 9A call starts, and adds each
-    reached call the scan cannot see (one that starts with a prefix). Returns a dict with the walk's
+    Walks the entry-path CFG from every established entry, ending a branch at a call to a routine in
+    ``no_return_calls`` and at an interrupt site in ``no_return_interrupts`` as ``walk`` does, then
+    scans every byte of the regions ``searchRegions`` names (all regions by default) for E8 and 9A
+    call starts, and adds each reached call the scan cannot see (one that starts with a prefix). Returns a dict with the walk's
     ``seen``, ``gaps`` (with a ``raw scan limit`` gap where ``scanLimit`` stopped a region),
     ``edges``, ``undecoded`` and ``contested``; ``rows``, every call row in the order it was read,
     each with its ``target`` (None when unresolved); ``scanned``, those rows by site, leaving out
     the reached calls whose frame encoding the walk does not model; ``scans``, the region names
     searched; and ``read``, the byte span the scan read in each.
     """
-    seen, gaps, edges, undecoded, contested = walk(image, entries(image), config.get("instructionLimit", 10000))
+    seen, gaps, edges, undecoded, contested = walk(image, entries(image), config.get("instructionLimit", 10000),
+                                                   no_return_calls=no_return_calls, no_return_interrupts=no_return_interrupts)
     rows, scanned = [], {}
 
     def classify(at):

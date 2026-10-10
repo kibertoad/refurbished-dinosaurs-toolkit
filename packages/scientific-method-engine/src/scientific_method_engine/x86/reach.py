@@ -46,7 +46,7 @@ def _leaves(value, image, starts):
     return leaves
 
 
-def _no_return(value, image):
+def no_return_declarations(value, image):
     """The declared routines and interrupt sites that never return, each with its reason."""
     if not isinstance(value, list) or len(value) > 256:
         raise ValueError("noReturn must be a list of at most 256 objects")
@@ -76,7 +76,7 @@ def _no_return(value, image):
     return routines, interrupts
 
 
-def _returns_from(graph, seen, returning_leaves, routine):
+def returns_from(graph, seen, returning_leaves, routine):
     """Where ``routine``'s own paths return: each return instruction, and each leaf they enter other than by a call.
 
     Calls are stepped over at the return sites the graph keeps. The walk assumes that a leaf returns,
@@ -99,7 +99,7 @@ def _returns_from(graph, seen, returning_leaves, routine):
     return sorted(found)
 
 
-def _kinds(at, ins, step):
+def successor_kinds(at, ins, step):
     """Each successor of ``step`` with how the CFG reaches it: call, return, table, interrupt, jump or fall."""
     m, following = base_mnemonic(ins), at + ins.size
     targets = {e["target"] for e in step.edges if e["target"] is not None}
@@ -119,6 +119,56 @@ def _kinds(at, ins, step):
             kind = "jump"
         rows.append((successor, kind))
     return rows
+
+
+def successor_graph(image, seen, **step):
+    """Each site of ``seen`` mapped to its ``successor_kinds`` rows that stay in ``seen``, under ``cfg_step``'s ``step`` options."""
+    return {at: [(s, kind) for s, kind in successor_kinds(at, ins, cfg_step(image, at, ins, **step)) if s in seen]
+            for at, ins in seen.items()}
+
+
+def no_return_rows(routines, interrupts, returns, call_sites, seen, reached, read):
+    """The ``noReturn`` report rows of the declared ``routines`` and ``interrupts``.
+
+    ``returns`` gives each routine's return sites, ``call_sites`` the reached calls to each routine,
+    ``seen`` the instructions the calls and interrupts were read in, ``reached`` the sites a walk from
+    the starts reached and ``read`` the sites the return check decoded.
+    """
+    rows = [{"routine": at, "reason": reason, "reached": at in reached, "read": at in read,
+             "returnSites": returns[at], "contradicted": bool(returns[at]),
+             "callSites": [{"site": site, "following": site + seen[site].size,
+                            "followingRead": site + seen[site].size in seen}
+                           for site in call_sites.get(at, [])]}
+            for at, reason in routines.items()]
+    return rows + [{"interrupt": at, "reason": row["reason"], "vector": row["vector"], "reached": at in seen,
+                    "following": row["following"], "followingRead": row["following"] in seen}
+                   for at, row in interrupts.items()]
+
+
+def fewest_calls(graph, starts):
+    """``(distance, parent, routine)`` for every site ``graph`` reaches from ``starts`` by the route with the fewest calls.
+
+    ``graph`` maps a site to its ``successor_kinds`` rows. ``distance`` counts the calls on the route,
+    ``parent`` gives each site's ``(predecessor, kind)`` on it (None at a start), and ``routine`` the
+    target of the route's last call, or the start.
+    """
+    # Entering a callee costs one, every other edge nothing (0-1 breadth-first search).
+    distance, parent, routine = {}, {}, {}
+    queue = deque()
+    for at in starts:
+        distance[at], parent[at], routine[at] = 0, None, at
+        queue.append((0, at))
+    while queue:
+        cost, at = queue.popleft()
+        if cost > distance[at]:
+            continue
+        for successor, kind in graph.get(at, []):
+            step_cost = cost + (kind == "call")
+            if successor not in distance or step_cost < distance[successor]:
+                distance[successor], parent[successor] = step_cost, (at, kind)
+                routine[successor] = successor if kind == "call" else routine[at]
+                (queue.append if kind == "call" else queue.appendleft)((step_cost, successor))
+    return distance, parent, routine
 
 
 def _dominators(order, predecessors):
@@ -182,7 +232,7 @@ def reach(image, config):
                              "the walk found")
     limit = integer(config.get("limit", 1000), 1, 10000, "result limit")
     instruction_limit = config.get("instructionLimit", 10000)
-    no_return_routines, no_return_interrupts = _no_return(config.get("noReturn", []), image)
+    no_return_routines, no_return_interrupts = no_return_declarations(config.get("noReturn", []), image)
     declared = {"no_return_calls": frozenset(no_return_routines), "no_return_interrupts": frozenset(no_return_interrupts)}
     seen, walk_gaps, _, _, contested = walk(image, starts, instruction_limit, follow_interrupts=True,
                                             stops=frozenset(leaves), **declared)
@@ -190,7 +240,7 @@ def reach(image, config):
     graph, unresolved, interrupts, resolved_calls = {}, [], [], {}
     for at, ins in sorted(seen.items()):
         step = cfg_step(image, at, ins, follow_interrupts=True, **declared)
-        graph[at] = [(s, kind) for s, kind in _kinds(at, ins, step) if s in seen or s in leaves]
+        graph[at] = [(s, kind) for s, kind in successor_kinds(at, ins, step) if s in seen or s in leaves]
         m = base_mnemonic(ins)
         text = _text(ins)
         kind = "call" if m in CALLS else "return" if m in RETURNS else "jump"
@@ -208,22 +258,7 @@ def reach(image, config):
     for at in leaves:
         graph.setdefault(at, [])
 
-    # Fewest calls first: entering a callee costs one, every other edge nothing (0-1 breadth-first search).
-    distance, parent, routine = {}, {}, {}
-    queue = deque()
-    for at in starts:
-        distance[at], parent[at], routine[at] = 0, None, at
-        queue.append((0, at))
-    while queue:
-        cost, at = queue.popleft()
-        if cost > distance[at]:
-            continue
-        for successor, kind in graph.get(at, []):
-            step_cost = cost + (kind == "call")
-            if successor not in distance or step_cost < distance[successor]:
-                distance[successor], parent[successor] = step_cost, (at, kind)
-                routine[successor] = successor if kind == "call" else routine[at]
-                (queue.append if kind == "call" else queue.appendleft)((step_cost, successor))
+    distance, parent, routine = fewest_calls(graph, starts)
 
     # Dominators over everything reached, from a virtual root that leads to every start.
     successors = {ROOT: list(starts)} | {at: [s for s, _ in graph.get(at, [])] for at in distance}
@@ -334,18 +369,10 @@ def reach(image, config):
     leaf_rows = [{"routine": at, "reason": reason, "reached": at in distance, "callSites": call_sites.get(at, [])}
                  for at, reason in leaves.items()]
     # Each call the declaration kept from its return site, so a reviewer can check what follows it.
-    no_return_rows, returning_leaves = [], set(leaves) - set(no_return_routines)
-    for at, reason in no_return_routines.items():
-        returns = _returns_from(graph, seen, returning_leaves, at)
-        no_return_rows.append({"routine": at, "reason": reason, "reached": at in distance, "read": at in seen,
-                               "returnSites": returns, "contradicted": bool(returns),
-                               "callSites": [{"site": site, "following": site + seen[site].size,
-                                              "followingRead": site + seen[site].size in seen}
-                                             for site in call_sites.get(at, [])]})
-    no_return_rows += [{"interrupt": at, "reason": row["reason"], "vector": row["vector"], "reached": at in seen,
-                        "following": row["following"], "followingRead": row["following"] in seen}
-                       for at, row in no_return_interrupts.items()]
-    contradicted = any(row.get("contradicted") for row in no_return_rows)
+    returning_leaves = set(leaves) - set(no_return_routines)
+    returns = {at: returns_from(graph, seen, returning_leaves, at) for at in no_return_routines}
+    no_return = no_return_rows(no_return_routines, no_return_interrupts, returns, call_sites, seen, distance, seen)
+    contradicted = any(row.get("contradicted") for row in no_return)
     counts = {"routines": len(routine_starts), "instructions": len(seen), "unresolved": len(unresolved),
               "interrupts": len(interrupts), "gaps": len(gaps), "contested": len(contested)}
     assumptions = ["each reached call returns to its next instruction"
@@ -355,9 +382,9 @@ def reach(image, config):
                    + "; interrupt handlers are not read",
                    "each leaf calls nothing, for the reason it gives",
                    "each declared indirect jump table holds the routes its declaration gives"]
-    if no_return_rows:
+    if no_return:
         assumptions.append("each noReturn routine and interrupt never returns, for the reason it gives")
-    return {"starts": starts, "targets": rows, "leaves": leaf_rows, "noReturn": no_return_rows,
+    return {"starts": starts, "targets": rows, "leaves": leaf_rows, "noReturn": no_return,
             "reachedRoutines": sorted(routine_starts), "counts": counts,
             "unresolved": unresolved[:limit], "interrupts": interrupts[:limit], "gaps": gaps[:limit],
             "contested": sorted(contested)[:limit],
