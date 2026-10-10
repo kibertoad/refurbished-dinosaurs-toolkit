@@ -17,6 +17,7 @@ sys.path.insert(0, str(SRC))
 # The engine CLI runs from this checkout's source whether or not the package is installed.
 ENGINE = [sys.executable, "-B", "-m", "scientific_method_engine"]
 ENGINE_ENV = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(SRC), os.environ.get("PYTHONPATH")]))}
+import capstone
 from importlib import metadata
 import pypcode
 from scientific_method_engine.x86 import image as image_module
@@ -2609,6 +2610,111 @@ class ReporterTests(unittest.TestCase):
     def test_raw_candidate_overlapping_query_from_below(self):
         r = report("c3 a1 ff 01 c3", "uses", query={"offset": 0x200, "width": 1})
         self.assertEqual([c["site"] for c in r["rawCandidates"]], [1])
+
+    def raw_footprints(self, code, **query):
+        r = report(code, "uses", query=query)
+        return {c["site"]: c for c in r["rawCandidates"]}
+
+    def test_raw_candidates_report_each_operand_footprint_against_the_field(self):
+        # ret; then unreached: mov [30],ax; mov [31],ax; mov [32],ax; mov [33],al; mov [34],ax; ret
+        rows = self.raw_footprints("c3 89 06 1e 00 89 06 1f 00 89 06 20 00 88 06 21 00 89 06 22 00 c3",
+                                   offset=32, width=2)
+        # The store touching the field from below and the one past its end stay out.
+        self.assertNotIn(1, rows)
+        self.assertNotIn(17, rows)
+        footprint = {at: [(o["displacement"], o["width"], o["intersection"], o["access"]) for o in rows[at]["operands"]]
+                     for at in (5, 9, 13)}
+        self.assertEqual(footprint, {
+            5: [(31, 2, {"start": 32, "end": 33}, ["write"])],
+            9: [(32, 2, {"start": 32, "end": 34}, ["write"])],
+            13: [(33, 1, {"start": 33, "end": 34}, ["write"])]})
+        row = rows[5]
+        self.assertEqual((row["classification"], row["boundary"], row["overlapsVerified"], row["mnemonic"]),
+                         ("unverified operand candidate", "unresolvedBoundary", [], "mov"))
+        self.assertEqual((row["operands"][0]["effectiveSegmentRegister"], row["operands"][0]["addressRegisters"],
+                          row["operands"][0]["wraps"], row["operands"][0]["operandIndex"]), ("ds", [], False, 0))
+
+    def test_raw_candidate_footprint_keeps_segment_override_and_address_registers(self):
+        # ret; es: mov [bx+32],ax; mov ax,[bp+32]; ret
+        rows = self.raw_footprints("c3 26 89 47 20 8b 46 20 c3", offset=32, width=2)
+        es, ss = rows[1]["operands"][0], rows[5]["operands"][0]
+        self.assertEqual((es["effectiveSegmentRegister"], es["addressRegisters"], es["access"]), ("es", ["bx"], ["write"]))
+        self.assertEqual(rows[1]["prefixes"], [0x26])
+        self.assertEqual((ss["effectiveSegmentRegister"], ss["addressRegisters"], ss["access"]), ("ss", ["bp"], ["read"]))
+
+    def test_raw_candidate_footprint_wraps_past_the_top_of_the_offset_space(self):
+        rows = self.raw_footprints("c3 89 06 ff ff c3", offset=0, width=1)
+        self.assertEqual([(o["wraps"], o["intersection"]) for o in rows[1]["operands"]], [(True, {"start": 0, "end": 1})])
+
+    def test_raw_candidate_of_unknown_footprint_has_no_width_and_stays_when_it_starts_below_the_field(self):
+        # ret; fnsave [16]; fnsave [80]; ret. Capstone's operand size is not the saved state's size.
+        rows = self.raw_footprints("c3 dd 36 10 00 dd 36 50 00 c3", offset=64, width=2)
+        self.assertEqual(list(rows), [1])
+        self.assertEqual([(o["width"], o["wraps"], o["intersection"], o["access"]) for o in rows[1]["operands"]],
+                         [(None, None, None, ["write"])])
+
+    def test_raw_candidate_footprint_of_far_pointer_loads_and_lea(self):
+        # ret; les ax,[31]; lss sp,[30]; lea ax,[32]; ret
+        rows = self.raw_footprints("c3 c4 06 1f 00 0f b2 26 1e 00 8d 06 20 00 c3", offset=32, width=2)
+        self.assertEqual([(o["width"], o["intersection"]) for o in rows[1]["operands"]], [(4, {"start": 32, "end": 34})])
+        self.assertEqual([(o["width"], o["intersection"]) for o in rows[5]["operands"]], [(4, {"start": 32, "end": 34})])
+        self.assertEqual(rows[10]["operands"][0]["access"], [])
+
+    def test_cfg_operand_past_a_stop_takes_the_raw_candidate_footprint(self):
+        # int 3 stops the trace. Past it: fnsave [16], of unknown width below the field, a possible alias;
+        # fnsave [80], past the field's end, left out; mov [0x30],ax, a word below the field, left out.
+        r = report("cd 03 dd 36 10 00 dd 36 50 00 89 06 30 00 c3", "uses", query={"offset": 64, "width": 2})
+        self.assertEqual([(e["site"], e["address"]) for e in r["conditionalAccesses"]], [(2, "possible alias")])
+        # Capstone's size for FNSAVE (4) is not the saved state's size, so the row claims no width.
+        row = r["conditionalAccesses"][0]
+        self.assertEqual((row["width"], row["value"]["bits"]), (None, None))
+        self.assertEqual(r["rawCandidates"], [])
+        # A word at 0xFFFF reaches offset 0 only by wrapping, so it is a possible alias, never an overlap.
+        r = report("cd 03 89 06 ff ff c3", "uses", query={"offset": 0, "width": 1})
+        self.assertEqual([(e["site"], e["address"]) for e in r["conditionalAccesses"]], [(2, "possible alias")])
+        # A word starting below the field overlaps it.
+        r = report("cd 03 89 06 3f 00 c3", "uses", query={"offset": 64, "width": 2}, controls=[2])
+        self.assertEqual([(e["site"], e["address"]) for e in r["conditionalAccesses"]], [(2, "overlaps query")])
+
+    def test_raw_candidates_keep_the_query_access_mode(self):
+        # ret; then unreached: mov ax,[32]; mov [32],ax; lea ax,[32]; ret
+        code = "c3 8b 06 20 00 89 06 20 00 8d 06 20 00 c3"
+        self.assertEqual(list(self.raw_footprints(code, offset=32, width=2)), [1, 5, 9])
+        # A write query drops the read; LEA stays, since the use of the address it forms is unknown.
+        r = report(code, "uses", query={"offset": 32, "width": 2, "access": "write"})
+        self.assertEqual([c["site"] for c in r["rawCandidates"]], [5, 9])
+        r = report(code, "uses", query={"offset": 32, "width": 2, "access": "read"})
+        self.assertEqual([c["site"] for c in r["rawCandidates"]], [1, 9])
+
+    def test_raw_candidate_displacement_takes_the_instruction_address_size(self):
+        # ret; then unreached: a32 mov [0x1001f],ax; a32 mov [31],ax; ret. In 16-bit code the 32-bit
+        # displacement is not cut to 16 bits, so only the second store meets the field.
+        rows = self.raw_footprints("c3 67 89 05 1f 00 01 00 67 89 05 1f 00 00 00 c3", offset=32, width=2)
+        self.assertEqual(list(rows), [8])
+        self.assertEqual([(o["displacement"], o["intersection"]) for o in rows[8]["operands"]], [(31, {"start": 32, "end": 33})])
+
+    def test_far_pointer_load_width_is_the_pcode_load_size(self):
+        # memory_width corrects Capstone's word for LDS/LES/LSS/LFS/LGS; SLEIGH's LOAD gives the same size.
+        cases = {False: ["c5 06 20 00", "c4 06 20 00", "0f b2 26 20 00", "0f b4 06 20 00", "0f b5 06 20 00",
+                         "66 c4 06 20 00", "66 0f b2 26 20 00"],
+                 True: ["c5 05 20 00 00 00", "0f b2 25 20 00 00 00", "66 0f b5 05 20 00 00 00"]}
+        for flat, codes in cases.items():
+            decoder = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32 if flat else capstone.CS_MODE_16)
+            decoder.detail = True
+            context = pypcode.Context("x86:LE:32:default" if flat else "x86:LE:16:Real Mode")
+            for text in codes:
+                code = bytes.fromhex(text)
+                ins = next(decoder.disasm(code, 0))
+                loads = [o.output.size for o in context.translate(code, max_instructions=1).ops
+                         if o.opcode == pypcode.OpCode.LOAD]
+                memory = [o for o in ins.operands if o.type == capstone.x86.X86_OP_MEM][0]
+                self.assertEqual([reports.memory_width(ins, memory)], loads, text)
+
+    def test_raw_candidate_inside_a_verified_instruction_is_a_rejected_overlap(self):
+        # mov ax,20a3h; add bl,al; ret. The bytes from 1 also decode as mov [32],ax.
+        rows = self.raw_footprints("b8 a3 20 00 c3 c3", offset=32, width=2)
+        self.assertEqual((rows[1]["boundary"], rows[1]["overlapsVerified"]),
+                         ("rejectedOverlap", [{"site": 0, "end": 3}, {"site": 3, "end": 5}]))
 
     def test_linear_write_invalidates_alias_under_its_last_byte(self):
         r = report("b8 00 20 8e c0 26 c6 07 55 c7 06 0f 00 34 12 26 8a 07 c3", registers={"ds": 0x1fff})

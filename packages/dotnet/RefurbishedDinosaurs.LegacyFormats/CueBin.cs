@@ -366,9 +366,16 @@ internal enum RawDataTrackMode
 /// dump again. The EDC and ECC are not checked, and neither is the address in the header. With
 /// <c>leaveOpen</c>, disposing the stream leaves <c>source</c> open, as <see cref="Iso9660"/> needs
 /// for the image the caller keeps.
+/// <para>
+/// With <c>emptyForm2AsZeros</c>, a MODE2 Form 2 sector whose 2324 data bytes are all zero reads as
+/// 2048 zero bytes instead of throwing. Volume reads pass it, so padding a CD-XA master leaves in
+/// Form 2 inside the volume space reads as the zero blocks a MODE1 image of the disc holds there.
+/// A Form 2 sector that carries any nonzero data byte still throws.
+/// </para>
 /// </remarks>
 internal sealed class RawDataTrackUserDataStream(
-    Stream source, long sectorCount, RawDataTrackMode mode, bool leaveOpen = false) : Stream
+    Stream source, long sectorCount, RawDataTrackMode mode, bool leaveOpen = false,
+    bool emptyForm2AsZeros = false) : Stream
 {
     private const int LogicalSectorSize = 2048;
     private const int ModeOffset = 15;
@@ -376,6 +383,9 @@ internal sealed class RawDataTrackUserDataStream(
     private const int SubheaderSize = 4;
     // Bit 5 of the submode byte marks a Form 2 sector.
     private const byte Form2Submode = 0x20;
+    // A Form 2 sector's data follows the subheader copies and fills the sector up to its 4-byte EDC.
+    private const int Form2DataOffset = 24;
+    private const int Form2DataSize = 2324;
     private static ReadOnlySpan<byte> SyncPattern =>
         [0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00];
     private readonly byte[] sector = new byte[CueBinSheet.RawSectorSize];
@@ -441,11 +451,11 @@ internal sealed class RawDataTrackUserDataStream(
         if (sector[ModeOffset] != modeByte)
             throw new InvalidDataException(
                 $"Sector {index} is mode {sector[ModeOffset]}, but the cue sheet declares {declared}.");
-        if (mode == RawDataTrackMode.Mode2Form1) CheckForm1Subheader(index);
+        if (mode == RawDataTrackMode.Mode2Form1) CheckSubheader(index);
         sectorIndex = index;
     }
 
-    private void CheckForm1Subheader(long index)
+    private void CheckSubheader(long index)
     {
         var first = sector.AsSpan(SubheaderOffset, SubheaderSize);
         var second = sector.AsSpan(SubheaderOffset + SubheaderSize, SubheaderSize);
@@ -453,11 +463,19 @@ internal sealed class RawDataTrackUserDataStream(
             throw new InvalidDataException(
                 $"Sector {index} is MODE2 but its two subheader copies differ, so it is not a CD-XA " +
                 "Form 1 sector. Only MODE2/2352 tracks of CD-XA Form 1 sectors are supported.");
-        if ((first[2] & Form2Submode) != 0)
+        if ((first[2] & Form2Submode) == 0) return;
+        if (!emptyForm2AsZeros)
             throw new InvalidDataException(
                 $"Sector {index} is a MODE2 Form 2 sector. Form 2 sectors carry 2324 bytes of user data " +
                 "without ECC and cannot be read as ISO 9660 user data; only Form 1 sectors are " +
                 "supported, so a file stored in Form 2 sectors cannot be read from this source.");
+        // An empty Form 2 sector's 2048 bytes at the Form 1 user data offset lie inside its zero
+        // data, so the sector is handed on as it is.
+        if (sector.AsSpan(Form2DataOffset, Form2DataSize).ContainsAnyExcept((byte)0))
+            throw new InvalidDataException(
+                $"Sector {index} is a MODE2 Form 2 sector that carries data. Form 2 sectors carry 2324 " +
+                "bytes of user data without ECC and cannot be read as ISO 9660 user data; the volume " +
+                "reads only Form 1 sectors and empty Form 2 sectors, whose data bytes are all zero.");
     }
 
     private long ValidatePosition(long value) => value >= 0 && value <= Length

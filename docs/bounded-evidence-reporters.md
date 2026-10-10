@@ -122,7 +122,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 |---|---|---|
 | `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; follows an indirect far call or jump whose pointer the path produced; declared-table continuations run on their own `continuationBudget`; checks `relationalControls`; `entryFrame` starts an entry inside its function's frame; `volatileMemory` gives each read of a declared range its own term | this section, [narrower entries](#a-narrower-entry-inside-its-functions-frame), [indirect far transfers](#indirect-far-transfers-through-a-traced-pointer), [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
-| `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; the inventory continues past interrupts, which it assumes return to the next instruction, and a stop inside a called function also continues it at the return site of each call open at the stop, each named in `dependsOn` | this section, [hardware boundaries](#hardware-boundaries) |
+| `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; the inventory continues past interrupts, which it assumes return to the next instruction, and a stop inside a called function also continues it at the return site of each call open at the stop, each named in `dependsOn`; each `rawCandidates` row gives the encoded footprint of every unreached operand that may intersect the query field | this section, [hardware boundaries](#hardware-boundaries) |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
 | `inventory-check` | every resolved direct call target in the searched regions that a function inventory does not list as a start, with one calling site each and counts for a coverage report | [inventory call targets](#call-targets-a-function-inventory-lacks) |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
@@ -352,12 +352,39 @@ an `instruction limit` gap at its start and continues no caller beyond it.
 Reachability is conditional on encoded guards and on
 execution continuing past every named stop; these observations do not prove callee
 preservation, effective-address values, or feasible native execution. A concrete
-segment query marks their `address` as a possible alias. They still satisfy a
+segment query marks their `address` as a possible alias. A concrete offset is
+matched by the footprint `rawCandidates` use (below): an operand of unknown width
+that starts below the field's end, or one that reaches the field only by wrapping
+past the top of the offset space, is a possible alias. An operand of unknown
+width has a `width` of `null` and a `value` whose `bits` are `null`. They still satisfy a
 positive control, since the control shows the search reached that instruction,
 and they always make `negativeUsable` false. LEA is not a use. The control is a known use of this
 query, so a controlled inventory normally contains at least that use. For an
 absence claim about additional uses, compare the inventory with that known set
 and account for every gap; `negativeUsable` is deliberately conservative.
+
+`rawCandidates` lists instructions decoded at a byte the entry walk never reached
+whose explicit memory operand has an encoded footprint intersecting the query
+field with an access the query's `access` mode asks for (an operand with no
+access, such as LEA's, under every mode). They are never counted as uses. Each row keeps the instruction's
+`mnemonic` and `prefixes`, and its `boundary`: `rejectedOverlap` when it
+intersects entry-path instructions, which `overlapsVerified` lists, or
+`unresolvedBoundary` otherwise. Its `operands` give, for each intersecting
+operand, the `operandIndex`, the encoded `displacement`, the `addressRegisters`
+(base and index) that move the real address away from it, the `width`, the
+`access` direction (none for LEA), the `effectiveSegmentRegister` and the
+`intersection` with the query field. The displacement is taken at the
+instruction's address size, so a 32-bit displacement past 0xFFFF in 16-bit code
+names no 16-bit offset. A footprint that runs past the top of the instruction's
+address space (64 KiB for a 16-bit address size) wraps to zero and is marked
+`wraps`. The x87 environment and state saves and loads, FXSAVE/FXRSTOR, the
+XSAVE family and any operand Capstone gives no size have a `width`, `wraps` and
+`intersection` of `null`: their footprint is unknown, so they are listed
+whenever they start below the field's end. They are not followed past the top
+of the address space, so one starting above the field is never listed even if
+its real footprint would wrap onto it. The footprint is the encoded
+displacement alone: segment values, register contents, implicit operands and
+reachability are not resolved.
 
 `incoming` adds a canonical `target`, a result `limit` and `controls` of known
 call sites to any resolved target. For FBOV a `targetSelector` may instead name a
@@ -604,6 +631,9 @@ program, 100,000 instructions take seconds and several hundred MB.
 Caps, undecoded ranges and unsupported cases are explicit. Source size is capped
 at 256 MiB, config size at 1 MiB (16 MiB for the relocation-expanded config the
 Node wrapper pipes to Python) and each symbolic expression at 1,024 tuple nodes.
+A config file is UTF-8, with or without one leading byte order mark; a file starting with a UTF-16
+or UTF-32 byte order mark or with more than one UTF-8 mark, or bytes that are not UTF-8, fail with
+the cause named. The prepared config the reader pipes to the engine is UTF-8 without a mark.
 An instruction whose value would pass that cap stops its path with `expression term limit: a value's
 expression would hold more than 1024 terms; narrow the query`, and `stopSite` names the instruction.
 Events and writes that instruction made before building the value, such as a memory read, stay on
@@ -1405,7 +1435,12 @@ crosses a following jump. Known memory sites can be supplied as `controls`;
 a raw or contested candidate fails that control. `scanLimit`, `limit`, coverage
 and partial-search flags bound the inventory. Implicit/computed uses, segment
 alias proofs and runtime reachability are excluded; counts never prove their
-absence or promote a candidate to original behavior.
+absence or promote a candidate to original behavior. It matches the literal at
+the operand's start only, so a word store one byte below a field is not a
+candidate for the field's offset. To find the accesses that overlap a
+multi-byte field, run `uses` with the field's `offset` and `width`: it traces the
+accesses whose footprint intersects the field and lists the unreached ones in
+`rawCandidates` with their operand footprints.
 
 
 Argument and effect reports retain LEA `address-formation` events with the
@@ -1563,6 +1598,21 @@ address at the preferred image base, sorted by address, with `rva`, `fileOffset`
 and the slot's index in it, `dll`, `storedEntry` (the address table entry as stored),
 `lookupEntry`, `namesFrom` and `import` (`{ name, hint }` or `{ ordinal }`). `descriptors` gives
 each descriptor's tables, time stamp and `namesFrom`.
+
+The directory ends at the first descriptor whose Name or FirstThunk is zero, whatever its other
+fields hold. The NT loader, Wine and ReactOS end it there; what the Windows 9x loader does is not
+confirmed, and `exclusions` says so. Some linkers and packers leave a time stamp or a lookup table
+RVA in that descriptor. `directoryEnd` gives it as `{ descriptor, rva, allZero, nonzeroFields }`,
+where `nonzeroFields` holds each of `originalFirstThunk`, `timeDateStamp`, `forwarderChain`, `name`
+and `firstThunk` that is not zero; it is null when the file has no import directory. A descriptor
+past a section's raw data, up to its VirtualSize, reads as the zeros the loader fills there. When
+the end is all zero, `pastEnd` is null. Otherwise the report reads on to the first all-zero
+descriptor, and `pastEnd.descriptors` lists each descriptor on the way that is not all zero, as
+`{ descriptor, rva, dll, nonzeroFields }`, where `dll` is the ASCII name at its Name RVA, or null
+when Name is zero or holds no ASCII name. A loader that read past the end would use these
+descriptors, and the report lists none of their slots. `pastEnd.stoppedAt` says where that read stopped: at an all-zero
+descriptor, at one neither loaded from the file nor zero-filled, or at the 4096-descriptor limit. In
+the last two cases descriptors may lie beyond it unread.
 
 A descriptor whose time stamp is not zero was bound, so its import address table as stored holds
 addresses in the DLLs, and such an address can have its top bit set, as every address in

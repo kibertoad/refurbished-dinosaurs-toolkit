@@ -102,7 +102,7 @@ Most restorations need no inputs. Set one when the defaults do not match the rep
 | `images` | empty | Half-open address ranges of the original's flat 32-bit images, such as `0x00400000..0x004C9000`. See below. |
 | `max-range` | `0x10000` | The largest address range by which an entry records an address. |
 | `data-dirs` | from the manifests | Top-level directories of the original's data. A path into one must name, with its exact case, a manifest file or a path of a build's list of other files (see Other files below). |
-| `base` | fork point | Ref whose IDs, areas and deviations must still exist. When it is set, the action fetches nothing and does not pass `--require-base`. |
+| `base` | the base branch | Branch the change merges into. IDs, areas and deviations that exist where HEAD forked from it must still exist, and an ID the change adds must not exist at its tip with other content. When it is set, the action fetches nothing and does not pass `--require-base`. |
 | `kaitai-version` | `0.11` | Compiler release to install, or empty to skip the install. With no `.ksy` file the install is skipped anyway. |
 | `java-version` | empty | Java to install with `actions/setup-java` before the compiler. |
 
@@ -116,7 +116,14 @@ IDs it cites are not checked.
 A passing citation check shows only that each cited ID exists and, outside `deviations/`, is not
 superseded. A `BLD-` or `SRC-` alias that names no entry is skipped, because an alias can collide
 with an ordinary word. Notes, plans and handovers outside the scanned directories are not read at
-all. In the files it reads, the check does not compare the words around a citation with the entry
+all. Research queue IDs (`Q-AREA-NNN`) are not checked in any file: the work protocol defines the
+queues, and the checker enforces only the documentation standard, so a parity row, deviation,
+handover or code comment that cites a queue item a research batch has since deleted passes. The
+[template](https://github.com/kibertoad/toad-discovery-center-template)'s
+`tools/Check-ResearchTracking.mjs` reads the queue files, but it compares their items only with the
+Open questions of spec entries that are not superseded, so it does not catch such a citation
+either. In the files it reads, the citation check does not compare the words around a citation
+with the entry
 the citation names, so a note that calls a bitmap entry a configuration entry passes as long as the
 ID exists. When prose describes what an entry is, take the description from the entry:
 `spec/index/by-kind.md` lists every spec ID with its title and status (builds and sources have no
@@ -403,7 +410,16 @@ compilation must run, such as in CI: a missing compiler then fails the check wit
 `--require-ksc` cannot be combined with `--no-ksy`.
 
 Without `--base`, the check compares with where HEAD forked from `origin/$GITHUB_BASE_REF`, or
-`origin/main` when that variable is unset. When that fork point does not resolve, because the
+`origin/main` when that variable is unset. With `--base <ref>`, it compares with where HEAD forked
+from `<ref>`, so entries that branch gained since are not read as deleted here. A spec ID or
+deviation that the change adds since the fork point fails when the tip of that branch holds a file
+under the same ID with content this branch never held, because IDENTIFIERS-6 has the branch merged
+second renumber its entry before it is merged. A copy that matches the branch's working tree, index
+or a commit since the fork point is the branch's own entry and passes, as does one that the base
+branch edited after taking such a copy. Run the check before
+committing a new entry, such as from a `pre-commit` hook, to renumber it before anything cites it.
+Only that one branch's tip is read, so an ID taken on another branch, or in an uncommitted draft,
+is not seen. When that fork point does not resolve, because the
 directory is not in a git repository, the clone is shallow, or the branch was never fetched, the
 result line names the skipped step, such as `Skipped: comparison with the base branch (HEAD has no
 merge-base with origin/main, fetch it with enough history or pass --base).` Without git on `PATH`

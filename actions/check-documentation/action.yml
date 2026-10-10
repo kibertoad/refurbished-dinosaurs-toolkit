@@ -30,7 +30,7 @@ inputs:
     required: false
     default: src,tests
   base:
-    description: Ref whose spec IDs, areas and deviations must still exist. Empty uses where HEAD forked from origin/$GITHUB_BASE_REF or origin/main. On a pull request the action fetches the base branch with enough history for that, and fails when the fork point still does not resolve; elsewhere the result line names the comparison as skipped.
+    description: Branch the change merges into. Spec IDs, areas and deviations that exist where HEAD forked from it must still exist, and an ID the change adds must not exist at its tip with other content. Empty uses origin/$GITHUB_BASE_REF or origin/main. On a pull request the action fetches the base branch with enough history for that, and fails when the fork point still does not resolve; elsewhere the result line names the comparison as skipped.
     required: false
     default: ""
   scheduled-generation:

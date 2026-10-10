@@ -1,8 +1,9 @@
 """Owned DOSBox-X debugger sessions for restoration research tooling (ADR 0026).
 
 The package owns the emulator process, the machine-wide run lock, the guest drives, muted host
-audio, session records, request IDs, operation observation and guarded writes to stopped guest
-memory against a field contract the caller supplies. It never imports the DOSBox-X
+audio, session records, request IDs, operation observation, guarded writes to stopped guest
+memory against a field contract the caller supplies, and an event log checked against the
+caller's event schemas and versioned outcome contract. It never imports the DOSBox-X
 Agent client: the caller imports it from its own checkout and passes a :data:`ClientFactory`.
 Windows only.
 
@@ -26,17 +27,43 @@ from .errors import (
     CleanupFailed,
     ConfigurationRefused,
     EmulatorExited,
+    EventSchemaViolation,
+    EventsMismatch,
     LockHeld,
+    LogEntryRefused,
+    LogIncomplete,
+    LogMalformed,
+    LogOversized,
+    LogRejected,
+    LogTruncated,
+    ModuleRefused,
     OperationPending,
+    OutcomeContractViolation,
+    OutcomeFailed,
+    OutcomeMismatch,
     PlatformRefused,
     ReadinessNotObserved,
     RunDirectoryRefused,
+    RunEnded,
     RunFailed,
     SessionError,
     WriteFailed,
     WriteHashMismatch,
     WriteOutsideContract,
     WriteReadbackMismatch,
+)
+from .events import (
+    DEFAULT_MAX_LOG_BYTES,
+    FIELD_TYPES,
+    LOG_FORMAT,
+    EventLog,
+    EventLogWriter,
+    EventSchema,
+    LoggedEvent,
+    ModuleHash,
+    OutcomeContract,
+    hash_modules,
+    read_event_log,
 )
 from .lock import (
     DEFAULT_LOCK_PATH,
@@ -48,7 +75,7 @@ from .lock import (
     resolve_lock_path,
 )
 from .processes import ProcessIdentity
-from .session import DosboxSession, Observation, SessionSettings, Target
+from .session import DosboxSession, EventLogSettings, Observation, SessionSettings, Target
 from .writes import FieldContract, VerifiedWrite, WritableField
 
 __all__ = [
@@ -61,17 +88,39 @@ __all__ = [
     "ClientFactory",
     "ConfigurationRefused",
     "DEFAULT_LOCK_PATH",
+    "DEFAULT_MAX_LOG_BYTES",
     "DosboxSession",
     "EmulatorConfig",
     "EmulatorExited",
     "Endpoint",
+    "EventLog",
+    "EventLogSettings",
+    "EventLogWriter",
+    "EventSchema",
+    "EventSchemaViolation",
+    "EventsMismatch",
+    "FIELD_TYPES",
     "FieldContract",
     "LOCK_PATH_VARIABLE",
+    "LOG_FORMAT",
     "LockHeld",
     "LockReport",
+    "LogEntryRefused",
+    "LogIncomplete",
+    "LogMalformed",
+    "LogOversized",
+    "LogRejected",
+    "LogTruncated",
+    "LoggedEvent",
     "Media",
+    "ModuleHash",
+    "ModuleRefused",
     "Observation",
     "OperationPending",
+    "OutcomeContract",
+    "OutcomeContractViolation",
+    "OutcomeFailed",
+    "OutcomeMismatch",
     "PINNED_REVISION",
     "PINNED_TAG",
     "PlatformRefused",
@@ -81,6 +130,7 @@ __all__ = [
     "RecordedProcess",
     "RequestIds",
     "RunDirectoryRefused",
+    "RunEnded",
     "RunFailed",
     "SessionClient",
     "SessionError",
@@ -93,6 +143,8 @@ __all__ = [
     "WriteOutsideContract",
     "WriteReadbackMismatch",
     "capability_value",
+    "hash_modules",
+    "read_event_log",
     "read_lock",
     "remove_stale_lock",
     "require",

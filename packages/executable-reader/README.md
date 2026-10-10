@@ -27,7 +27,9 @@ scientific-method <command> <config.json>
 The config is JSON with at least `source` (a path relative to the config file), its `xxh3` (the
 XXH3-128 hash the spec's build entry gives, as 32 lower-case hex digits; a `sha256` is refused),
 and `sourceKind`: `mz` for DOS executables, `pe32` for 32-bit Windows executables (parsed by the engine),
-`pe32+` for 64-bit Windows executables (read only by `imports`), or `synthetic-raw` for test data. The report is printed as JSON. On failure the command prints
+`pe32+` for 64-bit Windows executables (read only by `imports`), or `synthetic-raw` for test data. The config file is UTF-8, with or without one leading byte order mark
+(which Windows PowerShell 5.1 writes for `-Encoding utf8`); a file starting with a UTF-16 or UTF-32 byte order mark or with
+more than one UTF-8 mark, or bytes that are not UTF-8, are refused with the cause named. The report is printed as JSON. On failure the command prints
 `Evidence report: <reason>` to stderr and exits with 1.
 
 Commands: `trace`, `arguments`, `effects`, `returns`, `memory`, `guards`, `uses`, `incoming`,
@@ -49,7 +51,11 @@ found another way. It needs `formatControls` and decodes no instruction.
 
 `imports` lists the import the file's import tables put in each slot of a PE32 or PE32+ import
 address table, by slot address, and needs at least one positive control: a slot with the import
-other evidence shows. A control that maps to anything else rejects the report.
+other evidence shows. A control that maps to anything else rejects the report. The import
+directory ends at the first descriptor whose Name or FirstThunk is zero, where the NT loader ends
+it; `directoryEnd` gives that descriptor's nonzero fields, and `pastEnd` lists each later
+descriptor, up to an all-zero one, that a loader reading on would meet, with its DLL name and
+nonzero fields.
 
 `unpack` decodes an LZEXE 0.90 or 0.91, an EXEPACK or a PKLITE 1.00 to 1.15 executable (an `mz` source) and writes its unpacked form to
 the config's `output`, a path relative to the config file. It prints the `size`, `xxh3`, `format`
@@ -115,6 +121,7 @@ import { bodyLayout, fileLayout } from "@scientific-method/executable-reader/bod
 | `TableConfig`, `TableLayout`, `TableCodeSource`, `TableControl`, `TableListingRow`, `TablePointerKind`, `TableEntryResult` | `table-contents` | Types of the `table` query and its results. |
 | `importReport(bytes, config)` | `pe-imports` | The `imports` report over an already hash-checked buffer. |
 | `ImportConfig`, `ImportControl`, `ImportSlot`, `SlotImport`, `NamesFrom` | `pe-imports` | Types of the `imports` query, its controls and its slot rows. |
+| `DirectoryEnd`, `PastEnd`, `DescriptorField`, `DESCRIPTOR_FIELDS` | `pe-imports` | The descriptor that ends the import directory, the descriptors after it, and the descriptor field names. |
 | `IgnoredRawData` | `pe-imports` | A `rawIgnored` row: a section whose PointerToRawData is 0 and whose SizeOfRawData is not. |
 | `bodyLayout(bytes, config)` | `body-layout` | The `bodies` report over an already hash-checked buffer. |
 | `fileLayout(image)` | `body-layout` | The regions an `MzImage`'s tables declare, with the runs between them, covering the whole file. |
