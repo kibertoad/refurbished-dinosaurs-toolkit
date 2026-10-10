@@ -1,10 +1,43 @@
 // Read-only metadata for MZ and the Borland FBOV envelope. No original bytes are emitted.
-/** One FBOV segment descriptor. Bit 1 of `flags` marks an overlay; other descriptors are resident. */
+/**
+ * One 8-byte FBOV segment descriptor, its four words as stored. Bit 1 of `flags` marks an overlay;
+ * other descriptors are resident. The reader gives the other flag bits no meaning.
+ */
 export interface Descriptor {
   /** Position in the descriptor table, as encoded in fixup words (`word >>> 3`). */
   index: number;
+  /** Word 0: the segment, relative to the load segment. */
   segment: number;
+  /** Word 2 (`maxoff`): the offset in `segment` just past the descriptor's last byte. */
+  maxOffset: number;
+  /** Word 4. */
   flags: number;
+  /** Word 6 (`minoff`): the offset in `segment` of the descriptor's first byte. */
+  minOffset: number;
+}
+/**
+ * What a descriptor's offset words make of it: `bytes` when `minOffset < maxOffset` and the span
+ * lies in the load image, `empty` when the two words are equal, `inverted` when `maxOffset` is below
+ * `minOffset`, which holds no bytes either, and `outside-load-image` when the span, or the place an
+ * empty span names, ends past the load image.
+ */
+export type DescriptorExtentStatus = "bytes" | "empty" | "inverted" | "outside-load-image";
+/**
+ * The span of the load image one descriptor's words give, as returned by {@link descriptorExtents}.
+ * `start` and `end` are the file offsets of `segment * 16 + minOffset` and `segment * 16 + maxOffset`
+ * in the load image, so `end` is below `start` for an `inverted` descriptor. `loadedSegment` and
+ * `ip` give `start` as a loaded `segment:ip` address, the mapping a code region declares;
+ * `loadedSegment` is null when the load segment plus the descriptor's segment exceeds FFFF.
+ */
+export interface DescriptorExtent {
+  descriptor: number;
+  /** True when bit 1 of the descriptor's flags is set. */
+  overlay: boolean;
+  status: DescriptorExtentStatus;
+  start: number;
+  end: number;
+  loadedSegment: number | null;
+  ip: number;
 }
 /** A resident FBOV stub (`INT 3Fh` and an offset) that enters overlay code. Both values are file offsets. */
 export interface Trampoline {
@@ -154,7 +187,10 @@ export function readMz(bytes: Buffer, loadSegment = 0x1000): MzImage {
     span(dt, dc * 8, end, "FBOV descriptors");
     if (dt < header) throw new Error("FBOV descriptors overlap MZ header");
     envelope = { header: fbov, payloadEnd, descriptorTable: dt };
-    for (let i = 0; i < dc; i++) descriptors.push({ index: i, segment: u16(dt + i * 8), flags: u16(dt + i * 8 + 4) });
+    for (let i = 0; i < dc; i++) {
+      const p = dt + i * 8;
+      descriptors.push({ index: i, segment: u16(p), maxOffset: u16(p + 2), flags: u16(p + 4), minOffset: u16(p + 6) });
+    }
     for (const d of descriptors) {
       if (!(d.flags & 2)) continue;
       const h = header + d.segment * 16;
@@ -269,6 +305,37 @@ export function readMz(bytes: Buffer, loadSegment = 0x1000): MzImage {
     resolveOperand,
     bytes,
   };
+}
+/**
+ * The load-image span each FBOV descriptor's offset words give, in table order: the bytes from
+ * `segment * 16 + minOffset` up to `segment * 16 + maxOffset` (see {@link DescriptorExtent}). Nothing
+ * is refused here: a span that runs past the load image is reported as `outside-load-image`, for the
+ * caller to decide what to make of it. Empty without an FBOV envelope.
+ */
+export function descriptorExtents(image: MzImage): DescriptorExtent[] {
+  return image.descriptors.map((d) => {
+    const base = image.header + d.segment * 16;
+    const start = base + d.minOffset,
+      end = base + d.maxOffset;
+    const status: DescriptorExtentStatus =
+      d.maxOffset < d.minOffset
+        ? "inverted"
+        : end > image.end
+          ? "outside-load-image"
+          : d.maxOffset === d.minOffset
+            ? "empty"
+            : "bytes";
+    const loaded = image.loadSegment + d.segment;
+    return {
+      descriptor: d.index,
+      overlay: (d.flags & 2) !== 0,
+      status,
+      start,
+      end,
+      loadedSegment: loaded > 0xffff ? null : loaded,
+      ip: d.minOffset,
+    };
+  });
 }
 /**
  * Counts the format's own tables yield. A build's known counts act as positive controls: a

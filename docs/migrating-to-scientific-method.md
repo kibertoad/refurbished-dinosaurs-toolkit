@@ -425,6 +425,24 @@ Correct each experiment it reports: `new-game` for a run that starts by launchin
 a save, with the choices made on the way in given in Setup, and null for a save that cannot be
 committed and is kept with the captures, with its hash in the fixture's `starting_state.xxh3`.
 
+## Reader upgrades
+
+### Reader 3.0.0: `bodies` reads the load image through the FBOV descriptor spans
+
+In a file with an FBOV envelope, the `bodies` layout used to call the whole load image `resident`,
+with a null `descriptor`. It now cuts the load image at the spans the resident descriptors'
+`minOffset` and `maxOffset` words give: a span's bytes are `resident` with that descriptor's index,
+and bytes no span holds are `zero-padding` or `undeclared` runs. A body that runs from one segment's
+span into the next now has bytes outside its entry's region, and a report on a file whose resident
+spans overlap fails. Files without an envelope keep their layout.
+
+A script that reads `bodies` output and matches `resident` regions or totals by `descriptor: null`
+matches them by kind alone, or by the descriptor index. A function flagged by the new
+`outsideEntryRegion` bytes runs across a segment boundary in the file's own table; check its body
+before listing it. A config that hand-built resident code regions can take them from the report's
+new `descriptors` rows of resident descriptors: `start`, `end`, `loadedSegment` and `ip` are a
+region's `start`, `end`, `segment` and `ip`.
+
 ## Engine upgrades
 
 Engine releases that need a change in a restoration are listed here, newest first. Each entry is
