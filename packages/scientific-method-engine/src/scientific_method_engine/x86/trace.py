@@ -83,6 +83,8 @@ def far_pointer_transfer(state, image):
     return target, provenance, segment_value
 
 
+# The gap reason walk() records when it stops at its instruction limit with code left to read.
+LIMIT_REASON = "instruction limit"
 OVERLAP_REASON = "overlapping entry-path instructions; boundary unresolved"
 RETURNS = {"ret": "near return", "retf": "far return", "iret": "interrupt return", "iretd": "interrupt return"}
 INTERRUPTS = ("int", "int1", "int3", "into")
@@ -251,7 +253,7 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
         # A limit of the declared code size can leave every byte of it decoded, so only a site in a
         # declared region is one the limit stopped; a site outside is an unmapped edge.
         if len(seen) >= limit and image.region(at) is not None:
-            gaps.append({"site": at, "reason": "instruction limit"})
+            gaps.append({"site": at, "reason": LIMIT_REASON})
             break
         ins = image.decode(at)
         if ins is None:
@@ -843,7 +845,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
             overlapping = sum(g["reason"] == OVERLAP_REASON for g in walk_gaps)
             boundary_budget -= max(1, len(seen) + len(contested) + overlapping)
             # A truncated walk never saw the instructions that could contest a target start.
-            if any(g["reason"] == "instruction limit" for g in walk_gaps):
+            if any(g["reason"] == LIMIT_REASON for g in walk_gaps):
                 seen = {}
             boundary_cache[root_entry] = seen
         seen = boundary_cache[root_entry]
