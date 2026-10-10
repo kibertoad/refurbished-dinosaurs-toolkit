@@ -149,7 +149,10 @@ many locations in files of code did not parse, since those cite nothing.
 inventoried function's last byte (`start` plus `size` minus one, or for a row with `ranges` the last
 byte of each range, with ranges that touch taken as one) stops a byte short, the usual slip when a
 range is copied from an analyzer that gives last bytes, and the check fails it with the end it
-should have, naming every function whose range ends on that byte. It checks every range a location
+should have, naming every function whose range ends on that byte. A one-byte function, or a
+one-byte range of a body, is left out: its last byte is its first, where a range that stops before
+it ends, so such an end fails only when a longer range of another function ends on that byte
+too. It checks every range a location
 of a current entry gives in that build and file, by address or by offset, and the address ranges
 written in the body of an entry whose locations all name that one build and file. Without
 inventories it checks nothing and reports no skipped step.

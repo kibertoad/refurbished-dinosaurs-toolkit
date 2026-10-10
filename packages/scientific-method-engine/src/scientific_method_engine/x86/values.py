@@ -1,7 +1,8 @@
 """Small bit-vector expressions; unknown values retain their producers."""
 from dataclasses import dataclass
 
-# The most terms one value's expression may hold, counting every tuple node at any depth.
+# The most terms one value's expression may hold, counting every tuple node at any depth except
+# the part widths of a join.
 TERM_LIMIT = 1024
 
 
@@ -33,7 +34,9 @@ class Value:
             if count > TERM_LIMIT:
                 raise TermLimit()
             if isinstance(term, tuple):
-                pending.extend(item for item in term if isinstance(item, tuple))
+                # A join's part widths are numbers about its parts, not a term of their own.
+                items = term[:2] if term and term[0] == "join" else term
+                pending.extend(item for item in items if isinstance(item, tuple))
 
     @property
     def number(self):
@@ -94,10 +97,13 @@ def extract(v, low, bits):
     if low == 0 and bits == v.bits:
         return v
     if v.term[0] == "join":
-        parts = v.term[1]
-        if low % 8 == 0 and bits % 8 == 0:
-            selected = parts[low // 8:(low + bits) // 8]
-            return join([Value(8, term, v.sources) for term in selected])
+        # A field of a join is the join of the fields of the parts it covers.
+        pieces = []
+        for term, width, offset in join_offsets(v.term):
+            start, end = max(low, offset), min(low + bits, offset + width)
+            if start < end:
+                pieces.append(extract(Value(width, term, v.sources), start - offset, end - start))
+        return join(pieces)
     if v.term[0] == "extract":
         original, previous_low, _, original_bits = v.term[1:]
         return Value(bits, ("extract", original, previous_low + low, bits, original_bits), v.sources)
@@ -105,6 +111,14 @@ def extract(v, low, bits):
 
 
 def join(parts):
+    """The value whose bits are ``parts`` laid end to end, the first part lowest.
+
+    A ``join`` term is ``("join", terms, widths)``: the parts' terms and their widths in bits,
+    lowest first. A part that is itself a join contributes its own parts. Adjacent constant parts
+    become one constant, and adjacent fields of one value become one field, or that value when they
+    cover all of it. So a join never nests, and a partial write that stores a register's own bits
+    back leaves its term as it was.
+    """
     bits = sum(v.bits for v in parts)
     if len(parts) == 1:
         # A single part is already its own value; wrapping it would nest on every partial register write.
@@ -115,12 +129,35 @@ def join(parts):
             n |= v.number << shift
             shift += v.bits
         return Value(bits, const(n, bits).term, sources(*parts))
-    if all(v.term[0] == "extract" and v.term[1] == parts[0].term[1]
-           and v.term[2] == i * 8 and v.bits == 8 for i, v in enumerate(parts)):
-        original_bits = parts[0].term[4]
-        term = parts[0].term[1] if bits == original_bits else ("extract", parts[0].term[1], 0, bits, original_bits)
-        return Value(bits, term, sources(*parts))
-    return Value(bits, ("join", tuple(v.term for v in parts)), sources(*parts))
+    terms, widths = [], []
+    for v in parts:
+        for term, width in zip(*(v.term[1:] if v.term[0] == "join" else ((v.term,), (v.bits,)))):
+            previous = terms[-1] if terms else None
+            if previous and previous[0] == term[0] == "constant":
+                terms[-1] = ("constant", previous[1] | term[1] << widths[-1])
+            elif (previous and previous[0] == term[0] == "extract" and term[1] == previous[1]
+                  and term[2] == previous[2] + previous[3]):
+                original, start, original_bits = previous[1], previous[2], previous[4]
+                merged = widths[-1] + width
+                terms[-1] = original if start == 0 and merged == original_bits else (
+                    "extract", original, start, merged, original_bits)
+            else:
+                terms.append(term)
+                widths.append(width)
+                continue
+            widths[-1] += width
+    if len(terms) == 1:
+        return Value(bits, terms[0], sources(*parts))
+    return Value(bits, ("join", tuple(terms), tuple(widths)), sources(*parts))
+
+
+def join_offsets(term):
+    """A ``join`` term's parts as ``(term, width, offset)``, lowest first, each offset in bits."""
+    result, offset = [], 0
+    for part, width in zip(term[1], term[2]):
+        result.append((part, width, offset))
+        offset += width
+    return result
 
 
 def resize(v, bits, signed=False):

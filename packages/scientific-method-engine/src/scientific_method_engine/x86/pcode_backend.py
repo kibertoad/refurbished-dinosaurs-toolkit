@@ -23,7 +23,7 @@ from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
 
 from .machine import ALIASES, StopPath, FLAT_PORT_REASON
 from .pcode import LIFTER, Address, Run, FLAGS, SEGMENT_BASES, segment_base
-from .values import Value, const, unknown, op, extract, join, resize, sources
+from .values import Value, const, unknown, op, extract, join, join_offsets, resize, sources
 
 # Conditional branches by the condition code SLEIGH decodes from 0x70 + code.
 CONDITION_CODES = {}
@@ -210,8 +210,10 @@ def known_bit(term, position, width):
     if head == "extract":
         return known_bit(term[1], term[2] + position, term[4]) if position < term[3] else None
     if head == "join":
-        parts = term[1]
-        return known_bit(parts[position // 8], position % 8, 8) if position // 8 < len(parts) else None
+        for part, bits, offset in join_offsets(term):
+            if offset <= position < offset + bits:
+                return known_bit(part, position - offset, bits)
+        return None
     if head in ("or", "and"):
         bits = [known_bit(t, position, width) for t in term[1:]]
         decisive, other = (1, 0) if head == "or" else (0, 1)

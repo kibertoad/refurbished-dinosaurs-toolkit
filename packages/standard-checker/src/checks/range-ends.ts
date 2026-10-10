@@ -1,6 +1,9 @@
 // Ranges against the function inventories: a range is half-open, so one whose end is the last
 // byte of an inventoried function stops a byte short. Analyzers such as Ghidra give a function's
 // last byte, which makes this the usual slip (https://dinorefurb.com/documentation-standard/#notation).
+// A one-byte function, or a one-byte range of a body, is left out: its last byte is its first, where
+// a range that stops before it correctly ends. A function longer than one byte that ends on the same
+// byte, by sharing it, still fails the range.
 //
 // Every location of a current entry that gives a range in a file with an inventory is checked, by
 // address or by offset into overlay code. A range written in an entry's body or tables is checked
@@ -57,8 +60,14 @@ export function checkRangeEnds(ctx: Context) {
         else ends.set(r.end - 1n, { fns: [fn], path: inv.path });
       }
     }
-  const endsFunction = (build: Yaml, file: Yaml, space: Space, end: bigint) =>
-    lastBytes.get(`${build}\0${file}\0${space}`)?.get(end);
+  // The functions whose range ends on `end`, less those whose range there is that one byte, as the
+  // header says. A function's ranges neither overlap nor touch, so a range of it that starts on its
+  // last byte is that byte alone.
+  const endsFunction = (build: Yaml, file: Yaml, space: Space, end: bigint) => {
+    const hit = lastBytes.get(`${build}\0${file}\0${space}`)?.get(end);
+    const fns = hit?.fns.filter((f) => !f.body.some((r) => r.start === end));
+    return hit && fns?.length ? { fns, path: hit.path } : undefined;
+  };
   const message = (what: string, end: string, hit: { fns: InventoryRow[]; path: string }) => {
     const next = nextInNotation(end);
     // Each function the byte ends, as the last byte of a range of it when its body has several.

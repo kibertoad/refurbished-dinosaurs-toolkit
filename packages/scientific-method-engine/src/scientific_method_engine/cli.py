@@ -37,6 +37,8 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "Declared table continuations are separate conditional paths that spend continuationBudget\n"
          "(paths, totalSteps, maxSteps, visitLimit, stringIterations); ordinary computed transfers remain stopped.\n"
          "Port accesses and interrupts are hardware-boundary events; portInputs supplies port reads as assumptions.\n"
+         "volatileMemory lists memory hardware or an interrupt may change (segment, offset, bytes, evidence);\n"
+         "each read of a declared byte reads its own term, cause declared volatile.\n"
          "A callModels entry at an INT n site (real mode) returns past the interrupt under its cases (leavesFlags: true\n"
          "keeps the interrupt's FLAGS word on the stack); other interrupts stop.\n"
          "callModels[].preservesMemory keeps explicit, bounded pre-call byte scopes across a modeled call; other memory stays unknown.\n"

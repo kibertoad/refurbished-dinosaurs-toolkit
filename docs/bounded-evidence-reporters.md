@@ -67,8 +67,8 @@ width, full interval, byte producers and missing producers. Each `byteProducers`
 also gives `writeOrder`, the event order of the write that stored the byte. A byte
 with no modeled value has `writeOrder: null` and `unwritten`, whose `cause` is
 `no write on this path`, `possibly written by an aliasing write`, `dropped by a
-possibly aliasing write` or `dropped by a modeled call`, with the `order` of that
-write or modeled return. `dropped by a possibly aliasing write` names the write that dropped a
+possibly aliasing write`, `dropped by a modeled call` or `declared volatile`, with the `order` of that
+write or modeled return, or for `declared volatile` the order of the read itself (see below). `dropped by a possibly aliasing write` names the write that dropped a
 byte's modeled value, while no newer write through another segment or base may alias the byte.
 `possibly written by an aliasing write` names
 the newest write through another segment or base that may alias a byte with no value to lose,
@@ -91,10 +91,25 @@ modeled call. A modeled call keeps the term of a byte its `preservesMemory` scop
 keeps that term when it lies in the byte's own segment/base group at other offsets, or when both
 have concrete, disjoint address domains. A write that overlaps the byte, or whose segment or address
 may alias it, gives the next read a fresh term, so a reload is not shown equal to the earlier read.
-This identity assumes that only the path's own writes and modeled calls change memory: a byte that
+This identity assumes that only the path's own writes and modeled calls change memory. A byte that
 hardware, DMA or an interrupt handler updates between two reads (a timer counter, a polled status
-word) reads as one term across them, and a control that a reload of such a byte holds is
-conditional on that assumption.
+word, a DMA buffer) breaks that assumption, and only the program's restoration knows which of its
+addresses such a byte has. The query lists them in `volatileMemory`, at most 64 rows of `segment`
+(a real-mode paragraph, or 0 in the PE32 flat model), `offset`, `bytes` and `evidence`; rows that
+share a linear byte, or a range past the end of its segment, are rejected. A read of a byte whose
+concrete linear address lies in a declared range never uses a modeled value or an earlier term, even
+one the path stored itself: its `byteProducers` row has no producers, `writeOrder: null`, `unwritten`
+with cause `declared volatile` and the read's own `order`, and `volatileMemory`, the index of the
+declared row. Each read of the byte therefore reads its own term, so a `sameValue` control between
+two reads of it is undecided, a `lastWriter` control on it is undecided, a branch decided on one
+poll does not decide the next, and a far pointer read from it is not followed. A read whose address
+is not concrete (an unknown segment, or a concrete segment with a symbolic offset) but may name a
+byte of a declared range keeps its ordinary row and term, and the row carries `mayBeVolatile: true`:
+a control that such a reload holds is still conditional on the identity assumption. A `lastWriter`
+address probe reports its bytes as a read would, and its `declared volatile` rows give the order of
+the `checkpoint` event that carries the probe, since the probe adds no read. Writes, and
+every read when no range is declared, report as above. A byte outside every declared range keeps
+the identity assumption.
 All assumptions remain conditional, and matching numeric offsets alone never establish storage
 identity.
 
@@ -105,7 +120,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 
 | Command | Reports | Described in |
 |---|---|---|
-| `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; follows an indirect far call or jump whose pointer the path produced; declared-table continuations run on their own `continuationBudget`; checks `relationalControls`; `entryFrame` starts an entry inside its function's frame | this section, [narrower entries](#a-narrower-entry-inside-its-functions-frame), [indirect far transfers](#indirect-far-transfers-through-a-traced-pointer), [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
+| `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; follows an indirect far call or jump whose pointer the path produced; declared-table continuations run on their own `continuationBudget`; checks `relationalControls`; `entryFrame` starts an entry inside its function's frame; `volatileMemory` gives each read of a declared range its own term | this section, [narrower entries](#a-narrower-entry-inside-its-functions-frame), [indirect far transfers](#indirect-far-transfers-through-a-traced-pointer), [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
 | `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; the inventory continues past interrupts, which it assumes return to the next instruction, and a stop inside a called function also continues it at the return site of each call open at the stop, each named in `dependsOn`; each `rawCandidates` row gives the encoded footprint of every unreached operand that may intersect the query field | this section, [hardware boundaries](#hardware-boundaries) |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
@@ -582,11 +597,13 @@ order without `preservedMemoryScopes`; the summary's `path` names the path that 
 `declaredContinuationPaths` for a continuation summary), and an allocation entry's `path` does the
 same. A scope entry holds `segmentRegister`, `segment`, `baseRegister`, `base` (values and
 producers), `displacement`, `offset`, `interval`, `linearStart`, `linearEnd`, `bytes`, `evidence`,
-`cachedBytes`, `uncachedBytes` and a fixed `meaning` text. `interval` names the bytes as a read or
+`cachedBytes`, `uncachedBytes`, `volatileBytes` and a fixed `meaning` text. `interval` names the bytes as a read or
 write event's `interval` does: the segment and base terms and the start and end offsets from that
 base, or `linear`/`absolute` and linear addresses when both are concrete. On a symbolic base,
 `offset`, `linearStart` and `linearEnd` are `null`. The two counts describe the model's cache: an
 uncached byte is labelled uncached and says nothing about whether the original program wrote it.
+A byte inside a declared `volatileMemory` range counts only in `volatileBytes`, since a read of it
+ignores any kept value; the three counts add up to `bytes`.
 Memory outside the scopes, flags, unpreserved registers and the service's native effects stay
 unknown, so the call keeps `unknownEffects: true` and the path's `effectCompleteWithinModel` stays
 false. Without `preservesMemory`, a model invalidates the whole frame as before. The input needs
@@ -2025,15 +2042,19 @@ occurrence where an assumption cannot apply (see below).
 ### Arithmetic and assumptions
 
 Each value's expression becomes a linear form over its unknown subterms, reading additions,
-subtractions, offsets, multiplications and shifts by constants, and zero and sign extensions. A
-value counts as an integer only when the ranges of its unknowns show it cannot wrap its width;
+subtractions, offsets, multiplications and shifts by constants, zero and sign extensions, and a
+join that fills the value's width, which a partial register write or a multi-byte load leaves and
+which is the sum of its parts each shifted to its offset, so BX after `mov bl,[x]; xor bh,bh` equals
+BL. A value counts as an integer only when the ranges of its unknowns show it cannot wrap its width;
 otherwise the whole value is one unknown of its width. Such an unknown ranges over its whole width
 unless its expression bounds it: `and` is at most the smaller operand bound, so a constant mask
 bounds it by the mask; `or` and `xor` stay below the next power of two above both operands, and
 `or` is at least its larger operand; a shift right or a division by a constant divides the
 operand's bounds, an arithmetic shift only when its operand's sign bit is clear; a remainder by a
-constant is below the constant; a zero extension keeps the narrower value's bounds; and an extracted
-field keeps the bounds of the bits it takes when the operand cannot reach the bits above them. These
+constant is below the constant; a zero extension keeps the narrower value's bounds; an extracted
+field keeps the bounds of the bits it takes when the operand cannot reach the bits above them; and a
+join, which a partial register write or a multi-byte load leaves, is the sum of each part's bounds
+shifted to the part's offset, so `mov bl,[x]; xor bh,bh` leaves BX at most 0FFh as `movzx` does. These
 are unsigned bounds. A signed reading uses them only when they keep the sign bit the same for every
 value, clear or set. A relation holds when every value the unknowns allow satisfies it, is violated
 when none does, and is undecided otherwise. The branches a path took are not solved, so a relation
@@ -2041,7 +2062,8 @@ that fails for part of a range is undecided.
 
 `assume`, accepted on `containment` and `relation` controls, lists at most 16 ranges, each `{ "value": reference, "min", "max", "evidence" }`, with an
 unsigned range inside the value's width. The value should be one unknown, such as an entry register
-or a loaded word. Each occurrence resolves it again: a known value inside the range needs no
+or a loaded word. An assumed join, such as a loaded word, stays one unknown of its width in every
+form, so the assumption applies to it whole. Each occurrence resolves it again: a known value inside the range needs no
 assumption, while a known value outside it, a value computed from unknowns or a reference the path
 does not supply leaves that occurrence undecided. When the value's own expression also bounds it
 (a masked word, say), the narrower of the two ranges applies, and an assumed range the expression
