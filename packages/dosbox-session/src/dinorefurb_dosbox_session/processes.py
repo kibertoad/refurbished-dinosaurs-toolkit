@@ -190,6 +190,16 @@ def _open(kernel32: ctypes.WinDLL, pid: int) -> tuple[int | None, bool]:  # type
     return kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid), False
 
 
+def _start_time(kernel32: ctypes.WinDLL, handle: int) -> int | None:  # type: ignore[name-defined]
+    """The creation time of the process behind ``handle``, or ``None`` when Windows refuses it."""
+    created, exited, kernel, user = _FileTime(), _FileTime(), _FileTime(), _FileTime()
+    if not kernel32.GetProcessTimes(
+        handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)
+    ):
+        return None
+    return (created.high << 32) | created.low
+
+
 def _query(pid: int) -> tuple[ProcessState, int | None]:
     kernel32 = _kernel32()
     handle, synchronize = _open(kernel32, pid)
@@ -208,12 +218,8 @@ def _query(pid: int) -> tuple[ProcessState, int | None]:
                 return "unknown", None
             if code.value != _STILL_ACTIVE:
                 return "exited", None
-        created, exited, kernel, user = _FileTime(), _FileTime(), _FileTime(), _FileTime()
-        if not kernel32.GetProcessTimes(
-            handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)
-        ):
-            return "unknown", None
-        return "running", (created.high << 32) | created.low
+        start = _start_time(kernel32, handle)
+        return ("unknown", None) if start is None else ("running", start)
     finally:
         kernel32.CloseHandle(handle)
 
@@ -248,17 +254,9 @@ def process_state(identity: ProcessIdentity) -> ProcessState:
 
 
 def _windows_error(action: str) -> OSError:
+    """The last Windows error as an ``OSError`` whose ``winerror`` holds the Windows error code."""
     error = ctypes.get_last_error()  # type: ignore[attr-defined]
-    return OSError(error, f"{action} failed: {ctypes.FormatError(error).strip()}")  # type: ignore[attr-defined]
-
-
-def _start_time(kernel32: ctypes.WinDLL, handle: int) -> int:  # type: ignore[name-defined]
-    created, exited, kernel, user = _FileTime(), _FileTime(), _FileTime(), _FileTime()
-    if not kernel32.GetProcessTimes(
-        handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)
-    ):
-        raise _windows_error("Reading the process start time")
-    return (created.high << 32) | created.low
+    return ctypes.WinError(error, f"{action} failed: {ctypes.FormatError(error).strip()}")  # type: ignore[attr-defined]
 
 
 def _kill_on_close_job(kernel32: ctypes.WinDLL) -> int:  # type: ignore[name-defined]
@@ -316,7 +314,8 @@ class OwnedProcess:
 
         :raises subprocess.TimeoutExpired: the process still ran when the wait ran out.
         """
-        milliseconds = _INFINITE if timeout is None else max(0, int(timeout * 1000))
+        # INFINITE is the largest DWORD, so a finite wait stops one below it.
+        milliseconds = _INFINITE if timeout is None else min(max(0, int(timeout * 1000)), _INFINITE - 1)
         result = _loaded_kernel32().WaitForSingleObject(self._handle(), milliseconds)
         if result == _WAIT_TIMEOUT:
             raise subprocess.TimeoutExpired(self.args, timeout or 0)
@@ -342,10 +341,11 @@ class OwnedProcess:
 
     def in_job(self) -> bool:
         """Whether the process belongs to this object's job, which ends it with its owner."""
+        handle = self._handle()
         if self._job is None:
             return False
         result = ctypes.c_int()
-        if not _loaded_kernel32().IsProcessInJob(self._handle(), self._job, ctypes.byref(result)):
+        if not _loaded_kernel32().IsProcessInJob(handle, self._job, ctypes.byref(result)):
             raise _windows_error("Checking the process's job")
         return bool(result.value)
 
@@ -367,6 +367,7 @@ def launch_owned(arguments: list[str], cwd: str | os.PathLike[str]) -> OwnedProc
 
     :raises OSError: Windows refused to create the job object or the process: the file is not an
         executable, say, or this process runs in a job that does not let it nest another.
+    :raises PlatformRefused: this platform is not Windows.
     """
     kernel32 = _kernel32()
     job = _kill_on_close_job(kernel32)
@@ -408,13 +409,15 @@ def launch_owned(arguments: list[str], cwd: str | os.PathLike[str]) -> OwnedProc
         kernel32.CloseHandle(job)
         raise
     kernel32.CloseHandle(information.hThread)
-    try:
-        identity = ProcessIdentity(information.dwProcessId, _start_time(kernel32, information.hProcess))
-    except BaseException:
-        kernel32.CloseHandle(information.hProcess)
-        # Closing the job ends the process in it.
+    start = _start_time(kernel32, information.hProcess)
+    if start is None:
+        error = _windows_error("Reading the process start time")
+        # Closing the job ends the process in it. Wait for that, so nothing runs once this raises.
         kernel32.CloseHandle(job)
-        raise
+        kernel32.WaitForSingleObject(information.hProcess, 10_000)
+        kernel32.CloseHandle(information.hProcess)
+        raise error
+    identity = ProcessIdentity(information.dwProcessId, start)
     return OwnedProcess(list(arguments), int(information.hProcess), job, identity)
 
 
@@ -423,6 +426,5 @@ def terminate(process: OwnedProcess, timeout: float) -> None:
 
     :raises subprocess.TimeoutExpired: it was still running when the wait ran out.
     """
-    if process.poll() is None:
-        process.terminate()
+    process.terminate()
     process.wait(timeout=timeout)

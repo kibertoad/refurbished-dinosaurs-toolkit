@@ -34,8 +34,8 @@ Three remedies were weighed:
 2. The lock's guarantee follows from this: an emulator can run only while its owner runs, and a
    lock whose owner is recorded as running is never removed. Once every process a lock records
    has exited, no emulator from that session runs, recorded or not.
-3. An emulator whose owner crashed is ended, not left for the cleanup diagnostic. The diagnostic
-   still covers an emulator that outlives `close()` while the owner runs.
+3. Windows ends an emulator whose owner crashed, so the cleanup diagnostic never has to. The
+   diagnostic still covers an emulator that outlives `close()` while the owner runs.
 4. A launch Windows refuses (a file that is not an executable, or an owner inside a job that does
    not allow a nested one) raises `EmulatorLaunchFailed` and releases the lock. The session does
    not fall back to a launch outside the job.
@@ -46,3 +46,8 @@ Three remedies were weighed:
   `subprocess.Popen`. The README's native procedure covers the launch path and passed on the
   pinned revision with this change.
 - A program that wants the emulator to outlive it cannot get that from the package.
+- Windows ends the job's processes when it closes the owner's handles during the owner's exit, and
+  a process takes a moment to finish exiting. A `stale-lock` run in that moment can see the owner
+  exited and remove the lock while an emulator the lock never recorded is still being ended. The
+  window lasts as long as Windows takes to end one process. `stale-lock` has no record of that
+  emulator to wait on, so the package accepts the window.

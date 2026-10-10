@@ -115,7 +115,8 @@ environment or not at all. `SessionSettings.lock_path` overrides both, for tests
 The lock records the session, the owner process and the emulator, each by process ID and start
 time, so a process that later reuses an ID does not match. The emulator cannot outlive the owner
 (step 4 above), so once every process a lock records has exited, no emulator from that session
-runs, including one the owner launched but had not recorded yet. A session that finds the lock
+runs, including one the owner launched but had not recorded yet (an unrecorded emulator may
+still be finishing its exit for a moment after the owner reads as exited). A session that finds the lock
 refuses to start (`LockHeld`) and its report says which recorded processes still run. Nothing
 removes a lock automatically. When every recorded process has exited, remove it with:
 
