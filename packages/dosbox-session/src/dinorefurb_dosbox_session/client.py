@@ -17,16 +17,26 @@ from .errors import CapabilityRefused
 
 
 class StopReasonLike(Protocol):
-    """Why a session stopped. ``kind`` is ``startup`` after the target starts."""
+    """Why a session stopped. ``kind`` is ``startup`` after the target starts.
+
+    After a breakpoint stop, ``breakpoint_id`` names the breakpoint the server matched (``None``
+    when it matched none) and ``address`` is that breakpoint's address.
+    """
 
     kind: str
+    breakpoint_id: str | None
+    address: Any
 
 
 class SessionStateLike(Protocol):
-    """A debugger session's state as the client returns it."""
+    """A debugger session's state as the client returns it.
+
+    ``state_revision`` grows with each change to the guest's state, such as a stop.
+    """
 
     id: str
     state: str
+    state_revision: int
     stop_reason: StopReasonLike | None
 
 

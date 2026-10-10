@@ -2,7 +2,8 @@
 
 The package owns the emulator process, the machine-wide run lock, the guest drives, muted host
 audio, session records, request IDs, operation observation, guarded writes to stopped guest
-memory against a field contract the caller supplies, and an event log checked against the
+memory against a field contract the caller supplies, gated breakpoints that stop at a boundary
+only after the guest runs a wake address, and an event log checked against the
 caller's event schemas and versioned outcome contract. It never imports the DOSBox-X
 Agent client: the caller imports it from its own checkout and passes a :data:`ClientFactory`.
 Windows only.
@@ -30,6 +31,7 @@ from .errors import (
     EmulatorLaunchFailed,
     EventSchemaViolation,
     EventsMismatch,
+    GateRefused,
     LockHeld,
     LogEntryRefused,
     LogIncomplete,
@@ -66,6 +68,7 @@ from .events import (
     hash_modules,
     read_event_log,
 )
+from .gates import REAL_ADDRESSING_MODES, CodeAddress, GatedBreakpoint, GateStop
 from .lock import (
     DEFAULT_LOCK_PATH,
     LOCK_PATH_VARIABLE,
@@ -86,6 +89,7 @@ __all__ = [
     "CheckoutIdentity",
     "CheckoutRefused",
     "CleanupFailed",
+    "CodeAddress",
     "ClientFactory",
     "ConfigurationRefused",
     "DEFAULT_LOCK_PATH",
@@ -103,6 +107,9 @@ __all__ = [
     "EventsMismatch",
     "FIELD_TYPES",
     "FieldContract",
+    "GateRefused",
+    "GateStop",
+    "GatedBreakpoint",
     "LOCK_PATH_VARIABLE",
     "LOG_FORMAT",
     "LockHeld",
@@ -128,6 +135,7 @@ __all__ = [
     "PlatformRefused",
     "ProcessIdentity",
     "READINESS_MARKER",
+    "REAL_ADDRESSING_MODES",
     "ReadinessNotObserved",
     "RecordedProcess",
     "RequestIds",

@@ -8,7 +8,7 @@ log of the run beside the static evidence. The design is
 
 The package owns the parts that decide whether a recorded run can be trusted and that carry no
 game knowledge: the emulator process, the machine-wide run lock, the guest drives, muted host
-audio, the session record, request IDs, operation observation, guarded writes and the event log.
+audio, the session record, request IDs, operation observation, guarded writes, gated breakpoints and the event log.
 What a run means (executable fingerprints, address maps, state layouts and which fields may be
 written, input, screens, event kinds and what an outcome must say) stays in the restoration. A restored
 game never depends on this package.
@@ -300,6 +300,64 @@ both. When a `continue_` or `pause` request itself raises, the server may still 
 `continue_` and `step` raise `OperationPending` until `client.status()` shows the guest
 `stopped`, `exited` or `failed`.
 
+### Gated breakpoints
+
+A guest that polls in a loop until a timer reaches some value passes the loop's top many times
+per timer tick. A breakpoint there stops every pass, although nothing a timer condition reads can
+change between two ticks. A `GatedBreakpoint` stops at the boundary only at the first pass after
+the guest runs one of the wake addresses you name, such as the timer interrupt handler. The
+design is [ADR 0032](../../docs/decisions/0032-gated-breakpoints-for-polling-waits.md).
+
+```python
+from dinorefurb_dosbox_session import CodeAddress, GatedBreakpoint
+
+# Stopped at the loop's top: check once here, then remove your own breakpoint at it.
+if not ready(session):
+    session.client.delete_breakpoint(session.session_id, poll_breakpoint.id)
+    with GatedBreakpoint(session, CodeAddress(cs, 0x0120), (CodeAddress(0xF000, 0xFEA5),)) as gate:
+        while True:
+            stop = gate.run(timeout=10)
+            if stop.pending:
+                continue  # still running; the same continuation is observed again
+            if stop.kind == "ended":
+                break
+            if stop.kind == "other":
+                record_other_stop(stop.session)  # your own breakpoints still stop the guest
+                continue
+            if ready(session):  # stop.kind == "boundary"
+                break
+# The guest is stopped at the loop's top, the first pass at which ready() held.
+```
+
+- Opening needs a stopped guest in real or virtual-8086 mode. It sets an execution breakpoint at
+  each wake. `run(timeout, poll_ms=100)` continues the guest through the session. At a wake stop
+  it sets a breakpoint at the boundary that the server removes when it is hit, unless one is set,
+  and continues. It returns a `GateStop`: `boundary`, `other` (any stop that is not the gate's, with
+  an armed boundary left armed), `ended` (the debugger session exited or failed) or `pending`.
+  `stop.wakes` counts the wake stops it continued from during the call, and `gate.wakes_seen` since
+  it opened. Closing removes the breakpoints the gate set and leaves the guest where it is.
+- The gate never reads or evaluates your condition. The boundary stop is the first pass at which
+  your condition can hold only if everything it reads changes in code that runs a wake address
+  before the guest reaches the boundary again. Showing that, choosing the addresses, and checking
+  the condition at the stop where you open the gate are yours.
+- Two breakpoints at one address stop the guest once and the server reports only one of them, and
+  at the pinned revision a breakpoint removed when hit is removed without a stop of its own when
+  another breakpoint at its address is reported. So the gate refuses a boundary at a wake's
+  address, two wakes at one address, and any breakpoint it did not create at the boundary or a wake
+  address (`GateRefused`). It compares addresses as `segment * 16 + offset`, with and without the
+  A20 wrap, and checks before each `run` that continues the guest.
+- Continuations go through the session, so a pending operation, a failed run or an ended log
+  refuses them as usual. A pending continuation is observed again by the next `run`, which never
+  sends a second one. Transport errors propagate. After a continue request raised, the next `run`
+  reads the session's status: a stop with a higher `state_revision` is handled as observed, so a
+  wake the lost reply reached still arms the boundary. After a breakpoint request raised, the gate
+  raises `GateRefused` instead of continuing, and closing removes any breakpoint left at its
+  addresses. Closing while a continuation is pending raises `OperationPending` and keeps the
+  breakpoints; the session's own teardown is unaffected.
+
+The pinned DOSBox-X has no breakpoint conditions, run-until, hit counts or batch reads, so the
+package offers none of them. To read several fields at one stop, read one range that covers them.
+
 ## Errors
 
 | Error | Raised when |
@@ -314,6 +372,7 @@ both. When a `continue_` or `pause` request itself raises, the server may still 
 | `ReadinessNotObserved` | The guest did not write its readiness marker in time. |
 | `CapabilityRefused` | An operation needs a capability the server did not report. Not sent. |
 | `OperationPending` | A continuation was asked for while another operation is pending. |
+| `GateRefused` | A gated breakpoint refused its addresses, a guest outside real or virtual-8086 mode, or a breakpoint it did not create at its addresses, or a breakpoint request of its own failed. Raised before a continuation, nothing was sent. |
 | `WriteOutsideContract` | A write names no field in the contract, has no contract, or differs from the field's length. The run fails. |
 | `WriteHashMismatch` | The field's bytes do not hash to the expected value. Nothing was written; the run fails. |
 | `WriteReadbackMismatch` | The field does not hold the written bytes afterwards. The run fails. |
