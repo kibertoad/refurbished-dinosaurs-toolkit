@@ -186,6 +186,8 @@ when issue 403 closes, after reconqueror reruns its own startup probe on the rel
 
 Gated breakpoints (issue 456, [ADR 0032](decisions/0032-gated-breakpoints-for-polling-waits.md))
 follow the milestone: a polling wait stops once per wake the caller names instead of on every pass.
+A protected-mode guest is placed through a resolver the caller supplies
+([ADR 0037](decisions/0037-gated-breakpoints-in-protected-mode.md)).
 The issue closes once reconqueror's native control shows the same readiness, input order and RNG
 events as its loop-stop run.
 

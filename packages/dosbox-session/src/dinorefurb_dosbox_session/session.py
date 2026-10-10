@@ -161,6 +161,9 @@ class _Continuations:
         #: Set once the event log has its outcome. The guest is not resumed or changed again, so
         #: the log covers everything the run did to it, though it may still be paused.
         self.log_ended: str | None = None
+        #: The writes, steps and breakpoint requests the session's clients have sent, counted as
+        #: they are sent: each can raise the state revision without a continuation.
+        self.changes = 0
 
     def refuse_if_over(self) -> None:
         if self.run_failure is not None:
@@ -218,7 +221,22 @@ class _GuardedClient(SessionClient):
 
     def step(self, session_id: str, mode: str = "into") -> tuple[Any, Any]:
         self._refuse_if_pending("stepping")
+        self._continuations.changes += 1
         return super().step(session_id, mode)
+
+    def create_execution_breakpoint(
+        self, session_id: str, segment: str | int, offset: str | int, once: bool = False
+    ) -> Any:
+        self._continuations.changes += 1
+        return super().create_execution_breakpoint(session_id, segment, offset, once)
+
+    def create_breakpoint(self, session_id: str, kind: str, address: Any, once: bool = False) -> Any:
+        self._continuations.changes += 1
+        return super().create_breakpoint(session_id, kind, address, once)
+
+    def delete_breakpoint(self, session_id: str, breakpoint_id: str) -> Any:
+        self._continuations.changes += 1
+        return super().delete_breakpoint(session_id, breakpoint_id)
 
     def pause(self, session_id: str) -> OperationLike:
         # Allowed after a run failure: a pause only stops the guest, so it can be inspected.
@@ -457,6 +475,16 @@ class DosboxSession:
         return self.client.continue_(self.session_id)
 
     @property
+    def changes(self) -> int:
+        """How many writes, steps and breakpoint requests the session's clients have sent.
+
+        Each of them can raise the guest's ``state_revision`` without a continuation, so a reader
+        that judges a stop by the revision checks this count too. A request counts when it is
+        sent, whether or not it succeeds.
+        """
+        return self._continuations.changes
+
+    @property
     def run_failure(self) -> str | None:
         """Why the run failed, or ``None`` while it has not."""
         return self._continuations.run_failure
@@ -488,6 +516,7 @@ class DosboxSession:
         :raises RunEnded: the event log already ends with its outcome.
         """
         self._continuations.refuse_if_over()
+        self._continuations.changes += 1
         session_id = self.session_id
         written: str | None = None
         try:
