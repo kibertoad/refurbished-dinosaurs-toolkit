@@ -17,6 +17,7 @@ versions and keep no copies. See [the architecture](docs/architecture.md).
 | [`@scientific-method/standard-checker`](packages/standard-checker) | npm | The documentation standard check and index generator (`standard-checker`). |
 | [`RefurbishedDinosaurs.Core`, `RefurbishedDinosaurs.LegacyFormats`](packages/dotnet) | NuGet | Runtime asset installation, presentation primitives and bounded legacy readers. |
 | [`RefurbishedDinosaurs.Media.Smacker`, `.Avi`, `.Fli`, `.Playback`, `.Audio`](packages/dotnet) | NuGet | Independent managed movie codecs, host-driven playback and audio buffer/lifetime helpers. |
+| [`dinorefurb-dosbox-session`](packages/dosbox-session) | PyPI | Owned DOSBox-X debugger sessions for research tooling: the emulator process, a machine-wide run lock, private drives, muted host audio, session records, request IDs and operation observation. Windows only. |
 | [`dinorefurb-disc-archiver`](packages/disc-archiver) | PyPI | Personal archival copies of discs a player owns, in every common image format, through redumper or cdrdao, with a window for players (`disc-archiver`, `disc-archiver-gui`). |
 
 Used in place from this repository:
@@ -45,6 +46,8 @@ python -m pip install -e packages/scientific-method-engine
 python -B -m unittest discover -s packages/scientific-method-engine/tests -p 'test*.py'
 python -m pip install -e packages/disc-archiver
 python -B -m unittest discover -s packages/disc-archiver/tests -p 'test*.py'
+python -m pip install -e packages/dosbox-session
+python -B -m unittest discover -s packages/dosbox-session/tests -p 'test*.py'
 dotnet build packages/dotnet/RefurbishedDinosaurs.slnx
 dotnet test --project packages/dotnet/RefurbishedDinosaurs.Core.Tests/RefurbishedDinosaurs.Core.Tests.csproj
 ./tools/Verify-Repository.ps1

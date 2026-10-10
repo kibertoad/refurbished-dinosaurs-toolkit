@@ -15,6 +15,7 @@ jobs:
       typescript: ${{ steps.areas.outputs.typescript }}
       engine: ${{ steps.areas.outputs.engine }}
       disc-archiver: ${{ steps.areas.outputs.discArchiver }}
+      dosbox-session: ${{ steps.areas.outputs.dosboxSession }}
       dotnet: ${{ steps.areas.outputs.dotnet }}
       documentation-action: ${{ steps.areas.outputs.documentationAction }}
       software-opengl: ${{ steps.areas.outputs.softwareOpenGl }}
@@ -100,6 +101,25 @@ jobs:
       - name: Disc archiver tests
         working-directory: packages/disc-archiver
         run: xvfb-run -a python -B -m unittest discover -s tests -p 'test*.py'
+  # A session refuses every platform but Windows (ADR 0026), so its tests run on a Windows runner,
+  # against a stand-in emulator and a stand-in client, with no DOSBox-X and no game.
+  dosbox-session:
+    name: dosbox-session tests
+    needs: changes
+    if: needs.changes.outputs.dosbox-session == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install ./packages/dosbox-session
+      - name: DOSBox-X session tests
+        working-directory: packages/dosbox-session
+        run: python -B -m unittest discover -s tests -p 'test*.py'
   dotnet:
     name: .NET
     needs: changes

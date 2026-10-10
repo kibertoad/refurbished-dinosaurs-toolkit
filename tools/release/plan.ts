@@ -47,6 +47,12 @@ export const PACKAGES: ReleasedPackage[] = [
     tagPrefix: "dinorefurb-disc-archiver@",
   },
   {
+    name: "dinorefurb-dosbox-session",
+    ecosystem: "pypi",
+    paths: ["packages/dosbox-session/"],
+    tagPrefix: "dinorefurb-dosbox-session@",
+  },
+  {
     // The RefurbishedDinosaurs runtime packages share one version and one tag.
     name: "scientific-method-dotnet",
     ecosystem: "nuget",

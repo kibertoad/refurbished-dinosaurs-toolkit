@@ -46,6 +46,7 @@ test("a checker change runs the TypeScript job and the documentation action", ()
 test("each package outside the TypeScript workspace runs only its own jobs", () => {
   assert.deepEqual(on(["packages/disc-archiver/src/dinorefurb_disc_archiver/redumper.json"]), ["discArchiver"]);
   assert.deepEqual(on(["schemas/disc-profile.schema.json"]), ["discArchiver"]);
+  assert.deepEqual(on(["packages/dosbox-session/src/dinorefurb_dosbox_session/session.py"]), ["dosboxSession"]);
   assert.deepEqual(on(["packages/dotnet/RefurbishedDinosaurs.Core/Assets/InstalledAssetManifest.cs"]), ["dotnet"]);
   assert.deepEqual(on(["global.json"]), ["dotnet"]);
 });

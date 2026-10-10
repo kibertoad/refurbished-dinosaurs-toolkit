@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dinorefurb-dosbox-session"
+# The release workflow writes the published version from the package's release tag.
+version = "0.0.0"
+description = "Owned DOSBox-X debugger sessions for clean-room restoration research: process, run lock, drives, records and observation."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "kibertoad" }]
+dependencies = []
+
+[project.scripts]
+dosbox-session = "dinorefurb_dosbox_session.cli:main"
+
+[project.urls]
+Source = "https://github.com/kibertoad/refurbished-dinosaurs-toolkit/tree/main/packages/dosbox-session"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dinorefurb_dosbox_session"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "pyproject.toml"]

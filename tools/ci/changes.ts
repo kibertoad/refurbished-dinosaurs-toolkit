@@ -45,6 +45,8 @@ export const AREAS = {
   ],
   // The archiver's tests check its profile code against the schema.
   discArchiver: ["packages/disc-archiver/", "schemas/disc-profile.schema.json"],
+  // Runs on Windows, the only platform a session supports (ADR 0026).
+  dosboxSession: ["packages/dosbox-session/"],
   dotnet: ["packages/dotnet/", "global.json"],
   // The action runs the checker from its source and installs Kaitai through setup-kaitai.
   documentationAction: ["actions/check-documentation/", "actions/setup-kaitai/", "packages/standard-checker/"],
