@@ -51,8 +51,9 @@ found another way. It needs `formatControls` and decodes no instruction.
 address table, by slot address, and needs at least one positive control: a slot with the import
 other evidence shows. A control that maps to anything else rejects the report. The import
 directory ends at the first descriptor whose Name or FirstThunk is zero, where the NT loader ends
-it; `directoryEnd` gives that descriptor's nonzero fields, and `pastEnd` lists any later descriptor
-a loader that read on would import through.
+it; `directoryEnd` gives that descriptor's nonzero fields, and `pastEnd` lists each later
+descriptor, up to an all-zero one, that a loader reading on would meet, with its DLL name and
+nonzero fields.
 
 `unpack` decodes an LZEXE 0.90 or 0.91 or an EXEPACK executable (an `mz` source) and writes its unpacked form to
 the config's `output`, a path relative to the config file. It prints the `size`, `xxh3`, `format`

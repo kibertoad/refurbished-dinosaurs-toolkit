@@ -82,13 +82,20 @@ export interface DirectoryEnd {
 
 /**
  * What lies after a {@link DirectoryEnd} that is not all zero. `descriptors` lists each later
- * descriptor that names both a DLL and an address table, which a loader that read past the end
- * would import through and the report lists no slots for. The scan stops at the first all-zero
- * descriptor, at a descriptor not in the file's loaded bytes, or at the descriptor limit, and
- * `stoppedAt` says which.
+ * descriptor that is not all zero, with its nonzero fields and `dll`, the ASCII name at its Name
+ * RVA, or null when Name is zero or holds no ASCII name. A loader that read past the end would use
+ * these descriptors, and the report lists no slots for any of them. The scan stops at the first
+ * all-zero descriptor (zeros the loader fills past a section's raw data count), at a descriptor
+ * neither loaded from the file nor zero-filled, or at the descriptor limit, and `stoppedAt` says
+ * which.
  */
 export interface PastEnd {
-  descriptors: Array<{ descriptor: number; rva: number; nameRva: number; addressTableRva: number }>;
+  descriptors: Array<{
+    descriptor: number;
+    rva: number;
+    dll: string | null;
+    nonzeroFields: Partial<Record<DescriptorField, number>>;
+  }>;
   stoppedAt: { descriptor: number; reason: "all zero" | "not in loaded bytes" | "limit" };
 }
 
@@ -250,25 +257,49 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
     delay = directory(13);
   const descriptors: Array<Record<string, unknown>> = [];
   const slots: ImportSlot[] = [];
-  const fieldsAt = (d: number) =>
-    Object.fromEntries(DESCRIPTOR_FIELDS.map((field, i) => [field, bytes.readUInt32LE(d + i * 4)])) as Record<
+  // A byte at `rva` that is not loaded from the file but lies past a section's raw data, up to its
+  // VirtualSize, where the loader fills zeros. A section whose raw data is ignored gets no fill.
+  const zeroFilled = (rva: number) =>
+    sections.some((s) => !s.rawIgnored && rva >= s.rva + s.loaded && rva < s.rva + s.loaded + s.zeroFill);
+  // The fields of the import descriptor at `rva`, or null when any of its bytes is neither loaded
+  // from the file nor zero-filled by the loader.
+  const descriptorAt = (rva: number): Record<DescriptorField, number> | null => {
+    let raw: Buffer;
+    const o = offset(rva, 20);
+    if (o !== null) raw = bytes.subarray(o, o + 20);
+    else {
+      raw = Buffer.alloc(20);
+      for (let i = 0; i < 20; i++) {
+        const run = loadedRun(rva + i);
+        if (run) raw[i] = bytes[run.at]!;
+        else if (!zeroFilled(rva + i)) return null;
+      }
+    }
+    return Object.fromEntries(DESCRIPTOR_FIELDS.map((field, i) => [field, raw.readUInt32LE(i * 4)])) as Record<
       DescriptorField,
       number
     >;
-  // Descriptors after an end that is not all zero, up to the first all-zero one, that name a DLL
-  // and an address table: what a loader that read on would import through.
+  };
+  const isAllZero = (fields: Record<DescriptorField, number>) => DESCRIPTOR_FIELDS.every((f) => fields[f] === 0);
+  const nonzero = (fields: Record<DescriptorField, number>) =>
+    Object.fromEntries(DESCRIPTOR_FIELDS.filter((f) => fields[f]).map((f) => [f, fields[f]]));
+  // Descriptors after an end that is not all zero, up to the first all-zero one: what a loader
+  // that read on would use.
   const readPastEnd = (from: number): PastEnd => {
-    const named: PastEnd["descriptors"] = [];
+    const later: PastEnd["descriptors"] = [];
     for (let index = from; ; index++) {
-      if (index >= MAX_DESCRIPTORS) return { descriptors: named, stoppedAt: { descriptor: index, reason: "limit" } };
+      if (index >= MAX_DESCRIPTORS) return { descriptors: later, stoppedAt: { descriptor: index, reason: "limit" } };
       const descriptorRva = imports.rva + index * 20,
-        d = offset(descriptorRva, 20);
-      if (d === null) return { descriptors: named, stoppedAt: { descriptor: index, reason: "not in loaded bytes" } };
-      const fields = fieldsAt(d);
-      if (DESCRIPTOR_FIELDS.every((f) => fields[f] === 0))
-        return { descriptors: named, stoppedAt: { descriptor: index, reason: "all zero" } };
-      if (fields.name && fields.firstThunk)
-        named.push({ descriptor: index, rva: descriptorRva, nameRva: fields.name, addressTableRva: fields.firstThunk });
+        fields = descriptorAt(descriptorRva);
+      if (fields === null)
+        return { descriptors: later, stoppedAt: { descriptor: index, reason: "not in loaded bytes" } };
+      if (isAllZero(fields)) return { descriptors: later, stoppedAt: { descriptor: index, reason: "all zero" } };
+      later.push({
+        descriptor: index,
+        rva: descriptorRva,
+        dll: fields.name ? ascii(fields.name) : null,
+        nonzeroFields: nonzero(fields),
+      });
     }
   };
   let directoryEnd: DirectoryEnd | null = null,
@@ -277,17 +308,15 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
     for (let index = 0; ; index++) {
       if (index >= MAX_DESCRIPTORS) throw new Error(`Import directory exceeds ${MAX_DESCRIPTORS} descriptors`);
       const descriptorRva = imports.rva + index * 20;
-      const d = at(descriptorRva, 20, "Import descriptor");
-      const fields = fieldsAt(d);
-      const lookupRva = fields.originalFirstThunk,
-        timeDateStamp = fields.timeDateStamp,
-        nameRva = fields.name,
-        addressRva = fields.firstThunk;
+      const fields = descriptorAt(descriptorRva);
+      if (fields === null)
+        throw new Error(`Import descriptor at RVA ${hex(descriptorRva)} is not in the file's loaded bytes`);
+      const { originalFirstThunk: lookupRva, timeDateStamp, name: nameRva, firstThunk: addressRva } = fields;
       // The directory ends where the NT loader, Wine and ReactOS end it: at the first descriptor
       // whose Name or FirstThunk is zero, whatever its other fields hold.
       if (!nameRva || !addressRva) {
-        const nonzeroFields = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== 0));
-        const allZero = Object.keys(nonzeroFields).length === 0;
+        const nonzeroFields = nonzero(fields);
+        const allZero = isAllZero(fields);
         directoryEnd = { descriptor: index, rva: descriptorRva, allZero, nonzeroFields };
         if (!allZero) pastEnd = readPastEnd(index + 1);
         break;
@@ -391,6 +420,7 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
       "the import directory up to the first descriptor whose Name or FirstThunk is zero, where the NT loader ends it: each descriptor's import lookup table and import address table, walked in step up to the null entry",
     exclusions: [
       "delay-loaded imports",
+      "where the Windows 9x loader ends the import directory",
       "functions found through GetProcAddress",
       "the order any other tool lists imports in",
       "which code calls through a slot",
