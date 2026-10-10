@@ -127,8 +127,9 @@ Owns DOSBox-X debugger sessions for a restoration's research tooling
 - Takes a factory for the DOSBox-X Agent client from the caller, who imports the client from a
   DOSBox-X checkout at the pinned revision. The package never imports, vendors or depends on the
   client, which is GPL-2.0, and refuses a checkout at another revision or with local changes.
-- Launches the emulator with a generated configuration and a hidden native console, waits for a
-  marker the guest writes once its drives are set up, and starts the target stopped at its entry.
+- Launches the emulator with a generated configuration and a hidden native console, inside a job
+  that Windows ends when the owner process ends, waits for a marker the guest writes once its
+  drives are set up, and starts the target stopped at its entry.
 - Holds the machine-wide run lock, which records processes by ID and start time; a held lock
   refuses the session, and only the `stale-lock` command removes a lock whose processes have
   exited.
