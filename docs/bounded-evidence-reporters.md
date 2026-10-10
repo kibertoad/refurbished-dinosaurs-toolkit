@@ -337,7 +337,11 @@ an `instruction limit` gap at its start and continues no caller beyond it.
 Reachability is conditional on encoded guards and on
 execution continuing past every named stop; these observations do not prove callee
 preservation, effective-address values, or feasible native execution. A concrete
-segment query marks their `address` as a possible alias. They still satisfy a
+segment query marks their `address` as a possible alias. A concrete offset is
+matched by the footprint `rawCandidates` use (below): an operand of unknown width
+that starts below the field's end, or one that reaches the field only by wrapping
+past the top of the offset space, is a possible alias. An operand of unknown
+width has a `width` of `null` and a `value` whose `bits` are `null`. They still satisfy a
 positive control, since the control shows the search reached that instruction,
 and they always make `negativeUsable` false. LEA is not a use. The control is a known use of this
 query, so a controlled inventory normally contains at least that use. For an
@@ -346,18 +350,24 @@ and account for every gap; `negativeUsable` is deliberately conservative.
 
 `rawCandidates` lists instructions decoded at a byte the entry walk never reached
 whose explicit memory operand has an encoded footprint intersecting the query
-field. They are never counted as uses. Each row keeps the instruction's
+field with an access the query's `access` mode asks for (an operand with no
+access, such as LEA's, under every mode). They are never counted as uses. Each row keeps the instruction's
 `mnemonic` and `prefixes`, and its `boundary`: `rejectedOverlap` when it
 intersects entry-path instructions, which `overlapsVerified` lists, or
 `unresolvedBoundary` otherwise. Its `operands` give, for each intersecting
 operand, the `operandIndex`, the encoded `displacement`, the `addressRegisters`
 (base and index) that move the real address away from it, the `width`, the
 `access` direction (none for LEA), the `effectiveSegmentRegister` and the
-`intersection` with the query field. A footprint that runs past the top of the
-offset space wraps to zero and is marked `wraps`. The x87 environment and state
-saves and loads, FXSAVE/FXRSTOR and the XSAVE family have a `width`,
-`wraps` and `intersection` of `null`: their footprint is unknown, so they are
-listed whenever they start below the field's end. The footprint is the encoded
+`intersection` with the query field. The displacement is taken at the
+instruction's address size, so a 32-bit displacement past 0xFFFF in 16-bit code
+names no 16-bit offset. A footprint that runs past the top of the instruction's
+address space (64 KiB for a 16-bit address size) wraps to zero and is marked
+`wraps`. The x87 environment and state saves and loads, FXSAVE/FXRSTOR, the
+XSAVE family and any operand Capstone gives no size have a `width`, `wraps` and
+`intersection` of `null`: their footprint is unknown, so they are listed
+whenever they start below the field's end. They are not followed past the top
+of the address space, so one starting above the field is never listed even if
+its real footprint would wrap onto it. The footprint is the encoded
 displacement alone: segment values, register contents, implicit operands and
 reachability are not resolved.
 

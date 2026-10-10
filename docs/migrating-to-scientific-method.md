@@ -432,6 +432,7 @@ not in the table has no entry.
 
 | Engine | Entry |
 |---|---|
+| 17.0.0 | [A `uses` conditional access of unknown width has no width](#engine-1700-a-uses-conditional-access-of-unknown-width-has-no-width) |
 | 15.0.0 | [`ExportFunctionInventory` writes a regions file](#engine-1500-exportfunctioninventory-writes-a-regions-file) |
 | 14.0.0 | [`ExportFunctionInventory` writes the Standard's notation and a provenance file](#engine-1400-exportfunctioninventory-writes-the-standards-notation-and-a-provenance-file) |
 | 13.0.0 | [The scalar constant scripts match absolute memory operands](#engine-1300-the-scalar-constant-scripts-match-absolute-memory-operands) |
@@ -452,6 +453,19 @@ not in the table has no entry.
 | 3.0.0 | [The Ghidra report scripts state coverage](#engine-300-the-ghidra-report-scripts-state-coverage) |
 | 2.0.0 | [Prepared-config protocol 3, with reader 2.0.0](#prepared-config-protocol-3-scoped-memory-on-call-models) |
 | 1.0.0 | [Prepared-config protocol 2, with reader 1.0.0](#prepared-config-protocol-2) |
+
+### Engine 17.0.0: a `uses` conditional access of unknown width has no width
+
+A `uses` `conditionalAccesses` row for an x87 environment or state save or load (FNSTENV, FLDENV,
+FNSAVE, FRSTOR), FXSAVE/FXRSTOR or the XSAVE family had the operand size Capstone reports as its
+`width` (4 for FNSAVE, 2 for FXSAVE in 16-bit code), which is not the bytes the instruction
+touches. Such a row now has a `width` of `null` and a `value` whose `bits` are `null`, and its
+`address` is `possible alias` unless it starts inside the query field. A tool that reads `width` or
+`value.bits` from these rows handles `null`.
+
+The same rows are now kept whenever they start below the field's end, and a word or wider operand
+that reaches the field only by wrapping past 0xFFFF is kept as a `possible alias`. Before, both were
+left out when Capstone's size missed the field.
 
 ### Engine 15.0.0: `ExportFunctionInventory` writes a regions file
 

@@ -342,37 +342,63 @@ UNKNOWN_FOOTPRINT = frozenset(("fnstenv", "fstenv", "fldenv", "fnsave", "fsave",
                                "fxsave64", "fxrstor64", "xsave", "xrstor", "xsaveopt", "xsavec", "xsaves", "xrstors"))
 
 
-def _raw_footprints(image, ins, offset, width):
-    """The explicit memory operands of ``ins`` whose encoded footprint may intersect the query field
-    ``[offset, offset + width)``, with each one's encoded start, width, direction and intersection.
+def footprint_width(ins, operand):
+    """The bytes the memory operand ``operand`` of ``ins`` touches, or None when no established source gives
+    them: the mnemonics of ``UNKNOWN_FOOTPRINT``, and an operand Capstone gives no size."""
+    return None if base_mnemonic(ins) in UNKNOWN_FOOTPRINT or not operand.size else memory_width(ins, operand)
 
-    The encoded start is the displacement; ``addressRegisters`` names the base and index registers that
-    move the real address away from it. A footprint that runs past the top of the offset space wraps to
-    zero. An operand of unknown width extends upward from its start by an unknown amount, so it is kept
-    when it starts below the field's end, and has no width or intersection."""
-    space = 1 << image.bits
+
+def _footprint(ins, operand, start, offset, width):
+    """How the memory operand ``operand`` of ``ins``, starting at offset ``start``, meets the query field
+    ``[offset, offset + width)``: ``(width, wraps, intersection)``, or None when it cannot meet it.
+
+    A footprint that runs past the top of the instruction's address space (64 KiB for a 16-bit address
+    size, 4 GiB for a 32-bit one) wraps to zero. An operand of unknown width extends upward from its start
+    by an unknown amount, so it may meet the field when it starts below the field's end, and has no width,
+    wrap or intersection; it is not followed past the top of the address space."""
+    space = 1 << 8 * ins.addr_size
+    size = footprint_width(ins, operand)
+    if size is None:
+        return None if start >= offset + width else (None, None, None)
+    pieces = [(start, min(start + size, space))] + ([(0, start + size - space)] if start + size > space else [])
+    hits = [(max(offset, a), min(offset + width, z)) for a, z in pieces if max(offset, a) < min(offset + width, z)]
+    return (size, start + size > space, {"start": hits[0][0], "end": hits[0][1]}) if hits else None
+
+
+def _overlapping(intervals, starts, at, size):
+    """The instructions of ``intervals`` (sorted ``(start, end)`` pairs, with ``starts`` their starts) that
+    intersect ``[at, at + size)``, other than one starting at ``at``."""
+    # At most 15 bytes precede a partly overlapping x86 instruction.
+    lo, hi = bisect_right(starts, at - 15), bisect_right(starts, at + size - 1)
+    return [{"site": a, "end": z} for a, z in intervals[lo:hi] if a != at and a < at + size and z > at]
+
+
+def _raw_footprints(ins, offset, width, mode):
+    """The explicit memory operands of ``ins`` whose encoded footprint may intersect the query field
+    ``[offset, offset + width)`` with an access the query ``mode`` asks for, with each one's encoded start,
+    width, direction and intersection.
+
+    The encoded start is the displacement, wrapped to the instruction's address size; ``addressRegisters``
+    names the base and index registers that move the real address away from it. ``_footprint`` decides
+    whether it meets the field. An operand with no access (LEA) is kept under every mode, since what the
+    formed address is used for is unknown."""
     rows = []
     for index, operand in enumerate(ins.operands):
         if operand.type != X86_OP_MEM:
             continue
+        # LEA forms an address and touches no memory.
+        access = [] if ins.mnemonic == "lea" else memory_access(ins, operand)
+        if access and mode != "both" and mode not in access:
+            continue
         mem = operand.mem
-        start = mem.disp & image.mask
-        size = None if base_mnemonic(ins) in UNKNOWN_FOOTPRINT or not operand.size else memory_width(ins, operand)
-        if size is None:
-            if start >= offset + width:
-                continue
-            intersection, wraps = None, None
-        else:
-            pieces = [(start, min(start + size, space))] + ([(0, start + size - space)] if start + size > space else [])
-            hits = [(max(offset, a), min(offset + width, z)) for a, z in pieces if max(offset, a) < min(offset + width, z)]
-            if not hits:
-                continue
-            intersection, wraps = {"start": hits[0][0], "end": hits[0][1]}, start + size > space
+        start = mem.disp & ((1 << 8 * ins.addr_size) - 1)
+        footprint = _footprint(ins, operand, start, offset, width)
+        if footprint is None:
+            continue
+        size, wraps, intersection = footprint
         rows.append({"operandIndex": index, "displacement": start,
                      "addressRegisters": [ins.reg_name(r) for r in (mem.base, mem.index) if r],
-                     "width": size, "wraps": wraps, "intersection": intersection,
-                     # LEA forms an address and touches no memory.
-                     "access": [] if ins.mnemonic == "lea" else memory_access(ins, operand),
+                     "width": size, "wraps": wraps, "intersection": intersection, "access": access,
                      "effectiveSegmentRegister": segment_register(ins, mem)})
     return rows
 
@@ -539,16 +565,20 @@ def uses(image, config):
                 segment_value, offset_value, segment_name = state.address(ins, operand)
             except StopPath as error:
                 gaps.append({"site": at, "reason": str(error)}); continue
-            size = memory_width(ins, operand)
+            size = footprint_width(ins, operand)
             off = offset_value.number
-            overlaps = off is not None and max(offset, off) < min(offset + width, off + size)
-            if off is not None and not overlaps:
+            footprint = None if off is None else _footprint(ins, operand, off, offset, width)
+            if off is not None and footprint is None:
                 continue
+            # A concrete footprint overlaps the field when it starts inside it, or below it with a known
+            # width. One of unknown width, or one that reaches the field only by wrapping past the top of
+            # the offset space, is a possible alias.
+            overlaps = off is not None and (offset <= off < offset + width or off < offset and footprint[0] is not None)
             for kind in kinds:
                 # A concrete segment query cannot bind an unpropagated DS/SS.
                 conditional.append({"site": at, "kind": kind, "width": size,
                                     "segment": segment_value.report(), "offset": offset_value.report(),
-                                    "value": unknown(f"CFG-operand:{at}", size * 8).report(),
+                                    "value": unknown(f"CFG-operand:{at}", None if size is None else size * 8).report(),
                                     "effectiveSegmentRegister": segment_name,
                                     "address": "overlaps query" if overlaps and segment is None else "possible alias",
                                     "classification": ("unverified overlapping instruction path" if at in unverified else
@@ -563,8 +593,9 @@ def uses(image, config):
     raw = []
     scanned_bytes = 0
     byte_limit = scan_limit(image, config.get("scanLimit", 65536))
-    # Only entry-path instructions reject a raw candidate's boundary; a contested one proves nothing.
-    verified = sorted((at, at + ins.size) for at, ins in seen.items() if at not in unverified)
+    # Only entry-path instructions reject a raw candidate's boundary. The walk leaves contested
+    # instructions and rejected starts out of seen, since they prove nothing.
+    verified = sorted((at, at + ins.size) for at, ins in seen.items())
     verified_starts = [a for a, _ in verified]
     for r in image.regions:
         for at in range(r["start"], r["end"]):
@@ -574,15 +605,13 @@ def uses(image, config):
             scanned_bytes += 1
             # An instruction the walk past a stop decoded (one past a PE32 port access) is already inventoried above.
             ins = image.decode(at) if at not in seen and at not in after_stop else None
-            footprints = _raw_footprints(image, ins, offset, width) if ins else []
+            footprints = _raw_footprints(ins, offset, width, mode) if ins else []
             if footprints:
                 if len(raw) < result_limit:
-                    # At most 15 bytes precede a partly overlapping x86 instruction.
-                    lo, hi = bisect_right(verified_starts, at - 15), bisect_right(verified_starts, at + ins.size - 1)
-                    overlaps = [{"site": a, "end": z} for a, z in verified[lo:hi] if a < at + ins.size and z > at]
+                    inside = _overlapping(verified, verified_starts, at, ins.size)
                     raw.append({"site": at, "size": ins.size, "classification": "unverified operand candidate",
-                                "boundary": "rejectedOverlap" if overlaps else "unresolvedBoundary",
-                                "overlapsVerified": overlaps, "mnemonic": ins.mnemonic, "prefixes": prefixes(ins),
+                                "boundary": "rejectedOverlap" if inside else "unresolvedBoundary",
+                                "overlapsVerified": inside, "mnemonic": ins.mnemonic, "prefixes": prefixes(ins),
                                 "operands": footprints})
                 else:
                     gaps.append({"reason": "raw candidate limit"}); break
@@ -650,9 +679,7 @@ def operand_candidates(image, config):
                 literal = operand.mem.disp if operand.type == X86_OP_MEM else operand.imm
                 if literal & image.mask != value:
                     continue
-                # At most 15 bytes precede a partly overlapping x86 instruction.
-                lo, hi = bisect_right(starts, at - 15), bisect_right(starts, at + ins.size - 1)
-                overlaps = [{"site": a, "end": z} for a, z in intervals[lo:hi] if a != at and a < at + ins.size and z > at]
+                overlaps = _overlapping(intervals, starts, at, ins.size)
                 memory = operand.type == X86_OP_MEM and ins.mnemonic != "lea" and bool(operand.access & (CS_AC_READ | CS_AC_WRITE))
                 classification = ("unresolvedBoundary" if at in ambiguous else
                                   "verifiedMemoryUses" if at in seen and memory else
