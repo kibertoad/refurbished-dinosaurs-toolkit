@@ -2305,7 +2305,7 @@ class ReporterTests(unittest.TestCase):
         # The CPU leaves OF undefined past a count of 1. SLEIGH's SHR with a count operand writes OF
         # as 0 for a count of 1, where the CPU writes the operand's top bit.
         for shift in ("c1 e0 03", "c1 e8 02", "c1 f8 02", "c1 c0 03", "c1 c8 03", "c1 d0 03", "c1 d8 03",
-                      "c1 e8 01", "d3 e8", "c0 e8 01"):
+                      "c1 e8 01", "d3 e8", "c0 e8 01", "d2 e8", "66 c1 e8 01"):
             with self.subTest(shift=shift):
                 self.assertEqual([b.get("decidedBy") for b in branches(shift)], [None, None])
 
@@ -2878,6 +2878,20 @@ class ReporterTests(unittest.TestCase):
         data = bytes.fromhex("c3")
         with mock.patch.object(image_module, "CAPSTONE_VERSION", "5.0.7"):
             with self.assertRaisesRegex(ValueError, r"requires capstone==5\.0\.9; capstone 5\.0\.7 is installed"):
+                Image(data, configuration(data))
+        with mock.patch.object(image_module, "CAPSTONE_VERSION", None):
+            with self.assertRaisesRegex(ValueError, r"requires capstone==5\.0\.9; the installed capstone has no distribution metadata"):
+                Image(data, configuration(data))
+        with mock.patch.object(image_module.metadata, "version", side_effect=metadata.PackageNotFoundError("capstone")):
+            self.assertIsNone(image_module.installed("capstone"))
+
+    def test_pypcode_guard_refuses_another_sleigh_specification(self):
+        # Which flags the engine keeps after a shift is checked against pypcode 4.0.1's SLEIGH files;
+        # pypcode 4.0.0 writes the OF of SHR by one as 0.
+        self.assertEqual(image_module.PYPCODE_VERSION, image_module.REQUIRED_PYPCODE)
+        data = bytes.fromhex("c3")
+        with mock.patch.object(image_module, "PYPCODE_VERSION", "4.0.0"):
+            with self.assertRaisesRegex(ValueError, r"requires pypcode==4\.0\.1; pypcode 4\.0\.0 is installed"):
                 Image(data, configuration(data))
 
     def test_cli_identity_and_errors(self):

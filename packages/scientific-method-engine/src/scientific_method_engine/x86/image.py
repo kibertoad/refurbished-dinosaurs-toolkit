@@ -2,15 +2,29 @@
 import re
 from importlib import metadata
 from pathlib import Path
+import pypcode
 import xxhash
 from capstone import Cs, CS_ARCH_X86, CS_MODE_16, CS_MODE_32
 from capstone.x86 import X86_OP_MEM
 from .pe import prepare_pe
 
+
+def installed(name):
+    """The installed distribution's version, or None when it has no distribution metadata."""
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return None
+
+
 # The installed Capstone distribution's version. capstone.__version__ cannot stand in for it: the
 # 5.0.8 and 5.0.9 bindings still report 5.0.7, because their CS_VERSION_EXTRA was not bumped.
-CAPSTONE_VERSION = metadata.version("capstone")
+CAPSTONE_VERSION = installed("capstone")
 REQUIRED_CAPSTONE = "5.0.9"
+# The engine's rules for which flags to keep are checked against this SLEIGH specification, such as
+# the OF of SHR, which pypcode 4.0.0 writes as 0 where 4.0.1 writes the CPU's value.
+PYPCODE_VERSION = pypcode.__version__
+REQUIRED_PYPCODE = "4.0.1"
 MAX_SOURCE = 256 * 1024 * 1024
 XXH3_FORM = re.compile("[0-9a-f]{32}")
 
@@ -69,8 +83,11 @@ def read_source(config, base):
 
 class Image:
     def __init__(self, data, config):
-        if CAPSTONE_VERSION != REQUIRED_CAPSTONE:
-            raise ValueError(f"This reporter requires capstone=={REQUIRED_CAPSTONE}; capstone {CAPSTONE_VERSION} is installed")
+        for name, required, found in (("capstone", REQUIRED_CAPSTONE, CAPSTONE_VERSION),
+                                      ("pypcode", REQUIRED_PYPCODE, PYPCODE_VERSION)):
+            if found != required:
+                present = f"{name} {found} is installed" if found else f"the installed {name} has no distribution metadata"
+                raise ValueError(f"This reporter requires {name}=={required}; {present}")
         if config.get("sourceKind") == "pe32":
             config = prepare_pe(data, config)
         self.config = config

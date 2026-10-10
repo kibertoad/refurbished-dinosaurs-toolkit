@@ -188,11 +188,37 @@ class ShiftsAndRotates(unittest.TestCase):
         self.assertEqual(result["paths"][0]["registers"]["dx"]["expression"][0], "or")
 
     def test_overflow_of_one_bit_shifts_and_rotates(self):
-        # Each JNO skips INC BX when OF is clear. SHR by one writes OF from the operand's top bit;
-        # RCR writes it before rotating, from CF and the top bit.
-        check(self, "bb0000 b80080 d1e8 7101 43 b80040 c1e001 7101 43 b80080 c1f801 7101 43"
-                    " b80040 c1c001 7101 43 b80100 c1c801 7101 43 f8 b80040 c1d001 7101 43"
-                    " f9 b80000 c1d801 7101 43 b80040 d1e0 7101 43 c3", resolved=("bx",))
+        # The engine keeps OF after every shift and rotate by a count of 1 except SHR by a count
+        # operand, so each such encoding gets its own routine: JNO skips INC BX when OF is clear.
+        # The operands set and clear the top two bits and bit 0, and RCL and RCR run from both carries.
+        # 8-bit forms work on AL, 16-bit forms on AX and 32-bit forms (66h) on EAX; CL holds 1.
+        forms = {"d0": ("", 8), "d1": ("", 16), "66d1": ("", 32), "c0": ("01", 8), "c1": ("01", 16),
+                 "66c1": ("01", 32), "d2": ("", 8), "d3": ("", 16), "66d3": ("", 32)}
+        for field, mnemonic in enumerate(("rol", "ror", "rcl", "rcr", "shl", "shr", "sal", "sar")):
+            for opcode, (immediate, bits) in forms.items():
+                if mnemonic == "shr" and opcode[-2:] not in ("d0", "d1"):
+                    continue
+                for top in (0b00, 0b01, 0b10, 0b11):
+                    load = "66b8" if bits == 32 else "b8"
+                    value = (top << (bits - 2) | (top & 1)).to_bytes(4 if bits == 32 else 2, "little").hex()
+                    for carry in (("f8", "f9") if mnemonic in ("rcl", "rcr") else ("",)):
+                        shift = f"{opcode}{0xC0 | field << 3:02x}{immediate}"
+                        with self.subTest(mnemonic=mnemonic, shift=shift, value=value, carry=carry):
+                            check(self, f"bb0000 b90100 {load}{value} {carry} {shift} 7101 43 c3", resolved=("bx",))
+
+    def test_shift_by_an_unknown_count_keeps_the_count_mask(self):
+        # A p-code shift takes its whole count, so the term keeps SLEIGH's five-bit mask of CL.
+        result = check(self, "bb0300 d3e0 c3", resolved=("bx",))
+        ax = result["paths"][0]["registers"]["ax"]["expression"]
+        self.assertEqual((ax[0], ax[2][0], ax[2][1][0], ax[2][1][2]), ("shl", "zeroExtend", "and", ("constant", 31)))
+
+    def test_double_word_rotates_through_carry(self):
+        # SLEIGH rotates EAX through CF in a 64-bit temporary built with zext(CF) << 32, a p-code
+        # shift by 32 that x86's five-bit count mask does not apply to.
+        for rotate in ("66d1d0", "66d1d8", "66c1d005", "66c1d81f", "66d3d0", "66d3d8"):
+            for carry in ("f8", "f9"):
+                with self.subTest(rotate=rotate, carry=carry):
+                    check(self, f"b90300 66b8f00f0180 {carry} {rotate} bb0000 83d300 c3", resolved=("eax", "bx"))
 
     def test_memory_operands(self):
         # RCL by one on memory: Capstone reports its implicit count with a size of 0.
@@ -209,6 +235,14 @@ class MultiplyAndDivide(unittest.TestCase):
         registers = result["paths"][0]["registers"]
         self.assertEqual(registers["cx"]["expression"][0], "mul")
         self.assertEqual(registers["dx"]["expression"][0], "mul")
+
+    def test_product_by_zero_or_one_keeps_the_multiply(self):
+        # BX is unknown; the engine folds only the one-byte products of SLEIGH's flag selections.
+        result = check(self, "b90300 6bc301 66 6bd301 6bf300 c3", resolved=("cx",))
+        registers = result["paths"][0]["registers"]
+        self.assertEqual(registers["ax"]["expression"][0], "mul")
+        self.assertEqual(registers["dx"]["expression"][1][0], "mul")
+        self.assertEqual(registers["si"]["expression"][0], "mul")
 
     def test_low_products_of_extended_operands(self):
         # AX holds the sign extension of an unknown byte; the products name AX, not the byte.
