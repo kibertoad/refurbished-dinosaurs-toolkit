@@ -53,10 +53,13 @@ LegacyFormats parts of it:
   `OpenVolume` and the descriptor and directory reads while opening also read a Form 2 sector
   whose 2324 data bytes are all zero as 2048 zero bytes, so a disc with empty Form 2 padding in its
   volume space, even inside a directory's extent, opens and can pin `VolumeXxh3`. A cue/bin source
-  names the cue sheet and the raw image file it chose from a directory, a `.cue` or a `.bin` input as
-  `CuePath` and `BinPath` (the image is the file the sheet's `FILE` names, whatever its
-  extension), so the importer hashes and reads the same files instead of repeating the selection.
-  The source reads the `.cue` once, when it opens, and gives those bytes as `CueSheetBytes`: hash
+  names the cue sheet and the raw image file it chose from a directory, a sheet or a `.bin` input as
+  `CuePath` and `BinPath` (a sheet input may have any extension, and the image is the file the
+  sheet's first `FILE` names, whatever its extension), so the importer hashes and reads the same
+  files instead of repeating the selection. Later `FILE` entries holding only audio tracks are
+  recorded in `Cue.Files` and never read
+  ([Cue sheets](../packages/dotnet/README.md#cue-sheets)).
+  The source reads the sheet once, when it opens, and gives those bytes as `CueSheetBytes`: hash
   them, since the file at `CuePath` may have
   been replaced after the sheet was parsed. An `.iso` or cue/bin source records the image's length
   and last-write time when it opens, and every read of the `.iso` or BIN through the source,
@@ -491,3 +494,17 @@ catches `FileGenerationsUnreadableException` and reads `PrimaryFailure` instead.
 `RecoverableFile.Write` promotes with `File.Replace`. On Windows the new primary takes the replaced
 file's creation time and attributes, and on other systems the backup is a hard link to the old
 primary where the filesystem supports one.
+
+### Cue sheets with several files or another extension
+
+`CueSheet.Tracks` and `CueSheet.DataTrackSectors` now throw `InvalidDataException` for a sheet
+that names more than one `FILE`. They used to read every file's indices as sectors of one image,
+so the sectors they gave for a later file's tracks were wrong. Read such a sheet with
+`CueBinSheet.Parse`, whose `Files` and `ImageTracks` say which tracks are in the image.
+
+`BuildListing.Make` no longer refuses a disc image by its extension. Any file that is not an `.iso`
+is opened as a cue/bin image's sheet or `.bin`, so an image of another kind, such as an ISO named
+`.img`, now fails with `InvalidDataException` saying it was read as a cue sheet, where it used to
+fail with `ArgumentException` before anything was listed. The discs are now read before the
+installation directory is walked. Code that caught `ArgumentException` for a wrong image type
+catches `InvalidDataException` as well.

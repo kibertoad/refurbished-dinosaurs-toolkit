@@ -393,6 +393,14 @@ public static class AssetVerifier
                         $"The cue sheet has no audio track {track.Track:D2}.") { AudioTrack = track.Track });
                     continue;
                 }
+                if (track.Track > sheet.ImageTracks)
+                {
+                    issues.Add(new(null, AssetProblem.Unreadable,
+                        $"Audio track {track.Track:D2} is stored in {JsonString(sheet.FileOf(track.Track).Path)}, " +
+                        "a separate file the source does not read, so its fingerprint was not checked.")
+                        { AudioTrack = track.Track });
+                    continue;
+                }
                 if (!reads.Tracks.TryGetValue(track, out var issue))
                 {
                     if (image is null && reads.ImageFailure is null && !reads.NoImage)

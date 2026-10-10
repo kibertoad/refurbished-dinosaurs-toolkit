@@ -32,13 +32,20 @@ public static class CueSheet
     }
 
     /// <summary>Every track that has an <c>INDEX 01</c>, in file order, with its <c>INDEX 00</c> if it has one.</summary>
-    /// <exception cref="InvalidDataException">No track has an index.</exception>
+    /// <exception cref="InvalidDataException">
+    /// No track has an index, or the sheet names more than one <c>FILE</c>, whose indices would each
+    /// count from the start of their own file. Read such a sheet with <see cref="CueBinSheet.Parse"/>.
+    /// </exception>
     public static CueTrack[] Tracks(IEnumerable<string> lines)
     {
         var result = new List<CueTrack>();
         var number = 0; var mode = ""; int? pregap = null;
+        var files = 0;
         foreach (var line in lines)
         {
+            if (Regex.IsMatch(line, @"^\s*FILE\s", RegexOptions.IgnoreCase) && ++files > 1)
+                throw new InvalidDataException(
+                    "Cue sheet names more than one FILE; CueSheet reads only single-file images. Use CueBinSheet.Parse.");
             var track = Regex.Match(line, @"^\s*TRACK\s+(\d+)\s+(\S+)", RegexOptions.IgnoreCase);
             if (track.Success) { number = int.Parse(track.Groups[1].Value); mode = track.Groups[2].Value; pregap = null; continue; }
             var index = Regex.Match(line, @"INDEX\s+0([01])\s+(\d+):(\d+):(\d+)", RegexOptions.IgnoreCase);
