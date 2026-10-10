@@ -41,14 +41,16 @@ for example `requirements-evidence.txt`:
 scientific-method-engine==<version>
 ```
 
-The engine needs Python 3.12 or later, because pypcode 4.0.0, which supplies its instruction
+The engine needs Python 3.12 or later, because pypcode 4.0, which supplies its instruction
 semantics, publishes wheels only for 3.12 and later. Move CI and research environments that run an
 older Python to 3.12 in the same change.
 
-A requirements file that also pins the engine's dependencies, such as `capstone==5.0.7`, adds
-`pypcode==4.0.0` and, from engine 1.0, `xxhash==4.0.1` beside it. Neither has runtime dependencies
-of its own. Under `pip install --require-hashes` every dependency needs its hashes, so list the hash
-of each of their wheels for the platforms you install on, or pip refuses the whole file.
+A requirements file that also pins the engine's dependencies pins the versions its engine release
+requires: `capstone==5.0.9`, `pypcode==4.0.1` and `xxhash==4.0.1` from engine 18.0.0, and
+`capstone==5.0.7`, `pypcode==4.0.0` and, from engine 1.0, `xxhash==4.0.1` before it. None of them
+has runtime dependencies of its own. Under `pip install --require-hashes` every dependency needs its
+hashes, so list the hash of each of their wheels for the platforms you install on, or pip refuses
+the whole file.
 
 A gate that checks the installed versions asks pip whether the environment satisfies the
 requirements file, instead of repeating version literals or parsing the file. A literal goes stale
@@ -432,6 +434,7 @@ not in the table has no entry.
 
 | Engine | Entry |
 |---|---|
+| 18.0.0 | [Capstone 5.0.9 and pypcode 4.0.1](#engine-1800-capstone-509-and-pypcode-401) |
 | 17.0.0 | [A `uses` conditional access of unknown width has no width](#engine-1700-a-uses-conditional-access-of-unknown-width-has-no-width) |
 | 16.0.0 | [A `join` expression lists its parts' widths](#engine-1600-a-join-expression-lists-its-parts-widths) |
 | 15.0.0 | [`ExportFunctionInventory` writes a regions file](#engine-1500-exportfunctioninventory-writes-a-regions-file) |
@@ -454,6 +457,34 @@ not in the table has no entry.
 | 3.0.0 | [The Ghidra report scripts state coverage](#engine-300-the-ghidra-report-scripts-state-coverage) |
 | 2.0.0 | [Prepared-config protocol 3, with reader 2.0.0](#prepared-config-protocol-3-scoped-memory-on-call-models) |
 | 1.0.0 | [Prepared-config protocol 2, with reader 1.0.0](#prepared-config-protocol-2) |
+
+### Engine 18.0.0: Capstone 5.0.9 and pypcode 4.0.1
+
+The engine requires `capstone==5.0.9` and `pypcode==4.0.1`, up from 5.0.7 and 4.0.0. pypcode
+4.0.1 carries a newer x86 SLEIGH specification. A requirements file that pins the engine's
+dependencies changes both pins, with the hashes of their wheels under `--require-hashes`, in the
+same change as the engine pin. The engine refuses to build a report under any other pypcode, as it
+already did for any other Capstone, with `This reporter requires pypcode==4.0.1; pypcode <version> is
+installed`.
+
+Reports change in these ways:
+
+- `decoder` reads `capstone 5.0.9`. It names the installed Capstone distribution; the 5.0.9
+  binding's own `capstone.__version__` still says 5.0.7.
+- `instructionSemantics` reads `pypcode 4.0.1 (Ghidra SLEIGH x86)`.
+- After `shr r/m,1` in its D0 or D1 encoding, OF is the operand's top bit, as on the CPU. Earlier
+  releases took 0 from pypcode 4.0.0, so a branch that read OF there could be decided the wrong way.
+- A branch that reads OF (JO, JNO, JL, JGE, JLE, JG) after a shift or rotate by a count other than
+  1, or after SHR by a count operand (C0, C1, D2 or D3 encoding), is undecided: the trace splits
+  where earlier releases decided it. The CPU leaves OF undefined past a count of 1, and the SLEIGH
+  specification in pypcode 4.0.1 writes 0 as the OF of SHR by a count operand of 1.
+- A shift by a count the engine does not know keeps the count's five-bit mask in its expression:
+  `shl ax,cl` reads `["shl", ax, ["zeroExtend", ["and", cl, ["constant", 31]], 8, 16]]` where
+  earlier releases wrote `["shl", ax, ["zeroExtend", cl, 8, 16]]`. A shift term now means the
+  p-code shift, whose count is not masked, so a count of the width or more gives 0.
+
+A saved report compared with a new one differs in `decoder` and `instructionSemantics`. Rerun the
+positive controls of any query whose path branches on OF after a shift or rotate.
 
 ### Engine 17.0.0: a `uses` conditional access of unknown width has no width
 

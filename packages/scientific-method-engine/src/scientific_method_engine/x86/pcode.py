@@ -315,9 +315,6 @@ def evaluate(code, args, bits, site):
                         and x.term[1][2] + x.term[2][1] == bits):
                     high, low = Value(x.term[1][2], x.term[1][1]), Value(y.term[2], y.term[1])
                     return Value(bits, join([low, high]).term, origin)
-        if name in ("shl", "shr", "sar") and b.term[0] == "and" and b.term[2] == ("constant", 31):
-            # x86 masks shift counts to five bits; the engine's shift terms carry that mask already.
-            b = Value(b.bits, b.term[1], b.sources)
         if name in ("and", "or", "xor") and not known:
             # Identities that keep flag expressions small; constants fold in values.op.
             mask = (1 << bits) - 1
@@ -331,6 +328,15 @@ def evaluate(code, args, bits, site):
                     return Value(bits, y.term, origin)
                 if name == "or" and (x.number == mask):
                     return Value(bits, ("constant", mask), origin)
+        if name == "mul" and not known and bits == 8:
+            # SLEIGH's conditionalAssign selects a flag as (c * new) | (!c * old); with c known,
+            # one arm is a product by zero and the other a product by one. Those products are one
+            # byte wide. A wider product is a MUL or IMUL, which keeps its multiply in reports.
+            for x, y in ((a, b), (b, a)):
+                if x.number == 0:
+                    return Value(bits, ("constant", 0), origin)
+                if x.number == 1:
+                    return Value(bits, y.term, origin)
         return op(name, a, b, site)
     if code == "INT_NEGATE":
         return op("xor", a, const((1 << bits) - 1, bits), site)

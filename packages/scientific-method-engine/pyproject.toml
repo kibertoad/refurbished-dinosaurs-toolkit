@@ -11,7 +11,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [{ name = "kibertoad" }]
-dependencies = ["capstone==5.0.7", "pypcode==4.0.0", "xxhash==4.0.1"]
+dependencies = ["capstone==5.0.9", "pypcode==4.0.1", "xxhash==4.0.1"]
 
 [project.optional-dependencies]
 # Unicorn is the tests' concrete oracle (ADR 0003, decision 4). Its core is GPLv2, so it never

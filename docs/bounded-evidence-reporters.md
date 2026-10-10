@@ -488,15 +488,20 @@ terms ([ADR 0003](decisions/0003-established-instruction-semantics.md)). Segment
 memory accesses, producers and every control transfer stay with the engine. A p-code memory access
 that does not match the decoded operand, an unsupported p-code operation and a decode length that
 differs from Capstone's stop the path. Every report names both in `decoder` and
-`instructionSemantics`.
+`instructionSemantics`. `decoder` gives the version of the installed Capstone distribution, since
+the Capstone 5.0.8 and 5.0.9 bindings still report 5.0.7 as `capstone.__version__`. The engine
+refuses to build a report under any Capstone other than 5.0.9 or any pypcode other than 4.0.1.
 
 The decoder supports 16-bit addressing and a bounded subset of ordinary integer
 operations: MOV/MOVZX/MOVSX, XCHG, low-result two/three-operand IMUL (flags unresolved),
 one-operand MUL/IMUL/DIV/IDIV, LEA, LDS/LES, PUSH/POP, ENTER, LEAVE, ADD/SUB, ADC/SBB,
 NEG/NOT, bitwise logic, shifts, ROL/ROR/RCL/RCR with a known count, CLC/STC/CMC,
-INC/DEC and effective-size sign extension. ENTER runs at nesting levels 0 and 1 (the level byte
-modulo 32): its saved frame pointer and, at level 1, the new frame pointer are stack writes at
-ENTER's site, and BP and SP take ENTER's site as their producer. A higher level copies frame
+INC/DEC and effective-size sign extension. A shift or rotate keeps OF only for a count of 1,
+because the CPU leaves OF undefined for larger counts, and SHR keeps it only in its D0 and D1
+encodings, because the SLEIGH specification writes OF as 0 for SHR by a count operand of 1. A
+branch that reads OF after any other shift or rotate is undecided. ENTER runs at nesting levels 0
+and 1 (the level byte modulo 32): its saved frame pointer and, at level 1, the new frame pointer
+are stack writes at ENTER's site, and BP and SP take ENTER's site as their producer. A higher level copies frame
 pointers from the caller's frame chain and stops the path with `ENTER nesting level <n> copies the
 caller's frame chain, which is not modeled`, where `<n>` is the level in effect (the byte modulo
 32). ENTER and LEAVE with an operand-size or address-size override stop the path. The decoder

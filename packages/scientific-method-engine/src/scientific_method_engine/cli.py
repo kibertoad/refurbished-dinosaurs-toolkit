@@ -3,15 +3,15 @@ import json
 import sys
 from pathlib import Path
 
-import capstone
 import pypcode
 
 from . import PREPARED_PROTOCOL
+from .x86.image import CAPSTONE_VERSION
 
 CONFIG_LIMIT = 1024 * 1024
 PREPARED_CONFIG_LIMIT = 16 * 1024 * 1024
 # The header names the decoder and instruction semantics that actually ran, not the pins in pyproject.toml.
-DECODER = "capstone " + capstone.__version__
+DECODER = f"capstone {CAPSTONE_VERSION or 'without distribution metadata'}"
 INSTRUCTION_SEMANTICS = f"pypcode {pypcode.__version__} (Ghidra SLEIGH x86)"
 USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bounds|owner|callees|reach|trace|uses|arguments|"
          "effects|returns|memory|incoming|inventory-check|call-order|guards|allocation|dispatch> <config.json|->\n"
