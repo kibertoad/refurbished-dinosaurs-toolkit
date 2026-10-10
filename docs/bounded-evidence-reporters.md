@@ -1965,8 +1965,10 @@ unless its expression bounds it: `and` is at most the smaller operand bound, so 
 bounds it by the mask; `or` and `xor` stay below the next power of two above both operands, and
 `or` is at least its larger operand; a shift right or a division by a constant divides the
 operand's bounds, an arithmetic shift only when its operand's sign bit is clear; a remainder by a
-constant is below the constant; a zero extension keeps the narrower value's bounds; and an extracted
-field keeps the bounds of the bits it takes when the operand cannot reach the bits above them. These
+constant is below the constant; a zero extension keeps the narrower value's bounds; an extracted
+field keeps the bounds of the bits it takes when the operand cannot reach the bits above them; and a
+join, which a partial register write or a multi-byte load leaves, is the sum of each part's bounds
+shifted to the part's offset, so `mov bl,[x]; xor bh,bh` leaves BX at most 0FFh as `movzx` does. These
 are unsigned bounds. A signed reading uses them only when they keep the sign bit the same for every
 value, clear or set. A relation holds when every value the unknowns allow satisfies it, is violated
 when none does, and is undecided otherwise. The branches a path took are not solved, so a relation

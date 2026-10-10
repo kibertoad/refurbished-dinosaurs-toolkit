@@ -704,6 +704,21 @@ class BitwiseBoundTests(unittest.TestCase):
         self.assertEqual(self.check("0f b6 1e 00 02 83 cb 10", "le", 0xff)["verdict"], "held")
         self.assertEqual(self.check("0f b6 1e 00 02 83 cb 10", "le", 0xfe)["verdict"], "undecided")
 
+    def test_a_partial_register_write_bounds_the_register_by_its_parts(self):
+        # mov bl,[0200h]; xor bh,bh: the zero-extension idiom leaves BX at most 0FFh, like movzx.
+        held = self.check("8a 1e 00 02 30 ff", "le", 0xff)
+        self.assertEqual(held["verdict"], "held")
+        self.assertEqual(held["paths"][0]["occurrences"][0]["leftMinusRight"], {"min": -0xff, "max": 0})
+        self.assertEqual(self.check("8a 1e 00 02 30 ff", "le", 0xfe)["verdict"], "undecided")
+        # mov bl,[0200h]; mov bh,12h: a constant high byte puts BX in 1200h..12FFh.
+        self.assertEqual(self.check("8a 1e 00 02 b7 12", "ge", 0x1200)["verdict"], "held")
+        self.assertEqual(self.check("8a 1e 00 02 b7 12", "le", 0x12ff)["verdict"], "held")
+        self.assertEqual(self.check("8a 1e 00 02 b7 12", "le", 0x12fe)["verdict"], "undecided")
+        with self.assertRaisesRegex(ValueError, "bound violated"):
+            self.check("8a 1e 00 02 b7 12", "lt", 0x1200)
+        # A loaded word is a join of two unknown bytes and keeps its whole range.
+        self.assertEqual(self.check("8b 1e 00 02", "le", 0xfffe)["verdict"], "undecided")
+
     def test_an_assumed_range_bounds_the_masked_operand(self):
         # mov bx,cx; and bx,0FFh, with CX assumed at most 7.
         c = Code().emit("89 cb 81 e3 ff 00").label("return").emit("c3")

@@ -432,6 +432,7 @@ not in the table has no entry.
 
 | Engine | Entry |
 |---|---|
+| 16.0.0 | [A `join` expression lists its parts' widths](#engine-1600-a-join-expression-lists-its-parts-widths) |
 | 15.0.0 | [`ExportFunctionInventory` writes a regions file](#engine-1500-exportfunctioninventory-writes-a-regions-file) |
 | 14.0.0 | [`ExportFunctionInventory` writes the Standard's notation and a provenance file](#engine-1400-exportfunctioninventory-writes-the-standards-notation-and-a-provenance-file) |
 | 13.0.0 | [The scalar constant scripts match absolute memory operands](#engine-1300-the-scalar-constant-scripts-match-absolute-memory-operands) |
@@ -452,6 +453,19 @@ not in the table has no entry.
 | 3.0.0 | [The Ghidra report scripts state coverage](#engine-300-the-ghidra-report-scripts-state-coverage) |
 | 2.0.0 | [Prepared-config protocol 3, with reader 2.0.0](#prepared-config-protocol-3-scoped-memory-on-call-models) |
 | 1.0.0 | [Prepared-config protocol 2, with reader 1.0.0](#prepared-config-protocol-2) |
+
+### Engine 16.0.0: a `join` expression lists its parts' widths
+
+A value built from parts, such as a register after a partial write or a word loaded byte by byte,
+reports its expression as `["join", parts, widths]`: the parts' expressions and their widths in
+bits, lowest part first. Earlier releases wrote `["join", parts]` and left each part's width to the
+reader, which assumed bytes. A part that is itself a join now contributes its own parts, so a join
+never nests. A tool that reads `join` expressions out of reports reads the third element for each
+part's width and offset. A saved report compared with a new one differs in every `join`
+expression.
+
+Relation controls now bound a join by its parts, so a control over such a value, for example
+`registers.bx le 0FFh` after `mov bl,[x]; xor bh,bh`, can hold where it was undecided.
 
 ### Engine 15.0.0: `ExportFunctionInventory` writes a regions file
 

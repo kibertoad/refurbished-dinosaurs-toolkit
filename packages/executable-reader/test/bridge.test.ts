@@ -2122,6 +2122,40 @@ test("relational controls pass through preparation and fail, hold or stay undeci
   assert.throws(() => run(["memory", query({ relationalControls: [atReturn([68])] })]), /cleanup slot violated/);
 });
 
+test("a partial register write reports a join with its part widths and bounds a relation through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  // mov bl,[0200h]; xor bh,bh; ret
+  data.set([0x8a, 0x1e, 0x00, 0x02, 0x30, 0xff, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const bound = (op: string, right: number) => {
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({
+        ...config,
+        xxh3: sourceXxh3(data),
+        registers: { ds: 0x2000, ss: 0x3000, sp: 0xff00 },
+        relationalControls: [
+          {
+            name: "bx byte",
+            kind: "relation",
+            at: { site: 70, event: "checkpoint" },
+            left: { field: "registers.bx" },
+            op,
+            right,
+          },
+        ],
+      }),
+    );
+    return run(["trace", join(dir, "config.json")]);
+  };
+  const held = bound("le", 0xff);
+  const [kind, parts, widths] = held.paths[0].registers.bx.expression;
+  assert.deepEqual([kind, parts.length, parts[1], widths], ["join", 2, ["constant", 0], [8, 8]]);
+  assert.equal(held.relationalControls.controls[0].verdict, "held");
+  assert.deepEqual(held.relationalControls.controls[0].paths[0].occurrences[0].leftMinusRight, { min: -0xff, max: 0 });
+  assert.equal(bound("le", 0xfe).relationalControls.controls[0].verdict, "undecided");
+});
+
 test("an output count past a modeled call is a lower bound through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(20, 28);

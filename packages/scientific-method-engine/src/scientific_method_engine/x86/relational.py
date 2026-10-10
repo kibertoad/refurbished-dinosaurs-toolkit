@@ -9,7 +9,7 @@ from math import inf
 from .image import integer
 from .machine import ALIASES, NO_WRITE, State, StopPath
 from .memory_scopes import SEGMENTS
-from .values import const, op, TermLimit
+from .values import const, join_offsets, op, TermLimit
 
 KINDS = ("reach", "order", "lastWriter", "containment", "relation", "origin")
 OPERATORS = ("eq", "ne", "lt", "le", "gt", "ge")
@@ -308,8 +308,8 @@ def _unsigned(term, bits, ranges):
     """Bounds on the term's unsigned value at its width, read from bitwise structure and assumptions.
 
     An assumed range, a constant, ``and``, ``or``, ``xor``, a shift right or division by a constant
-    (an arithmetic shift only when its operand's sign bit is clear), a remainder by a constant, a zero extension or an extracted field narrows the width's full
-    range; any other term keeps it.
+    (an arithmetic shift only when its operand's sign bit is clear), a remainder by a constant, a zero extension, an extracted field
+    or a join of parts narrows the width's full range; any other term keeps it.
     """
     if (term, bits) in ranges:
         return ranges[(term, bits)]
@@ -344,6 +344,13 @@ def _unsigned(term, bits, ranges):
         low = term[2]
         if hi >> low <= top:
             return lo >> low, hi >> low
+    if tag == "join" and sum(term[2]) == bits:
+        # The parts hold disjoint bits, so the value is the sum of each part shifted to its offset.
+        lo = hi = 0
+        for part, width, offset in join_offsets(term):
+            plo, phi = _unsigned(part, width, ranges)
+            lo, hi = lo + (plo << offset), hi + (phi << offset)
+        return lo, hi
     return 0, top
 
 

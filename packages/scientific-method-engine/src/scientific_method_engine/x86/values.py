@@ -1,7 +1,8 @@
 """Small bit-vector expressions; unknown values retain their producers."""
 from dataclasses import dataclass
 
-# The most terms one value's expression may hold, counting every tuple node at any depth.
+# The most terms one value's expression may hold, counting every tuple node at any depth except
+# the part widths of a join.
 TERM_LIMIT = 1024
 
 
@@ -33,7 +34,9 @@ class Value:
             if count > TERM_LIMIT:
                 raise TermLimit()
             if isinstance(term, tuple):
-                pending.extend(item for item in term if isinstance(item, tuple))
+                # A join's part widths are numbers about its parts, not a term of their own.
+                items = term[:2] if term and term[0] == "join" else term
+                pending.extend(item for item in items if isinstance(item, tuple))
 
     @property
     def number(self):
@@ -94,10 +97,12 @@ def extract(v, low, bits):
     if low == 0 and bits == v.bits:
         return v
     if v.term[0] == "join":
-        parts = v.term[1]
-        if low % 8 == 0 and bits % 8 == 0:
-            selected = parts[low // 8:(low + bits) // 8]
-            return join([Value(8, term, v.sources) for term in selected])
+        # A field that starts and ends on part boundaries is the join of the parts it covers.
+        offsets = join_offsets(v.term)
+        bounds = [offset for _, _, offset in offsets] + [v.bits]
+        if low in bounds and low + bits in bounds:
+            return join([Value(width, term, v.sources) for term, width, offset in offsets
+                         if low <= offset < low + bits])
     if v.term[0] == "extract":
         original, previous_low, _, original_bits = v.term[1:]
         return Value(bits, ("extract", original, previous_low + low, bits, original_bits), v.sources)
@@ -105,6 +110,11 @@ def extract(v, low, bits):
 
 
 def join(parts):
+    """The value whose bits are ``parts`` laid end to end, the first part lowest.
+
+    A ``join`` term is ``("join", terms, widths)``: the parts' terms and their widths in bits,
+    lowest first. A part that is itself a join contributes its own parts.
+    """
     bits = sum(v.bits for v in parts)
     if len(parts) == 1:
         # A single part is already its own value; wrapping it would nest on every partial register write.
@@ -115,12 +125,31 @@ def join(parts):
             n |= v.number << shift
             shift += v.bits
         return Value(bits, const(n, bits).term, sources(*parts))
-    if all(v.term[0] == "extract" and v.term[1] == parts[0].term[1]
-           and v.term[2] == i * 8 and v.bits == 8 for i, v in enumerate(parts)):
-        original_bits = parts[0].term[4]
-        term = parts[0].term[1] if bits == original_bits else ("extract", parts[0].term[1], 0, bits, original_bits)
+    terms, widths = [], []
+    for v in parts:
+        if v.term[0] == "join":
+            terms.extend(v.term[1])
+            widths.extend(v.term[2])
+        else:
+            terms.append(v.term)
+            widths.append(v.bits)
+    # Consecutive fields of one value, from its lowest bit up, are that value or its low field.
+    first = terms[0]
+    if first[0] == "extract" and all(t[0] == "extract" and t[1] == first[1] and t[2] == sum(widths[:i])
+                                     and t[3] == widths[i] for i, t in enumerate(terms)):
+        original, original_bits = first[1], first[4]
+        term = original if bits == original_bits else ("extract", original, 0, bits, original_bits)
         return Value(bits, term, sources(*parts))
-    return Value(bits, ("join", tuple(v.term for v in parts)), sources(*parts))
+    return Value(bits, ("join", tuple(terms), tuple(widths)), sources(*parts))
+
+
+def join_offsets(term):
+    """A ``join`` term's parts as ``(term, width, offset)``, lowest first, each offset in bits."""
+    result, offset = [], 0
+    for part, width in zip(term[1], term[2]):
+        result.append((part, width, offset))
+        offset += width
+    return result
 
 
 def resize(v, bits, signed=False):
