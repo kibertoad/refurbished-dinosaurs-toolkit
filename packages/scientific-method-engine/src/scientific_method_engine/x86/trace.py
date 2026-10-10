@@ -180,7 +180,7 @@ class Step(NamedTuple):
 
 
 def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, follow_interrupts=False,
-             modeled_interrupts=frozenset()):
+             modeled_interrupts=frozenset(), no_return_calls=frozenset(), no_return_interrupts=frozenset()):
     """The successors of ``ins`` decoded at ``at``, under the rule ``walk`` and the ``uses`` caller continuation share.
 
     An unsupported transfer encoding, a return, an unconditional jump without a resolved target,
@@ -189,7 +189,9 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
     conditional jump or loop continues at its resolved target and at the next instruction. A declared
     indirect jump continues at its table rows only. A call continues at its resolved target and at
     its return site; with ``step_over_calls`` it continues at its return site only and its target
-    is neither resolved nor reported.
+    is neither resolved nor reported. A call whose resolved target is in ``no_return_calls``, and an
+    interrupt whose site is in ``no_return_interrupts``, have no return site: the query declared that
+    they never come back.
     """
     m, following = base_mnemonic(ins), at + ins.size
     if unsupported_transfer(image, ins):
@@ -216,8 +218,10 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
             gaps.append({"site": at, "reason": provenance.get("reason", "target outside declared regions")})
         else:
             successors.append(target)
-        if m in ("jmp", "ljmp"):
+        if m in ("jmp", "ljmp") or (calls and target in no_return_calls):
             return Step(successors, False, None, gaps, edges)
+    if m in INTERRUPTS and at in no_return_interrupts:
+        return Step(successors, False, None, gaps, edges)
     if m == "hlt" or (m in INTERRUPTS and not follow_interrupts and at not in modeled_interrupts):
         gaps.append({"site": at, "reason": "hardware or interrupt boundary"})
         return Step(successors, False, None, gaps, edges)
@@ -233,7 +237,7 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
 
 
 def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts=False, stops=frozenset(),
-         modeled_interrupts=frozenset()):
+         modeled_interrupts=frozenset(), no_return_calls=frozenset(), no_return_interrupts=frozenset()):
     """Decode the CFG reached from ``entries`` and check its instruction boundaries.
 
     A port access in the flat model records a gap and ends that branch, as ``trace`` stops there.
@@ -242,7 +246,9 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
     for callers that list each interrupt as an assumption. ``modeled_interrupts`` continues past the
     interrupts at those sites only, the ones ``modeled_interrupt_sites`` names, which ``trace``
     continues past under a call model (ADR 0017). A site in ``stops`` is never decoded:
-    the walk reaches it and goes no further, so it is in no returned set.
+    the walk reaches it and goes no further, so it is in no returned set. ``no_return_calls`` and
+    ``no_return_interrupts`` end the branch at a call to one of those routines and at one of those
+    interrupt sites, as ``cfg_step`` describes.
     """
     instruction_limit(image, limit)
     pending, seen, gaps, edges = list(entries), {}, [], []
@@ -265,7 +271,8 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
             continue
         seen[at] = ins
         step = cfg_step(image, at, ins, follow_flat_ports, follow_interrupts=follow_interrupts,
-                        modeled_interrupts=modeled_interrupts)
+                        modeled_interrupts=modeled_interrupts, no_return_calls=no_return_calls,
+                        no_return_interrupts=no_return_interrupts)
         successors[at] = step.successors
         gaps.extend(step.gaps)
         edges.extend(step.edges)

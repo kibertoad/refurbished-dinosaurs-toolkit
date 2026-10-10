@@ -851,6 +851,37 @@ test("reach follows a resident far call and an overlay fixup call through the FB
   assert.deepEqual(leafReport.leaves, [{ routine: 528, reason: leaf, reached: true, callSites: [532] }]);
 });
 
+test("reach keeps the return site of a far call to a noReturn routine unread through the real MZ prepared bridge", (t) => {
+  const { dir, config } = fixture(t);
+  const path = join(dir, "config.json");
+  const reason = "synthetic: declared to end the program";
+  // 64 calls 80 far through its relocation; 69 is the return site, and 80 ends in a far return at 83.
+  writeFileSync(
+    path,
+    JSON.stringify({ ...config, starts: [64], targets: [69], controls: [64], noReturn: [{ routine: 80, reason }] }),
+  );
+  const r = run(["reach", path]);
+  assert.equal(r.targets[0].reached, false);
+  assert.deepEqual(r.noReturn, [
+    {
+      routine: 80,
+      reason,
+      reached: true,
+      read: true,
+      returnSites: [83],
+      contradicted: true,
+      callSites: [{ site: 64, following: 69, followingRead: false }],
+    },
+  ]);
+  // The walk reads a return in the declared routine, so no negative rests on the declaration.
+  assert.equal(r.negativeUsable, false);
+  writeFileSync(
+    path,
+    JSON.stringify({ ...config, starts: [64], targets: [69], noReturn: [{ interrupt: 80, reason }] }),
+  );
+  assert.throws(() => run(["reach", path]), /noReturn interrupt 80 is not an interrupt instruction/);
+});
+
 test("inventory-check places an overlay entry two FBOV trampoline calls reach by its file offset", (t) => {
   const { dir, config } = overlayFixture(t);
   const path = join(dir, "config.json");
