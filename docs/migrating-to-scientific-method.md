@@ -427,6 +427,18 @@ committed and is kept with the captures, with its hash in the fixture's `startin
 
 ## Reader upgrades
 
+### Reader 4.0.0: `packed.pklite.scrambled` is replaced by `descrambler`
+
+The `unpack` report and the `unpack` export gave `packed.pklite.scrambled`, true when a descrambler
+XORed the stub before it was matched. PKLITE 1.20 and later stubs are also scrambled by ADD, so the
+field is now `packed.pklite.descrambler`: `xor` or `add` for the method of the descrambler the stub
+carries, and null when it carries none. A script that read `scrambled` reads `descrambler !== null`.
+The two differ only for a descrambler whose word count descrambles no word: `scrambled` was false
+for it, and `descrambler` names its method, which still decides how an extra-compression relocation
+table is read. `packed.pklite` also gives the new `codeTables`, `offsetKey` and `pspSignature`. The
+unpacked bytes of a file an earlier release unpacked are unchanged, so its `unpacked.xxh3` stays
+valid.
+
 ### Reader 3.0.0: `bodies` reads the load image through the FBOV descriptor spans
 
 In a file with an FBOV envelope, the `bodies` layout used to call the whole load image `resident`,

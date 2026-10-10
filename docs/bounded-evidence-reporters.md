@@ -139,7 +139,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
 | `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (the resident span of each FBOV descriptor, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own, an optional comparison with a candidate body, and every FBOV descriptor with its load-image span (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
 | `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables and checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots) |
-| `unpack` | writes the unpacked form of an LZEXE 0.90 or 0.91, an EXEPACK or a PKLITE 1.00 to 1.15 executable and gives the `size`, `xxh3`, `format` and `tool` of a build's `unpacked` item (reader only, no engine) | [unpacking packed executables](#unpacking-packed-executables) |
+| `unpack` | writes the unpacked form of an LZEXE 0.90 or 0.91, an EXEPACK or a PKLITE 1.00 to 2.01 executable and gives the `size`, `xxh3`, `format` and `tool` of a build's `unpacked` item (reader only, no engine) | [unpacking packed executables](#unpacking-packed-executables) |
 
 The engine also has `scientific-method-engine ghidra-scripts`, which prints the directory of the
 packaged Ghidra scripts (see the engine's README for the list).
@@ -1705,8 +1705,8 @@ is left alone (`outputWritten: false`); one that holds other bytes is refused.
 
 The reader unpacks LZEXE 0.91 and 0.90, recognized by `LZ91` or `LZ09` at offset 0x1C, and EXEPACK,
 recognized by `RB` at the end of an EXEPACK header that starts at CS:0 and ends at CS:IP, 16, 18
-or 20 bytes long, and PKLITE 1.00 to 1.15, recognized by CS:IP FFF0:0100 and the intro of one of
-those stubs at the entry point. A file with none of these is refused with an error that says so;
+or 20 bytes long, and PKLITE 1.00 to 2.01, Professional builds included, recognized by CS:IP
+FFF0:0100 and the intro of one of those stubs at the entry point. A file with none of these is refused with an error that says so;
 that does not show it is not packed. The signature names the format, so builds of LZEXE that write
 the same format are not told apart, and neither are the versions of EXEPACK and LINK `/EXEPACK`.
 
@@ -1737,30 +1737,44 @@ stub a file carries, so the reader matches each part of the stub against byte se
 the released versions and reads the facts from operand positions inside them
 ([ADR 0027](decisions/0027-pklite-stubs-matched-by-known-sequences.md)). The parts, in order:
 
-- the intro at the entry point, in its 1.00, 1.12 or 1.14 form;
-- after a 1.12 or 1.14 intro, an optional descrambler, which XORs each word of the copier and
-  decompressor with the scrambled word above it and the last word with the key the intro loads
-  into DX; the reader descrambles a copy before matching on;
-- the copier, within 75 bytes, which gives the decompressor's address;
-- the decompressor, which gives the paragraph of the compressed data as a byte or a word operand;
+- the intro at the entry point, in its 1.00, 1.12, 1.14 or 1.50 form (the last saves AX first);
+- after any intro but the 1.00 one, an optional descrambler, in one of the nine forms of 1.14,
+  1.20, 1.50 and 2.01, which combines each word of the copier and decompressor with the scrambled
+  word above it and the last word with the key the intro loads into DX, by XOR or by ADD as its
+  opcode says; the reader descrambles a copy before matching on;
+- the copier, within 75 bytes, in its common form (ending in a far return, `CB`, or in scrambled
+  1.50 stubs `CA`, a far return that also releases stack bytes), its 2.01 form or its 1.20
+  small-model form, which gives the decompressor's address;
+- the decompressor, which gives the paragraph of the compressed data as a byte or a word operand,
+  or in its two 1.20 small-model forms an address two bytes before the compressed data;
 - between the decompressor and the compressed data, the literal sequence, which tells standard
   from extra compression, and in its last 60 bytes the length table, whose preceding byte tells
-  the small model from the large.
+  the small model from the large. A 1.20 small-model decompressor has no length table. One with
+  extra compression and, in its last 50 bytes, the sequence `33 C0 8B D8 8B C8 8B D0 8B E8 8B F0 8B`
+  in its place is a 1.20 large-model one.
 
-A part that matches nothing listed is refused, naming the part and its offset; the variants of 1.20,
-the Professional and beta versions and stubs patched by other tools are not decoded yet. The stream
-starts at the compressed data. Flag bits come from 16-bit words, low bit first, read as soon as the
+A decompressor of 1.20 uses the 1.20 code tables. If it holds `AC 34 key 8A` after its first 200
+bytes, the low byte of every offset is XORed with that key, and if not the low bytes are read as
+they are. A stub that writes `PK` or `pk` at offset 0x5C of the program's PSP, which the program
+may check to detect that it was unpacked, is reported. A part that matches nothing listed is
+refused, naming the part and its offset; the beta versions, stubs patched by other tools, the
+customized literal sequence of a 1.23 build and PKLITE COM files are not decoded. The stream starts
+at the compressed data. Flag bits come from 16-bit words, low bit first, read as soon as the
 previous word's 16th bit is taken; 0 is a literal and 1 a copy, given by a length code, a byte for
 the long lengths, an offset code for the high bits of the distance (except in the two-byte copy) and
-a byte for the low bits. The long-length byte 0xFF is the end mark, and in the large model 0xFE is
-the segment mark, which the decoder skips, and 0xFD an uncompressed area, which is refused. With
-extra compression each literal is XORed with the number of flag bits left in the current word. The
-relocation table follows the end mark: with standard compression, groups of a count byte, a segment
-word and that many offset words, ended by a count of 0; with extra compression, groups of a count
-word and that many offset words for segments 0000, 0FFF, 1FFE and on, ended by 0xFFFF. Then comes
-an 8-byte footer of SS, SP, CS and IP, and at most 15 bytes of padding, which `packed.slack` counts.
-`packed.pklite` gives the `versionWord` as found, the `intro`, whether the stub was `scrambled`,
-`extra`, `large` and the `footer` offset; `packed.decompressor` is the decompressor the copier moves.
+a byte for the low bits. The 1.20 tables have two two-byte copies, from distances 1 to 255 and 256
+to 511, and a length code that writes a literal 0. The long-length byte 0xFF is the end mark, and
+in the large model 0xFE is the segment mark, which the decoder skips, and 0xFD an uncompressed
+area, which is refused. With extra compression each literal byte is XORed with the number of flag
+bits left in the current word. The relocation table follows the end mark: with standard
+compression, groups of a count byte, a segment word and that many offset words, ended by a count of
+0; with extra compression, groups of a count word and that many offset words for segments 0000,
+0FFF, 1FFE and on, ended by 0xFFFF, with each offset high byte first behind an ADD descrambler.
+Then comes an 8-byte footer of SS, SP, CS and IP, and at most 15 bytes of padding, which
+`packed.slack` counts. `packed.pklite` gives the `versionWord` as found, the `intro`, the
+`descrambler`'s method (`xor`, `add` or null), `extra`, `large`, the `codeTables` (`1.00` or
+`1.20`), the `offsetKey` (null where there is none), the `pspSignature` and the `footer` offset;
+`packed.decompressor` is the decompressor the copier moves.
 
 Every read is bounded, and each failure names the file offset:
 
