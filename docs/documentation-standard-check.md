@@ -408,7 +408,8 @@ from `<ref>`, so entries that branch gained since are not read as deleted here. 
 deviation that the change adds since the fork point fails when the tip of that branch holds a file
 under the same ID with content this branch never held, because IDENTIFIERS-6 has the branch merged
 second renumber its entry before it is merged. A copy that matches the branch's working tree, index
-or a commit since the fork point is the branch's own entry and passes. Run the check before
+or a commit since the fork point is the branch's own entry and passes, as does one that the base
+branch edited after taking such a copy. Run the check before
 committing a new entry, such as from a `pre-commit` hook, to renumber it before anything cites it.
 Only that one branch's tip is read, so an ID taken on another branch, or in an uncommitted draft,
 is not seen. When that fork point does not resolve, because the

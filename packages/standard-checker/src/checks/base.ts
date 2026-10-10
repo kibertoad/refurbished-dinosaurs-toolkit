@@ -19,6 +19,15 @@ export const gitIn =
   (...args: string[]) =>
     execFileSync("git", ["-C", dir, ...args], { stdio: ["ignore", "pipe", "ignore"] }).toString();
 
+/** The object name that spec resolves to with git, run through gitIn, or null when it does not resolve. */
+export function revParse(git: ReturnType<typeof gitIn>, spec: string): string | null {
+  try {
+    return git("rev-parse", "-q", "--verify", spec).trim();
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Where HEAD forked from ref: their merge-base. While a merge is being committed (a pre-commit hook
  * after a conflict, or --no-commit), the change already holds what MERGE_HEAD brings, so it is the
@@ -57,8 +66,9 @@ export function baseTarget(baseArg: string | null | undefined): string {
  * from the base branch) and is gone now, a superseded format entry whose Layout has no table although
  * it had one at the base, and a spec ID or deviation the change adds that the tip of --base or the
  * base branch holds with content this branch never held. Without --base, a fork point that does not
- * resolve is recorded as a skipped step, or with --require-base reported as a problem. Returns
- * --base, or the fork point it compared with, or null when there was none.
+ * resolve is recorded as a skipped step, or with --require-base reported as a problem. Returns the
+ * commit it compared with (the fork point, or --base as it is when HEAD shares no history with it),
+ * or null when there was none.
  *
  * An ID that --squashed lists is accepted as gone when at the base it was superseded by exactly the
  * listed replacements, and each replacement exists now and is not superseded, or is squashed in the
@@ -163,14 +173,17 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>): str
   // A base from before the deviation log became a directory keeps its deviations in DEVIATIONS.md.
   const oldDev = show("DEVIATIONS.md");
   if (oldDev)
-    for (const m of oldDev.matchAll(/^## (DEV-[A-Z0-9]+-\d+)$/gm))
+    for (const m of oldDev.matchAll(/^## (DEV-[A-Z0-9]+-\d+)$/gm)) {
+      // A deviation moved from DEVIATIONS.md into deviations/ is not one this change adds.
+      devsAtBase.add(m[1]);
       if (!deviations.has(m[1])) problem(null, `${m[1]} exists at ${base} and has been removed`);
+    }
   const added = [
     ...[...entries].filter(([id]) => !atBase.has(id)),
     ...[...deviations].filter(([id]) => !devsAtBase.has(id)),
   ].map(([id, { file }]) => ({ id, file, isEntry: entries.has(id) }));
   checkTakenIds(ctx, from, target, added);
-  return baseArg ?? from;
+  return from;
 }
 
 /**
@@ -179,7 +192,8 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>): str
  * never held: another change took the same ID first. IDENTIFIERS-6 has the branch merged second
  * renumber its entry before it is merged, and finding the clash before then keeps the old ID out of
  * the commits that would cite it. The tip's copy is this branch's own entry, merged or cherry-picked
- * there, when it matches the working tree, the index, or the file at a commit since from.
+ * there and possibly edited there since, when the file at the tip or at a commit of target since
+ * from matches the working tree, the index, or the file at a commit of this branch since from.
  */
 function checkTakenIds(
   ctx: Context,
@@ -190,34 +204,48 @@ function checkTakenIds(
   const { problem, skip } = ctx;
   const { repoDir } = ctx.config;
   const git = gitIn(repoDir);
-  const revParse = (spec: string) => {
-    try {
-      return git("rev-parse", "-q", "--verify", spec).trim();
-    } catch {
-      return null;
-    }
-  };
   if (added.length === 0) return;
-  const tip = revParse(`${target}^{commit}`);
+  const tip = revParse(git, `${target}^{commit}`);
   if (tip === null) {
     skip(`comparison of the new IDs with ${target} (it does not resolve)`);
     return;
   }
-  if (tip === revParse(`${from}^{commit}`)) return;
-  for (const { id, file, isEntry } of added) {
-    // ./ makes the path relative to --root, which need not be the top of the repository.
-    const path = `./${relative(repoDir, file).replaceAll("\\", "/")}`;
-    const atTip = revParse(`${tip}:${path}`);
-    if (atTip === null) continue;
-    const own = new Set<string | null>([revParse(`:${path}`)]);
+  if (tip === revParse(git, `${from}^{commit}`)) return;
+  // The paths under spec/ and deviations/ at the tip, relative to --root, read in one listing.
+  let atTip: Set<string>;
+  try {
+    atTip = new Set(git("ls-tree", "-r", "-z", "--name-only", tip, "--", "spec", "deviations").split("\0"));
+  } catch {
+    problem(null, `cannot list spec/ at ${target}`);
+    return;
+  }
+  // The file at path in each commit of range that touched it, and null where it was deleted.
+  const versions = (range: string, path: string) => {
     try {
-      own.add(git("hash-object", "--", path).trim());
-      for (const commit of git("rev-list", `${from}..HEAD`, "--", path).split("\n").filter(Boolean))
-        own.add(revParse(`${commit}:${path}`));
+      return git("rev-list", range, "--", path)
+        .split("\n")
+        .filter(Boolean)
+        .map((commit) => revParse(git, `${commit}:${path}`));
     } catch {
-      // A file git cannot hash or a history it cannot list holds no copy to match.
+      return [];
     }
-    if (own.has(atTip)) continue;
+  };
+  for (const { id, file, isEntry } of added) {
+    const rel = relative(repoDir, file).replaceAll("\\", "/");
+    if (!atTip.has(rel)) continue;
+    // ./ makes the path relative to --root, which need not be the top of the repository.
+    const path = `./${rel}`;
+    let hashed: string | null = null;
+    try {
+      hashed = git("hash-object", "--", path).trim();
+    } catch {
+      // A file git cannot hash holds no copy to match; the index and the commits still may.
+    }
+    const own = new Set([hashed, revParse(git, `:${path}`), ...versions(`${from}..HEAD`, path)]);
+    own.delete(null);
+    // The base branch may have edited this branch's entry after taking it.
+    const theirs = [revParse(git, `${tip}:${path}`), ...versions(`${from}..${tip}`, path)];
+    if (theirs.some((blob) => own.has(blob))) continue;
     const message = `${id} also exists at ${target} with content this branch never held; renumber this one before it is merged`;
     if (isEntry) problem(file, message, "IDENTIFIERS-6");
     else problem(file, message);

@@ -1405,6 +1405,46 @@ test("a new ID whose copy at the base branch's tip this branch once held is its 
   assert.doesNotMatch(output, /also exists at/);
 });
 
+test("a new ID that the base branch took from this branch and edited since is its own entry", (t) => {
+  const root = broken(t, (r) => withForkPoint(r));
+  const git = gitAt(root);
+  git("checkout", "-q", "-b", "feature");
+  addRule(root, "RULE-SCORE-002", "A bonus adds ten points to the score");
+  commitEverything(root, "first");
+  // The base branch squash merges the entry, then edits it there.
+  git("checkout", "-q", "-b", "squashed", "origin/main");
+  git("checkout", "feature", "--", "spec/rules/RULE-SCORE-002.md", "parity/SCORE.md");
+  commitEverything(root, "squashed");
+  replaceIn(root, "spec/rules/RULE-SCORE-002.md", "title: A bonus adds", "title: A bonus later adds");
+  replaceIn(root, "parity/SCORE.md", "| A bonus adds", "| A bonus later adds");
+  commitEverything(root, "edited on the base branch");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "feature");
+  const { status, output } = run(root, "--require-base");
+  assert.equal(status, 0, output);
+  assert.doesNotMatch(output, /also exists at/);
+});
+
+test("a deviation moved out of DEVIATIONS.md on both branches is not a new ID", (t) => {
+  const root = broken(t, (r) => {
+    writeFileSync(join(r, "DEVIATIONS.md"), "# Deviation log\n\n## DEV-SCORE-001\n");
+    withForkPoint(r);
+  });
+  const git = gitAt(root);
+  git("checkout", "-q", "-b", "feature");
+  git("checkout", "-q", "-b", "other", "origin/main");
+  rmSync(join(root, "DEVIATIONS.md"));
+  withDeviation(root);
+  commitEverything(root, "other");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "feature");
+  rmSync(join(root, "DEVIATIONS.md"));
+  withDeviation(root);
+  replaceIn(root, "deviations/DEV-SCORE-001.md", "Counts two points.", "Counts three points.");
+  const { output } = run(root, "--require-base");
+  assert.doesNotMatch(output, /also exists at/);
+});
+
 test("--base names the branch a change merges into: its newer entries are not deletions, and its IDs are taken", (t) => {
   const root = broken(t, (r) => withForkPoint(r));
   const git = gitAt(root);

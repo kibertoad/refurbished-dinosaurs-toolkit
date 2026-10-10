@@ -42,7 +42,7 @@ fork point: another change took the ID first, and IDENTIFIERS-6 has the branch m
 renumber its entry before it is merged, as in
 `spec/findings/FND-SCORE-012.md: FND-SCORE-012 also exists at origin/main with content this branch never held; renumber this one before it is merged [IDENTIFIERS-6]`.
 A tip that holds the branch's own entry, merged or cherry-picked there in an earlier version,
-passes. Run the check before committing an entry, for example from a `pre-commit` hook, so the
+passes, and so does one the base branch edited after taking it. Run the check before committing an entry, for example from a `pre-commit` hook, so the
 renumbering happens before commit messages and other files cite the ID. Pass the branch a change
 merges into as `--base` when it is not the default, such as a long-lived branch that several working
 branches merge into. Only the tip of that one branch is read: an ID taken on another branch, or in a
