@@ -226,7 +226,7 @@ other type fails to parse.
 | Track type | Sector checks | User data |
 |---|---|---|
 | `MODE1/2352` | sync pattern, mode byte 1 | 2048 bytes from byte 16 |
-| `MODE2/2352` | sync pattern, mode byte 2, the CD-XA subheader at bytes 16 to 19 equal to its copy at bytes 20 to 23, the submode's Form 2 bit (0x20) clear | 2048 bytes from byte 24 (Form 1) |
+| `MODE2/2352` | sync pattern, mode byte 2, the CD-XA subheader at bytes 16 to 19 equal to its copy at bytes 20 to 23, the submode's Form 2 bit (0x20) clear, or for `OpenVolume` set with the 2324 data bytes from byte 24 all zero | 2048 bytes from byte 24 (Form 1, or zeros for an empty Form 2 sector) |
 
 The two layouts of one disc list the same files and read the same file and volume bytes, so a
 `VolumeXxh3` pin holds for either. A `MODE2/2352` track is read only as CD-XA Form 1. A sector of
@@ -234,8 +234,12 @@ another mode, a MODE2 sector whose subheader copies differ (such as a formless M
 Form 2 sector throw `InvalidDataException` when read. Directories and volume descriptors are
 Form 1, so a disc that stores some files in Form 2 sectors, such as interleaved audio or video,
 still opens and lists them; reading such a file through `OpenRead`, or the whole volume through
-`OpenVolume`, throws when it reaches the first Form 2 sector. The EDC, the ECC and the address in
-each sector's header are not checked.
+`OpenVolume`, throws when it reaches the first Form 2 sector. `OpenVolume` makes one exception: a
+Form 2 sector whose 2324 data bytes are all zero, such as padding a CD-XA master leaves inside the
+volume space, reads as 2048 zero bytes, which is what a `MODE1/2352` image of the disc holds there,
+so the `VolumeXxh3` of such a disc is the same in either layout. `OpenRead` still throws for a file
+that covers an empty Form 2 sector, and `OpenVolume` still throws for a Form 2 sector with any
+nonzero data byte. The EDC, the ECC and the address in each sector's header are not checked.
 
 ## Listing a build
 
