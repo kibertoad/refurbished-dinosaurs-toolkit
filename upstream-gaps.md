@@ -29,7 +29,11 @@ far transfer into the code loaded.
 - Engine workaround: recognise that exact three-op sequence and drop it, because the declared region
   supplies CS (`pcode.cs_idiom`).
 - Upstream: read CS as a register in real mode, as the other segment overrides do, instead of
-  computing it.
+  computing it. [ghidra#9703](https://github.com/NationalSecurityAgency/ghidra/pull/9703) makes
+  that change and is still open; pypcode 4.0.1 emits the same sequence as 4.0.0.
+- Once a pinned pypcode carries it: `tests/test_upstream_gaps.py` fails, because the sequence is
+  gone. Drop `cs_idiom`, keep CS from the declared region, and check that the default CS in the
+  language's pspec `tracked_set` does not reach reports as the value of CS.
 
 ### SCAS loads ES:[DI] once per flag
 
