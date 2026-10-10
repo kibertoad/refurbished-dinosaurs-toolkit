@@ -107,17 +107,23 @@ each against main and fix the ones that belong here.
 
 Build `dinorefurb-dosbox-session` as [ADR 0026](decisions/0026-dosbox-x-session-package.md)
 sets out. Each slice is one PR with synthetic tests against a stand-in emulator and a stand-in
-client, and no game or DOSBox-X in CI:
+client on a Windows runner, and no game or DOSBox-X in CI:
 
 1. The package, its CI area, release path and catalog rows, with the owned process, run lock,
    drives, muted host audio, session records, request IDs and operation observation. Tests cover
-   readiness, an early exit, an expired observation, a transport error, a refused capability, an
-   existing lock and cleanup that fails while the process lives. The owner-local native procedure
-   passes on the pinned revision.
+   readiness, an early exit, an expired observation, a transport error, a refused capability, a
+   checkout at another revision or with local changes, an existing C: drive, an existing lock and
+   a stale one, cleanup that fails while the process lives and another platform. The owner-local
+   native procedure's breakpoint stop and register read pass on the pinned revision.
 2. Guarded writes to stopped state against a caller-supplied field contract. Tests cover a write
-   outside the contract, an expected-hash mismatch and a readback mismatch.
-3. The event log, with caller-supplied event schemas and module hashes. Tests cover a log cut off
-   mid-run, an event that fails its schema and a named module imported after the session started.
+   outside the contract, an expected-hash mismatch and a readback mismatch. The native procedure
+   gains the guarded memory write and readback, and passes on the pinned revision.
+3. The event log, with caller-supplied event schemas, a versioned outcome contract and module
+   hashes. Tests cover a log cut off mid-run, an event that fails its schema, an outcome that
+   differs from the expected one or carries a failure, a required outcome field that is missing or
+   of the wrong type, a missing, extra or reordered event, a log read against the contract version
+   it recorded after a newer version exists, a malformed or oversized log, and a named module that
+   is not imported when the guest starts.
 
 What must stay explicit: an expired observation is pending, a log without its final outcome is
 incomplete, and no write is supported unless the caller's contract says so. The milestone ends
