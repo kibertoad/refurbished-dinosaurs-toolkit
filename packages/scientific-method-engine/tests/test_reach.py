@@ -245,10 +245,46 @@ class ReachTests(unittest.TestCase):
         self.assertEqual(r["noReturn"][0]["callSites"], [{"site": 6, "following": 9, "followingRead": True}])
         self.assertTrue(r["negativeUsable"])
 
+    def test_a_no_return_routine_that_jumps_into_a_leaf_is_contradicted(self):
+        # 0000 call 0004; 0003 ret. 0004 X: jmp 0007; 0006 nop. 0007 L, a leaf the walk assumes returns.
+        data = bytes.fromhex("e80100" "c3" "eb01" "90" "c3")
+        leaf = [{"routine": 7, "reason": "synthetic leaf"}]
+        r = run_report(data, config(data, targets=[3], controls=[0], leaves=leaf,
+                                    noReturn=[{"routine": 4, "reason": "synthetic exit"}]), "reach")
+        row = r["noReturn"][0]
+        self.assertEqual((row["returnSites"], row["contradicted"]), ([7], True))
+        self.assertFalse(r["negativeUsable"])
+        # A leaf that is declared noReturn as well is no way back.
+        r = run_report(data, config(data, targets=[3], controls=[0], leaves=leaf,
+                                    noReturn=[{"routine": 4, "reason": "synthetic exit"},
+                                              {"routine": 7, "reason": "synthetic exit"}]), "reach")
+        self.assertEqual([row["contradicted"] for row in r["noReturn"]], [False, False])
+        self.assertTrue(r["negativeUsable"])
+
+    def test_a_control_after_a_no_return_call_or_interrupt_names_the_declaration(self):
+        exits = [{"routine": 0x10, "reason": "synthetic exit"}, {"interrupt": 0x12, "reason": "synthetic exit"}]
+        for site, message in ((6, "instruction control 6 is not reached "
+                                  r"\(it follows the call at 3 to noReturn routine 16\)$"),
+                              (0x14, "instruction control 20 is not reached "
+                                     r"\(it follows the noReturn interrupt at 18\)$")):
+            with self.subTest(site=site), self.assertRaisesRegex(ValueError, "Positive controls failed: " + message):
+                run_report(EXITS, config(EXITS, targets=[9], instructionControls=[site], noReturn=exits), "reach")
+
+    def test_an_unreached_no_return_interrupt_still_gives_its_following_site(self):
+        # 0000 ret; 0001 int 21h, which nothing reaches.
+        data = bytes.fromhex("c3" "cd21")
+        r = run_report(data, config(data, targets=[1], noReturn=[{"interrupt": 1, "reason": "synthetic exit"}]),
+                       "reach")
+        self.assertEqual(r["noReturn"], [{"interrupt": 1, "reason": "synthetic exit", "vector": 0x21,
+                                          "reached": False, "following": 3, "followingRead": False}])
+
     def test_a_conditional_interrupt_cannot_be_declared_no_return(self):
         data = bytes.fromhex("cec3")  # into; ret
         with self.assertRaisesRegex(ValueError, "noReturn interrupt 0 is conditional"):
             run_report(data, config(data, targets=[1], noReturn=[{"interrupt": 0, "reason": "synthetic"}]), "reach")
+        exit_interrupt = {"interrupt": 0x12, "reason": "synthetic"}
+        with self.assertRaisesRegex(ValueError, "Duplicate noReturn interrupt"):
+            run_report(EXITS, config(EXITS, targets=[9], noReturn=[exit_interrupt, exit_interrupt]), "reach")
 
     def test_a_control_that_is_no_call_is_refused_before_the_walk_and_an_instruction_control_takes_it(self):
         # 0000 calls 0004, which stores AX at [0100] and returns.
@@ -334,6 +370,8 @@ class ReachTests(unittest.TestCase):
                                ({"noReturn": [{"routine": 0x18, "reason": "x"}, {"routine": 0x18, "reason": "y"}]},
                                 "Duplicate noReturn routine"),
                                ({"noReturn": [{"interrupt": 0x18, "reason": "x"}]}, "not an interrupt instruction"),
+                               ({"noReturn": [{"routine": 0x18, "reason": "x"}] * 257},
+                                "noReturn must be a list of at most 256"),
                                ({"controls": [0x3, 0x3]}, "distinct file offsets"),
                                ({"controls": [0x1000]}, "controls must be an integer"),
                                ({"instructionControls": [0x3, 0x3]}, "distinct file offsets"),

@@ -70,20 +70,29 @@ def _no_return(value, image):
             vector, conditional = interrupt_vector(image.flat, ins, at)
             if conditional:
                 raise ValueError(f"noReturn interrupt {at} is conditional and continues when it does not interrupt")
-            found[at] = {"reason": entry["reason"], "vector": vector}
+            found[at] = {"reason": entry["reason"], "vector": vector, "following": at + ins.size}
             continue
         found[at] = entry["reason"]
     return routines, interrupts
 
 
-def _returns_from(graph, seen, routine):
-    """The return instructions on ``routine``'s own paths: calls are stepped over at the return sites the graph keeps."""
+def _returns_from(graph, seen, returning_leaves, routine):
+    """Where ``routine``'s own paths return: each return instruction, and each leaf they enter other than by a call.
+
+    Calls are stepped over at the return sites the graph keeps. The walk assumes that a leaf returns,
+    so a jump, branch, table row or fall-through into one in ``returning_leaves`` returns too.
+    """
     found, stack, visited = [], [routine], set()
     while stack:
         at = stack.pop()
-        if at in visited or at not in seen:
+        if at in visited:
             continue
         visited.add(at)
+        if at in returning_leaves:
+            found.append(at)
+            continue
+        if at not in seen:
+            continue
         if base_mnemonic(seen[at]) in RETURNS:
             found.append(at)
         stack.extend(s for s, kind in graph.get(at, []) if kind != "call")
@@ -292,6 +301,11 @@ def reach(image, config):
              for at in sorted(leaves) if at in distance and holding_instruction(seen, at) is not None]
     # Kept apart from the gap rows, which the result limit can cut.
     stopped = any(g["reason"] == LIMIT_REASON for g in walk_gaps)
+    # A control at a site a noReturn declaration kept the walk from names that declaration, which may be the cause.
+    cut_by = {at + seen[at].size: f"the call at {at} to noReturn routine {target}"
+              for at, target in sorted(resolved_calls.items()) if target in no_return_routines}
+    cut_by |= {row["following"]: f"the noReturn interrupt at {at}"
+               for at, row in no_return_interrupts.items() if at in seen}
     # Not reached and reached-but-unresolved need different fixes, so each failure says which it is.
     failures = []
     for label, sites, passed in (("control", controls, resolved_calls), ("instruction control", instruction_controls, seen)):
@@ -308,7 +322,9 @@ def reach(image, config):
                 state = unreached(at)
                 detail = (f"inside the reached instruction at {state['insideInstruction']}" if "insideInstruction" in state
                           else "the " + state["status"] if state["status"].startswith("start") else state["status"])
+                cut = cut_by.get(at)
                 failures.append(f"{label} {at} is {detail}"
+                                + (f" (it follows {cut})" if cut else "")
                                 + (" (the walk stopped at its instruction limit)" if stopped else ""))
     if failures:
         raise ValueError("Positive controls failed: " + "; ".join(failures))
@@ -318,17 +334,16 @@ def reach(image, config):
     leaf_rows = [{"routine": at, "reason": reason, "reached": at in distance, "callSites": call_sites.get(at, [])}
                  for at, reason in leaves.items()]
     # Each call the declaration kept from its return site, so a reviewer can check what follows it.
-    no_return_rows = []
+    no_return_rows, returning_leaves = [], set(leaves) - set(no_return_routines)
     for at, reason in no_return_routines.items():
-        returns = _returns_from(graph, seen, at)
+        returns = _returns_from(graph, seen, returning_leaves, at)
         no_return_rows.append({"routine": at, "reason": reason, "reached": at in distance, "read": at in seen,
                                "returnSites": returns, "contradicted": bool(returns),
                                "callSites": [{"site": site, "following": site + seen[site].size,
                                               "followingRead": site + seen[site].size in seen}
                                              for site in call_sites.get(at, [])]})
     no_return_rows += [{"interrupt": at, "reason": row["reason"], "vector": row["vector"], "reached": at in seen,
-                        "following": at + seen[at].size if at in seen else None,
-                        "followingRead": at in seen and at + seen[at].size in seen}
+                        "following": row["following"], "followingRead": row["following"] in seen}
                        for at, row in no_return_interrupts.items()]
     contradicted = any(row.get("contradicted") for row in no_return_rows)
     counts = {"routines": len(routine_starts), "instructions": len(seen), "unresolved": len(unresolved),
@@ -362,8 +377,9 @@ def reach(image, config):
                               "negativeUsable needs a control of either kind, a walk that did not stop at its instruction limit, "
                               "and no unresolved transfer, gap, contested instruction or contradicted noReturn "
                               "routine, and still rests on the listed assumptions, leaves and noReturn declarations. "
-                              "A noReturn routine is contradicted when a return instruction lies on its own read "
-                              "paths; an empty returnSites means only that the walk read none. "
+                              "A noReturn routine is contradicted when a return instruction, or a leaf entered "
+                              "other than by a call, lies on its own read paths; an empty returnSites means only "
+                              "that the walk read none. "
                               "When instructionLimitReached holds, the walk stopped before reading all it reaches: "
                               "every list and count covers only the part read, which part depends on the walk order, "
                               "and an unreached target may lie past the stop."}

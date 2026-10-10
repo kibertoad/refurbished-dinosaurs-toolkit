@@ -32,9 +32,11 @@ be handwritten service semantics, and the walk does not track register values.
    declaration to `assumptions`.
 4. The engine checks each declared routine it read for a return instruction on the routine's own
    paths (jumps, branches and table rows followed; calls and interrupts stepped over at their
-   return sites, except declared ones). A routine with one is `contradicted`, and a contradicted
-   declaration keeps `negativeUsable` false. A routine without one is not proved non-returning:
-   the declaration stays an assumption that rests on its reason.
+   return sites, except declared ones). A leaf those paths enter other than by a call counts as a
+   return, since the walk assumes a leaf returns, unless the leaf is declared `noReturn` too. A
+   routine with one is `contradicted`, and a contradicted declaration keeps `negativeUsable`
+   false. A routine without one is not proved non-returning: the declaration stays an assumption
+   that rests on its reason.
 
 ## Consequences
 

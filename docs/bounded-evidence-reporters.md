@@ -1136,7 +1136,9 @@ it (`reached`) and decoded it (`read`; a routine that is also a leaf is not read
 `following` is the return site the call no longer continues at and `followingRead` says whether
 the walk read an instruction there by another route. `returnSites` lists the return instructions
 on the routine's own read paths, which follow its jumps, branches and table rows and step over
-its calls and interrupts at their return sites as the walk does. A routine with a return site is
+its calls and interrupts at their return sites as the walk does. It also lists the start of each
+leaf those paths enter other than by a call, since the walk assumes a leaf returns; a leaf that
+is itself declared `noReturn` is not listed. A routine with a return site is
 `contradicted`: the walk shows a way for it to return, so the declaration does not hold on the
 walk's own assumptions. A routine that ends in an interrupt the walk continues past is usually
 contradicted by whatever follows the interrupt, so such an interrupt is declared too. An empty
@@ -1155,7 +1157,8 @@ A failed control of either kind fails the report, and the error names every fail
 the walk found there: a call it reached whose target is unresolved (with the reason), the start of a
 reached leaf (never decoded), a site inside a reached instruction (with that instruction's start),
 the start of a contested or unresolved overlapping instruction, a reached site whose bytes do not
-decode, or a site the walk did not reach, noting when the walk stopped at its instruction limit. A
+decode, or a site the walk did not reach, noting when the walk stopped at its instruction limit and
+when the site follows a reached `noReturn` call or interrupt, whose declaration may be wrong. A
 passing call-site control is reported in `controls` with its `site` and resolved `target`, and an
 instruction control in `instructionControls` with its `site`, `instruction` text and the `routine`
 the walk read it in.
