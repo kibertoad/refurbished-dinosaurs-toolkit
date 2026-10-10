@@ -124,7 +124,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
 | `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (load image, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own and an optional comparison with a candidate body (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
 | `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables and checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots) |
-| `unpack` | writes the unpacked form of an LZEXE 0.90 or 0.91 or an EXEPACK executable and gives the `size`, `xxh3`, `format` and `tool` of a build's `unpacked` item (reader only, no engine) | [unpacking packed executables](#unpacking-packed-executables) |
+| `unpack` | writes the unpacked form of an LZEXE 0.90 or 0.91, an EXEPACK or a PKLITE 1.00 to 1.15 executable and gives the `size`, `xxh3`, `format` and `tool` of a build's `unpacked` item (reader only, no engine) | [unpacking packed executables](#unpacking-packed-executables) |
 
 The engine also has `scientific-method-engine ghidra-scripts`, which prints the directory of the
 packaged Ghidra scripts (see the engine's README for the list).
@@ -1578,21 +1578,24 @@ form, so that every restoration reading the same packed file gets the same bytes
 `unpacked.xxh3`. It runs in the reader without the engine, and it never runs the decompressor in
 the file: it reads the decompressor's header words and its relocation table, and decodes the
 compressed stream itself. For EXEPACK it also reads the message that ends the decompressor, to find
-where the relocation table starts. The config is `source`, its `xxh3`, `sourceKind: "mz"` and `output`, the
+where the relocation table starts, and for PKLITE it matches the stub's code against known byte
+sequences (see below). The config is `source`, its `xxh3`, `sourceKind: "mz"` and `output`, the
 path to write, relative to the config file. An existing output that already holds the same bytes
 is left alone (`outputWritten: false`); one that holds other bytes is refused.
 
 The reader unpacks LZEXE 0.91 and 0.90, recognized by `LZ91` or `LZ09` at offset 0x1C, and EXEPACK,
 recognized by `RB` at the end of an EXEPACK header that starts at CS:0 and ends at CS:IP, 16, 18
-or 20 bytes long. A file with none of these is refused with an error that says so; that does not
-show it is not packed. The signature names the format, so builds of LZEXE that write the same
-format are not told apart, and neither are the versions of EXEPACK and LINK `/EXEPACK`.
+or 20 bytes long, and PKLITE 1.00 to 1.15, recognized by CS:IP FFF0:0100 and the intro of one of
+those stubs at the entry point. A file with none of these is refused with an error that says so;
+that does not show it is not packed. The signature names the format, so builds of LZEXE that write
+the same format are not told apart, and neither are the versions of EXEPACK and LINK `/EXEPACK`.
 
-The report gives `packer` (`LZEXE 0.91`, `LZEXE 0.90` or `EXEPACK`), `unpacked` (`size`, `xxh3`,
+The report gives `packer` (`LZEXE 0.91`, `LZEXE 0.90`, `EXEPACK` or `PKLITE`), `unpacked` (`size`, `xxh3`,
 `format: "MZ"` and `tool`, the reader's package name and version), `layout`, the rebuilt `header`,
 `loadModuleSize`, `sourceIdentity`, and under `packed` the file offsets it read: the
-decompressor's header (`decompressor`), the compressed `stream`, the `slack` between the stream's
-end and the decompressor's CS:0, and the `relocationTable`. For LZEXE the stream runs from its
+decompressor's header (`decompressor`), the compressed `stream`, the `slack`, which counts the bytes
+of the image the decoder reads nothing from (for LZEXE and EXEPACK those between the stream's end
+and the decompressor's CS:0, for PKLITE the padding after its footer), and the `relocationTable`. For LZEXE the stream runs from its
 first flag word to the byte after its end mark. `setByLayout` names the header fields the packed
 file did not supply.
 
@@ -1609,6 +1612,36 @@ load module is the longer; `packed.leftInPlace` counts them. No header field giv
 the EXEPACK block ends. Its 16 groups are a count word and that many offset words for segments
 0000, 1000, ... F000. A stub whose message is localized, or that holds it twice, is refused.
 
+PKLITE keeps its facts in the stub's code, and the version word at 0x1C does not reliably say which
+stub a file carries, so the reader matches each part of the stub against byte sequences listed from
+the released versions and reads the facts from operand positions inside them
+([ADR 0027](decisions/0027-pklite-stubs-matched-by-known-sequences.md)). The parts, in order:
+
+- the intro at the entry point, in its 1.00, 1.12 or 1.14 form;
+- after a 1.12 or 1.14 intro, an optional descrambler, which XORs each word of the copier and
+  decompressor with the scrambled word above it and the last word with the key the intro loads
+  into DX; the reader descrambles a copy before matching on;
+- the copier, within 75 bytes, which gives the decompressor's address;
+- the decompressor, which gives the paragraph of the compressed data as a byte or a word operand;
+- between the decompressor and the compressed data, the literal sequence, which tells standard
+  from extra compression, and in its last 60 bytes the length table, whose preceding byte tells
+  the small model from the large.
+
+A part that matches nothing listed is refused, naming the part and its offset; the variants of 1.20,
+the Professional and beta versions and stubs patched by other tools are not decoded yet. The stream
+starts at the compressed data. Flag bits come from 16-bit words, low bit first, read as soon as the
+previous word's 16th bit is taken; 0 is a literal and 1 a copy, given by a length code, a byte for
+the long lengths, an offset code for the high bits of the distance (except in the two-byte copy) and
+a byte for the low bits. The long-length byte 0xFF is the end mark, and in the large model 0xFE is
+the segment mark, which the decoder skips, and 0xFD an uncompressed area, which is refused. With
+extra compression each literal is XORed with the number of flag bits left in the current word. The
+relocation table follows the end mark: with standard compression, groups of a count byte, a segment
+word and that many offset words, ended by a count of 0; with extra compression, groups of a count
+word and that many offset words for segments 0000, 0FFF, 1FFE and on, ended by 0xFFFF. Then comes
+an 8-byte footer of SS, SP, CS and IP, and at most 15 bytes of padding, which `packed.slack` counts.
+`packed.pklite` gives the `versionWord` as found, the `intro`, whether the stub was `scrambled`,
+`extra`, `large` and the `footer` offset; `packed.decompressor` is the decompressor the copier moves.
+
 Every read is bounded, and each failure names the file offset:
 
 - The packed file holds at most 1 MiB, and no data may follow its MZ image.
@@ -1622,6 +1655,8 @@ Every read is bounded, and each failure names the file offset:
   A 17th byte of 0xFF padding is read as an opcode and refused, as the stub refuses it.
   `skip_len` must be at least 1 and at most one more than both CS and `dest_len`, and the EXEPACK
   block must lie inside the load module.
+- A PKLITE stream must reach its end mark inside the image, a copy may not have distance 0, and
+  the relocation table must end at least 8 bytes before the end of the image, leaving the footer.
 - A packed file with MZ relocations of its own is refused.
 - The relocation table must end inside the load module (for EXEPACK, exactly at the end of the
   EXEPACK block), and every relocation must name a whole word inside the unpacked load module. A
@@ -1640,7 +1675,7 @@ multiple of 16 bytes, then the load module. Nothing else is written.
 | header paragraphs | the header size above, divided by 16 |
 | minimum allocation | the packed file's load module in paragraphs plus its minimum allocation, less the unpacked load module in paragraphs, at least 0 |
 | maximum allocation | 0xFFFF when the packed file's is 0xFFFF; otherwise the same sum with the packed file's maximum allocation, at least the minimum |
-| SS, SP, IP, CS | LZEXE: the words at CS:6, CS:4, CS:0 and CS:2 of the decompressor; EXEPACK: `real_ss`, `real_sp`, `real_ip` and `real_cs` from its header |
+| SS, SP, IP, CS | LZEXE: the words at CS:6, CS:4, CS:0 and CS:2 of the decompressor; EXEPACK: `real_ss`, `real_sp`, `real_ip` and `real_cs` from its header; PKLITE: the footer |
 | checksum | 0 |
 | relocation table offset | 0x1C |
 | overlay number | 0 |

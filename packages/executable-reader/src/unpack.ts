@@ -1,7 +1,12 @@
 // Unpacks packed DOS executables by decoding the packer's format. The decompressor in the file is
 // never run. Of its code, only its header words and its relocation table are read, and for EXEPACK
-// the error message that ends it, which marks where the relocation table starts.
+// the error message that ends it, which marks where the relocation table starts. PKLITE keeps those
+// facts in its stub's code, which unpack-pklite.ts matches against known sequences.
 import { hex } from "./legacy-image.ts";
+import { type Decoded, type Image, reader } from "./unpack-image.ts";
+import { decodePklite, pkliteIntro, type PkliteParts } from "./unpack-pklite.ts";
+
+export type { PkliteIntro, PkliteParts } from "./unpack-pklite.ts";
 
 /**
  * The layout rule {@link unpack} writes the unpacked file by. Two runs with the same layout give the
@@ -33,15 +38,19 @@ export interface UnpackedHeader {
 }
 /** Where the parts {@link unpack} read lie in the packed file, as file offsets. Ends are exclusive. */
 export interface PackedParts {
-  /** The decompressor's header at its CS:0. */
+  /** The decompressor's header at its CS:0; for PKLITE, the decompressor the stub's copier moves. */
   decompressor: number;
   /**
-   * The compressed load module: for LZEXE from its first flag word to the byte after its end mark;
+   * The compressed load module: for LZEXE and PKLITE from its first flag word to the byte after its end mark;
    * for EXEPACK, which is read backwards, from the last byte its final command read to the byte
    * after its first command.
    */
   stream: { start: number; end: number };
-  /** Bytes between the stream's end and the decompressor's CS:0, which the stream does not use. */
+  /**
+   * The number of bytes in the packed image that the decoder reads nothing from. For LZEXE and
+   * EXEPACK they lie between the stream's end and the decompressor's CS:0. For PKLITE, whose stream
+   * follows the decompressor, they are the padding between the footer and the end of the image.
+   */
   slack: number;
   /** The packed relocation table, from its first byte to the byte after its end. */
   relocationTable: { start: number; end: number };
@@ -51,10 +60,12 @@ export interface PackedParts {
    * are zeros where the unpacked load module is longer than the packed one.
    */
   leftInPlace?: number;
+  /** PKLITE only: what the reader read from the stub, and where the footer is. */
+  pklite?: PkliteParts;
 }
 /** The result of {@link unpack}: the unpacked file and the facts it was built from. */
 export interface UnpackResult {
-  /** The packer, and the format version where its signature names one: `LZEXE 0.91`, `LZEXE 0.90` or `EXEPACK`. */
+  /** The packer, and the format version where its signature names one: `LZEXE 0.91`, `LZEXE 0.90`, `EXEPACK` or `PKLITE`. */
   packer: string;
   /** The {@link UNPACK_LAYOUT} the file was written by. */
   layout: number;
@@ -73,37 +84,15 @@ const LZEXE = {
   LZ09: { version: "0.90", table: 0x19d },
 } as const;
 
-// The facts of the packed MZ image every decoder works from.
-interface Image {
-  bytes: Buffer;
-  word: (p: number) => number;
-  /** File offset of the load module. */
-  headerBytes: number;
-  /** File offset one past the MZ image, which is also the end of the file. */
-  end: number;
-}
-
-// What a decoder gives the layout rule: the load module, the entry registers and the relocations.
-interface Decoded {
-  packer: string;
-  data: Buffer;
-  ip: number;
-  cs: number;
-  sp: number;
-  ss: number;
-  /** Each relocation as [file offset of the entry, load-module offset]. */
-  linear: Array<[number, number]>;
-  packed: PackedParts;
-}
-
 /**
  * Unpacks an LZEXE 0.90 or 0.91 executable, recognized by `LZ09` or `LZ91` at offset 0x1C, or an
- * EXEPACK executable, recognized by `RB` at the end of the EXEPACK header at its CS:0, into an MZ
- * file written by layout rule {@link UNPACK_LAYOUT}. Every read is bounded: the compressed stream
+ * EXEPACK executable, recognized by `RB` at the end of the EXEPACK header at its CS:0, or a PKLITE
+ * executable whose stub matches the sequences of PKLITE 1.00 to 1.15, into an MZ file written by
+ * layout rule {@link UNPACK_LAYOUT}. Every read is bounded: the compressed stream
  * must end inside the packed load module, a copy may not reach before the start of the output, the
  * output may not pass {@link MAX_UNPACKED_BYTES}, and every relocation must name a word inside the
  * unpacked load module that no other entry names. Each failure throws an error naming the file offset.
- * A file that carries neither signature is refused; that does not show it is not packed.
+ * A file that carries none of these is refused; that does not show it is not packed.
  * @param input The whole packed file, at most {@link MAX_PACKED_BYTES}. Data after its MZ image is refused.
  */
 export function unpack(input: Uint8Array): UnpackResult {
@@ -115,9 +104,10 @@ export function unpack(input: Uint8Array): UnpackResult {
   const signature = bytes.toString("latin1", 0x1c, 0x20);
   const lzexe = signature === "LZ91" || signature === "LZ09" ? LZEXE[signature] : undefined;
   const exepack = lzexe ? undefined : exepackHeaderLength(bytes);
-  if (!lzexe && !exepack)
+  const pklite = lzexe || exepack ? undefined : pkliteIntro(bytes);
+  if (!lzexe && !exepack && !pklite)
     throw new Error(
-      "No packer the reader unpacks: LZEXE 0.90 and 0.91 are recognized by LZ09 or LZ91 at 0x1C, and EXEPACK by RB at the end of a 16-, 18- or 20-byte header at CS:0 that ends at CS:IP. This does not show that the file is not packed.",
+      "No packer the reader unpacks: LZEXE 0.90 and 0.91 are recognized by LZ09 or LZ91 at 0x1C, EXEPACK by RB at the end of a 16-, 18- or 20-byte header at CS:0 that ends at CS:IP, and PKLITE by the intro of a 1.00 to 1.15 stub at CS:IP FFF0:0100. This does not show that the file is not packed.",
     );
   if (word(6) !== 0)
     throw new Error(
@@ -142,7 +132,11 @@ export function unpack(input: Uint8Array): UnpackResult {
   if (headerBytes < 0x20 || headerBytes > end)
     throw new Error(`Invalid MZ header size at 0x08: ${hex(headerBytes)} bytes in an image of ${hex(end)}`);
   const image: Image = { bytes, word, headerBytes, end };
-  const decoded = lzexe ? decodeLzexe(image, lzexe) : decodeExepack(image, exepack!);
+  const decoded = lzexe
+    ? decodeLzexe(image, lzexe)
+    : exepack
+      ? decodeExepack(image, exepack)
+      : decodePklite(image, pklite!, MAX_UNPACKED_BYTES);
   const { data, linear } = decoded;
 
   // The reader's MZ parser refuses a word relocated twice, so a table that lists one twice is
@@ -305,14 +299,6 @@ function decodeLzexeStream(bytes: Buffer, start: number, limit: number) {
 }
 
 // The relocation-table readers give each entry as [file offset of the entry, load-module offset].
-function reader(bytes: Buffer, start: number, limit: number, bound: string) {
-  let p = start;
-  const byte = () => {
-    if (p >= limit) throw new Error(`The relocation table runs past the end of the ${bound} at ${hex(limit)}`);
-    return bytes[p++]!;
-  };
-  return { byte, word: () => byte() | (byte() << 8), at: () => p };
-}
 
 // LZEXE 0.91: each entry is a distance from the previous one, a byte, or a zero byte and a word.
 // The word 0 moves 0xFFF0 bytes on without an entry, and the word 1 ends the table.
