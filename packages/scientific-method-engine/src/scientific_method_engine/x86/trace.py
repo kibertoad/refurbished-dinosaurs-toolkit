@@ -2,7 +2,7 @@
 from copy import deepcopy
 from typing import NamedTuple
 from capstone.x86 import X86_OP_IMM, X86_OP_REG, X86_OP_MEM
-from .image import integer
+from .image import instruction_limit, integer
 from .machine import (State, StopPath, REGISTERS, ALIASES, BRANCH_CONDITIONS, string_instruction,
                       string_count, string_effect, check_string_form, compare_string, repeated, string_width,
                       FLAT_PORT_REASON)
@@ -240,7 +240,7 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
     continues past under a call model (ADR 0017). A site in ``stops`` is never decoded:
     the walk reaches it and goes no further, so it is in no returned set.
     """
-    integer(limit, 1, 100000, "instruction limit")
+    instruction_limit(image, limit)
     pending, seen, gaps, edges = list(entries), {}, [], []
     # Decoded successors of each instruction, so a proof can be checked for independence below.
     # A call's return site is reached only if the callee returns, and the site after an interrupt only
@@ -250,7 +250,9 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
         at = pending.pop()
         if at in seen or at in stops:
             continue
-        if len(seen) >= limit:
+        # A limit of the declared code size can leave every byte of it decoded, so only a site in a
+        # declared region is one the limit stopped; a site outside is an unmapped edge.
+        if len(seen) >= limit and image.region(at) is not None:
             gaps.append({"site": at, "reason": LIMIT_REASON})
             break
         ins = image.decode(at)
@@ -673,7 +675,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
     # States stopped at a declared jump site, continued after the ordinary paths.
     deferred = []
     boundary_cache = {}
-    boundary_budget = integer(config.get("instructionLimit", 10000), 1, 100000, "instruction limit")
+    boundary_budget = instruction_limit(image, config.get("instructionLimit", 10000))
     created = 1
     total_steps = 0
     total_string_steps = 0

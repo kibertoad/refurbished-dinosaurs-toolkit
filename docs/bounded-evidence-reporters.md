@@ -49,7 +49,11 @@ both refuse a hash in another form, a source with another hash and a config that
 ```
 
 Offsets are decimal shipped-file offsets. Region ends are exclusive; `ip` and
-`segment` describe the mapping of the first byte. MZ resident mappings are checked
+`segment` describe the mapping of the first byte. `entries` lists 0..4096
+established entry offsets in the region, and the regions together list at least
+one. A region with no entries is scanned, places call targets and holds the
+code a walk reaches through a transfer into it, but no walk starts in it. Use one
+for an overlay or segment with no established entry. MZ resident mappings are checked
 against the source. Overlay view mappings remain explicit researcher inputs and
 must have distinct coordinates; the loader checks containment in a declared
 payload, not the truth of a researcher's entry or code classification. Select
@@ -565,8 +569,16 @@ or a scope is in
 
 Defaults cap each path at 512 instructions, the query at 20,000 steps, paths at
 64 and call depth at 8. Raw scans stop after 65,536 byte positions (`scanLimit`,
-maximum 1,048,576); use inventories stop after 64 entries (`entryLimit`, maximum
+maximum 1,048,576 or the total bytes of the declared regions, whichever is larger);
+use inventories stop after 64 entries (`entryLimit`, maximum
 256). `instructionLimit` bounds graph traversal; `limit` bounds search results.
+The maximum of `instructionLimit` is 100,000 or the total bytes of the declared
+regions, whichever is larger. A walk decodes each instruction start once, and every
+start is a byte of a declared region, so a walk given the declared size finishes
+however large the code is. The table boundary walks of `trace` share one
+`instructionLimit`, so a trace that walks from several function entries can still
+spend it. Time and memory grow with the instructions decoded: on a 16-bit
+program, 100,000 instructions take seconds and several hundred MB.
 Caps, undecoded ranges and unsupported cases are explicit. Source size is capped
 at 256 MiB, config size at 1 MiB (16 MiB for the relocation-expanded config the
 Node wrapper pipes to Python) and each symbolic expression at 1,024 tuple nodes.
@@ -1016,7 +1028,7 @@ for questions such as "can anything between program start and this point write t
 | `leaves` | optional, at most 256 `{ "routine", "reason" }` objects: routines the walk reaches but does not read, so they call nothing. `reason` is required free text, and the report repeats it. A start cannot be a leaf |
 | `controls` | optional, at most 256 distinct call sites the walk must decode and resolve; a missed or unresolved control fails the report |
 | `indirectJumps` | the [declared tables](#evidenced-indirect-jump-tables) the walk follows |
-| `instructionLimit` | instructions the walk decodes (1..100000, default 10000) |
+| `instructionLimit` | instructions the walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000) |
 | `limit` | rows kept in each of `unresolved`, `interrupts`, `gaps` and `contested` (1..10000, default 1000) |
 
 The walk is the entry-path walk `incoming` and `uses` read, started from `starts` alone. It
@@ -1083,7 +1095,7 @@ state how many called routines the inventory misses next to its coverage figure
 | Field | Meaning |
 |---|---|
 | `inventory` | the inventory TSV, relative to the config file's directory as `source` is (a Python caller of `run_report` passes an absolute path, and a relative one is refused). Its columns are `start` and `size`, then optionally `name`, `out_of_scope` and `ranges`, as the work protocol gives them; a row that does not parse fails the report with its line number |
-| `searchRegions`, `scanLimit`, `instructionLimit` | as for `incoming`: the regions scanned (all by default), the bytes the raw scan reads (1..1048576, default 65536) and the instructions the entry-path walk decodes. Raise `scanLimit` to the size of the declared code, or the search is partial |
+| `searchRegions`, `scanLimit`, `instructionLimit` | as for `incoming`: the regions scanned (all by default), the bytes the raw scan reads (1 to 1,048,576 or the declared code size, whichever is larger; default 65536) and the instructions the entry-path walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000). Raise `scanLimit` to the size of the declared code, or the search is partial, and raise `instructionLimit` to it for a walk that cannot stop at its limit. A region with no `entries` can declare an overlay no inventory row starts, so targets in it are placed rather than `outside declared code` |
 | `controls` | optional, at most 256 call sites that must be entry-path calls with a resolved target; a missed one fails the report |
 | `limit` | rows kept in each of `targets`, `unresolved` and `rowsOutsideDeclaredCode` (1..10000, default 1000) |
 
@@ -1259,7 +1271,7 @@ argument-sensitive and runtime effects are excluded. A missing write is never a
 read-only claim. Width/access, segment register and unresolved base/index
 operands accompany observations.
 `nodeLimit` (1..128, default 64), `edgeLimit` (1..2048, default 512), `depthLimit`
-(1..128, default 16) and `instructionLimit` (1..100000 per body) bound work.
+(1..128, default 16) and `instructionLimit` (per body, up to 100,000 or the declared code size, whichever is larger) bound work.
 Omitted edges and capped/incomplete bodies remain dependencies;
 `completeWithinDeclaredGraph` qualifies only the declared conditional graph.
 `controls` may name known `sharedSites`, `recursiveSites` and explicit verified

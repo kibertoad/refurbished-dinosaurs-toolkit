@@ -785,6 +785,22 @@ test("inventory-check places an overlay entry two FBOV trampoline calls reach by
   assert.equal(listed.counts["entry-path call"].inventoryStarts, 1);
 });
 
+test("inventory-check places a target in an overlay region that lists no entries", (t) => {
+  const { dir, config } = overlayFixture(t);
+  const path = join(dir, "config.json");
+  // Only the resident caller is an entry. The walk reaches the overlay's RETF at 528 through the
+  // trampoline; the overlay's own call at 532 lies past it, so it is only a raw byte candidate.
+  const regions = config.regions.map((r) => (r.name === "overlay" ? { ...r, entries: [] } : r));
+  writeFileSync(join(dir, "inventory.tsv"), "start\tsize\n1000:0010\t6\n");
+  writeFileSync(path, JSON.stringify({ ...config, regions, inventory: "inventory.tsv", controls: [80] }));
+  const r = run(["inventory-check", path]);
+  assert.deepEqual(
+    r.targets.map((row: Report) => [row.target, row.address, row.status, row.evidence, row.callSites]),
+    [[528, "0x210", "outside every row", "entry-path call", { entryPath: 1, contested: 0, rawCandidates: 1 }]],
+  );
+  assert.deepEqual(r.gaps, []);
+});
+
 test("callee graph through the source bridge compares its edges with a Ghidra export", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);
