@@ -1,6 +1,9 @@
 // Ranges against the function inventories: a range is half-open, so one whose end is the last
 // byte of an inventoried function stops a byte short. Analyzers such as Ghidra give a function's
 // last byte, which makes this the usual slip (https://dinorefurb.com/documentation-standard/#notation).
+// An end that is also the first byte of an inventoried function, or of a range of one, is left
+// alone: a one-byte function's last byte is its first, and a range that stops before a function
+// correctly ends on that function's first byte.
 //
 // Every location of a current entry that gives a range in a file with an inventory is checked, by
 // address or by offset into overlay code. A range written in an entry's body or tables is checked
@@ -46,19 +49,26 @@ export function checkRangeEnds(ctx: Context) {
   // start order. A body that is not contiguous has a last byte at the end of each of its ranges, and
   // functions that share bytes can end on the same one.
   const lastBytes = new Map<string, Map<bigint, { fns: InventoryRow[]; path: string }>>();
+  // Build, file and space -> the first byte of each range of a function's body.
+  const firstBytes = new Map<string, Set<bigint>>();
   for (const inv of inventories)
     for (const fn of inv.functions) {
       const key = `${inv.build}\0${inv.file}\0${fn.space}`;
       if (!lastBytes.has(key)) lastBytes.set(key, new Map());
+      if (!firstBytes.has(key)) firstBytes.set(key, new Set());
       const ends = lastBytes.get(key)!;
       for (const r of fn.body) {
+        firstBytes.get(key)!.add(r.start);
         const hit = ends.get(r.end - 1n);
         if (hit) hit.fns.push(fn);
         else ends.set(r.end - 1n, { fns: [fn], path: inv.path });
       }
     }
-  const endsFunction = (build: Yaml, file: Yaml, space: Space, end: bigint) =>
-    lastBytes.get(`${build}\0${file}\0${space}`)?.get(end);
+  // An end on the first byte of a range of a body passes, as the header says.
+  const endsFunction = (build: Yaml, file: Yaml, space: Space, end: bigint) => {
+    const key = `${build}\0${file}\0${space}`;
+    return firstBytes.get(key)?.has(end) ? undefined : lastBytes.get(key)?.get(end);
+  };
   const message = (what: string, end: string, hit: { fns: InventoryRow[]; path: string }) => {
     const next = nextInNotation(end);
     // Each function the byte ends, as the last byte of a range of it when its body has several.

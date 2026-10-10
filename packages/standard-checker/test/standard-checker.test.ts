@@ -5110,3 +5110,41 @@ test("a range that ends where two ranges of a body touch passes", (t) => {
   assert.equal(status, 0, output);
   assert.ok(!output.includes("last byte"), output);
 });
+
+// 0x00401000 for 32 bytes, followed by a one-byte function at 0x00401020, whose last byte is its first.
+const WITH_ONE_BYTE_FUNCTION = "0x00401000\t32\n0x00401020\t1\n";
+
+test("a range that ends where a one-byte function starts passes", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x00401020"), "The handler spans 0x00401000..0x00401020.");
+    inventory(r, WITH_ONE_BYTE_FUNCTION);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});
+
+test("a range that ends where a one-byte range of a body starts passes", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x00401010"));
+    inventory(
+      r,
+      "0x00401000\t16\n0x00401100\t17\t0x00401010..0x00401011 0x00401100..0x00401110\n",
+      "start\tsize\tranges",
+    );
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});
+
+test("a range that ends on a function's last byte fails when a one-byte function follows", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F"), "The handler spans 0x00401000..0x0040101F.");
+    inventory(r, WITH_ONE_BYTE_FUNCTION);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes(LAST_BYTE("location address 0x00401000..0x0040101F")), output);
+  assert.ok(output.includes(LAST_BYTE("the body's range 0x00401000..0x0040101F")), output);
+});
