@@ -132,7 +132,7 @@ fails. Exit code 0 means it removed the lock or found none; 2 is a usage error.
 | `request_id_prefixes` | One per client. |
 | `capabilities` | What the server reported. |
 | `debugger_session` | The debugger session's ID. |
-| `writes` | Each guarded write in order: the contract's name, the field, its address (as the address object's `repr`) and length, the expected hash, the hash of the bytes written, `verified` or `failed`, and the failure. |
+| `writes` | Each guarded write in order: the contract's name, the field, its address (as the address object's `repr`) and length, the expected hash, the hash of the data the write carried (`null` when it was not bytes), `verified` or `failed`, and the failure, which says how far a failed write got. |
 | `run_failure` | Why the run failed, or `null`. |
 
 ### Calls, capabilities and request IDs
@@ -154,6 +154,8 @@ has no default contract and supports no field on its own, so a write without a c
 refused. Field layouts and the rules for when a field may be written stay in your restoration.
 
 ```python
+import hashlib
+
 from dosbox_agent import MemoryAddress
 
 from dinorefurb_dosbox_session import FieldContract, WritableField
@@ -164,23 +166,25 @@ session.write(contract, "counter", b"\x21\x43", expected_sha256=hashlib.sha256(b
 
 Each write, in this order:
 
-1. Refuses a field the contract lacks, or `data` of another length than the field
-   (`WriteOutsideContract`). Nothing is sent.
+1. Refuses a field the contract lacks, `data` that is not bytes, or `data` of another length than
+   the field (`WriteOutsideContract`). Nothing is sent.
 2. Refuses an `expected_sha256` that is not 64 hexadecimal digits, and a guest whose status is not
    `stopped` (`WriteFailed`).
 3. Reads the field and refuses unless its bytes hash to `expected_sha256` (`WriteHashMismatch`).
    Nothing is written.
 4. Sends `memory.write` with the same `expected_sha256`, so the server checks it again. The hashes
    the server reports for the bytes it replaced and the bytes it left must match the expected hash
-   and `data`.
+   and `data`; when the server wrote but reports replacing other bytes, the field may hold the
+   new bytes (`WriteFailed`).
 5. Reads the field back and compares it with `data` (`WriteReadbackMismatch`).
 
 It returns a `VerifiedWrite` and appends it to `writes` in `session.json`.
 
 Any refusal or failure, including a transport error during the write, fails the run. The write is
 not retried, the failure goes into `session.json` as `run_failure`, and from then on further
-writes, `continue_`, `step` and `pause` raise `RunFailed` without sending anything. Reads still
-work, so the failed state can be inspected, and closing the session cleans up as usual. Start a new
+writes, `continue_` and `step` raise `RunFailed` without sending anything. `pause` is still sent,
+so a guest that was running when the write failed can be stopped, and reads still work, so the
+failed state can be inspected. Closing the session cleans up as usual. Start a new
 run to try again.
 
 ### Observation
@@ -212,7 +216,7 @@ both. When a `continue_` or `pause` request itself raises, the server may still 
 | `WriteHashMismatch` | The field's bytes do not hash to the expected value. Nothing was written; the run fails. |
 | `WriteReadbackMismatch` | The field does not hold the written bytes afterwards. The run fails. |
 | `WriteFailed` | A write was refused for another reason, such as a guest that is not stopped. The run fails. The three errors above derive from it. |
-| `RunFailed` | A write, continuation, step or pause was asked for after the run failed. Not sent. |
+| `RunFailed` | A write, continuation or step was asked for after the run failed. Not sent. |
 | `CleanupFailed` | The emulator still ran after teardown; the lock was kept. |
 
 All of them derive from `SessionError`.

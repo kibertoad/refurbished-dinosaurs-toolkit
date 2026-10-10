@@ -31,7 +31,8 @@ class StandinServer:
     ``memory`` maps an address object to the bytes there; an address it lacks reads as zeros.
     ``write_effect`` decides what a write does: ``"store"`` the bytes, ``"drop"`` them (as ROM
     would), or ``"store, then read back changed"``, where the write reports the new bytes but every
-    later read returns them with the first byte inverted.
+    later read returns them with the first byte inverted, or ``"store, report other replaced bytes"``,
+    where the write stores the bytes but reports a hash of zeros for the bytes it replaced.
     """
 
     def __init__(
@@ -149,6 +150,8 @@ class StandinClient:
         after = self._peek(address, len(data))
         if self.server.write_effect == "store, then read back changed":
             self.server.changed_after_write.add(address)
+        if self.server.write_effect == "store, report other replaced bytes":
+            before_sha256 = hashlib.sha256(bytes(len(data))).hexdigest()
         return SimpleNamespace(
             byte_count=len(after),
             before_sha256=before_sha256,

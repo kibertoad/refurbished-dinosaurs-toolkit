@@ -38,7 +38,7 @@ from .errors import (
     SessionError,
 )
 from .lock import RunLock, resolve_lock_path
-from .writes import FieldContract, VerifiedWrite, guarded_write, resolve, sha256, write_entry
+from .writes import FieldContract, VerifiedWrite, guarded_write, payload, resolve, sha256, write_entry
 
 #: The ``format`` field of ``session.json``.
 RECORD_FORMAT = "dinorefurb-dosbox-session.record/1"
@@ -126,7 +126,7 @@ class _Continuations:
 
     Each of them ends with the guest stopped, so once a wait shows any of them ended, none of the
     others is still running either: a pause ends the continuation it interrupts. It also holds the
-    run's failure, which refuses every further continuation, step, pause and write.
+    run's failure, which refuses every further continuation, step and write.
     """
 
     def __init__(self) -> None:
@@ -134,7 +134,8 @@ class _Continuations:
         #: Set when a continuation or pause request raised, so the session cannot tell whether the
         #: server received it. Cleared once a status shows the guest not running.
         self.unconfirmed: str | None = None
-        #: Set when a guarded write failed. The guest is not resumed or changed again in this run.
+        #: Set when a guarded write failed. The guest is not resumed or changed again in this run,
+        #: though it may still be paused.
         self.run_failure: str | None = None
 
     def clear(self) -> None:
@@ -191,8 +192,7 @@ class _GuardedClient(SessionClient):
         return super().step(session_id, mode)
 
     def pause(self, session_id: str) -> OperationLike:
-        if self._continuations.run_failure is not None:
-            raise RunFailed(self._continuations.run_failure)
+        # Allowed after a run failure: a pause only stops the guest, so it can be inspected.
         return self._send("pause", lambda: SessionClient.pause(self, session_id))
 
     def wait(self, session_id: str, operation_id: str, timeout_ms: int) -> Any:
@@ -410,35 +410,44 @@ class DosboxSession:
         After writing, the hashes the server reports and the bytes read back must match ``data``.
 
         Any refusal or failure fails the run: the write is not retried, the failure is recorded in
-        ``session.json``, and from then on writes, continuations, steps and pauses raise
-        :class:`~dinorefurb_dosbox_session.errors.RunFailed`. Reads still work, and closing the
-        session cleans up as usual. A transport error from the client also fails the run and
+        ``session.json``, and from then on writes, continuations and steps raise
+        :class:`~dinorefurb_dosbox_session.errors.RunFailed`. A pause is still sent, so a guest
+        that runs can be stopped, reads still work, and closing the session cleans up as usual. A transport error from the client also fails the run and
         propagates as it was raised.
 
-        :raises WriteOutsideContract: no contract, a field the contract lacks, or a length that
-            differs from the field's.
+        :raises WriteOutsideContract: no contract, a field the contract lacks, ``data`` that is not
+            bytes-like, or a length that differs from the field's.
         :raises WriteHashMismatch: the field's bytes do not hash to ``expected_sha256``; nothing
             was written.
         :raises WriteReadbackMismatch: the field does not hold ``data`` after the write.
-        :raises WriteFailed: the guest is not stopped, or the hash is malformed.
+        :raises WriteFailed: the guest is not stopped, the hash is malformed, or the server wrote but
+            reports replacing bytes with another hash.
         :raises CapabilityRefused: the server did not report ``debugger`` as true; nothing was sent.
         :raises RunFailed: the run failed earlier.
         """
         if self._continuations.run_failure is not None:
             raise RunFailed(self._continuations.run_failure)
         session_id = self.session_id
-        written = sha256(bytes(data))
-        contract_name = None if contract is None else contract.name
-        target = None if contract is None else contract.field(field)
+        written: str | None = None
         try:
-            target = resolve(contract, field, bytes(data))
+            content = payload(data)
+            written = sha256(content)
+            target = resolve(contract, field, content)
             assert contract is not None
-            verified = guarded_write(self.client, session_id, contract, target, bytes(data), expected_sha256)
+            verified = guarded_write(self.client, session_id, contract, target, content, expected_sha256)
         except BaseException as error:
-            failure = f"Write to field {field} failed: {error}"
-            self._continuations.run_failure = failure
+            self._continuations.run_failure = f"Write to field {field} failed: {error}"
+            expected = expected_sha256.lower() if isinstance(expected_sha256, str) else repr(expected_sha256)
             self._writes.append(
-                write_entry(contract_name, field, target, str(expected_sha256), written, "failed", str(error))
+                write_entry(
+                    None if contract is None else contract.name,
+                    field,
+                    None if contract is None else contract.field(field),
+                    expected,
+                    written,
+                    "failed",
+                    str(error),
+                )
             )
             self._write_record()
             raise

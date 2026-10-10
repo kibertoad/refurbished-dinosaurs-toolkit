@@ -69,8 +69,9 @@ class WriteFailed(SessionError):
     """A guarded write was refused or did not verify, and the run has failed.
 
     The subclasses name the three checks a write makes. This class itself covers the other
-    refusals: a malformed expected hash, a guest that is not stopped, and a field that reads back
-    at another length than the contract gives.
+    refusals: a malformed expected hash, a guest that is not stopped, a field that reads back at
+    another length than the contract gives, and a write the server made while reporting that the
+    bytes it replaced had another hash than expected (the field may then hold the new bytes).
     """
 
 
@@ -114,7 +115,7 @@ class RunFailed(SessionError):
 
     def __init__(self, failure: str) -> None:
         super().__init__(
-            f"The run failed and the guest is not changed or resumed again: {failure} Close the session "
+            f"The run failed and the guest is not changed or resumed again: {failure.rstrip('.')}. Close the session "
             "and start a new run."
         )
         self.failure = failure

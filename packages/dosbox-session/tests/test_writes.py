@@ -48,7 +48,7 @@ class GuardedWrites(SessionCase):
         return json.loads((settings.run_directory / "session.json").read_text(encoding="utf-8"))
 
     def assert_run_failed(self, session: DosboxSession, server: StandinServer) -> None:
-        """A failed run refuses writes, continuations, steps and pauses, and sends none of them."""
+        """A failed run refuses writes, continuations and steps, and sends none of them."""
         sent = len(server.calls)
         with self.assertRaises(RunFailed):
             session.write(CONTRACT, "counter", NEW, sha256(OLD))
@@ -56,8 +56,6 @@ class GuardedWrites(SessionCase):
             session.continue_()
         with self.assertRaises(RunFailed):
             session.client.step(session.session_id)
-        with self.assertRaises(RunFailed):
-            session.client.pause(session.session_id)
         self.assertEqual(len(server.calls), sent)
         session.client.get_registers(session.session_id)
 
@@ -163,7 +161,29 @@ class GuardedWrites(SessionCase):
         self.assertIn("reads back with SHA-256", self.record(settings)["run_failure"])
         self.assert_run_failed(session, server)
 
-    def test_a_write_while_the_guest_runs_fails_the_run(self) -> None:
+    def test_a_server_that_reports_replacing_other_bytes_does_not_claim_nothing_was_written(self) -> None:
+        server = StandinServer()
+        session, _ = self.start(server)
+        server.write_effect = "store, report other replaced bytes"
+        with self.assertRaisesRegex(WriteFailed, "may now hold the new bytes") as raised:
+            session.write(CONTRACT, "counter", NEW, sha256(OLD))
+        self.assertNotIsInstance(raised.exception, WriteHashMismatch)
+        self.assertEqual(server.memory[COUNTER], NEW)
+        self.assert_run_failed(session, server)
+
+    def test_data_that_is_not_bytes_is_outside_the_contract(self) -> None:
+        server = StandinServer()
+        session, settings = self.start(server)
+        # bytes(2) would be two zero bytes, the length of the field.
+        with self.assertRaisesRegex(WriteOutsideContract, "carries bytes, not int"):
+            session.write(CONTRACT, "counter", 2, sha256(OLD).upper())  # type: ignore[arg-type]
+        self.assertEqual(server.written, [])
+        entry = self.record(settings)["writes"][0]
+        self.assertIsNone(entry["written_sha256"])
+        self.assertEqual(entry["expected_sha256"], sha256(OLD))
+        self.assert_run_failed(session, server)
+
+    def test_a_write_while_the_guest_runs_fails_the_run_and_the_guest_can_still_be_paused(self) -> None:
         server = StandinServer(waits=["running"])
         session, _ = self.start(server)
         operation = session.continue_()
@@ -173,6 +193,11 @@ class GuardedWrites(SessionCase):
             session.write(CONTRACT, "counter", NEW, sha256(OLD))
         self.assertEqual(server.written, [])
         self.assertNotIn("read_memory", server.methods())
+        # The failure leaves the guest running; a pause is still sent so it can be inspected.
+        server.waits.append("pause")
+        pause = session.client.pause(session.session_id)
+        self.assertEqual(server.methods()[-1], "pause")
+        self.assertEqual(session.observe(pause, timeout=5, poll_ms=50).status, "completed")
         server.status_state = "stopped"
         self.assert_run_failed(session, server)
 
@@ -209,6 +234,11 @@ class Contracts(unittest.TestCase):
     def test_a_contract_refuses_two_fields_with_one_name(self) -> None:
         with self.assertRaisesRegex(ValueError, "more than once: counter"):
             FieldContract("dup/1", (WritableField("counter", COUNTER, 2), WritableField("counter", FLAGS, 1)))
+
+    def test_a_contract_keeps_fields_given_as_a_generator(self) -> None:
+        contract = FieldContract("gen/1", (field for field in CONTRACT.fields))  # type: ignore[arg-type]
+        self.assertEqual(contract.fields, CONTRACT.fields)
+        self.assertIsNotNone(contract.field("counter"))
 
     def test_a_field_needs_a_positive_length(self) -> None:
         for length in (0, -1, True):

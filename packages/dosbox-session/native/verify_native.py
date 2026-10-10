@@ -26,6 +26,7 @@ from dinorefurb_dosbox_session import (
     SessionSettings,
     Target,
     WritableField,
+    WriteFailed,
     verify_checkout,
 )
 
@@ -87,13 +88,19 @@ def main() -> int:
                 checks[name] = hex(int(str(registers.general[name]), 16) & 0xFFFF)
             word = WritableField("probe word", MemoryAddress.segmented(cs, WORD_OFFSET), len(WORD_BEFORE))
             contract = FieldContract("native-probe/1", (word,))
-            written = session.write(contract, word.name, WORD_AFTER, hashlib.sha256(WORD_BEFORE).hexdigest())
-            checks["write"] = "verified"
-            checks["readback"] = client.read_memory(session.session_id, word.address, word.length).data.hex()
-            checks["written_sha256"] = written.written_sha256
-            _, stepped = client.step(session.session_id)
-            checks["ip_after_load"] = hex(int(str(stepped.instruction_pointer), 16))
-            checks["ax_after_load"] = hex(int(str(stepped.general["eax"]), 16) & 0xFFFF)
+            # A failed write still prints the result: the record holds it and the step is skipped.
+            try:
+                written = session.write(contract, word.name, WORD_AFTER, hashlib.sha256(WORD_BEFORE).hexdigest())
+            except WriteFailed as error:
+                checks["write"] = f"failed: {error}"
+            else:
+                checks["write"] = "verified"
+                checks["written_sha256"] = written.written_sha256
+            checks["readback"] = bytes(client.read_memory(session.session_id, word.address, word.length).data).hex()
+            if checks["write"] == "verified":
+                _, stepped = client.step(session.session_id)
+                checks["ip_after_load"] = hex(int(str(stepped.instruction_pointer), 16))
+                checks["ax_after_load"] = hex(int(str(stepped.general["eax"]), 16) & 0xFFFF)
         record = session.record()
 
     passed = (

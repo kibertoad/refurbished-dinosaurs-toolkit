@@ -52,6 +52,7 @@ class FieldContract:
     def __post_init__(self) -> None:
         if not self.name:
             raise ValueError("a field contract needs a name")
+        object.__setattr__(self, "fields", tuple(self.fields))
         names = [field.name for field in self.fields]
         duplicates = sorted({name for name in names if names.count(name) > 1})
         if duplicates:
@@ -86,11 +87,16 @@ def write_entry(
     field_name: str,
     field: WritableField | None,
     expected_sha256: str,
-    written_sha256: str,
+    written_sha256: str | None,
     status: Literal["verified", "failed"],
     failure: str | None = None,
 ) -> dict[str, Any]:
-    """One entry of the session record's ``writes``."""
+    """One entry of the session record's ``writes``.
+
+    ``written_sha256`` is the hash of the data the write carried, or ``None`` when that data was
+    not bytes. A failed entry does not claim the data reached the guest; ``failure`` says how far
+    the write got.
+    """
     return {
         "contract": contract,
         "field": field_name,
@@ -107,6 +113,17 @@ def _normalize_sha256(value: str) -> str:
     if not isinstance(value, str) or len(value) != 64 or any(c not in string.hexdigits for c in value):
         raise WriteFailed(f"The expected hash {value!r} is not a SHA-256 value of 64 hexadecimal digits.")
     return value.lower()
+
+
+def payload(data: Any) -> bytes:
+    """``data`` as bytes.
+
+    :raises WriteOutsideContract: ``data`` is not bytes-like. An integer is refused rather than
+        turned into that many zero bytes, as ``bytes(n)`` would.
+    """
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        raise WriteOutsideContract(f"A write carries bytes, not {type(data).__name__}.")
+    return bytes(data)
 
 
 def resolve(contract: FieldContract | None, field_name: str, data: bytes) -> WritableField:
@@ -151,8 +168,10 @@ def guarded_write(
     The write request carries the same hash, so the server checks it again. Then it compares the
     hashes the server reports and the bytes read back with what was written.
 
-    :raises WriteFailed: the guest is not stopped, or the expected hash is malformed.
-    :raises WriteHashMismatch: the bytes in the field do not hash to ``expected_sha256``.
+    :raises WriteFailed: the guest is not stopped, the expected hash is malformed, or the server
+        wrote but reports replacing bytes with another hash than ``expected_sha256``.
+    :raises WriteHashMismatch: the bytes in the field do not hash to ``expected_sha256``; nothing
+        was written.
     :raises WriteReadbackMismatch: the server's reported hashes or the readback differ from the
         bytes written.
     """
@@ -173,11 +192,11 @@ def guarded_write(
         session_id, field.address, data, expected_sha256=expected, request_id=client.ids.next()
     )
     if result.before_sha256 != expected:
-        raise WriteHashMismatch(
-            f"The server reports that the bytes it replaced in field {field.name} have SHA-256 "
-            f"{result.before_sha256}, not the expected {expected}.",
-            expected,
-            result.before_sha256,
+        # The server accepted the write, so the field may already hold ``data``. This is not a
+        # WriteHashMismatch, which promises that nothing was written.
+        raise WriteFailed(
+            f"The server wrote field {field.name} but reports that the bytes it replaced have SHA-256 "
+            f"{result.before_sha256}, not the expected {expected}; the field may now hold the new bytes."
         )
     if result.byte_count != len(data) or result.after_sha256 != written:
         raise WriteReadbackMismatch(
