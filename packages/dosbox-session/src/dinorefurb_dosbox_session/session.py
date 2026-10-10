@@ -30,13 +30,16 @@ from .config import READINESS_MARKER, EmulatorConfig, agent_env, dosbox_conf
 from .errors import (
     CleanupFailed,
     EmulatorExited,
+    LogEntryRefused,
     OperationPending,
     PlatformRefused,
     ReadinessNotObserved,
     RunDirectoryRefused,
+    RunEnded,
     RunFailed,
     SessionError,
 )
+from .events import EventLogWriter, EventSchema, OutcomeContract
 from .lock import RunLock, resolve_lock_path
 from .writes import FieldContract, VerifiedWrite, guarded_write, payload, resolve, sha256, write_entry
 
@@ -48,6 +51,7 @@ DRIVE_C = "drive-c"
 DOSBOX_CONF = "dosbox.conf"
 AGENT_CONFIG = "agent.env"
 SESSION_RECORD = "session.json"
+EVENT_LOG = "events.jsonl"
 CLEANUP_DIAGNOSTIC = "cleanup-diagnostic.txt"
 
 _BUILD_LINK = (
@@ -65,6 +69,21 @@ class Target:
 
 
 @dataclass(frozen=True)
+class EventLogSettings:
+    """What a session's event log checks, all of it from the caller.
+
+    - ``contract``: the versioned outcome contract the log's final outcome must fit.
+    - ``schemas``: one :class:`~dinorefurb_dosbox_session.events.EventSchema` per event kind.
+    - ``modules``: names of modules to hash into the log header, such as the restoration's probe
+      and adapter modules. Each must be imported before the session starts.
+    """
+
+    contract: OutcomeContract
+    schemas: tuple[EventSchema, ...]
+    modules: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class SessionSettings:
     """Everything a session needs from its caller.
 
@@ -79,6 +98,7 @@ class SessionSettings:
     - ``emulator_arguments``: passed to the emulator before the generated ``-conf`` and
       ``--agent-config`` arguments.
     - ``lock_path``: the run lock; by default the path :func:`~dinorefurb_dosbox_session.lock.resolve_lock_path` gives.
+    - ``event_log``: when given, the session keeps an event log, ``events.jsonl`` in the run directory.
     """
 
     checkout: Path
@@ -92,6 +112,7 @@ class SessionSettings:
     lock_path: Path | None = None
     readiness_timeout: float = 30.0
     teardown_timeout: float = 10.0
+    event_log: EventLogSettings | None = None
 
 
 @dataclass(frozen=True)
@@ -134,9 +155,18 @@ class _Continuations:
         #: Set when a continuation or pause request raised, so the session cannot tell whether the
         #: server received it. Cleared once a status shows the guest not running.
         self.unconfirmed: str | None = None
-        #: Set when a guarded write failed. The guest is not resumed or changed again in this run,
-        #: though it may still be paused.
+        #: Set when a guarded write failed or the event log refused an entry. The guest is not
+        #: resumed or changed again in this run, though it may still be paused.
         self.run_failure: str | None = None
+        #: Set once the event log has its outcome. The guest is not resumed or changed again, so
+        #: the log covers everything the run did to it, though it may still be paused.
+        self.log_ended: str | None = None
+
+    def refuse_if_over(self) -> None:
+        if self.run_failure is not None:
+            raise RunFailed(self.run_failure)
+        if self.log_ended is not None:
+            raise RunEnded(self.log_ended)
 
     def clear(self) -> None:
         self.pending.clear()
@@ -157,8 +187,7 @@ class _GuardedClient(SessionClient):
         self._continuations = continuations
 
     def _refuse_if_pending(self, action: str) -> None:
-        if self._continuations.run_failure is not None:
-            raise RunFailed(self._continuations.run_failure)
+        self._continuations.refuse_if_over()
         if self._continuations.pending:
             shown = ", ".join(sorted(self._continuations.pending))
             raise OperationPending(f"Operation {shown} is still pending; observe it before {action}.")
@@ -232,6 +261,7 @@ class DosboxSession:
         self._clients: list[_GuardedClient] = []
         self._continuations = _Continuations()
         self._writes: list[dict[str, Any]] = []
+        self._log: EventLogWriter | None = None
         self._clients_closed = False
         self._closed = False
 
@@ -260,8 +290,11 @@ class DosboxSession:
         self._check_run_directory()
         conf = dosbox_conf(settings.emulator_config, self.drive_c, self.token)
         self._owner = processes.current()
+        create_log = self._prepare_log()
         self._lock = RunLock.acquire(self.lock_path, self.token, self._owner)
         try:
+            if create_log is not None:
+                self._log = create_log(self.run_directory / EVENT_LOG)
             self._launch(emulator, conf)
             self._wait_for_readiness()
             client = self._new_client()
@@ -275,9 +308,38 @@ class DosboxSession:
                     f"The target did not stop at its entry: state {self.state.state}, "
                     f"stop reason {stop.kind if stop is not None else None}."
                 )
-        except BaseException:
+        except BaseException as error:
+            self._end_log(f"The session did not start: {error}")
             self.close()
             raise
+
+    def _prepare_log(self) -> Callable[[Path], EventLogWriter] | None:
+        """Checks the log settings and hashes the named modules, before the lock is taken.
+
+        The header is written once the session holds the lock, so a refused module or a held lock
+        leaves the run directory empty and reusable.
+        """
+        log = self.settings.event_log
+        if log is None:
+            return None
+        return EventLogWriter._prepare(
+            log.contract, log.schemas, log.modules, session=self.token, package_version=_package_version()
+        )
+
+    def _end_log(self, failure: str) -> None:
+        """Ends a log that has no outcome yet with ``failure``. A log that cannot take it is left as it is."""
+        log = self._log
+        if log is None or log.outcome is not None:
+            return
+        try:
+            log.fail(failure)
+        except (LogEntryRefused, OSError):
+            pass
+        self._note_log_end()
+
+    def _close_log(self) -> None:
+        if self._log is not None:
+            self._log.close()
 
     def _check_run_directory(self) -> None:
         directory = self.run_directory
@@ -392,7 +454,11 @@ class DosboxSession:
             raise EmulatorExited(f"The owned emulator exited with code {code}.")
 
     def continue_(self) -> OperationLike:
-        """Resumes the guest. Refused while an earlier operation is still pending or after the run failed."""
+        """Resumes the guest.
+
+        Refused while an earlier operation is still pending, after the run failed, or once its
+        event log has its outcome.
+        """
         return self.client.continue_(self.session_id)
 
     @property
@@ -424,9 +490,9 @@ class DosboxSession:
             reports replacing bytes with another hash.
         :raises CapabilityRefused: the server did not report ``debugger`` as true; nothing was sent.
         :raises RunFailed: the run failed earlier.
+        :raises RunEnded: the event log already ends with its outcome.
         """
-        if self._continuations.run_failure is not None:
-            raise RunFailed(self._continuations.run_failure)
+        self._continuations.refuse_if_over()
         session_id = self.session_id
         written: str | None = None
         try:
@@ -437,6 +503,7 @@ class DosboxSession:
             verified = guarded_write(self.client, session_id, contract, target, content, expected_sha256)
         except BaseException as error:
             self._continuations.run_failure = f"Write to field {field} failed: {error}"
+            self._end_log(self._continuations.run_failure)
             expected = expected_sha256.lower() if isinstance(expected_sha256, str) else repr(expected_sha256)
             self._writes.append(
                 write_entry(
@@ -454,6 +521,83 @@ class DosboxSession:
         self._writes.append(verified.to_json())
         self._write_record()
         return verified
+
+    # The event log
+
+    @property
+    def event_log_path(self) -> Path | None:
+        """The run's event log, or ``None`` when the settings give no event log or it is not created yet.
+
+        Entries go through :meth:`log_event`, :meth:`finish_log` and :meth:`fail_log`, which fail
+        the run when the log refuses one.
+        """
+        return None if self._log is None else self._log.path
+
+    def _logged(self, action: Callable[[EventLogWriter], None]) -> None:
+        log = self._log
+        if log is None:
+            raise SessionError("This session keeps no event log; give SessionSettings.event_log to keep one.")
+        ended = log.outcome is not None
+        try:
+            action(log)
+        except (LogEntryRefused, OSError) as error:
+            # A call after the outcome changes nothing the log records: the guest is not resumed
+            # or changed once the log has ended, so it does not fail the run.
+            if not ended and self._continuations.run_failure is None:
+                self._continuations.run_failure = f"The event log refused an entry: {error}"
+                self._write_record()
+            raise
+        finally:
+            self._note_log_end()
+
+    def _note_log_end(self) -> None:
+        log = self._log
+        if log is not None and log.outcome is not None and self._continuations.log_ended is None:
+            self._continuations.log_ended = (
+                f"The event log {log.path} ends with its outcome, so the guest is not resumed or changed again "
+                "and the log covers everything the run did. Close the session and start a new run."
+            )
+
+    def log_event(self, kind: str, data: Mapping[str, Any]) -> None:
+        """Appends an event to the run's log. It is synced to disk before this returns.
+
+        A refused event (a kind without a schema, data that does not fit it or that JSON cannot
+        hold) ends the log with a failure outcome and fails the run: from then on continuations,
+        steps and writes raise :class:`~dinorefurb_dosbox_session.errors.RunFailed`. A failed write
+        to the file also fails the run and raises the ``OSError``; the log takes nothing more and
+        is left without an outcome, so it reads as truncated or incomplete. An event logged after
+        the outcome is refused without failing the run, since the guest has not run since.
+
+        :raises LogEntryRefused: the event was refused, or the log has already ended.
+        :raises OSError: writing or syncing the line failed.
+        :raises SessionError: the session keeps no event log.
+        """
+        self._logged(lambda log: log.append(kind, data))
+
+    def finish_log(self, values: Mapping[str, Any]) -> None:
+        """Ends the run's log with a completed outcome. ``values`` must fit the outcome contract.
+
+        Values that do not fit end the log with a failure outcome instead and fail the run. After
+        a run failure the log already ends with that failure, so this raises. Once the log has its
+        outcome, continuations, steps and writes raise
+        :class:`~dinorefurb_dosbox_session.errors.RunEnded`, so the log covers everything the run
+        did to the guest. A pause is still sent.
+
+        :raises LogEntryRefused: the values do not fit the contract, or the log has already ended.
+        :raises SessionError: the session keeps no event log.
+        """
+        self._logged(lambda log: log.finish(values))
+
+    def fail_log(self, failure: str, values: Mapping[str, Any] | None = None) -> None:
+        """Ends the run's log with an outcome that records ``failure``; the log then reads as failed.
+
+        As after :meth:`finish_log`, continuations, steps and writes then raise
+        :class:`~dinorefurb_dosbox_session.errors.RunEnded`.
+
+        :raises LogEntryRefused: the log has already ended.
+        :raises SessionError: the session keeps no event log.
+        """
+        self._logged(lambda log: log.fail(failure, values))
 
     def observe(self, operation: OperationLike, timeout: float, poll_ms: int = 100) -> Observation:
         """Waits on ``operation`` for up to ``timeout`` seconds.
@@ -501,6 +645,7 @@ class DosboxSession:
             "debugger_session": None if self.state is None else self.state.id,
             "writes": list(self._writes),
             "run_failure": self._continuations.run_failure,
+            "event_log": None if self._log is None else str(self._log.path),
         }
 
     def _write_record(self) -> None:
@@ -559,6 +704,7 @@ class DosboxSession:
             )
         if errors and self.run_directory.exists():
             diagnostic.write_text("\n\n".join(errors) + "\n", encoding="utf-8")
+        self._close_log()
         if alive:
             raise CleanupFailed(f"The owned emulator is still running; see {diagnostic}.", diagnostic)
         self._closed = True
