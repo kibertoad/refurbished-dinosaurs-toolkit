@@ -421,10 +421,17 @@ class InventoryCheckTests(unittest.TestCase):
         exits = [{"routine": 0x18, "reason": "synthetic exit"}]
         ended = self.check(inventory, data=data, noReturn=exits,
                            indirectCalls=[{"site": 0, "exhaustive": True, "evidence": "synthetic", "targets": [0x18]}])
-        self.assertEqual([(row["start"], row["site"], row["routine"]) for row in ended["rowsPastNoReturn"]],
-                         [("1000:0000", 0, 0x18)])
+        self.assertEqual([(row["start"], row["site"], row["routines"]) for row in ended["rowsPastNoReturn"]],
+                         [("1000:0000", 0, [0x18])])
         mixed = self.check(inventory, data=data, noReturn=exits, indirectCalls=[table])
         self.assertEqual(mixed["rowsPastNoReturn"], [])
+        # A call whose declared targets are all noReturn is listed once, with every target.
+        both = self.check(inventory, data=data, noReturn=exits + [{"routine": 0x14, "reason": "synthetic exit"}],
+                          indirectCalls=[table])
+        self.assertEqual([(row["site"], row["routines"]) for row in both["rowsPastNoReturn"]], [(0, [0x14, 0x18])])
+        self.assertEqual(both["counts"]["rowsPastNoReturn"], 1)
+        with self.assertRaisesRegex(ValueError, r"Positive control \[0\] missed or not verified"):
+            self.check(inventory, data=data, indirectCalls=[table], controls=[[0]])
 
     def test_a_missed_control_and_a_malformed_inventory_are_refused(self):
         with self.assertRaisesRegex(ValueError, "Positive control 12 missed"):

@@ -32,7 +32,8 @@ its code for row-start checks.
    admitted by the rule a traced far call through memory uses: one region's exact mapping, or a
    source FBOV trampoline. A `targets` list serves targets no table in the build holds, such as a
    far pointer stored from instruction immediates, and rests on its evidence alone. Every target
-   must lie in declared code, or the declaration is refused.
+   must lie in declared code, and a near call's target must be placed by an IP in the call site's
+   segment, or the declaration is refused.
 3. The walk enters each declared target as a call and continues at the return site, unless the
    declaration is exhaustive and every target is a `noReturn` routine. Declared call edges, like
    table rows, never prove an overlapping instruction start.
@@ -41,7 +42,8 @@ its code for row-start checks.
    A declaration that is not exhaustive is followed and its site stays unresolved. The report
    repeats each declaration with the rows read, whether its site was reached, and the declared
    targets at which the walk established no instruction, each of which is also a gap or a
-   contested instruction. A chain that took a declared call lists it in `route.declaredCalls`.
+   contested instruction unless the walk stopped at its instruction limit. A chain that took a
+   declared call lists it in `route.declaredCalls`.
 5. A declared site is refused as a call-site control. A control shows that the walk resolved a
    call from its own encoding, which a declaration does not; an instruction control or a call
    inside a declared target takes its place.

@@ -1155,7 +1155,8 @@ ends its branch, that is when it is exhaustive and every target it declares is `
 section describes, with whether the walk `reached` its site, the `routine` the walk read the site in,
 and `unreadTargets`: for a reached site, the declared targets that are not leaves and at which the
 walk established no instruction, because the target overlaps another reached instruction, is
-contested or does not decode. Each such target is also a gap or a contested instruction.
+contested or does not decode. Each such target is also a gap or a contested instruction, unless
+the walk stopped at its instruction limit before reading it.
 
 `instructionLimitReached` holds when the walk stopped at `instructionLimit` with code left to read.
 The stop is also an `instruction limit` row in `gaps`, but the result `limit` can cut that row, and
@@ -1285,6 +1286,7 @@ evidence, or a declared interrupt site, and also holds the byte after it:
 | `start`, `size`, `name` | the row |
 | `kind`, `site`, `siteAddress`, `siteClassification` | `call` or `interrupt`, the site, its place, and `entry-path instruction`, `reached only through a rejected overlapping start` (contested), `raw byte candidate` or, for an interrupt the walk did not reach, `declared site` |
 | `routine` | for a call, the declared routine it resolves to |
+| `routines` | in place of `routine`, for a declared computed call: every target it declares, all of them `noReturn`. The call is listed once |
 | `following`, `followingAddress` | the byte after the call or interrupt |
 | `followingRead` | whether the walk established an instruction at `following` by another route, such as a branch around an error exit. Without one, nothing the walk read shows the bytes after the call to be code |
 | `bytesAfter` | the bytes of the row's body range from `following` to the range's end |
@@ -1394,7 +1396,7 @@ Each of at most 256 declarations names:
 | `evidence` | required free text connecting the call's operand to the targets: the producers of the index or pointer and every gate on them |
 | `exhaustive` | required boolean. `true` asserts that the call can reach no other target; the engine does not infer it |
 | `table` | `{ start, count, stride, fieldOffset, width, evidence }`, as for [indirect jump tables](#evidenced-indirect-jump-tables): `count` 1..256, `fieldOffset` defaults to 0, and `evidence` justifies the layout and count. A near call's rows are little-endian words placed through the call site's region mapping (`width` 2, the default). A far call's rows are `offset, segment` word pairs (`width` 4): the segment word needs a declared relocation, and the pointer is admitted as a [traced far pointer](#indirect-far-transfers-through-a-traced-pointer) is, through one region's exact mapping or a source FBOV trampoline |
-| `targets` | in place of `table`: 1..256 distinct file offsets in declared code, for targets that no table in the build holds, such as a far pointer stored from instruction immediates on every path into the call |
+| `targets` | in place of `table`: 1..256 distinct file offsets in declared code, for targets that no table in the build holds, such as a far pointer stored from instruction immediates on every path into the call. A near call's target must be a byte that some IP in the call site's segment places, since a near call keeps CS |
 
 A declaration has exactly one of `table` and `targets`. Every target must lie in declared code. The
 walk enters each declared target as a call and continues at the call's return site, unless the
@@ -1404,7 +1406,8 @@ exhaustive`, so `negativeUsable` stays false, and an exhaustive one leaves nothi
 
 Table rows are read from the build's bytes, and a `targets` list rests on its evidence alone; the
 report repeats each declaration with its `instruction` text, a table's `rows` (`index`,
-`operandSite`, `rawOffset`, for a far call `rawSegment` and `resolvedSegment`, and `target`) and its
+`operandSite`, `rawOffset`, for a far call `rawSegment`, `resolvedSegment` and, for a pointer at an FBOV
+trampoline, the `trampoline` whose overlay entry is the `target`, and `target`) and its
 distinct `targets` in row order. Neither form proves that the call runs, which target a given path
 calls, or an instruction boundary: like table jump rows, declared call edges never prove an
 overlapping start. `trace` and the other path commands do not take the declarations, and their

@@ -5,6 +5,21 @@ from .image import integer
 CALL_NOT_EXHAUSTIVE = "indirect call targets are not declared exhaustive"
 
 
+def _word(image, at):
+    return int.from_bytes(image.data[at:at + 2], "little")
+
+
+def _table_operands(image, table, width, label, field_label):
+    """The file offset of each row's target field in a declared ``table`` of ``width``-byte targets."""
+    start = integer(table.get("start"), 0, len(image.data) - 1, f"{label} start")
+    count = integer(table.get("count"), 1, 256, f"{label} count")
+    stride = integer(table.get("stride"), width, 65536, f"{label} stride")
+    field = integer(table.get("fieldOffset", 0), 0, stride - width, field_label)
+    if start + (count - 1) * stride + field + width > len(image.data):
+        raise ValueError(f"{label[0].upper()}{label[1:]} leaves source bounds")
+    return [start + index * stride + field for index in range(count)]
+
+
 def read_indirect_jumps(image):
     declarations = image.config.get("indirectJumps", [])
     if not isinstance(declarations, list) or len(declarations) > 256:
@@ -32,16 +47,10 @@ def read_indirect_jumps(image):
             raise ValueError("Indirect table needs layout/count evidence")
         if type(table.get("width", 2)) is not int or table.get("width", 2) != 2:
             raise ValueError("Indirect table targets must be word width 2")
-        start = integer(table.get("start"), 0, len(image.data) - 1, "indirect table start")
-        count = integer(table.get("count"), 1, 256, "indirect table count")
-        stride = integer(table.get("stride"), 2, 65536, "indirect table stride")
-        field = integer(table.get("fieldOffset", 0), 0, stride - 2, "indirect target field offset")
-        if start + (count - 1) * stride + field + 2 > len(image.data):
-            raise ValueError("Indirect table leaves source bounds")
         rows = []
-        for index in range(count):
-            operand = start + index * stride + field
-            raw = int.from_bytes(image.data[operand:operand + 2], "little")
+        operands = _table_operands(image, table, 2, "indirect table", "indirect target field offset")
+        for index, operand in enumerate(operands):
+            raw = _word(image, operand)
             target = image.near_target(site, raw)
             if target is None:
                 raise ValueError("Indirect table target leaves declared code mappings")
@@ -53,10 +62,6 @@ def read_indirect_jumps(image):
     return result
 
 
-def _word(image, at):
-    return int.from_bytes(image.data[at:at + 2], "little")
-
-
 def indirect_call_declarations(value, image):
     """The declared targets of computed calls, by call site, as ``reach`` and ``inventory-check`` take them.
 
@@ -66,9 +71,11 @@ def indirect_call_declarations(value, image):
     read from the source bytes as ``indirectJumps`` reads them: words placed through the call site's
     region mapping for a near call, and for a far call ``offset, segment`` word pairs whose segment
     word has a declared relocation, admitted as ``Image.far_pointer_target`` admits the pointer a
-    traced far call reads. ``targets`` gives file offsets in declared code, which rest on
-    the evidence alone. Each declaration is returned with the call's ``instruction`` text, a table's
-    ``rows``, and its distinct ``targets`` in row order.
+    traced far call reads; a far row whose pointer names an FBOV trampoline carries its
+    ``trampoline``. ``targets`` gives file offsets in declared code, which rest on the evidence
+    alone; a near call's targets must be bytes some IP in the call site's segment places. Each
+    declaration is returned with the call's ``instruction`` text, a table's ``rows``, and its
+    distinct ``targets`` in row order.
     """
     if not isinstance(value, list) or len(value) > 256:
         raise ValueError("indirectCalls must be a list of at most 256 declarations")
@@ -102,15 +109,9 @@ def indirect_call_declarations(value, image):
             if type(table.get("width", width)) is not int or table.get("width", width) != width:
                 raise ValueError(f"An indirect {'far' if far else 'near'} call table holds {width}-byte targets, "
                                  f"so its width must be {width}")
-            start = integer(table.get("start"), 0, len(image.data) - 1, "indirect call table start")
-            count = integer(table.get("count"), 1, 256, "indirect call table count")
-            stride = integer(table.get("stride"), width, 65536, "indirect call table stride")
-            field = integer(table.get("fieldOffset", 0), 0, stride - width, "indirect call target field offset")
-            if start + (count - 1) * stride + field + width > len(image.data):
-                raise ValueError("Indirect call table leaves source bounds")
             rows = []
-            for index in range(count):
-                operand = start + index * stride + field
+            operands = _table_operands(image, table, width, "indirect call table", "indirect call target field offset")
+            for index, operand in enumerate(operands):
                 row = {"index": index, "operandSite": operand, "rawOffset": _word(image, operand)}
                 if far:
                     # The segment word is relocated at load time, and the pointer is admitted as a traced far
@@ -123,6 +124,9 @@ def indirect_call_declarations(value, image):
                     if target is None:
                         raise ValueError(f"Indirect call table row {index} target is not admitted: {admission['reason']}")
                     row |= {"rawSegment": _word(image, operand + 2), "resolvedSegment": fixup["segment"]}
+                    # A pointer at an FBOV trampoline continues at its overlay entry, which the row names.
+                    if "trampoline" in admission:
+                        row["trampoline"] = admission["trampoline"]
                 else:
                     target = image.near_target(site, row["rawOffset"])
                 if target is None or image.region(target) is None:
@@ -137,8 +141,16 @@ def indirect_call_declarations(value, image):
                 raise ValueError("indirect call targets must be a list of 1..256 distinct file offsets")
             for at in targets:
                 integer(at, 0, len(image.data) - 1, "indirect call target")
-                if image.region(at) is None:
+                region = image.region(at)
+                if region is None:
                     raise ValueError(f"indirect call target {at} is outside declared code")
+                if not far:
+                    # A near call keeps CS, so its target needs an IP that the call site's mapping places there.
+                    linear = region["segment"] * 16 + region["ip"] + at - region["start"]
+                    ip = linear - image.region(site)["segment"] * 16
+                    if not 0 <= ip <= image.mask or image.near_target(site, ip) != at:
+                        raise ValueError(f"indirect call target {at} is not placed by any IP in the near call "
+                                         f"site {site}'s segment")
         result[site] = declaration | {"targets": list(dict.fromkeys(targets))}
     return result
 
@@ -146,3 +158,11 @@ def indirect_call_declarations(value, image):
 def declared_call_ends(declaration, no_return_calls):
     """Whether a declared indirect call ends its branch: it is exhaustive and every target is in ``no_return_calls``."""
     return declaration["exhaustive"] and all(target in no_return_calls for target in declaration["targets"])
+
+
+def call_ends(site, target, indirect_calls, no_return_calls):
+    """Whether the call at ``site`` to ``target`` ends its branch, under ``declared_call_ends`` for a declared site."""
+    declaration = indirect_calls.get(site)
+    if declaration is not None:
+        return declared_call_ends(declaration, no_return_calls)
+    return target in no_return_calls

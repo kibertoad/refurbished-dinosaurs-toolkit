@@ -4,7 +4,7 @@ from .image import integer
 from .trace import (walk, cfg_step, base_mnemonic, unsupported_transfer, holding_instruction, INTERRUPTS, RETURNS,
                     LIMIT_REASON, OVERLAP_REASON, UNDECODED_REASON)
 from .pcode_backend import interrupt_vector
-from .dispatch import indirect_call_declarations, declared_call_ends
+from .dispatch import indirect_call_declarations, call_ends
 
 # The virtual root of the dominator computation; no file offset is negative.
 ROOT = -1
@@ -351,9 +351,7 @@ def reach(image, config):
     stopped = any(g["reason"] == LIMIT_REASON for g in walk_gaps)
     # A control at a site a noReturn declaration kept the walk from names that declaration, which may be the cause.
     def ends(at, found):
-        if at in indirect_calls:
-            return declared_call_ends(indirect_calls[at], no_return_routines)
-        return found[0] in no_return_routines
+        return call_ends(at, found[0], indirect_calls, no_return_routines)
     cut_by = {at + seen[at].size: f"the call at {at} to noReturn routine{'s' if len(found) > 1 else ''} "
                                   + ", ".join(map(str, found))
               for at, found in sorted(call_targets.items()) if ends(at, found)}
@@ -384,9 +382,10 @@ def reach(image, config):
     # Every call to each routine, and the calls to a noReturn routine that the declaration ended.
     call_sites, ended_sites = {}, {}
     for site, found in sorted(call_targets.items()):
+        ended = ends(site, found)
         for target in found:
             call_sites.setdefault(target, []).append(site)
-            if ends(site, found):
+            if ended:
                 ended_sites.setdefault(target, []).append(site)
     leaf_rows = [{"routine": at, "reason": reason, "reached": at in distance, "callSites": call_sites.get(at, [])}
                  for at, reason in leaves.items()]
@@ -395,7 +394,8 @@ def reach(image, config):
     returns = {at: returns_from(graph, seen, returning_leaves, at) for at in no_return_routines}
     no_return = no_return_rows(no_return_routines, no_return_interrupts, returns, ended_sites, seen, distance, seen)
     contradicted = any(row.get("contradicted") for row in no_return)
-    # A declared target the walk entered but established no instruction at shows in gaps or contested too.
+    # A declared target the walk entered but established no instruction at shows in gaps or contested too,
+    # unless the walk stopped at its instruction limit before reading it.
     indirect_rows = [declaration | {"reached": site in seen, "routine": routine.get(site),
                                     "unreadTargets": [t for t in declaration["targets"]
                                                       if site in seen and t not in seen and t not in leaves]}

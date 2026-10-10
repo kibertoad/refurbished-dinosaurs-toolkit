@@ -473,6 +473,29 @@ class DeclaredIndirectCallTests(unittest.TestCase):
             computed(indirectCalls=[table])
         with self.assertRaisesRegex(ValueError, "row 0 target is not admitted: far pointer names no declared code region"):
             computed(indirectCalls=[table], relocations=[{**relocations[0], "segment": 0x2000}])
+        # A pointer at an FBOV trampoline continues at the overlay entry, and the row names the trampoline.
+        export = {"trampoline": 0x110, "descriptor": 1, "entry": 0x120, "evidence": "synthetic trampoline"}
+        through = computed(indirectCalls=[table], relocations=relocations, overlayExports=[export], targets=[0x140])
+        self.assertEqual(through["indirectCalls"][0]["rows"][0], {
+            "index": 0, "operandSite": 0x48, "rawOffset": 0x110, "rawSegment": 0, "resolvedSegment": 0x1000,
+            "trampoline": export, "target": 0x120})
+        self.assertEqual(through["targets"][0]["route"]["declaredCalls"], [{"site": 0x0D, "target": 0x120}])
+
+    def test_a_near_target_list_needs_a_target_the_call_sites_segment_places(self):
+        def regions(segment, ip, resident=False):
+            return [{"name": "low", "start": 0, "end": 0x100, "ip": 0, "segment": 0x1000, "entries": [0],
+                     "resident": True, "evidence": "synthetic"},
+                    {"name": "high", "start": 0x100, "end": 0x160, "ip": ip, "segment": segment, "entries": [],
+                     "resident": resident, "evidence": "synthetic"}]
+        near = {"site": 0x08, "exhaustive": True, "evidence": "synthetic", "targets": [0x120]}
+        with self.assertRaisesRegex(ValueError, "indirect call target 288 is not placed by any IP in the near call "
+                                                "site 8's segment"):
+            run_report(COMPUTED, {"regions": regions(0x2000, 0), "starts": [0], "targets": [0x140],
+                                  "indirectCalls": [near]}, "reach")
+        # 1010:0020 is 1000:0120, so a resident alias of the call site's segment places the target.
+        r = run_report(COMPUTED, {"regions": regions(0x1010, 0, resident=True), "starts": [0], "targets": [0x140],
+                                  "indirectCalls": [near]}, "reach")
+        self.assertTrue(r["targets"][0]["reached"])
 
     def test_a_declared_call_ends_its_branch_only_when_every_target_is_no_return(self):
         no_return = [{"routine": 0x130, "reason": "synthetic: spins forever"}]
@@ -493,6 +516,11 @@ class DeclaredIndirectCallTests(unittest.TestCase):
         self.assertEqual(r["indirectCalls"][1]["unreadTargets"], [0x141])
         self.assertTrue(r["gaps"])
         self.assertFalse(r["negativeUsable"])
+        # A walk that stops at its instruction limit leaves targets unread that are no gap or contested instruction.
+        stopped = computed(indirectCalls=[NEAR_TABLE], instructionLimit=6)
+        self.assertTrue(stopped["instructionLimitReached"])
+        self.assertEqual(stopped["indirectCalls"][0]["unreadTargets"], [0x100, 0x110, 0x120, 0x130])
+        self.assertFalse(stopped["negativeUsable"])
 
     def test_a_declared_site_is_refused_as_a_call_control(self):
         with self.assertRaisesRegex(ValueError, "control 8 is a declared indirect call"):
@@ -514,7 +542,9 @@ class DeclaredIndirectCallTests(unittest.TestCase):
                 ({**FAR_TARGETS, "targets": [0x1000]}, "indirect call target must be an integer"),
                 ({**NEAR_TABLE, "table": {**table, "evidence": ""}}, "layout/count evidence"),
                 ({**NEAR_TABLE, "table": {**table, "width": 4}}, "near call table holds 2-byte targets"),
+                ({**FAR_TARGETS, "targets": list(range(0x100, 0x100 + 257))}, "1..256 distinct file offsets"),
                 ({**NEAR_TABLE, "table": {**table, "count": 0}}, "table count"),
+                ({**NEAR_TABLE, "table": {**table, "count": 257}}, "table count must be an integer in 1..256"),
                 ({**NEAR_TABLE, "table": {**table, "start": 0x15E, "count": 2}}, "leaves source bounds"),
                 ({**NEAR_TABLE, "table": {**table, "start": 0x08, "count": 1}}, "row 0 target leaves declared code")]:
             with self.subTest(declaration=declaration), self.assertRaisesRegex(ValueError, message):
@@ -523,6 +553,8 @@ class DeclaredIndirectCallTests(unittest.TestCase):
             computed(indirectCalls=[FAR_TARGETS, FAR_TARGETS])
         with self.assertRaisesRegex(ValueError, "indirectCalls must be a list"):
             computed(indirectCalls={})
+        with self.assertRaisesRegex(ValueError, "indirectCalls must be a list of at most 256 declarations"):
+            computed(indirectCalls=[FAR_TARGETS] * 257)
 
 
 if __name__ == "__main__":

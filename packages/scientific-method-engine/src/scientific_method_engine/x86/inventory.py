@@ -4,7 +4,7 @@ from bisect import bisect_right
 from pathlib import Path
 from .image import integer
 from .trace import LIMIT_REASON, CONTESTED_REASON, walk, holding_instruction
-from .dispatch import indirect_call_declarations, declared_call_ends
+from .dispatch import indirect_call_declarations, call_ends
 
 MAX_INVENTORY = 16 * 1024 * 1024
 MAX_ROWS = 200000
@@ -227,7 +227,8 @@ def inventory_check(image, config):
     no_return_routines, no_return_interrupts = no_return_declarations(config.get("noReturn", []), image)
     indirect_calls = indirect_call_declarations(config.get("indirectCalls", []), image)
     for at in config.get("controls", []) if isinstance(config.get("controls"), list) else []:
-        if at in indirect_calls:
+        # call_controls refuses a control that is no integer.
+        if type(at) is int and at in indirect_calls:
             raise ValueError(f"Positive control {at} is a declared indirect call, whose targets rest on its "
                              "declaration; a control must resolve from its own encoding")
     declared = {"no_return_calls": frozenset(no_return_routines), "no_return_interrupts": frozenset(no_return_interrupts),
@@ -236,9 +237,7 @@ def inventory_check(image, config):
 
     def ends_branch(row):
         # A declared indirect call ends its branch only when every target it may call is declared noReturn.
-        if row["site"] in indirect_calls:
-            return declared_call_ends(indirect_calls[row["site"]], no_return_routines)
-        return row["target"] in no_return_routines
+        return call_ends(row["site"], row["target"], indirect_calls, no_return_routines)
     seen, contested = calls["seen"], calls["contested"]
 
     starts = {(row["space"], row["at"]) for row in rows}
@@ -334,8 +333,16 @@ def inventory_check(image, config):
                                {at: sorted(sites) for at, sites in entry_calls.items()}, seen, seen, check_read)
 
     # A row whose body holds a declared call or interrupt and the byte after it still covers what follows.
-    ends = [(row["site"], image.decode(row["site"]).size, "call", row["target"], row["classification"])
-            for row in calls["rows"] if row["target"] in no_return_routines and ends_branch(row)]
+    # A declared computed call has one row for each target, and is listed once with all of them.
+    ends, declared_ends = [], set()
+    for row in calls["rows"]:
+        if row["target"] not in no_return_routines or not ends_branch(row) or row["site"] in declared_ends:
+            continue
+        routine = row["target"]
+        if row["site"] in indirect_calls:
+            declared_ends.add(row["site"])
+            routine = list(indirect_calls[row["site"]]["targets"])
+        ends.append((row["site"], image.decode(row["site"]).size, "call", routine, row["classification"]))
     ends += [(at, row["following"] - at, "interrupt", None,
               "entry-path instruction" if at in seen else CONTESTED_REASON if at in contested else "declared site")
              for at, row in no_return_interrupts.items()]
@@ -352,7 +359,9 @@ def inventory_check(image, config):
                 continue
             entry = {**_row_fields(rows[i]), "kind": kind, "site": site, "siteAddress": here[2],
                      "siteClassification": classification}
-            if routine is not None:
+            if isinstance(routine, list):
+                entry["routines"] = routine
+            elif routine is not None:
                 entry["routine"] = routine
             past.append(entry | {"following": site + size, "followingAddress": after[2],
                                  "followingRead": site + size in seen, "bytesAfter": piece[1] - after[1]})
