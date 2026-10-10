@@ -29,6 +29,13 @@ def instruction_limit(image, value):
     return integer(value, 1, max(INSTRUCTION_LIMIT_FLOOR, image.code_bytes), "instruction limit")
 
 
+def scan_limit(image, value, label="scanLimit"):
+    """``value`` checked as a ``scanLimit``: an integer from 1 to 1,048,576 or the total bytes of the declared
+    regions, whichever is larger. A raw scan reads each byte of the declared regions once, so a limit of the
+    declared size lets it read them all. ``label`` names the limit in the error."""
+    return integer(value, 1, max(SCAN_LIMIT_FLOOR, image.code_bytes), label)
+
+
 def read_source(config, base):
     """Read the source a report config names and check its hash.
 

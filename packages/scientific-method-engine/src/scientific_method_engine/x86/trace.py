@@ -248,7 +248,9 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
         at = pending.pop()
         if at in seen or at in stops:
             continue
-        if len(seen) >= limit:
+        # A limit of the declared code size can leave every byte of it decoded, so only a site in a
+        # declared region is one the limit stopped; a site outside is an unmapped edge.
+        if len(seen) >= limit and image.region(at) is not None:
             gaps.append({"site": at, "reason": "instruction limit"})
             break
         ins = image.decode(at)

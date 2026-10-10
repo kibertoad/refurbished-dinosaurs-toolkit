@@ -11,7 +11,7 @@ from .relational import validate_controls, evaluate_controls
 from .argument_frames import WINDOW_BYTES, argument_frames, stack_cleanup
 from .memory_scopes import model_scopes
 from .result_flow import return_flows
-from .image import Image, SCAN_LIMIT_FLOOR, instruction_limit, integer
+from .image import Image, instruction_limit, integer, scan_limit
 from .trace import (trace, walk, cfg_step, call_target, unsupported_transfer, uncovered, holding_instruction, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
                     RETURNS, INTERRUPTS, PORTS, PORT_INPUTS, port_width, budget_input, modeled_interrupt_sites)
 from .pcode_backend import interrupt_vector
@@ -107,7 +107,7 @@ def direct_calls(image, config):
     scans = config.get("searchRegions", [r["name"] for r in image.regions])
     if not isinstance(scans, list) or not scans or len(set(scans)) != len(scans):
         raise ValueError("searchRegions must be unique region names")
-    scan_limit = integer(config.get("scanLimit", 65536), 1, max(SCAN_LIMIT_FLOOR, image.code_bytes), "scanLimit")
+    byte_limit = scan_limit(image, config.get("scanLimit", 65536))
     scanned_bytes, read = 0, {}
     for name in scans:
         r = next((r for r in image.regions if r["name"] == name), None)
@@ -116,7 +116,7 @@ def direct_calls(image, config):
         read[name] = (r["start"], r["end"])
         # Scan the entire declared region, including sites after the target returns.
         for at in range(r["start"], r["end"]):
-            if scanned_bytes >= scan_limit:
+            if scanned_bytes >= byte_limit:
                 gaps.append({"region": name, "unsearchedStart": at, "end": r["end"], "reason": "raw scan limit"})
                 read[name] = (r["start"], at)
                 break
@@ -265,7 +265,7 @@ def _function_exit(image, start, limit, follow_flat_ports, cache):
         at = pending.pop()
         if at in seen:
             continue
-        if len(seen) >= limit:
+        if len(seen) >= limit and image.region(at) is not None:
             cache[key] = {}, False, True
             return cache[key]
         ins = image.decode(at)
@@ -521,10 +521,10 @@ def uses(image, config):
             raise ValueError(f"Positive variable-use control {at} missed; negative result rejected")
     raw = []
     scanned_bytes = 0
-    scan_limit = integer(config.get("scanLimit", 65536), 1, max(SCAN_LIMIT_FLOOR, image.code_bytes), "scanLimit")
+    byte_limit = scan_limit(image, config.get("scanLimit", 65536))
     for r in image.regions:
         for at in range(r["start"], r["end"]):
-            if scanned_bytes >= scan_limit:
+            if scanned_bytes >= byte_limit:
                 gaps.append({"region": r["name"], "unsearchedStart": at, "end": r["end"], "reason": "raw scan limit"})
                 break
             scanned_bytes += 1
@@ -569,7 +569,7 @@ def operand_candidates(image, config):
         raise ValueError("Candidate query must be an object")
     value = integer(query.get("offset"), 0, image.mask, "candidate literal")
     limit = integer(config.get("limit", 100), 1, 10000, "candidate result limit")
-    scan_limit = integer(config.get("scanLimit", 100000), 1, max(SCAN_LIMIT_FLOOR, image.code_bytes), "candidate scan limit")
+    byte_limit = scan_limit(image, config.get("scanLimit", 100000), "candidate scan limit")
     seen, gaps, _, _, contested = walk(image, entries(image), config.get("instructionLimit", 10000))
     ambiguous = {g["site"] for g in gaps if g.get("reason") == OVERLAP_REASON} | set(contested)
     intervals = sorted((at, at + ins.size) for at, ins in seen.items())
@@ -580,7 +580,7 @@ def operand_candidates(image, config):
     for region in image.regions:
         end = region["start"]
         for at in range(region["start"], region["end"]):
-            if scanned >= scan_limit:
+            if scanned >= byte_limit:
                 break
             scanned += 1
             end = at + 1
@@ -984,7 +984,8 @@ def body(image, entry, limit=10000):
         at = pending.pop()
         if at in seen:
             continue
-        if len(seen) >= limit:
+        # As in walk, a site outside declared code is an unmapped edge even once the limit is reached.
+        if len(seen) >= limit and image.region(at) is not None:
             gaps.append({"site": at, "reason": "instruction limit"})
             break
         ins = image.decode(at)

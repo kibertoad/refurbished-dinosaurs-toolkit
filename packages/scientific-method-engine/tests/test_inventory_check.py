@@ -234,7 +234,7 @@ class InventoryCheckTests(unittest.TestCase):
         declared = len(first) + len(second) + len(third)
         cfg = config(data, regions, relocations=relocations, scanLimit=declared, controls=[0, 5, c + 60000],
                      inventory=self.inventory("start\tsize\n1000:0000\t11\n"))
-        with self.assertRaisesRegex(ValueError, f"instruction limit must be an integer in 1..{declared}"):
+        with self.assertRaisesRegex(ValueError, rf"instruction limit must be an integer in 1\.\.{declared}$"):
             run_report(data, {**cfg, "instructionLimit": declared + 1}, "inventory-check")
         r = run_report(data, {**cfg, "instructionLimit": declared}, "inventory-check")
         self.assertEqual(r["gaps"], [])
@@ -286,6 +286,18 @@ class InventoryCheckTests(unittest.TestCase):
         self.assertFalse(run(size, scanLimit=size)["partialSearch"])
         with self.assertRaisesRegex(ValueError, rf"scanLimit must be an integer in 1\.\.{size}$"):
             run(size, scanLimit=size + 1)
+
+    def test_a_walk_that_decodes_every_declared_byte_reports_no_instruction_limit(self):
+        # Two adjacent regions of NOPs, 120,000 one-byte instructions, so a walk at the largest limit decodes
+        # every declared byte and then falls through to 120000, outside declared code.
+        size = 120000
+        data = b"\x90" * size
+        regions = [{"name": "a", "start": 0, "end": 60000, "ip": 0, "segment": 0x1000, "entries": [0],
+                    "evidence": "synthetic code extent"},
+                   {"name": "b", "start": 60000, "end": size, "ip": 0, "segment": 0x2000, "entries": [],
+                    "evidence": "synthetic code extent"}]
+        r = run_report(data, config(data, regions, target=0, instructionLimit=size, scanLimit=size), "incoming")
+        self.assertEqual(r["gaps"], [{"site": size, "reason": "undecoded or unmapped edge"}])
 
 
 if __name__ == "__main__":

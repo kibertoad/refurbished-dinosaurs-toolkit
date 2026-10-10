@@ -52,8 +52,8 @@ Offsets are decimal shipped-file offsets. Region ends are exclusive; `ip` and
 `segment` describe the mapping of the first byte. `entries` lists 0..4096
 established entry offsets in the region, and the regions together list at least
 one. A region with no entries is scanned, places call targets and holds the
-code a walk reaches through a transfer into it, but no walk starts in it: declare
-an overlay or segment that no inventory row or other evidence starts this way. MZ resident mappings are checked
+code a walk reaches through a transfer into it, but no walk starts in it. Use one
+for an overlay or segment with no established entry. MZ resident mappings are checked
 against the source. Overlay view mappings remain explicit researcher inputs and
 must have distinct coordinates; the loader checks containment in a declared
 payload, not the truth of a researcher's entry or code classification. Select
@@ -572,10 +572,12 @@ Defaults cap each path at 512 instructions, the query at 20,000 steps, paths at
 maximum 1,048,576 or the total bytes of the declared regions, whichever is larger);
 use inventories stop after 64 entries (`entryLimit`, maximum
 256). `instructionLimit` bounds graph traversal; `limit` bounds search results.
-Its maximum is 100,000 or the total bytes of the declared regions, whichever is
-larger. A walk decodes each instruction start once, and every start is a byte of a
-declared region, so a walk given the declared size finishes however large the
-code is. Time and memory grow with the instructions decoded: on a 16-bit
+The maximum of `instructionLimit` is 100,000 or the total bytes of the declared
+regions, whichever is larger. A walk decodes each instruction start once, and every
+start is a byte of a declared region, so a walk given the declared size finishes
+however large the code is. The table boundary walks of `trace` share one
+`instructionLimit`, so a trace that walks from several function entries can still
+spend it. Time and memory grow with the instructions decoded: on a 16-bit
 program, 100,000 instructions take seconds and several hundred MB.
 Caps, undecoded ranges and unsupported cases are explicit. Source size is capped
 at 256 MiB, config size at 1 MiB (16 MiB for the relocation-expanded config the
