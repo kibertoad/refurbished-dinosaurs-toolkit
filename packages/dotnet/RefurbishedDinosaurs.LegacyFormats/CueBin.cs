@@ -368,8 +368,9 @@ internal enum RawDataTrackMode
 /// for the image the caller keeps.
 /// <para>
 /// With <c>emptyForm2AsZeros</c>, a MODE2 Form 2 sector whose 2324 data bytes are all zero reads as
-/// 2048 zero bytes instead of throwing. Volume reads pass it, so padding a CD-XA master leaves in
-/// Form 2 inside the volume space reads as the zero blocks a MODE1 image of the disc holds there.
+/// 2048 zero bytes instead of throwing. Volume reads and the reads of the descriptors and
+/// directories pass it, so padding a CD-XA master leaves in Form 2 inside the volume space reads as
+/// the zero blocks a MODE1 image of the disc holds there. File reads do not pass it.
 /// A Form 2 sector that carries any nonzero data byte still throws.
 /// </para>
 /// </remarks>
