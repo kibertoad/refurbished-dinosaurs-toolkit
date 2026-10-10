@@ -69,6 +69,18 @@ class OperationPending(SessionError):
     """A continuation was requested while an earlier operation was still pending."""
 
 
+class GateRefused(SessionError):
+    """A gated breakpoint refused its addresses or the guest's state, or can no longer vouch for
+    its own breakpoints.
+
+    It is raised for an address outside real-mode range, a boundary that shares an address with a
+    wake, a guest that is not in real or virtual-8086 mode, a breakpoint the gate did not create at
+    the boundary or a wake address, and a gate whose breakpoint request failed so that it cannot
+    tell which of its breakpoints the server holds. When it is raised before a continuation, no
+    continuation was sent.
+    """
+
+
 class WriteFailed(SessionError):
     """A guarded write was refused or did not verify, and the run has failed.
 

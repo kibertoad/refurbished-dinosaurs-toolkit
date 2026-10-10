@@ -140,6 +140,10 @@ Owns DOSBox-X debugger sessions for a restoration's research tooling
 - Writes to stopped guest memory only for fields in a contract the caller supplies, checks the
   hash of the bytes each write replaces and reads the write back. A refused or failed write fails
   the run. The package has no default contract.
+- Offers gated breakpoints: a boundary armed only after the guest runs a wake address the caller
+  names, so a polling loop stops once per wake instead of on every pass
+  ([ADR 0032](decisions/0032-gated-breakpoints-for-polling-waits.md)). The caller's condition
+  and the proof that only wake code changes its inputs stay with the caller.
 - Keeps an event log when asked: JSON lines synced as they are written, each event checked
   against the caller's schemas, ending in an outcome that fits the caller's versioned contract
   and records the count and an ordered hash of the events. The header records the schemas, the

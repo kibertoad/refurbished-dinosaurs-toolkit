@@ -133,6 +133,11 @@ What must stay explicit: an expired observation is pending, a log without its fi
 incomplete, and no write is supported unless the caller's contract says so. The milestone ends
 when issue 403 closes, after reconqueror reruns its own startup probe on the released package.
 
+Gated breakpoints (issue 456, [ADR 0032](decisions/0032-gated-breakpoints-for-polling-waits.md))
+follow the milestone: a polling wait stops once per wake the caller names instead of on every pass.
+The issue closes once reconqueror's native control shows the same readiness, input order and RNG
+events as its loop-stop run.
+
 ### Writing rules
 
 The writing-rule halves of gaps 27, 29, 32 to 34, 37 and 41 to 43 go back to Dark Sun as proposed
