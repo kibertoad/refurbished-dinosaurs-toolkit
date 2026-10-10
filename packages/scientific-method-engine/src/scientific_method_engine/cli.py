@@ -28,6 +28,8 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "that inventory names and lists each target no row starts at: inside another row's body or outside every row,\n"
          "with one calling site, near or far, and whether an entry-path call, a contested one or only raw bytes call it;\n"
          "a target inside an instruction the entry-path walk established from another start names it as insideInstruction.\n"
+         "uses matches accesses whose footprint intersects query offset..offset+width; its rawCandidates give each unreached\n"
+         "operand's encoded displacement, width, access, segment register and intersection, and never count as uses.\n"
          "trace, arguments, effects, returns, guards, memory and allocation check relationalControls:\n"
          "a violated control fails the report; an undecided one is reported and never counts as held.\n"
          "A lastWriter control with an address inspects that memory at its checkpoint anchors without a read.\n"

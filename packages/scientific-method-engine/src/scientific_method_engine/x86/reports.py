@@ -22,8 +22,8 @@ def entries(image):
 
 
 def memory_width(ins, operand):
-    # Capstone reports the LDS/LES source as a word, but the load reads the full selector:offset pointer.
-    return 2 + ins.operands[0].size if ins.mnemonic in ("lds", "les") else operand.size
+    # Capstone reports the LDS/LES/LSS/LFS/LGS source as a word, but the load reads the full selector:offset pointer.
+    return 2 + ins.operands[0].size if ins.mnemonic in ("lds", "les", "lss", "lfs", "lgs") else operand.size
 
 
 # Capstone reports several x87 stores (fst, fstp m32/m64, fist, fistp m16/m32, fnstcw) as reads and frstor
@@ -336,6 +336,47 @@ def _caller_continuations(image, stop, reason, stack, limit, cache, modeled=froz
     return rows, []
 
 
+# Memory operands whose Capstone size is not the bytes the instruction touches: x87 environment and
+# state images, and FXSAVE/XSAVE areas. Their footprint is reported as unknown, never as Capstone's size.
+UNKNOWN_FOOTPRINT = frozenset(("fnstenv", "fstenv", "fldenv", "fnsave", "fsave", "frstor", "fxsave", "fxrstor",
+                               "fxsave64", "fxrstor64", "xsave", "xrstor", "xsaveopt", "xsavec", "xsaves", "xrstors"))
+
+
+def _raw_footprints(image, ins, offset, width):
+    """The explicit memory operands of ``ins`` whose encoded footprint may intersect the query field
+    ``[offset, offset + width)``, with each one's encoded start, width, direction and intersection.
+
+    The encoded start is the displacement; ``addressRegisters`` names the base and index registers that
+    move the real address away from it. A footprint that runs past the top of the offset space wraps to
+    zero. An operand of unknown width extends upward from its start by an unknown amount, so it is kept
+    when it starts below the field's end, and has no width or intersection."""
+    space = 1 << image.bits
+    rows = []
+    for index, operand in enumerate(ins.operands):
+        if operand.type != X86_OP_MEM:
+            continue
+        mem = operand.mem
+        start = mem.disp & image.mask
+        size = None if base_mnemonic(ins) in UNKNOWN_FOOTPRINT or not operand.size else memory_width(ins, operand)
+        if size is None:
+            if start >= offset + width:
+                continue
+            intersection, wraps = None, None
+        else:
+            pieces = [(start, min(start + size, space))] + ([(0, start + size - space)] if start + size > space else [])
+            hits = [(max(offset, a), min(offset + width, z)) for a, z in pieces if max(offset, a) < min(offset + width, z)]
+            if not hits:
+                continue
+            intersection, wraps = {"start": hits[0][0], "end": hits[0][1]}, start + size > space
+        rows.append({"operandIndex": index, "displacement": start,
+                     "addressRegisters": [ins.reg_name(r) for r in (mem.base, mem.index) if r],
+                     "width": size, "wraps": wraps, "intersection": intersection,
+                     # LEA forms an address and touches no memory.
+                     "access": [] if ins.mnemonic == "lea" else memory_access(ins, operand),
+                     "effectiveSegmentRegister": segment_register(ins, mem)})
+    return rows
+
+
 def uses(image, config):
     query = config.get("query", {})
     offset = integer(query.get("offset"), 0, image.mask, "query offset")
@@ -522,18 +563,27 @@ def uses(image, config):
     raw = []
     scanned_bytes = 0
     byte_limit = scan_limit(image, config.get("scanLimit", 65536))
+    # Only entry-path instructions reject a raw candidate's boundary; a contested one proves nothing.
+    verified = sorted((at, at + ins.size) for at, ins in seen.items() if at not in unverified)
+    verified_starts = [a for a, _ in verified]
     for r in image.regions:
         for at in range(r["start"], r["end"]):
             if scanned_bytes >= byte_limit:
                 gaps.append({"region": r["name"], "unsearchedStart": at, "end": r["end"], "reason": "raw scan limit"})
                 break
             scanned_bytes += 1
-            ins = image.decode(at)
             # An instruction the walk past a stop decoded (one past a PE32 port access) is already inventoried above.
-            if ins and at not in seen and at not in after_stop and any(o.type == X86_OP_MEM and max(offset, o.mem.disp & image.mask) < min(offset + width, (o.mem.disp & image.mask) + max(o.size, 1))
-                                              for o in ins.operands):
+            ins = image.decode(at) if at not in seen and at not in after_stop else None
+            footprints = _raw_footprints(image, ins, offset, width) if ins else []
+            if footprints:
                 if len(raw) < result_limit:
-                    raw.append({"site": at, "size": ins.size, "classification": "unverified operand candidate"})
+                    # At most 15 bytes precede a partly overlapping x86 instruction.
+                    lo, hi = bisect_right(verified_starts, at - 15), bisect_right(verified_starts, at + ins.size - 1)
+                    overlaps = [{"site": a, "end": z} for a, z in verified[lo:hi] if a < at + ins.size and z > at]
+                    raw.append({"site": at, "size": ins.size, "classification": "unverified operand candidate",
+                                "boundary": "rejectedOverlap" if overlaps else "unresolvedBoundary",
+                                "overlapsVerified": overlaps, "mnemonic": ins.mnemonic, "prefixes": prefixes(ins),
+                                "operands": footprints})
                 else:
                     gaps.append({"reason": "raw candidate limit"}); break
     truncated = len(matches) + len(unresolved) + len(conditional) > result_limit
@@ -615,7 +665,7 @@ def operand_candidates(image, config):
                     continue
                 rows.append({"site": at, "end": at + ins.size, "operandIndex": index,
                              "operandKind": "memory" if operand.type == X86_OP_MEM else "immediate",
-                             "width": 2 + ins.operands[0].size if ins.mnemonic in ("lds", "les", "lss", "lfs", "lgs") and operand.type == X86_OP_MEM else operand.size,
+                             "width": memory_width(ins, operand) if operand.type == X86_OP_MEM else operand.size,
                              "prefixes": prefixes(ins), "mnemonic": ins.mnemonic,
                              "access": [name for flag, name in ((CS_AC_READ, "read"), (CS_AC_WRITE, "write")) if operand.access & flag],
                              "effectiveSegmentRegister": segment_register(ins, operand.mem) if operand.type == X86_OP_MEM else None,
