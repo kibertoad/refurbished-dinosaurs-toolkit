@@ -116,7 +116,11 @@ IDs it cites are not checked.
 A passing citation check shows only that each cited ID exists and, outside `deviations/`, is not
 superseded. A `BLD-` or `SRC-` alias that names no entry is skipped, because an alias can collide
 with an ordinary word. Notes, plans and handovers outside the scanned directories are not read at
-all. In the files it reads, the check does not compare the words around a citation with the entry
+all. Research queue IDs (`Q-AREA-NNN`) are not checked in any file: the work protocol defines the
+queues, and the checker enforces only the documentation standard, so a parity row or deviation that
+cites a queue item a research batch has since deleted passes. The restoration template's
+`tools/Check-ResearchTracking.mjs` is the check that compares queue items with the references to
+them. In the files it reads, the check does not compare the words around a citation with the entry
 the citation names, so a note that calls a bitmap entry a configuration entry passes as long as the
 ID exists. When prose describes what an entry is, take the description from the entry:
 `spec/index/by-kind.md` lists every spec ID with its title and status (builds and sources have no
