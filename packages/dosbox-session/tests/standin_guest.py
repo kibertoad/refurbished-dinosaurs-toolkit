@@ -32,7 +32,8 @@ def linear(segment: int, offset: int) -> int:
 class GuestServer(StandinServer):
     """A stand-in server whose continuations run ``program`` until a breakpoint matches.
 
-    ``hold`` keeps every wait reporting the guest as running. ``fail_waits`` lists errors the next
+    ``hold`` keeps every wait, and the status after a continuation, reporting the guest as running
+    until a pause. ``fail_waits`` lists errors the next
     waits raise, ``fail_continue`` is ``(error, received)``: the next continue raises ``error``,
     after running the guest when ``received`` is true. ``fail_create`` is ``(error, created)`` for the
     next breakpoint request.
@@ -53,6 +54,8 @@ class GuestServer(StandinServer):
         self._next_breakpoint = 0
         self.results: dict[str, SimpleNamespace] = {}
         self.hold = False
+        #: Whether a continuation sent while ``hold`` was set still shows the guest running.
+        self.running = False
         self.fail_waits: list[BaseException] = []
         self.fail_continue: tuple[BaseException, bool] | None = None
         self.fail_create: tuple[BaseException, bool] | None = None
@@ -75,6 +78,11 @@ class GuestServer(StandinServer):
         )
         self.breakpoints.insert(0, entry)
         return entry
+
+    def touch(self) -> None:
+        """Raises the state revision without a stop, as a write to the stopped guest does."""
+        self.revision += 1
+        self.state = SimpleNamespace(**{**vars(self.state), "state_revision": self.revision})
 
     def _stop(self, kind: str, entry: SimpleNamespace | None = None) -> None:
         self.revision += 1
@@ -127,10 +135,21 @@ class GuestClient(StandinClient):
 
     def status(self, session_id, request_id=None):
         self._call("status", request_id)
+        if self.server.running:
+            return SimpleNamespace(id="ses-1", state="running", state_revision=self.server.revision, stop_reason=None)
         return self.server.state
+
+    def pause(self, session_id, request_id=None):
+        self._call("pause", request_id)
+        operation = self._operation("op")
+        self.server.running = False
+        self.server.hold = False
+        self.server.results[operation.id] = self.server.state
+        return operation
 
     def continue_(self, session_id, request_id=None):
         self._call("continue", request_id)
+        self.server.running = self.server.hold
         operation = self._operation("op")
         failure = self.server.fail_continue
         self.server.fail_continue = None
@@ -150,6 +169,7 @@ class GuestClient(StandinClient):
             raise self.server.fail_waits.pop(0)
         if self.server.hold:
             return SimpleNamespace(running=True, session=SimpleNamespace(id="ses-1", state="running", stop_reason=None))
+        self.server.running = False
         return SimpleNamespace(running=False, session=self.server.results[operation_id])
 
     def get_registers(self, session_id, request_id=None):

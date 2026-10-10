@@ -335,7 +335,8 @@ if not ready(session):
   and continues. It returns a `GateStop`: `boundary`, `other` (any stop that is not the gate's, with
   an armed boundary left armed), `ended` (the debugger session exited or failed) or `pending`.
   `stop.wakes` counts the wake stops it continued from during the call, and `gate.wakes_seen` since
-  it opened. Closing removes the breakpoints the gate set and leaves the guest where it is.
+  it opened. Closing removes the breakpoints the gate set and leaves the guest where it is. Once a
+  run returned `ended`, the gate refuses to run again and closing sends nothing to the session.
 - The gate never reads or evaluates your condition. The boundary stop is the first pass at which
   your condition can hold only if everything it reads changes in code that runs a wake address
   before the guest reaches the boundary again. Showing that, choosing the addresses, and checking
@@ -348,12 +349,15 @@ if not ready(session):
   A20 wrap, and checks before each `run` that continues the guest.
 - Continuations go through the session, so a pending operation, a failed run or an ended log
   refuses them as usual. A pending continuation is observed again by the next `run`, which never
-  sends a second one. Transport errors propagate. After a continue request raised, the next `run`
-  reads the session's status: a stop with a higher `state_revision` is handled as observed, so a
-  wake the lost reply reached still arms the boundary. After a breakpoint request raised, the gate
-  raises `GateRefused` instead of continuing, and closing removes any breakpoint left at its
-  addresses. Closing while a continuation is pending raises `OperationPending` and keeps the
-  breakpoints; the session's own teardown is unaffected.
+  sends a second one. Transport errors propagate. Each `run` that continues the guest first reads
+  the session's status. After a continue request raised, the next `run` compares the status with
+  the `state_revision` the guest had when that request was sent: a higher one is handled as an
+  observed stop, so a wake the lost reply reached still arms the boundary. After a breakpoint
+  request raised, the gate raises `GateRefused` instead of continuing, and closing removes any
+  breakpoint left at its addresses. Closing after a continuation the gate has not seen end reads
+  the session's status: while it shows the guest running, closing raises `OperationPending` and
+  keeps the breakpoints; once you have paused the guest and observed the pause, closing removes
+  them. The session's own teardown is unaffected.
 
 The pinned DOSBox-X has no breakpoint conditions, run-until, hit counts or batch reads, so the
 package offers none of them. To read several fields at one stop, read one range that covers them.

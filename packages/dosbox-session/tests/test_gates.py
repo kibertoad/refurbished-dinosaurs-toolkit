@@ -137,6 +137,12 @@ class GatedWaits(SessionCase):
             GatedBreakpoint(session, CodeAddress(*POLL), ())
         with self.assertRaisesRegex(GateRefused, "from 0 to 0xFFFF"):
             CodeAddress(0x10000, 0)
+        with self.assertRaisesRegex(GateRefused, "The boundary must be a CodeAddress"):
+            GatedBreakpoint(session, POLL, (CodeAddress(*TIMER),))  # type: ignore[arg-type]
+        closed = gate(session)
+        closed.close()
+        with self.assertRaisesRegex(GateRefused, "opened or closed already"):
+            closed.open()
 
     def test_a_breakpoint_at_a_gate_address_refuses_the_gate_before_it_sets_anything(self) -> None:
         server = GuestServer(timer_gated)
@@ -228,6 +234,50 @@ class GatedWaits(SessionCase):
             self.assertEqual((stop.kind, stop.wakes), ("boundary", 1))
             self.assertEqual(server.guest.polls, 2 * ITERATIONS_PER_TICK)
 
+    def test_a_failed_continue_after_a_change_of_the_callers_is_judged_against_the_revision_it_was_sent_at(self) -> None:
+        server = GuestServer(timer_gated)
+        session = self.start(server)
+        with gate(session) as waiting:
+            self.assertEqual(waiting.run(5).kind, "boundary")
+            # The caller writes to the stopped guest, which raises the revision without a stop.
+            server.touch()
+            server.fail_continue = (ConnectionError("request lost"), False)
+            with self.assertRaisesRegex(ConnectionError, "request lost"):
+                waiting.run(5)
+            stop = waiting.run(5)
+            self.assertEqual((stop.kind, stop.wakes), ("boundary", 1))
+            self.assertEqual(server.guest.polls, 2 * ITERATIONS_PER_TICK)
+
+    def test_a_refused_check_keeps_the_wake_a_lost_reply_reached(self) -> None:
+        server = GuestServer(timer_gated)
+        session = self.start(server)
+        with gate(session) as waiting:
+            self.assertEqual(waiting.run(5).kind, "boundary")
+            server.fail_continue = (ConnectionError("reply lost"), True)
+            with self.assertRaisesRegex(ConnectionError, "reply lost"):
+                waiting.run(5)
+            caller = session.client.create_execution_breakpoint(session.session_id, *POLL)
+            with self.assertRaisesRegex(GateRefused, "at the address of the boundary"):
+                waiting.run(5)
+            session.client.delete_breakpoint(session.session_id, caller.id)
+            stop = waiting.run(5)
+            # The wake stop is still handled, so the boundary stops the first pass after it.
+            self.assertEqual((stop.kind, stop.wakes), ("boundary", 1))
+            self.assertEqual(server.guest.polls, 2 * ITERATIONS_PER_TICK)
+
+    def test_closing_after_the_caller_paused_a_pending_continuation_removes_the_breakpoints(self) -> None:
+        server = GuestServer(timer_gated)
+        session = self.start(server)
+        waiting = gate(session)
+        waiting.open()
+        server.hold = True
+        self.assertTrue(waiting.run(0.1, poll_ms=20).pending)
+        with self.assertRaisesRegex(OperationPending, "still pending"):
+            waiting.close()
+        self.assertFalse(session.observe(session.client.pause(session.session_id), 5).pending)
+        waiting.close()
+        self.assertEqual(server.breakpoints, [])
+
     def test_a_failed_boundary_request_stops_the_gate_and_closing_removes_what_it_created(self) -> None:
         server = GuestServer(timer_gated)
         session = self.start(server)
@@ -250,6 +300,11 @@ class GatedWaits(SessionCase):
             self.assertEqual(waiting.run(5).kind, "boundary")
             stop = waiting.run(5)
             self.assertEqual((stop.kind, stop.session.state), ("ended", "exited"))
+            with self.assertRaisesRegex(GateRefused, "session ended"):
+                waiting.run(5)
+            sent = server.methods()
+        # Closing after the session ended sends nothing to the exited session.
+        self.assertEqual(server.methods(), sent)
 
     def test_closing_the_session_with_the_gate_pending_still_releases_the_lock(self) -> None:
         server = GuestServer(timer_gated)

@@ -56,14 +56,25 @@ def _same_place(first: int, second: int) -> bool:
     return first == second or (first & 0xFFFFF) == (second & 0xFFFFF)
 
 
+def _number(value: Any) -> int:
+    # The client carries segments and offsets as hex strings; accept integers too.
+    if isinstance(value, bool):
+        raise TypeError(value)
+    return value if isinstance(value, int) else int(value, 16)
+
+
 def _linear(address: Any) -> int | None:
     """The linear address of a segmented address object from the client, or ``None``."""
     if address is None or getattr(address, "space", None) != "segmented":
         return None
     try:
-        return int(address.segment, 16) * 16 + int(address.offset, 16)
+        return _number(address.segment) * 16 + _number(address.offset)
     except (AttributeError, TypeError, ValueError):
         return None
+
+
+def _id(value: Any) -> str | None:
+    return None if value is None else str(value)
 
 
 @dataclass(frozen=True)
@@ -113,6 +124,8 @@ class GatedBreakpoint:
     """
 
     def __init__(self, session: DosboxSession, boundary: CodeAddress, wakes: Iterable[CodeAddress]) -> None:
+        if not isinstance(boundary, CodeAddress):
+            raise GateRefused(f"The boundary must be a CodeAddress, not {boundary!r}.")
         self.boundary = boundary
         self.wakes = tuple(wakes)
         if not self.wakes:
@@ -134,6 +147,8 @@ class GatedBreakpoint:
         self._unconfirmed = False
         self._broken: str | None = None
         self._lost_create = False
+        #: Set when a run returned ``ended``: the debugger session has no breakpoints left to remove.
+        self._ended = False
         self._opened = False
         self._closed = False
         #: The wake stops the gate has observed since it opened.
@@ -157,11 +172,11 @@ class GatedBreakpoint:
     def open(self) -> None:
         """Checks the guest and the session's breakpoints, then sets a breakpoint at each wake.
 
-        :raises GateRefused: the gate was opened before, the guest is not stopped or not in real or
+        :raises GateRefused: the gate was opened or closed before, the guest is not stopped or not in real or
             virtual-8086 mode, or a breakpoint shares the boundary's or a wake's address.
         """
-        if self._opened:
-            raise GateRefused("This gate was opened already; open a new one.")
+        if self._opened or self._closed:
+            raise GateRefused("This gate was opened or closed already; open a new one.")
         state = self._session.client.status(self._session.session_id)
         if state.state != "stopped":
             raise GateRefused(f"The guest is {state.state}; a gate opens only on a stopped guest.")
@@ -185,30 +200,35 @@ class GatedBreakpoint:
         boundary or a wake address: the gate checked that none was there before it sent the
         request, so such a breakpoint is the one the failed request created.
 
-        :raises OperationPending: a continuation is still pending, or a continue request failed
-            and the guest is running. The gate's breakpoints are kept; observe the continuation or
-            pause the guest, then close again.
+        After a run returned ``ended``, the debugger session has exited or failed and closing sends
+        no request.
+
+        :raises OperationPending: the session's status shows the guest running after a continuation
+            the gate has not seen end, or after a continue request that failed. The gate's
+            breakpoints are kept; run the gate again, or pause the guest and observe the pause,
+            then close again.
         """
-        if self._closed or not self._opened:
+        if self._closed or not self._opened or self._ended:
             self._closed = True
             return
-        if self._operation is not None:
-            raise OperationPending(
-                f"Operation {self._operation.id} is still pending; run the gate again or pause the guest "
-                "before closing. The gate's breakpoints are still set."
-            )
-        if self._unconfirmed:
+        if self._operation is not None or self._unconfirmed:
             state = self._session.client.status(self._session.session_id)
             if state.state == "running":
-                raise OperationPending(
-                    "A continue request failed and the guest is running; pause it and observe the pause before "
-                    "closing. The gate's breakpoints are still set."
+                what = (
+                    f"Operation {self._operation.id} is still pending"
+                    if self._operation is not None
+                    else "A continue request failed and the guest is running"
                 )
+                raise OperationPending(
+                    f"{what}; run the gate again, or pause the guest and observe the pause, before closing. "
+                    "The gate's breakpoints are still set."
+                )
+            # The guest is not running, so the continuation ended; the guest stays where it stopped.
+            self._operation = None
             self._unconfirmed = False
         client = self._session.client
         failure: BaseException | None = None
-        ids = [*self._wake_ids, *([self._armed] if self._armed is not None else [])]
-        for breakpoint_id in ids:
+        for breakpoint_id in self._own_ids():
             try:
                 client.delete_breakpoint(self._session.session_id, breakpoint_id)
             except Exception as error:  # noqa: BLE001 - remove the others, then raise the first
@@ -232,35 +252,43 @@ class GatedBreakpoint:
         """Continues the guest and waits up to ``timeout`` seconds for a stop the caller acts on.
 
         A continuation still pending from an earlier call is observed again rather than sent anew.
-        After a continue request raised, the gate reads the session's status first: a stop the
-        gate has not seen (a higher ``state_revision``) is handled as if observed, and the same
-        stop as before means the request did not reach the guest, so it continues again.
+        Before continuing, the gate reads the session's status and keeps its ``state_revision``.
+        After a continue request raised, a higher revision is a stop the gate has not seen and is
+        handled as if observed; the same revision means the request did not reach the guest, so it
+        continues again.
 
-        :raises GateRefused: the gate is not open, a breakpoint request of the gate failed, or a
-            breakpoint the gate did not create now shares the boundary's or a wake's address.
+        :raises GateRefused: the gate is not open, an earlier run returned ``ended``, a breakpoint
+            request of the gate failed, or a breakpoint the gate did not create now shares the
+            boundary's or a wake's address.
         :raises OperationPending: a continue request failed and the guest is running.
         """
         if not self._opened or self._closed:
             raise GateRefused("The gate is not open.")
+        if self._ended:
+            raise GateRefused("The debugger session ended; there is no guest to continue.")
         if self._broken is not None:
             raise GateRefused(f"{self._broken} Close the gate; it cannot vouch for its breakpoints.")
         deadline = time.monotonic() + timeout
         wakes = 0
         unseen: SessionStateLike | None = None
         if self._operation is None:
+            state = self._session.client.status(self._session.session_id)
             if self._unconfirmed:
-                state = self._session.client.status(self._session.session_id)
                 if state.state == "running":
                     raise OperationPending(
                         "A continue request failed and the guest is running; pause it and observe the pause, "
                         "then run the gate again."
                     )
-                self._unconfirmed = False
                 if getattr(state, "state_revision", None) != self._revision:
                     unseen = state
             if unseen is None or unseen.state == "stopped":
                 self._check_guest()
+            # Cleared only once the checks passed, so a refused check keeps an unseen stop for the next run.
+            self._unconfirmed = False
             if unseen is None:
+                # The caller's writes and breakpoint changes since the last stop raise the revision;
+                # a failed continue is judged against the revision the guest had when it was sent.
+                self._revision = getattr(state, "state_revision", None)
                 self._continue()
         while True:
             if unseen is not None:
@@ -279,6 +307,8 @@ class GatedBreakpoint:
             if kind != "wake":
                 if kind == "boundary":
                     self._armed = None
+                elif kind == "ended":
+                    self._ended = True
                 return GateStop(kind, state, wakes)
             wakes += 1
             self.wakes_seen += 1
@@ -287,6 +317,9 @@ class GatedBreakpoint:
             self._continue()
 
     # Internals
+
+    def _own_ids(self) -> list[str]:
+        return [*self._wake_ids, *([self._armed] if self._armed is not None else [])]
 
     def _gate_address(self, linear: int | None) -> CodeAddress | None:
         if linear is None:
@@ -305,9 +338,9 @@ class GatedBreakpoint:
                 f"The guest is in {mode!r} mode. The gate compares addresses as segment * 16 + offset, which "
                 "holds only in real and virtual-8086 mode."
             )
-        ours = {*self._wake_ids, *([self._armed] if self._armed is not None else [])}
+        ours = set(self._own_ids())
         for entry in client.list_breakpoints(session_id):
-            if entry.id in ours or getattr(entry, "kind", None) != "execution":
+            if _id(entry.id) in ours or getattr(entry, "kind", None) != "execution":
                 continue
             linear = _linear(entry.address)
             if linear is None:
@@ -354,7 +387,7 @@ class GatedBreakpoint:
         if state.state != "stopped":
             return "ended"
         reason = state.stop_reason
-        breakpoint_id = getattr(reason, "breakpoint_id", None)
+        breakpoint_id = _id(getattr(reason, "breakpoint_id", None))
         if breakpoint_id is not None and breakpoint_id in self._wake_ids:
             return "wake"
         if breakpoint_id is not None and breakpoint_id == self._armed:
