@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import functools
 import json
-import subprocess
 import sys
 import time
 import traceback
@@ -30,6 +29,7 @@ from .config import READINESS_MARKER, EmulatorConfig, agent_env, dosbox_conf
 from .errors import (
     CleanupFailed,
     EmulatorExited,
+    EmulatorLaunchFailed,
     LogEntryRefused,
     OperationPending,
     PlatformRefused,
@@ -255,7 +255,7 @@ class DosboxSession:
         self.state: SessionStateLike | None = None
         self.readiness: Literal["not observed", "observed"] = "not observed"
         self._lock: RunLock | None = None
-        self._process: subprocess.Popen[bytes] | None = None
+        self._process: processes.OwnedProcess | None = None
         self._emulator_identity: processes.ProcessIdentity | None = None
         self._owner: processes.ProcessIdentity | None = None
         self._clients: list[_GuardedClient] = []
@@ -366,26 +366,21 @@ class DosboxSession:
         self._write_record()
         # The debugger needs a real console: redirecting it, -noconsole and CREATE_NO_WINDOW each
         # failed debugger entry at the pinned revision. A new console, created hidden, works.
-        startup = subprocess.STARTUPINFO()  # type: ignore[attr-defined]
-        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW  # type: ignore[attr-defined]
-        startup.wShowWindow = 0
-        self._process = subprocess.Popen(
-            [
-                str(emulator),
-                *settings.emulator_arguments,
-                "-conf",
-                str(self.run_directory / DOSBOX_CONF),
-                "--agent-config",
-                str(self.endpoint.agent_config),
-            ],
-            cwd=self.run_directory,
-            startupinfo=startup,
-            creationflags=subprocess.CREATE_NEW_CONSOLE,  # type: ignore[attr-defined]
-        )
+        # The emulator is in a job that ends it when this process ends, from before it runs, so an
+        # owner killed before the lock records the emulator does not leave it running.
+        arguments = [
+            str(emulator),
+            *settings.emulator_arguments,
+            "-conf",
+            str(self.run_directory / DOSBOX_CONF),
+            "--agent-config",
+            str(self.endpoint.agent_config),
+        ]
         try:
-            self._emulator_identity = processes.identify(self._process.pid)
-        except ProcessLookupError:
-            raise EmulatorExited(f"The emulator exited at once (exit code {self._process.poll()}).") from None
+            self._process = processes.launch_owned(arguments, self.run_directory)
+        except OSError as error:
+            raise EmulatorLaunchFailed(f"The emulator {emulator} could not be started: {error}") from error
+        self._emulator_identity = self._process.identity
         assert self._lock is not None
         self._lock.record("emulator", self._emulator_identity)
         self._write_record()
@@ -659,7 +654,8 @@ class DosboxSession:
 
         When the emulator is still running afterwards, writes ``cleanup-diagnostic.txt``, keeps the
         run lock and raises :class:`CleanupFailed`; calling ``close`` again once the process has
-        exited releases the lock. Nothing the session did not start is stopped.
+        exited releases the lock. Nothing the session did not start is stopped. The emulator runs in
+        a job that Windows ends when this process ends, so it never outlives its owner.
         """
         if self._closed:
             return
@@ -699,8 +695,8 @@ class DosboxSession:
         if alive:
             errors.append(
                 f"Emulator process {process.pid} is still running. The run lock {self.lock_path} was kept; "  # type: ignore[union-attr]
-                "once the process has exited, close the session again or, if this program has ended, "
-                "remove the lock with the stale-lock command."
+                "once the process has exited, close the session again. If this program ends first, Windows "
+                "ends the emulator with it, and the stale-lock command then removes the lock."
             )
         if errors and self.run_directory.exists():
             diagnostic.write_text("\n\n".join(errors) + "\n", encoding="utf-8")
@@ -708,6 +704,8 @@ class DosboxSession:
         if alive:
             raise CleanupFailed(f"The owned emulator is still running; see {diagnostic}.", diagnostic)
         self._closed = True
+        if process is not None:
+            process.close()
         if self._lock is not None:
             self._lock.release()
             self._lock = None

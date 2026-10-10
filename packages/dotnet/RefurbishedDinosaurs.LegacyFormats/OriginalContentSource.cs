@@ -269,9 +269,11 @@ public abstract class OriginalContentSource : IDisposable
     /// it is read: while opening for the descriptors and directories, and from the stream
     /// <see cref="OpenRead"/> or <see cref="OpenVolume"/> returns for a file's or the volume's sectors.
     /// The one exception is a Form 2 sector whose 2324 data bytes are all zero, such as padding a
-    /// CD-XA master leaves inside the volume space: <see cref="OpenVolume"/> reads it as 2048 zero
-    /// bytes, as a MODE1 image of the disc holds there, while <see cref="OpenRead"/> still throws
-    /// when a file covers it.
+    /// CD-XA master leaves inside the volume space: <see cref="OpenVolume"/>, and the reads of the
+    /// descriptors and directories while opening, read it as 2048 zero bytes, as a MODE1 image of the
+    /// disc holds there, while <see cref="OpenRead"/> still throws when a file covers it. Such a sector
+    /// inside a directory's extent holds no records, and one where a volume descriptor is expected
+    /// fails as an invalid descriptor.
     /// The EDC, the ECC and the address in each sector's header are not checked.
     /// </summary>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
@@ -539,8 +541,8 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     // openImage returns a new seekable stream of 2048-byte sectors each time. A cue/bin source passes
     // the files it chose; its audio tracks are read from the BIN. When listing is given, every file
     // is added to it in directory order, depth first, as Iso9660 lists them. openVolume, when given,
-    // opens the same sectors for OpenVolume, for a cue/bin source whose volume reads accept sectors
-    // that file reads reject.
+    // opens the same sectors for OpenVolume and for the descriptors and directories read here, for a
+    // cue/bin source whose volume reads accept sectors that file reads reject.
     public Iso9660ContentSource(
         Func<Stream> openImage, string kind, CueBinFiles? cueBin, List<IsoFile>? listing = null,
         Func<Stream>? openVolume = null)
@@ -550,7 +552,10 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
         Kind = kind;
         this.cueBin = cueBin;
         this.listing = listing;
-        using var stream = openImage();
+        // The descriptors and directories are read as OpenVolume reads them, so a sector the volume
+        // reads as zeros reads as zeros here too. A zero descriptor sector fails the descriptor check,
+        // and a zero directory sector holds no records, so nothing is listed that the disc lacks.
+        using var stream = this.openVolume();
         var imageLength = stream.Length;
         if (imageLength < 18L * SectorSize)
             throw new InvalidDataException("Source is too small to be an ISO9660 image.");

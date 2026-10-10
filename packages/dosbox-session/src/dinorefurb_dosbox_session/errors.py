@@ -37,6 +37,10 @@ class LockHeld(SessionError):
         self.report = report
 
 
+class EmulatorLaunchFailed(SessionError):
+    """Windows refused to start the emulator in a job that ends it with its owner. Nothing runs."""
+
+
 class EmulatorExited(SessionError):
     """The owned emulator process exited while the session still needed it."""
 

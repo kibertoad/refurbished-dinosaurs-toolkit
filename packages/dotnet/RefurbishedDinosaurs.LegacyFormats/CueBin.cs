@@ -498,8 +498,9 @@ internal enum RawDataTrackMode
 /// for the image the caller keeps.
 /// <para>
 /// With <c>emptyForm2AsZeros</c>, a MODE2 Form 2 sector whose 2324 data bytes are all zero reads as
-/// 2048 zero bytes instead of throwing. Volume reads pass it, so padding a CD-XA master leaves in
-/// Form 2 inside the volume space reads as the zero blocks a MODE1 image of the disc holds there.
+/// 2048 zero bytes instead of throwing. Volume reads and the reads of the descriptors and
+/// directories pass it, so padding a CD-XA master leaves in Form 2 inside the volume space reads as
+/// the zero blocks a MODE1 image of the disc holds there. File reads do not pass it.
 /// A Form 2 sector that carries any nonzero data byte still throws.
 /// </para>
 /// </remarks>
@@ -604,8 +605,9 @@ internal sealed class RawDataTrackUserDataStream(
         if (sector.AsSpan(Form2DataOffset, Form2DataSize).ContainsAnyExcept((byte)0))
             throw new InvalidDataException(
                 $"Sector {index} is a MODE2 Form 2 sector that carries data. Form 2 sectors carry 2324 " +
-                "bytes of user data without ECC and cannot be read as ISO 9660 user data; the volume " +
-                "reads only Form 1 sectors and empty Form 2 sectors, whose data bytes are all zero.");
+                "bytes of user data without ECC and cannot be read as ISO 9660 user data; the volume, " +
+                "its descriptors and its directories are read only from Form 1 sectors and empty Form 2 " +
+                "sectors, whose data bytes are all zero.");
     }
 
     private long ValidatePosition(long value) => value >= 0 && value <= Length

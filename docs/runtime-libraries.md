@@ -50,8 +50,9 @@ LegacyFormats parts of it:
   on a line it cannot read rather than skipping it. The cue/bin data track may be `MODE1/2352` or
   `MODE2/2352` CD-XA Form 1, and every sector read is checked against the layout the sheet
   declares ([Cue/bin data tracks](../packages/dotnet/README.md#cuebin-data-tracks)).
-  `OpenVolume` also reads a Form 2 sector whose 2324 data bytes are all zero, as 2048 zero bytes,
-  so a disc with empty Form 2 padding in its volume space can pin `VolumeXxh3`. A cue/bin source
+  `OpenVolume` and the descriptor and directory reads while opening also read a Form 2 sector
+  whose 2324 data bytes are all zero as 2048 zero bytes, so a disc with empty Form 2 padding in its
+  volume space, even inside a directory's extent, opens and can pin `VolumeXxh3`. A cue/bin source
   names the cue sheet and the raw image file it chose from a directory, a sheet or a `.bin` input as
   `CuePath` and `BinPath` (a sheet input may have any extension, and the image is the file the
   sheet's first `FILE` names, whatever its extension), so the importer hashes and reads the same

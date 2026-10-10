@@ -67,7 +67,12 @@ Entering `DosboxSession` (or calling `start()`):
 4. Writes `dosbox.conf` and `agent.env` and launches the emulator with a native console that is
    created and hidden. Redirecting the console, `-noconsole` and `CREATE_NO_WINDOW` each broke
    debugger entry at the pinned revision. The emulator gets `emulator_arguments` first, then
-   `-conf` and `--agent-config`.
+   `-conf` and `--agent-config`. It is created inside a Windows job object that only this
+   process holds, so Windows ends it when this process ends for any reason, a hard kill
+   included, even before the run lock records it
+   ([ADR 0030](../../docs/decisions/0030-owned-emulator-ends-with-its-owner.md)). When Windows
+   refuses the launch (a file that is not an executable, or a Python process inside a job that
+   does not allow a nested one), the session raises `EmulatorLaunchFailed`.
 5. Waits for the readiness marker the guest's `[autoexec]` writes to `C:\DRREADY.TXT` after its
    drives are mounted. An answering debugger server is not readiness. Fails when the emulator
    exits first or the marker does not appear within `readiness_timeout` seconds.
@@ -80,8 +85,9 @@ ends the log with an outcome that records it.
 Leaving (or `close()`) stops the debugger session, closes every client, terminates the owned
 emulator and releases the run lock. If the emulator is still running afterwards, it writes
 `cleanup-diagnostic.txt`, keeps the lock and raises `CleanupFailed`; closing again after the
-process has exited releases the lock. It never stops or removes anything the session did not
-start.
+process has exited releases the lock. If your program ends first, Windows ends the emulator with
+it, and the `stale-lock` command then removes the lock. It never stops or removes anything the
+session did not start.
 
 ### The generated configuration
 
@@ -107,9 +113,12 @@ that resolve the lock path differently do not exclude each other, so set it in y
 environment or not at all. `SessionSettings.lock_path` overrides both, for tests.
 
 The lock records the session, the owner process and the emulator, each by process ID and start
-time, so a process that later reuses an ID does not match. A session that finds the lock refuses
-to start (`LockHeld`) and its report says which recorded processes still run. Nothing removes a
-lock automatically. When every recorded process has exited, remove it with:
+time, so a process that later reuses an ID does not match. The emulator cannot outlive the owner
+(step 4 above), so once every process a lock records has exited, no emulator from that session
+runs, including one the owner launched but had not recorded yet (an unrecorded emulator may
+still be finishing its exit for a moment after the owner reads as exited). A session that finds the lock
+refuses to start (`LockHeld`) and its report says which recorded processes still run. Nothing
+removes a lock automatically. When every recorded process has exited, remove it with:
 
 ```text
 dosbox-session stale-lock [--lock PATH] [--json]
@@ -300,6 +309,7 @@ both. When a `continue_` or `pause` request itself raises, the server may still 
 | `RunDirectoryRefused` | The run directory is not empty, or `prepare_drive` wrote the readiness marker. |
 | `ConfigurationRefused` | A setting is one the session owns or one known to break the debugger. |
 | `LockHeld` | The run lock is held, or cannot be read. `report` describes it. |
+| `EmulatorLaunchFailed` | Windows refused to start the emulator in its job. Nothing runs and the lock is released. |
 | `EmulatorExited` | The owned emulator exited while the session needed it. |
 | `ReadinessNotObserved` | The guest did not write its readiness marker in time. |
 | `CapabilityRefused` | An operation needs a capability the server did not report. Not sent. |

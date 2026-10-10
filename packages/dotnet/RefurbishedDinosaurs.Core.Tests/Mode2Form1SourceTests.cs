@@ -220,6 +220,96 @@ public sealed class Mode2Form1SourceTests
     }
 
     [Fact]
+    public async Task AnEmptyForm2SectorInsideADirectoryReadsAsZerosWhileOpening()
+    {
+        var iso = BuildIsoWithTwoSectorGameDirectory([4, 2]);
+        var image = ToMode2Form1(iso);
+        MakeEmptyForm2(image, TwoSectorDirectorySector + 1);
+        var mode1 = CreateTemporaryDirectory();
+        var mode2 = CreateTemporaryDirectory();
+        try
+        {
+            await WriteAsync(mode1, CueBinSourceTests.ToRaw(iso), Mode1Cue);
+            await WriteAsync(mode2, image, Mode2Cue);
+            using var expected = OriginalContentSource.OpenCueBin(mode1);
+            using var actual = OriginalContentSource.OpenCueBin(mode2);
+            Assert.Equal(expected.Files, actual.Files);
+            Assert.Equal(new ContentSourceEntry("EI/TEST.BIN", 2), Assert.Single(actual.Files));
+            Assert.Equal([4, 2], await ReadAllAsync(actual.OpenRead("EI/TEST.BIN")));
+            Assert.Equal(iso, await ReadAllAsync(actual.OpenVolume()));
+        }
+        finally
+        {
+            Directory.Delete(mode1, true);
+            Directory.Delete(mode2, true);
+        }
+    }
+
+    [Fact]
+    public async Task ADirectoryWhoseWholeExtentIsEmptyForm2ListsNothingAsTheMode1ImageDoes()
+    {
+        // The MODE1 image holds zero blocks where the MODE2 image holds empty Form 2 sectors, so
+        // both read the EI directory as holding no records and list no files.
+        var iso = BuildIsoWithTwoSectorGameDirectory([1]);
+        var image = ToMode2Form1(iso);
+        MakeEmptyForm2(image, TwoSectorDirectorySector);
+        MakeEmptyForm2(image, TwoSectorDirectorySector + 1);
+        iso.AsSpan(TwoSectorDirectorySector * CookedSector, 2 * CookedSector).Clear();
+        var mode1 = CreateTemporaryDirectory();
+        var mode2 = CreateTemporaryDirectory();
+        try
+        {
+            await WriteAsync(mode1, CueBinSourceTests.ToRaw(iso), Mode1Cue);
+            await WriteAsync(mode2, image, Mode2Cue);
+            using var expected = OriginalContentSource.OpenCueBin(mode1);
+            using var actual = OriginalContentSource.OpenCueBin(mode2);
+            Assert.Empty(expected.Files);
+            Assert.Empty(actual.Files);
+            Assert.Equal(iso, await ReadAllAsync(actual.OpenVolume()));
+        }
+        finally
+        {
+            Directory.Delete(mode1, true);
+            Directory.Delete(mode2, true);
+        }
+    }
+
+    [Fact]
+    public async Task AForm2SectorThatCarriesDataInsideADirectoryFailsTheOpen()
+    {
+        var image = ToMode2Form1(BuildIsoWithTwoSectorGameDirectory([1]));
+        MakeEmptyForm2(image, TwoSectorDirectorySector + 1);
+        image[(TwoSectorDirectorySector + 1) * RawSector + 24] = 0x5A;
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            await WriteAsync(root, image, Mode2Cue);
+            var failure = Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenCueBin(root));
+            Assert.Contains($"Sector {TwoSectorDirectorySector + 1} is a MODE2 Form 2 sector that carries data",
+                failure.Message, StringComparison.Ordinal);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task AnEmptyForm2SectorWhereADescriptorIsExpectedFailsAsAnInvalidDescriptor()
+    {
+        // The primary volume descriptor's sector read as zeros holds no descriptor, so the open
+        // fails instead of reading past it.
+        var image = ToMode2Form1(OriginalContentSourceTests.BuildIso([1]));
+        MakeEmptyForm2(image, DescriptorSector);
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            await WriteAsync(root, image, Mode2Cue);
+            Assert.Contains($"Invalid ISO9660 volume descriptor at sector {DescriptorSector}.",
+                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenCueBin(root)).Message,
+                StringComparison.Ordinal);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task AnEmptyForm2SectorWithDifferingSubheaderCopiesFailsTheVolume()
     {
         var image = ToMode2Form1(OriginalContentSourceTests.BuildIso([1]));
@@ -349,6 +439,29 @@ public sealed class Mode2Form1SourceTests
             cooked.AsSpan(lba * CookedSector, CookedSector).CopyTo(sector[24..]);
         }
         return raw;
+    }
+
+    // The first of the two sectors the EI directory of BuildIsoWithTwoSectorGameDirectory covers.
+    private const int TwoSectorDirectorySector = 18;
+
+    // BuildIso's volume with the EI directory moved to sectors 18 and 19, its records in the first
+    // and the second all zero, as a directory whose extent ends in a padding sector.
+    private static byte[] BuildIsoWithTwoSectorGameDirectory(byte[] payload)
+    {
+        var iso = OriginalContentSourceTests.BuildIso(payload);
+        const int length = 2 * CookedSector;
+        var game = iso.AsSpan(OriginalContentSourceTests.IsoGameDirectorySector * CookedSector, CookedSector);
+        game.CopyTo(iso.AsSpan(TwoSectorDirectorySector * CookedSector));
+        game.Clear();
+        // The "." record of the EI directory and the EI record of the root, after its "." and "..".
+        var self = iso.AsSpan(TwoSectorDirectorySector * CookedSector);
+        OriginalContentSourceTests.WriteBothEndianUInt32(self, 2, TwoSectorDirectorySector);
+        OriginalContentSourceTests.WriteBothEndianUInt32(self, 10, length);
+        var entry = iso.AsSpan(OriginalContentSourceTests.IsoRootDirectorySector * CookedSector + 2 * 34);
+        Assert.Equal("EI"u8.ToArray(), entry.Slice(33, 2).ToArray());
+        OriginalContentSourceTests.WriteBothEndianUInt32(entry, 2, TwoSectorDirectorySector);
+        OriginalContentSourceTests.WriteBothEndianUInt32(entry, 10, length);
+        return iso;
     }
 
     // Rewrites a sector as an empty CD-XA Form 2 sector: subheader 00 00 20 00 twice and 2324 zero
