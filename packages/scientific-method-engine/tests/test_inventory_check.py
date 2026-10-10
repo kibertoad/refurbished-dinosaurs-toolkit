@@ -171,6 +171,130 @@ class InventoryCheckTests(unittest.TestCase):
         self.assertEqual([t["insideInstruction"] for t in twice["targets"]], [1, 9])
         self.assertIn(" 2 of them start inside an instruction the entry-path walk established from another start.", twice["summary"])
 
+    def test_a_row_start_inside_an_established_far_call_names_the_call_and_the_routine_it_was_read_in(self):
+        # 0000 calls 0004, a routine no row starts at: push bp; mov bp,sp; call far 1000:000E; pop bp; ret.
+        # The row 1000:000A starts three bytes into that five-byte far call.
+        data = bytes.fromhex("e80100" "c3" "55" "8bec" "9a0e000010" "5d" "c3" "cb")
+        relocation = [{"site": 10, "segment": 0x1000, "evidence": "synthetic relocation"}]
+        r = self.check("start\tsize\tname\n1000:0000\t4\tmain\n1000:000A\t4\tshifted\n1000:000E\t1\tfar\n", data=data,
+                       relocations=relocation)
+        self.assertEqual(r["rowStarts"], [{
+            "start": "1000:000A", "size": 4, "name": "shifted", "site": 10, "status": "inside an instruction",
+            "insideInstruction": 7, "insideInstructionAddress": "1000:0007", "insideInstructionSize": 5,
+            "insideInstructionText": "lcall 0x1000, 0xe", "routine": 4, "routineAddress": "1000:0004", "routineIsRow": False}])
+        self.assertEqual(r["counts"]["rowStarts"],
+                         {"instructionStarts": 2, "insideAnInstruction": 1, "overlappingInstructionStarts": 0, "notRead": 0})
+        self.assertIn(" 1 row start lies inside an instruction the entry-path walk established.", r["summary"])
+        # The routine's real entry is still a call target no row starts at.
+        self.assertEqual([(t["address"], t["status"]) for t in r["targets"]], [("1000:0004", "outside every row")])
+        # Rows at instruction starts pass.
+        fixed = self.check("start\tsize\n1000:0000\t4\n1000:0004\t10\n1000:000E\t1\n", data=data, relocations=relocation)
+        self.assertEqual(fixed["rowStarts"], [])
+        self.assertEqual(fixed["counts"]["rowStarts"]["instructionStarts"], 3)
+        self.assertNotIn("row start", fixed["summary"])
+        # The result limit cuts the list, not the count.
+        cut = self.check("start\tsize\n1000:0000\t4\n1000:0009\t1\n1000:000A\t1\n", data=data, relocations=relocation, limit=1)
+        self.assertEqual([row["start"] for row in cut["rowStarts"]], ["1000:0009"])
+        self.assertEqual(cut["counts"]["rowStarts"]["insideAnInstruction"], 2)
+        self.assertTrue(cut["truncated"])
+
+    def test_a_row_start_only_a_misaligned_decode_would_cut_is_not_placed_inside_an_instruction(self):
+        # 0000 calls 0007. 0004..0006 is data the walk never decodes; decoded linearly, its 9A byte starts a
+        # five-byte far call over 0007. The row at 0007 is an established start, and the row at 0005, in the
+        # data, is counted as not read.
+        data = bytes.fromhex("e80400" "c3" "9a9090" "c3" "90")
+        r = self.check("start\tsize\n1000:0000\t4\n1000:0005\t1\n1000:0007\t1\n", data=data)
+        self.assertEqual(r["rowStarts"], [])
+        self.assertEqual(r["counts"]["rowStarts"],
+                         {"instructionStarts": 2, "insideAnInstruction": 0, "overlappingInstructionStarts": 0, "notRead": 1})
+        self.assertIn(" 1 row start in declared code lies in bytes the walk did not decode, so its boundary is not checked.",
+                      r["summary"])
+        self.assertNotIn("inside an instruction the entry-path walk established", r["summary"])
+
+    def test_a_row_at_a_deliberately_overlapping_instruction_is_listed_once_with_both_instructions(self):
+        # 0001 or bh,0 holds an IRET byte at 0002, which the push-CS/call frame at 0004 calls, so the walk
+        # establishes both instructions and the row at 0002 starts one inside the other.
+        data = bytes.fromhex("9c" "80cf00" "0e" "e8faff" "c3")
+        r = self.check("start\tsize\n1000:0000\t9\n1000:0002\t1\n", data=data)
+        self.assertEqual(r["rowStarts"], [{
+            "start": "1000:0002", "size": 1, "site": 2, "status": "start of an overlapping instruction",
+            "insideInstruction": 1, "insideInstructionAddress": "1000:0001", "insideInstructionSize": 3,
+            "insideInstructionText": "or bh, 0", "rowStartInstructionSize": 1, "rowStartInstructionText": "iret",
+            "routine": 0, "routineAddress": "1000:0000", "routineIsRow": True}])
+        self.assertEqual(r["counts"]["rowStarts"]["overlappingInstructionStarts"], 1)
+        self.assertIn(" 1 row start lies inside an instruction the entry-path walk established, 1 of them at the start "
+                      "of an overlapping instruction it also established.", r["summary"])
+
+    def test_a_row_past_a_call_to_a_no_return_routine_is_listed_and_the_bytes_after_the_call_are_not_walked(self):
+        # 0000 calls the exit routine at 0008 (mov ah,4Ch; int 21h). The row 1000:0000 runs on over 0003..0007,
+        # where E8 FD FF decodes as a call to 0003 and the walk reads it unless the routine is declared.
+        data = bytes.fromhex("e80500" "e8fdff" "0000" "b44c" "cd21")
+        inventory = "start\tsize\n1000:0000\t8\n1000:0008\t4\n"
+        exit_routine = [{"routine": 8, "reason": "synthetic exit"}]
+        r = self.check(inventory, data=data, noReturn=exit_routine)
+        self.assertEqual(r["rowsPastNoReturn"], [{
+            "start": "1000:0000", "size": 8, "kind": "call", "site": 0, "siteAddress": "1000:0000",
+            "siteClassification": "entry-path instruction", "routine": 8, "following": 3, "followingAddress": "1000:0003",
+            "followingRead": False, "bytesAfter": 5}])
+        self.assertEqual(r["noReturn"], [{"routine": 8, "reason": "synthetic exit", "reached": True, "returnSites": [],
+                                          "contradicted": False,
+                                          "callSites": [{"site": 0, "following": 3, "followingRead": False}]}])
+        self.assertEqual((r["counts"]["rowsPastNoReturn"], r["counts"]["rowsPastNoReturnUnreadAfter"]), (1, 1))
+        self.assertIn(" 1 row continues past a call or interrupt declared noReturn, 1 of them where the walk read no "
+                      "instruction after it by another route.", r["summary"])
+        self.assertEqual(r["assumptions"], ["each reached call returns to its next instruction, except a call to a noReturn routine",
+                                            "each noReturn routine and interrupt never returns, for the reason it gives"])
+        # The call in the bytes after the exit call is only a raw byte candidate once the routine is declared.
+        self.assertEqual([(t["target"], t["evidence"]) for t in r["targets"]], [(3, "raw byte candidate only")])
+        undeclared = self.check(inventory, data=data)
+        self.assertEqual([(t["target"], t["evidence"]) for t in undeclared["targets"]], [(3, "entry-path call")])
+        self.assertEqual((undeclared["rowsPastNoReturn"], undeclared["noReturn"]), ([], []))
+        self.assertEqual(undeclared["assumptions"], ["each reached call returns to its next instruction"])
+        # A row that ends at the call's last byte does not continue past it.
+        ended = self.check("start\tsize\n1000:0000\t3\n1000:0008\t4\n", data=data, noReturn=exit_routine)
+        self.assertEqual(ended["rowsPastNoReturn"], [])
+
+    def test_a_row_past_a_no_return_interrupt_is_listed_and_the_interrupt_is_no_boundary_gap(self):
+        # mov ah,4Ch; int 21h; three data bytes; ret. The row covers all eight bytes.
+        data = bytes.fromhex("b44c" "cd21" "4f4b00" "c3")
+        inventory = "start\tsize\n1000:0000\t8\n"
+        r = self.check(inventory, data=data, noReturn=[{"interrupt": 2, "reason": "synthetic terminate"}])
+        self.assertEqual(r["rowsPastNoReturn"], [{
+            "start": "1000:0000", "size": 8, "kind": "interrupt", "site": 2, "siteAddress": "1000:0002",
+            "siteClassification": "entry-path instruction", "following": 4, "followingAddress": "1000:0004",
+            "followingRead": False, "bytesAfter": 4}])
+        self.assertEqual(r["noReturn"], [{"interrupt": 2, "reason": "synthetic terminate", "vector": 0x21, "reached": True,
+                                          "following": 4, "followingRead": False}])
+        self.assertEqual([g for g in r["gaps"] if g.get("site") == 2], [])
+        undeclared = self.check(inventory, data=data)
+        self.assertEqual([g["reason"] for g in undeclared["gaps"] if g.get("site") == 2], ["hardware or interrupt boundary"])
+        with self.assertRaisesRegex(ValueError, "noReturn interrupt 0 is not an interrupt instruction"):
+            self.check(inventory, data=data, noReturn=[{"interrupt": 0, "reason": "synthetic"}])
+
+    def test_a_no_return_routine_is_checked_past_its_interrupts_and_a_call_reached_another_way_says_so(self):
+        # 0000 jnz 0005; 0002 call 0006; 0005 ret. 0006 mov ah,4Ch; 0008 int 21h; 000A ret.
+        data = bytes.fromhex("7503" "e80100" "c3" "b44c" "cd21" "c3")
+        inventory = "start\tsize\n1000:0000\t6\n1000:0006\t5\n"
+        exit_routine = {"routine": 6, "reason": "synthetic exit"}
+        # The entry-path walk ends at the interrupt, but the check reads past it to the RET, as reach does.
+        r = self.check(inventory, data=data, noReturn=[exit_routine])
+        self.assertEqual([(row["returnSites"], row["contradicted"]) for row in r["noReturn"]], [([10], True)])
+        self.assertIn(" 1 noReturn routine has a return on its own read paths, so the declaration is contradicted.", r["summary"])
+        self.assertEqual([(row["site"], row["following"], row["followingRead"]) for row in r["rowsPastNoReturn"]],
+                         [(2, 5, True)])
+        self.assertEqual(r["counts"]["rowsPastNoReturnUnreadAfter"], 0)
+        self.assertIn(", 0 of them where the walk read no instruction after it by another route.", r["summary"])
+        # Declaring the interrupt too ends the routine's paths there.
+        both = self.check(inventory, data=data, noReturn=[exit_routine, {"interrupt": 8, "reason": "synthetic terminate"}])
+        self.assertEqual([(row.get("returnSites"), row.get("contradicted")) for row in both["noReturn"]],
+                         [([], False), (None, None)])
+        self.assertNotIn("contradicted", both["summary"])
+        # The check walk shares instructionLimit and says when it stopped.
+        stopped = self.check(inventory, data=data, noReturn=[exit_routine], instructionLimit=2)
+        self.assertTrue(stopped["noReturnCheckLimitReached"])
+        self.assertIn("The walk that checks the noReturn routines stopped at its instruction limit", stopped["summary"])
+        self.assertFalse(r["noReturnCheckLimitReached"])
+
     def test_a_contested_instruction_holds_no_target(self):
         # Entries 0 and 1 overlap, so the call at 0003 is contested. The raw call at 000D targets 0004, a byte of
         # that contested call, and names no holder, since only established instructions count.

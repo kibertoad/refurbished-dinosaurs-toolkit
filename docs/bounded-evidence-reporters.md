@@ -124,7 +124,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
 | `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; the inventory continues past interrupts, which it assumes return to the next instruction, and a stop inside a called function also continues it at the return site of each call open at the stop, each named in `dependsOn`; each `rawCandidates` row gives the encoded footprint of every unreached operand that may intersect the query field | this section, [hardware boundaries](#hardware-boundaries) |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
-| `inventory-check` | every resolved direct call target in the searched regions that a function inventory does not list as a start, with one calling site each and counts for a coverage report | [inventory call targets](#call-targets-a-function-inventory-lacks) |
+| `inventory-check` | every resolved direct call target in the searched regions that a function inventory does not list as a start, with one calling site each and counts for a coverage report; each row whose start lies inside an instruction the entry-path walk established; with `noReturn`, each row that continues past a call or interrupt declared never to return | [inventory call targets](#call-targets-a-function-inventory-lacks) |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
 | `dispatch` | the target of each input through a switch's jump table | this section, [jump tables](#evidenced-indirect-jump-tables) |
 | `allocation` | allocation requests, returned pointers and later writes; checks `relationalControls` | this section, [relational controls](#relational-controls) |
@@ -1185,7 +1185,8 @@ state how many called routines the inventory misses next to its coverage figure
 | `inventory` | the inventory TSV, relative to the config file's directory as `source` is (a Python caller of `run_report` passes an absolute path, and a relative one is refused). Its columns are `start` and `size`, then optionally `name`, `out_of_scope` and `ranges`, as the work protocol gives them; a row that does not parse fails the report with its line number |
 | `searchRegions`, `scanLimit`, `instructionLimit` | as for `incoming`: the regions scanned (all by default), the bytes the raw scan reads (1 to 1,048,576 or the declared code size, whichever is larger; default 65536) and the instructions the entry-path walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000). Raise `scanLimit` to the size of the declared code, or the search is partial, and raise `instructionLimit` to it for a walk that cannot stop at its limit. A region with no `entries` can declare an overlay no inventory row starts, so targets in it are placed rather than `outside declared code` |
 | `controls` | optional, at most 256 call sites that must be entry-path calls with a resolved target; a missed one fails the report |
-| `limit` | rows kept in each of `targets`, `unresolved` and `rowsOutsideDeclaredCode` (1..10000, default 1000) |
+| `noReturn` | optional, the declarations `reach` takes, in the same shape and with the same validation ([ADR 0030](decisions/0030-inventory-boundaries-against-the-entry-path-walk.md)): at most 256 `{ "routine", "reason" }` or `{ "interrupt", "reason" }` objects. The entry-path walk does not continue past a resolved call to a declared routine, and a declared interrupt is no `hardware or interrupt boundary` gap |
+| `limit` | rows kept in each of `targets`, `unresolved`, `rowsOutsideDeclaredCode`, `rowStarts` and `rowsPastNoReturn` (1..10000, default 1000) |
 
 The calls are the ones `incoming` reads: every E8 and 9A call start in the searched regions, and
 every call the entry-path walk from the established region entries reaches. Each resolves as
@@ -1224,6 +1225,61 @@ The counts are lower bounds on what the inventory lacks. Computed calls, far cal
 relocation or fixup, calls the walk does not reach that start with a prefix, and routines reached
 only by jumps are not targets of this search. The report writes no inventory rows: a row needs the
 size an analyzer gives it, and the `address` column is the list to seed discovery with.
+
+### Row starts inside an instruction
+
+Each row start that a declared region places is compared with the instructions the entry-path
+walk established. A row whose start lies past the first byte of one of them is a row of
+`rowStarts`:
+
+| Field | Meaning |
+|---|---|
+| `start`, `size`, `name` | the row |
+| `site` | the row start's file offset |
+| `status` | `inside an instruction`, or `start of an overlapping instruction` when the walk also established an instruction at the row start, as it does for deliberately overlapping code that a direct edge proves. The reader decides which of the two the routine starts with |
+| `insideInstruction`, `insideInstructionAddress`, `insideInstructionSize`, `insideInstructionText` | the established instruction that holds the row start: its site, its place in the inventory's notation, its size and its text |
+| `rowStartInstructionSize`, `rowStartInstructionText` | for `start of an overlapping instruction`, the instruction established at the row start |
+| `routine`, `routineAddress`, `routineIsRow` | the routine the walk read the holding instruction in (the target of the last call on the route with the fewest calls, or the entry, as `reach` names it), its place, and whether a row starts there. A routine no row starts at is usually the routine's real entry, and is also a row of `targets` when a call resolves to it |
+
+`counts.rowStarts` counts the rows that start at an established instruction
+(`instructionStarts`), inside one (`insideAnInstruction`), at an overlapping instruction
+(`overlappingInstructionStarts`), and in bytes the walk did not decode (`notRead`). The check
+decodes nothing the walk did not: a row start in bytes the walk never reached, such as one after
+data that a linear decode would run over, is counted as `notRead` and not placed, whatever a
+linear decode of those bytes would show. Raise `instructionLimit` to the size of the declared code
+so that a stop does not add to `notRead`. The summary states the rows inside an instruction and
+the rows not read.
+
+### Rows past a call that does not return
+
+`noReturn` declares routines and interrupt sites that never return, as in
+[`reach`](#reachability-from-starts-to-targets). A resolved call to a declared routine continues
+only into the routine, so the walk no longer decodes the bytes its compiler placed after the call
+(often an error message or a data word), and calls in those bytes are no longer entry-path calls.
+`rowsPastNoReturn` lists each row whose body holds a resolved call to a declared routine, of any
+evidence, or a declared interrupt site, and also holds the byte after it:
+
+| Field | Meaning |
+|---|---|
+| `start`, `size`, `name` | the row |
+| `kind`, `site`, `siteAddress`, `siteClassification` | `call` or `interrupt`, the site, its place, and `entry-path instruction`, `reached only through a rejected overlapping start` (contested), `raw byte candidate` or, for an interrupt the walk did not reach, `declared site` |
+| `routine` | for a call, the declared routine it resolves to |
+| `following`, `followingAddress` | the byte after the call or interrupt |
+| `followingRead` | whether the walk established an instruction at `following` by another route, such as a branch around an error exit. Without one, nothing the walk read shows the bytes after the call to be code |
+| `bytesAfter` | the bytes of the row's body range from `following` to the range's end |
+
+`noReturn` repeats each declaration as `reach` does: a routine row gives whether the walk
+`reached` it, its `returnSites`, `contradicted` and its entry-path `callSites` (each with
+`following` and `followingRead`); an interrupt row gives its `vector`, `reached`, `following` and
+`followingRead`. The entry-path walk ends a branch at every interrupt, so the return check reads
+each declared routine with a walk of its own that starts at the declared routines and continues
+past every interrupt except a declared one, as `reach` does. A routine that ends in an interrupt
+that returns is then contradicted by what follows it, unless that interrupt is declared too. This
+walk spends its own `instructionLimit`, and `noReturnCheckLimitReached` says when it stopped; an
+empty `returnSites` then may miss a return past the stop. `counts.rowsPastNoReturn` counts the
+rows and `counts.rowsPastNoReturnUnreadAfter` those whose `following` the walk did not read.
+`assumptions` lists what the walk rests on: each reached call returns to its next instruction
+except a call to a declared routine, and each declaration holds for its reason.
 
 ## Evidenced indirect jump tables
 
