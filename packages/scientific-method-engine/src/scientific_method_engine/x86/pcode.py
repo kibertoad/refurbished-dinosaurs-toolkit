@@ -331,6 +331,14 @@ def evaluate(code, args, bits, site):
                     return Value(bits, y.term, origin)
                 if name == "or" and (x.number == mask):
                     return Value(bits, ("constant", mask), origin)
+        if name == "mul" and not known:
+            # SLEIGH's conditionalAssign selects a flag as (c * new) | (!c * old); with c known,
+            # one arm is a product by zero and the other a product by one.
+            for x, y in ((a, b), (b, a)):
+                if x.number == 0:
+                    return Value(bits, ("constant", 0), origin)
+                if x.number == 1:
+                    return Value(bits, y.term, origin)
         return op(name, a, b, site)
     if code == "INT_NEGATE":
         return op("xor", a, const((1 << bits) - 1, bits), site)

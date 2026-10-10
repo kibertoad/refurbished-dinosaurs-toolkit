@@ -1,12 +1,16 @@
 """Bounded explicit code mappings. No guessed linear disassembly domains."""
 import re
+from importlib import metadata
 from pathlib import Path
 import xxhash
 from capstone import Cs, CS_ARCH_X86, CS_MODE_16, CS_MODE_32
 from capstone.x86 import X86_OP_MEM
 from .pe import prepare_pe
-import capstone
 
+# The installed Capstone distribution's version. capstone.__version__ cannot stand in for it: the
+# 5.0.8 and 5.0.9 bindings still report 5.0.7, because their CS_VERSION_EXTRA was not bumped.
+CAPSTONE_VERSION = metadata.version("capstone")
+REQUIRED_CAPSTONE = "5.0.9"
 MAX_SOURCE = 256 * 1024 * 1024
 XXH3_FORM = re.compile("[0-9a-f]{32}")
 
@@ -65,8 +69,8 @@ def read_source(config, base):
 
 class Image:
     def __init__(self, data, config):
-        if capstone.__version__ != "5.0.7":
-            raise ValueError("This reporter requires capstone==5.0.7")
+        if CAPSTONE_VERSION != REQUIRED_CAPSTONE:
+            raise ValueError(f"This reporter requires capstone=={REQUIRED_CAPSTONE}; capstone {CAPSTONE_VERSION} is installed")
         if config.get("sourceKind") == "pe32":
             config = prepare_pe(data, config)
         self.config = config

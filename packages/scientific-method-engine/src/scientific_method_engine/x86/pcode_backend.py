@@ -746,7 +746,19 @@ def shift(state, ins, image):
         state.carry = carry if carry is not None else unknown(f"carry:{state.at}:{state.flag_serial}", 1, state.at)
         flags_written(state, f.run)
         state.flag_values["CF"] = resize(state.carry, 8)
+        # SLEIGH's SHR with a count operand (C0, C1, D2, D3) swaps the arms of its OF selection,
+        # writing 0 for a count of 1; only the D0 and D1 forms write OF as the CPU does.
+        if n != 1 or (m == "shr" and ins.opcode[0] not in (0xD0, 0xD1)):
+            undefined_overflow(state)
     state.event("arithmetic", operation=m, left=a.report(), right=b.report(), result=result.report(), modulus=1 << a.bits)
+
+
+def undefined_overflow(state):
+    """Drop OF after a shift or rotate whose OF the CPU leaves undefined or SLEIGH writes wrongly.
+
+    The CPU defines OF only for a count of 1. A branch that reads OF afterwards stays undecided.
+    """
+    state.flag_values.pop("OF", None)
 
 
 def rotate(state, ins, image):
@@ -790,6 +802,8 @@ def rotate(state, ins, image):
     state.carry = Value(1, carry.term, sources(a, count, site=state.at))
     flags_written(state, f.run)
     state.flag_values["CF"] = resize(state.carry, 8)
+    if count.number & 31 != 1:
+        undefined_overflow(state)
     state.event("arithmetic", operation=m, left=a.report(), count=n, result=value.report(),
                 carryOut=state.carry.report(), modulus=1 << bits)
 

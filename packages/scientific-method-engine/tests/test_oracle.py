@@ -187,6 +187,13 @@ class ShiftsAndRotates(unittest.TestCase):
         result = check(self, "b90100 31d2 d1e0 d1d2 d1e0 d1d2 bb0000 11db c3", resolved=("cx", "bx"))
         self.assertEqual(result["paths"][0]["registers"]["dx"]["expression"][0], "or")
 
+    def test_overflow_of_one_bit_shifts_and_rotates(self):
+        # Each JNO skips INC BX when OF is clear. SHR by one writes OF from the operand's top bit;
+        # RCR writes it before rotating, from CF and the top bit.
+        check(self, "bb0000 b80080 d1e8 7101 43 b80040 c1e001 7101 43 b80080 c1f801 7101 43"
+                    " b80040 c1c001 7101 43 b80100 c1c801 7101 43 f8 b80040 c1d001 7101 43"
+                    " f9 b80000 c1d801 7101 43 b80040 d1e0 7101 43 c3", resolved=("bx",))
+
     def test_memory_operands(self):
         # RCL by one on memory: Capstone reports its implicit count with a size of 0.
         check(self, "bb1000 c7070180 d107 c12f04 f9 d117 8b07 c7070180 f8 d017 8b07 c3", registers=DATA, resolved=("ax",))
