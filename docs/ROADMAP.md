@@ -129,6 +129,12 @@ What must stay explicit: an expired observation is pending, a log without its fi
 incomplete, and no write is supported unless the caller's contract says so. The milestone ends
 when issue 403 closes, after reconqueror reruns its own startup probe on the released package.
 
+Emulator checkpoints (issue 420) are not part of the milestone. The pinned DOSBox-X exposes no
+save or restore through its structured debugger, and its own save states neither carry the
+writable drive nor restore atomically, so [ADR 0028](decisions/0028-no-emulator-checkpoints-at-the-pinned-dosbox-x.md)
+defers them until an upstream revision provides what it lists. They then become a slice that
+depends on slices 2 and 3.
+
 ### Writing rules
 
 The writing-rule halves of gaps 27, 29, 32 to 34, 37 and 41 to 43 go back to Dark Sun as proposed
