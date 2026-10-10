@@ -11,7 +11,7 @@ from .relational import validate_controls, evaluate_controls
 from .argument_frames import WINDOW_BYTES, argument_frames, stack_cleanup
 from .memory_scopes import model_scopes
 from .result_flow import return_flows
-from .image import Image, integer
+from .image import Image, SCAN_LIMIT_FLOOR, instruction_limit, integer
 from .trace import (trace, walk, cfg_step, call_target, unsupported_transfer, uncovered, holding_instruction, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON,
                     RETURNS, INTERRUPTS, PORTS, PORT_INPUTS, port_width, budget_input, modeled_interrupt_sites)
 from .pcode_backend import interrupt_vector
@@ -107,7 +107,7 @@ def direct_calls(image, config):
     scans = config.get("searchRegions", [r["name"] for r in image.regions])
     if not isinstance(scans, list) or not scans or len(set(scans)) != len(scans):
         raise ValueError("searchRegions must be unique region names")
-    scan_limit = integer(config.get("scanLimit", 65536), 1, 1048576, "scanLimit")
+    scan_limit = integer(config.get("scanLimit", 65536), 1, max(SCAN_LIMIT_FLOOR, image.code_bytes), "scanLimit")
     scanned_bytes, read = 0, {}
     for name in scans:
         r = next((r for r in image.regions if r["name"] == name), None)
@@ -425,7 +425,7 @@ def uses(image, config):
     # Those operands stay out of matches: each names the stops whose CFG reaches it, so
     # reading one callee later shows exactly which accesses depended on it.
     reported = {(e["site"], e["kind"]) for e in matches + unresolved}
-    instruction_limit = config.get("instructionLimit", 10000)
+    walk_limit = config.get("instructionLimit", 10000)
     # This inventory assumes execution continues past each stop, so it also follows interrupts, which
     # it assumes return to the next instruction, and PE32 port accesses, and names each one below.
     # A stop inside a called function would end the inventory at that function's return. The code
@@ -434,11 +434,11 @@ def uses(image, config):
     returning, exit_walks = [], {}
     for root, stacks in sorted(open_calls.items()):
         for stack in sorted(stacks):
-            rows, frame_gaps = _caller_continuations(image, root, stops[root], stack, instruction_limit, exit_walks, modeled)
+            rows, frame_gaps = _caller_continuations(image, root, stops[root], stack, walk_limit, exit_walks, modeled)
             returning.extend(rows)
             gaps.extend(g for g in frame_gaps if g not in gaps)
     seeds = list(stops) + [start for start, _, _ in returning]
-    after_stop, stop_gaps, _, _, _ = (walk(image, seeds, instruction_limit, follow_flat_ports=True, follow_interrupts=True)
+    after_stop, stop_gaps, _, _, _ = (walk(image, seeds, walk_limit, follow_flat_ports=True, follow_interrupts=True)
                                       if seeds else ({}, [], None, None, None))
     gaps.extend(g for g in stop_gaps if g["reason"] == "instruction limit")
     # In PE32 a site the stops reach only by continuing past a port access is named as such, even when
@@ -449,7 +449,7 @@ def uses(image, config):
     if image.flat and (any(base_mnemonic(ins) in PORTS for ins in after_stop.values())
                        or any(not port_free for _, _, port_free in returning)):
         port_free_seeds = list(stops) + [start for start, _, port_free in returning if port_free]
-        before_ports, port_gaps, _, _, _ = walk(image, port_free_seeds, instruction_limit, follow_interrupts=True)
+        before_ports, port_gaps, _, _, _ = walk(image, port_free_seeds, walk_limit, follow_interrupts=True)
         if not any(g["reason"] == "instruction limit" for g in port_gaps):
             port_only = set(after_stop) - set(before_ports)
     # A call or interrupt past a stop was never traced either, so code after it also depends on it returning.
@@ -469,7 +469,7 @@ def uses(image, config):
         named.extend(d for d in row_depends if d not in named)
     depends = {}
     for start, row_depends in by_start.items():
-        reached, _, _, _, _ = walk(image, [start], instruction_limit, follow_flat_ports=True, follow_interrupts=True)
+        reached, _, _, _, _ = walk(image, [start], walk_limit, follow_flat_ports=True, follow_interrupts=True)
         for at in reached:
             named = depends.setdefault(at, [])
             named.extend(d for d in row_depends if d not in named)
@@ -521,7 +521,7 @@ def uses(image, config):
             raise ValueError(f"Positive variable-use control {at} missed; negative result rejected")
     raw = []
     scanned_bytes = 0
-    scan_limit = integer(config.get("scanLimit", 65536), 1, 1048576, "scanLimit")
+    scan_limit = integer(config.get("scanLimit", 65536), 1, max(SCAN_LIMIT_FLOOR, image.code_bytes), "scanLimit")
     for r in image.regions:
         for at in range(r["start"], r["end"]):
             if scanned_bytes >= scan_limit:
@@ -569,7 +569,7 @@ def operand_candidates(image, config):
         raise ValueError("Candidate query must be an object")
     value = integer(query.get("offset"), 0, image.mask, "candidate literal")
     limit = integer(config.get("limit", 100), 1, 10000, "candidate result limit")
-    scan_limit = integer(config.get("scanLimit", 100000), 1, 1048576, "candidate scan limit")
+    scan_limit = integer(config.get("scanLimit", 100000), 1, max(SCAN_LIMIT_FLOOR, image.code_bytes), "candidate scan limit")
     seen, gaps, _, _, contested = walk(image, entries(image), config.get("instructionLimit", 10000))
     ambiguous = {g["site"] for g in gaps if g.get("reason") == OVERLAP_REASON} | set(contested)
     intervals = sorted((at, at + ins.size) for at, ins in seen.items())
@@ -973,7 +973,7 @@ def body(image, entry, limit=10000):
     one it could not resolve), including targets that leave the body. Reports that need where the body goes
     from an instruction read flow instead of restating these rules.
     """
-    integer(limit, 1, 100000, "instruction limit")
+    instruction_limit(image, limit)
     established = set(entries(image))
     pending, seen, exits, calls, gaps, assumed, shared = [entry], {}, [], [], [], [], set()
     hardware, flow = [], {}
@@ -1089,7 +1089,7 @@ def callees(image, config):
     node_limit = integer(config.get("nodeLimit", 64), 1, 128, "callee node limit")
     edge_limit = integer(config.get("edgeLimit", 512), 1, 2048, "callee edge limit")
     depth_limit = integer(config.get("depthLimit", 16), 1, 128, "callee depth limit")
-    instruction_limit = integer(config.get("instructionLimit", 10000), 1, 100000, "instruction limit")
+    body_limit = instruction_limit(image, config.get("instructionLimit", 10000))
     controls = config.get("controls", {})
     if not isinstance(controls, dict) or set(controls) - {"sharedSites", "recursiveSites", "writeSites", "ghidraAgreementSites"}:
         raise ValueError("Invalid callee controls")
@@ -1101,7 +1101,7 @@ def callees(image, config):
     nodes, edges, omitted = {}, [], []
 
     def read(entry):
-        b = body(image, entry, instruction_limit)
+        b = body(image, entry, body_limit)
         observations = []
         for site, ins in sorted(b["instructions"].items()):
             for index, operand in enumerate(ins.operands):

@@ -214,6 +214,79 @@ class InventoryCheckTests(unittest.TestCase):
         self.assertEqual(piped.returncode, 1)
         self.assertIn("relative inventory path", piped.stderr)
 
+    def test_a_walk_past_100000_instructions_finishes_from_one_entry_through_regions_with_no_entries(self):
+        # 1000:0000 calls far 2000:0000 and 3000:0000. Each callee runs 60,000 NOPs, so the code holds
+        # 120,006 distinct instructions; the third ends with a call to its own last RET, which only a walk
+        # that reaches the end shows as an entry-path call.
+        first = bytes.fromhex("9a00000020" "9a00000030" "c3")
+        second = b"\x90" * 60000 + b"\xc3"
+        third = b"\x90" * 60000 + bytes.fromhex("e80000" "c3")
+        b, c = 16, 16 + (len(second) + 15) // 16 * 16
+        data = first.ljust(b, b"\0") + second.ljust(c - b, b"\0") + third
+        regions = [{"name": "first", "start": 0, "end": len(first), "ip": 0, "segment": 0x1000, "entries": [0],
+                    "evidence": "synthetic resident code"},
+                   {"name": "second", "start": b, "end": b + len(second), "ip": 0, "segment": 0x2000, "entries": [],
+                    "evidence": "synthetic code no inventory row starts"},
+                   {"name": "third", "start": c, "end": c + len(third), "ip": 0, "segment": 0x3000, "entries": [],
+                    "evidence": "synthetic code no inventory row starts"}]
+        relocations = [{"site": 3, "segment": 0x2000, "evidence": "synthetic relocation"},
+                       {"site": 8, "segment": 0x3000, "evidence": "synthetic relocation"}]
+        declared = len(first) + len(second) + len(third)
+        cfg = config(data, regions, relocations=relocations, scanLimit=declared, controls=[0, 5, c + 60000],
+                     inventory=self.inventory("start\tsize\n1000:0000\t11\n"))
+        with self.assertRaisesRegex(ValueError, f"instruction limit must be an integer in 1..{declared}"):
+            run_report(data, {**cfg, "instructionLimit": declared + 1}, "inventory-check")
+        r = run_report(data, {**cfg, "instructionLimit": declared}, "inventory-check")
+        self.assertEqual(r["gaps"], [])
+        self.assertNotIn("instruction limit", r["summary"])
+        self.assertEqual([(t["address"], t["status"], t["evidence"]) for t in r["targets"]],
+                         [("2000:0000", "outside every row", "entry-path call"),
+                          ("3000:0000", "outside every row", "entry-path call"),
+                          ("3000:EA63", "outside every row", "entry-path call")])
+
+    def test_a_region_with_no_entries_places_targets_and_its_unreached_calls_stay_raw_candidates(self):
+        # 0000 calls far through an FBOV fixup to 0010 in an overlay region that lists no entries. 0010 is a
+        # RET; the call at 0011 back to it lies past that RET, so no walk reaches it.
+        data = bytes.fromhex("9a00000800" "c3") + bytes(10) + bytes.fromhex("c3" "e8fcff" "c3") + bytes(3)
+        resident = {"name": "resident", "start": 0, "end": 6, "ip": 0, "segment": 0x1000, "entries": [0],
+                    "evidence": "synthetic resident code"}
+        overlay = {"name": "overlay", "start": 0x10, "end": 0x18, "ip": 0, "segment": 0x2000, "entries": [],
+                   "container": {"view": "overlay 1", "start": 0x10, "end": 0x18}, "evidence": "synthetic overlay view"}
+        fixup = {"site": 3, "raw": 8, "descriptor": 1, "segment": 0x2000, "target": 0x10, "trampoline": 0x40,
+                 "evidence": "synthetic FBOV descriptor/fixup"}
+        r = run_report(data, config(data, [resident, overlay], relocations=[fixup], controls=[0],
+                                    inventory=self.inventory("start\tsize\n1000:0000\t6\n")), "inventory-check")
+        self.assertEqual([(t["address"], t["status"], t["evidence"], t["callSites"]) for t in r["targets"]],
+                         [("0x10", "outside every row", "entry-path call", {"entryPath": 1, "contested": 0, "rawCandidates": 1})])
+        self.assertEqual(r["gaps"], [])
+        for regions, message in (([{**resident, "entries": []}, overlay], "at least one established entry"),
+                                 ([resident, {k: v for k, v in overlay.items() if k != "entries"}], "0..4096"),
+                                 ([resident, {**overlay, "entries": [0x10] * 4097}], "0..4096")):
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ValueError, message):
+                    run_report(data, config(data, regions, relocations=[fixup], target=0x10), "incoming")
+
+    def test_instruction_and_scan_limits_reach_the_size_of_the_declared_code(self):
+        def run(size, **limits):
+            # One RET, then zero bytes in 64 KiB regions; only the first region lists an entry.
+            data = b"\xc3" + bytes(size - 1)
+            regions = [{"name": f"r{i}", "start": start, "end": min(start + 0x10000, size), "ip": 0,
+                        "segment": 0x1000 + i, "entries": [] if i else [0], "evidence": "synthetic code extent"}
+                       for i, start in enumerate(range(0, size, 0x10000))]
+            return run_report(data, config(data, regions, target=0, **limits), "incoming")
+        self.assertEqual(run(16, instructionLimit=100000)["gaps"], [])
+        with self.assertRaisesRegex(ValueError, r"instruction limit must be an integer in 1\.\.100000$"):
+            run(16, instructionLimit=100001)
+        self.assertEqual(run(200000, instructionLimit=200000, scanLimit=200000)["gaps"], [])
+        with self.assertRaisesRegex(ValueError, r"1\.\.200000$"):
+            run(200000, instructionLimit=200001)
+        with self.assertRaisesRegex(ValueError, r"scanLimit must be an integer in 1\.\.1048576$"):
+            run(16, scanLimit=1048577)
+        size = 1048576 + 16
+        self.assertFalse(run(size, scanLimit=size)["partialSearch"])
+        with self.assertRaisesRegex(ValueError, rf"scanLimit must be an integer in 1\.\.{size}$"):
+            run(size, scanLimit=size + 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -17,6 +17,18 @@ def integer(value, low, high, label):
     return value
 
 
+# The least maximum of instructionLimit and scanLimit, whatever the size of the declared code.
+INSTRUCTION_LIMIT_FLOOR = 100000
+SCAN_LIMIT_FLOOR = 1048576
+
+
+def instruction_limit(image, value):
+    """``value`` checked as an ``instructionLimit``: an integer from 1 to 100,000 or the total bytes of the
+    declared regions, whichever is larger. A walk decodes each instruction start once and every start is a
+    byte of a declared region, so a limit of the declared size lets a walk finish however large the code."""
+    return integer(value, 1, max(INSTRUCTION_LIMIT_FLOOR, image.code_bytes), "instruction limit")
+
+
 def read_source(config, base):
     """Read the source a report config names and check its hash.
 
@@ -80,9 +92,11 @@ class Image:
                 raise ValueError("Code region crosses the instruction address boundary")
             if not isinstance(r.get("evidence"), str) or not r["evidence"].strip():
                 raise ValueError("Each region needs mapping/bounds evidence")
+            # A region may list no entries: it is scanned and places targets, and a walk enters it only
+            # through a transfer from an entry elsewhere.
             entries = r.get("entries")
-            if not isinstance(entries, list) or not entries or len(entries) > 4096:
-                raise ValueError("Each region needs 1..4096 established entry offsets")
+            if not isinstance(entries, list) or len(entries) > 4096:
+                raise ValueError("Each region needs a list of 0..4096 established entry offsets")
             for at in entries:
                 integer(at, r["start"], r["end"] - 1, "entry")
             container = r.get("container")
@@ -92,6 +106,9 @@ class Image:
                     raise ValueError("A region container needs view, start and end")
                 integer(container.get("start"), 0, r["start"], "container start")
                 integer(container.get("end"), r["end"], len(data), "container end")
+        if not any(r["entries"] for r in self.regions):
+            raise ValueError("Declare at least one established entry offset in some region")
+        self.code_bytes = sum(r["end"] - r["start"] for r in self.regions)
         self.segments = config.get("segments", [])
         if not isinstance(self.segments, list) or len(self.segments) > 256:
             raise ValueError("segments must be a list of at most 256 declared segment bounds")
