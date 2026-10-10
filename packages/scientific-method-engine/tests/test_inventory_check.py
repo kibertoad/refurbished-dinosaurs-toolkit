@@ -258,6 +258,33 @@ class InventoryCheckTests(unittest.TestCase):
         ended = self.check("start\tsize\n1000:0000\t3\n1000:0008\t4\n", data=data, noReturn=exit_routine)
         self.assertEqual(ended["rowsPastNoReturn"], [])
 
+    def test_a_row_past_a_no_return_call_is_listed_and_the_target_returns_are_given(self):
+        # 0000 calls W at 0008, which calls K at 000C and returns. The row 1000:0000 runs on over 0003..0007,
+        # where E8 FD FF decodes as a call to 0003. Only the call at 0000 is declared never to return.
+        data = bytes.fromhex("e80500" "e8fdff" "0000" "e80100" "c3" "c3")
+        inventory = "start\tsize\n1000:0000\t8\n1000:0008\t4\n1000:000C\t1\n"
+        reason = "synthetic: this call passes the argument that makes W exit"
+        r = self.check(inventory, data=data, noReturn=[{"call": 0, "reason": reason}])
+        self.assertEqual(r["rowsPastNoReturn"], [{
+            "start": "1000:0000", "size": 8, "kind": "call site", "site": 0, "siteAddress": "1000:0000",
+            "siteClassification": "entry-path instruction", "routine": 8, "following": 3, "followingAddress": "1000:0003",
+            "followingRead": False, "bytesAfter": 5}])
+        self.assertEqual(r["noReturn"], [{"call": 0, "reason": reason, "reached": True,
+                                          "targets": [{"routine": 8, "read": True, "returnSites": [11]}],
+                                          "following": 3, "followingRead": False}])
+        self.assertEqual([(t["target"], t["evidence"]) for t in r["targets"]], [(3, "raw byte candidate only")])
+        self.assertNotIn("contradicted", r["summary"])
+        self.assertEqual(r["assumptions"], ["each reached call returns to its next instruction, except a noReturn call",
+                                            "each interrupt the noReturn check reads returns to its next instruction; "
+                                            "interrupt handlers are not read",
+                                            "each noReturn call never returns to its next instruction, for the reason "
+                                            "it gives, though its target may return to other callers"])
+        # A call that a routine declaration already lists is listed once, as a call to that routine.
+        both = self.check(inventory, data=data, noReturn=[{"call": 0, "reason": reason}, {"routine": 8, "reason": reason}])
+        self.assertEqual([(row["kind"], row["site"]) for row in both["rowsPastNoReturn"]], [("call", 0)])
+        self.assertEqual([(row.get("routine"), row.get("contradicted")) for row in both["noReturn"]],
+                         [(8, True), (None, None)])
+
     def test_a_row_with_two_calls_to_a_no_return_routine_lists_both_and_counts_one_row(self):
         # 0000 jz 0005; 0002 call 000C; 0005 jnz 000A; 0007 call 000C; 000A ret; 000B nop; 000C mov ah,4Ch; int 21h.
         data = bytes.fromhex("7403" "e80700" "7503" "e80200" "c3" "90" "b44c" "cd21")

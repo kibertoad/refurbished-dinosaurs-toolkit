@@ -86,11 +86,13 @@ def search_coverage(image, spans):
     return rows
 
 
-def direct_calls(image, config, no_return_calls=frozenset(), no_return_interrupts=frozenset(), indirect_calls=None):
+def direct_calls(image, config, no_return_calls=frozenset(), no_return_interrupts=frozenset(), indirect_calls=None,
+                 no_return_call_sites=frozenset()):
     """Every direct call site in the searched regions, as ``incoming`` and ``inventory-check`` read them.
 
     Walks the entry-path CFG from every established entry, ending a branch at a call to a routine in
-    ``no_return_calls`` and at an interrupt site in ``no_return_interrupts`` and following the declared
+    ``no_return_calls``, at a call site in ``no_return_call_sites`` and at an interrupt site in
+    ``no_return_interrupts`` and following the declared
     targets of each ``indirect_calls`` site as ``walk`` does, then
     scans every byte of the regions ``searchRegions`` names (all regions by default) for E8 and 9A
     call starts, and adds each reached call the scan cannot see (one that starts with a prefix). A
@@ -104,7 +106,7 @@ def direct_calls(image, config, no_return_calls=frozenset(), no_return_interrupt
     """
     seen, gaps, edges, undecoded, contested = walk(image, entries(image), config.get("instructionLimit", 10000),
                                                    no_return_calls=no_return_calls, no_return_interrupts=no_return_interrupts,
-                                                   indirect_calls=indirect_calls)
+                                                   indirect_calls=indirect_calls, no_return_call_sites=no_return_call_sites)
     rows, scanned = [], {}
 
     def classify(at):
