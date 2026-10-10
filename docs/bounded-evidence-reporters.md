@@ -1117,12 +1117,15 @@ Each target that is not a row's start is a row of `targets`:
 | `evidence` | the best of its calling sites: `entry-path call`, `contested call only` or `raw byte candidate only`. A target that only raw byte candidates or contested instructions call is not shown to be code |
 | `site`, `call`, `siteClassification`, `region`, `provenance` | one calling site of that evidence, the lowest, with `near` or `far` and the site's resolution |
 | `callSites` | how many calling sites of each kind the search found |
+| `insideInstruction`, `insideInstructionAddress`, `insideInstructionSize` | present when the target is a byte past the first of an instruction the entry-path walk established from another start: that instruction's site (file offset, as `insideInstruction` gives it in `reach` and `incoming`), its place in the inventory's notation and its size. A call there runs an overlapping instruction stream, such as a call to an IRET byte inside another instruction's operand, so the target may be no routine's start. The fields name the instruction the target overlaps and do not say which of the two streams is a routine. The target keeps its `status`, since the inventory still has no row starting there |
 
 `counts` gives `callTargets` and, under each evidence, the targets, the inventory starts among
-them and how many are inside another row, outside every row or outside declared code. It also
+them, how many are inside another row, outside every row or outside declared code, and how many of
+those that are not starts lie inside an established instruction (`insideAnInstruction`). It also
 counts the unresolved calls, the inventory rows and the rows outside declared code. `summary`
 states the entry-path counts in one sentence for a coverage report, leaving the targets outside
-declared code out of its total and naming them apart. It adds the targets from weaker evidence, the
+declared code out of its total and naming them apart, and says how many of them start inside an
+established instruction. It adds the targets from weaker evidence, the
 unresolved calls with how many of them the entry path reaches, a partial search (including a scan
 that `scanLimit` stopped) and a walk that `instructionLimit` stopped when there are any.
 `rowsOutsideDeclaredCode` lists the starts of rows no declared region places, such as overlay code

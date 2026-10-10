@@ -132,9 +132,11 @@ def inventory_check(image, config):
     The calls are those ``incoming`` reads (``direct_calls``). Each distinct target is an inventory
     start, inside the body of another row, outside every row, or outside declared code, and is
     reported with one calling site, near or far, and the evidence of its best site: a call on the
-    entry path, a contested instruction, or only a raw byte candidate.
+    entry path, a contested instruction, or only a raw byte candidate. A target that is a byte past
+    the first of an instruction the entry-path walk established names that instruction.
     """
     from .reports import call_controls, direct_calls, search_coverage
+    from .trace import holding_instruction
     if "inventory" not in config:
         raise ValueError("inventory-check needs inventory, the path of a function inventory TSV")
     rows = read_inventory(config["inventory"], image)
@@ -173,7 +175,7 @@ def inventory_check(image, config):
     def rank(row):
         return 0 if row["site"] in seen else 1 if row["site"] in contested else 2
     tally = {label: {"targets": 0, "inventoryStarts": 0, "insideAnotherRow": 0, "outsideEveryRow": 0,
-                     "outsideDeclaredCode": 0} for label in EVIDENCE}
+                     "outsideDeclaredCode": 0, "insideAnInstruction": 0} for label in EVIDENCE}
     field = {START: "inventoryStarts", INSIDE: "insideAnotherRow", OUTSIDE: "outsideEveryRow", UNPLACED: "outsideDeclaredCode"}
     missing = []
     for target, sites in sorted(by_target.items()):
@@ -198,6 +200,16 @@ def inventory_check(image, config):
                  "siteClassification": best["classification"], "region": best["region"], "provenance": best["provenance"],
                  "callSites": {"entryPath": sum(rank(r) == 0 for r in sites), "contested": sum(rank(r) == 1 for r in sites),
                                "rawCandidates": sum(rank(r) == 2 for r in sites)}}
+        # A call into the bytes of an established instruction runs an overlapping instruction stream, such
+        # as a call to an IRET byte inside an operand. The target is still a call target the inventory
+        # lacks, so it keeps its status, and the instruction it overlaps is named. insideInstruction is the
+        # holder's site, as in reach and incoming.
+        holder = holding_instruction(seen, target)
+        if holder is not None:
+            tally[evidence]["insideAnInstruction"] += 1
+            # The walk decodes only inside declared regions, so a holder always has a place.
+            entry |= {"insideInstruction": holder, "insideInstructionAddress": _target_place(image, holder)[2],
+                      "insideInstructionSize": seen[holder].size}
         if held:
             entry["rows"] = [{k: rows[i][k] for k in ("start", "size", "name") if k in rows[i]} for i in held]
         missing.append(entry)
@@ -213,6 +225,10 @@ def inventory_check(image, config):
     summary = (f"{lacking} of the {_count(compared, 'call target that entry-path calls resolve to is', 'call targets that entry-path calls resolve to are')} "
                f"not inventory starts: {path['insideAnotherRow']} inside another row's body, "
                f"{path['outsideEveryRow']} outside every row.")
+    if path["insideAnInstruction"]:
+        summary += " " + _count(path["insideAnInstruction"],
+                                "of them starts inside an instruction the entry-path walk established from another start.",
+                                "of them start inside an instruction the entry-path walk established from another start.")
     if path["outsideDeclaredCode"]:
         summary += " " + _count(path["outsideDeclaredCode"],
                                 "more entry-path call target lies outside declared code and is not compared with the inventory.",
