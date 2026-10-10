@@ -5148,3 +5148,23 @@ test("a range that ends on a function's last byte fails when a one-byte function
   assert.ok(output.includes(LAST_BYTE("location address 0x00401000..0x0040101F")), output);
   assert.ok(output.includes(LAST_BYTE("the body's range 0x00401000..0x0040101F")), output);
 });
+
+test("a range that ends on a function's last byte fails when another function starts on that byte", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F"));
+    inventory(r, "0x00401000\t32\n0x0040101F\t16\n");
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes(LAST_BYTE("location address 0x00401000..0x0040101F")), output);
+});
+
+test("a range that ends where a one-byte function shares another function's last byte fails", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F"));
+    inventory(r, "0x00401000\t32\n0x0040101F\t1\n");
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes(LAST_BYTE("location address 0x00401000..0x0040101F")), output);
+});
