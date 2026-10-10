@@ -407,7 +407,7 @@ class SessionLogs(SessionCase):
             self.assertEqual(session.observe(session.continue_(), timeout=5, poll_ms=50).status, "completed")
             session.log_event("input", {"key": "enter"})
             session.finish_log(OUTCOME)
-            self.assertEqual(session.event_log_path, log_path)
+            self.assertEqual(session.event_log_path, log_path.resolve())
             record = json.loads((settings.run_directory / "session.json").read_text(encoding="utf-8"))
         log = read_event_log(log_path, OUTCOME)
         self.assertEqual(log.session, session.token)
