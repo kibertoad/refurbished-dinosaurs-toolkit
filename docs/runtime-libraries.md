@@ -493,3 +493,17 @@ catches `FileGenerationsUnreadableException` and reads `PrimaryFailure` instead.
 `RecoverableFile.Write` promotes with `File.Replace`. On Windows the new primary takes the replaced
 file's creation time and attributes, and on other systems the backup is a hard link to the old
 primary where the filesystem supports one.
+
+### Cue sheets with several files or another extension
+
+`CueSheet.Tracks` and `CueSheet.DataTrackSectors` now throw `InvalidDataException` for a sheet
+that names more than one `FILE`. They used to read every file's indices as sectors of one image,
+so the sectors they gave for a later file's tracks were wrong. Read such a sheet with
+`CueBinSheet.Parse`, whose `Files` and `ImageTracks` say which tracks are in the image.
+
+`BuildListing.Make` no longer refuses a disc image by its extension. Any file that is not an `.iso`
+is opened as a cue/bin image's sheet or `.bin`, so an image of another kind, such as an ISO named
+`.img`, now fails with `InvalidDataException` saying it was read as a cue sheet, where it used to
+fail with `ArgumentException` before anything was listed. The discs are now read before the
+installation directory is walked. Code that caught `ArgumentException` for a wrong image type
+catches `InvalidDataException` as well.

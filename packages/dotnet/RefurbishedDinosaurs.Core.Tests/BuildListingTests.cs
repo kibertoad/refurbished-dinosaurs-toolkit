@@ -327,6 +327,24 @@ public sealed class BuildListingTests : IDisposable
         // A disc refused for its image is refused before the installation is walked.
         Assert.Throws<ArgumentException>(() => BuildListing.Make(Path.Combine(_work, "missing"),
             [new BuildListingDisc("CD:", _work, "D:")], Day));
+        // An image that is not an .iso is opened as a cue sheet, and the error says so.
+        var img = Path.Combine(_work, "game.img");
+        File.Copy(image, img);
+        Assert.Contains("game.img was read as a cue sheet", Assert.Throws<InvalidDataException>(() =>
+            BuildListing.Make(null, [new BuildListingDisc("CD:", img, "game.img")], Day)).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReadsTheDiscsBeforeWalkingTheInstallation()
+    {
+        if (OperatingSystem.IsWindows()) Assert.Skip("Windows refuses ':' in a name itself.");
+        // The installation holds a name the walk refuses, so the disc's error shows it was read first.
+        var install = Path.Combine(_work, "install");
+        await WriteAsync(Path.Combine(install, "CD:notes.txt"), 1);
+        var img = Path.Combine(_work, "game.img");
+        await File.WriteAllBytesAsync(img, OriginalContentSourceTests.BuildIso([5]), Token);
+        Assert.Contains("read as a cue sheet", Assert.Throws<InvalidDataException>(() =>
+            BuildListing.Make(install, [new BuildListingDisc("CD:", img, "game.img")], Day)).Message, StringComparison.Ordinal);
     }
 
     [Fact]

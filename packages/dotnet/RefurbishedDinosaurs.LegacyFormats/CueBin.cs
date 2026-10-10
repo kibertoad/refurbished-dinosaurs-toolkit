@@ -44,9 +44,49 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
 {
     /// <summary>
     /// The sheet's <c>FILE</c> entries in order. The first is <see cref="ReferencedFile"/>. A sheet
-    /// built without this property set has the one <c>BINARY</c> entry holding every track.
+    /// built without this property set has the one <c>BINARY</c> entry holding every track, and keeps
+    /// it when <c>with</c> replaces <see cref="Tracks"/>.
     /// </summary>
-    public IReadOnlyList<CueBinFile> Files { get; init; } = [new(ReferencedFile, "BINARY", 1, Tracks.Count)];
+    /// <exception cref="ArgumentException">
+    /// When set: the entries are empty, the first is not <see cref="ReferencedFile"/>, or they do not
+    /// hold tracks 1 to the number of <see cref="Tracks"/> in order, each entry at least one.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// When read: <c>with</c> replaced <see cref="ReferencedFile"/> or <see cref="Tracks"/> after the
+    /// entries were set, so they no longer describe the sheet.
+    /// </exception>
+    public IReadOnlyList<CueBinFile> Files
+    {
+        get
+        {
+            if (files is null) return [new(ReferencedFile, "BINARY", 1, Tracks.Count)];
+            if (FilesMismatch(files) is { } problem)
+                throw new InvalidOperationException($"The sheet's FILE entries no longer match it: {problem}");
+            return files;
+        }
+        init
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            if (FilesMismatch(value) is { } problem) throw new ArgumentException(problem, nameof(Files));
+            files = value.ToArray();
+        }
+    }
+
+    private readonly CueBinFile[]? files;
+
+    private string? FilesMismatch(IReadOnlyList<CueBinFile> entries)
+    {
+        if (entries.Count == 0) return "a sheet has at least one FILE.";
+        if (entries[0].Path != ReferencedFile) return "the first FILE must be ReferencedFile.";
+        var next = 1;
+        foreach (var entry in entries)
+        {
+            if (entry is null || entry.FirstTrack != next || entry.LastTrack < entry.FirstTrack)
+                return "the FILE entries must hold consecutive tracks from 1, each at least one.";
+            next = entry.LastTrack + 1;
+        }
+        return next == Tracks.Count + 1 ? null : "the FILE entries must hold every track and no other.";
+    }
 
     /// <summary>
     /// The number of tracks stored in the image, the first <c>FILE</c>: tracks 1 to this number.
@@ -177,7 +217,7 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     /// number its 1 to 99 tracks consecutively from 1, give each track an <c>INDEX 01</c>, and keep
     /// every index in order, within a track and across the tracks of one <c>FILE</c>; each
     /// <c>FILE</c>'s indices count from its own start. A <c>TRACK</c> before the first <c>FILE</c>
-    /// is rejected, and a <c>FILE</c>, <c>TRACK</c> or <c>INDEX</c> line it cannot read is
+    /// and an <c>INDEX</c> between a <c>FILE</c> and its first <c>TRACK</c> are rejected, and a <c>FILE</c>, <c>TRACK</c> or <c>INDEX</c> line it cannot read is
     /// rejected, not skipped.
     /// </summary>
     /// <exception cref="InvalidDataException">The text breaks one of these rules or a timestamp is invalid.</exception>
@@ -225,6 +265,12 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
                 continue;
             }
             if (tracks.Count == 0) throw new InvalidDataException("Cue INDEX appears before TRACK.");
+            // An index counts from the start of the FILE it follows, so one between a later FILE and
+            // that FILE's first TRACK cannot belong to the track before, which another FILE holds.
+            if (files[^1].FirstPosition == tracks.Count)
+                throw new InvalidDataException(
+                    $"Cue INDEX appears in FILE {Truncate(files[^1].Path)} before its first TRACK; a track's " +
+                    "indices must follow it in the FILE that holds it.");
             if (!int.TryParse(index.Groups["number"].Value, out var indexNumber) ||
                 !int.TryParse(index.Groups["minute"].Value, out var minute) ||
                 !int.TryParse(index.Groups["second"].Value, out var second) ||

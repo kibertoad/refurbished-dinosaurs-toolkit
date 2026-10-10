@@ -229,11 +229,12 @@ tracks after it. Later `FILE` entries, of any type (`BINARY`, `WAVE`, `MP3` and 
 only `AUDIO` tracks, such as a disc shipped as one image and one compressed audio file per track.
 Each later entry's indices count from the start of its own file. Their paths pass the same
 `PortableAssetPath.Relative` check as the image's, but the files are never opened and need not
-exist. A sheet whose later `FILE` holds a data track, a `FILE` with no track, or a `TRACK` before
-the first `FILE` is rejected with a message naming the rule.
+exist. A sheet whose later `FILE` holds a data track, a `FILE` with no track, a `TRACK` before
+the first `FILE`, or an `INDEX` between a `FILE` and its first `TRACK`, as a sheet that stores each
+pregap at the end of the previous file writes it, is rejected with a message naming the rule.
 
 Only the image's tracks are read. `CueBinSheet.ImageTracks` counts them, `Files` and `FileOf` give
-each entry and the tracks it holds, and `TrackExtent` throws `InvalidDataException` for a track in
+each entry and the tracks it holds (setting `Files` on a sheet checks that the entries hold every track in order, and reading it throws `InvalidOperationException` once `with` has replaced the tracks they describe), and `TrackExtent` throws `InvalidDataException` for a track in
 another file. The data track ends where the image's second track begins, or at the end of the
 image when the image holds no other track. `AssetVerifier` reports a fingerprinted audio track
 stored in another file as `Unreadable`, naming the file, `CddaTrackFingerprints.RecordAsync`

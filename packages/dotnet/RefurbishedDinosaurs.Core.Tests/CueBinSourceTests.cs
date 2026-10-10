@@ -276,6 +276,14 @@ public sealed class CueBinSourceTests
         "Cue FILE ../b.ogg must be a safe relative path")]
     [InlineData("FILE a.ogg MP3\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n", "for the first FILE, the image; expected BINARY")]
     [InlineData("TRACK 01 MODE1/2352\nFILE a.bin BINARY\nINDEX 01 00:00:00\n", "Cue TRACK appears before FILE")]
+    // Track 02's pregap is at the end of the image and its INDEX 01 at the start of b.wav, so the
+    // index would otherwise be read as a sector of the image.
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nTRACK 02 AUDIO\nINDEX 00 00:00:20\n" +
+        "FILE b.wav WAVE\nINDEX 01 00:00:00\nTRACK 03 AUDIO\nINDEX 01 00:00:30\n",
+        "Cue INDEX appears in FILE b.wav before its first TRACK")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nTRACK 02 AUDIO\nINDEX 01 00:00:20\n" +
+        "FILE b.wav WAVE\nINDEX 02 00:00:40\nTRACK 03 AUDIO\nINDEX 01 00:00:00\n",
+        "Cue INDEX appears in FILE b.wav before its first TRACK")]
     public void CueParserNamesTheRuleAMultiFileSheetBreaks(string text, string rule) =>
         Assert.Contains(rule, Assert.Throws<InvalidDataException>(() => CueBinSheet.Parse(text)).Message,
             StringComparison.Ordinal);
@@ -311,6 +319,28 @@ public sealed class CueBinSourceTests
         Assert.Equal([new CueBinFile("game.bin", "BINARY", 1, 1)], single.Files);
         Assert.Equal(1, single.ImageTracks);
         Assert.Equal(1, new CueBinSheet("x.bin", single.Tracks).ImageTracks);
+    }
+
+    [Fact]
+    public void CueBinSheetFilesMustDescribeItsTracks()
+    {
+        var sheet = CueBinSheet.Parse(
+            "FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n" +
+            "FILE b.ogg MP3\nTRACK 02 AUDIO\nINDEX 01 00:00:00\n");
+        Assert.Throws<ArgumentException>(() => sheet with { Files = [] });
+        Assert.Throws<ArgumentException>(() => sheet with { Files = [new("other.bin", "BINARY", 1, 2)] });
+        Assert.Throws<ArgumentException>(() => sheet with { Files = [new("a.bin", "BINARY", 1, 1)] });
+        Assert.Throws<ArgumentException>(() =>
+            sheet with { Files = [new("a.bin", "BINARY", 1, 1), new("b.ogg", "MP3", 3, 3)] });
+        Assert.Equal(2, (sheet with { Files = [new("a.bin", "BINARY", 1, 2)] }).ImageTracks);
+
+        // Entries set for other tracks are refused when read, not used to measure the image.
+        var stale = sheet with { Tracks = sheet.Tracks.Take(1).ToArray() };
+        Assert.Throws<InvalidOperationException>(() => stale.ImageTracks);
+        Assert.Throws<InvalidOperationException>(() => stale.TrackExtent(1, 300));
+        // A sheet built without entries keeps describing its tracks after with.
+        var built = new CueBinSheet("a.bin", sheet.Tracks);
+        Assert.Equal(1, (built with { Tracks = sheet.Tracks.Take(1).ToArray() }).Files[0].LastTrack);
     }
 
     [Fact]

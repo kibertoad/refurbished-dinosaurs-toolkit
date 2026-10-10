@@ -8,8 +8,10 @@ namespace RefurbishedDinosaurs.LegacyFormats;
 /// <summary>A disc that <see cref="BuildListing.Make"/> lists, read from an image of it.</summary>
 /// <param name="Prefix">The prefix its paths take: <c>CD:</c>, or <c>CD1:</c>, <c>CD2:</c> and so on.</param>
 /// <param name="ImagePath">
-/// Where to read the image: an <c>.iso</c> file of 2,048-byte sectors, or the <c>.cue</c> or <c>.bin</c>
-/// file of a cue/bin raw image whose data track is <c>MODE1/2352</c> or <c>MODE2/2352</c>.
+/// Where to read the image: an <c>.iso</c> file of 2,048-byte sectors, or the cue sheet, whatever its
+/// extension, or the <c>.bin</c> file of a cue/bin raw image whose data track is <c>MODE1/2352</c> or
+/// <c>MODE2/2352</c>. Any file that is not an <c>.iso</c> is opened as
+/// <see cref="OriginalContentSource.OpenCueBin(string)"/> opens it.
 /// </param>
 /// <param name="Source">
 /// The image's path as the build's manifest or list of other files writes it, which the record gives
@@ -176,7 +178,9 @@ public static partial class BuildListing
     /// character, <c>|</c>, which marks an archive member, a <c>\</c>, which Linux and macOS allow
     /// in a name, or an unpaired surrogate. Or a name at its top starts like a disc path
     /// (<c>CD:</c>, <c>CD2:</c>), which Linux and macOS allow. Or a disc image is not valid, as its
-    /// reader describes.
+    /// reader describes, such as a file that is not an <c>.iso</c> and is not a cue sheet or
+    /// <c>.bin</c>. The discs are read before the installation directory is walked, so an invalid
+    /// image fails first.
     /// </exception>
     /// <exception cref="UnauthorizedAccessException">The installation directory itself cannot be read.</exception>
     /// <exception cref="IOException">The installation directory itself cannot be read, or a disc image changed while it was read.</exception>
@@ -208,15 +212,18 @@ public static partial class BuildListing
 
         var media = new List<BuildListingMedium>();
         var items = new List<BuildListingItem>();
+        DirectoryInfo? root = null;
         if (installationDirectory is not null)
         {
-            var root = new DirectoryInfo(Path.GetFullPath(installationDirectory));
+            root = new DirectoryInfo(Path.GetFullPath(installationDirectory));
             if (!root.Exists)
                 throw new DirectoryNotFoundException($"Installation directory {installationDirectory} does not exist.");
             media.Add(new BuildListingMedium("", null, null));
-            Walk(root, "", items);
         }
+        // The discs are read first, so an image of the wrong kind, which is only found by opening it,
+        // fails before the installation directory is walked.
         foreach (var disc in discs) media.Add(ListDisc(disc, items));
+        if (root is not null) Walk(root, "", items);
 
         var sorted = items.Select(item => (Key: Encoding.UTF8.GetBytes(item.Path), Item: item))
             .OrderBy(pair => pair.Key, ByteOrder.Instance).ToArray();
@@ -297,7 +304,8 @@ public static partial class BuildListing
 
     private static BuildListingMedium ListDisc(BuildListingDisc disc, List<BuildListingItem> items)
     {
-        // Make checked the extension before listing anything.
+        // Make refused a blank path and a directory before listing anything. An .iso is read as
+        // 2048-byte sectors and any other file as a cue/bin image's sheet or .bin.
         var cueBin = !Path.GetExtension(disc.ImagePath).Equals(".iso", StringComparison.OrdinalIgnoreCase);
         using var source = cueBin ? OriginalContentSource.OpenCueBin(disc.ImagePath) : OriginalContentSource.OpenIso9660(disc.ImagePath);
         foreach (var file in source.Files) items.Add(new($"{disc.Prefix}{file.Path}", file.Size, null, null));
