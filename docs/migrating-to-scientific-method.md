@@ -423,6 +423,17 @@ Correct each experiment it reports: `new-game` for a run that starts by launchin
 a save, with the choices made on the way in given in Setup, and null for a save that cannot be
 committed and is kept with the captures, with its hash in the fixture's `starting_state.xxh3`.
 
+## Reader upgrades
+
+### Reader 3.0.0: `packed.pklite.scrambled` is replaced by `descrambler`
+
+The `unpack` report and the `unpack` export gave `packed.pklite.scrambled`, true when a descrambler
+XORed the stub before it was matched. PKLITE 1.20 and later stubs are also scrambled by ADD, so the
+field is now `packed.pklite.descrambler`: `xor` or `add` for the method of the descrambler the stub
+carries, and null when it carries none. A script that read `scrambled` reads `descrambler !== null`.
+`packed.pklite` also gives the new `codeTables`, `offsetKey` and `pspSignature`. The unpacked bytes
+of a file 2.x unpacked are unchanged, so its `unpacked.xxh3` stays valid.
+
 ## Engine upgrades
 
 Engine releases that need a change in a restoration are listed here, newest first. Each entry is

@@ -87,7 +87,7 @@ const LZEXE = {
 /**
  * Unpacks an LZEXE 0.90 or 0.91 executable, recognized by `LZ09` or `LZ91` at offset 0x1C, or an
  * EXEPACK executable, recognized by `RB` at the end of the EXEPACK header at its CS:0, or a PKLITE
- * executable whose stub matches the sequences of PKLITE 1.00 to 1.15, into an MZ file written by
+ * executable whose stub matches the sequences of PKLITE 1.00 to 2.01, into an MZ file written by
  * layout rule {@link UNPACK_LAYOUT}. Every read is bounded: the compressed stream
  * must end inside the packed load module, a copy may not reach before the start of the output, the
  * output may not pass {@link MAX_UNPACKED_BYTES}, and every relocation must name a word inside the
@@ -107,7 +107,7 @@ export function unpack(input: Uint8Array): UnpackResult {
   const pklite = lzexe || exepack ? undefined : pkliteIntro(bytes);
   if (!lzexe && !exepack && !pklite)
     throw new Error(
-      "No packer the reader unpacks: LZEXE 0.90 and 0.91 are recognized by LZ09 or LZ91 at 0x1C, EXEPACK by RB at the end of a 16-, 18- or 20-byte header at CS:0 that ends at CS:IP, and PKLITE by the intro of a 1.00 to 1.15 stub at CS:IP FFF0:0100. This does not show that the file is not packed.",
+      "No packer the reader unpacks: LZEXE 0.90 and 0.91 are recognized by LZ09 or LZ91 at 0x1C, EXEPACK by RB at the end of a 16-, 18- or 20-byte header at CS:0 that ends at CS:IP, and PKLITE by the intro of a 1.00 to 2.01 stub at CS:IP FFF0:0100. This does not show that the file is not packed.",
     );
   if (word(6) !== 0)
     throw new Error(
