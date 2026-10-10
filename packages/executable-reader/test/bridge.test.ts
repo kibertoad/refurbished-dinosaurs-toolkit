@@ -823,6 +823,19 @@ test("reach follows a resident far call and an overlay fixup call through the FB
   assert.deepEqual(r.reachedRoutines, [80, 528, 532]);
   assert.equal(r.negativeUsable, true);
   assert.equal(r.instructionLimitReached, false);
+  // The overlay entry is no call, so it is refused as a call-site control and holds as an instruction control.
+  writeFileSync(path, JSON.stringify({ ...config, starts: [80], targets: [528], controls: [528] }));
+  assert.throws(() => run(["reach", path]), /control 528 is not a call site/);
+  writeFileSync(
+    path,
+    JSON.stringify({ ...config, starts: [80], targets: [528], controls: [], instructionControls: [528] }),
+  );
+  const instruction = run(["reach", path]);
+  assert.deepEqual(
+    instruction.instructionControls.map((c: Report) => [c.site, c.routine]),
+    [[528, 528]],
+  );
+  assert.equal(instruction.negativeUsable, true);
   // Stopped after its first instruction, the walk says so at the top level and claims no negative,
   // though the control it read holds.
   writeFileSync(path, JSON.stringify({ ...config, starts: [80], targets: [528], controls: [80], instructionLimit: 1 }));
