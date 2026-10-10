@@ -49,7 +49,10 @@ found another way. It needs `formatControls` and decodes no instruction.
 
 `imports` lists the import the file's import tables put in each slot of a PE32 or PE32+ import
 address table, by slot address, and needs at least one positive control: a slot with the import
-other evidence shows. A control that maps to anything else rejects the report.
+other evidence shows. A control that maps to anything else rejects the report. The import
+directory ends at the first descriptor whose Name or FirstThunk is zero, where the NT loader ends
+it; `directoryEnd` gives that descriptor's nonzero fields, and `pastEnd` lists any later descriptor
+a loader that read on would import through.
 
 `unpack` decodes an LZEXE 0.90 or 0.91 or an EXEPACK executable (an `mz` source) and writes its unpacked form to
 the config's `output`, a path relative to the config file. It prints the `size`, `xxh3`, `format`
@@ -115,6 +118,7 @@ import { bodyLayout, fileLayout } from "@scientific-method/executable-reader/bod
 | `TableConfig`, `TableLayout`, `TableCodeSource`, `TableControl`, `TableListingRow`, `TablePointerKind`, `TableEntryResult` | `table-contents` | Types of the `table` query and its results. |
 | `importReport(bytes, config)` | `pe-imports` | The `imports` report over an already hash-checked buffer. |
 | `ImportConfig`, `ImportControl`, `ImportSlot`, `SlotImport`, `NamesFrom` | `pe-imports` | Types of the `imports` query, its controls and its slot rows. |
+| `DirectoryEnd`, `PastEnd`, `DescriptorField`, `DESCRIPTOR_FIELDS` | `pe-imports` | The descriptor that ends the import directory, the descriptors after it, and the descriptor field names. |
 | `IgnoredRawData` | `pe-imports` | A `rawIgnored` row: a section whose PointerToRawData is 0 and whose SizeOfRawData is not. |
 | `bodyLayout(bytes, config)` | `body-layout` | The `bodies` report over an already hash-checked buffer. |
 | `fileLayout(image)` | `body-layout` | The regions an `MzImage`'s tables declare, with the runs between them, covering the whole file. |

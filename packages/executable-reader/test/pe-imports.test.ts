@@ -325,3 +325,79 @@ test("import report fails on tables it cannot map to one slot or one loaded byte
     /formatControls apply only to mz sources/,
   );
 });
+
+test("import report ends the directory at the first descriptor whose Name or FirstThunk is zero", () => {
+  const descriptor = (i: number) => 0x400 + i * 20;
+  const read = (change: (data: Buffer) => void, controls: ImportControl[] = []) => {
+    const pe = buildPe(false);
+    change(pe.data);
+    return importReport(pe.data, {
+      sourceKind: "pe32",
+      controls: [{ slot: 0x400000 + DLLS[0]!.address, dll: "KERNEL32.dll", name: "CreateFileA" }, ...controls],
+    });
+  };
+  const dlls = (r: ReturnType<typeof read>) => r.descriptors.map((d) => d.dll);
+
+  // The all-zero descriptor every loader stops at.
+  const plain = read(() => {});
+  assert.deepEqual(plain.directoryEnd, { descriptor: 3, rva: 0x203c, allZero: true, nonzeroFields: {} });
+  assert.equal(plain.pastEnd, null);
+
+  // A stray lookup table RVA and time stamp in the descriptor after the last one do not fail the
+  // report, and the report shows which fields it ended on.
+  const stray = read((data) => {
+    data.writeUInt32LE(0x2100, descriptor(3));
+    data.writeUInt32LE(0xffffffff, descriptor(3) + 4);
+  });
+  assert.deepEqual(dlls(stray), ["KERNEL32.dll", "USER32.dll", "ADVAPI32.dll"]);
+  assert.deepEqual(stray.directoryEnd, {
+    descriptor: 3,
+    rva: 0x203c,
+    allZero: false,
+    nonzeroFields: { originalFirstThunk: 0x2100, timeDateStamp: 0xffffffff },
+  });
+  assert.deepEqual(stray.pastEnd, { descriptors: [], stoppedAt: { descriptor: 4, reason: "all zero" } });
+
+  // A DLL name with no address table ends the directory there, so ADVAPI32's slots are not listed
+  // and a control on one of them is no slot.
+  const noTable = (data: Buffer) => data.writeUInt32LE(0, descriptor(2) + 16);
+  const ended = read(noTable);
+  assert.deepEqual(dlls(ended), ["KERNEL32.dll", "USER32.dll"]);
+  assert.equal(ended.directoryEnd!.descriptor, 2);
+  assert.deepEqual(Object.keys(ended.directoryEnd!.nonzeroFields), ["name"]);
+  assert.deepEqual(ended.pastEnd, { descriptors: [], stoppedAt: { descriptor: 3, reason: "all zero" } });
+  assert.equal(ended.counts.slots, 5);
+  assert.throws(
+    () => read(noTable, [{ slot: 0x400000 + DLLS[2]!.address, dll: "ADVAPI32.dll", ordinal: 9 }]),
+    /is not an import address table slot/,
+  );
+
+  // An address table with no DLL name ends the directory before USER32. ADVAPI32's descriptor after
+  // it names a DLL and an address table, so it is listed as one a loader reading on would use.
+  const noName = read((data) => data.writeUInt32LE(0, descriptor(1) + 12));
+  assert.deepEqual(dlls(noName), ["KERNEL32.dll"]);
+  assert.deepEqual(noName.directoryEnd, {
+    descriptor: 1,
+    rva: 0x2014,
+    allZero: false,
+    nonzeroFields: { originalFirstThunk: 0x2140, firstThunk: 0x2180 },
+  });
+  const advapiName = buildPe(false).data.readUInt32LE(descriptor(2) + 12);
+  assert.deepEqual(noName.pastEnd, {
+    descriptors: [{ descriptor: 2, rva: 0x2028, nameRva: advapiName, addressTableRva: 0x2200 }],
+    stoppedAt: { descriptor: 3, reason: "all zero" },
+  });
+
+  // A directory moved to the end of .idata: KERNEL32's descriptor, an end with a stray time stamp,
+  // a descriptor with only a forwarder chain, and then the end of the loaded bytes, where the scan
+  // past the end stops and says so.
+  const atEnd = read((data) => {
+    data.copy(data, 0x7c4, descriptor(0), descriptor(1));
+    data.writeUInt32LE(1, 0x7d8 + 4);
+    data.writeUInt32LE(1, 0x7ec + 8);
+    data.writeUInt32LE(0x23c4, 0x98 + 96 + 8);
+  });
+  assert.deepEqual(dlls(atEnd), ["KERNEL32.dll"]);
+  assert.deepEqual(atEnd.directoryEnd!.nonzeroFields, { timeDateStamp: 1 });
+  assert.deepEqual(atEnd.pastEnd, { descriptors: [], stoppedAt: { descriptor: 3, reason: "not in loaded bytes" } });
+});

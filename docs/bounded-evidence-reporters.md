@@ -1542,6 +1542,18 @@ and the slot's index in it, `dll`, `storedEntry` (the address table entry as sto
 `lookupEntry`, `namesFrom` and `import` (`{ name, hint }` or `{ ordinal }`). `descriptors` gives
 each descriptor's tables, time stamp and `namesFrom`.
 
+The directory ends at the first descriptor whose Name or FirstThunk is zero, whatever its other
+fields hold. The NT loader, Wine and ReactOS end it there; what the Windows 9x loader does is not
+confirmed. Some linkers and packers leave a time stamp or a lookup table RVA in that descriptor.
+`directoryEnd` gives it as `{ descriptor, rva, allZero, nonzeroFields }`, where `nonzeroFields`
+holds each of `originalFirstThunk`, `timeDateStamp`, `forwarderChain`, `name` and `firstThunk` that
+is not zero. When it is all zero, `pastEnd` is null. Otherwise the report reads on to the first
+all-zero descriptor, and `pastEnd.descriptors` lists each descriptor on the way that names both a
+DLL and an address table, as `{ descriptor, rva, nameRva, addressTableRva }`: a loader that read
+past the end would import through it, and the report lists none of its slots. `pastEnd.stoppedAt`
+says where that read stopped: at an all-zero descriptor, at one not in the file's loaded bytes,
+or at the 4096-descriptor limit. In the last two cases descriptors may lie beyond it unread.
+
 A descriptor whose time stamp is not zero was bound, so its import address table as stored holds
 addresses in the DLLs, and such an address can have its top bit set, as every address in
 `KERNEL32.DLL` did under Windows 95. A descriptor with no lookup table, which some linkers of the

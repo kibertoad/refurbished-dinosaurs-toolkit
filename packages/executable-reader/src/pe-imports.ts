@@ -55,6 +55,43 @@ export interface ImportSlot {
   reason?: string;
 }
 
+/** The five fields of an import descriptor, in the order they are stored. */
+export const DESCRIPTOR_FIELDS = [
+  "originalFirstThunk",
+  "timeDateStamp",
+  "forwarderChain",
+  "name",
+  "firstThunk",
+] as const;
+
+/** One field of an import descriptor. */
+export type DescriptorField = (typeof DESCRIPTOR_FIELDS)[number];
+
+/**
+ * The descriptor that ends the import directory: the first whose Name or FirstThunk is zero, where
+ * the NT loader, Wine and ReactOS stop. `nonzeroFields` holds each of its fields that is not zero,
+ * and is empty, with `allZero` true, for the all-zero descriptor every loader stops at.
+ */
+export interface DirectoryEnd {
+  /** Index of the descriptor in the import directory. */
+  descriptor: number;
+  rva: number;
+  allZero: boolean;
+  nonzeroFields: Partial<Record<DescriptorField, number>>;
+}
+
+/**
+ * What lies after a {@link DirectoryEnd} that is not all zero. `descriptors` lists each later
+ * descriptor that names both a DLL and an address table, which a loader that read past the end
+ * would import through and the report lists no slots for. The scan stops at the first all-zero
+ * descriptor, at a descriptor not in the file's loaded bytes, or at the descriptor limit, and
+ * `stoppedAt` says which.
+ */
+export interface PastEnd {
+  descriptors: Array<{ descriptor: number; rva: number; nameRva: number; addressTableRva: number }>;
+  stoppedAt: { descriptor: number; reason: "all zero" | "not in loaded bytes" | "limit" };
+}
+
 const MAX_DESCRIPTORS = 4096,
   MAX_ENTRIES = 65536,
   MAX_NAME = 4096,
@@ -101,6 +138,11 @@ function checkControls(controls: unknown): ImportControl[] {
  * name. A descriptor with no lookup table has its names read from the import address table as
  * stored, and a slot there that holds a bound address (the descriptor has a nonzero time stamp, or
  * the stored entry is neither an ordinal nor a hint/name in the file) gets no import.
+ *
+ * The directory ends at the first descriptor whose Name or FirstThunk is zero, as the NT loader,
+ * Wine and ReactOS end it; the Windows 9x loader's rule is not confirmed. `directoryEnd` gives that
+ * descriptor and its nonzero fields. When any is nonzero, `pastEnd` lists the later descriptors, up
+ * to an all-zero one, that a loader reading on would import through; otherwise it is null.
  *
  * Slots are listed by address. Listing order of any other tool is never used. Every control in
  * `config.controls` must name the import the tables put in its slot, or the report throws.
@@ -208,16 +250,48 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
     delay = directory(13);
   const descriptors: Array<Record<string, unknown>> = [];
   const slots: ImportSlot[] = [];
+  const fieldsAt = (d: number) =>
+    Object.fromEntries(DESCRIPTOR_FIELDS.map((field, i) => [field, bytes.readUInt32LE(d + i * 4)])) as Record<
+      DescriptorField,
+      number
+    >;
+  // Descriptors after an end that is not all zero, up to the first all-zero one, that name a DLL
+  // and an address table: what a loader that read on would import through.
+  const readPastEnd = (from: number): PastEnd => {
+    const named: PastEnd["descriptors"] = [];
+    for (let index = from; ; index++) {
+      if (index >= MAX_DESCRIPTORS) return { descriptors: named, stoppedAt: { descriptor: index, reason: "limit" } };
+      const descriptorRva = imports.rva + index * 20,
+        d = offset(descriptorRva, 20);
+      if (d === null) return { descriptors: named, stoppedAt: { descriptor: index, reason: "not in loaded bytes" } };
+      const fields = fieldsAt(d);
+      if (DESCRIPTOR_FIELDS.every((f) => fields[f] === 0))
+        return { descriptors: named, stoppedAt: { descriptor: index, reason: "all zero" } };
+      if (fields.name && fields.firstThunk)
+        named.push({ descriptor: index, rva: descriptorRva, nameRva: fields.name, addressTableRva: fields.firstThunk });
+    }
+  };
+  let directoryEnd: DirectoryEnd | null = null,
+    pastEnd: PastEnd | null = null;
   if (imports.rva) {
     for (let index = 0; ; index++) {
       if (index >= MAX_DESCRIPTORS) throw new Error(`Import directory exceeds ${MAX_DESCRIPTORS} descriptors`);
-      const d = at(imports.rva + index * 20, 20, "Import descriptor");
-      const lookupRva = bytes.readUInt32LE(d),
-        timeDateStamp = bytes.readUInt32LE(d + 4),
-        nameRva = bytes.readUInt32LE(d + 12),
-        addressRva = bytes.readUInt32LE(d + 16);
-      if (!lookupRva && !timeDateStamp && !bytes.readUInt32LE(d + 8) && !nameRva && !addressRva) break;
-      if (!nameRva || !addressRva) throw new Error(`Import descriptor ${index} has no DLL name or address table`);
+      const descriptorRva = imports.rva + index * 20;
+      const d = at(descriptorRva, 20, "Import descriptor");
+      const fields = fieldsAt(d);
+      const lookupRva = fields.originalFirstThunk,
+        timeDateStamp = fields.timeDateStamp,
+        nameRva = fields.name,
+        addressRva = fields.firstThunk;
+      // The directory ends where the NT loader, Wine and ReactOS end it: at the first descriptor
+      // whose Name or FirstThunk is zero, whatever its other fields hold.
+      if (!nameRva || !addressRva) {
+        const nonzeroFields = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== 0));
+        const allZero = Object.keys(nonzeroFields).length === 0;
+        directoryEnd = { descriptor: index, rva: descriptorRva, allZero, nonzeroFields };
+        if (!allZero) pastEnd = readPastEnd(index + 1);
+        break;
+      }
       const dll = ascii(nameRva);
       if (dll === null) throw new Error(`Import descriptor ${index} has no ASCII DLL name at RVA ${hex(nameRva)}`);
       const namesFrom: NamesFrom = lookupRva ? "import lookup table" : "import address table as stored in the file";
@@ -299,6 +373,8 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
     imageBase,
     thunkWidth: width,
     importDirectory: imports.rva ? imports : null,
+    directoryEnd,
+    pastEnd,
     descriptors,
     slots,
     controls: checked,
@@ -312,7 +388,7 @@ export function importReport(bytes: Buffer, config: ImportConfig) {
     delayImportDirectory: delay.rva ? delay : null,
     rawIgnored,
     searched:
-      "the import directory: each descriptor's import lookup table and import address table, walked in step up to the null entry",
+      "the import directory up to the first descriptor whose Name or FirstThunk is zero, where the NT loader ends it: each descriptor's import lookup table and import address table, walked in step up to the null entry",
     exclusions: [
       "delay-loaded imports",
       "functions found through GetProcAddress",
