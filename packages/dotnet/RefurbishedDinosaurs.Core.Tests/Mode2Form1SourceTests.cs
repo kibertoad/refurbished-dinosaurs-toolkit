@@ -11,6 +11,8 @@ public sealed class Mode2Form1SourceTests
     private const int DescriptorSector = 16;
     private const int PayloadSector = OriginalContentSourceTests.IsoPayloadSector;
     private const int IsoSectors = OriginalContentSourceTests.IsoSectors;
+    // A sector of the volume space outside every descriptor, directory and file.
+    private const int PaddingSector = 18;
     private const byte DataSubmode = 0x08;
     private const byte Form2Submode = 0x20;
     private const string Mode1Cue = "FILE \"game.bin\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n";
@@ -147,11 +149,12 @@ public sealed class Mode2Form1SourceTests
     public async Task TheVolumeReadsAnEmptyForm2PaddingSectorAsZeros()
     {
         var iso = OriginalContentSourceTests.BuildIso([3, 1]);
-        // A sector of the volume space outside every descriptor, directory and file.
-        const int padding = 18;
-        Assert.DoesNotContain(iso.AsSpan(padding * CookedSector, CookedSector).ToArray(), value => value != 0);
+        Assert.DoesNotContain(iso.AsSpan(PaddingSector * CookedSector, CookedSector).ToArray(), value => value != 0);
         var image = ToMode2Form1(iso);
-        MakeEmptyForm2(image, padding);
+        MakeEmptyForm2(image, PaddingSector);
+        // The Form 2 EDC after the 2324 data bytes is not data, so a master that fills it in still
+        // gives an empty sector.
+        image.AsSpan(PaddingSector * RawSector + 24 + 2324, 4).Fill(0xA5);
         var mode1 = CreateTemporaryDirectory();
         var mode2 = CreateTemporaryDirectory();
         try
@@ -200,10 +203,9 @@ public sealed class Mode2Form1SourceTests
     [InlineData(24 + 2324 - 1)]
     public async Task AForm2SectorThatCarriesDataFailsTheVolume(int dataByte)
     {
-        const int padding = 18;
         var image = ToMode2Form1(OriginalContentSourceTests.BuildIso([1]));
-        MakeEmptyForm2(image, padding);
-        image[padding * RawSector + dataByte] = 0x5A;
+        MakeEmptyForm2(image, PaddingSector);
+        image[PaddingSector * RawSector + dataByte] = 0x5A;
         var root = CreateTemporaryDirectory();
         try
         {
@@ -212,7 +214,7 @@ public sealed class Mode2Form1SourceTests
             await using var volume = source.OpenVolume();
             var failure = await Assert.ThrowsAsync<InvalidDataException>(
                 () => volume.CopyToAsync(Stream.Null, TestContext.Current.CancellationToken));
-            Assert.Contains($"Sector {padding} is a MODE2 Form 2 sector that carries data", failure.Message, StringComparison.Ordinal);
+            Assert.Contains($"Sector {PaddingSector} is a MODE2 Form 2 sector that carries data", failure.Message, StringComparison.Ordinal);
         }
         finally { Directory.Delete(root, true); }
     }
@@ -220,10 +222,9 @@ public sealed class Mode2Form1SourceTests
     [Fact]
     public async Task AnEmptyForm2SectorWithDifferingSubheaderCopiesFailsTheVolume()
     {
-        const int padding = 18;
         var image = ToMode2Form1(OriginalContentSourceTests.BuildIso([1]));
-        MakeEmptyForm2(image, padding);
-        image[padding * RawSector + 20 + 1] = 1;
+        MakeEmptyForm2(image, PaddingSector);
+        image[PaddingSector * RawSector + 20 + 1] = 1;
         var root = CreateTemporaryDirectory();
         try
         {
@@ -232,7 +233,7 @@ public sealed class Mode2Form1SourceTests
             await using var volume = source.OpenVolume();
             var failure = await Assert.ThrowsAsync<InvalidDataException>(
                 () => volume.CopyToAsync(Stream.Null, TestContext.Current.CancellationToken));
-            Assert.Contains($"Sector {padding} is MODE2 but its two subheader copies differ", failure.Message, StringComparison.Ordinal);
+            Assert.Contains($"Sector {PaddingSector} is MODE2 but its two subheader copies differ", failure.Message, StringComparison.Ordinal);
         }
         finally { Directory.Delete(root, true); }
     }

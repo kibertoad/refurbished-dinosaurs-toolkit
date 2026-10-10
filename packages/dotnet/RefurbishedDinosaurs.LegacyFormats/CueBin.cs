@@ -451,11 +451,11 @@ internal sealed class RawDataTrackUserDataStream(
         if (sector[ModeOffset] != modeByte)
             throw new InvalidDataException(
                 $"Sector {index} is mode {sector[ModeOffset]}, but the cue sheet declares {declared}.");
-        if (mode == RawDataTrackMode.Mode2Form1) CheckForm1Subheader(index);
+        if (mode == RawDataTrackMode.Mode2Form1) CheckSubheader(index);
         sectorIndex = index;
     }
 
-    private void CheckForm1Subheader(long index)
+    private void CheckSubheader(long index)
     {
         var first = sector.AsSpan(SubheaderOffset, SubheaderSize);
         var second = sector.AsSpan(SubheaderOffset + SubheaderSize, SubheaderSize);
