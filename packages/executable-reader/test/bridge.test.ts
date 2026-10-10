@@ -289,6 +289,37 @@ test("uses inventories an operand past an unmodeled interrupt conditionally and 
   assert.deepEqual(modeled.conditionalAccesses, []);
 });
 
+test("uses reports each raw candidate operand's footprint against the query field", (t) => {
+  const { dir, config } = fixture(t);
+  // ret; then unreached: mov [31],ax; es: mov [33],al; ret
+  const source = Buffer.from([0xc3, 0x89, 0x06, 0x1f, 0x00, 0x26, 0x88, 0x06, 0x21, 0x00, 0xc3]);
+  writeFileSync(join(dir, "source.bin"), source);
+  const query = {
+    source: "source.bin",
+    sourceKind: "synthetic-raw",
+    xxh3: sourceXxh3(source),
+    entry: 0,
+    regions: [{ ...config.regions[0]!, start: 0, end: source.length, entries: [0] }],
+    query: { offset: 32, width: 2 },
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const report = run(["uses", join(dir, "config.json")]);
+  assert.deepEqual(
+    report.rawCandidates.map((r: Report) => [
+      r.site,
+      r.boundary,
+      r.operands.map((o: Report) => [o.displacement, o.width, o.intersection, o.access, o.effectiveSegmentRegister]),
+    ]),
+    [
+      [1, "unresolvedBoundary", [[31, 2, { start: 32, end: 33 }, ["write"], "ds"]]],
+      [5, "unresolvedBoundary", [[33, 1, { start: 33, end: 34 }, ["write"], "es"]]],
+      // The same store decoded from the byte after its prefix is a separate candidate.
+      [6, "unresolvedBoundary", [[33, 1, { start: 33, end: 34 }, ["write"], "ds"]]],
+    ],
+  );
+  assert.equal(report.negativeUsable, false);
+});
+
 test("PE32 uses takes the access direction of an x87 or INS operand from its mnemonic", (t) => {
   const kinds = (code: number[], access: string) => {
     const { dir, config } = pe32Fixture(t, code);
