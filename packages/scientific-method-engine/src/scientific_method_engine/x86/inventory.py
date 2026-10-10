@@ -4,6 +4,7 @@ from bisect import bisect_right
 from pathlib import Path
 from .image import integer
 from .trace import LIMIT_REASON, CONTESTED_REASON, walk, holding_instruction
+from .dispatch import indirect_call_declarations, declared_call_ends
 
 MAX_INVENTORY = 16 * 1024 * 1024
 MAX_ROWS = 200000
@@ -214,7 +215,8 @@ def inventory_check(image, config):
     walk established is listed in ``rowStarts``. ``noReturn`` declarations, in ``reach``'s shape, end
     the walk at a call to a declared routine and at a declared interrupt site, are checked for a
     return on the routine's own paths, and list in ``rowsPastNoReturn`` each row whose body
-    continues past such a call or interrupt.
+    continues past such a call or interrupt. ``indirectCalls`` declarations, in ``reach``'s shape,
+    make each declared target of a reached computed call a call target, and the walk reads on in them.
     """
     from .reports import call_controls, direct_calls, entries, search_coverage
     from .reach import no_return_declarations, no_return_rows, successor_graph, fewest_calls
@@ -223,8 +225,20 @@ def inventory_check(image, config):
     rows = read_inventory(config["inventory"], image)
     limit = integer(config.get("limit", 1000), 1, 10000, "result limit")
     no_return_routines, no_return_interrupts = no_return_declarations(config.get("noReturn", []), image)
-    declared = {"no_return_calls": frozenset(no_return_routines), "no_return_interrupts": frozenset(no_return_interrupts)}
+    indirect_calls = indirect_call_declarations(config.get("indirectCalls", []), image)
+    for at in config.get("controls", []) if isinstance(config.get("controls"), list) else []:
+        if at in indirect_calls:
+            raise ValueError(f"Positive control {at} is a declared indirect call, whose targets rest on its "
+                             "declaration; a control must resolve from its own encoding")
+    declared = {"no_return_calls": frozenset(no_return_routines), "no_return_interrupts": frozenset(no_return_interrupts),
+                "indirect_calls": indirect_calls}
     calls = direct_calls(image, config, **declared)
+
+    def ends_branch(row):
+        # A declared indirect call ends its branch only when every target it may call is declared noReturn.
+        if row["site"] in indirect_calls:
+            return declared_call_ends(indirect_calls[row["site"]], no_return_routines)
+        return row["target"] in no_return_routines
     seen, contested = calls["seen"], calls["contested"]
 
     starts = {(row["space"], row["at"]) for row in rows}
@@ -314,14 +328,14 @@ def inventory_check(image, config):
                                                           config.get("instructionLimit", 10000))
     entry_calls = {}
     for row in calls["rows"]:
-        if row["target"] in no_return_routines and row["site"] in seen:
+        if row["target"] in no_return_routines and row["site"] in seen and ends_branch(row):
             entry_calls.setdefault(row["target"], []).append(row["site"])
     no_return = no_return_rows(no_return_routines, no_return_interrupts, returns,
                                {at: sorted(sites) for at, sites in entry_calls.items()}, seen, seen, check_read)
 
     # A row whose body holds a declared call or interrupt and the byte after it still covers what follows.
     ends = [(row["site"], image.decode(row["site"]).size, "call", row["target"], row["classification"])
-            for row in calls["rows"] if row["target"] in no_return_routines]
+            for row in calls["rows"] if row["target"] in no_return_routines and ends_branch(row)]
     ends += [(at, row["following"] - at, "interrupt", None,
               "entry-path instruction" if at in seen else CONTESTED_REASON if at in contested else "declared site")
              for at, row in no_return_interrupts.items()]
@@ -420,10 +434,15 @@ def inventory_check(image, config):
                            + "; interrupt handlers are not read")
     if no_return:
         assumptions.append("each noReturn routine and interrupt never returns, for the reason it gives")
+    if indirect_calls:
+        assumptions.append("each declared indirect call can call the targets its declaration gives, for the evidence "
+                           "it gives, and only those when it is declared exhaustive")
+    indirect_rows = [declaration | {"reached": site in seen} for site, declaration in indirect_calls.items()]
     return {"inventory": {"path": config["inventory"], "rows": len(rows)},
             "targets": missing[:limit], "unresolved": unresolved[:limit],
             "rowsOutsideDeclaredCode": outside_code[:limit],
             "rowStarts": row_starts[:limit], "noReturn": no_return, "rowsPastNoReturn": past[:limit],
+            "indirectCalls": indirect_rows,
             "counts": {"callTargets": len(by_target), **tally, "unresolvedCalls": len(unresolved),
                        "inventoryRows": len(rows), "rowsOutsideDeclaredCode": len(outside_code),
                        "rowStarts": start_counts, "rowsPastNoReturn": len(past_rows),
@@ -434,7 +453,8 @@ def inventory_check(image, config):
             "summary": summary, "controls": controls,
             "searched": [r for r in image.regions if r["name"] in calls["scans"]], "coverage": coverage,
             "partialSearch": partial, "gaps": calls["gaps"],
-            "exclusions": ["computed call targets (listed in unresolved when the walk reaches them)", "unrelocated far calls",
+            "exclusions": ["computed call targets no indirectCalls declaration gives (listed in unresolved when the "
+                           "walk reaches them)", "unrelocated far calls",
                            "undeclared mappings", "prefix-started raw candidates off the entry path", "jump targets"],
             "interpretation": "Each distinct resolved direct call target in the searched regions, placed in the inventory's "
                               "notation and compared with its rows. A target only raw byte candidates or contested "

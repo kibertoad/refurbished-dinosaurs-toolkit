@@ -15,6 +15,7 @@ from .image import Image, instruction_limit, integer, scan_limit
 from .trace import (trace, walk, cfg_step, call_target, unsupported_transfer, uncovered, holding_instruction, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON, LIMIT_REASON,
                     RETURNS, INTERRUPTS, PORTS, PORT_INPUTS, port_width, budget_input, modeled_interrupt_sites)
 from .pcode_backend import interrupt_vector
+from .dispatch import CALL_NOT_EXHAUSTIVE
 
 
 def entries(image):
@@ -85,13 +86,16 @@ def search_coverage(image, spans):
     return rows
 
 
-def direct_calls(image, config, no_return_calls=frozenset(), no_return_interrupts=frozenset()):
+def direct_calls(image, config, no_return_calls=frozenset(), no_return_interrupts=frozenset(), indirect_calls=None):
     """Every direct call site in the searched regions, as ``incoming`` and ``inventory-check`` read them.
 
     Walks the entry-path CFG from every established entry, ending a branch at a call to a routine in
-    ``no_return_calls`` and at an interrupt site in ``no_return_interrupts`` as ``walk`` does, then
+    ``no_return_calls`` and at an interrupt site in ``no_return_interrupts`` and following the declared
+    targets of each ``indirect_calls`` site as ``walk`` does, then
     scans every byte of the regions ``searchRegions`` names (all regions by default) for E8 and 9A
-    call starts, and adds each reached call the scan cannot see (one that starts with a prefix). Returns a dict with the walk's
+    call starts, and adds each reached call the scan cannot see (one that starts with a prefix). A
+    reached declared indirect call gives one row for each declared target, and one unresolved row more
+    when it is not declared exhaustive; those rows are not in ``scanned``. Returns a dict with the walk's
     ``seen``, ``gaps`` (with a ``raw scan limit`` gap where ``scanLimit`` stopped a region),
     ``edges``, ``undecoded`` and ``contested``; ``rows``, every call row in the order it was read,
     each with its ``target`` (None when unresolved); ``scanned``, those rows by site, leaving out
@@ -99,7 +103,8 @@ def direct_calls(image, config, no_return_calls=frozenset(), no_return_interrupt
     searched; and ``read``, the byte span the scan read in each.
     """
     seen, gaps, edges, undecoded, contested = walk(image, entries(image), config.get("instructionLimit", 10000),
-                                                   no_return_calls=no_return_calls, no_return_interrupts=no_return_interrupts)
+                                                   no_return_calls=no_return_calls, no_return_interrupts=no_return_interrupts,
+                                                   indirect_calls=indirect_calls)
     rows, scanned = [], {}
 
     def classify(at):
@@ -143,6 +148,15 @@ def direct_calls(image, config, no_return_calls=frozenset(), no_return_interrupt
         if unsupported_transfer(image, ins):
             rows.append({"site": at, "target": None, "encoding": ins.mnemonic, "region": region["name"],
                          "classification": "unsupported control-transfer frame encoding"})
+            continue
+        declaration = (indirect_calls or {}).get(at)
+        if declaration is not None:
+            provenance = {"encoding": "declared indirect call", "evidence": declaration["evidence"]}
+            rows.extend({"site": at, "target": target, "encoding": ins.mnemonic, "classification": classify(at),
+                         "provenance": provenance, "region": region["name"]} for target in declaration["targets"])
+            if not declaration["exhaustive"]:
+                rows.append({"site": at, "target": None, "encoding": ins.mnemonic, "classification": classify(at),
+                             "provenance": {"reason": CALL_NOT_EXHAUSTIVE}, "region": region["name"]})
             continue
         resolved, provenance = call_target(image, at, ins)
         row = {"site": at, "target": resolved, "encoding": ins.mnemonic,
@@ -1854,6 +1868,9 @@ def _run_report(image, config, command):
         raise ValueError("entryFrame applies only to " + ", ".join(TRACE_COMMANDS))
     if "inventory" in config and command != "inventory-check":
         raise ValueError("inventory applies only to inventory-check")
+    # Other commands do not read the declarations, so a config that carries them is refused rather than ignored.
+    if "indirectCalls" in config and command not in ("reach", "inventory-check"):
+        raise ValueError("indirectCalls applies only to reach and inventory-check")
     if command == "operand":
         return operand_provenance(image, config)
     if command == "target":

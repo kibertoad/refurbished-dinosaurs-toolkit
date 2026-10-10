@@ -3,6 +3,7 @@
 Status: accepted. Extends [ADR 0024](0024-call-targets-a-function-inventory-lacks.md) with row
 checks, and [ADR 0029](0029-declared-non-returning-routines-and-interrupts.md) with `noReturn`
 declarations in `inventory-check`.
+[ADR 0033](0033-declared-computed-call-targets.md) adds `indirectCalls` declarations to it.
 
 ## Context
 

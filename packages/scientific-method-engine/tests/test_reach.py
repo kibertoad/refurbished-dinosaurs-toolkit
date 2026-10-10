@@ -383,5 +383,147 @@ class ReachTests(unittest.TestCase):
                 reach(**extra)
 
 
+def _code(size, parts):
+    data = bytearray(b"\x90" * size)
+    for at, encoded in parts.items():
+        data[at:at + len(encoded) // 2] = bytes.fromhex(encoded)
+    return bytes(data)
+
+
+# 0000 masks its argument to 0..3, doubles it and calls through the four words at 0040, which name
+# 0100, 0110, 0120 and 0130. It then calls through the far pointer at 0200. Only 0120 calls 0140, which
+# stores a word. 0130 never returns. The far pointer pair at 0048 names 0110 once its segment word is relocated.
+COMPUTED = _code(0x160, {
+    0x00: "8b5e06",        # mov bx, [bp+6]
+    0x03: "83e303",        # and bx, 3
+    0x06: "d1e3",          # shl bx, 1
+    0x08: "2eff974000",    # call word ptr cs:[bx+0040]
+    0x0D: "ff1e0002",      # call far [0200]
+    0x11: "c3",            # ret
+    0x40: "0001100120013001",
+    0x48: "10010000",
+    0x100: "c3",
+    0x110: "c3",
+    0x120: "e81d00c3",     # call 0140; ret
+    0x130: "ebfe",         # jmp 0130
+    0x140: "c70600010100c3",  # mov word [0100], 1; ret
+    0x150: "c3",           # nothing reaches it
+})
+NEAR_TABLE = {"site": 0x08, "exhaustive": True, "evidence": "synthetic: bx is the argument masked to 0..3 and doubled",
+              "table": {"start": 0x40, "count": 4, "stride": 2, "evidence": "synthetic: four words under and bx, 3"}}
+FAR_TARGETS = {"site": 0x0D, "exhaustive": True, "targets": [0x110, 0x130],
+               "evidence": "synthetic: every path stores one of two far pointers at 0200 just before the call"}
+
+
+def computed(**extra):
+    return run_report(COMPUTED, config(COMPUTED, **{"targets": [0x140, 0x150], **extra}), "reach")
+
+
+class DeclaredIndirectCallTests(unittest.TestCase):
+    def test_an_undeclared_computed_call_is_unresolved_and_its_targets_are_not_reached(self):
+        r = computed()
+        self.assertEqual([t["status"] for t in r["targets"]], ["not reached", "not reached"])
+        self.assertEqual([(u["site"], u["kind"]) for u in r["unresolved"]], [(0x08, "call"), (0x0D, "call")])
+        self.assertEqual(r["reachedRoutines"], [0])
+        self.assertEqual(r["indirectCalls"], [])
+        self.assertFalse(r["negativeUsable"])
+
+    def test_declared_targets_are_called_and_an_exhaustive_declaration_leaves_the_negative_usable(self):
+        r = computed(indirectCalls=[NEAR_TABLE, FAR_TARGETS], controls=[0x120])
+        reached, unreached = r["targets"]
+        self.assertEqual(reached["chain"], [{"routine": 0}, {"callSite": 0x08, "routine": 0x120},
+                                            {"callSite": 0x120, "routine": 0x140}])
+        self.assertEqual(reached["route"]["declaredCalls"], [{"site": 0x08, "target": 0x120}])
+        self.assertEqual(reached["throughEveryRoute"], [0, 0x120])
+        self.assertEqual(unreached["status"], "not reached")
+        self.assertEqual(r["reachedRoutines"], [0, 0x100, 0x110, 0x120, 0x130, 0x140])
+        self.assertEqual((r["unresolved"], r["gaps"]), ([], []))
+        self.assertTrue(r["negativeUsable"])
+        near, far = r["indirectCalls"]
+        self.assertEqual(near["rows"], [{"index": i, "operandSite": 0x40 + 2 * i, "rawOffset": t, "target": t}
+                                        for i, t in enumerate((0x100, 0x110, 0x120, 0x130))])
+        self.assertEqual((near["targets"], near["reached"], near["routine"], near["unreadTargets"]),
+                         ([0x100, 0x110, 0x120, 0x130], True, 0, []))
+        self.assertIn("[bx + 0x40]", near["instruction"])
+        self.assertEqual({k: far[k] for k in ("site", "targets", "exhaustive", "evidence", "reached")},
+                         {"site": 0x0D, "targets": [0x110, 0x130], "exhaustive": True,
+                          "evidence": FAR_TARGETS["evidence"], "reached": True})
+        self.assertNotIn("rows", far)
+        self.assertIn("each declared indirect call can call the targets its declaration gives, for the evidence it "
+                      "gives, and only those when it is declared exhaustive", r["assumptions"])
+
+    def test_a_declaration_not_exhaustive_is_followed_and_stays_unresolved(self):
+        r = computed(indirectCalls=[{**NEAR_TABLE, "exhaustive": False}], controls=[0x120])
+        self.assertTrue(r["targets"][0]["reached"])
+        self.assertEqual([(u["site"], u["kind"], u["reason"]) for u in r["unresolved"]],
+                         [(0x08, "call", "indirect call targets are not declared exhaustive"),
+                          (0x0D, "call", "computed transfer remains unresolved")])
+        self.assertEqual(r["gaps"], [])
+        self.assertFalse(r["negativeUsable"])
+
+    def test_a_far_table_reads_its_segment_word_through_a_declared_relocation(self):
+        table = {"site": 0x0D, "exhaustive": True, "evidence": "synthetic: the pointer at 0200 is copied from 0048",
+                 "table": {"start": 0x48, "count": 1, "stride": 4, "width": 4, "evidence": "synthetic: one far pointer"}}
+        relocations = [{"site": 0x4A, "segment": 0x1000, "evidence": "synthetic relocation of the segment word"}]
+        r = computed(indirectCalls=[table], relocations=relocations, targets=[0x110])
+        self.assertEqual(r["indirectCalls"][0]["rows"], [{"index": 0, "operandSite": 0x48, "rawOffset": 0x110,
+                                                          "rawSegment": 0, "resolvedSegment": 0x1000, "target": 0x110}])
+        self.assertEqual(r["targets"][0]["chain"], [{"routine": 0}, {"callSite": 0x0D, "routine": 0x110}])
+        with self.assertRaisesRegex(ValueError, "row 0 has no declared relocation for its segment word at 74"):
+            computed(indirectCalls=[table])
+        with self.assertRaisesRegex(ValueError, "row 0 target is not admitted: far pointer names no declared code region"):
+            computed(indirectCalls=[table], relocations=[{**relocations[0], "segment": 0x2000}])
+
+    def test_a_declared_call_ends_its_branch_only_when_every_target_is_no_return(self):
+        no_return = [{"routine": 0x130, "reason": "synthetic: spins forever"}]
+        ended = computed(indirectCalls=[{**FAR_TARGETS, "targets": [0x130]}], noReturn=no_return, targets=[0x11])
+        self.assertEqual(ended["targets"][0]["status"], "not reached")
+        self.assertEqual(ended["noReturn"][0]["callSites"], [{"site": 0x0D, "following": 0x11, "followingRead": False}])
+        with self.assertRaisesRegex(ValueError, r"instruction control 17 is not reached \(it follows the call at 13 "
+                                                r"to noReturn routine 304\)"):
+            computed(indirectCalls=[{**FAR_TARGETS, "targets": [0x130]}], noReturn=no_return, instructionControls=[0x11])
+        # 0110 returns, so the call continues at its return site.
+        mixed = computed(indirectCalls=[FAR_TARGETS], noReturn=no_return, targets=[0x11], instructionControls=[0x11])
+        self.assertTrue(mixed["targets"][0]["reached"])
+        self.assertEqual(mixed["noReturn"][0]["callSites"], [])
+        self.assertFalse(mixed["noReturn"][0]["contradicted"])
+
+    def test_a_declared_target_inside_a_reached_instruction_is_unread_and_keeps_the_negative_unusable(self):
+        r = computed(indirectCalls=[NEAR_TABLE, {**FAR_TARGETS, "targets": [0x141]}], instructionControls=[0x08])
+        self.assertEqual(r["indirectCalls"][1]["unreadTargets"], [0x141])
+        self.assertTrue(r["gaps"])
+        self.assertFalse(r["negativeUsable"])
+
+    def test_a_declared_site_is_refused_as_a_call_control(self):
+        with self.assertRaisesRegex(ValueError, "control 8 is a declared indirect call"):
+            computed(indirectCalls=[NEAR_TABLE], controls=[0x08])
+        self.assertTrue(computed(indirectCalls=[NEAR_TABLE], instructionControls=[0x08])["targets"][0]["reached"])
+
+    def test_rejected_declarations(self):
+        table = NEAR_TABLE["table"]
+        for declaration, message in [
+                ({}, "site, evidence, exhaustive and exactly one of table and targets"),
+                ({**NEAR_TABLE, "targets": [0x100]}, "exactly one of table and targets"),
+                ({**FAR_TARGETS, "unknown": 1}, "exactly one of table and targets"),
+                ({**FAR_TARGETS, "evidence": " "}, "needs evidence"),
+                ({**FAR_TARGETS, "exhaustive": 1}, "explicit exhaustive"),
+                ({**FAR_TARGETS, "site": 0x120}, "site 288 must decode as an unprefixed computed near word call"),
+                ({**FAR_TARGETS, "site": 0x00}, "site 0 must decode"),
+                ({**FAR_TARGETS, "targets": []}, "1..256 distinct file offsets"),
+                ({**FAR_TARGETS, "targets": [0x110, 0x110]}, "1..256 distinct file offsets"),
+                ({**FAR_TARGETS, "targets": [0x1000]}, "indirect call target must be an integer"),
+                ({**NEAR_TABLE, "table": {**table, "evidence": ""}}, "layout/count evidence"),
+                ({**NEAR_TABLE, "table": {**table, "width": 4}}, "near call table holds 2-byte targets"),
+                ({**NEAR_TABLE, "table": {**table, "count": 0}}, "table count"),
+                ({**NEAR_TABLE, "table": {**table, "start": 0x15E, "count": 2}}, "leaves source bounds"),
+                ({**NEAR_TABLE, "table": {**table, "start": 0x08, "count": 1}}, "row 0 target leaves declared code")]:
+            with self.subTest(declaration=declaration), self.assertRaisesRegex(ValueError, message):
+                computed(indirectCalls=[declaration])
+        with self.assertRaisesRegex(ValueError, "Duplicate indirect call site"):
+            computed(indirectCalls=[FAR_TARGETS, FAR_TARGETS])
+        with self.assertRaisesRegex(ValueError, "indirectCalls must be a list"):
+            computed(indirectCalls={})
+
+
 if __name__ == "__main__":
     unittest.main()
