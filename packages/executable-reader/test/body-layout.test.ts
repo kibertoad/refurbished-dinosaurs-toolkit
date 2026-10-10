@@ -213,7 +213,7 @@ test("a nonzero byte between two descriptors' spans makes the run undeclared", (
   });
 });
 
-test("resident spans that overlap or run past the load image fail the layout but not the loader", () => {
+test("resident spans that overlap fail the layout but not the loader", () => {
   const overlapping = spans();
   overlapping.writeUInt16LE(0x11, 170);
   assert.equal(readMz(overlapping).descriptors[1]!.maxOffset, 0x11);
@@ -221,13 +221,51 @@ test("resident spans that overlap or run past the load image fail the layout but
     () => fileLayout(readMz(overlapping)),
     /FBOV descriptors 1 and 2 give overlapping spans 112\.\.129 and 128\.\.160/,
   );
+});
+
+test("a resident span that runs past the load image keeps its bytes in the load image", (t) => {
+  // Descriptor 0 runs from 64 to 320, past the load image's end at 200; the others hold no bytes.
+  const past = spans();
+  past.writeUInt16LE(0x100, 162);
+  for (const p of [170, 178, 194]) past.writeUInt16LE(0, p);
+  assert.deepEqual(
+    descriptorExtents(readMz(past)).map((e) => [e.descriptor, e.status, e.start, e.end]),
+    [
+      [0, "outside-load-image", 64, 320],
+      [1, "empty", 112, 112],
+      [2, "empty", 128, 128],
+      [3, "inverted", 148, 147],
+      [4, "empty", 160, 160],
+    ],
+  );
+  const { query } = harness(t, past, { formatControls: { descriptors: 5 } });
+  const r = query({ functions: [{ entry: 64, body: [{ start: 64, end: 160 }] }] });
+  assert.deepEqual(
+    r.layout.map((g: Report) => [g.kind, g.descriptor, g.start, g.end]),
+    [
+      ["mz-header", null, 0, 64],
+      ["resident", 0, 64, 160],
+      ["fbov-descriptors", null, 160, 200],
+      ["zero-padding", null, 200, 208],
+      ["fbov-header", null, 208, 224],
+    ],
+  );
+  assert.equal(r.descriptors[0].extent, "outside-load-image");
+  assert.equal(r.functions[0].outsideEntryRegion, 0);
+});
+
+test("spans past the load image and empty or overlay descriptors leave the rest of the layout alone", () => {
   const past = spans();
   past.writeUInt16LE(0x30, 194);
   assert.equal(descriptorExtents(readMz(past))[4]!.status, "outside-load-image");
-  assert.throws(
-    () => fileLayout(readMz(past)),
-    /FBOV descriptor 4 gives a span 160\.\.208 that ends past the load image at 200/,
-  );
+  assert.deepEqual(fileLayout(readMz(past)), fileLayout(readMz(spans())));
+  // A resident descriptor that holds no bytes, at a place past the load image, leaves the layout alone.
+  const empty = spans();
+  empty.writeUInt16LE(0x40, 184);
+  empty.writeUInt16LE(0, 186);
+  empty.writeUInt16LE(0, 190);
+  assert.equal(descriptorExtents(readMz(empty))[3]!.status, "outside-load-image");
+  assert.deepEqual(fileLayout(readMz(empty)), fileLayout(readMz(spans())));
   // An overlay descriptor's span is reported and leaves the layout alone.
   const overlay = overlays();
   overlay.writeUInt16LE(0xffff, 138);
@@ -570,6 +608,7 @@ test("invalid ranges, entries and missing or failed format controls are refused"
   );
   assert.throws(() => query({ sourceKind: "synthetic-raw", functions: [] }), /reads mz sources/);
   assert.throws(() => query({ functions: {} }), /functions must be 0\.\./);
+  assert.throws(() => query({ functions: null }), /functions must be 0\.\./);
   assert.throws(() => one({ entry: 544, body: [{ start: 548, end: 548 }] }), /body\[0\] must be/);
   assert.throws(() => one({ entry: 544, body: [{ start: 580, end: 593 }] }), /<= 592, the file's length/);
   assert.throws(() => one({ entry: 544, body: [{ start: -1, end: 4 }] }), /body\[0\] must be/);

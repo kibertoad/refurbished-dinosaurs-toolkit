@@ -1530,24 +1530,29 @@ reader reads the words as a span of the load image, from `segment * 16 + minOffs
 |---|---|
 | `index`, `segment`, `maxOffset`, `flags`, `minOffset` | the descriptor's position and its four words as stored |
 | `overlay` | true when bit 1 of `flags` is set |
-| `extent` | `bytes` when `minOffset` is below `maxOffset` and the span lies in the load image, `empty` when the two words are equal, `inverted` when `maxOffset` is below `minOffset` (no bytes either), and `outside-load-image` when the span ends past the load image |
+| `extent` | `bytes` when `minOffset` is below `maxOffset` and the span lies in the load image, `empty` when the two words are equal, `inverted` when `maxOffset` is below `minOffset` (no bytes either), and `outside-load-image` when the span, or the place an empty span names, ends past the load image |
 | `start`, `end` | the span as file offsets; `end` is below `start` for an `inverted` descriptor |
 | `loadedSegment`, `ip` | `start` as a loaded address: the load segment plus `segment`, and `minOffset`. `loadedSegment` is null past FFFF |
 
 In a file with an envelope, the layout reads the load image through the resident descriptors (those
-without the overlay bit) whose `extent` is `bytes`. Each span's bytes, less the envelope's tables,
+without the overlay bit) whose span holds bytes. Each span's bytes, less the envelope's tables,
 are `resident` with that descriptor, and load-image bytes no span holds are runs between declared
 regions, `zero-padding` or `undeclared` as above, the way bytes in the FBOV payload that no overlay
 holds are. A body that runs from one segment into the next is therefore outside its entry's region
-there. A resident descriptor whose span ends past the load image, or two resident spans that
-overlap, fail the report; the loader itself refuses neither, so every other command still reads
-the file. Overlay descriptors' spans are listed and leave the layout alone.
+there. A resident span that runs past the load image, such as a segment whose end is memory the
+program gets at load time and the file does not store, keeps the part in the load image; its row
+still reports `outside-load-image`. Two resident spans that overlap in the load image fail the
+report; the loader itself does not refuse them, so every other command still reads the file.
+Overlay descriptors' spans are listed and leave the layout alone.
 
 A resident descriptor's `start`, `end`, `loadedSegment` and `ip` are the `start`, `end`, `segment`
 and `ip` of a code region, which the reader checks against the file when a query declares it. The caller
 decides which descriptors hold code: the reader does not read it from `flags`, so a config
 picks the descriptors it treats as code, adds `name`, `entries` and `evidence`, and declares overlay
-code regions from the `overlay-code` layout rows with an analysis segment of its choosing.
+code regions from the `overlay-code` layout rows with an analysis segment of its choosing. An
+overlay row (`overlay` true) reads its words the same way, but what those words mean for an
+overlay's stub is not established, so its span is never a code region: filter rows by `overlay` as
+well as by `extent`.
 
 Each function's `entry` gives its `offset`, the `kind` and `descriptor` of the region holding it,
 `inBody` (whether a body range holds it) and `trampolines`, the stub trampolines whose target it

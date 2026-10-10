@@ -118,19 +118,19 @@ export interface DescriptorRow extends Descriptor, Omit<DescriptorExtent, "descr
 }
 
 /**
- * The spans of the load image the resident descriptors' words give (see {@link descriptorExtents}),
- * sorted by start. Overlay descriptors and descriptors that hold no bytes are left out. Throws when a
- * resident descriptor's span runs past the load image or two spans overlap, since a byte would then
- * have no single place in the layout.
+ * The bytes of the load image the resident descriptors' words give (see {@link descriptorExtents}),
+ * sorted by start. Overlay descriptors and descriptors that hold no bytes are left out. A span that
+ * runs past the load image keeps only its bytes in the load image, since the file stores nothing of
+ * the rest (memory the program gets at load time, such as a stack); its descriptor row still reports
+ * `outside-load-image`. Throws when two of the kept spans overlap, since a byte would then have no
+ * single place in the layout.
  */
-function residentSpans(image: MzImage): DescriptorExtent[] {
-  const extents = descriptorExtents(image).filter((e) => !e.overlay);
-  const outside = extents.find((e) => e.status === "outside-load-image");
-  if (outside)
-    throw new Error(
-      `FBOV descriptor ${outside.descriptor} gives a span ${outside.start}..${outside.end} that ends past the load image at ${image.end}`,
-    );
-  const spans = extents.filter((e) => e.status === "bytes").sort((a, b) => a.start - b.start);
+function residentSpans(image: MzImage): { descriptor: number; start: number; end: number }[] {
+  const spans = descriptorExtents(image)
+    .filter((e) => !e.overlay && (e.status === "bytes" || e.status === "outside-load-image"))
+    .map((e) => ({ descriptor: e.descriptor, start: e.start, end: Math.min(e.end, image.end) }))
+    .filter((e) => e.end > e.start)
+    .sort((a, b) => a.start - b.start);
   for (let i = 1; i < spans.length; i++)
     if (spans[i]!.start < spans[i - 1]!.end)
       throw new Error(
@@ -149,8 +149,8 @@ function residentSpans(image: MzImage): DescriptorExtent[] {
  * read through the descriptor table: the bytes of each resident descriptor's span (see
  * {@link descriptorExtents}) are `resident` with that descriptor, outside the envelope's own tables,
  * and load-image bytes no span holds are runs between declared regions, like bytes in the FBOV
- * payload no overlay holds. Throws when a resident descriptor's span ends past the load image or
- * two spans overlap.
+ * payload no overlay holds. A resident span that runs past the load image is cut at its end. Throws
+ * when two resident spans overlap in the load image.
  */
 export function fileLayout(image: MzImage): LayoutRegion[] {
   // The tables the FBOV envelope keeps in the load image: each overlay's stub and the descriptors.
@@ -169,8 +169,8 @@ export function fileLayout(image: MzImage): LayoutRegion[] {
   // Without an envelope the whole load image is resident; with one, only the resident descriptors'
   // spans are. Either way the envelope's tables are cut out of it.
   const spans = image.envelope
-    ? residentSpans(image).map((e) => ({ descriptor: e.descriptor as number | null, start: e.start, end: e.end }))
-    : [{ descriptor: null, start: image.header, end: image.end }];
+    ? residentSpans(image)
+    : [{ descriptor: null as number | null, start: image.header, end: image.end }];
   for (const span of spans) {
     let at = span.start;
     for (const table of tables) {
@@ -310,22 +310,15 @@ export function bodyLayout(bytes: Buffer, config: BodyConfig) {
     throw new Error("bodies needs formatControls: the classification rests on the tables being read right");
   const controls = checkFormatControls(image, config.formatControls);
   const layout = fileLayout(image);
-  const functions = config.functions ?? [];
+  // Left out means none; an explicit null is refused like any other non-list.
+  const functions = config.functions === undefined ? [] : config.functions;
   if (!Array.isArray(functions) || functions.length > MAX_BODY_FUNCTIONS)
     throw new Error(`functions must be 0..${MAX_BODY_FUNCTIONS} objects`);
-  const extents = descriptorExtents(image);
-  const descriptors: DescriptorRow[] = image.descriptors.map((d, i) => {
-    const e = extents[i]!;
-    return {
-      ...d,
-      overlay: e.overlay,
-      extent: e.status,
-      start: e.start,
-      end: e.end,
-      loadedSegment: e.loadedSegment,
-      ip: e.ip,
-    };
-  });
+  const descriptors: DescriptorRow[] = descriptorExtents(image).map(({ descriptor, status, ...extent }) => ({
+    ...image.descriptors[descriptor]!,
+    ...extent,
+    extent: status,
+  }));
 
   // The entry's own region: parts of another kind or descriptor, or of another undeclared run, lie outside it.
   const outside = (region: LayoutRegion, home: LayoutRegion) =>
