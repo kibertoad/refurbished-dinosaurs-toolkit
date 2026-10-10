@@ -31,14 +31,16 @@ def far_pointer_word(state, read, low):
 
     ``row`` reports the word's value and the producers and writers of its two bytes. ``word`` is the
     modeled value of those bytes with all their sources, including the markers of declared return
-    results that ``producers`` leaves out, or None when a byte has no modeled value.
+    results that ``producers`` leaves out, or None when a byte has no modeled value or lies in
+    declared volatile memory, whose read has no producer.
     """
     rows = read["byteProducers"][low // 8:low // 8 + 2]
     interval = read["interval"]
     seg, base, start = interval["segment"], interval["base"], interval["start"]
     keys = [(seg, base, start + i if seg == ("linear",) else (start + i) % (1 << state.bits))
             for i in (low // 8, low // 8 + 1)]
-    word = join([state.memory[key] for key in keys]) if all(key in state.memory for key in keys) else None
+    word = (join([state.memory[key] for key in keys])
+            if all(key in state.memory and "unwritten" not in row for key, row in zip(keys, rows)) else None)
     return ({"value": None if word is None else word.number,
              "producers": sorted({p for row in rows for p in row["producers"]}), "bytes": rows}, word)
 

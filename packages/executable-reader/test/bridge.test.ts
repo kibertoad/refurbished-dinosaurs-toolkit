@@ -1680,6 +1680,36 @@ test("trace follows an indirect far call through a pointer the path stored, with
   assert.equal(stopped.completeWithinModel, false);
 });
 
+test("trace gives each read of declared volatile memory its own term through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // l: mov ax, es:[0x6c]; cmp ax, dx; je l; ret
+  data.set([0x26, 0xa1, 0x6c, 0, 0x39, 0xd0, 0x74, 0xf8, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const timer = { segment: 0x40, offset: 0x6c, bytes: 2, evidence: "synthetic timer counter" };
+  const polls = (volatileMemory: object[]) => {
+    const query = { ...config, xxh3: sourceXxh3(data), registers: { es: 0x40 }, visitLimit: 3, volatileMemory };
+    writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+    const result = run(["trace", join(dir, "config.json")]);
+    return result.paths
+      .filter((p: Report) => p.returned)
+      .map((p: Report) => p.events.filter((e: Report) => e.kind === "read"));
+  };
+  // Without the range every poll reads one term, so the path leaves only after the first poll.
+  assert.deepEqual(
+    polls([]).map((reads: Report[]) => reads.length),
+    [1],
+  );
+  const exits = polls([timer]);
+  assert.deepEqual(exits.map((reads: Report[]) => reads.length).sort(), [1, 2, 3]);
+  const last = exits.find((reads: Report[]) => reads.length === 3)!;
+  assert.deepEqual(
+    last.map((e: Report) => e.byteProducers[0].unwritten),
+    last.map((e: Report) => ({ cause: "declared volatile", order: e.order })),
+  );
+  assert.equal(new Set(last.map((e: Report) => JSON.stringify(e.value.expression))).size, 3);
+});
+
 test("effects reports port accesses as hardware boundaries apart from RAM writes through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);

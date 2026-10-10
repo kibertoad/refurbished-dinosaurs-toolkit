@@ -167,6 +167,16 @@ reported as `undecided` and never counts as held. Access reports also give each 
 same of memory the program never reads back, at a checkpoint. See the
 [controls contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#relational-controls).
 
+Two reads of a byte the model holds no value for read one term until a write that may store it or a
+modeled call, which assumes nothing else changes memory. A query whose program polls memory that
+hardware, DMA or an interrupt handler updates lists those addresses in `volatileMemory`: up to 64
+rows of `segment` (a real-mode paragraph, or 0 in the PE32 flat model), `offset`, `bytes` and
+`evidence`. Each read of a byte inside a declared range reads its own term, ignoring any value the
+path stored, and its `byteProducers` row gives cause `declared volatile` with the read's order and
+the declared row's index in `volatileMemory`. A read whose address is not concrete but may name a
+declared byte keeps its term and carries `mayBeVolatile: true`. See the
+[memory model](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#bounded-instruction-reports).
+
 A trace-family query whose entry lies inside a function body names the function's entry in
 `entryFrame: { "from": <site> }`. The engine traces from there to the query's entry and, when SP
 sits at one offset from the function's entry SP at every arrival, starts the query in that frame,

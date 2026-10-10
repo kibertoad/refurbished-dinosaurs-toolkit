@@ -60,8 +60,10 @@ def capture_scopes(state, model, frame_bytes=0):
     """Resolve each scope against the pre-call state and snapshot its bytes.
 
     Returns ``(values, unread, descriptions)``: the cached bytes, the unknown term names of bytes
-    the model had no value for, and one report entry per scope. The segment must be concrete. The
-    base may be concrete, or a symbolic value such as SP or BP at an offset from an unknown entry SP
+    the model had no value for, and one report entry per scope. The entry counts the scope's bytes
+    in ``cachedBytes``, ``uncachedBytes`` and ``volatileBytes``: a byte inside a range the query's
+    ``volatileMemory`` declares counts only as volatile, since a read of it ignores any kept value.
+    The segment must be concrete. The base may be concrete, or a symbolic value such as SP or BP at an offset from an unknown entry SP
     (ADR 0013): the scope's bytes are then keyed by that value, as reads and writes through it are.
     Raises ``StopPath`` when the segment is not concrete, a concrete interval leaves the address
     space, two scopes on one base value share a byte, or two scopes on different base values may
@@ -110,10 +112,13 @@ def capture_scopes(state, model, frame_bytes=0):
             raise StopPath("preservesMemory scope covers the return frame the processor writes below SP")
         resolved.append(((seg, group_base), set(keys), domain))
         linear = seg == ("linear",)
-        cached = 0
+        cached = volatile = 0
         for key in keys:
+            # A read of a declared volatile byte ignores the kept value, so it counts apart.
+            inside = (state.volatility(key) or ("",))[0] == "inside"
+            volatile += inside
             if key in state.memory:
-                cached += 1
+                cached += not inside
                 values[key] = state.memory[key]
             else:
                 unread[key] = state.unread_term(key)
@@ -123,7 +128,8 @@ def capture_scopes(state, model, frame_bytes=0):
             "offset": offset.number,
             "interval": {"segment": seg, "base": group_base, "start": start, "end": start + size},
             "linearStart": start if linear else None, "linearEnd": start + size if linear else None, "bytes": size,
-            "cachedBytes": cached, "uncachedBytes": size - cached, "evidence": scope["evidence"],
+            "cachedBytes": cached, "uncachedBytes": size - cached - volatile, "volatileBytes": volatile,
+            "evidence": scope["evidence"],
             "meaning": "explicit pre-call memory-preservation hypothesis; memory outside every scope is unknown"})
     return values, unread, descriptions
 
