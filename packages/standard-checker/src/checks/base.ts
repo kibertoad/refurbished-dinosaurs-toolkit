@@ -1,6 +1,7 @@
 // IDs, areas and deviations that exist on the base branch must not disappear, and a format entry
 // superseded since the base keeps the layout table it had there. A superseded entry that --squashed
-// lists may disappear into the replacements it named at the base.
+// lists may disappear into the replacements it named at the base. An ID the change adds may not be
+// one the base branch's tip took for another entry.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -17,6 +18,15 @@ export const gitIn =
   (dir: string) =>
   (...args: string[]) =>
     execFileSync("git", ["-C", dir, ...args], { stdio: ["ignore", "pipe", "ignore"] }).toString();
+
+/** The object name that spec resolves to with git, run through gitIn, or null when it does not resolve. */
+export function revParse(git: ReturnType<typeof gitIn>, spec: string): string | null {
+  try {
+    return git("rev-parse", "-q", "--verify", spec).trim();
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Where HEAD forked from ref: their merge-base. While a merge is being committed (a pre-commit hook
@@ -52,11 +62,13 @@ export function baseTarget(baseArg: string | null | undefined): string {
 }
 
 /**
- * Reports a spec ID, area or deviation that exists at the base (--base, or where HEAD forked from
- * the base branch) and is gone now, and a superseded format entry whose Layout has no table although
- * it had one at the base. Without --base, a fork point that does not resolve is recorded as a
- * skipped step, or with --require-base reported as a problem. Returns the base it compared with, or
- * null when there was none.
+ * Reports a spec ID, area or deviation that exists at the base (where HEAD forked from --base, or
+ * from the base branch) and is gone now, a superseded format entry whose Layout has no table although
+ * it had one at the base, and a spec ID or deviation the change adds that the tip of --base or the
+ * base branch holds with content this branch never held. Without --base, a fork point that does not
+ * resolve is recorded as a skipped step, or with --require-base reported as a problem. Returns the
+ * commit it compared with (the fork point, or --base as it is when HEAD shares no history with it),
+ * or null when there was none.
  *
  * An ID that --squashed lists is accepted as gone when at the base it was superseded by exactly the
  * listed replacements, and each replacement exists now and is not superseded, or is squashed in the
@@ -74,11 +86,26 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>): str
   // target in CI), not that branch's tip: an entry added on the base branch after this branch
   // forked is not one this branch deleted. A base that resolves but cannot be listed is a problem.
   const git = gitIn(repoDir);
-  let base = baseArg;
-  if (!base) {
-    const target = baseTarget(null);
+  const target = baseTarget(baseArg);
+  // base names the comparison in messages; from is the commit compared with.
+  let base: string;
+  let from: string;
+  if (baseArg) {
+    // An explicit --base that HEAD has not reached, such as a branch that moved on since this one
+    // forked from it, is compared from the fork point, so its newer entries do not read as deleted
+    // here. A base with no history in common with HEAD is compared as it is.
+    base = baseArg;
+    from = baseArg;
     try {
-      base = forkPoint(repoDir, target);
+      from = forkPoint(repoDir, baseArg);
+      if (from !== git("rev-parse", "--verify", `${baseArg}^{commit}`).trim())
+        base = `${from} (where HEAD forked from ${baseArg})`;
+    } catch {
+      // Compared as it is; the listing below reports a base that does not resolve.
+    }
+  } else {
+    try {
+      base = from = forkPoint(repoDir, target);
     } catch (error) {
       // Outside a git repository, in a shallow clone, or without the base branch fetched, there is
       // no fork point, and the deleted-ID checks cannot run. The run says so instead of reading as
@@ -94,12 +121,13 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>): str
   }
   let listing: string;
   try {
-    listing = git("ls-tree", "-r", "--name-only", base, "--", "spec", "deviations");
+    listing = git("ls-tree", "-r", "--name-only", from, "--", "spec", "deviations");
   } catch {
     problem(null, `cannot list spec/ at ${base}`);
     return null;
   }
   const atBase = new Set<string>();
+  const devsAtBase = new Set<string>();
   for (const p of listing.split("\n")) {
     const m =
       /^spec\/(?:builds|sources|formats|rules|findings|experiments|bugs|screens)\/([A-Z]+-[A-Z0-9.-]+)\.md$/.exec(p);
@@ -107,17 +135,18 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>): str
     if (m && !entries.has(m[1])) {
       const into = squashed.get(m[1]);
       // ls-tree lists paths relative to --root, and ./ makes git show read them the same way.
-      if (into) checkSquashed(ctx, m[1], into, base, gitShow(git, base, `./${p}`));
+      if (into) checkSquashed(ctx, m[1], into, base, gitShow(git, from, `./${p}`));
       else problem(null, `${m[1]} exists at ${base} and has been deleted or renamed`, "IDENTIFIERS-6");
     }
     const d = /^deviations\/(DEV-[A-Z0-9]+-\d+)\.md$/.exec(p);
+    if (d) devsAtBase.add(d[1]);
     if (d && !deviations.has(d[1])) problem(null, `${d[1]} exists at ${base} and has been deleted or renamed`);
   }
   for (const id of squashed.keys()) if (!atBase.has(id)) skip(`--squashed ${id}: not at the base, nothing to accept`);
   // ./ makes the path relative to --root, which need not be the top of the repository. A file
   // that does not exist at the base has nothing to compare, and each is read on its own so a
   // missing README does not skip the deviation comparison.
-  const show = (path: string) => gitShow(git, base, `./${path}`);
+  const show = (path: string) => gitShow(git, from, `./${path}`);
   const oldReadme = show("spec/README.md");
   // Reads the area table the way the current README is read, so areas with or without
   // backticks are both found.
@@ -144,9 +173,83 @@ export function checkBase(ctx: Context, deviations: Map<string, Deviation>): str
   // A base from before the deviation log became a directory keeps its deviations in DEVIATIONS.md.
   const oldDev = show("DEVIATIONS.md");
   if (oldDev)
-    for (const m of oldDev.matchAll(/^## (DEV-[A-Z0-9]+-\d+)$/gm))
+    for (const m of oldDev.matchAll(/^## (DEV-[A-Z0-9]+-\d+)$/gm)) {
+      // A deviation moved from DEVIATIONS.md into deviations/ is not one this change adds.
+      devsAtBase.add(m[1]);
       if (!deviations.has(m[1])) problem(null, `${m[1]} exists at ${base} and has been removed`);
-  return base;
+    }
+  const added = [
+    ...[...entries].filter(([id]) => !atBase.has(id)),
+    ...[...deviations].filter(([id]) => !devsAtBase.has(id)),
+  ].map(([id, { file }]) => ({ id, file, isEntry: entries.has(id) }));
+  checkTakenIds(ctx, from, target, added);
+  return from;
+}
+
+/**
+ * Reports each spec entry and deviation the change adds since from (its file is not there) whose
+ * file also exists at the tip of target, the branch this one merges into, with content this branch
+ * never held: another change took the same ID first. IDENTIFIERS-6 has the branch merged second
+ * renumber its entry before it is merged, and finding the clash before then keeps the old ID out of
+ * the commits that would cite it. The tip's copy is this branch's own entry, merged or cherry-picked
+ * there and possibly edited there since, when the file at the tip or at a commit of target since
+ * from matches the working tree, the index, or the file at a commit of this branch since from.
+ */
+function checkTakenIds(
+  ctx: Context,
+  from: string,
+  target: string,
+  added: Array<{ id: string; file: string; isEntry: boolean }>,
+) {
+  const { problem, skip } = ctx;
+  const { repoDir } = ctx.config;
+  const git = gitIn(repoDir);
+  if (added.length === 0) return;
+  const tip = revParse(git, `${target}^{commit}`);
+  if (tip === null) {
+    skip(`comparison of the new IDs with ${target} (it does not resolve)`);
+    return;
+  }
+  if (tip === revParse(git, `${from}^{commit}`)) return;
+  // The paths under spec/ and deviations/ at the tip, relative to --root, read in one listing.
+  let atTip: Set<string>;
+  try {
+    atTip = new Set(git("ls-tree", "-r", "-z", "--name-only", tip, "--", "spec", "deviations").split("\0"));
+  } catch {
+    problem(null, `cannot list spec/ at ${target}`);
+    return;
+  }
+  // The file at path in each commit of range that touched it, and null where it was deleted.
+  const versions = (range: string, path: string) => {
+    try {
+      return git("rev-list", range, "--", path)
+        .split("\n")
+        .filter(Boolean)
+        .map((commit) => revParse(git, `${commit}:${path}`));
+    } catch {
+      return [];
+    }
+  };
+  for (const { id, file, isEntry } of added) {
+    const rel = relative(repoDir, file).replaceAll("\\", "/");
+    if (!atTip.has(rel)) continue;
+    // ./ makes the path relative to --root, which need not be the top of the repository.
+    const path = `./${rel}`;
+    let hashed: string | null = null;
+    try {
+      hashed = git("hash-object", "--", path).trim();
+    } catch {
+      // A file git cannot hash holds no copy to match; the index and the commits still may.
+    }
+    const own = new Set([hashed, revParse(git, `:${path}`), ...versions(`${from}..HEAD`, path)]);
+    own.delete(null);
+    // The base branch may have edited this branch's entry after taking it.
+    const theirs = [revParse(git, `${tip}:${path}`), ...versions(`${from}..${tip}`, path)];
+    if (theirs.some((blob) => own.has(blob))) continue;
+    const message = `${id} also exists at ${target} with content this branch never held; renumber this one before it is merged`;
+    if (isEntry) problem(file, message, "IDENTIFIERS-6");
+    else problem(file, message);
+  }
 }
 
 /** A file at rev, with CRLF read as LF, or null when git cannot show it. */
