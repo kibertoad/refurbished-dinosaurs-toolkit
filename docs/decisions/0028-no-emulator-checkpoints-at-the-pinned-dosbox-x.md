@@ -16,15 +16,18 @@ ADR 0026 pins DOSBox-X at tag `dosbox-x-v2026.10.01` (revision
 
 - The structured debugger offers no checkpoint method. Its methods are `agent.capabilities`,
   `session.*`, `execution.*`, `state.get_registers`, `memory.read`, `memory.write`,
-  `breakpoints.*`, `debugger.execute_command` and `trace.*`, and the Python client has no save or
-  restore call. `debugger.execute_command` accepts only `HELP`, `CPU` and `PIC`
-  (`src/agent/debugger/debugger_adapter.cpp`).
-- The emulator's own save states (`src/misc/savestates.cpp`) are started from the mapper or the
-  menu, and report failures and compatibility mismatches through modal message boxes and the log.
-  Nothing a session drives can start one or learn whether it succeeded.
+  `breakpoints.*`, `debug.output.read`, `debugger.execute_command` and `trace.*`, and the Python
+  client has no save or restore call. `debugger.execute_command` accepts only `HELP`, `CPU` and
+  `PIC` (`src/agent/debugger/debugger_adapter.cpp`).
+- The emulator's own save states (`src/misc/savestates.cpp`) are started from the mapper, the menu
+  or the `autosave` setting, which saves on a timer. Failures go to modal message boxes and the
+  log. A version, program name, memory size or machine type that differs from the saved one opens
+  a confirmation dialog, and the "No warning when loading state" menu option loads without asking.
+  Nothing a session drives can start one at a stopped boundary or learn whether it succeeded.
 - A load restores components one after another and stops at the first it cannot read, leaving the
-  components before it restored and the rest as they were. It does not roll back and does not
-  report the partial load to anything but the log.
+  components before it restored and the rest as they were. It does not roll back. A component it
+  cannot read stops the load without a message: the only sign is that the log lacks the line a
+  successful load writes. Files named by `FLAGSAVE` are restored even when the load stopped.
 - A save records each drive's mount description, including the host directory of a directory
   drive, and the open files by name. It does not record the files on a directory drive, except
   those named by `FLAGSAVE`. A load mounts the recorded host directory again
@@ -49,8 +52,9 @@ observation stays pending, and nothing in a session record claims more than was 
      stopped and no operation is pending;
    - a restore that either applies the whole state or leaves the machine unchanged, and reports
      which;
-   - compatibility identity in the saved state (emulator build, configuration, machine type,
-     memory size, mounted media) that a restore checks and refuses on mismatch, with no prompt;
+   - compatibility identity in the saved state (emulator build, save-state format version,
+     configuration, machine type, memory size, mounted media) that a restore checks and refuses on
+     mismatch, with no prompt;
    - a writable drive whose contents travel with the state or are checked against it, so a restore
      never mounts another session's directory;
    - debugger state reset on restore, so breakpoints and operation handles from before it are gone
@@ -58,13 +62,18 @@ observation stays pending, and nothing in a session record claims more than was 
    That is a change to DOSBox-X, made and released upstream. Moving the pin to a revision that has
    it is a package release under ADR 0026 decision 2, after the native procedure passes on it.
 3. When that exists, checkpoints are planned as a further M7 slice with its own tracking entry. It
-   depends on the guarded writes of slice 2, since a restore has to refuse while a write or an
-   operation is pending and has to invalidate their handles, and on the event log of slice 3, since
+   uses the operation observation of slice 1, since a restore has to refuse while an operation is
+   pending and has to invalidate the handles from before it. It depends on the guarded writes of
+   slice 2, since a restore replaces memory that recorded writes were checked against, so the
+   session record has to show which of them the restored state holds, and a run that a write
+   failed stays failed after a restore. It depends on the event log of slice 3, since
    a run that starts from a restored state records the checkpoint as its starting-state identity
-   and does not claim the cold-boot prefix ran. Checkpoints stay in the session's own directory
-   under the run lock and are never fixtures for Git or CI. The native procedure gains a synthetic
-   DOS program that checks what a restore preserves: memory, the timer, the keyboard buffer, an
-   open file handle and a file written to C:.
+   and does not claim the cold-boot prefix ran. Checkpoints are kept in a local directory the
+   package owns, so a later session can restore one, are read and written only under the run lock,
+   and are never fixtures for Git or CI. A restore that brings back the drive's contents gives the
+   new run a C: that does not start empty, so the slice's own ADR amends that rule of ADR 0026
+   decision 3. The native procedure gains a synthetic DOS program that checks what a restore
+   preserves: memory, the timer, the keyboard buffer, an open file handle and a file written to C:.
 4. What a restored state means for a game (its mapping, random state, screen and input) stays with
    the restoration, as ADR 0026 decision 4 says.
 
