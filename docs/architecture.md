@@ -136,6 +136,9 @@ Owns DOSBox-X debugger sessions for a restoration's research tooling
 - Writes a session record, gives every call a request ID from its client's own namespace, refuses
   calls the reported capabilities lack, and reports an observation that runs out of time as
   pending.
+- Writes to stopped guest memory only for fields in a contract the caller supplies, checks the
+  hash of the bytes each write replaces and reads the write back. A refused or failed write fails
+  the run. The package has no default contract.
 - Windows only.
 
 What a run means stays in the restoration. A restored game never depends on this package.

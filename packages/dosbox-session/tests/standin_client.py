@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from types import SimpleNamespace
 from typing import Any
 
@@ -26,6 +27,12 @@ class StandinServer:
     ``waits`` scripts the waits on continuations in order: ``"running"``, a stop-reason kind such
     as ``"breakpoint"``, or an exception to raise. When it runs out, the operation keeps running.
     A wait on a stop operation ends the session at once.
+
+    ``memory`` maps an address object to the bytes there; an address it lacks reads as zeros.
+    ``write_effect`` decides what a write does: ``"store"`` the bytes, ``"drop"`` them (as ROM
+    would), or ``"store, then read back changed"``, where the write reports the new bytes but every
+    later read returns them with the first byte inverted, or ``"store, report other replaced bytes"``,
+    where the write stores the bytes but reports a hash of zeros for the bytes it replaced.
     """
 
     def __init__(
@@ -44,6 +51,11 @@ class StandinServer:
         self.operations = 0
         self.status_state = "stopped"
         self.fail_next: BaseException | None = None
+        self.memory: dict[Any, bytes] = {}
+        self.write_effect = "store"
+        self.changed_after_write: set[Any] = set()
+        self.fail_write: BaseException | None = None
+        self.written: list[dict[str, Any]] = []
 
     def factory(self, endpoint: Any) -> StandinClient:
         self.endpoints.append(endpoint)
@@ -113,9 +125,39 @@ class StandinClient:
         self._call("get_registers", request_id)
         return SimpleNamespace(general={"eax": "0x00001234"})
 
+    def _peek(self, address, length):
+        data = self.server.memory.get(address, b"\0" * length)[:length]
+        if address in self.server.changed_after_write:
+            data = bytes([data[0] ^ 0xFF]) + data[1:]
+        return data
+
     def read_memory(self, session_id, address, length, request_id=None):
         self._call("read_memory", request_id)
-        return SimpleNamespace(data=b"\0" * length)
+        return SimpleNamespace(data=self._peek(address, length))
+
+    def write_memory(self, session_id, address, data, *, expected_sha256=None, request_id=None):
+        self._call("write_memory", request_id)
+        self.server.written.append({"address": address, "data": bytes(data), "expected_sha256": expected_sha256})
+        if self.server.fail_write is not None:
+            error, self.server.fail_write = self.server.fail_write, None
+            raise error
+        before = self._peek(address, len(data))
+        before_sha256 = hashlib.sha256(before).hexdigest()
+        if expected_sha256 is not None and before_sha256 != expected_sha256:
+            raise RuntimeError("MEMORY_PRECONDITION_FAILED")
+        if self.server.write_effect != "drop":
+            self.server.memory[address] = bytes(data)
+        after = self._peek(address, len(data))
+        if self.server.write_effect == "store, then read back changed":
+            self.server.changed_after_write.add(address)
+        if self.server.write_effect == "store, report other replaced bytes":
+            before_sha256 = hashlib.sha256(bytes(len(data))).hexdigest()
+        return SimpleNamespace(
+            byte_count=len(after),
+            before_sha256=before_sha256,
+            after_sha256=hashlib.sha256(after).hexdigest(),
+            state_revision=1,
+        )
 
     def create_execution_breakpoint(self, session_id, segment, offset, *, once=False, request_id=None):
         self._call("create_execution_breakpoint", request_id)
