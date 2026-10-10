@@ -121,6 +121,12 @@ class RunFailed(SessionError):
         self.failure = failure
 
 
+class RunEnded(SessionError):
+    """The run's event log ends with its outcome, so an operation that would change or resume the
+    guest was refused. The log describes everything the run did to the guest.
+    """
+
+
 class CleanupFailed(SessionError):
     """The owned emulator was still running after teardown, so the run lock was kept.
 

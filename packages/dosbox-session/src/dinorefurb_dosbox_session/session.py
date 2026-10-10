@@ -35,6 +35,7 @@ from .errors import (
     PlatformRefused,
     ReadinessNotObserved,
     RunDirectoryRefused,
+    RunEnded,
     RunFailed,
     SessionError,
 )
@@ -157,6 +158,15 @@ class _Continuations:
         #: Set when a guarded write failed or the event log refused an entry. The guest is not
         #: resumed or changed again in this run, though it may still be paused.
         self.run_failure: str | None = None
+        #: Set once the event log has its outcome. The guest is not resumed or changed again, so
+        #: the log covers everything the run did to it, though it may still be paused.
+        self.log_ended: str | None = None
+
+    def refuse_if_over(self) -> None:
+        if self.run_failure is not None:
+            raise RunFailed(self.run_failure)
+        if self.log_ended is not None:
+            raise RunEnded(self.log_ended)
 
     def clear(self) -> None:
         self.pending.clear()
@@ -177,8 +187,7 @@ class _GuardedClient(SessionClient):
         self._continuations = continuations
 
     def _refuse_if_pending(self, action: str) -> None:
-        if self._continuations.run_failure is not None:
-            raise RunFailed(self._continuations.run_failure)
+        self._continuations.refuse_if_over()
         if self._continuations.pending:
             shown = ", ".join(sorted(self._continuations.pending))
             raise OperationPending(f"Operation {shown} is still pending; observe it before {action}.")
@@ -280,15 +289,12 @@ class DosboxSession:
         self.emulator_sha256 = file_sha256(emulator)
         self._check_run_directory()
         conf = dosbox_conf(settings.emulator_config, self.drive_c, self.token)
-        self._open_log()
         self._owner = processes.current()
+        create_log = self._prepare_log()
+        self._lock = RunLock.acquire(self.lock_path, self.token, self._owner)
         try:
-            self._lock = RunLock.acquire(self.lock_path, self.token, self._owner)
-        except BaseException as error:
-            self._end_log(f"The session did not start: {error}")
-            self._close_log()
-            raise
-        try:
+            if create_log is not None:
+                self._log = create_log(self.run_directory / EVENT_LOG)
             self._launch(emulator, conf)
             self._wait_for_readiness()
             client = self._new_client()
@@ -307,18 +313,17 @@ class DosboxSession:
             self.close()
             raise
 
-    def _open_log(self) -> None:
-        """Hashes the named modules and writes the log header, before the emulator starts."""
+    def _prepare_log(self) -> Callable[[Path], EventLogWriter] | None:
+        """Checks the log settings and hashes the named modules, before the lock is taken.
+
+        The header is written once the session holds the lock, so a refused module or a held lock
+        leaves the run directory empty and reusable.
+        """
         log = self.settings.event_log
         if log is None:
-            return
-        self._log = EventLogWriter.create(
-            self.run_directory / EVENT_LOG,
-            log.contract,
-            log.schemas,
-            log.modules,
-            session=self.token,
-            package_version=_package_version(),
+            return None
+        return EventLogWriter._prepare(
+            log.contract, log.schemas, log.modules, session=self.token, package_version=_package_version()
         )
 
     def _end_log(self, failure: str) -> None:
@@ -330,6 +335,7 @@ class DosboxSession:
             log.fail(failure)
         except (LogEntryRefused, OSError):
             pass
+        self._note_log_end()
 
     def _close_log(self) -> None:
         if self._log is not None:
@@ -448,7 +454,11 @@ class DosboxSession:
             raise EmulatorExited(f"The owned emulator exited with code {code}.")
 
     def continue_(self) -> OperationLike:
-        """Resumes the guest. Refused while an earlier operation is still pending or after the run failed."""
+        """Resumes the guest.
+
+        Refused while an earlier operation is still pending, after the run failed, or once its
+        event log has its outcome.
+        """
         return self.client.continue_(self.session_id)
 
     @property
@@ -480,9 +490,9 @@ class DosboxSession:
             reports replacing bytes with another hash.
         :raises CapabilityRefused: the server did not report ``debugger`` as true; nothing was sent.
         :raises RunFailed: the run failed earlier.
+        :raises RunEnded: the event log already ends with its outcome.
         """
-        if self._continuations.run_failure is not None:
-            raise RunFailed(self._continuations.run_failure)
+        self._continuations.refuse_if_over()
         session_id = self.session_id
         written: str | None = None
         try:
@@ -515,30 +525,51 @@ class DosboxSession:
     # The event log
 
     @property
-    def event_log(self) -> EventLogWriter | None:
-        """The run's event log writer, or ``None`` when the settings give no event log."""
-        return self._log
+    def event_log_path(self) -> Path | None:
+        """The run's event log, or ``None`` when the settings give no event log or it is not created yet.
+
+        Entries go through :meth:`log_event`, :meth:`finish_log` and :meth:`fail_log`, which fail
+        the run when the log refuses one.
+        """
+        return None if self._log is None else self._log.path
 
     def _logged(self, action: Callable[[EventLogWriter], None]) -> None:
-        if self._log is None:
+        log = self._log
+        if log is None:
             raise SessionError("This session keeps no event log; give SessionSettings.event_log to keep one.")
+        ended = log.outcome is not None
         try:
-            action(self._log)
+            action(log)
         except (LogEntryRefused, OSError) as error:
-            if self._continuations.run_failure is None:
+            # A call after the outcome changes nothing the log records: the guest is not resumed
+            # or changed once the log has ended, so it does not fail the run.
+            if not ended and self._continuations.run_failure is None:
                 self._continuations.run_failure = f"The event log refused an entry: {error}"
                 self._write_record()
             raise
+        finally:
+            self._note_log_end()
+
+    def _note_log_end(self) -> None:
+        log = self._log
+        if log is not None and log.outcome is not None and self._continuations.log_ended is None:
+            self._continuations.log_ended = (
+                f"The event log {log.path} ends with its outcome, so the guest is not resumed or changed again "
+                "and the log covers everything the run did. Close the session and start a new run."
+            )
 
     def log_event(self, kind: str, data: Mapping[str, Any]) -> None:
         """Appends an event to the run's log. It is synced to disk before this returns.
 
         A refused event (a kind without a schema, data that does not fit it or that JSON cannot
-        hold) or a failed write ends the log with a failure outcome and fails the run: from then
-        on continuations, steps and writes raise
-        :class:`~dinorefurb_dosbox_session.errors.RunFailed`.
+        hold) ends the log with a failure outcome and fails the run: from then on continuations,
+        steps and writes raise :class:`~dinorefurb_dosbox_session.errors.RunFailed`. A failed write
+        to the file also fails the run and raises the ``OSError``; the log takes nothing more and
+        is left without an outcome, so it reads as truncated or incomplete. An event logged after
+        the outcome is refused without failing the run, since the guest has not run since.
 
         :raises LogEntryRefused: the event was refused, or the log has already ended.
+        :raises OSError: writing or syncing the line failed.
         :raises SessionError: the session keeps no event log.
         """
         self._logged(lambda log: log.append(kind, data))
@@ -547,7 +578,10 @@ class DosboxSession:
         """Ends the run's log with a completed outcome. ``values`` must fit the outcome contract.
 
         Values that do not fit end the log with a failure outcome instead and fail the run. After
-        a run failure the log already ends with that failure, so this raises.
+        a run failure the log already ends with that failure, so this raises. Once the log has its
+        outcome, continuations, steps and writes raise
+        :class:`~dinorefurb_dosbox_session.errors.RunEnded`, so the log covers everything the run
+        did to the guest. A pause is still sent.
 
         :raises LogEntryRefused: the values do not fit the contract, or the log has already ended.
         :raises SessionError: the session keeps no event log.
@@ -556,6 +590,9 @@ class DosboxSession:
 
     def fail_log(self, failure: str, values: Mapping[str, Any] | None = None) -> None:
         """Ends the run's log with an outcome that records ``failure``; the log then reads as failed.
+
+        As after :meth:`finish_log`, continuations, steps and writes then raise
+        :class:`~dinorefurb_dosbox_session.errors.RunEnded`.
 
         :raises LogEntryRefused: the log has already ended.
         :raises SessionError: the session keeps no event log.

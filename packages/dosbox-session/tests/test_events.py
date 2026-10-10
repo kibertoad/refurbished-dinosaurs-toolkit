@@ -27,17 +27,21 @@ from dinorefurb_dosbox_session import (
     LogMalformed,
     LogOversized,
     LogRejected,
+    LockHeld,
     LogTruncated,
     ModuleRefused,
     OutcomeContract,
     OutcomeContractViolation,
     OutcomeFailed,
     OutcomeMismatch,
+    RunEnded,
     RunFailed,
     SessionError,
     WriteOutsideContract,
     read_event_log,
 )
+from dinorefurb_dosbox_session import processes
+from dinorefurb_dosbox_session.lock import RunLock
 
 from standin_client import StandinServer
 from support import SessionCase, windows_only
@@ -178,6 +182,33 @@ class Writing(LogCase):
                 self.assertEqual(failed.line, 3)
                 self.assertIn(message.split("'")[0], str(failed))
 
+    def test_data_that_contains_itself_is_refused_and_ends_the_log_as_failed(self) -> None:
+        looped: list[Any] = []
+        looped.append(looped)
+        writer = self.writer()
+        with self.assertRaisesRegex(LogEntryRefused, "nested too deeply or contains itself"):
+            writer.append("input", {"key": "enter", "note": looped})
+        writer.close()
+        self.assert_rejected(OutcomeFailed, "Event 1 .* cannot be logged")
+
+    def test_a_failed_outcome_with_values_json_cannot_hold_keeps_the_callers_failure(self) -> None:
+        writer = self.writer()
+        with self.assertRaisesRegex(LogEntryRefused, "the probe saw the wrong screen. The outcome cannot be logged"):
+            writer.fail("the probe saw the wrong screen", {"score": float("nan")})
+        writer.close()
+        self.assert_rejected(OutcomeFailed, "failed: the probe saw the wrong screen")
+
+    def test_a_failed_write_raises_and_leaves_the_log_without_an_outcome(self) -> None:
+        writer = self.writer()
+        with mock.patch("os.fsync", side_effect=OSError("synthetic disk failure")):
+            with self.assertRaisesRegex(OSError, "synthetic disk failure"):
+                writer.append("stop", {"frame": 1, "ip": "0x0106"})
+        self.assertIsNone(writer.outcome)
+        with self.assertRaisesRegex(LogEntryRefused, "takes nothing more"):
+            writer.finish(OUTCOME)
+        writer.close()
+        self.assert_rejected(LogIncomplete, "no outcome")
+
     def test_outcome_values_that_do_not_fit_the_contract_are_refused_and_the_log_ends_as_failed(self) -> None:
         cases = [
             ({"score": 1}, "required field ended is absent"),
@@ -223,6 +254,14 @@ class Reading(LogCase):
         self.assertEqual(self.assert_rejected(LogTruncated, "Line 5 .* was cut off").line, 5)
         rewrite(self.path, [b""])
         self.assert_rejected(LogTruncated, "is empty")
+
+    def test_a_cut_off_log_reads_as_truncated_before_an_event_fails_its_schema(self) -> None:
+        self.complete_log()
+        content = lines(self.path)
+        content[2] = json_line({"record": "event", "kind": "input", "data": {"key": 7}})
+        content[-1] = content[-1][:-10]
+        rewrite(self.path, content)
+        self.assertEqual(self.assert_rejected(LogTruncated, "was cut off").line, 5)
 
     def test_an_event_that_fails_its_recorded_schema_is_rejected(self) -> None:
         self.complete_log()
@@ -314,6 +353,7 @@ class Reading(LogCase):
             ([header, b"{not json\n", outcome], 2, "Line 2 .* is not a JSON object"),
             ([header, b'{"record":"event","kind":"stop","kind":"input","data":{}}\n', outcome], 2, "appear more than once"),
             ([header, b'{"record":"event","kind":"stop","data":{"frame":NaN,"ip":"x"}}\n', outcome], 2, "NaN is not a JSON value"),
+            ([header, b'{"record":"event","kind":"stop","data":{"frame":1e400,"ip":"x"}}\n', outcome], 2, "1e400 is too large"),
             ([header, b"[1, 2]\n", outcome], 2, "not a header, event or outcome record"),
             ([header, b"\xff\xfe\n", outcome], 2, "not a JSON object"),
             ([first, header, outcome], 1, "Line 1 .* holds the event record where the log header belongs"),
@@ -324,6 +364,7 @@ class Reading(LogCase):
             ([header, first, header, outcome], 3, "second header"),
             ([header, json_line({**json.loads(first), "seq": 1}), outcome], 2, "has \\['seq'\\] it should not"),
             ([header, json_line({**json.loads(outcome), "event_count": -1})], 2, "event count -1"),
+            ([header, b"[" * 100_000 + b"]" * 100_000 + b"\n", outcome], 2, "nested too deeply to read"),
         ]
         for content, line, message in cases:
             with self.subTest(message):
@@ -366,6 +407,7 @@ class SessionLogs(SessionCase):
             self.assertEqual(session.observe(session.continue_(), timeout=5, poll_ms=50).status, "completed")
             session.log_event("input", {"key": "enter"})
             session.finish_log(OUTCOME)
+            self.assertEqual(session.event_log_path, log_path)
             record = json.loads((settings.run_directory / "session.json").read_text(encoding="utf-8"))
         log = read_event_log(log_path, OUTCOME)
         self.assertEqual(log.session, session.token)
@@ -385,6 +427,46 @@ class SessionLogs(SessionCase):
         self.assertFalse(self.lock_path.exists())
         self.assertFalse((settings.run_directory / "events.jsonl").exists())
         self.assertFalse((settings.run_directory / "drive-c").exists())
+
+    def test_a_held_lock_refuses_the_session_and_leaves_the_run_directory_reusable(self) -> None:
+        holder = RunLock.acquire(self.lock_path, "other-session", processes.current())
+        server = StandinServer()
+        settings = self.log_settings(server)
+        try:
+            with self.assertRaises(LockHeld):
+                DosboxSession(settings).start()
+            self.assertEqual(list(settings.run_directory.iterdir()), [])
+        finally:
+            holder.release()
+        with DosboxSession(settings) as session:
+            session.finish_log(OUTCOME)
+        read_event_log(settings.run_directory / "events.jsonl", OUTCOME)
+
+    def test_once_the_log_has_its_outcome_the_guest_is_not_resumed_or_changed(self) -> None:
+        for end in ("finish", "fail"):
+            with self.subTest(end):
+                server = StandinServer()
+                settings = self.log_settings(server)
+                with DosboxSession(settings) as session:
+                    if end == "finish":
+                        session.finish_log(OUTCOME)
+                    else:
+                        session.fail_log("the probe saw the wrong screen")
+                    sent = len(server.calls)
+                    with self.assertRaisesRegex(RunEnded, "ends with its outcome"):
+                        session.continue_()
+                    with self.assertRaises(RunEnded):
+                        session.client.step(session.session_id)
+                    with self.assertRaises(RunEnded):
+                        session.write(FieldContract("synthetic-state/1", ()), "counter", b"\0\0", "0" * 64)
+                    self.assertEqual(len(server.calls), sent)
+                    # Logging after the outcome is refused, but the guest has not run since, so
+                    # the run has not failed.
+                    with self.assertRaisesRegex(LogEntryRefused, "already ends with its outcome"):
+                        session.log_event("stop", {"frame": 1, "ip": "0x0102"})
+                    self.assertIsNone(session.run_failure)
+                if end == "finish":
+                    read_event_log(settings.run_directory / "events.jsonl", OUTCOME)
 
     def test_a_session_closed_before_its_outcome_leaves_an_incomplete_log(self) -> None:
         server = StandinServer()
@@ -433,7 +515,7 @@ class SessionLogs(SessionCase):
     def test_a_session_without_an_event_log_refuses_events(self) -> None:
         server = StandinServer()
         with DosboxSession(self.settings(server)) as session:
-            self.assertIsNone(session.event_log)
+            self.assertIsNone(session.event_log_path)
             with self.assertRaisesRegex(SessionError, "keeps no event log"):
                 session.log_event("stop", {"frame": 0, "ip": "0x0100"})
             self.assertIsNone(session.run_failure)

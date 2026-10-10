@@ -16,7 +16,8 @@ import hashlib
 import json
 import os
 import sys
-from collections.abc import Iterable, Mapping
+from collections import Counter
+from collections.abc import Callable, Hashable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -35,6 +36,7 @@ from .errors import (
     OutcomeFailed,
     OutcomeMismatch,
 )
+from .writes import sha256 as _sha256
 
 #: The ``format`` field of an event log's header.
 LOG_FORMAT = "dinorefurb-dosbox-session.event-log/1"
@@ -48,6 +50,11 @@ FIELD_TYPES = ("string", "integer", "number", "boolean", "null", "array", "objec
 _HEADER_KEYS = {"record", "format", "package_version", "session", "outcome_contract", "event_schemas", "modules"}
 _EVENT_KEYS = {"record", "kind", "data"}
 _OUTCOME_KEYS = {"record", "event_count", "events_sha256", "header_sha256", "failure", "values"}
+
+
+def _duplicates(items: Iterable[Hashable]) -> list[Any]:
+    """The items that appear more than once, sorted."""
+    return sorted(item for item, count in Counter(items).items() if count > 1)
 
 
 # Field types
@@ -203,7 +210,7 @@ def hash_modules(names: Iterable[str]) -> tuple[ModuleHash, ...]:
     names = tuple(names)
     if any(not isinstance(name, str) or not name for name in names):
         raise ValueError("a module to hash needs a name")
-    duplicates = sorted({name for name in names if names.count(name) > 1})
+    duplicates = _duplicates(names)
     if duplicates:
         raise ValueError(f"these modules are named more than once: {', '.join(duplicates)}")
     hashes = []
@@ -247,12 +254,14 @@ def _json_value(value: Any, where: str) -> Any:
     raise ValueError(f"{where} is a {type(value).__name__}, which JSON cannot hold")
 
 
+def _unloggable(error: ValueError | RecursionError) -> str:
+    if isinstance(error, RecursionError):
+        return "it is nested too deeply or contains itself"
+    return str(error)
+
+
 def _line(record: Any) -> bytes:
     return (json.dumps(record, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode("ascii")
-
-
-def _sha256(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
 
 # Writing
@@ -302,13 +311,28 @@ class EventLogWriter:
         :raises ValueError: the contract or schemas are not the classes above, or two schemas share
             a kind.
         """
+        return cls._prepare(contract, schemas, modules, session, package_version)(path)
+
+    @classmethod
+    def _prepare(
+        cls,
+        contract: OutcomeContract,
+        schemas: Iterable[EventSchema],
+        modules: Iterable[str],
+        session: str | None,
+        package_version: str,
+    ) -> Callable[[Path], EventLogWriter]:
+        """Checks the settings and hashes the modules, and returns what creates the log.
+
+        A session prepares its log before it takes the run lock, so a refused module leaves nothing
+        behind, and creates the file only once it holds the lock.
+        """
         if not isinstance(contract, OutcomeContract):
             raise ValueError(f"the outcome contract must be an OutcomeContract, not {type(contract).__name__}")
         schemas = tuple(schemas)
         if any(not isinstance(schema, EventSchema) for schema in schemas):
             raise ValueError("each event schema must be an EventSchema")
-        kinds = [schema.kind for schema in schemas]
-        duplicates = sorted({kind for kind in kinds if kinds.count(kind) > 1})
+        duplicates = _duplicates(schema.kind for schema in schemas)
         if duplicates:
             raise ValueError(f"these event kinds have more than one schema: {', '.join(duplicates)}")
         hashes = hash_modules(modules)
@@ -323,15 +347,20 @@ class EventLogWriter:
                 "modules": [module.to_json() for module in hashes],
             }
         )
-        path = Path(path)
-        handle = path.open("xb")
-        writer = cls(path, handle, contract, {schema.kind: schema for schema in schemas}, header)
-        try:
-            writer._write(header)
-        except BaseException:
-            writer.close()
-            raise
-        return writer
+        by_kind = {schema.kind: schema for schema in schemas}
+
+        def create(path: Path) -> EventLogWriter:
+            path = Path(path)
+            handle = path.open("xb")
+            writer = cls(path, handle, contract, by_kind, header)
+            try:
+                writer._write(header)
+            except BaseException:
+                writer.close()
+                raise
+            return writer
+
+        return create
 
     @property
     def event_count(self) -> int:
@@ -384,8 +413,10 @@ class EventLogWriter:
             )
         try:
             stored = _json_value(data, "the event's data")
-        except ValueError as error:
-            raise self._refuse(f"Event {self._event_count + 1} ({kind}) cannot be logged: {error}.") from None
+        except (ValueError, RecursionError) as error:
+            raise self._refuse(
+                f"Event {self._event_count + 1} ({kind}) cannot be logged: {_unloggable(error)}."
+            ) from None
         problems = schema.check(stored)
         if problems:
             raise self._refuse(f"Event {self._event_count + 1} ({kind}) fails its schema: {'; '.join(problems)}.")
@@ -420,15 +451,17 @@ class EventLogWriter:
         self._check_open()
         if not isinstance(failure, str) or not failure:
             raise ValueError("a failed outcome needs a failure message")
-        self._end(failure, None if values is None else self._outcome_values(values))
+        self._end(failure, None if values is None else self._outcome_values(values, failure))
 
-    def _outcome_values(self, values: Mapping[str, Any]) -> dict[str, Any]:
+    def _outcome_values(self, values: Mapping[str, Any], failure: str | None = None) -> dict[str, Any]:
+        # A failed outcome whose values are refused still records the caller's failure.
+        prefix = "" if failure is None else f"{failure}. "
         if not isinstance(values, Mapping):
-            raise self._refuse(f"The outcome carries a {type(values).__name__}, not an object.")
+            raise self._refuse(f"{prefix}The outcome carries a {type(values).__name__}, not an object.")
         try:
             return _json_value(values, "the outcome")
-        except ValueError as error:
-            raise self._refuse(f"The outcome cannot be logged: {error}.") from None
+        except (ValueError, RecursionError) as error:
+            raise self._refuse(f"{prefix}The outcome cannot be logged: {_unloggable(error)}.") from None
 
     def _end(self, failure: str | None, values: dict[str, Any] | None) -> None:
         outcome = {
@@ -476,8 +509,7 @@ class EventLog:
 
 
 def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    keys = [key for key, _ in pairs]
-    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+    duplicates = _duplicates(key for key, _ in pairs)
     if duplicates:
         raise ValueError(f"the keys {', '.join(duplicates)} appear more than once")
     return dict(pairs)
@@ -487,13 +519,26 @@ def _reject_constant(name: str) -> Any:
     raise ValueError(f"{name} is not a JSON value")
 
 
+def _finite_float(text: str) -> float:
+    # A number too large for a float, such as 1e400, would otherwise read as infinity.
+    value = float(text)
+    if value in (float("inf"), float("-inf")):
+        raise ValueError(f"{text} is too large for a number")
+    return value
+
+
 def _parse(raw: bytes, number: int, path: Path) -> dict[str, Any]:
     try:
         record = json.loads(
-            raw.decode("utf-8"), object_pairs_hook=_reject_duplicates, parse_constant=_reject_constant
+            raw.decode("utf-8"),
+            object_pairs_hook=_reject_duplicates,
+            parse_constant=_reject_constant,
+            parse_float=_finite_float,
         )
     except (UnicodeDecodeError, ValueError) as error:
         raise LogMalformed(f"Line {number} of {path} is not a JSON object: {error}.", number) from None
+    except RecursionError:
+        raise LogMalformed(f"Line {number} of {path} is nested too deeply to read.", number) from None
     if not isinstance(record, dict) or record.get("record") not in ("header", "event", "outcome"):
         raise LogMalformed(f"Line {number} of {path} is not a header, event or outcome record.", number)
     return record
@@ -571,6 +616,25 @@ def _outcome_fields(record: Mapping[str, Any], number: int, path: Path) -> None:
         raise LogMalformed(f"The outcome on line {number} of {path} has values that are not an object.", number)
 
 
+def _event_violation(
+    schemas: Mapping[str, EventSchema], kind: Any, data: Any, number: int, path: Path
+) -> EventSchemaViolation | None:
+    """Why an event does not fit the recorded schemas, or ``None`` when it fits."""
+    schema = schemas.get(kind) if isinstance(kind, str) else None
+    if schema is None:
+        return EventSchemaViolation(
+            f"Event on line {number} of {path} has kind {kind!r}, which no recorded schema names.", number
+        )
+    if not isinstance(data, dict):
+        return EventSchemaViolation(f"Event on line {number} of {path} ({kind}) carries no object.", number)
+    problems = schema.check(data)
+    if problems:
+        return EventSchemaViolation(
+            f"Event on line {number} of {path} ({kind}) fails its recorded schema: {'; '.join(problems)}.", number
+        )
+    return None
+
+
 def read_event_log(
     path: Path, expected_outcome: Mapping[str, Any], *, max_bytes: int = DEFAULT_MAX_LOG_BYTES
 ) -> EventLog:
@@ -625,6 +689,9 @@ def read_event_log(
     events_hash = hashlib.sha256()
     outcome: dict[str, Any] | None = None
     outcome_line = 0
+    # The first event that fails its schema. It is raised once every line has parsed and the last
+    # one is known to be whole, in the order the docstring gives.
+    violation: EventSchemaViolation | None = None
     for index, raw in enumerate(lines):
         number = index + 1
         record = _parse(raw, number, path)
@@ -643,18 +710,8 @@ def read_event_log(
             continue
         _keys(record, _EVENT_KEYS, number, path)
         kind, data = record["kind"], record["data"]
-        schema = schemas.get(kind) if isinstance(kind, str) else None
-        if schema is None:
-            raise EventSchemaViolation(
-                f"Event on line {number} of {path} has kind {kind!r}, which no recorded schema names.", number
-            )
-        if not isinstance(data, dict):
-            raise EventSchemaViolation(f"Event on line {number} of {path} ({kind}) carries no object.", number)
-        problems = schema.check(data)
-        if problems:
-            raise EventSchemaViolation(
-                f"Event on line {number} of {path} ({kind}) fails its recorded schema: {'; '.join(problems)}.", number
-            )
+        if violation is None:
+            violation = _event_violation(schemas, kind, data, number, path)
         events_hash.update(raw + b"\n")
         events.append(LoggedEvent(number, kind, data))
     if partial:
@@ -663,6 +720,8 @@ def read_event_log(
             f"Line {number} of {path} was cut off: the file ends without a line break after {len(partial)} bytes.",
             number,
         )
+    if violation is not None:
+        raise violation
     assert contract is not None
     if outcome is None:
         raise LogIncomplete(

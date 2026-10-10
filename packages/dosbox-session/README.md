@@ -59,9 +59,10 @@ Entering `DosboxSession` (or calling `start()`):
 
 1. Refuses a platform other than Windows, a checkout that fails the check above, a missing
    emulator, and a run directory that is not empty (a `drive-c` from an earlier run included).
-   With `event_log` set, hashes the named modules (refusing one that is not imported) and writes
-   the log header.
+   With `event_log` set, hashes the named modules (refusing one that is not imported).
 2. Takes the run lock (below), or refuses with a report of the recorded owner and processes.
+   With `event_log` set, then writes the log header. A refusal up to here leaves the run
+   directory empty, so the same directory can be used again.
 3. Creates `drive-c` empty in the run directory and calls `prepare_drive` on it.
 4. Writes `dosbox.conf` and `agent.env` and launches the emulator with a native console that is
    created and hidden. Redirecting the console, `-noconsole` and `CREATE_NO_WINDOW` each broke
@@ -225,15 +226,24 @@ with DosboxSession(settings) as session:
 - The header records the schemas, the contract and, for each module in `modules`, the file it was
   imported from and that file's SHA-256, taken after the modules are imported and before the
   emulator starts. A named module that is not imported then, or that has no file (a built-in or a
-  namespace package), is refused with `ModuleRefused` before the lock is taken.
+  namespace package), is refused with `ModuleRefused` before the lock is taken. The header is
+  written once the session holds the lock.
 - `session.finish_log(values)` ends the log with a completed outcome, and
   `session.fail_log(failure, values=None)` with one that records a failure. The outcome records
   how many events came before it, a SHA-256 over them in order and a SHA-256 of the header.
+- Once the log has its outcome, by either call or by a refusal, `continue_`, `step` and writes
+  raise `RunEnded` (or `RunFailed` after a failure) without sending anything, so the log covers
+  everything the run did to the guest. `pause` and reads still work. An event logged after the
+  outcome raises `LogEntryRefused` and does not fail the run.
+- Entries go through `log_event`, `finish_log` and `fail_log`. `session.event_log_path` gives the
+  log's path.
 - An event the log refuses (a kind with no schema, data that does not fit it or that JSON cannot
-  hold), outcome values that do not fit the contract, or a failed write to the file ends the log
-  with a failure outcome that names it, raises `LogEntryRefused` and fails the run, as a failed
-  guarded write does. A failed guarded write ends the log with the run's failure too, and so does
-  a session that fails to start after writing the header.
+  hold) or outcome values that do not fit the contract end the log with a failure outcome that
+  names the refusal, raise `LogEntryRefused` and fail the run, as a failed guarded write does. A
+  failed guarded write ends the log with the run's failure too, and so does a session that fails
+  to start after writing the header.
+- A failed write to the file raises the `OSError` and fails the run. The log takes nothing more
+  and has no outcome, so it reads as truncated or incomplete.
 - A session closed without an outcome leaves the log without one, and it reads as incomplete.
 
 The package does not decide what an event or an outcome means. Boundary names, what counts as a
@@ -299,6 +309,7 @@ both. When a `continue_` or `pause` request itself raises, the server may still 
 | `WriteReadbackMismatch` | The field does not hold the written bytes afterwards. The run fails. |
 | `WriteFailed` | A write was refused for another reason, such as a guest that is not stopped. The run fails. The three errors above derive from it. |
 | `RunFailed` | A write, continuation or step was asked for after the run failed. Not sent. |
+| `RunEnded` | A write, continuation or step was asked for after the event log got its outcome. Not sent. |
 | `ModuleRefused` | A module the event log names is not imported, or has no file to hash. Nothing was started. |
 | `LogEntryRefused` | The event log refused an event or outcome, or has already ended. A refusal ends the log as failed and fails the run. |
 | `LogRejected` | Reading an event log refused it; its subclasses are in the table above. |
