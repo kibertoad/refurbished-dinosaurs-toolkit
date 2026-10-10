@@ -103,6 +103,57 @@ and enemy-reinfestation's open requests against this toolkit's Ghidra scripts. I
 these are items 12, 13, 20 to 27 and 32. Some name scripts the toolkit does not ship. Re-verify
 each against main and fix the ones that belong here.
 
+### M8. Derived dispatch-table bounds (issue 460; slice 1 in progress)
+
+The engine derives a table's entry count from the code where the code proves it, with a value-range
+analysis over p-code ([ADR 0034](decisions/0034-value-ranges-over-p-code-for-table-bounds.md)).
+Today the researcher declares the count of every `indirectJumps` table, and declared computed call
+targets (issue 457) rest on the same kind of reading.
+
+Outcome: an exhaustive table that declares no count gets a derived count when the analysis proves
+the index's range on every path into the dispatch, and the report marks it as derived, with the
+range, the dispatch site, the bounding sites and the assumptions it rests on.
+
+What reports must keep explicit:
+
+- A site whose bound is not proven stays unresolved, with its reason: no bound, a path that skips
+  the bound, an operation without a transfer function, an unknown memory read, a call or interrupt
+  not walked, the widening limit, or an index that does not step by the table stride.
+- A declared count larger than the proven range is refused. A smaller one is followed, and the
+  report lists the rows it leaves out.
+- The table's segment and location stay declared and are listed among the derivation's
+  assumptions.
+
+Synthetic tests, all built from synthetic bytes:
+
+- Positive controls: `and bx, 3; shl bx, 1` before a word table call, the same with `add bx, bx`,
+  a `cmp bx, 9; ja default` guard, and a 4-entry table indexed by `x * 2 & 7`.
+- Unproven cases: a second path into the dispatch that skips the mask, a write to the index
+  between the bound and the dispatch, a call that is not walked between them, and an index loaded
+  from memory.
+- A loop that increments the index, which reaches the widening limit.
+- Unicorn oracle cases for each transfer function, and a bridge case in `bridge.test.ts`.
+
+Slices, one PR each:
+
+1. In progress. The domain, its transfer functions and a per-instruction evaluation over
+   register ranges in `x86/ranges.py`, checked against `pcode.evaluate` and Unicorn
+   (`tests/test_ranges.py`). Nothing reads it yet, so no report changes. Release label
+   `release:skip`.
+2. The analysis over a routine's control flow to a dispatch site: joins, the widening limit,
+   refinement on `CBRANCH` edges, stack slots, and calls and interrupts not walked. Tested on the
+   positive controls, unproven cases and the loop above, before any report uses it.
+3. Reports: `table.count` becomes optional for an exhaustive `indirectJumps` declaration, the
+   derived-count record and the unresolved reasons, the declared-against-derived check, in
+   `reach`, `inventory-check` and the path commands that read tables. Reporter guide, migration
+   guide and bridge case; a prepared-config change, if any, increments `PREPARED_PROTOCOL`.
+4. Declared computed call targets take derived counts, once their declaration (issue 457) has
+   landed. If it lands before slice 3, slice 3 covers both.
+
+Exit condition: a table with no declared count gets a derived count only when the analysis proves
+the bound on every path into the dispatch, the report marks it as derived, and every case it cannot
+prove stays unresolved with its reason. Issue 460 then closes.
+
 ### M7. Owned DOSBox-X debugger sessions (issue 403, tracked in issue 406; slices shipped)
 
 `dinorefurb-dosbox-session` is built as [ADR 0026](decisions/0026-dosbox-x-session-package.md)
