@@ -41,7 +41,7 @@ engine.
   counts from the source, and enforces `formatControls`. A query may not supply any of these.
 - Owns the `pointers` inventory, the `table` contents report, the `bodies` report on where function
   bodies lie by file region, the `imports` report on PE32
-  and PE32+ import tables, and `unpack`, which writes the unpacked form of an LZEXE or EXEPACK executable by
+  and PE32+ import tables, and `unpack`, which writes the unpacked form of an LZEXE, EXEPACK or PKLITE executable by
   a documented layout rule. These run without the engine.
 - Provides the `scientific-method` command. For every other command it builds a prepared config
   and pipes it to `python -m scientific_method_engine <command> -`.

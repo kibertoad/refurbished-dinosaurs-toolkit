@@ -52,4 +52,7 @@ Two parts of the request were not taken:
 - EXEPACK gives no field for the length of its stub, so the reader finds the relocation table
   after the message that ends every known stub, and checks that the table ends where the header
   says the EXEPACK block ends. It reads that message and nothing else of the stub's code.
+- PKLITE keeps its facts in its stub's code rather than in header words, so the reader matches
+  that code against known byte sequences, as [ADR 0027](0027-pklite-stubs-matched-by-known-sequences.md)
+  records.
 - The prepared config is unchanged: `unpack` runs in Node and does not reach the engine.
