@@ -31,8 +31,28 @@ class JoinTermTests(unittest.TestCase):
         joined = join([low, high])
         self.assertEqual(extract(joined, 16, 16).term, high.term)
         self.assertEqual(extract(joined, 0, 16).term, low.term)
-        # A field inside a part stays a field of the join.
-        self.assertEqual(extract(joined, 8, 16).term, ("extract", joined.term, 8, 16, 32))
+        # A field across a boundary joins the fields of the parts it covers.
+        self.assertEqual(extract(joined, 8, 16).term, ("join", (("extract", low.term, 8, 8, 16),
+                                                                ("extract", high.term, 0, 8, 16)), (8, 8)))
+
+    def test_a_field_inside_a_part_is_a_field_of_that_part(self):
+        # AH of (high << 16 | 1234h) is the constant 12h, and a field of an unknown part names that part.
+        joined = join([const(0x1234, 16), word("high")])
+        self.assertEqual(extract(joined, 8, 8).number, 0x12)
+        self.assertEqual(extract(joined, 20, 8).term, ("extract", ("unknown", "high"), 4, 8, 16))
+
+    def test_adjacent_parts_of_one_value_or_constants_merge(self):
+        whole, byte = unknown("whole", 32), unknown("byte", 8)
+        self.assertEqual(join([byte, extract(whole, 8, 8), extract(whole, 16, 8), extract(whole, 24, 8)]).term,
+                         ("join", (byte.term, ("extract", whole.term, 8, 24, 32)), (8, 24)))
+        self.assertEqual(join([const(0x34, 8), const(0x12, 8), word("high")]).term,
+                         ("join", (("constant", 0x1234), ("unknown", "high")), (16, 16)))
+
+    def test_writing_a_register_its_own_bytes_keeps_its_term(self):
+        # A partial write splits the old value into bytes and puts them back; the join it builds
+        # is the term the register held, for parts of any width.
+        for joined in (join([const(0x1234, 16), word("high")]), join([word("low"), word("high")])):
+            self.assertEqual(join([extract(joined, n, 8) for n in range(0, 32, 8)]).term, joined.term)
 
     def test_a_known_bit_comes_from_the_part_that_holds_it(self):
         # Bit 12 of (high << 16 | 0010h) is bit 12 of the constant low word, clear; bit 20 is high's.

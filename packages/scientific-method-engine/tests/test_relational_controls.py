@@ -719,6 +719,25 @@ class BitwiseBoundTests(unittest.TestCase):
         # A loaded word is a join of two unknown bytes and keeps its whole range.
         self.assertEqual(self.check("8b 1e 00 02", "le", 0xfffe)["verdict"], "undecided")
 
+    def test_a_register_compared_with_its_own_part_cancels(self):
+        # mov bl,[0200h]; xor bh,bh: BX is BL. With mov bh,12h in place of the xor, BX is BL + 1200h.
+        held = self.check("8a 1e 00 02 30 ff", "eq", {"field": "registers.bl"})
+        self.assertEqual(held["verdict"], "held")
+        self.assertEqual(held["paths"][0]["occurrences"][0]["leftMinusRight"], {"min": 0, "max": 0})
+        self.assertEqual(self.check("8a 1e 00 02 b7 12", "gt", {"field": "registers.bl"})["verdict"], "held")
+        with self.assertRaisesRegex(ValueError, "bound violated"):
+            self.check("8a 1e 00 02 b7 12", "eq", {"field": "registers.bl"})
+        # Two unknown bytes: BX is not BL unless BH is zero.
+        self.assertEqual(self.check("8b 1e 00 02", "eq", {"field": "registers.bl"})["verdict"], "undecided")
+
+    def test_an_assumption_on_a_loaded_word_bounds_the_word(self):
+        # mov bx,[0200h] joins two unknown bytes; an assumed range on BX applies to the whole join.
+        c = Code().emit("8b 1e 00 02").label("return").emit("c3")
+        rule = control("bound", "relation", at={"site": c.labels["return"], "event": "checkpoint"}, op="le",
+                       left={"field": "registers.bx"}, right=10,
+                       assume=[{"value": {"field": "registers.bx"}, "min": 0, "max": 10, "evidence": "synthetic range"}])
+        self.assertEqual(verdict(run(c, [rule], registers=FRAME), "bound")["verdict"], "held")
+
     def test_an_assumed_range_bounds_the_masked_operand(self):
         # mov bx,cx; and bx,0FFh, with CX assumed at most 7.
         c = Code().emit("89 cb 81 e3 ff 00").label("return").emit("c3")

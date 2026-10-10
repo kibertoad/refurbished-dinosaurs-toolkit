@@ -1958,8 +1958,10 @@ occurrence where an assumption cannot apply (see below).
 ### Arithmetic and assumptions
 
 Each value's expression becomes a linear form over its unknown subterms, reading additions,
-subtractions, offsets, multiplications and shifts by constants, and zero and sign extensions. A
-value counts as an integer only when the ranges of its unknowns show it cannot wrap its width;
+subtractions, offsets, multiplications and shifts by constants, zero and sign extensions, and a
+join that fills the value's width, which a partial register write or a multi-byte load leaves and
+which is the sum of its parts each shifted to its offset, so BX after `mov bl,[x]; xor bh,bh` equals
+BL. A value counts as an integer only when the ranges of its unknowns show it cannot wrap its width;
 otherwise the whole value is one unknown of its width. Such an unknown ranges over its whole width
 unless its expression bounds it: `and` is at most the smaller operand bound, so a constant mask
 bounds it by the mask; `or` and `xor` stay below the next power of two above both operands, and
@@ -1976,7 +1978,8 @@ that fails for part of a range is undecided.
 
 `assume`, accepted on `containment` and `relation` controls, lists at most 16 ranges, each `{ "value": reference, "min", "max", "evidence" }`, with an
 unsigned range inside the value's width. The value should be one unknown, such as an entry register
-or a loaded word. Each occurrence resolves it again: a known value inside the range needs no
+or a loaded word. An assumed join, such as a loaded word, stays one unknown of its width in every
+form, so the assumption applies to it whole. Each occurrence resolves it again: a known value inside the range needs no
 assumption, while a known value outside it, a value computed from unknowns or a reference the path
 does not supply leaves that occurrence undecided. When the value's own expression also bounds it
 (a masked word, say), the narrower of the two ranges applies, and an assumed range the expression

@@ -97,12 +97,13 @@ def extract(v, low, bits):
     if low == 0 and bits == v.bits:
         return v
     if v.term[0] == "join":
-        # A field that starts and ends on part boundaries is the join of the parts it covers.
-        offsets = join_offsets(v.term)
-        bounds = [offset for _, _, offset in offsets] + [v.bits]
-        if low in bounds and low + bits in bounds:
-            return join([Value(width, term, v.sources) for term, width, offset in offsets
-                         if low <= offset < low + bits])
+        # A field of a join is the join of the fields of the parts it covers.
+        pieces = []
+        for term, width, offset in join_offsets(v.term):
+            start, end = max(low, offset), min(low + bits, offset + width)
+            if start < end:
+                pieces.append(extract(Value(width, term, v.sources), start - offset, end - start))
+        return join(pieces)
     if v.term[0] == "extract":
         original, previous_low, _, original_bits = v.term[1:]
         return Value(bits, ("extract", original, previous_low + low, bits, original_bits), v.sources)
@@ -113,7 +114,10 @@ def join(parts):
     """The value whose bits are ``parts`` laid end to end, the first part lowest.
 
     A ``join`` term is ``("join", terms, widths)``: the parts' terms and their widths in bits,
-    lowest first. A part that is itself a join contributes its own parts.
+    lowest first. A part that is itself a join contributes its own parts. Adjacent constant parts
+    become one constant, and adjacent fields of one value become one field, or that value when they
+    cover all of it. So a join never nests, and a partial write that stores a register's own bits
+    back leaves its term as it was.
     """
     bits = sum(v.bits for v in parts)
     if len(parts) == 1:
@@ -127,19 +131,23 @@ def join(parts):
         return Value(bits, const(n, bits).term, sources(*parts))
     terms, widths = [], []
     for v in parts:
-        if v.term[0] == "join":
-            terms.extend(v.term[1])
-            widths.extend(v.term[2])
-        else:
-            terms.append(v.term)
-            widths.append(v.bits)
-    # Consecutive fields of one value, from its lowest bit up, are that value or its low field.
-    first = terms[0]
-    if first[0] == "extract" and all(t[0] == "extract" and t[1] == first[1] and t[2] == sum(widths[:i])
-                                     and t[3] == widths[i] for i, t in enumerate(terms)):
-        original, original_bits = first[1], first[4]
-        term = original if bits == original_bits else ("extract", original, 0, bits, original_bits)
-        return Value(bits, term, sources(*parts))
+        for term, width in zip(*(v.term[1:] if v.term[0] == "join" else ((v.term,), (v.bits,)))):
+            previous = terms[-1] if terms else None
+            if previous and previous[0] == term[0] == "constant":
+                terms[-1] = ("constant", previous[1] | term[1] << widths[-1])
+            elif (previous and previous[0] == term[0] == "extract" and term[1] == previous[1]
+                  and term[2] == previous[2] + previous[3]):
+                original, start, original_bits = previous[1], previous[2], previous[4]
+                merged = widths[-1] + width
+                terms[-1] = original if start == 0 and merged == original_bits else (
+                    "extract", original, start, merged, original_bits)
+            else:
+                terms.append(term)
+                widths.append(width)
+                continue
+            widths[-1] += width
+    if len(terms) == 1:
+        return Value(bits, terms[0], sources(*parts))
     return Value(bits, ("join", tuple(terms), tuple(widths)), sources(*parts))
 
 

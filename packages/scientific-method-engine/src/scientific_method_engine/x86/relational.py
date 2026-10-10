@@ -393,6 +393,13 @@ def _modular(term, bits, ranges):
                 return _scaled(_modular(x, bits, ranges), y[1] if tag == "mul" else 1 << y[1])
     if tag in ("zeroExtend", "signExtend") and term[3] == bits:
         return _integer(term[1], term[2], tag == "signExtend", ranges)
+    if tag == "join" and sum(term[2]) == bits and (term, bits) not in ranges:
+        # The parts hold disjoint bits, so the join is the sum of each part's value shifted to its
+        # offset, and a part compared with the join it sits in cancels.
+        form = 0, {}
+        for part, width, offset in join_offsets(term):
+            form = _combine(form, _scaled(_integer(part, width, False, ranges), 1 << offset))
+        return form
     return 0, {(term, bits): 1}
 
 
@@ -569,7 +576,10 @@ def _ranges(control, path, anchor):
     ranges = {}
     for a in control.get("assume", []):
         value = path.value(a["value"], anchor)
-        form = _modular(value["expression"], value["bits"], {})
+        expression, bits = value["expression"], value["bits"]
+        # An assumed join is its own atom, which _modular then keeps whole instead of splitting it
+        # into its parts.
+        form = (0, {(expression, bits): 1}) if expression[0] == "join" else _modular(expression, bits, {})
         if not form[1]:
             if not a["min"] <= form[0] <= a["max"]:
                 raise _Unresolved(f"the assumed value is {form[0]} here, outside the assumed range {a['min']}..{a['max']}")

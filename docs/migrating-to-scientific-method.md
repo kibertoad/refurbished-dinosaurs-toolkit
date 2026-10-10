@@ -460,12 +460,19 @@ A value built from parts, such as a register after a partial write or a word loa
 reports its expression as `["join", parts, widths]`: the parts' expressions and their widths in
 bits, lowest part first. Earlier releases wrote `["join", parts]` and left each part's width to the
 reader, which assumed bytes. A part that is itself a join now contributes its own parts, so a join
-never nests. A tool that reads `join` expressions out of reports reads the third element for each
-part's width and offset. A saved report compared with a new one differs in every `join`
-expression.
+never nests. Adjacent constant parts become one constant, and adjacent fields of one value become
+one field, so a register after a partial write lists the written bytes and the untouched rest as
+wider parts where earlier releases listed every byte. A field read out of a join, such as AH of a
+register built from two words, is a field of the part that holds it instead of a field of the whole
+join. A tool that reads `join` expressions out of reports reads the third element for each part's
+width and offset. A saved report compared with a new one differs in every `join` expression, and
+expressions after partial writes are shorter, so a query that stopped at the expression term limit
+may now run further.
 
-Relation controls now bound a join by its parts, so a control over such a value, for example
-`registers.bx le 0FFh` after `mov bl,[x]; xor bh,bh`, can hold where it was undecided.
+Relation controls now read a join that fills its value's width as the sum of its parts at their
+offsets. A control over such a value, for example `registers.bx le 0FFh` or `registers.bx eq
+registers.bl` after `mov bl,[x]; xor bh,bh`, can hold where it was undecided. An assumption that
+names a join, such as a loaded word, still applies to the whole value.
 
 ### Engine 15.0.0: `ExportFunctionInventory` writes a regions file
 
