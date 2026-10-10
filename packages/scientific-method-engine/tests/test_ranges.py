@@ -2,10 +2,10 @@
 
 Synthetic machine code only. Each transfer function is checked two ways: against the engine's
 own p-code evaluator (``pcode.evaluate``) for every value pair of sampled input ranges, and
-through instructions that lift to it, against Unicorn for sampled register values. PIECE has no
-Unicorn case, because no real-mode instruction lifts to it; the register file pieces held bytes
-together the same way, and ``RegisterFile.test_byte_writes_piece_together`` runs that through
-Unicorn.
+through instructions that lift to it, against Unicorn for sampled register values. PIECE,
+INT_LESSEQUAL and INT_SLESSEQUAL have no Unicorn case, because no general-purpose real-mode
+instruction lifts to them; the register file pieces held bytes together as PIECE does, and
+``RegisterFile.test_byte_writes_piece_together`` runs that through Unicorn.
 """
 import itertools
 import random
@@ -14,6 +14,7 @@ import unittest
 from capstone import CS_ARCH_X86, CS_MODE_16, Cs
 
 from oracle import STACK, unicorn
+from scientific_method_engine.x86.machine import StopPath
 from scientific_method_engine.x86.pcode import LIFTER, evaluate
 from scientific_method_engine.x86.ranges import SAME_INPUT, TRANSFERS, Evaluation, Range, RegisterRanges, transfer
 from scientific_method_engine.x86.values import const
@@ -68,6 +69,9 @@ class Domain(unittest.TestCase):
         self.assertEqual(r.clamp(0, 100), r)
         self.assertIsNone(r.clamp(3, 5))
         self.assertIsNone(Range.constant(16, 7).clamp(8, 9))
+        # One value of a strided range lies in the bounds.
+        self.assertEqual(r.clamp(5, 7), Range.constant(16, 6))
+        self.assertEqual(Range.span(16, 6, 9, 4), Range.constant(16, 6))
 
     def test_widening_moves_a_bound_that_grew_to_its_limit(self):
         # A loop that adds 2 to an index starting at 0: the upper bound goes to the width's limit.
@@ -151,6 +155,13 @@ class Soundness(unittest.TestCase):
         for high, low in itertools.product(pool, pool):
             with self.subTest(high=high, low=low):
                 self.check("PIECE", [high, low], 16)
+
+    def test_a_stride_across_the_sign_boundary(self):
+        # One value below 0x80 and the rest above it: each sign half is a range of its own.
+        for a in (Range(8, 0x7E, 0x92, 5), Range(8, 0x70, 0xF0, 0x10)):
+            with self.subTest(a=a):
+                self.check("INT_SEXT", [a], 16)
+                self.check("INT_SRIGHT", [a, Range.constant(8, 2)], 8)
 
     def test_every_transfer_function_has_soundness_cases(self):
         tested = set(BINARY) | set(BOOLEAN) | set(SHIFTS) | set(UNARY) | {
@@ -347,6 +358,14 @@ class Oracle(unittest.TestCase):
         oracle(self, "050100 0f92c1 0f90c2", {"AX": Range(16, 0, 0x10, 1)},
                {"CL": Range.constant(8, 0), "DL": Range.constant(8, 0)})
         oracle(self, "050100 0f92c1 0f90c2", {"AX": Range(16, 0x7FFF, 0xFFFF, 0x8000)}, {"CL": None, "DL": None})
+        # cmp ax, 9 then setg cl: not ZF and SF == OF, joined by BOOL_AND.
+        oracle(self, "3d0900 0f9fc1", {"AX": Range(16, 0, 3, 1)}, {"CL": Range.constant(8, 0)})
+        oracle(self, "3d0900 0f9fc1", {"AX": Range(16, 0, 20, 1)}, {"CL": Range(8, 0, 1, 1)})
+        # clc; adc bx, ax; seto dl: ADC's overflow is a BOOL_XOR of two signed carries.
+        oracle(self, "f8 11c3 0f90c2", {"AX": Range(16, 0, 3, 1), "BX": Range(16, 0, 3, 1)},
+               {"DL": Range.constant(8, 0), "BX": Range(16, 0, 6, 1)})
+        oracle(self, "f8 11c3 0f90c2", {"AX": Range(16, 0x7FFF, 0xFFFF, 0x8000), "BX": Range(16, 0, 3, 1)},
+               {"DL": None, "BX": None})
 
 
 class Unmodelled(unittest.TestCase):
@@ -356,6 +375,33 @@ class Unmodelled(unittest.TestCase):
         self.assertIn(("INT_DIV", None), unmodelled)
         state, unmodelled = run("8b07", {"AX": Range.constant(16, 1)})
         self.assertEqual((state.get("AX"), unmodelled), (Range.top(16), [("LOAD", None)]))
+
+    def test_a_direct_memory_operand_is_a_named_load(self):
+        # Flat-mode mov eax, [0x1234] reads a ram varnode directly.
+        ops, _ = LIFTER.ops(True, bytes.fromhex("a134120000"), 0x1000)
+        state = RegisterRanges.named(True, {"EAX": Range.constant(32, 1)})
+        evaluation = Evaluation(state)
+        self.assertIsNone(evaluation.execute(ops))
+        self.assertEqual((state.get("EAX"), evaluation.unmodelled), (Range.top(32), [("LOAD", None)]))
+
+    def test_lock_markers_are_not_unmodelled(self):
+        # lock inc word [bx]: only the memory reads are unknown.
+        _, unmodelled = run("f0ff07", {})
+        self.assertEqual(set(unmodelled), {("LOAD", None)})
+
+    def test_reads_of_part_of_a_temporary(self):
+        # Flat-mode movaps xmm1, [ebp + 0x20]: SLEIGH copies each 4-byte lane out of a 16-byte temporary.
+        ops, _ = LIFTER.ops(True, bytes.fromhex("0f284d20"), 0x1000)
+        state = RegisterRanges(True)
+        evaluation = Evaluation(state)
+        self.assertIsNone(evaluation.execute(ops))
+        self.assertEqual((state.get("XMM1_Da"), evaluation.unmodelled), (Range.top(32), [("LOAD", None)]))
+        evaluation = Evaluation(RegisterRanges(False))
+        evaluation.assign(("unique", 0x100, 4), Range(32, 0x1200, 0x1203, 1))
+        self.assertEqual(evaluation.value(("unique", 0x101, 1)), Range.constant(8, 0x12))
+        evaluation.assign(("unique", 0x102, 2), Range.constant(16, 7))
+        with self.assertRaises(StopPath):
+            evaluation.value(("unique", 0x100, 4))
 
     def test_cs_override_does_not_write_cs(self):
         state, _ = run("2e8b5f40", {"CS": Range.top(16)})

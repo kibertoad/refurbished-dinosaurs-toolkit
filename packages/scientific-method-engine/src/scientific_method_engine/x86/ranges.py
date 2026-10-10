@@ -8,10 +8,10 @@ range contains every value ``pcode.evaluate`` can produce from values in the inp
 operation without a transfer function has no range, and its output is unknown.
 
 ``Evaluation`` runs one instruction's p-code over ``RegisterRanges``. Memory is not modelled:
-a ``LOAD`` yields an unknown value and a ``STORE`` changes no register. Control flow, joins
-across paths, widening and branch refinement belong to the analysis that walks the code (ADR
-0034, slices 2 and later); ``Evaluation.execute`` stops at the first control-flow operation and
-hands it back.
+a ``LOAD`` or a direct ``ram`` operand yields an unknown value and a ``STORE`` changes no
+register. Control flow, joins across paths, widening and branch refinement belong to the
+analysis that walks the code (ADR 0034, slices 2 and later); ``Evaluation.execute`` stops at the
+first control-flow operation and hands it back.
 """
 from math import gcd
 
@@ -51,9 +51,8 @@ class Range:
     @classmethod
     def span(cls, bits, lo, hi, stride):
         """The range from ``lo`` to the last value at or below ``hi`` that ``stride`` reaches."""
-        if lo == hi or stride == 0:
-            return cls(bits, lo, lo, 0)
-        return cls(bits, lo, lo + (hi - lo) // stride * stride, stride)
+        last = lo if stride == 0 else lo + (hi - lo) // stride * stride
+        return cls(bits, lo, last, stride if last != lo else 0)
 
     @property
     def number(self):
@@ -98,7 +97,8 @@ class Range:
         """The range a loop head keeps after ``newer`` arrives: a bound that moved goes to its limit.
 
         A chain of widenings ends, because each one either keeps both bounds and a stride that
-        divides the last one, or moves a bound to 0 or to the width's largest value.
+        divides the last one, or moves the lower bound below the stride or the upper bound to the
+        largest value the stride reaches.
         """
         joined = self.join(newer)
         if joined == self:
@@ -445,6 +445,9 @@ SAME_INPUT = {
     "INT_SBORROW": lambda r, bits: boolean(False),
     "INT_LESSEQUAL": lambda r, bits: boolean(True),
     "INT_SLESSEQUAL": lambda r, bits: boolean(True),
+    "BOOL_XOR": lambda r, bits: boolean(False),
+    "BOOL_AND": lambda r, bits: r,
+    "BOOL_OR": lambda r, bits: r,
 }
 
 
@@ -533,16 +536,23 @@ class Evaluation:
         if space == "const":
             return Range.constant(size * 8, offset)
         if space == "unique":
-            if offset not in self.temps:
-                raise StopPath("p-code read an unwritten temporary")
-            return self.temps[offset]
+            # SLEIGH reads pieces of a wider temporary, such as each 4-byte lane of a 16-byte load.
+            for o, r in self.temps.items():
+                if o <= offset and offset + size <= o + r.bits // 8:
+                    return resize(shift_right(r, (offset - o) * 8), size * 8)
+            raise StopPath("p-code read an unwritten temporary")
         if space == "register":
             return self.registers.read(offset, size)
+        if space == "ram":
+            # Flat-mode SLEIGH names an absolute memory operand as a direct ram varnode: a memory read.
+            self.unmodelled.append(("LOAD", None))
         return Range.top(size * 8)
 
     def assign(self, v, r):
         space, offset, size = v
         if space == "unique":
+            for o in [o for o, old in self.temps.items() if o < offset + size and offset < o + old.bits // 8]:
+                del self.temps[o]
             self.temps[offset] = r
         elif space == "register":
             self.registers.write(offset, size, r)
@@ -560,7 +570,8 @@ class Evaluation:
             if o.output is None:
                 if o.code != "CALLOTHER":
                     raise StopPath("p-code operation without an output: " + o.code)
-                self.unmodelled.append((o.code, o.userop))
+                if o.userop not in ("LOCK", "UNLOCK"):  # atomicity markers, as pcode.Run skips them
+                    self.unmodelled.append((o.code, o.userop))
                 continue
             bits = o.output[2] * 8
             if o.code in ("LOAD", "CALLOTHER"):

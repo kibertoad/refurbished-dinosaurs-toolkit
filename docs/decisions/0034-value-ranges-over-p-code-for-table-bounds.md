@@ -47,9 +47,9 @@ The engine has no analysis that joins values across paths. `x86/values.py`, `mac
 4. **Every transfer function is checked for soundness two ways.** For sampled input ranges, every
    output `pcode.evaluate` computes from values in them lies in the output range. Through instructions that lift
    to the operation, the registers Unicorn computes from sampled values in the input ranges lie in
-   the output ranges (ADR 0003, decision 4). PIECE has no Unicorn case, because no real-mode
-   instruction the engine reads lifts to it; the register file's tiling, which pieces bytes the
-   same way, has one.
+   the output ranges (ADR 0003, decision 4). PIECE, `INT_LESSEQUAL` and `INT_SLESSEQUAL` have no
+   Unicorn case, because no general-purpose real-mode instruction lifts to them; the register
+   file's tiling, which pieces bytes the way PIECE does, has one.
 
 5. **The analysis runs forward over the routine's control flow to the dispatch site.** It joins
    ranges where paths merge, and widens at a loop head after a bounded number of passes, which
