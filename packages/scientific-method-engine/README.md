@@ -14,8 +14,9 @@ For original MZ/FBOV executables, run reports through
 reader derives relocation, fixup and trampoline data from the hash-checked source and pipes a
 prepared config to this engine. Running the engine directly trusts whatever relocation data the
 config supplies, so use it directly only for synthetic inputs, PE32 sources and checked mappings. A config
-file is read as the reader reads it: UTF-8, with or without one leading byte order mark, and a UTF-16 file
-or bytes that are not UTF-8 are refused with the encoding named.
+file is read as the reader reads it: UTF-8, with or without one leading byte order mark, and a file starting
+with a UTF-16 or UTF-32 byte order mark or with more than one UTF-8 mark, or bytes that are not UTF-8, are
+refused with the cause named.
 
 ```sh
 scientific-method-engine trace analysis/query.json

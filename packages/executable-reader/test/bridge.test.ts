@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,15 +60,38 @@ test("config files read the same with a UTF-8 byte order mark and refuse other e
   assert.equal(plain.completeWithinModel, true);
   writeFileSync(path, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(text)]));
   assert.deepEqual(run(["returns", path]), plain);
-  // Only one mark is an encoding signature; a second is text and fails JSON parsing.
+  // Only one mark is an encoding signature; a second is refused by name.
   writeFileSync(path, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf]), Buffer.from(text)]));
-  assert.throws(() => run(["returns", path]), SyntaxError);
+  assert.throws(() => run(["returns", path]), /starts with more than one byte order mark/);
+  writeFileSync(path, Buffer.concat([Buffer.from([0xff, 0xfe, 0, 0]), Buffer.from("{}")]));
+  assert.throws(() => run(["returns", path]), /is UTF-32 text; save it as UTF-8/);
+  writeFileSync(path, Buffer.from([0, 0, 0xfe, 0xff, 0, 0, 0, 0x7b, 0, 0, 0, 0x7d]));
+  assert.throws(() => run(["returns", path]), /is UTF-32 text; save it as UTF-8/);
   writeFileSync(path, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]));
   assert.throws(() => run(["returns", path]), /is UTF-16 text; save it as UTF-8/);
   writeFileSync(path, Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(text, "utf16le").swap16()]));
   assert.throws(() => run(["returns", path]), /is UTF-16 text; save it as UTF-8/);
   writeFileSync(path, Buffer.from(text, "latin1"));
   assert.throws(() => run(["returns", path]), /is not valid UTF-8; save it as UTF-8/);
+});
+
+test("non-ASCII config text reaches the engine intact whatever the engine's locale", (t) => {
+  const { dir, data, config } = fixture(t);
+  // The engine decodes the pipe and writes stderr as UTF-8, not in the locale's encoding (cp1252 on Windows).
+  const previous = process.env.PYTHONIOENCODING;
+  process.env.PYTHONIOENCODING = "latin-1";
+  t.after(() =>
+    previous === undefined ? delete process.env.PYTHONIOENCODING : (process.env.PYTHONIOENCODING = previous),
+  );
+  const folder = join(dir, "côte");
+  mkdirSync(folder);
+  writeFileSync(join(folder, "source.bin"), data);
+  const path = join(folder, "config.json");
+  writeFileSync(path, JSON.stringify({ ...config, regions: [{ ...config.regions[0]!, name: "résident" }] }));
+  const report = run(["trace", path]);
+  assert.equal(report.completeWithinModel, true);
+  assert.match(JSON.stringify(report), /résident/);
+  assert.doesNotMatch(JSON.stringify(report), /rÃ©sident/);
 });
 
 test("return flow bridge keeps full-width failures and declared roles", (t) => {

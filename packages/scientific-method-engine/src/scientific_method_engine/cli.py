@@ -50,14 +50,20 @@ def ghidra_scripts():
 
 def _read_config_text(path):
     # Windows PowerShell 5.1 writes a UTF-8 byte order mark with -Encoding utf8 and UTF-16 by default.
+    # The reader's readConfigText in report.ts applies the same rules with the same messages.
     data = path.read_bytes()
+    if data[:4] in (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff"):
+        raise ValueError(f"Config {path} is UTF-32 text; save it as UTF-8")
     if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
         raise ValueError(f"Config {path} is UTF-16 text; save it as UTF-8")
     try:
         # utf-8-sig drops one leading byte order mark.
-        return data.decode("utf-8-sig")
+        text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
         raise ValueError(f"Config {path} is not valid UTF-8; save it as UTF-8") from None
+    if text.startswith("\ufeff"):
+        raise ValueError(f"Config {path} starts with more than one byte order mark; save it as UTF-8 with at most one")
+    return text
 
 
 def main(argv):
@@ -74,7 +80,15 @@ def main(argv):
     if config_path == "-":
         # The reader caps its input at 1 MiB, then adds every source relocation.
         limit, label = PREPARED_CONFIG_LIMIT, "Prepared config exceeds 16 MiB"
-        text = sys.stdin.read(limit + 1)
+        # The reader writes UTF-8. sys.stdin decodes with the locale's encoding (cp1252 on Windows), which
+        # would garble a non-ASCII source path or evidence string, so the bytes are decoded here.
+        data = sys.stdin.buffer.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError(label)
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError("Prepared config is not valid UTF-8") from None
         base = Path.cwd()
     else:
         limit, label = CONFIG_LIMIT, "Config exceeds 1 MiB"
@@ -118,6 +132,9 @@ def main(argv):
 
 def run():
     """Entry point of the ``scientific-method-engine`` command; exits with 1 on any error."""
+    # The reader decodes this process's stderr as UTF-8; the locale's encoding (cp1252 on Windows) would
+    # garble a non-ASCII path in an error message.
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     try:
         main(sys.argv[1:])
     except (ValueError, TypeError, KeyError, OSError, ImportError) as error:

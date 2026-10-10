@@ -235,16 +235,23 @@ export const MAX_REPORT_MIB = 32;
 export const PREPARED_PROTOCOL = 3;
 
 // Windows PowerShell 5.1 writes a UTF-8 byte order mark with `-Encoding utf8` and UTF-16 by default.
+// The engine's `_read_config_text` in cli.py applies the same rules with the same messages.
 function readConfigText(file: string): string {
-  const bytes = readFileSync(file);
-  if ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff))
-    throw new Error(`Config ${file} is UTF-16 text; save it as UTF-8`);
+  const bytes = readFileSync(file),
+    starts = (...mark: number[]) => mark.every((b, i) => bytes[i] === b);
+  if (starts(0xff, 0xfe, 0, 0) || starts(0, 0, 0xfe, 0xff))
+    throw new Error(`Config ${file} is UTF-32 text; save it as UTF-8`);
+  if (starts(0xff, 0xfe) || starts(0xfe, 0xff)) throw new Error(`Config ${file} is UTF-16 text; save it as UTF-8`);
+  let text: string;
   try {
     // The decoder drops one leading UTF-8 byte order mark and refuses bytes that are not UTF-8.
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
     throw new Error(`Config ${file} is not valid UTF-8; save it as UTF-8`);
   }
+  if (text.startsWith("﻿"))
+    throw new Error(`Config ${file} starts with more than one byte order mark; save it as UTF-8 with at most one`);
+  return text;
 }
 
 /**
