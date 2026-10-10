@@ -322,6 +322,55 @@ test("a glossary term that names a superseded entry is reported", (t) => {
   assert.match(output, /add_points cites RULE-SCORE-002, which is superseded/);
 });
 
+// STATUS-17 lists the fields and rows where a live entry may not cite a superseded one, and an
+// entry's body text is not among them: a replacement names the entry it replaced in its
+// Alternatives section (IDENTIFIERS-8), and entries that replaced nothing may name it as well.
+test("an entry body that names a superseded entry passes, and its related field does not", (t) => {
+  const root = broken(t, (r) => {
+    copyRule(r, "RULE-SCORE-002", (text) =>
+      text
+        .replace("status: sourced", "status: superseded")
+        .replace("superseded_by: []", "superseded_by: [RULE-SCORE-001]"),
+    );
+    rangeFinding(r, locatedAt("0x00401000..0x00401010"));
+    const findings = join(r, "spec", "findings");
+    const live = readFileSync(join(findings, "FND-SCORE-001.md"), "utf8");
+    writeFileSync(
+      join(findings, "FND-SCORE-002.md"),
+      live
+        .replace("id: FND-SCORE-001", "id: FND-SCORE-002")
+        .replace("status: recorded", "status: superseded")
+        .replace("superseded_by: []", "superseded_by: [FND-SCORE-001]"),
+    );
+    // A live finding that replaced nothing names the superseded one in its observation.
+    writeFileSync(
+      join(findings, "FND-SCORE-003.md"),
+      live
+        .replace("id: FND-SCORE-001", "id: FND-SCORE-003")
+        .replace("The handler adds 1 to the score.", "The handler adds 1 to the score, as FND-SCORE-002 read it."),
+    );
+    replaceIn(
+      r,
+      "spec/findings/FND-SCORE-001.md",
+      "## Alternatives\n\nNone known.",
+      "## Alternatives\n\nFND-SCORE-002 recorded the same handler and is replaced by this finding.",
+    );
+    // The replacement rule names the rule it replaced, and a finding it did not replace.
+    replaceIn(
+      r,
+      "spec/rules/RULE-SCORE-001.md",
+      "Each kill adds one point.",
+      "Each kill adds one point, as RULE-SCORE-002 said and FND-SCORE-002 observed.",
+    );
+  });
+  const prose = run(root);
+  assert.equal(prose.status, 0, prose.output);
+  replaceIn(root, "spec/rules/RULE-SCORE-001.md", "related: []", "related: [RULE-SCORE-002]");
+  const linked = run(root);
+  assert.equal(linked.status, 1);
+  assert.match(linked.output, /RULE-SCORE-001\.md: related cites RULE-SCORE-002, which is superseded \[STATUS-17\]$/m);
+});
+
 test("a Markdown file under --references that cites a superseded entry is reported, and a deviation file is not", (t) => {
   const root = broken(t, (r) => {
     copyRule(r, "RULE-SCORE-002", (text) =>
