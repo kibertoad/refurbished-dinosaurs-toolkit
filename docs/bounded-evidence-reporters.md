@@ -1059,8 +1059,14 @@ inside it past its start is not reached through it.
 `counts` gives the routines, the decoded instructions and the full length of each list. `leaves`
 repeats each leaf with its reason, whether the walk reached it and the call sites that entered it.
 
-`negativeUsable` holds when `controls` were given and nothing is unresolved, no gap was recorded
-and no instruction is contested. Even then a target that is not reached is unreached only on the
+`instructionLimitReached` holds when the walk stopped at `instructionLimit` with code left to read.
+The stop is also an `instruction limit` row in `gaps`, but the result `limit` can cut that row, and
+`truncated` describes only the lists. In a stopped run every list and count covers the part read
+before the stop, and which part that is depends on the walk order, so adding starts can lower the
+counts. A target that is not reached may lie past the stop.
+
+`negativeUsable` holds when `controls` were given, the walk did not stop at its instruction limit,
+nothing is unresolved, no gap was recorded and no instruction is contested. Even then a target that is not reached is unreached only on the
 walk's assumptions, which the report lists: each call and interrupt returns to the next
 instruction, each leaf calls nothing for its stated reason, and each declared table holds the
 routes its declaration gives. `throughEveryRoute` describes the routes the walk read; an

@@ -61,6 +61,7 @@ class ReachTests(unittest.TestCase):
         self.assertEqual([(u["site"], u["kind"], u["routine"]) for u in r["unresolved"]], [(0x6, "call", 0x0)])
         self.assertIn("[0x200]", r["unresolved"][0]["instruction"])
         self.assertFalse(r["negativeUsable"])
+        self.assertFalse(r["instructionLimitReached"])
         self.assertEqual(r["controls"], [{"site": 0x3, "target": 0x18}, {"site": 0x20, "target": 0x28}])
 
     def test_a_leaf_is_reached_unread_and_its_reason_is_repeated(self):
@@ -147,6 +148,21 @@ class ReachTests(unittest.TestCase):
         r = reach(indirectJumps=[TABLE], instructionLimit=3)
         self.assertIn("instruction limit", [g["reason"] for g in r["gaps"]])
         self.assertFalse(r["negativeUsable"])
+        self.assertTrue(r["instructionLimitReached"])
+        self.assertFalse(r["truncated"])
+
+    def test_the_instruction_limit_stop_is_reported_when_the_result_limit_cuts_its_gap(self):
+        # 0000 je 0004; 0002 holds undecodable bytes; 0004 nop; 0005 nop; 0006 ret.
+        data = bytes.fromhex("7402ffff9090c3")
+        r = run_report(data, config(data, targets=[6], instructionLimit=2, limit=1), "reach")
+        self.assertEqual(r["gaps"], [{"site": 2, "reason": "undecoded or unmapped edge"}])
+        self.assertEqual(r["counts"]["gaps"], 2)
+        self.assertTrue(r["instructionLimitReached"])
+        self.assertFalse(r["targets"][0]["reached"])
+        # With room to read everything, the same walk reaches the target and does not stop.
+        r = run_report(data, config(data, targets=[6], limit=1), "reach")
+        self.assertFalse(r["instructionLimitReached"])
+        self.assertTrue(r["targets"][0]["reached"])
 
     def test_the_result_limit_truncates_lists_and_keeps_counts(self):
         data = bytes.fromhex("ffd0ffd3c3")  # call ax; call bx; ret

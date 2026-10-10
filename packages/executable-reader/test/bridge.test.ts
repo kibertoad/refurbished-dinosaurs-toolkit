@@ -748,6 +748,13 @@ test("reach follows a resident far call and an overlay fixup call through the FB
   ]);
   assert.deepEqual(r.reachedRoutines, [80, 528, 532]);
   assert.equal(r.negativeUsable, true);
+  assert.equal(r.instructionLimitReached, false);
+  // Stopped at its first instruction, the walk says so at the top level and claims no negative.
+  writeFileSync(path, JSON.stringify({ ...config, starts: [80], targets: [528], controls: [], instructionLimit: 1 }));
+  const stopped = run(["reach", path]);
+  assert.equal(stopped.targets[0].reached, false);
+  assert.equal(stopped.instructionLimitReached, true);
+  assert.equal(stopped.negativeUsable, false);
   // A leaf is reached through the same trampoline and keeps its reason.
   const leaves = [{ routine: 528, reason: leaf }];
   writeFileSync(path, JSON.stringify({ ...config, starts: [532], targets: [528], controls: [532], leaves }));
