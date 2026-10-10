@@ -130,7 +130,7 @@ import { bodyLayout, fileLayout } from "@scientific-method/executable-reader/bod
 | `unpack(bytes)` | `unpack` | Unpacks an LZEXE 0.90 or 0.91, an EXEPACK or a PKLITE 1.00 to 2.01 file in memory into an `UnpackResult`: the unpacked bytes, the rebuilt header and relocations, and the packed parts read. |
 | `UNPACK_LAYOUT` | `unpack` | The layout rule number the unpacked bytes are written by. |
 | `MAX_PACKED_BYTES`, `MAX_UNPACKED_BYTES` | `unpack` | The caps on the packed file and on the unpacked load module, 1 MiB each. |
-| `UnpackResult`, `UnpackedHeader`, `UnpackedRelocation`, `PackedParts`, `PkliteParts`, `PkliteIntro` | `unpack` | Types of the result. |
+| `UnpackResult`, `UnpackedHeader`, `UnpackedRelocation`, `PackedParts`, `PkliteParts`, `PkliteIntro`, `PkliteCodeTables` | `unpack` | Types of the result. |
 
 Each export carries a doc comment with its exact checks and errors.
 

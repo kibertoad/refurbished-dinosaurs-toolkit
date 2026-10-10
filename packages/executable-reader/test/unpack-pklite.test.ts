@@ -586,6 +586,11 @@ test("a stub part the reader does not know is refused, naming it", () => {
   const standard = { v120: true, large: true } as const;
   assert.throws(
     () => unpack(pklite(encode(literals("abcd"), standard), standard)),
+    /holds the 1\.20 large-model sequence at 0x[0-9A-F]{8} with standard compression, which that model does not use/,
+  );
+  // Neither the length table nor the 1.20 large-model sequence.
+  assert.throws(
+    () => unpack(pklite(stream).fill(0x90, 0x20 + 0x40, 0x20 + 0x60)),
     /has neither a length table nor a 1\.20 large-model sequence the reader knows/,
   );
   // A decompressor whose paragraph operand would lie past the end of the image.

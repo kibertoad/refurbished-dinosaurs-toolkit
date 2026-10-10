@@ -431,7 +431,9 @@ The `unpack` report and the `unpack` export gave `packed.pklite.scrambled`, true
 XORed the stub before it was matched. PKLITE 1.20 and later stubs are also scrambled by ADD, so the
 field is now `packed.pklite.descrambler`: `xor` or `add` for the method of the descrambler the stub
 carries, and null when it carries none. A script that read `scrambled` reads `descrambler !== null`.
-`packed.pklite` also gives the new `codeTables`, `offsetKey` and `pspSignature`. The unpacked bytes
+The two differ only for a descrambler whose word count descrambles no word: `scrambled` was false
+for it, and `descrambler` names its method, which still decides how an extra-compression
+relocation table is read. `packed.pklite` also gives the new `codeTables`, `offsetKey` and `pspSignature`. The unpacked bytes
 of a file 2.x unpacked are unchanged, so its `unpacked.xxh3` stays valid.
 
 ## Engine upgrades

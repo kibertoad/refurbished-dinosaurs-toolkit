@@ -277,6 +277,7 @@ export function decodePklite(image: Image, intro: PkliteIntro, cap: number): Dec
   let large = false;
   if (codeTables === "1.00") {
     const table = search(w, stubEnd - 60, stubEnd, LENGTH_TABLE);
+    const large120 = table > 0 ? -1 : search(w, stubEnd - 50, stubEnd, LARGE_120);
     if (table > 0) {
       const model = w[table - 1];
       if (model !== 0x09 && model !== 0x18)
@@ -284,7 +285,11 @@ export function decodePklite(image: Image, intro: PkliteIntro, cap: number): Dec
           `The length table at ${at(table)} follows the byte ${hex(model!, 2)}, which names no model the reader knows`,
         );
       large = model === 0x18;
-    } else if (extra && search(w, stubEnd - 50, stubEnd, LARGE_120) >= 0) {
+    } else if (large120 >= 0) {
+      if (!extra)
+        refuse(
+          `The decompressor at ${at(decompressor)} holds the 1.20 large-model sequence at ${at(large120)} with standard compression, which that model does not use`,
+        );
       codeTables = "1.20";
       large = true;
     } else

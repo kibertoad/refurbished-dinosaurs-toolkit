@@ -7,6 +7,7 @@ import { type Decoded, type Image, reader } from "./unpack-image.ts";
 import { decodePklite, pkliteIntro, type PkliteParts } from "./unpack-pklite.ts";
 
 export type { PkliteIntro, PkliteParts } from "./unpack-pklite.ts";
+export type { PkliteCodeTables } from "./unpack-pklite-stream.ts";
 
 /**
  * The layout rule {@link unpack} writes the unpacked file by. Two runs with the same layout give the
