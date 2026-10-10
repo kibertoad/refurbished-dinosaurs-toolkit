@@ -6,7 +6,8 @@ import type { MzImage, Descriptor, DescriptorExtent } from "./legacy-image.ts";
 /**
  * What the file's tables make of a run of bytes. `mz-header` is the MZ header with its relocation
  * table, `resident` the MZ load image outside the FBOV tables kept in it (in a file with an FBOV
- * envelope, only the bytes of a resident descriptor's span, see {@link fileLayout}), `fbov-descriptors` the
+ * envelope, only the bytes of a resident descriptor's span, see {@link fileLayout}), `overlapping-spans`
+ * load-image bytes the spans of two or more resident descriptors hold, `fbov-descriptors` the
  * FBOV descriptor table in the load image, `overlay-stub` an FBOV overlay's stub header and
  * trampolines in the load image, `fbov-header` the 16-byte FBOV envelope header, `overlay-code` and
  * `fixup-table` an overlay's code and the fixup table after it. Bytes no table declares are
@@ -15,6 +16,7 @@ import type { MzImage, Descriptor, DescriptorExtent } from "./legacy-image.ts";
 export type RegionKind =
   | "mz-header"
   | "resident"
+  | "overlapping-spans"
   | "fbov-descriptors"
   | "overlay-stub"
   | "fbov-header"
@@ -26,7 +28,8 @@ export type RegionKind =
 /**
  * One run of the file's layout, as half-open file offsets. `descriptor` is the FBOV descriptor index
  * of an overlay's stub, code or fixup table, or of the resident descriptor whose span holds a
- * `resident` run, and null otherwise. A run no table declares carries
+ * `resident` run, and null otherwise. An `overlapping-spans` run carries `descriptors`, the indexes
+ * of every resident descriptor whose span holds it, in ascending order. A run no table declares carries
  * `nonzeroBytes`, which is 0 exactly for `zero-padding`, and `trailing`, true when the run lies past
  * everything the tables declare: past the end of the FBOV payload, or past the load image when the
  * file has no FBOV envelope. A run never crosses that boundary.
@@ -34,6 +37,7 @@ export type RegionKind =
 export interface LayoutRegion {
   kind: RegionKind;
   descriptor: number | null;
+  descriptors?: number[];
   start: number;
   end: number;
   nonzeroBytes?: number;
@@ -75,17 +79,23 @@ export interface BodyPart extends ByteRange {
   size: number;
   kind: RegionKind;
   descriptor: number | null;
+  /** The descriptors of an `overlapping-spans` run, as in {@link LayoutRegion}. */
+  descriptors?: number[];
   /**
-   * True when the part's kind or descriptor differs from the entry's, or when the entry lies in a
-   * `zero-padding` or `undeclared` run and the part lies in another run.
+   * True when the part's kind or descriptor differs from the entry's, or when the entry lies in an
+   * `overlapping-spans`, `zero-padding` or `undeclared` run and the part lies in another run.
    */
   outsideEntryRegion: boolean;
 }
 
-/** Bytes of one kind and descriptor in a set of ranges. */
+/**
+ * Bytes of one kind and descriptor in a set of ranges. `descriptors` names the descriptors of
+ * `overlapping-spans` bytes, which are totalled per set of descriptors.
+ */
 export interface RegionTotal {
   kind: RegionKind;
   descriptor: number | null;
+  descriptors?: number[];
   bytes: number;
 }
 
@@ -97,6 +107,7 @@ export const MAX_BODY_RANGES = 4096;
 const KIND_ORDER: RegionKind[] = [
   "mz-header",
   "resident",
+  "overlapping-spans",
   "fbov-descriptors",
   "overlay-stub",
   "fbov-header",
@@ -105,9 +116,10 @@ const KIND_ORDER: RegionKind[] = [
   "zero-padding",
   "undeclared",
 ];
-// Kinds of the runs no table declares. Each run is its own region, so a part in another run of
-// the same kind is outside an entry's run.
-const GAP_KINDS: ReadonlySet<RegionKind> = new Set(["zero-padding", "undeclared"]);
+// Kinds whose runs no single descriptor owns: runs no table declares, and runs several resident
+// spans hold. Each run is its own region, so a part in another run of the same kind is outside an
+// entry's run.
+const RUN_KINDS: ReadonlySet<RegionKind> = new Set(["overlapping-spans", "zero-padding", "undeclared"]);
 
 /**
  * One FBOV descriptor in the `bodies` report: its four words as stored, whether its flags carry the
@@ -119,24 +131,41 @@ export interface DescriptorRow extends Descriptor, Omit<DescriptorExtent, "descr
 
 /**
  * The bytes of the load image the resident descriptors' words give (see {@link descriptorExtents}),
- * sorted by start. Overlay descriptors and descriptors that hold no bytes are left out. A span that
+ * in file order. Overlay descriptors and descriptors that hold no bytes are left out. A span that
  * runs past the load image keeps only its bytes in the load image, since the file stores nothing of
  * the rest (memory the program gets at load time, such as a stack); its descriptor row still reports
- * `outside-load-image`. Throws when two of the kept spans overlap, since a byte would then have no
- * single place in the layout.
+ * `outside-load-image`. Bytes one span holds are `resident` with that descriptor. Bytes two or more
+ * spans hold are `overlapping-spans`, naming every descriptor whose span holds them, so the layout
+ * gives no such byte to one descriptor.
  */
-function residentSpans(image: MzImage): { descriptor: number; start: number; end: number }[] {
+function residentRuns(image: MzImage): LayoutRegion[] {
   const spans = descriptorExtents(image)
     .filter((e) => !e.overlay && (e.status === "bytes" || e.status === "outside-load-image"))
     .map((e) => ({ descriptor: e.descriptor, start: e.start, end: Math.min(e.end, image.end) }))
-    .filter((e) => e.end > e.start)
-    .sort((a, b) => a.start - b.start);
-  for (let i = 1; i < spans.length; i++)
-    if (spans[i]!.start < spans[i - 1]!.end)
-      throw new Error(
-        `FBOV descriptors ${spans[i - 1]!.descriptor} and ${spans[i]!.descriptor} give overlapping spans ${spans[i - 1]!.start}..${spans[i - 1]!.end} and ${spans[i]!.start}..${spans[i]!.end}`,
-      );
-  return spans;
+    .filter((e) => e.end > e.start);
+  // Every span starts and ends at a cut, so each piece between two cuts is held by the same spans throughout.
+  const cuts = [...new Set(spans.flatMap((e) => [e.start, e.end]))].sort((a, b) => a - b);
+  const runs: LayoutRegion[] = [];
+  for (let i = 1; i < cuts.length; i++) {
+    const start = cuts[i - 1]!,
+      end = cuts[i]!;
+    const holders = spans
+      .filter((e) => e.start <= start && end <= e.end)
+      .map((e) => e.descriptor)
+      .sort((a, b) => a - b);
+    if (!holders.length) continue;
+    const last = runs.at(-1);
+    const sameHolders =
+      last !== undefined &&
+      last.end === start &&
+      (holders.length === 1
+        ? last.kind === "resident" && last.descriptor === holders[0]
+        : last.descriptors?.join() === holders.join());
+    if (sameHolders) last.end = end;
+    else if (holders.length === 1) runs.push({ kind: "resident", descriptor: holders[0]!, start, end });
+    else runs.push({ kind: "overlapping-spans", descriptor: null, descriptors: holders, start, end });
+  }
+  return runs;
 }
 
 /**
@@ -149,8 +178,8 @@ function residentSpans(image: MzImage): { descriptor: number; start: number; end
  * read through the descriptor table: the bytes of each resident descriptor's span (see
  * {@link descriptorExtents}) are `resident` with that descriptor, outside the envelope's own tables,
  * and load-image bytes no span holds are runs between declared regions, like bytes in the FBOV
- * payload no overlay holds. A resident span that runs past the load image is cut at its end. Throws
- * when two resident spans overlap in the load image.
+ * payload no overlay holds. A resident span that runs past the load image is cut at its end. Bytes
+ * two or more resident spans hold are `overlapping-spans` runs naming those descriptors.
  */
 export function fileLayout(image: MzImage): LayoutRegion[] {
   // The tables the FBOV envelope keeps in the load image: each overlay's stub and the descriptors.
@@ -168,18 +197,17 @@ export function fileLayout(image: MzImage): LayoutRegion[] {
   const declared: LayoutRegion[] = [{ kind: "mz-header", descriptor: null, start: 0, end: image.header }, ...tables];
   // Without an envelope the whole load image is resident; with one, only the resident descriptors'
   // spans are. Either way the envelope's tables are cut out of it.
-  const spans = image.envelope
-    ? residentSpans(image)
-    : [{ descriptor: null as number | null, start: image.header, end: image.end }];
+  const spans: LayoutRegion[] = image.envelope
+    ? residentRuns(image)
+    : [{ kind: "resident", descriptor: null, start: image.header, end: image.end }];
   for (const span of spans) {
     let at = span.start;
     for (const table of tables) {
       if (table.end <= at || table.start >= span.end) continue;
-      if (table.start > at)
-        declared.push({ kind: "resident", descriptor: span.descriptor, start: at, end: table.start });
+      if (table.start > at) declared.push({ ...span, start: at, end: table.start });
       at = Math.max(at, table.end);
     }
-    if (span.end > at) declared.push({ kind: "resident", descriptor: span.descriptor, start: at, end: span.end });
+    if (span.end > at) declared.push({ ...span, start: at, end: span.end });
   }
   if (image.envelope) {
     const fbov = image.envelope.header;
@@ -320,9 +348,9 @@ export function bodyLayout(bytes: Buffer, config: BodyConfig) {
     extent: status,
   }));
 
-  // The entry's own region: parts of another kind or descriptor, or of another undeclared run, lie outside it.
+  // The entry's own region: parts of another kind or descriptor, or of another run no single descriptor owns, lie outside it.
   const outside = (region: LayoutRegion, home: LayoutRegion) =>
-    region.kind !== home.kind || region.descriptor !== home.descriptor || (GAP_KINDS.has(home.kind) && region !== home);
+    region.kind !== home.kind || region.descriptor !== home.descriptor || (RUN_KINDS.has(home.kind) && region !== home);
   const split = (range: ByteRange, home: LayoutRegion): BodyPart[] => {
     const parts: BodyPart[] = [];
     for (let i = regionAt(layout, range.start), at = range.start; at < range.end; i++) {
@@ -334,6 +362,7 @@ export function bodyLayout(bytes: Buffer, config: BodyConfig) {
         size: end - at,
         kind: region.kind,
         descriptor: region.descriptor,
+        ...(region.descriptors ? { descriptors: region.descriptors } : {}),
         outsideEntryRegion: outside(region, home),
       });
       at = end;
@@ -345,13 +374,20 @@ export function bodyLayout(bytes: Buffer, config: BodyConfig) {
   const totals = (parts: BodyPart[]): RegionTotal[] => {
     const byKey = new Map<string, RegionTotal>();
     for (const p of parts) {
-      const key = `${p.kind}:${p.descriptor}`;
-      const row = byKey.get(key) ?? { kind: p.kind, descriptor: p.descriptor, bytes: 0 };
+      const key = `${p.kind}:${p.descriptor}:${p.descriptors?.join() ?? ""}`;
+      const { kind, descriptor, descriptors } = p;
+      const row = byKey.get(key) ?? { kind, descriptor, ...(descriptors ? { descriptors } : {}), bytes: 0 };
       row.bytes += p.size;
       byKey.set(key, row);
     }
+    // Sets of descriptors compare index by index, a set that is a prefix of another first.
+    const bySet = (a: number[] = [], b: number[] = []) =>
+      a.map((n, i) => n - (b[i] ?? -Infinity)).find((d) => d !== 0) ?? a.length - b.length;
     return [...byKey.values()].sort(
-      (a, b) => KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) || (a.descriptor ?? -1) - (b.descriptor ?? -1),
+      (a, b) =>
+        KIND_ORDER.indexOf(a.kind) - KIND_ORDER.indexOf(b.kind) ||
+        (a.descriptor ?? -1) - (b.descriptor ?? -1) ||
+        bySet(a.descriptors, b.descriptors),
     );
   };
   const outsideBytes = (parts: BodyPart[]) => parts.filter((p) => p.outsideEntryRegion).reduce((n, p) => n + p.size, 0);
@@ -390,6 +426,7 @@ export function bodyLayout(bytes: Buffer, config: BodyConfig) {
       offset: fn.entry!,
       kind: home.kind,
       descriptor: home.descriptor,
+      ...(home.descriptors ? { descriptors: home.descriptors } : {}),
       inBody: body.some((r) => r.start <= fn.entry! && fn.entry! < r.end),
       // Stubs whose trampolines name the entry: the FBOV's own record of it as an overlay entry.
       trampolines: trampolineSites.get(fn.entry!) ?? [],

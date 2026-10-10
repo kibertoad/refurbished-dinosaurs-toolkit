@@ -1696,6 +1696,7 @@ body or candidate fail the report.
 |---|---|
 | `mz-header` | the MZ header and its relocation table |
 | `resident` | the MZ load image, less the FBOV descriptor table and the overlay stubs. In a file with an FBOV envelope, only the bytes of a resident descriptor's span, with `descriptor` naming it (see below) |
+| `overlapping-spans` | load-image bytes the spans of two or more resident descriptors hold, less the FBOV tables; `descriptors` lists those descriptors in ascending order and `descriptor` is null |
 | `fbov-descriptors` | the FBOV descriptor table in the load image, 8 bytes per descriptor |
 | `overlay-stub` | one overlay's stub in the load image: its 32-byte header and its trampolines |
 | `fbov-header` | the 16-byte FBOV envelope header |
@@ -1733,9 +1734,12 @@ regions, `zero-padding` or `undeclared` as above, the way bytes in the FBOV payl
 holds are. A body that runs from one segment into the next is therefore outside its entry's region
 there. A resident span that runs past the load image, such as a segment whose end is memory the
 program gets at load time and the file does not store, keeps the part in the load image; its row
-still reports `outside-load-image`. Two resident spans that overlap in the load image fail the
-report; the loader itself does not refuse them, so every other command still reads the file.
-Overlay descriptors' spans are listed and leave the layout alone.
+still reports `outside-load-image`. Bytes that two or more resident spans hold are an
+`overlapping-spans` run naming every descriptor whose span holds them, one run for each stretch held
+by the same descriptors, so the layout gives none of them to one segment. A descriptor whose span
+starts inside another's, such as a segment that runs on to the end of its 64 KiB past the next
+segment's start, shows this way, and the rest of the file is laid out as usual. Overlay
+descriptors' spans are listed and leave the layout alone.
 
 A resident descriptor's `start`, `end`, `loadedSegment` and `ip` are the `start`, `end`, `segment`
 and `ip` of a code region, which the reader checks against the file when a query declares it. The caller
@@ -1751,7 +1755,10 @@ Each function's `entry` gives its `offset`, the `kind` and `descriptor` of the r
 is. Each body range is a `fragments` row with `start`, `end`, `size`, `crossesRegions` and `parts`:
 the range cut at every region boundary, each part with its `kind`, `descriptor`, size and
 `outsideEntryRegion`, true when its kind or descriptor differs from the entry's, or when the entry
-lies in a `zero-padding` or `undeclared` run and the part lies in another run. Code of another
+lies in an `overlapping-spans`, `zero-padding` or `undeclared` run and the part lies in another run.
+The entry and the parts of an `overlapping-spans` run also carry its `descriptors`, and `regions`
+totals those bytes per set of descriptors. An entry in such a run counts as outside resident code,
+since the table gives it no single segment. Code of another
 overlay is outside the entry's region, since being code says nothing about which procedure owns it.
 Every fragment is kept, however much of it lies outside. The parts of a range add up to the range,
 and the report fails rather than give a partition that does not. Per function, `bytes`, `regions`
