@@ -137,7 +137,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved | [reachability](#reachability-from-starts-to-targets) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
-| `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (load image, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own and an optional comparison with a candidate body (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
+| `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (the resident span of each FBOV descriptor, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own, an optional comparison with a candidate body, and every FBOV descriptor with its load-image span (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
 | `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables and checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots) |
 | `unpack` | writes the unpacked form of an LZEXE 0.90 or 0.91, an EXEPACK or a PKLITE 1.00 to 1.15 executable and gives the `size`, `xxh3`, `format` and `tool` of a build's `unpacked` item (reader only, no engine) | [unpacking packed executables](#unpacking-packed-executables) |
 
@@ -1485,12 +1485,13 @@ Run `scientific-method bodies <config.json>` to see where the bytes of an analyz
 lie in an `mz` source, by the file's own MZ and FBOV tables. It runs in the reader and needs no
 engine. Use it on a function inventory whose rows fail a check such as the Code ranges one, to
 tell an entry outside code from a body fragment that runs into a fixup table, padding or another
-overlay. It decodes no instruction.
+overlay. It decodes no instruction. Run without `functions`, it gives the layout and the FBOV
+descriptor table alone, from which a config can take its code regions.
 
 | Field | Meaning |
 |---|---|
 | `formatControls` | Required. The counts the build is known to have (see [format-table controls](#format-table-controls)). The classification rests on the tables, so a count that differs fails the report before anything is classified. |
-| `functions` | 1..10000 objects `{ name?, entry, body, candidate? }`. `entry` is a file offset in the file. `body` is 1..4096 half-open ranges `{ start, end }` of file offsets, in any order, none overlapping another; ranges that touch are kept as given. |
+| `functions` | Optional, 0..10000 objects `{ name?, entry, body, candidate? }`. `entry` is a file offset in the file. `body` is 1..4096 half-open ranges `{ start, end }` of file offsets, in any order, none overlapping another; ranges that touch are kept as given. |
 | `functions[].candidate` | Optional `{ ranges, evidence }`: a body found another way, such as the `intervals` of a `bounds` report, and where it comes from. Same range rules as `body`. |
 
 A range outside the file, an empty or reversed range, an unknown field and overlapping ranges in one
@@ -1502,7 +1503,7 @@ body or candidate fail the report.
 | Kind | Bytes |
 |---|---|
 | `mz-header` | the MZ header and its relocation table |
-| `resident` | the MZ load image, less the FBOV descriptor table and the overlay stubs |
+| `resident` | the MZ load image, less the FBOV descriptor table and the overlay stubs. In a file with an FBOV envelope, only the bytes of a resident descriptor's span, with `descriptor` naming it (see below) |
 | `fbov-descriptors` | the FBOV descriptor table in the load image, 8 bytes per descriptor |
 | `overlay-stub` | one overlay's stub in the load image: its 32-byte header and its trampolines |
 | `fbov-header` | the 16-byte FBOV envelope header |
@@ -1518,6 +1519,35 @@ file without an envelope. A run is split there, so a body that runs past the las
 bytes appended after the envelope shows apart from one that runs into a gap inside the payload.
 Stubs of two overlays that overlap, or a stub that overlaps the descriptor table, fail the MZ/FBOV
 loader, so they fail this report and every other command that reads an `mz` source.
+
+Each 8-byte FBOV descriptor holds four words: the segment, `maxOffset`, `flags` and `minOffset`,
+the names a public description of the table gives (`seg`, `maxoff`, `flags`, `minoff`). The
+reader reads the words as a span of the load image, from `segment * 16 + minOffset` up to
+`segment * 16 + maxOffset`, and gives the flags no meaning beyond bit 1, which marks an overlay.
+`descriptors` lists every descriptor in table order:
+
+| Field | Meaning |
+|---|---|
+| `index`, `segment`, `maxOffset`, `flags`, `minOffset` | the descriptor's position and its four words as stored |
+| `overlay` | true when bit 1 of `flags` is set |
+| `extent` | `bytes` when `minOffset` is below `maxOffset` and the span lies in the load image, `empty` when the two words are equal, `inverted` when `maxOffset` is below `minOffset` (no bytes either), and `outside-load-image` when the span ends past the load image |
+| `start`, `end` | the span as file offsets; `end` is below `start` for an `inverted` descriptor |
+| `loadedSegment`, `ip` | `start` as a loaded address: the load segment plus `segment`, and `minOffset`. `loadedSegment` is null past FFFF |
+
+In a file with an envelope, the layout reads the load image through the resident descriptors (those
+without the overlay bit) whose `extent` is `bytes`. Each span's bytes, less the envelope's tables,
+are `resident` with that descriptor, and load-image bytes no span holds are runs between declared
+regions, `zero-padding` or `undeclared` as above, the way bytes in the FBOV payload that no overlay
+holds are. A body that runs from one segment into the next is therefore outside its entry's region
+there. A resident descriptor whose span ends past the load image, or two resident spans that
+overlap, fail the report; the loader itself refuses neither, so every other command still reads
+the file. Overlay descriptors' spans are listed and leave the layout alone.
+
+A resident descriptor's `start`, `end`, `loadedSegment` and `ip` are the `start`, `end`, `segment`
+and `ip` of a code region, which the reader checks against the file when a query declares it. The caller
+decides which descriptors hold code: the reader does not read it from `flags`, so a config
+picks the descriptors it treats as code, adds `name`, `entries` and `evidence`, and declares overlay
+code regions from the `overlay-code` layout rows with an analysis segment of its choosing.
 
 Each function's `entry` gives its `offset`, the `kind` and `descriptor` of the region holding it,
 `inBody` (whether a body range holds it) and `trampolines`, the stub trampolines whose target it
