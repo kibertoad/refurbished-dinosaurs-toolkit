@@ -234,8 +234,22 @@ export const MAX_REPORT_MIB = 32;
 /** The prepared-config protocol this reader speaks. It must equal `scientific_method_engine.PREPARED_PROTOCOL`; the engine refuses any other number. */
 export const PREPARED_PROTOCOL = 3;
 
+// Windows PowerShell 5.1 writes a UTF-8 byte order mark with `-Encoding utf8` and UTF-16 by default.
+function readConfigText(file: string): string {
+  const bytes = readFileSync(file);
+  if ((bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff))
+    throw new Error(`Config ${file} is UTF-16 text; save it as UTF-8`);
+  try {
+    // The decoder drops one leading UTF-8 byte order mark and refuses bytes that are not UTF-8.
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error(`Config ${file} is not valid UTF-8; save it as UTF-8`);
+  }
+}
+
 /**
- * Runs one report, as the `scientific-method` command does. `args` is `[command, configPath]`.
+ * Runs one report, as the `scientific-method` command does. `args` is `[command, configPath]`, and the
+ * config file is UTF-8 JSON, with or without one leading byte order mark.
  * `imports`, `pointers`, `table`, `bodies` and `unpack` run in Node, and `unpack` also writes the unpacked
  * file its config names; every other command is prepared here and piped to
  * `python -m scientific_method_engine <command> -`, using `EVIDENCE_PYTHON` or `python`.
@@ -245,7 +259,7 @@ export function run(args: string[]): Report {
   const [command, file, ...extra] = args;
   if (!command || !file || extra.length) throw new Error("Usage: scientific-method <command> <local-config.json>");
   if (statSync(file).size > 1024 * 1024) throw new Error("Config exceeds 1 MiB");
-  const supplied = JSON.parse(readFileSync(file, "utf8")) as ReportConfig,
+  const supplied = JSON.parse(readConfigText(file)) as ReportConfig,
     base = dirname(resolve(file));
   if (command === "imports") {
     // The import report reads the PE import tables itself; the engine has no part in it.

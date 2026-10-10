@@ -48,6 +48,18 @@ def ghidra_scripts():
     return Path(__file__).resolve().parent / "ghidra"
 
 
+def _read_config_text(path):
+    # Windows PowerShell 5.1 writes a UTF-8 byte order mark with -Encoding utf8 and UTF-16 by default.
+    data = path.read_bytes()
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        raise ValueError(f"Config {path} is UTF-16 text; save it as UTF-8")
+    try:
+        # utf-8-sig drops one leading byte order mark.
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise ValueError(f"Config {path} is not valid UTF-8; save it as UTF-8") from None
+
+
 def main(argv):
     """Run one command (``argv`` excludes the program name) and print its JSON report."""
     from .x86.image import read_source
@@ -69,7 +81,7 @@ def main(argv):
         path = Path(config_path).resolve()
         if path.stat().st_size > limit:
             raise ValueError(label)
-        text, base = path.read_text(encoding="utf-8"), path.parent
+        text, base = _read_config_text(path), path.parent
         reject_derived = True
     if len(text.encode("utf-8")) > limit:
         raise ValueError(label)

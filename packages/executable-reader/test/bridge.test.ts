@@ -51,6 +51,26 @@ test("source loader derives relocation membership and far return frames", (t) =>
   assert.ok(report.paths[0].events.some((e: Report) => e.kind === "call-return"));
 });
 
+test("config files read the same with a UTF-8 byte order mark and refuse other encodings", (t) => {
+  const { dir, config } = fixture(t);
+  const path = join(dir, "config.json"),
+    text = JSON.stringify({ ...config, regions: [{ ...config.regions[0]!, evidence: "synthetic côte" }] });
+  writeFileSync(path, text);
+  const plain = run(["returns", path]);
+  assert.equal(plain.completeWithinModel, true);
+  writeFileSync(path, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(text)]));
+  assert.deepEqual(run(["returns", path]), plain);
+  // Only one mark is an encoding signature; a second is text and fails JSON parsing.
+  writeFileSync(path, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf]), Buffer.from(text)]));
+  assert.throws(() => run(["returns", path]), SyntaxError);
+  writeFileSync(path, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]));
+  assert.throws(() => run(["returns", path]), /is UTF-16 text; save it as UTF-8/);
+  writeFileSync(path, Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(text, "utf16le").swap16()]));
+  assert.throws(() => run(["returns", path]), /is UTF-16 text; save it as UTF-8/);
+  writeFileSync(path, Buffer.from(text, "latin1"));
+  assert.throws(() => run(["returns", path]), /is not valid UTF-8; save it as UTF-8/);
+});
+
 test("return flow bridge keeps full-width failures and declared roles", (t) => {
   const { dir, config } = fixture(t);
   const returnContracts = [

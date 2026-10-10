@@ -27,7 +27,9 @@ scientific-method <command> <config.json>
 The config is JSON with at least `source` (a path relative to the config file), its `xxh3` (the
 XXH3-128 hash the spec's build entry gives, as 32 lower-case hex digits; a `sha256` is refused),
 and `sourceKind`: `mz` for DOS executables, `pe32` for 32-bit Windows executables (parsed by the engine),
-`pe32+` for 64-bit Windows executables (read only by `imports`), or `synthetic-raw` for test data. The report is printed as JSON. On failure the command prints
+`pe32+` for 64-bit Windows executables (read only by `imports`), or `synthetic-raw` for test data. The config file is UTF-8, with or without one leading byte order mark
+(which Windows PowerShell 5.1 writes for `-Encoding utf8`); a UTF-16 file or bytes that are not UTF-8 are
+refused with the encoding named. The report is printed as JSON. On failure the command prints
 `Evidence report: <reason>` to stderr and exits with 1.
 
 Commands: `trace`, `arguments`, `effects`, `returns`, `memory`, `guards`, `uses`, `incoming`,

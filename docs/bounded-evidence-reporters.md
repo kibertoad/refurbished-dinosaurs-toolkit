@@ -582,6 +582,8 @@ program, 100,000 instructions take seconds and several hundred MB.
 Caps, undecoded ranges and unsupported cases are explicit. Source size is capped
 at 256 MiB, config size at 1 MiB (16 MiB for the relocation-expanded config the
 Node wrapper pipes to Python) and each symbolic expression at 1,024 tuple nodes.
+A config file is UTF-8, with or without one leading byte order mark; a UTF-16 file or bytes
+that are not UTF-8 fail with the encoding named.
 An instruction whose value would pass that cap stops its path with `expression term limit: a value's
 expression would hold more than 1024 terms; narrow the query`, and `stopSite` names the instruction.
 Events and writes that instruction made before building the value, such as a memory read, stay on
