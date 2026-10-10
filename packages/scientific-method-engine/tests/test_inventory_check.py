@@ -390,6 +390,49 @@ class InventoryCheckTests(unittest.TestCase):
         self.assertTrue(r["truncated"])
         self.assertEqual(r["counts"]["entry-path call"]["outsideEveryRow"], 2)
 
+    def test_the_declared_targets_of_a_computed_call_are_call_targets_and_the_walk_reads_them(self):
+        # 0000 calls through the two words at 0010, which name 0014 and 0018; 0014 calls 0018.
+        data = bytes.fromhex("2eff971000" "c3" "90909090909090909090" "14001800" "e80100" "c3" "c3")
+        table = {"site": 0, "exhaustive": True, "evidence": "synthetic: bx is 0 or 2",
+                 "table": {"start": 0x10, "count": 2, "stride": 2, "evidence": "synthetic: two words"}}
+        inventory = "start\tsize\n1000:0000\t6\n1000:0018\t1\n"
+        undeclared = self.check(inventory, data=data)
+        self.assertEqual([(u["site"], u["target"]) for u in undeclared["unresolved"]], [(0, None)])
+        self.assertEqual([(t["target"], t["evidence"]) for t in undeclared["targets"]], [])
+        self.assertEqual(undeclared["indirectCalls"], [])
+        r = self.check(inventory, data=data, indirectCalls=[table], controls=[0x14])
+        self.assertEqual([(t["target"], t["status"], t["evidence"], t["site"], t["provenance"]) for t in r["targets"]],
+                         [(0x14, "outside every row", "entry-path call", 0,
+                           {"encoding": "declared indirect call", "evidence": "synthetic: bx is 0 or 2"})])
+        self.assertEqual(r["counts"]["entry-path call"]["targets"], 2)
+        self.assertEqual(r["unresolved"], [])
+        self.assertEqual([(d["site"], d["targets"], d["reached"]) for d in r["indirectCalls"]], [(0, [0x14, 0x18], True)])
+        self.assertIn("each declared indirect call can call the targets its declaration gives, for the evidence it "
+                      "gives, and only those when it is declared exhaustive", r["assumptions"])
+        partial = self.check(inventory, data=data, indirectCalls=[{**table, "exhaustive": False}])
+        self.assertEqual([(u["site"], u["provenance"]) for u in partial["unresolved"]],
+                         [(0, {"reason": "indirect call targets are not declared exhaustive"})])
+        with self.assertRaisesRegex(ValueError, "Positive control 0 is a declared indirect call"):
+            self.check(inventory, data=data, indirectCalls=[table], controls=[0])
+        with self.assertRaisesRegex(ValueError, "indirectCalls applies only to reach and inventory-check"):
+            run_report(data, config(data, target=0x18, indirectCalls=[table]), "incoming")
+        # The row 1000:0000 holds the call and the byte after it, so it runs past a call that only reaches noReturn
+        # routines; one target that returns keeps the call returning.
+        exits = [{"routine": 0x18, "reason": "synthetic exit"}]
+        ended = self.check(inventory, data=data, noReturn=exits,
+                           indirectCalls=[{"site": 0, "exhaustive": True, "evidence": "synthetic", "targets": [0x18]}])
+        self.assertEqual([(row["start"], row["site"], row["routines"]) for row in ended["rowsPastNoReturn"]],
+                         [("1000:0000", 0, [0x18])])
+        mixed = self.check(inventory, data=data, noReturn=exits, indirectCalls=[table])
+        self.assertEqual(mixed["rowsPastNoReturn"], [])
+        # A call whose declared targets are all noReturn is listed once, with every target.
+        both = self.check(inventory, data=data, noReturn=exits + [{"routine": 0x14, "reason": "synthetic exit"}],
+                          indirectCalls=[table])
+        self.assertEqual([(row["site"], row["routines"]) for row in both["rowsPastNoReturn"]], [(0, [0x14, 0x18])])
+        self.assertEqual(both["counts"]["rowsPastNoReturn"], 1)
+        with self.assertRaisesRegex(ValueError, r"Positive control \[0\] missed or not verified"):
+            self.check(inventory, data=data, indirectCalls=[table], controls=[[0]])
+
     def test_a_missed_control_and_a_malformed_inventory_are_refused(self):
         with self.assertRaisesRegex(ValueError, "Positive control 12 missed"):
             self.check("start\tsize\n1000:0000\t6\n", data=RAW, controls=[12])

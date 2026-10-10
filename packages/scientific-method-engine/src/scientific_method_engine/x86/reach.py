@@ -4,6 +4,7 @@ from .image import integer
 from .trace import (walk, cfg_step, base_mnemonic, unsupported_transfer, holding_instruction, INTERRUPTS, RETURNS,
                     LIMIT_REASON, OVERLAP_REASON, UNDECODED_REASON)
 from .pcode_backend import interrupt_vector
+from .dispatch import indirect_call_declarations, call_ends
 
 # The virtual root of the dominator computation; no file offset is negative.
 ROOT = -1
@@ -102,15 +103,16 @@ def returns_from(graph, seen, returning_leaves, routine):
 def successor_kinds(at, ins, step):
     """Each successor of ``step`` with how the CFG reaches it: call, return, table, interrupt, jump or fall."""
     m, following = base_mnemonic(ins), at + ins.size
+    # A call lists its resolved or declared targets first, then its return site; a call to the next
+    # instruction lists that site twice.
     targets = {e["target"] for e in step.edges if e["target"] is not None}
-    rows, called = [], False
+    calls = sum(e["target"] is not None for e in step.edges) if m in CALLS else 0
+    rows = []
     for successor in step.successors:
-        if step.supplied:
+        if m in CALLS:
+            kind = "call" if len(rows) < calls else "return"
+        elif step.supplied:
             kind = "table"
-        elif m in CALLS:
-            # A call names its target first; a call to the next instruction lists that site twice.
-            kind = "call" if successor in targets and not called else "return"
-            called = called or kind == "call"
         elif m in INTERRUPTS:
             kind = "interrupt"
         elif successor == following and m not in ("jmp", "ljmp") and (successor not in targets or len(rows) > 0):
@@ -202,11 +204,12 @@ def reach(image, config):
 
     The walk decodes from ``starts`` (established region entries) and follows every resolved call
     into its callee and on at its return site, every resolved jump and branch, the rows of a
-    declared indirect jump table, and every interrupt to the next instruction. A ``leaves`` routine
-    is reached but never decoded. A call to a ``noReturn`` routine and a ``noReturn`` interrupt site
-    do not continue at the next instruction. Each reached target gets one chain with the fewest
-    calls, the assumptions its route rests on, and the routines on every route to it within the
-    read graph.
+    declared indirect jump table, the declared targets of an ``indirectCalls`` site, and every
+    interrupt to the next instruction. A ``leaves`` routine is reached but never decoded. A call to a
+    ``noReturn`` routine and a ``noReturn`` interrupt site do not continue at the next instruction,
+    nor does a declared indirect call that is exhaustive and whose targets are all ``noReturn``.
+    Each reached target gets one chain with the fewest calls, the assumptions its route rests on,
+    and the routines on every route to it within the read graph.
     """
     from .reports import entries
     starts = _sites(config.get("starts"), "starts", image)
@@ -218,6 +221,12 @@ def reach(image, config):
     leaves = _leaves(config.get("leaves", []), image, set(starts))
     controls = _sites(config.get("controls", []), "controls", image, least=0)
     instruction_controls = _sites(config.get("instructionControls", []), "instructionControls", image, least=0)
+    indirect_calls = indirect_call_declarations(config.get("indirectCalls", []), image)
+    # A control shows that the walk resolved a call from its own encoding, which a declaration does not.
+    for at in controls:
+        if at in indirect_calls:
+            raise ValueError(f"control {at} is a declared indirect call, whose targets rest on its declaration; give "
+                             "the site as an instructionControls entry, or a call inside a declared target as a control")
     # The walk decodes a site as image.decode does, so a control whose bytes are no call can never pass.
     for at in controls:
         ins = image.decode(at)
@@ -233,11 +242,13 @@ def reach(image, config):
     limit = integer(config.get("limit", 1000), 1, 10000, "result limit")
     instruction_limit = config.get("instructionLimit", 10000)
     no_return_routines, no_return_interrupts = no_return_declarations(config.get("noReturn", []), image)
-    declared = {"no_return_calls": frozenset(no_return_routines), "no_return_interrupts": frozenset(no_return_interrupts)}
+    declared = {"no_return_calls": frozenset(no_return_routines), "no_return_interrupts": frozenset(no_return_interrupts),
+                "indirect_calls": indirect_calls}
     seen, walk_gaps, _, _, contested = walk(image, starts, instruction_limit, follow_interrupts=True,
                                             stops=frozenset(leaves), **declared)
 
-    graph, unresolved, interrupts, resolved_calls = {}, [], [], {}
+    # Each reached call site with its resolved or declared targets.
+    graph, unresolved, interrupts, call_targets = {}, [], [], {}
     for at, ins in sorted(seen.items()):
         step = cfg_step(image, at, ins, follow_interrupts=True, **declared)
         graph[at] = [(s, kind) for s, kind in successor_kinds(at, ins, step) if s in seen or s in leaves]
@@ -251,7 +262,7 @@ def reach(image, config):
                 unresolved.append({"site": at, "instruction": text, "kind": kind,
                                    "reason": edge["provenance"].get("reason", "target outside declared regions")})
             elif m in CALLS:
-                resolved_calls[at] = edge["target"]
+                call_targets.setdefault(at, []).append(edge["target"])
         if m in INTERRUPTS and at not in no_return_interrupts:
             vector, conditional = interrupt_vector(image.flat, ins, at)
             interrupts.append({"site": at, "instruction": text, "vector": vector, "conditional": conditional})
@@ -278,15 +289,17 @@ def reach(image, config):
         for child in successors[node]:
             predecessors[child].append(node)
     idom = _dominators(order, predecessors)
-    routine_starts = set(starts) | {target for at, target in resolved_calls.items() if target in distance}
+    routine_starts = set(starts) | {target for found in call_targets.values() for target in found if target in distance}
 
     def chain(target):
-        hops, assumed_returns, tables, continued = [], [], [], []
+        hops, assumed_returns, tables, declared_calls, continued = [], [], [], [], []
         at = target
         while parent[at] is not None:
             previous, kind = parent[at]
             if kind == "call":
                 hops.append({"callSite": previous, "routine": at})
+                if previous in indirect_calls:
+                    declared_calls.append({"site": previous, "target": at})
             elif kind == "return":
                 assumed_returns.append(previous)
             elif kind == "table":
@@ -297,7 +310,7 @@ def reach(image, config):
         hops.append({"routine": at})
         return {"chain": hops[::-1], "calls": distance[target],
                 "route": {"assumedReturns": assumed_returns[::-1], "declaredTableJumps": tables[::-1],
-                          "interruptsContinued": continued[::-1]}}
+                          "declaredCalls": declared_calls[::-1], "interruptsContinued": continued[::-1]}}
 
     # The walk decodes both instructions of an unresolved overlap and keeps neither, so their starts are not in seen.
     overlapping = {g["site"] for g in walk_gaps if g["reason"] == OVERLAP_REASON}
@@ -337,13 +350,16 @@ def reach(image, config):
     # Kept apart from the gap rows, which the result limit can cut.
     stopped = any(g["reason"] == LIMIT_REASON for g in walk_gaps)
     # A control at a site a noReturn declaration kept the walk from names that declaration, which may be the cause.
-    cut_by = {at + seen[at].size: f"the call at {at} to noReturn routine {target}"
-              for at, target in sorted(resolved_calls.items()) if target in no_return_routines}
+    def ends(at, found):
+        return call_ends(at, found[0], indirect_calls, no_return_routines)
+    cut_by = {at + seen[at].size: f"the call at {at} to noReturn routine{'s' if len(found) > 1 else ''} "
+                                  + ", ".join(map(str, found))
+              for at, found in sorted(call_targets.items()) if ends(at, found)}
     cut_by |= {row["following"]: f"the noReturn interrupt at {at}"
                for at, row in no_return_interrupts.items() if at in seen}
     # Not reached and reached-but-unresolved need different fixes, so each failure says which it is.
     failures = []
-    for label, sites, passed in (("control", controls, resolved_calls), ("instruction control", instruction_controls, seen)):
+    for label, sites, passed in (("control", controls, call_targets), ("instruction control", instruction_controls, seen)):
         for at in sites:
             if at in passed:
                 continue
@@ -363,16 +379,27 @@ def reach(image, config):
                                 + (" (the walk stopped at its instruction limit)" if stopped else ""))
     if failures:
         raise ValueError("Positive controls failed: " + "; ".join(failures))
-    call_sites = {}
-    for site, target in sorted(resolved_calls.items()):
-        call_sites.setdefault(target, []).append(site)
+    # Every call to each routine, and the calls to a noReturn routine that the declaration ended.
+    call_sites, ended_sites = {}, {}
+    for site, found in sorted(call_targets.items()):
+        ended = ends(site, found)
+        for target in found:
+            call_sites.setdefault(target, []).append(site)
+            if ended:
+                ended_sites.setdefault(target, []).append(site)
     leaf_rows = [{"routine": at, "reason": reason, "reached": at in distance, "callSites": call_sites.get(at, [])}
                  for at, reason in leaves.items()]
     # Each call the declaration kept from its return site, so a reviewer can check what follows it.
     returning_leaves = set(leaves) - set(no_return_routines)
     returns = {at: returns_from(graph, seen, returning_leaves, at) for at in no_return_routines}
-    no_return = no_return_rows(no_return_routines, no_return_interrupts, returns, call_sites, seen, distance, seen)
+    no_return = no_return_rows(no_return_routines, no_return_interrupts, returns, ended_sites, seen, distance, seen)
     contradicted = any(row.get("contradicted") for row in no_return)
+    # A declared target the walk entered but established no instruction at shows in gaps or contested too,
+    # unless the walk stopped at its instruction limit before reading it.
+    indirect_rows = [declaration | {"reached": site in seen, "routine": routine.get(site),
+                                    "unreadTargets": [t for t in declaration["targets"]
+                                                      if site in seen and t not in seen and t not in leaves]}
+                     for site, declaration in indirect_calls.items()]
     counts = {"routines": len(routine_starts), "instructions": len(seen), "unresolved": len(unresolved),
               "interrupts": len(interrupts), "gaps": len(gaps), "contested": len(contested)}
     assumptions = ["each reached call returns to its next instruction"
@@ -382,21 +409,24 @@ def reach(image, config):
                    + "; interrupt handlers are not read",
                    "each leaf calls nothing, for the reason it gives",
                    "each declared indirect jump table holds the routes its declaration gives"]
+    if indirect_calls:
+        assumptions.append("each declared indirect call can call the targets its declaration gives, for the evidence "
+                           "it gives, and only those when it is declared exhaustive")
     if no_return:
         assumptions.append("each noReturn routine and interrupt never returns, for the reason it gives")
-    return {"starts": starts, "targets": rows, "leaves": leaf_rows, "noReturn": no_return,
+    return {"starts": starts, "targets": rows, "leaves": leaf_rows, "noReturn": no_return, "indirectCalls": indirect_rows,
             "reachedRoutines": sorted(routine_starts), "counts": counts,
             "unresolved": unresolved[:limit], "interrupts": interrupts[:limit], "gaps": gaps[:limit],
             "contested": sorted(contested)[:limit],
             "truncated": any(len(x) > limit for x in (unresolved, interrupts, gaps, contested)),
             "instructionLimitReached": stopped,
-            "controls": [{"site": at, "target": resolved_calls[at]} for at in controls],
+            "controls": [{"site": at, "target": call_targets[at][0]} for at in controls],
             "instructionControls": [{"site": at, "instruction": _text(seen[at]), "routine": routine.get(at)}
                                     for at in instruction_controls],
             "negativeUsable": bool(controls or instruction_controls)
                               and not (stopped or unresolved or gaps or contested or contradicted),
             "assumptions": assumptions,
-            "exclusions": ["computed call and jump targets (listed in unresolved)", "unrelocated far calls",
+            "exclusions": ["computed call and jump targets no declaration gives (listed in unresolved)", "unrelocated far calls",
                            "code reached only from outside the starts", "runtime reachability"],
             "interpretation": "Routes over the decoded entry-path CFG from the starts. A chain has the fewest calls; "
                               "throughEveryRoute lists the routine starts every read route to the target passes, "
@@ -404,6 +434,9 @@ def reach(image, config):
                               "negativeUsable needs a control of either kind, a walk that did not stop at its instruction limit, "
                               "and no unresolved transfer, gap, contested instruction or contradicted noReturn "
                               "routine, and still rests on the listed assumptions, leaves and noReturn declarations. "
+                              "A declared indirect call counts as resolved when it is declared exhaustive: its table "
+                              "rows are read from the build's bytes and its targets list rests on its evidence alone, "
+                              "and neither proves an instruction boundary or that the call runs. "
                               "A noReturn routine is contradicted when a return instruction, or a leaf entered "
                               "other than by a call, lies on its own read paths; an empty returnSites means only "
                               "that the walk read none. "

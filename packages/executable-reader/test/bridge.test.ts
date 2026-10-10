@@ -882,6 +882,71 @@ test("reach keeps the return site of a far call to a noReturn routine unread thr
   assert.throws(() => run(["reach", path]), /noReturn interrupt 80 is not an interrupt instruction/);
 });
 
+test("reach follows declared near and far computed call tables through the real MZ prepared bridge", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "bounded-report-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const data = Buffer.alloc(512);
+  data.write("MZ");
+  data.writeUInt16LE(1, 4);
+  data.writeUInt16LE(1, 6);
+  data.writeUInt16LE(4, 8);
+  data.writeUInt16LE(28, 24);
+  // The one MZ relocation is the segment word of the far pointer at load offset 0028.
+  data.writeUInt16LE(0x2a, 28);
+  // 0000 calls through the words at 0020 (0010, 0018), then through the far pointer at 0028 (0000:0014).
+  data.set([0x2e, 0xff, 0x97, 0x20, 0x00, 0x2e, 0xff, 0x1e, 0x28, 0x00, 0xc3], 64);
+  data.set([0xb8, 0xff, 0xff, 0xc3, 0xb8, 0x01, 0x00, 0xcb, 0xc3], 80);
+  data.set([0x10, 0x00, 0x18, 0x00, 0, 0, 0, 0, 0x14, 0x00, 0x00, 0x00], 96);
+  writeFileSync(join(dir, "source.bin"), data);
+  const base = {
+    source: "source.bin",
+    sourceKind: "mz",
+    xxh3: sourceXxh3(data),
+    entry: 64,
+    regions: [{ name: "resident", start: 64, end: 112, ip: 0, segment: 4096, entries: [64], evidence: "synthetic" }],
+    starts: [64],
+    targets: [80, 84, 88],
+    instructionControls: [74],
+  };
+  const path = join(dir, "config.json");
+  writeFileSync(path, JSON.stringify(base));
+  const undeclared = run(["reach", path]);
+  assert.deepEqual(
+    undeclared.unresolved.map((u: Report) => u.site),
+    [64, 69],
+  );
+  assert.equal(undeclared.negativeUsable, false);
+  const indirectCalls = [
+    {
+      site: 64,
+      exhaustive: true,
+      evidence: "synthetic: bx is 0 or 2",
+      table: { start: 96, count: 2, stride: 2, evidence: "synthetic: two words" },
+    },
+    {
+      site: 69,
+      exhaustive: true,
+      evidence: "synthetic: the pointer is fixed",
+      table: { start: 104, count: 1, stride: 4, width: 4, evidence: "synthetic: one far pointer" },
+    },
+  ];
+  writeFileSync(path, JSON.stringify({ ...base, indirectCalls }));
+  const r = run(["reach", path]);
+  assert.deepEqual(
+    r.targets.map((row: Report) => [row.target, row.reached, row.route.declaredCalls]),
+    [
+      [80, true, [{ site: 64, target: 80 }]],
+      [84, true, [{ site: 69, target: 84 }]],
+      [88, true, [{ site: 64, target: 88 }]],
+    ],
+  );
+  assert.deepEqual(r.indirectCalls[1].rows, [
+    { index: 0, operandSite: 104, rawOffset: 0x14, rawSegment: 0, resolvedSegment: 4096, target: 84 },
+  ]);
+  assert.deepEqual(r.unresolved, []);
+  assert.equal(r.negativeUsable, true);
+});
+
 test("inventory-check places an overlay entry two FBOV trampoline calls reach by its file offset", (t) => {
   const { dir, config } = overlayFixture(t);
   const path = join(dir, "config.json");

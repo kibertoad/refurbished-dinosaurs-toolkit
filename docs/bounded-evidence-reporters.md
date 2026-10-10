@@ -124,7 +124,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
 | `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; the inventory continues past interrupts, which it assumes return to the next instruction, and a stop inside a called function also continues it at the return site of each call open at the stop, each named in `dependsOn`; each `rawCandidates` row gives the encoded footprint of every unreached operand that may intersect the query field | this section, [hardware boundaries](#hardware-boundaries) |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
-| `inventory-check` | every resolved direct call target in the searched regions that a function inventory does not list as a start, with one calling site each and counts for a coverage report; each row whose start lies inside an instruction the entry-path walk established; with `noReturn`, each row that continues past a call or interrupt declared never to return | [inventory call targets](#call-targets-a-function-inventory-lacks) |
+| `inventory-check` | every resolved direct call target in the searched regions that a function inventory does not list as a start, with one calling site each and counts for a coverage report; each row whose start lies inside an instruction the entry-path walk established; with `noReturn`, each row that continues past a call or interrupt declared never to return; with `indirectCalls`, the declared targets of computed calls as call targets | [inventory call targets](#call-targets-a-function-inventory-lacks), [declared call targets](#declared-computed-call-targets) |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
 | `dispatch` | the target of each input through a switch's jump table | this section, [jump tables](#evidenced-indirect-jump-tables) |
 | `allocation` | allocation requests, returned pointers and later writes; checks `relationalControls` | this section, [relational controls](#relational-controls) |
@@ -134,7 +134,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `bounds` | the instruction extent reached from one entry, with its interrupt and port instructions | [function bounds](#function-bounds-and-site-ownership), [hardware boundaries](#hardware-boundaries) |
 | `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
 | `callees` | the bounded call graph below an entry, with recursion and shared callees, optionally compared with Ghidra's edges | [function bounds](#function-bounds-and-site-ownership) |
-| `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved | [reachability](#reachability-from-starts-to-targets) |
+| `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved; follows the declared targets of computed calls | [reachability](#reachability-from-starts-to-targets), [declared call targets](#declared-computed-call-targets) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
 | `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (the resident span of each FBOV descriptor, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own, an optional comparison with a candidate body, and every FBOV descriptor with its load-image span (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
@@ -1082,21 +1082,24 @@ for questions such as "can anything between program start and this point write t
 | `controls` | optional, at most 256 distinct call sites the walk must decode and resolve. An offset whose bytes do not decode as a call fails the report before the walk |
 | `instructionControls` | optional, at most 256 distinct sites the walk must decode as instruction starts, such as a store the walk is known to reach. A start is refused, since the walk decodes every start |
 | `indirectJumps` | the [declared tables](#evidenced-indirect-jump-tables) the walk follows |
+| `indirectCalls` | optional, the [declared targets of computed calls](#declared-computed-call-targets) the walk follows ([ADR 0033](decisions/0033-declared-computed-call-targets.md)) |
 | `instructionLimit` | instructions the walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000) |
 | `limit` | rows kept in each of `unresolved`, `interrupts`, `gaps` and `contested` (1..10000, default 1000) |
 
 The walk is the entry-path walk `incoming` and `uses` read, started from `starts` alone. It
 follows every resolved call into its callee and on at its return site, every resolved jump and
-branch, the rows of a declared indirect jump table, and every interrupt to the next instruction.
-A call to a `noReturn` routine continues only into the routine, and a `noReturn` interrupt ends
-its branch.
+branch, the rows of a declared indirect jump table, the declared targets of a computed call, and
+every interrupt to the next instruction. A call to a `noReturn` routine continues only into the
+routine, and a `noReturn` interrupt ends its branch. A declared computed call continues at its
+return site unless it is declared exhaustive and every target it declares is a `noReturn` routine.
 Far calls resolve as `target` describes: through an MZ relocation, or through an FBOV fixup and
 the trampoline it names to the overlay entry. A near transfer resolves through the mapping of the
 region that holds it. Instruction boundaries are checked as in the entry-path walk, so an
 instruction reached only through a rejected overlapping start is `contested`.
 
-Nothing else is followed. A computed call or jump, a far call with no relocation or fixup, a
-table jump with no declaration, a declared table that is not exhaustive, and a call, jump or
+Nothing else is followed. A computed call with no `indirectCalls` declaration, a computed jump,
+a far call with no relocation or fixup, a table jump with no declaration, a declared table or
+computed call that is not exhaustive, and a call, jump or
 return whose frame encoding the walk does not model (an operand-size override, or a far transfer
 in the flat model) are listed in `unresolved` with their `site`, `instruction` text, `kind`
 (`call`, `jump` or `return`), `reason` and the `routine` the walk read them in. The walk never
@@ -1115,7 +1118,7 @@ Each `targets` row gives `reached`. A reached target has:
 | `chain` | one route with the fewest calls: the start as `{ "routine" }`, then each call as `{ "callSite", "routine" }` |
 | `calls` | the number of calls on the chain |
 | `routine` | the routine the chain's last call entered, or the start |
-| `route` | what the chain rests on: `assumedReturns` (calls whose return site it continued at), `declaredTableJumps` (the table rows it took) and `interruptsContinued` |
+| `route` | what the chain rests on: `assumedReturns` (calls whose return site it continued at), `declaredTableJumps` (the table rows it took), `declaredCalls` (the declared computed calls it took, as `{ "site", "target" }`) and `interruptsContinued` |
 | `throughEveryRoute` | the routine starts, outermost first, that every route the walk read to the target passes. A routine that only runs and returns before the target is not on such a route |
 | `leaf` | whether the target is the start of a leaf |
 
@@ -1145,7 +1148,15 @@ contradicted by whatever follows the interrupt, so such an interrupt is declared
 `returnSites` means only that the walk read no return; the declaration stays an assumption. An
 interrupt row gives its `vector`, whether the walk `reached` it, its `following` site and
 `followingRead`. A declared interrupt is not in `interrupts`, which lists the interrupts the walk
-continued past.
+continued past. A declared computed call is among a routine's `callSites` only when the declaration
+ends its branch, that is when it is exhaustive and every target it declares is `noReturn`.
+
+`indirectCalls` repeats each declaration as the [declared call targets](#declared-computed-call-targets)
+section describes, with whether the walk `reached` its site, the `routine` the walk read the site in,
+and `unreadTargets`: for a reached site, the declared targets that are not leaves and at which the
+walk established no instruction, because the target overlaps another reached instruction, is
+contested or does not decode. Each such target is also a gap or a contested instruction, unless
+the walk stopped at its instruction limit before reading it.
 
 `instructionLimitReached` holds when the walk stopped at `instructionLimit` with code left to read.
 The stop is also an `instruction limit` row in `gaps`, but the result `limit` can cut that row, and
@@ -1159,6 +1170,8 @@ reached leaf (never decoded), a site inside a reached instruction (with that ins
 the start of a contested or unresolved overlapping instruction, a reached site whose bytes do not
 decode, or a site the walk did not reach, noting when the walk stopped at its instruction limit and
 when the site follows a reached `noReturn` call or interrupt, whose declaration may be wrong. A
+declared computed call is refused as a call-site control before the walk, since its targets rest on
+the declaration; give it as an instruction control, or give a call inside a declared target. A
 passing call-site control is reported in `controls` with its `site` and resolved `target`, and an
 instruction control in `instructionControls` with its `site`, `instruction` text and the `routine`
 the walk read it in.
@@ -1168,8 +1181,9 @@ instruction limit, nothing is unresolved, no gap was recorded, no instruction is
 `noReturn` routine is contradicted. Even then a target that is not reached is unreached only on
 the walk's assumptions, which the report lists: each call and interrupt returns to the next
 instruction except where `noReturn` declares otherwise, each leaf calls nothing and each
-`noReturn` routine and interrupt never returns, for its stated reason, and each declared table
-holds the routes its declaration gives. `throughEveryRoute` describes the routes the walk read; an
+`noReturn` routine and interrupt never returns, for its stated reason, each declared table
+holds the routes its declaration gives, and each declared computed call calls only the targets
+its declaration gives. `throughEveryRoute` describes the routes the walk read; an
 unresolved transfer may add a route that passes none of those routines. None of this proves
 runtime reachability.
 
@@ -1186,6 +1200,7 @@ state how many called routines the inventory misses next to its coverage figure
 | `searchRegions`, `scanLimit`, `instructionLimit` | as for `incoming`: the regions scanned (all by default), the bytes the raw scan reads (1 to 1,048,576 or the declared code size, whichever is larger; default 65536) and the instructions the entry-path walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000). Raise `scanLimit` to the size of the declared code, or the search is partial, and raise `instructionLimit` to it for a walk that cannot stop at its limit. A region with no `entries` can declare an overlay no inventory row starts, so targets in it are placed rather than `outside declared code` |
 | `controls` | optional, at most 256 call sites that must be entry-path calls with a resolved target; a missed one fails the report |
 | `noReturn` | optional, the declarations `reach` takes, in the same shape and with the same validation ([ADR 0031](decisions/0031-inventory-boundaries-against-the-entry-path-walk.md)): at most 256 `{ "routine", "reason" }` or `{ "interrupt", "reason" }` objects. The entry-path walk does not continue past a resolved call to a declared routine, and a declared interrupt is no `hardware or interrupt boundary` gap |
+| `indirectCalls` | optional, the declarations `reach` takes, in the same shape and with the same validation ([declared call targets](#declared-computed-call-targets)). Each declared target of a computed call the entry-path walk reaches is a call target of that site, and the walk reads on in it. A declared site is refused as a control |
 | `limit` | rows kept in each of `targets`, `unresolved`, `rowsOutsideDeclaredCode`, `rowStarts` and `rowsPastNoReturn` (1..10000, default 1000) |
 
 The calls are the ones `incoming` reads: every E8 and 9A call start in the searched regions, and
@@ -1221,7 +1236,13 @@ that `scanLimit` stopped) and a walk that `instructionLimit` stopped when there 
 written by an analysis segment, which no target can match. `unresolved`, `coverage`,
 `partialSearch` and `gaps` are as in `incoming`.
 
-The counts are lower bounds on what the inventory lacks. Computed calls, far calls with no
+A declared target's row carries the provenance `{ "encoding": "declared indirect call", "evidence" }`,
+and `indirectCalls` repeats each declaration with whether the entry-path walk `reached` its site. A
+declaration that is not exhaustive also leaves its site in `unresolved`. A declared call counts a
+row in `rowsPastNoReturn` only when it is exhaustive and every target it declares is `noReturn`.
+
+The counts are lower bounds on what the inventory lacks. Computed calls with no exhaustive
+declaration, far calls with no
 relocation or fixup, calls the walk does not reach that start with a prefix, and routines reached
 only by jumps are not targets of this search. The report writes no inventory rows: a row needs the
 size an analyzer gives it, and the `address` column is the list to seed discovery with.
@@ -1265,6 +1286,7 @@ evidence, or a declared interrupt site, and also holds the byte after it:
 | `start`, `size`, `name` | the row |
 | `kind`, `site`, `siteAddress`, `siteClassification` | `call` or `interrupt`, the site, its place, and `entry-path instruction`, `reached only through a rejected overlapping start` (contested), `raw byte candidate` or, for an interrupt the walk did not reach, `declared site` |
 | `routine` | for a call, the declared routine it resolves to |
+| `routines` | in place of `routine`, for a declared computed call: every target it declares, all of them `noReturn`. The call is listed once |
 | `following`, `followingAddress` | the byte after the call or interrupt |
 | `followingRead` | whether the walk established an instruction at `following` by another route, such as a branch around an error exit. Without one, nothing the walk read shows the bytes after the call to be code |
 | `bytesAfter` | the bytes of the row's body range from `following` to the range's end |
@@ -1361,6 +1383,35 @@ A returned conditional path never makes `completeWithinModel` or `allPathsRead`
 true. Split capped queries by explicitly partial evidenced table fields rather
 than raising limits; such a split cannot prove the complete dispatch.
 A true exhaustive flag is not independently validated behavior or native reachability.
+
+## Declared computed call targets
+
+`reach` and `inventory-check` accept `indirectCalls` for segmented16 computed calls
+([ADR 0033](decisions/0033-declared-computed-call-targets.md)); other commands refuse the field.
+Each of at most 256 declarations names:
+
+| Field | Meaning |
+|---|---|
+| `site` | the call. It must decode as an unprefixed near call through a word register or memory operand, or a far call through memory |
+| `evidence` | required free text connecting the call's operand to the targets: the producers of the index or pointer and every gate on them |
+| `exhaustive` | required boolean. `true` asserts that the call can reach no other target; the engine does not infer it |
+| `table` | `{ start, count, stride, fieldOffset, width, evidence }`, as for [indirect jump tables](#evidenced-indirect-jump-tables): `count` 1..256, `fieldOffset` defaults to 0, and `evidence` justifies the layout and count. A near call's rows are little-endian words placed through the call site's region mapping (`width` 2, the default). A far call's rows are `offset, segment` word pairs (`width` 4): the segment word needs a declared relocation, and the pointer is admitted as a [traced far pointer](#indirect-far-transfers-through-a-traced-pointer) is, through one region's exact mapping or a source FBOV trampoline |
+| `targets` | in place of `table`: 1..256 distinct file offsets in declared code, for targets that no table in the build holds, such as a far pointer stored from instruction immediates on every path into the call. A near call's target must be a byte that some IP in the call site's segment places, since a near call keeps CS |
+
+A declaration has exactly one of `table` and `targets`. Every target must lie in declared code. The
+walk enters each declared target as a call and continues at the call's return site, unless the
+declaration is exhaustive and every target is a `noReturn` routine. A declaration that is not
+exhaustive leaves the site in `unresolved` with the reason `indirect call targets are not declared
+exhaustive`, so `negativeUsable` stays false, and an exhaustive one leaves nothing unresolved.
+
+Table rows are read from the build's bytes, and a `targets` list rests on its evidence alone; the
+report repeats each declaration with its `instruction` text, a table's `rows` (`index`,
+`operandSite`, `rawOffset`, for a far call `rawSegment`, `resolvedSegment` and, for a pointer at an FBOV
+trampoline, the `trampoline` whose overlay entry is the `target`, and `target`) and its
+distinct `targets` in row order. Neither form proves that the call runs, which target a given path
+calls, or an instruction boundary: like table jump rows, declared call edges never prove an
+overlapping start. `trace` and the other path commands do not take the declarations, and their
+paths still stop at a computed call they cannot resolve.
 
 ## Relocated pointer-pair inventory
 
