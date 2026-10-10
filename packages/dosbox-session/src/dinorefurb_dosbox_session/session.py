@@ -125,7 +125,8 @@ class _Continuations:
     """The continuations and pauses a session has sent and not yet seen end, shared by its clients.
 
     Each of them ends with the guest stopped, so once a wait shows any of them ended, none of the
-    others is still running either: a pause ends the continuation it interrupts.
+    others is still running either: a pause ends the continuation it interrupts. It also holds the
+    run's failure, which refuses every further continuation, step, pause and write.
     """
 
     def __init__(self) -> None:
