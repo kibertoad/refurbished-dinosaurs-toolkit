@@ -246,6 +246,35 @@ public sealed class Mode2Form1SourceTests
     }
 
     [Fact]
+    public async Task ADirectoryWhoseWholeExtentIsEmptyForm2ListsNothingAsTheMode1ImageDoes()
+    {
+        // The MODE1 image holds zero blocks where the MODE2 image holds empty Form 2 sectors, so
+        // both read the EI directory as holding no records and list no files.
+        var iso = BuildIsoWithTwoSectorGameDirectory([1]);
+        var image = ToMode2Form1(iso);
+        MakeEmptyForm2(image, TwoSectorDirectorySector);
+        MakeEmptyForm2(image, TwoSectorDirectorySector + 1);
+        iso.AsSpan(TwoSectorDirectorySector * CookedSector, 2 * CookedSector).Clear();
+        var mode1 = CreateTemporaryDirectory();
+        var mode2 = CreateTemporaryDirectory();
+        try
+        {
+            await WriteAsync(mode1, CueBinSourceTests.ToRaw(iso), Mode1Cue);
+            await WriteAsync(mode2, image, Mode2Cue);
+            using var expected = OriginalContentSource.OpenCueBin(mode1);
+            using var actual = OriginalContentSource.OpenCueBin(mode2);
+            Assert.Empty(expected.Files);
+            Assert.Empty(actual.Files);
+            Assert.Equal(iso, await ReadAllAsync(actual.OpenVolume()));
+        }
+        finally
+        {
+            Directory.Delete(mode1, true);
+            Directory.Delete(mode2, true);
+        }
+    }
+
+    [Fact]
     public async Task AForm2SectorThatCarriesDataInsideADirectoryFailsTheOpen()
     {
         var image = ToMode2Form1(BuildIsoWithTwoSectorGameDirectory([1]));
