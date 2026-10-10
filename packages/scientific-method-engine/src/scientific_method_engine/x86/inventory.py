@@ -201,13 +201,14 @@ def inventory_check(image, config):
                                "rawCandidates": sum(rank(r) == 2 for r in sites)}}
         # A call into the bytes of an established instruction runs an overlapping instruction stream, such
         # as a call to an IRET byte inside an operand. The target is still a call target the inventory
-        # lacks, so it keeps its status, and the instruction it overlaps is named.
+        # lacks, so it keeps its status, and the instruction it overlaps is named. insideInstruction is the
+        # holder's site, as in reach and incoming.
         holder = holding_instruction(seen, target)
         if holder is not None:
             tally[evidence]["insideAnInstruction"] += 1
-            where = _target_place(image, holder)
-            entry["insideInstruction"] = {"site": holder, "address": where[2] if where else None,
-                                          "size": seen[holder].size}
+            # The walk decodes only inside declared regions, so a holder always has a place.
+            entry |= {"insideInstruction": holder, "insideInstructionAddress": _target_place(image, holder)[2],
+                      "insideInstructionSize": seen[holder].size}
         if held:
             entry["rows"] = [{k: rows[i][k] for k in ("start", "size", "name") if k in rows[i]} for i in held]
         missing.append(entry)
@@ -225,8 +226,8 @@ def inventory_check(image, config):
                f"{path['outsideEveryRow']} outside every row.")
     if path["insideAnInstruction"]:
         summary += " " + _count(path["insideAnInstruction"],
-                                "of them starts inside an instruction the entry-path walk decoded from another start.",
-                                "of them start inside an instruction the entry-path walk decoded from another start.")
+                                "of them starts inside an instruction the entry-path walk established from another start.",
+                                "of them start inside an instruction the entry-path walk established from another start.")
     if path["outsideDeclaredCode"]:
         summary += " " + _count(path["outsideDeclaredCode"],
                                 "more entry-path call target lies outside declared code and is not compared with the inventory.",

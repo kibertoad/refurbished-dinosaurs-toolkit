@@ -788,11 +788,21 @@ test("inventory-check names the instruction a call target lies inside", (t) => {
   writeFileSync(path, JSON.stringify({ ...config, xxh3: sourceXxh3(data), inventory: "inventory.tsv" }));
   const r = run(["inventory-check", path]);
   assert.deepEqual(
-    r.targets.map((row: Report) => [row.address, row.status, row.evidence, row.insideInstruction]),
-    [["1000:0002", "inside another row's body", "entry-path call", { site: 65, address: "1000:0001", size: 3 }]],
+    r.targets.map((row: Report) => [
+      row.address,
+      row.status,
+      row.evidence,
+      row.insideInstruction,
+      row.insideInstructionAddress,
+      row.insideInstructionSize,
+    ]),
+    [["1000:0002", "inside another row's body", "entry-path call", 65, "1000:0001", 3]],
   );
   assert.equal(r.counts["entry-path call"].insideAnInstruction, 1);
-  assert.match(r.summary, /1 of them starts inside an instruction the entry-path walk decoded from another start\./);
+  assert.match(
+    r.summary,
+    /1 of them starts inside an instruction the entry-path walk established from another start\./,
+  );
 });
 
 test("callee graph through the source bridge compares its edges with a Ghidra export", (t) => {
