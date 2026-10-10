@@ -48,9 +48,11 @@ LegacyFormats parts of it:
 - `OriginalContentSource` reads the player's original from an installed directory, an `.iso`
   image or a cue/bin raw image through one file listing. It checks a cue sheet strictly and fails
   on a line it cannot read rather than skipping it. The cue/bin data track may be `MODE1/2352` or
-  `MODE2/2352` CD-XA Form 1, and every sector read is checked against the layout the sheet declares
-  ([Cue/bin data tracks](../packages/dotnet/README.md#cuebin-data-tracks)). A cue/bin source names
-  the cue sheet and the raw image file it chose from a directory, a `.cue` or a `.bin` input as
+  `MODE2/2352` CD-XA Form 1, and every sector read is checked against the layout the sheet
+  declares ([Cue/bin data tracks](../packages/dotnet/README.md#cuebin-data-tracks)).
+  `OpenVolume` also reads a Form 2 sector whose 2324 data bytes are all zero, as 2048 zero bytes,
+  so a disc with empty Form 2 padding in its volume space can pin `VolumeXxh3`. A cue/bin source
+  names the cue sheet and the raw image file it chose from a directory, a `.cue` or a `.bin` input as
   `CuePath` and `BinPath` (the image is the file the sheet's `FILE` names, whatever its
   extension), so the importer hashes and reads the same files instead of repeating the selection.
   The source reads the `.cue` once, when it opens, and gives those bytes as `CueSheetBytes`: hash
