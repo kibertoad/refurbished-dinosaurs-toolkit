@@ -34,9 +34,11 @@ from .errors import (
     PlatformRefused,
     ReadinessNotObserved,
     RunDirectoryRefused,
+    RunFailed,
     SessionError,
 )
 from .lock import RunLock, resolve_lock_path
+from .writes import FieldContract, VerifiedWrite, guarded_write, resolve, sha256, write_entry
 
 #: The ``format`` field of ``session.json``.
 RECORD_FORMAT = "dinorefurb-dosbox-session.record/1"
@@ -131,6 +133,8 @@ class _Continuations:
         #: Set when a continuation or pause request raised, so the session cannot tell whether the
         #: server received it. Cleared once a status shows the guest not running.
         self.unconfirmed: str | None = None
+        #: Set when a guarded write failed. The guest is not resumed or changed again in this run.
+        self.run_failure: str | None = None
 
     def clear(self) -> None:
         self.pending.clear()
@@ -151,6 +155,8 @@ class _GuardedClient(SessionClient):
         self._continuations = continuations
 
     def _refuse_if_pending(self, action: str) -> None:
+        if self._continuations.run_failure is not None:
+            raise RunFailed(self._continuations.run_failure)
         if self._continuations.pending:
             shown = ", ".join(sorted(self._continuations.pending))
             raise OperationPending(f"Operation {shown} is still pending; observe it before {action}.")
@@ -184,6 +190,8 @@ class _GuardedClient(SessionClient):
         return super().step(session_id, mode)
 
     def pause(self, session_id: str) -> OperationLike:
+        if self._continuations.run_failure is not None:
+            raise RunFailed(self._continuations.run_failure)
         return self._send("pause", lambda: SessionClient.pause(self, session_id))
 
     def wait(self, session_id: str, operation_id: str, timeout_ms: int) -> Any:
@@ -222,6 +230,7 @@ class DosboxSession:
         self._owner: processes.ProcessIdentity | None = None
         self._clients: list[_GuardedClient] = []
         self._continuations = _Continuations()
+        self._writes: list[dict[str, Any]] = []
         self._clients_closed = False
         self._closed = False
 
@@ -382,8 +391,59 @@ class DosboxSession:
             raise EmulatorExited(f"The owned emulator exited with code {code}.")
 
     def continue_(self) -> OperationLike:
-        """Resumes the guest. Refused while an earlier operation is still pending."""
+        """Resumes the guest. Refused while an earlier operation is still pending or after the run failed."""
         return self.client.continue_(self.session_id)
+
+    @property
+    def run_failure(self) -> str | None:
+        """Why the run failed, or ``None`` while it has not."""
+        return self._continuations.run_failure
+
+    def write(self, contract: FieldContract | None, field: str, data: bytes, expected_sha256: str) -> VerifiedWrite:
+        """Writes ``data`` to a field of the stopped guest's memory and reads it back.
+
+        ``contract`` is the caller's: the package supports no field by default, so a write without
+        a contract is outside it. ``expected_sha256`` is the SHA-256 of the bytes the write
+        replaces. The write is refused unless the field is in the contract, ``data`` is exactly the
+        field's length, the guest is stopped and the field's bytes hash to ``expected_sha256``.
+        After writing, the hashes the server reports and the bytes read back must match ``data``.
+
+        Any refusal or failure fails the run: the write is not retried, the failure is recorded in
+        ``session.json``, and from then on writes, continuations, steps and pauses raise
+        :class:`~dinorefurb_dosbox_session.errors.RunFailed`. Reads still work, and closing the
+        session cleans up as usual. A transport error from the client also fails the run and
+        propagates as it was raised.
+
+        :raises WriteOutsideContract: no contract, a field the contract lacks, or a length that
+            differs from the field's.
+        :raises WriteHashMismatch: the field's bytes do not hash to ``expected_sha256``; nothing
+            was written.
+        :raises WriteReadbackMismatch: the field does not hold ``data`` after the write.
+        :raises WriteFailed: the guest is not stopped, or the hash is malformed.
+        :raises CapabilityRefused: the server did not report ``debugger`` as true; nothing was sent.
+        :raises RunFailed: the run failed earlier.
+        """
+        if self._continuations.run_failure is not None:
+            raise RunFailed(self._continuations.run_failure)
+        session_id = self.session_id
+        written = sha256(bytes(data))
+        contract_name = None if contract is None else contract.name
+        target = None if contract is None else contract.field(field)
+        try:
+            target = resolve(contract, field, bytes(data))
+            assert contract is not None
+            verified = guarded_write(self.client, session_id, contract, target, bytes(data), expected_sha256)
+        except BaseException as error:
+            failure = f"Write to field {field} failed: {error}"
+            self._continuations.run_failure = failure
+            self._writes.append(
+                write_entry(contract_name, field, target, str(expected_sha256), written, "failed", str(error))
+            )
+            self._write_record()
+            raise
+        self._writes.append(verified.to_json())
+        self._write_record()
+        return verified
 
     def observe(self, operation: OperationLike, timeout: float, poll_ms: int = 100) -> Observation:
         """Waits on ``operation`` for up to ``timeout`` seconds.
@@ -429,6 +489,8 @@ class DosboxSession:
             "request_id_prefixes": [c.ids.prefix for c in self._clients],
             "capabilities": None if self.capabilities is None else dict(self.capabilities),
             "debugger_session": None if self.state is None else self.state.id,
+            "writes": list(self._writes),
+            "run_failure": self._continuations.run_failure,
         }
 
     def _write_record(self) -> None:

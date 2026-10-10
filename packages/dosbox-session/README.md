@@ -2,13 +2,15 @@
 
 Owned DOSBox-X debugger sessions for a restoration's research tooling: the original program runs
 under DOSBox-X's structured debugger, and the tooling reads registers and memory, stops at
-breakpoints and observes operations beside the static evidence. The design is
+breakpoints, observes operations and makes checked writes to stopped guest memory beside the
+static evidence. The design is
 [ADR 0026](../../docs/decisions/0026-dosbox-x-session-package.md).
 
 The package owns the parts that decide whether a recorded run can be trusted and that carry no
 game knowledge: the emulator process, the machine-wide run lock, the guest drives, muted host
-audio, the session record, request IDs and operation observation. What a run means (executable
-fingerprints, address maps, state layouts, input, screens) stays in the restoration. A restored
+audio, the session record, request IDs, operation observation and guarded writes. What a run
+means (executable fingerprints, address maps, state layouts and which fields may be written,
+input, screens) stays in the restoration. A restored
 game never depends on this package.
 
 Windows only. On another platform a session refuses to start and says so.
@@ -130,6 +132,8 @@ fails. Exit code 0 means it removed the lock or found none; 2 is a usage error.
 | `request_id_prefixes` | One per client. |
 | `capabilities` | What the server reported. |
 | `debugger_session` | The debugger session's ID. |
+| `writes` | Each guarded write in order: the contract's name, the field, its address (as the address object's `repr`) and length, the expected hash, the hash of the bytes written, `verified` or `failed`, and the failure. |
+| `run_failure` | Why the run failed, or `null`. |
 
 ### Calls, capabilities and request IDs
 
@@ -139,7 +143,45 @@ Every call they make carries a request ID from that client's own namespace
 first. A call that needs a capability the server did not report as `true` raises
 `CapabilityRefused` and is not sent: every debugger call needs `debugger`, a `memory_change`
 breakpoint needs `breakpoints.memory_change`, and CPU tracing needs `trace.cpu`. The wrappers offer
-no writes to guest state.
+no writes to guest state; `session.write` makes them, as the next section describes.
+
+### Guarded writes
+
+`session.write(contract, field, data, expected_sha256)` writes to the stopped guest's memory. The
+contract is yours: a `FieldContract` with a name you choose and the `WritableField`s you support,
+each with a name, an address built with the client's `MemoryAddress` and a length. The package
+has no default contract and supports no field on its own, so a write without a contract is
+refused. Field layouts and the rules for when a field may be written stay in your restoration.
+
+```python
+from dosbox_agent import MemoryAddress
+
+from dinorefurb_dosbox_session import FieldContract, WritableField
+
+contract = FieldContract("startup-state/1", (WritableField("counter", MemoryAddress.segmented(cs, 0x0200), 2),))
+session.write(contract, "counter", b"\x21\x43", expected_sha256=hashlib.sha256(b"\x34\x12").hexdigest())
+```
+
+Each write, in this order:
+
+1. Refuses a field the contract lacks, or `data` of another length than the field
+   (`WriteOutsideContract`). Nothing is sent.
+2. Refuses an `expected_sha256` that is not 64 hexadecimal digits, and a guest whose status is not
+   `stopped` (`WriteFailed`).
+3. Reads the field and refuses unless its bytes hash to `expected_sha256` (`WriteHashMismatch`).
+   Nothing is written.
+4. Sends `memory.write` with the same `expected_sha256`, so the server checks it again. The hashes
+   the server reports for the bytes it replaced and the bytes it left must match the expected hash
+   and `data`.
+5. Reads the field back and compares it with `data` (`WriteReadbackMismatch`).
+
+It returns a `VerifiedWrite` and appends it to `writes` in `session.json`.
+
+Any refusal or failure, including a transport error during the write, fails the run. The write is
+not retried, the failure goes into `session.json` as `run_failure`, and from then on further
+writes, `continue_`, `step` and `pause` raise `RunFailed` without sending anything. Reads still
+work, so the failed state can be inspected, and closing the session cleans up as usual. Start a new
+run to try again.
 
 ### Observation
 
@@ -166,6 +208,11 @@ both. When a `continue_` or `pause` request itself raises, the server may still 
 | `ReadinessNotObserved` | The guest did not write its readiness marker in time. |
 | `CapabilityRefused` | An operation needs a capability the server did not report. Not sent. |
 | `OperationPending` | A continuation was asked for while another operation is pending. |
+| `WriteOutsideContract` | A write names no field in the contract, has no contract, or differs from the field's length. The run fails. |
+| `WriteHashMismatch` | The field's bytes do not hash to the expected value. Nothing was written; the run fails. |
+| `WriteReadbackMismatch` | The field does not hold the written bytes afterwards. The run fails. |
+| `WriteFailed` | A write was refused for another reason, such as a guest that is not stopped. The run fails. The three errors above derive from it. |
+| `RunFailed` | A write, continuation, step or pause was asked for after the run failed. Not sent. |
 | `CleanupFailed` | The emulator still ran after teardown; the lock was kept. |
 
 All of them derive from `SessionError`.
@@ -196,8 +243,11 @@ procedure on the pinned revision and puts its output in the pull request:
 
 The script generates a synthetic `.COM` program, starts it in an owned session under the
 machine's run lock, sets an execution breakpoint, continues to it, and reads the registers there.
-It passes when the breakpoint stop is observed and `AX` and `BX` hold the values the program set.
-It prints the checks, the checkout revision, the emulator hash and the reported capabilities.
+At the breakpoint it makes a guarded write to a word the program loads next, under a contract with
+that one field, reads the word back and steps over the load. It passes when the breakpoint stop is
+observed, `AX` and `BX` hold the values the program set, the write verifies, the readback holds
+the new bytes and `AX` holds the new word after the step. It prints the checks, the checkout
+revision, the emulator hash, the reported capabilities and the recorded writes.
 
 ## Tests
 

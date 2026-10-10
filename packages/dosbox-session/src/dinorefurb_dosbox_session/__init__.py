@@ -1,7 +1,8 @@
 """Owned DOSBox-X debugger sessions for restoration research tooling (ADR 0026).
 
 The package owns the emulator process, the machine-wide run lock, the guest drives, muted host
-audio, session records, request IDs and operation observation. It never imports the DOSBox-X
+audio, session records, request IDs, operation observation and guarded writes to stopped guest
+memory against a field contract the caller supplies. It never imports the DOSBox-X
 Agent client: the caller imports it from its own checkout and passes a :data:`ClientFactory`.
 Windows only.
 
@@ -30,7 +31,12 @@ from .errors import (
     PlatformRefused,
     ReadinessNotObserved,
     RunDirectoryRefused,
+    RunFailed,
     SessionError,
+    WriteFailed,
+    WriteHashMismatch,
+    WriteOutsideContract,
+    WriteReadbackMismatch,
 )
 from .lock import (
     DEFAULT_LOCK_PATH,
@@ -43,6 +49,7 @@ from .lock import (
 )
 from .processes import ProcessIdentity
 from .session import DosboxSession, Observation, SessionSettings, Target
+from .writes import FieldContract, VerifiedWrite, WritableField
 
 __all__ = [
     "AgentClientLike",
@@ -58,6 +65,7 @@ __all__ = [
     "EmulatorConfig",
     "EmulatorExited",
     "Endpoint",
+    "FieldContract",
     "LOCK_PATH_VARIABLE",
     "LockHeld",
     "LockReport",
@@ -73,10 +81,17 @@ __all__ = [
     "RecordedProcess",
     "RequestIds",
     "RunDirectoryRefused",
+    "RunFailed",
     "SessionClient",
     "SessionError",
     "SessionSettings",
     "Target",
+    "VerifiedWrite",
+    "WritableField",
+    "WriteFailed",
+    "WriteHashMismatch",
+    "WriteOutsideContract",
+    "WriteReadbackMismatch",
     "capability_value",
     "read_lock",
     "remove_stale_lock",

@@ -65,6 +65,61 @@ class OperationPending(SessionError):
     """A continuation was requested while an earlier operation was still pending."""
 
 
+class WriteFailed(SessionError):
+    """A guarded write was refused or did not verify, and the run has failed.
+
+    The subclasses name the three checks a write makes. This class itself covers the other
+    refusals: a malformed expected hash, a guest that is not stopped, and a field that reads back
+    at another length than the contract gives.
+    """
+
+
+class WriteOutsideContract(WriteFailed):
+    """The write names no field in the caller's contract, or its length differs from the field's.
+
+    Nothing was read or written.
+    """
+
+
+class WriteHashMismatch(WriteFailed):
+    """The bytes the write would replace do not hash to the expected value, so nothing was written.
+
+    :attr:`expected` is the hash the caller stated and :attr:`found` the hash of the bytes read.
+    """
+
+    def __init__(self, message: str, expected: str, found: str) -> None:
+        super().__init__(message)
+        self.expected = expected
+        self.found = found
+
+
+class WriteReadbackMismatch(WriteFailed):
+    """The bytes read back after a write differ from the bytes written.
+
+    :attr:`written` is the SHA-256 of the bytes written and :attr:`found` the SHA-256 the server
+    reported or the readback produced.
+    """
+
+    def __init__(self, message: str, written: str, found: str) -> None:
+        super().__init__(message)
+        self.written = written
+        self.found = found
+
+
+class RunFailed(SessionError):
+    """The run failed earlier, so an operation that would change or resume the guest was refused.
+
+    :attr:`failure` is the message of the failure that ended the run.
+    """
+
+    def __init__(self, failure: str) -> None:
+        super().__init__(
+            f"The run failed and the guest is not changed or resumed again: {failure} Close the session "
+            "and start a new run."
+        )
+        self.failure = failure
+
+
 class CleanupFailed(SessionError):
     """The owned emulator was still running after teardown, so the run lock was kept.
 

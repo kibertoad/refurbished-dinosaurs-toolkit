@@ -75,6 +75,16 @@ class AgentClientLike(Protocol):
 
     def read_memory(self, session_id: str, address: Any, length: int, request_id: str | None = None) -> Any: ...
 
+    def write_memory(
+        self,
+        session_id: str,
+        address: Any,
+        data: bytes,
+        *,
+        expected_sha256: str | None = None,
+        request_id: str | None = None,
+    ) -> Any: ...
+
     def create_execution_breakpoint(
         self, session_id: str, segment: str | int, offset: str | int, *, once: bool = False, request_id: str | None = None
     ) -> Any: ...
@@ -160,7 +170,8 @@ class SessionClient:
     """A caller's client with this session's request IDs and capability checks.
 
     Every call carries an ID from the client's own namespace. A call that needs a capability the
-    server did not report is refused before it is sent. Writes to guest state are not offered here.
+    server did not report is refused before it is sent. Writes to guest state are not offered here;
+    :meth:`~dinorefurb_dosbox_session.DosboxSession.write` makes them against a field contract.
     """
 
     def __init__(self, client: AgentClientLike, ids: RequestIds, capabilities: Mapping[str, Any] | None) -> None:

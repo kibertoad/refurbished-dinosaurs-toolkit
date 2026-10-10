@@ -57,7 +57,7 @@ This repository publishes the shared tooling that clean-room game restorations c
 | Documentation checker rule | `packages/standard-checker/test/standard-checker.test.ts`, with a passing and a failing fixture |
 | .NET API | `packages/dotnet/RefurbishedDinosaurs.Core.Tests/` |
 | Disc archiver backend, format, profile field or command | `packages/disc-archiver/tests/`, against synthetic discs from `tests/synthetic.py` and stand-in programs, with a refused or unavailable case |
-| DOSBox-X session lifecycle, lock, drives, records or observation | `packages/dosbox-session/tests/`, against the stand-in emulator and stand-in client, with a refused case; they run on Windows. A change to process, transport or drive handling also runs the README's native procedure before release |
+| DOSBox-X session lifecycle, lock, drives, records, observation or guarded writes | `packages/dosbox-session/tests/`, against the stand-in emulator and stand-in client, with a refused case; they run on Windows. A change to process, transport or drive handling also runs the README's native procedure before release |
 | Ghidra script | it compiles against Ghidra 12.1, which CI checks (see below); headless runs on real programs stay local |
 | Release tooling | `tools/release/plan.test.ts` |
 | Which CI jobs a change runs (`tools/ci/changes.ts`) | `tools/ci/changes.test.ts` |
