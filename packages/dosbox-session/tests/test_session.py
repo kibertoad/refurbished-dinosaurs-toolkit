@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest import mock
 
+import dinorefurb_dosbox_session
 from dinorefurb_dosbox_session import (
     PINNED_REVISION,
     CapabilityRefused,
@@ -14,6 +19,7 @@ from dinorefurb_dosbox_session import (
     CleanupFailed,
     DosboxSession,
     EmulatorExited,
+    EmulatorLaunchFailed,
     LockHeld,
     OperationPending,
     PlatformRefused,
@@ -26,7 +32,7 @@ from dinorefurb_dosbox_session import processes
 from dinorefurb_dosbox_session.lock import RunLock
 
 from standin_client import DEFAULT_CAPABILITIES, StandinServer
-from support import SessionCase, exited_identity, git, windows_only
+from support import HERE, PYTHON, SessionCase, exited_identity, git, windows_only
 
 
 @windows_only
@@ -40,6 +46,8 @@ class StartAndStop(SessionCase):
             lock = read_lock(self.lock_path)
             self.assertEqual([p.role for p in lock.processes], ["owner", "emulator"])
             self.assertTrue(all(p.state == "running" for p in lock.processes))
+            assert session._process is not None
+            self.assertTrue(session._process.in_job())
             record = json.loads((settings.run_directory / "session.json").read_text(encoding="utf-8"))
             emulator = session.emulator_process
             assert emulator is not None
@@ -77,6 +85,21 @@ class StartAndStop(SessionCase):
             DosboxSession(self.settings(server, mode="exit-early")).start()
         self.assertEqual(server.calls, [])
         self.assertFalse(self.lock_path.exists())
+
+    def test_an_emulator_windows_cannot_start_is_refused_and_releases_the_lock(self) -> None:
+        server = StandinServer()
+        settings = self.settings(server)
+        not_executable = self.root / "not-an-emulator.exe"
+        not_executable.write_text("not a program\n", encoding="utf-8")
+        settings = dataclasses.replace(settings, emulator=not_executable, emulator_arguments=())
+        session = DosboxSession(settings)
+        with self.assertRaisesRegex(EmulatorLaunchFailed, "could not be started"):
+            session.start()
+        self.assertIsNone(session.emulator_process)
+        self.assertEqual(server.calls, [])
+        self.assertFalse(self.lock_path.exists())
+        record = json.loads((settings.run_directory / "session.json").read_text(encoding="utf-8"))
+        self.assertIsNone(record["emulator_process"])
 
     def test_an_answering_server_without_the_guest_marker_is_not_ready(self) -> None:
         server = StandinServer()
@@ -342,3 +365,34 @@ class RunLockHandling(SessionCase):
         session.close()
         self.assertFalse(self.lock_path.exists())
         self.assertEqual(server.closed, 1)
+
+    def test_an_owner_killed_before_recording_its_emulator_leaves_no_emulator_running(self) -> None:
+        run_directory = self.root / "killed-owner"
+        run_directory.mkdir()
+        source = str(Path(dinorefurb_dosbox_session.__file__).resolve().parent.parent)
+        environment = {**os.environ, "PYTHONPATH": os.pathsep.join([source, str(HERE)])}
+        # The base interpreter, so that killing the child kills the owner itself.
+        owner = subprocess.Popen(
+            [str(PYTHON), str(HERE / "standin_owner.py"), str(self.lock_path), str(run_directory), str(PYTHON)],
+            stdout=subprocess.PIPE,
+            env=environment,
+        )
+        self.addCleanup(owner.wait)
+        self.addCleanup(owner.kill)
+        assert owner.stdout is not None
+        self.addCleanup(owner.stdout.close)
+        line = owner.stdout.readline()
+        self.assertTrue(line, "the stand-in owner printed no emulator identity")
+        emulator = processes.ProcessIdentity.from_json(json.loads(line))
+        self.assertEqual(processes.process_state(emulator), "running")
+        self.assertEqual([p.role for p in read_lock(self.lock_path).processes], ["owner"])
+
+        owner.kill()
+        owner.wait()
+        deadline = time.monotonic() + 10
+        while processes.process_state(emulator) != "exited" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(processes.process_state(emulator), "exited")
+        report = remove_stale_lock(self.lock_path)
+        self.assertEqual(report.session, "killed-owner")
+        self.assertFalse(self.lock_path.exists())

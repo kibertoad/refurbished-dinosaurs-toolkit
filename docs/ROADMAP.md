@@ -115,8 +115,9 @@ client on a Windows runner, and no game or DOSBox-X in CI:
    transport error, a refused capability, a checkout at another revision or with local changes,
    an existing C: drive, an existing lock and a stale one, cleanup that fails while the process
    lives and another platform. The owner-local native procedure's breakpoint stop and register
-   read pass on the pinned revision. Issue 416 is still open: an owner killed between launching
-   the emulator and recording it in the lock leaves an emulator that no lock names.
+   read pass on the pinned revision. Issue 416 found that an owner killed between launching the
+   emulator and recording it in the lock left an emulator that no lock names; the emulator now
+   runs in a job that ends it with its owner (ADR 0030).
 2. Shipped in PR 419, released as 0.2.0. Guarded writes to stopped state against a
    caller-supplied field contract. Tests cover a write outside the contract, an expected-hash
    mismatch and a readback mismatch. The native procedure gains the guarded memory write and
