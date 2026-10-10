@@ -326,10 +326,11 @@ class State:
     def byte(self, key, unwritten=None):
         """The modeled value of one memory byte, or an unknown term produced by the current site.
 
-        A read passes the byte's ``unwritten`` row; a declared volatile byte then reads the term that
-        row names even when the path stored a value there.
+        A read passes the byte's ``unwritten`` row, which a byte has exactly when the read sees no
+        modeled value, so a declared volatile byte reads the term that row names even when the path
+        stored a value there.
         """
-        if key in self.memory and (unwritten is None or unwritten["cause"] != VOLATILE):
+        if unwritten is None and key in self.memory:
             return self.memory[key]
         return unknown(self.unread_term(key, unwritten), 8, self.at)
 

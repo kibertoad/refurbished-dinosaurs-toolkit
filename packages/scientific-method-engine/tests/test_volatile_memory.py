@@ -103,6 +103,39 @@ class ReloadTests(unittest.TestCase):
                 self.assertEqual("mayBeVolatile" in deref["byteProducers"][0], flagged)
 
 
+class ProbeTests(unittest.TestCase):
+    def test_an_address_probe_over_a_volatile_word_names_its_checkpoint(self):
+        # mov [0100], ax; ret, with a lastWriter address at the return's checkpoint and no read of the word.
+        code = Code().label("store").emit("a3 00 01").label("end").emit("c3")
+        rule = control("slot", "lastWriter", writers=[code.labels["store"]],
+                       at={"site": code.labels["end"], "event": "checkpoint"},
+                       address={"segment": "ds", "displacement": 0x100, "width": 2})
+        self.assertEqual(verdict(report(code, relationalControls=[rule], registers=FRAME), "slot")["verdict"], "held")
+        result = report(code, relationalControls=[rule], registers=FRAME, volatileMemory=volatile())
+        self.assertEqual(verdict(result, "slot")["verdict"], "undecided")
+        checkpoint = events(result, "checkpoint")[0]
+        for row in checkpoint["memoryProbes"][0]["byteProducers"]:
+            self.assertEqual(row["unwritten"], {"cause": "declared volatile", "order": checkpoint["order"]})
+            self.assertEqual(row["volatileMemory"], 0)
+
+
+class ScopeTests(unittest.TestCase):
+    def test_a_preserved_scope_counts_declared_volatile_bytes_apart(self):
+        # mov word [00FE], 7; mov word [0100], 5; mov bx, 00FE; call service (modeled, keeps DS:BX..+4); reload.
+        c = (Code().emit("c7 06 fe 00 07 00 c7 06 00 01 05 00 bb fe 00").label("service").branch("e8", "external")
+             .label("reload").emit("a1 00 01 c3").label("external").emit("c3"))
+        model = {"site": c.labels["service"], "preserves": ["ds", "ss"],
+                 "preservesMemory": [{"segment": "ds", "base": "bx", "bytes": 4, "evidence": "synthetic kept buffer"}],
+                 "evidence": "synthetic returning service; other memory unknown", "cases": [{}]}
+        for name, ranges, counts, value in (("no range", [], (4, 0, 0), 5), ("range", volatile(), (2, 0, 2), None)):
+            with self.subTest(name):
+                result = report(c, registers=FRAME, callModels=[model], volatileMemory=ranges)
+                kept = result["paths"][0]["conditionalModels"][0]["preservedMemoryScopes"][0]
+                self.assertEqual((kept["cachedBytes"], kept["uncachedBytes"], kept["volatileBytes"]), counts)
+                reload = next(e for e in events(result, "read") if e["site"] == c.labels["reload"])
+                self.assertEqual(reload["value"]["value"], value)
+
+
 class PollLoopTests(unittest.TestCase):
     def test_a_polled_timer_word_can_change_between_iterations(self):
         # l: mov ax, es:[006C]; cmp ax, dx; je l; ret

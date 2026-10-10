@@ -105,7 +105,9 @@ two reads of it is undecided, a `lastWriter` control on it is undecided, a branc
 poll does not decide the next, and a far pointer read from it is not followed. A read whose address
 is not concrete (an unknown segment, or a concrete segment with a symbolic offset) but may name a
 byte of a declared range keeps its ordinary row and term, and the row carries `mayBeVolatile: true`:
-a control that such a reload holds is still conditional on the identity assumption. Writes, and
+a control that such a reload holds is still conditional on the identity assumption. A `lastWriter`
+address probe reports its bytes as a read would, and its `declared volatile` rows give the order of
+the `checkpoint` event that carries the probe, since the probe adds no read. Writes, and
 every read when no range is declared, report as above. A byte outside every declared range keeps
 the identity assumption.
 All assumptions remain conditional, and matching numeric offsets alone never establish storage
@@ -568,11 +570,13 @@ order without `preservedMemoryScopes`; the summary's `path` names the path that 
 `declaredContinuationPaths` for a continuation summary), and an allocation entry's `path` does the
 same. A scope entry holds `segmentRegister`, `segment`, `baseRegister`, `base` (values and
 producers), `displacement`, `offset`, `interval`, `linearStart`, `linearEnd`, `bytes`, `evidence`,
-`cachedBytes`, `uncachedBytes` and a fixed `meaning` text. `interval` names the bytes as a read or
+`cachedBytes`, `uncachedBytes`, `volatileBytes` and a fixed `meaning` text. `interval` names the bytes as a read or
 write event's `interval` does: the segment and base terms and the start and end offsets from that
 base, or `linear`/`absolute` and linear addresses when both are concrete. On a symbolic base,
 `offset`, `linearStart` and `linearEnd` are `null`. The two counts describe the model's cache: an
 uncached byte is labelled uncached and says nothing about whether the original program wrote it.
+A byte inside a declared `volatileMemory` range counts only in `volatileBytes`, since a read of it
+ignores any kept value; the three counts add up to `bytes`.
 Memory outside the scopes, flags, unpreserved registers and the service's native effects stay
 unknown, so the call keeps `unknownEffects: true` and the path's `effectCompleteWithinModel` stays
 false. Without `preservesMemory`, a model invalidates the whole frame as before. The input needs
