@@ -10,6 +10,7 @@ This repository publishes the shared tooling that clean-room game restorations c
 | `packages/standard-checker/` | `@scientific-method/standard-checker` | npm | changeset |
 | `packages/scientific-method-engine/` | `scientific-method-engine` (with the Ghidra scripts) | PyPI | `release:*` label |
 | `packages/disc-archiver/` | `dinorefurb-disc-archiver` | PyPI | `release:*` label |
+| `packages/dosbox-session/` | `dinorefurb-dosbox-session` | PyPI | `release:*` label |
 | `packages/dotnet/`, `global.json` | `RefurbishedDinosaurs.Core`, `RefurbishedDinosaurs.LegacyFormats`, `RefurbishedDinosaurs.Media.*` | NuGet | `release:*` label |
 | `actions/`, `schemas/`, `tools/`, `docs/` | used in place, pinned by commit | none | none |
 
@@ -56,6 +57,7 @@ This repository publishes the shared tooling that clean-room game restorations c
 | Documentation checker rule | `packages/standard-checker/test/standard-checker.test.ts`, with a passing and a failing fixture |
 | .NET API | `packages/dotnet/RefurbishedDinosaurs.Core.Tests/` |
 | Disc archiver backend, format, profile field or command | `packages/disc-archiver/tests/`, against synthetic discs from `tests/synthetic.py` and stand-in programs, with a refused or unavailable case |
+| DOSBox-X session lifecycle, lock, drives, records or observation | `packages/dosbox-session/tests/`, against the stand-in emulator and stand-in client, with a refused case; they run on Windows. A change to process, transport or drive handling also runs the README's native procedure before release |
 | Ghidra script | it compiles against Ghidra 12.1, which CI checks (see below); headless runs on real programs stay local |
 | Release tooling | `tools/release/plan.test.ts` |
 | Which CI jobs a change runs (`tools/ci/changes.ts`) | `tools/ci/changes.test.ts` |
@@ -103,6 +105,7 @@ the rest to CI. A red CI run is fixed with a follow-up commit on the same PR.
 | `tools/` or `actions/` | `pnpm exec tsc -p tools/tsconfig.json` and `node --test` on the test files beside the change |
 | `packages/scientific-method-engine/` | the engine test modules covering the change: `python -B -m unittest discover -s tests -p "test_<module>.py"` from the package directory |
 | `packages/disc-archiver/` | the archiver test modules covering the change, the same way |
+| `packages/dosbox-session/` | the session test modules covering the change, the same way, on Windows |
 | `packages/dotnet/` | `dotnet build packages/dotnet/RefurbishedDinosaurs.slnx` (it fails on missing XML docs) and the tests of the changed area |
 | Docs, ADRs, plans, skills | nothing |
 
@@ -136,7 +139,7 @@ javac -proc:none -nowarn -d "$(mktemp -d)" \
 ## Releases
 
 A PR that changes `packages/scientific-method-engine/`, `packages/disc-archiver/`,
-`packages/dotnet/` or `global.json` carries exactly one release label. The `Release label` check fails without it. The label sets the next
+`packages/dosbox-session/`, `packages/dotnet/` or `global.json` carries exactly one release label. The `Release label` check fails without it. The label sets the next
 version of every label-released package the PR touches:
 
 | Label | Use when |

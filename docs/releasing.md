@@ -25,23 +25,25 @@ The PyPI packages are versioned independently. The .NET packages share a NuGet v
 Release paths and tag prefixes are defined in `tools/release/plan.ts`.
 
 1. A pull request that changes `packages/scientific-method-engine/`, `packages/disc-archiver/`,
-   `packages/dotnet/` or `global.json` carries exactly one of the labels `release:major`,
+   `packages/dosbox-session/`, `packages/dotnet/` or `global.json` carries exactly one of the labels `release:major`,
    `release:minor`, `release:patch` or `release:skip`. `release-label.yml` fails the pull request otherwise. The
    paths are listed in `tools/release/plan.ts`. The check reads the changed files with
    `tools/lib/changed-files.ts`, the same module CI uses to pick its jobs, so a file moved out of
    a package counts as a change to that package, and a path with non-ASCII characters matches as
    written.
-2. When it merges, `release-python.yml`, `release-disc-archiver.yml` or `release-dotnet.yml`
-   starts because its paths changed. Its plan job (`plan.ts release <package>`) lists every pull
+2. When it merges, `release-python.yml`, `release-disc-archiver.yml`,
+   `release-dosbox-session.yml` or `release-dotnet.yml` starts because its paths changed. Its plan job (`plan.ts release <package>`) lists every pull
    request merged into the package's paths since the package's latest tag
-   (`scientific-method-engine@X.Y.Z`, `dinorefurb-disc-archiver@X.Y.Z` or
-   `scientific-method-dotnet@X.Y.Z`; all of history when there is none) and reads their labels.
+   (`scientific-method-engine@X.Y.Z`, `dinorefurb-disc-archiver@X.Y.Z`,
+   `dinorefurb-dosbox-session@X.Y.Z` or `scientific-method-dotnet@X.Y.Z`; all of history when there is none) and reads their labels.
    When all of them carry `release:skip`, the run ends.
 3. Otherwise the next version is the latest tag's version (`0.0.0` when there is none) bumped by
    the largest of those labels. The publish job writes that version into the build, tests,
    publishes, then creates the tag and a GitHub release with the built files attached. For
    `scientific-method-engine` a separate job without publishing or write permission runs the
    tests, because they install the reader's npm packages, and the publish job waits for it.
+   `dinorefurb-dosbox-session` does the same on a Windows runner, because a session refuses
+   every other platform.
 
 `release-disc-archiver.yml` then builds the standalone downloads on Windows, macOS and Linux and
 attaches them to the same GitHub release. A failed bundle job can be rerun on its own; it
@@ -96,6 +98,8 @@ the upload skips the existing version, and the tag and release are created.
   environment `pypi`. The first run creates the project.
 - Add one for the project `dinorefurb-disc-archiver` in the same way, with workflow
   `release-disc-archiver.yml`.
+- Add one for the project `dinorefurb-dosbox-session` in the same way, with workflow
+  `release-dosbox-session.yml`.
 
 ### NuGet
 

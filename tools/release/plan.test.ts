@@ -18,6 +18,7 @@ import { testRepo } from "../lib/test-repo.ts";
 const engine = PACKAGES.find((p) => p.name === "scientific-method-engine")!;
 const dotnet = PACKAGES.find((p) => p.name === "scientific-method-dotnet")!;
 const archiver = PACKAGES.find((p) => p.name === "dinorefurb-disc-archiver")!;
+const dosboxSession = PACKAGES.find((p) => p.name === "dinorefurb-dosbox-session")!;
 
 test("a package is touched by a file under its path prefix or by an exact file path", () => {
   assert.ok(touched(engine, ["packages/scientific-method-engine/src/scientific_method_engine/cli.py"]));
@@ -26,6 +27,8 @@ test("a package is touched by a file under its path prefix or by an exact file p
   assert.ok(!touched(dotnet, ["tools/global.json"]));
   assert.ok(touched(archiver, ["packages/disc-archiver/src/dinorefurb_disc_archiver/cli.py"]));
   assert.ok(!touched(engine, ["packages/disc-archiver/README.md"]));
+  assert.ok(touched(dosboxSession, ["packages/dosbox-session/src/dinorefurb_dosbox_session/session.py"]));
+  assert.ok(!touched(archiver, ["packages/dosbox-session/README.md"]));
 });
 
 test("a file moved out of a package marks the package touched", (t) => {
@@ -63,7 +66,8 @@ test("a change outside every package gates none", (t) => {
 
 test("a release is planned for one package by name, so an ecosystem may hold several", () => {
   assert.equal(packageNamed("dinorefurb-disc-archiver"), archiver);
-  assert.equal(PACKAGES.filter((p) => p.ecosystem === "pypi").length, 2);
+  assert.equal(packageNamed("dinorefurb-dosbox-session"), dosboxSession);
+  assert.equal(PACKAGES.filter((p) => p.ecosystem === "pypi").length, 3);
   assert.throws(() => packageNamed("pypi"), /No label-versioned package is named pypi/);
 });
 

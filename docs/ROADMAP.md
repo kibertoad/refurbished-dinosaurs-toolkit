@@ -103,7 +103,7 @@ and enemy-reinfestation's open requests against this toolkit's Ghidra scripts. I
 these are items 12, 13, 20 to 27 and 32. Some name scripts the toolkit does not ship. Re-verify
 each against main and fix the ones that belong here.
 
-### M7. Owned DOSBox-X debugger sessions (issue 403)
+### M7. Owned DOSBox-X debugger sessions (issue 403, tracked in issue 406)
 
 Build `dinorefurb-dosbox-session` as [ADR 0026](decisions/0026-dosbox-x-session-package.md)
 sets out. Each slice is one PR with synthetic tests against a stand-in emulator and a stand-in

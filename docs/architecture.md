@@ -16,6 +16,7 @@ packages/
                                    RefurbishedDinosaurs.LegacyFormats,
                                    RefurbishedDinosaurs.Media.{Smacker,Avi,Fli,Playback,Audio} C#
   disc-archiver/             PyPI  dinorefurb-disc-archiver               Python
+  dosbox-session/            PyPI  dinorefurb-dosbox-session              Python
 actions/    composite GitHub Actions, consumed by commit SHA
 tools/      repository-level scripts (Verify-Repository.ps1, release planning, CI area
             selection and the tools' test run, and lib/ for the changed-file reading both share)
@@ -118,6 +119,27 @@ Makes personal archival copies of discs a player owns
 Restorations do not depend on it in code: players and researchers run it before an import. See
 [disc archiving](disc-archiving.md).
 
+### dinorefurb-dosbox-session
+
+Owns DOSBox-X debugger sessions for a restoration's research tooling
+([ADR 0026](decisions/0026-dosbox-x-session-package.md)).
+
+- Takes a factory for the DOSBox-X Agent client from the caller, who imports the client from a
+  DOSBox-X checkout at the pinned revision. The package never imports, vendors or depends on the
+  client, which is GPL-2.0, and refuses a checkout at another revision or with local changes.
+- Launches the emulator with a generated configuration and a hidden native console, waits for a
+  marker the guest writes once its drives are set up, and starts the target stopped at its entry.
+- Holds the machine-wide run lock, which records processes by ID and start time; a held lock
+  refuses the session, and only the `stale-lock` command removes a lock whose processes have
+  exited.
+- Gives each run an empty writable C:, mounts media read-only and mutes host audio by default.
+- Writes a session record, gives every call a request ID from its client's own namespace, refuses
+  calls the reported capabilities lack, and reports an observation that runs out of time as
+  pending.
+- Windows only.
+
+What a run means stays in the restoration. A restored game never depends on this package.
+
 ## The reader-engine contract
 
 The reader and engine are released separately and agree through a prepared-config protocol, not
@@ -138,7 +160,8 @@ through matching version numbers.
   to JavaScript with declaration files, because Node refuses to strip types under `node_modules`.
 - The Node workspace uses pnpm. oxlint lints and oxfmt formats the TypeScript.
 - The Python packages build with hatchling and are tested with `unittest`. The disc archiver pins
-  pycdlib and uses only the standard library otherwise; its window is tkinter.
+  pycdlib and uses only the standard library otherwise; its window is tkinter. The DOSBox-X
+  session package has no dependencies; its tests run on Windows.
 - The engine pins Capstone and pypcode, because reports depend on the decoder and the
   instruction specification they used.
   Its `test` extra adds Unicorn, the concrete oracle for synthetic tests. Unicorn's core is GPLv2,
