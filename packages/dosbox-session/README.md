@@ -87,8 +87,10 @@ start.
   `directory` with `mount -ro`.
 - Host audio is muted by default: `mixer master 0:0 /noshow` in `[autoexec]` and `[midi]
   mididevice=none`. The emulated sound devices stay configured. `keep_host_sound=True` leaves both
-  alone. `nosound=true` is refused, because it broke structured readiness at the pinned revision.
-- The session writes `[autoexec]` itself, so a section by that name is refused.
+  alone. `nosound` set to anything DOSBox-X does not read as false is refused, because
+  `nosound=true` broke structured readiness at the pinned revision.
+- The session writes `[autoexec]` itself, so a section by that name is refused, as is a section
+  name, key or value with a line break in it.
 
 ### The run lock
 
@@ -108,8 +110,8 @@ dosbox-session stale-lock [--lock PATH] [--json]
 ```
 
 It checks the processes again first, and refuses (exit code 1, nothing removed) when one still
-runs or cannot be queried, or when the file is not a record this package wrote. Exit code 0 means
-it removed the lock or found none; 2 is a usage error.
+runs or cannot be queried, when the file is not a record this package wrote, or when deleting it
+fails. Exit code 0 means it removed the lock or found none; 2 is a usage error.
 
 ### The session record
 
@@ -146,7 +148,10 @@ emulator still runs (`EmulatorExited` if not). When the time runs out the result
 which is neither a failure nor a result: observe the same operation again to keep waiting.
 Transport errors from the client propagate. Observation never restarts the guest or sends another
 continuation, and while an operation is pending a further `continue_` or `step` raises
-`OperationPending`.
+`OperationPending`. A pause ends the continuation it interrupts, so observing either one clears
+both. When a `continue_` or `pause` request itself raises, the server may still have received it:
+`continue_` and `step` raise `OperationPending` until `client.status()` shows the guest
+`stopped`, `exited` or `failed`.
 
 ## Errors
 

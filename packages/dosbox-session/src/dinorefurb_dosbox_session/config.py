@@ -53,13 +53,23 @@ class EmulatorConfig:
     limits: AgentLimits = field(default_factory=AgentLimits)
 
 
+#: The values DOSBox-X reads as false for a boolean setting. Any other ``nosound`` value is refused,
+#: because DOSBox-X reads ``true``, ``1``, ``on`` and ``enabled`` as true.
+_FALSE_VALUES = ("0", "disabled", "false", "off")
+
+
 def _check(config: EmulatorConfig) -> None:
     for section, values in config.sections.items():
         name = section.lower()
         if name == "autoexec":
             raise ConfigurationRefused("The session writes [autoexec] itself; it cannot be set.")
+        for text in (section, *values.keys(), *values.values()):
+            if "\n" in text or "\r" in text:
+                raise ConfigurationRefused(
+                    f"[{section}] holds a line break, which would add lines to dosbox.conf: {text!r}."
+                )
         for key, value in values.items():
-            if key.lower() == "nosound" and value.strip().lower() in ("true", "1", "yes"):
+            if key.lower() == "nosound" and value.strip().lower() not in _FALSE_VALUES:
                 raise ConfigurationRefused(
                     "nosound=true failed structured readiness at the pinned revision. Host audio is muted "
                     "in the mixer by default instead."

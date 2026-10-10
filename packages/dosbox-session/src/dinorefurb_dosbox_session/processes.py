@@ -7,6 +7,7 @@ FILETIME (100 ns intervals since 1601-01-01 UTC).
 from __future__ import annotations
 
 import ctypes
+import functools
 import os
 import subprocess
 import sys
@@ -16,6 +17,8 @@ from typing import Literal
 from .errors import PlatformRefused
 
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_SYNCHRONIZE = 0x00100000
+_WAIT_OBJECT_0 = 0
 _STILL_ACTIVE = 259
 _ERROR_ACCESS_DENIED = 5
 
@@ -53,30 +56,51 @@ class _FileTime(ctypes.Structure):
     _fields_ = [("low", ctypes.c_uint32), ("high", ctypes.c_uint32)]
 
 
-def _kernel32() -> ctypes.WinDLL:  # type: ignore[name-defined]
-    if sys.platform != "win32":
-        raise PlatformRefused("Process identity is read through the Windows API; this platform is not Windows.")
+@functools.cache
+def _loaded_kernel32() -> ctypes.WinDLL:  # type: ignore[name-defined]
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
     kernel32.OpenProcess.restype = ctypes.c_void_p
     kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
     kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
     kernel32.GetProcessTimes.argtypes = [ctypes.c_void_p] + [ctypes.POINTER(_FileTime)] * 4
     kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
     return kernel32
+
+
+def _kernel32() -> ctypes.WinDLL:  # type: ignore[name-defined]
+    if sys.platform != "win32":
+        raise PlatformRefused("Process identity is read through the Windows API; this platform is not Windows.")
+    return _loaded_kernel32()
+
+
+def _open(kernel32: ctypes.WinDLL, pid: int) -> tuple[int | None, bool]:  # type: ignore[name-defined]
+    """Opens the process, with ``SYNCHRONIZE`` access when this user may have it."""
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION | _SYNCHRONIZE, False, pid)
+    if handle:
+        return handle, True
+    return kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid), False
 
 
 def _query(pid: int) -> tuple[ProcessState, int | None]:
     kernel32 = _kernel32()
-    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    handle, synchronize = _open(kernel32, pid)
     if not handle:
         error = ctypes.get_last_error()  # type: ignore[attr-defined]
         return ("unknown" if error == _ERROR_ACCESS_DENIED else "exited"), None
     try:
-        code = ctypes.c_uint32()
-        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-            return "unknown", None
-        if code.value != _STILL_ACTIVE:
-            return "exited", None
+        if synchronize:
+            # A process that exited with code 259 reports STILL_ACTIVE as its exit code, so the
+            # handle's signalled state decides when it can be read.
+            if kernel32.WaitForSingleObject(handle, 0) == _WAIT_OBJECT_0:
+                return "exited", None
+        else:
+            code = ctypes.c_uint32()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return "unknown", None
+            if code.value != _STILL_ACTIVE:
+                return "exited", None
         created, exited, kernel, user = _FileTime(), _FileTime(), _FileTime(), _FileTime()
         if not kernel32.GetProcessTimes(
             handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)

@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,7 +30,7 @@ from dinorefurb_dosbox_session.cli import run
 from dinorefurb_dosbox_session.config import dosbox_conf
 from dinorefurb_dosbox_session.lock import RunLock
 
-from support import exited_identity, windows_only
+from support import PYTHON, exited_identity, windows_only
 
 DRIVE = Path(r"C:\runs\one\drive-c")
 
@@ -60,6 +61,9 @@ class GeneratedConfig(unittest.TestCase):
     def test_settings_that_break_the_debugger_or_that_the_session_owns_are_refused(self) -> None:
         refused = [
             EmulatorConfig(sections={"mixer": {"nosound": "true"}}),
+            EmulatorConfig(sections={"mixer": {"nosound": "on"}}),
+            EmulatorConfig(sections={"mixer": {"nosound": "enabled"}}),
+            EmulatorConfig(sections={"cpu": {"cycles": "max\n[autoexec]\nexit"}}),
             EmulatorConfig(sections={"autoexec": {"x": "y"}}),
             EmulatorConfig(sections={"midi": {"mididevice": "default"}}),
             EmulatorConfig(media=(Media("C", Path("x"), "directory"),)),
@@ -69,6 +73,7 @@ class GeneratedConfig(unittest.TestCase):
             with self.subTest(config=config), self.assertRaises(ConfigurationRefused):
                 dosbox_conf(config, DRIVE, "tok")
         dosbox_conf(EmulatorConfig(keep_host_sound=True, sections={"midi": {"mididevice": "default"}}), DRIVE, "t")
+        dosbox_conf(EmulatorConfig(sections={"mixer": {"nosound": "false"}}), DRIVE, "t")
 
 
 class RequestIdNamespaces(unittest.TestCase):
@@ -100,6 +105,13 @@ class LockRecords(unittest.TestCase):
         self.assertEqual(processes.process_state(ProcessIdentity(me.pid, me.start_time + 1)), "exited")
         self.assertEqual(processes.process_state(exited_identity()), "exited")
 
+    def test_a_process_that_exited_with_the_still_active_code_has_exited(self) -> None:
+        # The Popen object keeps a handle, so the exited process stays queryable under its ID.
+        child = subprocess.Popen([str(PYTHON), "-c", "import sys, time; time.sleep(0.5); sys.exit(259)"])
+        identity = processes.identify(child.pid)
+        self.assertEqual(child.wait(), 259)
+        self.assertEqual(processes.process_state(identity), "exited")
+
     def test_a_second_acquire_is_refused_while_the_first_holds_the_lock(self) -> None:
         first = RunLock.acquire(self.path, "one", processes.current())
         with self.assertRaises(LockHeld) as raised:
@@ -107,6 +119,22 @@ class LockRecords(unittest.TestCase):
         self.assertEqual(raised.exception.report.session, "one")
         first.release()
         self.assertFalse(self.path.exists())
+
+    def test_a_lock_whose_first_record_fails_is_not_left_behind(self) -> None:
+        with mock.patch("dinorefurb_dosbox_session.lock.os.fsync", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                RunLock.acquire(self.path, "one", processes.current())
+        self.assertFalse(self.path.exists())
+
+    def test_a_stale_lock_that_cannot_be_deleted_is_refused(self) -> None:
+        stale = RunLock.acquire(self.path, "dead", exited_identity())
+        stale._handle.close()  # type: ignore[union-attr]
+        stale._handle = None
+        with mock.patch.object(Path, "unlink", side_effect=PermissionError("denied")):
+            with self.assertRaisesRegex(LockHeld, "deleting it failed: denied"):
+                remove_stale_lock(self.path)
+        self.assertTrue(self.path.exists())
+        remove_stale_lock(self.path)
 
     def test_a_lock_this_package_did_not_write_is_reported_and_never_removed(self) -> None:
         self.path.write_text('{"session": "older-helper", "pids": [4]}\n{"pid": 8}\n', encoding="utf-8")

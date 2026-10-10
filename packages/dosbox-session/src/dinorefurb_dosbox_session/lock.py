@@ -157,7 +157,12 @@ class RunLock:
             raise LockHeld(f"The run lock is held.{hint}\n{report.describe()}", report) from None
         created = datetime.datetime.now(datetime.UTC).isoformat()
         lock = cls(lock_path, handle, session, created)
-        lock.record("owner", owner)
+        try:
+            lock.record("owner", owner)
+        except BaseException:
+            # An empty lock file cannot be read, so the stale-lock command would never remove it.
+            lock.release()
+            raise
         return lock
 
     def record(self, role: str, identity: ProcessIdentity) -> None:
@@ -196,8 +201,8 @@ def remove_stale_lock(path: str | Path) -> LockReport:
 
     Returns the report it checked. A missing lock is reported, not an error.
 
-    :raises LockHeld: the lock cannot be read, or a recorded process still runs or cannot be
-        queried. Nothing is removed.
+    :raises LockHeld: the lock cannot be read or deleted, or a recorded process still runs or
+        cannot be queried. Nothing is removed.
     """
     report = read_lock(path)
     if not report.exists:
@@ -206,5 +211,12 @@ def remove_stale_lock(path: str | Path) -> LockReport:
         raise LockHeld(f"The run lock was not removed.\n{report.describe()}", report)
     if report.possibly_running:
         raise LockHeld(f"The run lock was not removed: a recorded process still runs.\n{report.describe()}", report)
-    Path(path).unlink()
+    try:
+        Path(path).unlink()
+    except FileNotFoundError:
+        # Another stale-lock run removed it after this one read it.
+        return LockReport(Path(path), False)
+    except OSError as error:
+        message = f"The run lock was not removed: deleting it failed: {error}\n{report.describe()}"
+        raise LockHeld(message, report) from error
     return report

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import subprocess
 import sys
@@ -110,6 +111,7 @@ class Observation:
         return self.status == "pending"
 
 
+@functools.cache
 def _package_version() -> str:
     try:
         return metadata.version("dinorefurb-dosbox-session")
@@ -118,10 +120,21 @@ def _package_version() -> str:
 
 
 class _Continuations:
-    """The operation a session is waiting on, shared by all its clients."""
+    """The continuations and pauses a session has sent and not yet seen end, shared by its clients.
+
+    Each of them ends with the guest stopped, so once a wait shows any of them ended, none of the
+    others is still running either: a pause ends the continuation it interrupts.
+    """
 
     def __init__(self) -> None:
-        self.pending: str | None = None
+        self.pending: set[str] = set()
+        #: Set when a continuation or pause request raised, so the session cannot tell whether the
+        #: server received it. Cleared once a status shows the guest not running.
+        self.unconfirmed: str | None = None
+
+    def clear(self) -> None:
+        self.pending.clear()
+        self.unconfirmed = None
 
 
 class _GuardedClient(SessionClient):
@@ -138,30 +151,45 @@ class _GuardedClient(SessionClient):
         self._continuations = continuations
 
     def _refuse_if_pending(self, action: str) -> None:
-        if self._continuations.pending is not None:
+        if self._continuations.pending:
+            shown = ", ".join(sorted(self._continuations.pending))
+            raise OperationPending(f"Operation {shown} is still pending; observe it before {action}.")
+        if self._continuations.unconfirmed is not None:
             raise OperationPending(
-                f"Operation {self._continuations.pending} is still pending; observe it before {action}."
+                f"A {self._continuations.unconfirmed} request failed and the server may have received it; "
+                f"read the session's status, which must show the guest not running, before {action}."
             )
+
+    def _send(self, kind: str, call: Callable[[], OperationLike]) -> OperationLike:
+        try:
+            operation = call()
+        except BaseException:
+            self._continuations.unconfirmed = kind
+            raise
+        self._continuations.pending.add(operation.id)
+        return operation
 
     def continue_(self, session_id: str) -> OperationLike:
         self._refuse_if_pending("continuing again")
-        operation = super().continue_(session_id)
-        self._continuations.pending = operation.id
-        return operation
+        return self._send("continue", lambda: SessionClient.continue_(self, session_id))
+
+    def status(self, session_id: str) -> SessionStateLike:
+        state = super().status(session_id)
+        if state.state in ("stopped", "exited", "failed"):
+            self._continuations.clear()
+        return state
 
     def step(self, session_id: str, mode: str = "into") -> tuple[Any, Any]:
         self._refuse_if_pending("stepping")
         return super().step(session_id, mode)
 
     def pause(self, session_id: str) -> OperationLike:
-        operation = super().pause(session_id)
-        self._continuations.pending = operation.id
-        return operation
+        return self._send("pause", lambda: SessionClient.pause(self, session_id))
 
     def wait(self, session_id: str, operation_id: str, timeout_ms: int) -> Any:
         result = super().wait(session_id, operation_id, timeout_ms)
-        if not result.running and operation_id == self._continuations.pending:
-            self._continuations.pending = None
+        if not result.running and operation_id in self._continuations.pending:
+            self._continuations.clear()
         return result
 
 
@@ -420,7 +448,14 @@ class DosboxSession:
             return
         errors: list[str] = []
         process = self._process
-        if self.state is not None and self._clients and process is not None and process.poll() is None:
+        # A second close, after cleanup failed, has no open client left to stop the session with.
+        if (
+            self.state is not None
+            and self._clients
+            and not self._clients_closed
+            and process is not None
+            and process.poll() is None
+        ):
             client = self._clients[0]
             try:
                 status = client.status(self.state.id)

@@ -120,6 +120,35 @@ class Observation(SessionCase):
             session.continue_()
             self.assertEqual(server.methods().count("continue"), 2)
 
+    def test_a_pause_ends_the_continuation_it_interrupts(self) -> None:
+        server = StandinServer(waits=["pause"])
+        with DosboxSession(self.settings(server)) as session:
+            operation = session.continue_()
+            session.client.pause(session.session_id)
+            observation = session.observe(operation, timeout=5, poll_ms=50)
+            self.assertEqual(observation.status, "completed")
+            session.continue_()
+            self.assertEqual(server.methods().count("continue"), 2)
+
+    def test_a_continuation_whose_request_failed_blocks_another_until_a_status_shows_the_guest_stopped(self) -> None:
+        server = StandinServer()
+        with DosboxSession(self.settings(server)) as session:
+            server.fail_next = ConnectionError("pipe closed")
+            with self.assertRaisesRegex(ConnectionError, "pipe closed"):
+                session.continue_()
+            with self.assertRaisesRegex(OperationPending, "continue request failed"):
+                session.continue_()
+            with self.assertRaises(OperationPending):
+                session.client.step(session.session_id)
+            server.status_state = "running"
+            session.client.status(session.session_id)
+            with self.assertRaises(OperationPending):
+                session.continue_()
+            server.status_state = "stopped"
+            session.client.status(session.session_id)
+            session.continue_()
+            self.assertEqual(server.methods().count("continue"), 2)
+
     def test_a_transport_error_propagates_without_a_retry(self) -> None:
         server = StandinServer(waits=[ConnectionError("pipe closed")])
         with DosboxSession(self.settings(server)) as session:
@@ -297,6 +326,12 @@ class RunLockHandling(SessionCase):
         self.assertEqual([(p.role, p.state) for p in report.processes][1], ("emulator", "running"))
         with self.assertRaises(LockHeld):
             remove_stale_lock(self.lock_path)
+        # Closing again while the process lives sends nothing through the clients it closed.
+        sent = len(server.calls)
+        with mock.patch.object(processes, "terminate", side_effect=OSError("access denied")):
+            with self.assertRaises(CleanupFailed):
+                session.close()
+        self.assertEqual(len(server.calls), sent)
         session._process.kill()
         session._process.wait()
         self.assertEqual(processes.process_state(emulator), "exited")

@@ -14,9 +14,9 @@ USAGE = f"""\
 dosbox-session stale-lock [--lock PATH] [--json]
 
   Removes the machine-wide run lock when every process it records has exited. It refuses, and
-  removes nothing, when a recorded process still runs or cannot be queried, or when the lock is
-  not a record this package wrote. The lock path is --lock, else {LOCK_PATH_VARIABLE}, else the
-  default path.
+  removes nothing, when a recorded process still runs or cannot be queried, when the lock is not
+  a record this package wrote, or when deleting it fails. The lock path is --lock, else
+  {LOCK_PATH_VARIABLE}, else the default path.
 
 Exit codes: 0 the lock was removed or there was none; 1 refused; 2 usage error.
 """

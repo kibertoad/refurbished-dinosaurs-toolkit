@@ -42,6 +42,8 @@ class StandinServer:
         self.started_with: dict[str, Any] = {}
         self.closed = 0
         self.operations = 0
+        self.status_state = "stopped"
+        self.fail_next: BaseException | None = None
 
     def factory(self, endpoint: Any) -> StandinClient:
         self.endpoints.append(endpoint)
@@ -73,7 +75,7 @@ class StandinClient:
 
     def status(self, session_id, request_id=None):
         self._call("status", request_id)
-        return state(None)
+        return state(None, self.server.status_state)
 
     def stop(self, session_id, graceful_timeout_ms=0, request_id=None):
         self._call("stop", request_id)
@@ -81,6 +83,9 @@ class StandinClient:
 
     def continue_(self, session_id, request_id=None):
         self._call("continue", request_id)
+        if self.server.fail_next is not None:
+            error, self.server.fail_next = self.server.fail_next, None
+            raise error
         return self._operation("op")
 
     def pause(self, session_id, request_id=None):
