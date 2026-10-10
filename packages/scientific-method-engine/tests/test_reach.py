@@ -36,6 +36,21 @@ TABLE = {"site": 0x12, "exhaustive": True, "evidence": "synthetic: bx is gated t
          "table": {"start": 0x30, "count": 2, "stride": 2, "evidence": "synthetic: two rows under cmp bx, 1"}}
 
 
+# 0000 calls B at 0008, then X at 0010, which ends the program through its interrupt. The bytes after
+# the second call are data that decode as a mov whose immediate runs over B's entry.
+EXITS = bytes.fromhex(
+    "e80500"        # 0000 call 0008
+    "e80a00"        # 0003 call 0010
+    "b841"          # 0006 data: decodes as mov ax, 0B841h through 0008
+    "b890c3"        # 0008 B: mov ax, 0C390h
+    "c3"            # 000B ret
+    "90909090"      # 000C padding
+    "b44c"          # 0010 X: mov ah, 4Ch
+    "cd21"          # 0012 int 21h
+    "c3"            # 0014 what a walk past the interrupt reads
+)
+
+
 def config(data=DISPATCH, entries=(0,), **extra):
     return {"regions": [{"name": "synthetic", "start": 0, "end": len(data), "ip": 0, "segment": 0x1000, "resident": True,
                          "entries": list(entries), "evidence": "synthetic declared code extent"}],
@@ -172,6 +187,69 @@ class ReachTests(unittest.TestCase):
         self.assertEqual(r["counts"]["unresolved"], 2)
         self.assertTrue(r["truncated"])
 
+    def test_a_no_return_declaration_keeps_the_bytes_after_its_calls_unread(self):
+        exits = "synthetic: ends the program through its interrupt"
+        # Without a declaration the walk reads the data after 0003 as an instruction over B's entry.
+        r = run_report(EXITS, config(EXITS, targets=[9], controls=[0, 3]), "reach")
+        self.assertIn("overlapping entry-path instructions; boundary unresolved", [g["reason"] for g in r["gaps"]])
+        self.assertTrue(r["contested"])
+        self.assertFalse(r["negativeUsable"])
+        self.assertEqual(r["noReturn"], [])
+        # Declaring X a leaf leaves it unread, but the call to it still falls through into the data.
+        r = run_report(EXITS, config(EXITS, targets=[9], controls=[0, 3],
+                                     leaves=[{"routine": 0x10, "reason": "synthetic leaf"}]), "reach")
+        self.assertIn("overlapping entry-path instructions; boundary unresolved", [g["reason"] for g in r["gaps"]])
+        r = run_report(EXITS, config(EXITS, targets=[9], controls=[0, 3], noReturn=[
+            {"routine": 0x10, "reason": exits}, {"interrupt": 0x12, "reason": exits}]), "reach")
+        self.assertEqual((r["gaps"], r["contested"], r["unresolved"], r["interrupts"]), ([], [], [], []))
+        # B is read from its own entry only, so its second byte is inside its first instruction.
+        self.assertEqual((r["targets"][0]["status"], r["targets"][0]["insideInstruction"]),
+                         ("inside a reached instruction", 8))
+        self.assertTrue(r["negativeUsable"])
+        self.assertEqual(r["noReturn"], [
+            {"routine": 0x10, "reason": exits, "reached": True, "read": True, "returnSites": [],
+             "contradicted": False, "callSites": [{"site": 3, "following": 6, "followingRead": False}]},
+            {"interrupt": 0x12, "reason": exits, "vector": 0x21, "reached": True, "following": 0x14,
+             "followingRead": False}])
+        self.assertIn("each reached call returns to its next instruction, except a call to a noReturn routine",
+                      r["assumptions"])
+        self.assertIn("each reached interrupt returns to its next instruction, except at a noReturn interrupt "
+                      "site; interrupt handlers are not read", r["assumptions"])
+        self.assertIn("each noReturn routine and interrupt never returns, for the reason it gives", r["assumptions"])
+
+    def test_a_no_return_routine_with_a_read_return_is_contradicted(self):
+        # Declared alone, X's interrupt is assumed to return, so the walk reads the ret after it.
+        r = run_report(EXITS, config(EXITS, targets=[9], controls=[0, 3],
+                                     noReturn=[{"routine": 0x10, "reason": "synthetic exit"}]), "reach")
+        row = r["noReturn"][0]
+        self.assertEqual((row["returnSites"], row["contradicted"]), ([0x14], True))
+        self.assertEqual(r["gaps"], [])
+        self.assertFalse(r["negativeUsable"])
+
+    def test_a_no_return_leaf_is_reached_unread_and_unchecked(self):
+        r = run_report(EXITS, config(EXITS, targets=[9], controls=[0, 3],
+                                     leaves=[{"routine": 0x10, "reason": "synthetic leaf"}],
+                                     noReturn=[{"routine": 0x10, "reason": "synthetic exit"}]), "reach")
+        row = r["noReturn"][0]
+        self.assertEqual((row["reached"], row["read"], row["returnSites"]), (True, False, []))
+        self.assertEqual(r["gaps"], [])
+        self.assertTrue(r["negativeUsable"])
+
+    def test_the_site_after_a_no_return_call_is_still_read_through_a_jump(self):
+        # 0000 call 0004; ret. 0004 je 0009; call 000A; 0009 ret. 000A mov ah, 4Ch; int 21h.
+        data = bytes.fromhex("e80100c3" "7403" "e80100" "c3" "b44c" "cd21")
+        exits = [{"routine": 0xA, "reason": "synthetic exit"}, {"interrupt": 0xC, "reason": "synthetic exit"}]
+        r = run_report(data, config(data, targets=[9], controls=[6], noReturn=exits), "reach")
+        self.assertTrue(r["targets"][0]["reached"])
+        self.assertEqual(r["targets"][0]["chain"], [{"routine": 0}, {"callSite": 0, "routine": 4}])
+        self.assertEqual(r["noReturn"][0]["callSites"], [{"site": 6, "following": 9, "followingRead": True}])
+        self.assertTrue(r["negativeUsable"])
+
+    def test_a_conditional_interrupt_cannot_be_declared_no_return(self):
+        data = bytes.fromhex("cec3")  # into; ret
+        with self.assertRaisesRegex(ValueError, "noReturn interrupt 0 is conditional"):
+            run_report(data, config(data, targets=[1], noReturn=[{"interrupt": 0, "reason": "synthetic"}]), "reach")
+
     def test_rejected_inputs(self):
         for extra, message in [({"starts": [0x18]}, "established region entry"),
                                ({"starts": []}, "starts must be"),
@@ -179,6 +257,15 @@ class ReachTests(unittest.TestCase):
                                ({"leaves": [{"routine": 0x18}]}, "routine and reason"),
                                ({"leaves": [{"routine": 0x18, "reason": " "}]}, "nonempty reason"),
                                ({"leaves": [{"routine": 0, "reason": "x"}]}, "start cannot be a leaf"),
+                               ({"noReturn": {}}, "noReturn must be a list"),
+                               ({"noReturn": [{"routine": 0x18}]}, "exactly one of routine and interrupt"),
+                               ({"noReturn": [{"routine": 0x18, "interrupt": 0x18, "reason": "x"}]},
+                                "exactly one of routine and interrupt"),
+                               ({"noReturn": [{"routine": 0x1000, "reason": "x"}]}, "noReturn routine"),
+                               ({"noReturn": [{"routine": 0x18, "reason": ""}]}, "nonempty reason"),
+                               ({"noReturn": [{"routine": 0x18, "reason": "x"}, {"routine": 0x18, "reason": "y"}]},
+                                "Duplicate noReturn routine"),
+                               ({"noReturn": [{"interrupt": 0x18, "reason": "x"}]}, "not an interrupt instruction"),
                                ({"controls": [0x3, 0x3]}, "distinct file offsets"),
                                ({"controls": [0x6]}, "Positive control 6 missed"),
                                ({"controls": [0x10]}, "Positive control 16 missed")]:

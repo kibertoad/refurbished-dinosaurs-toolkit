@@ -1073,6 +1073,7 @@ for questions such as "can anything between program start and this point write t
 | `starts` | 1..256 file offsets, each an established region entry |
 | `targets` | 1..256 file offsets in declared code, such as the starts of a variable's writers or the writes themselves |
 | `leaves` | optional, at most 256 `{ "routine", "reason" }` objects: routines the walk reaches but does not read, so they call nothing. `reason` is required free text, and the report repeats it. A start cannot be a leaf |
+| `noReturn` | optional, at most 256 `{ "routine", "reason" }` or `{ "interrupt", "reason" }` objects ([ADR 0029](decisions/0029-declared-non-returning-routines-and-interrupts.md)): a resolved call to the `routine` and the interrupt instruction at the `interrupt` site do not continue at the next instruction. `reason` is required free text, and the report repeats it. An `interrupt` site must decode as an unconditional interrupt instruction |
 | `controls` | optional, at most 256 distinct call sites the walk must decode and resolve; a missed or unresolved control fails the report |
 | `indirectJumps` | the [declared tables](#evidenced-indirect-jump-tables) the walk follows |
 | `instructionLimit` | instructions the walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000) |
@@ -1081,6 +1082,8 @@ for questions such as "can anything between program start and this point write t
 The walk is the entry-path walk `incoming` and `uses` read, started from `starts` alone. It
 follows every resolved call into its callee and on at its return site, every resolved jump and
 branch, the rows of a declared indirect jump table, and every interrupt to the next instruction.
+A call to a `noReturn` routine continues only into the routine, and a `noReturn` interrupt ends
+its branch.
 Far calls resolve as `target` describes: through an MZ relocation, or through an FBOV fixup and
 the trampoline it names to the overlay entry. A near transfer resolves through the mapping of the
 region that holds it. Instruction boundaries are checked as in the entry-path walk, so an
@@ -1118,6 +1121,21 @@ inside it past its start is not reached through it.
 `counts` gives the routines, the decoded instructions and the full length of each list. `leaves`
 repeats each leaf with its reason, whether the walk reached it and the call sites that entered it.
 
+`noReturn` repeats each declaration with its reason. A routine row gives whether the walk reached
+it (`reached`) and decoded it (`read`; a routine that is also a leaf is not read), and its
+`callSites`: each resolved call to it as `{ "site", "following", "followingRead" }`, where
+`following` is the return site the call no longer continues at and `followingRead` says whether
+the walk read an instruction there by another route. `returnSites` lists the return instructions
+on the routine's own read paths, which follow its jumps, branches and table rows and step over
+its calls and interrupts at their return sites as the walk does. A routine with a return site is
+`contradicted`: the walk shows a way for it to return, so the declaration does not hold on the
+walk's own assumptions. A routine that ends in an interrupt the walk continues past is usually
+contradicted by whatever follows the interrupt, so such an interrupt is declared too. An empty
+`returnSites` means only that the walk read no return; the declaration stays an assumption. An
+interrupt row gives its `vector`, whether the walk `reached` it, its `following` site and
+`followingRead`. A declared interrupt is not in `interrupts`, which lists the interrupts the walk
+continued past.
+
 `instructionLimitReached` holds when the walk stopped at `instructionLimit` with code left to read.
 The stop is also an `instruction limit` row in `gaps`, but the result `limit` can cut that row, and
 `truncated` describes only the lists. In a stopped run every list and count covers the part read
@@ -1125,10 +1143,12 @@ before the stop, and which part that is depends on the walk order, so adding sta
 counts. A target that is not reached may lie past the stop.
 
 `negativeUsable` holds when `controls` were given, the walk did not stop at its instruction limit,
-nothing is unresolved, no gap was recorded and no instruction is contested. Even then a target
-that is not reached is unreached only on the walk's assumptions, which the report lists: each call
-and interrupt returns to the next instruction, each leaf calls nothing for its stated reason, and
-each declared table holds the routes its declaration gives. `throughEveryRoute` describes the
+nothing is unresolved, no gap was recorded, no instruction is contested and no `noReturn` routine
+is contradicted. Even then a target that is not reached is unreached only on the walk's
+assumptions, which the report lists: each call and interrupt returns to the next instruction
+except where `noReturn` declares otherwise, each leaf calls nothing and each `noReturn` routine
+and interrupt never returns, for its stated reason, and each declared table holds the routes its
+declaration gives. `throughEveryRoute` describes the
 routes the walk read; an unresolved transfer may add a route that passes none of those routines.
 None of this proves runtime reachability.
 
