@@ -121,19 +121,31 @@ class Track:
             first = stored_first
         yield from self._read(first, stop)
 
-    def iter_user_data(self) -> Iterator[bytes]:
-        """Yield the 2,048-byte user data of every sector from INDEX 01, checking each header."""
+    def iter_user_data(self, empty_form2: list[list[int]] | None = None) -> Iterator[bytes]:
+        """Yield the 2,048-byte user data of every sector from INDEX 01, checking each header.
+
+        Given a list, an empty MODE2 form 2 sector (see :func:`is_empty_form2`) reads as 2,048
+        zero bytes, and the sectors read that way are appended to the list as ``[first, stop)``
+        ranges counted from INDEX 01. Without one, such a sector raises :class:`NotDataSector`.
+        """
         if self.is_audio:
             raise DiscError(f"track {self.number} is audio and has no user data")
         if self.storage == "cooked":
             yield from self._read(0, self.length)
             return
-        lba = self.index1
+        index = 0
         for chunk in self._read(0, self.length):
             view = memoryview(chunk)
             for offset in range(0, len(chunk), RAW_SECTOR):
-                yield user_data(view[offset : offset + RAW_SECTOR], self.mode, lba)
-                lba += 1
+                sector = view[offset : offset + RAW_SECTOR]
+                if empty_form2 is None:
+                    yield user_data(sector, self.mode, self.index1 + index)
+                else:
+                    data, empty = block_data(sector, self.mode, self.index1 + index)
+                    if empty:
+                        add_to_ranges(empty_form2, index)
+                    yield data
+                index += 1
 
     def _read(self, first: int, stop: int) -> Iterator[bytes]:
         stored_first, _ = self.stored_range()
@@ -176,10 +188,60 @@ def user_data(sector: memoryview | bytes, mode: str, lba: int) -> bytes:
     if sector_mode != 2:
         raise NotDataSector(f"sector {lba} is mode {sector_mode}, not the MODE2 its track declares")
     # CD-ROM XA: the submode byte repeats at 18 and 22. Bit 5 marks a form 2 sector, whose 2,324
-    # bytes of user data have no 2,048-byte form.
+    # bytes of data are not ISO 9660 user data. block_data reads an empty one as zeros.
     if sector[18] & 0x20:
-        raise NotDataSector(f"sector {lba} is a MODE2 form 2 sector, which an ISO file cannot hold")
+        raise NotDataSector(f"sector {lba} is a MODE2 form 2 sector, whose data is not ISO 9660 user data")
     return bytes(sector[24:2072])
+
+
+def is_empty_form2(sector: memoryview | bytes) -> bool:
+    """Whether a raw sector is an empty CD-ROM XA form 2 sector.
+
+    That is a sector with the data sync pattern, mode 2, two equal subheader copies whose submode
+    has the form 2 bit set, and all 2,324 bytes of form 2 data (from byte 24) zero. CD-XA masters
+    leave such sectors as padding and postgaps. The EDC in the last four bytes is not checked.
+    """
+    return (
+        bytes(sector[:12]) == SYNC
+        and sector[15] == 2
+        and bytes(sector[16:20]) == bytes(sector[20:24])
+        and bool(sector[18] & 0x20)
+        and not any(sector[24:2348])
+    )
+
+
+def block_data(sector: memoryview | bytes, mode: str, lba: int) -> tuple[bytes, bool]:
+    """The 2,048 bytes a raw sector gives an ISO file, and whether it is an empty form 2 sector.
+
+    A sector with user data gives that user data (:func:`user_data`). An empty MODE2 form 2 sector
+    on a MODE2 track gives 2,048 zero bytes, the block a MODE1 image of the same disc holds there
+    and the bytes the toolkit's ``OriginalContentSource.OpenVolume`` reads for it. Any other sector
+    raises :class:`NotDataSector`.
+    """
+    try:
+        return user_data(sector, mode, lba), False
+    except NotDataSector:
+        # Only a mode 2 sector with its sync pattern gets here for its form 2 bit.
+        if mode != "MODE2" or bytes(sector[:12]) != SYNC or sector[15] != 2:
+            raise
+    if is_empty_form2(sector):
+        return bytes(COOKED_SECTOR), True
+    if bytes(sector[16:20]) != bytes(sector[20:24]):
+        raise NotDataSector(f"sector {lba} is a MODE2 form 2 sector whose two subheader copies differ")
+    raise NotDataSector(f"sector {lba} is a MODE2 form 2 sector that carries data, which an ISO file cannot hold")
+
+
+def add_to_ranges(ranges: list[list[int]], index: int) -> None:
+    """Add sector ``index`` to ``[first, stop)`` ranges built in ascending order."""
+    if ranges and ranges[-1][1] == index:
+        ranges[-1][1] = index + 1
+    else:
+        ranges.append([index, index + 1])
+
+
+def describe_ranges(ranges: list[list[int]]) -> str:
+    """``[first, stop)`` sector ranges as text such as ``5-9, 12``, each range's last sector included."""
+    return ", ".join(str(first) if stop == first + 1 else f"{first}-{stop - 1}" for first, stop in ranges)
 
 
 @dataclass

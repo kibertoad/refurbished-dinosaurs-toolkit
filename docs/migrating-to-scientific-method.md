@@ -443,6 +443,24 @@ before listing it. A config that hand-built resident code regions can take them 
 new `descriptors` rows of resident descriptors: `start`, `end`, `loadedSegment` and `ip` are a
 region's `start`, `end`, `segment` and `ip`.
 
+## Disc archiver upgrades
+
+### Disc archiver 2.0.0: empty form 2 sectors are zero blocks of the data hash
+
+An empty CD-ROM XA form 2 sector on a MODE2 data track (subheader copies equal with the form 2 bit
+set, all 2,324 data bytes zero) used to stop the run inside the declared ISO 9660 volume, and past
+the volume it was listed in `data.nonDataSectors` and hashed raw into `data.nonDataSha256`. Now it
+adds 2,048 zero bytes to `data.sha256` wherever it sits, the block a MODE1 image or an ISO of the
+disc holds there and the bytes `OriginalContentSource.OpenVolume` reads for it, and the manifest
+lists it in the new `data.emptyForm2Sectors`. An ISO is written for such a track, with a note
+naming the sectors, and its verification lists their form 2 mode under `notCompared`.
+
+A restoration that recorded `data.sha256`, `data.nonDataSectors` or `data.nonDataSha256` for a
+MODE2 disc with a form 2 postgap or padding runs `disc-archiver check` on its dump again and
+records the new values. On a track with no other sectors in `data.nonDataSectors`, the data hash
+is the SHA-256 of an ISO of the track that holds zero blocks for those sectors, as the archiver's
+own `iso` format does. Discs without empty form 2 sectors keep every value.
+
 ## Engine upgrades
 
 Engine releases that need a change in a restoration are listed here, newest first. Each entry is

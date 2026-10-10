@@ -159,10 +159,11 @@ class RefusalTests(CueTestCase):
         self.assertRefused('FILE "d.bin" BINARY\n TRACK 01 MODE2/2352\n  INDEX 01 00:00:00\n', "not the MODE2")
         self.assertRefused('FILE "d.bin" BINARY\n TRACK 01 MODE1/2352\n  INDEX 01 00:00:00\n', "no data sync", {"d.bin": bytes(2352 * 20)})
 
-    def test_mode2_form2_sectors_have_no_iso_form(self) -> None:
+    def test_mode2_form2_sectors_that_carry_data_have_no_iso_form(self) -> None:
         sector = bytearray(mode1_sector(0, bytes(2048), mode=2))
         sector[18] = sector[22] = 0x20
-        self.assertRefused('FILE "d.bin" BINARY\n TRACK 01 MODE2/2352\n  INDEX 01 00:00:00\n', "form 2", {"d.bin": bytes(sector)})
+        sector[2347] = 1
+        self.assertRefused('FILE "d.bin" BINARY\n TRACK 01 MODE2/2352\n  INDEX 01 00:00:00\n', "form 2 sector that carries data", {"d.bin": bytes(sector)})
 
     def test_wave_files_that_are_not_cd_audio(self) -> None:
         mono = b"RIFF" + struct.pack("<I", 36) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, 22050, 44100, 2, 16) + b"data\x00\x00\x00\x00"

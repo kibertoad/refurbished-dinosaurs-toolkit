@@ -24,7 +24,7 @@ from pathlib import Path
 
 from . import ccd, isofs, tools
 from .cue import read_cue, read_iso
-from .disc import RAW_SECTOR, Disc, DiscError, NotDataSector, Track, user_data
+from .disc import RAW_SECTOR, Disc, DiscError, NotDataSector, Track, add_to_ranges, block_data, describe_ranges
 from .formats import FORMATS, FormatUnavailable, Output, track_file_name, write_format
 from .notice import NOTICE_FILENAME, write_notice
 from .profile import Profile, check_profile, recommended_formats
@@ -97,11 +97,19 @@ def _data_fingerprint(track: Track) -> dict[str, object]:
     if track.storage != "raw":
         for chunk in track.iter_user_data():
             user.update(chunk)
-        return {"track": track.number, "sectors": track.length, "sha256": user.hexdigest(), "nonDataSectors": [], "nonDataSha256": None}
+        return {
+            "track": track.number,
+            "sectors": track.length,
+            "sha256": user.hexdigest(),
+            "emptyForm2Sectors": [],
+            "nonDataSectors": [],
+            "nonDataSha256": None,
+        }
     # Only sectors past the declared volume may hold no user data: inside it, such a sector is a
     # BIN that does not match its sheet, or a damaged dump.
     volume_end = isofs.volume_sectors(track)
     raw = hashlib.sha256()
+    empty: list[list[int]] = []
     ranges: list[list[int]] = []
     index = 0
     for chunk in track.iter_raw(0, track.length):
@@ -109,20 +117,22 @@ def _data_fingerprint(track: Track) -> dict[str, object]:
         for offset in range(0, len(chunk), RAW_SECTOR):
             sector = view[offset : offset + RAW_SECTOR]
             try:
-                user.update(user_data(sector, track.mode, track.index1 + index))
+                data, empty_form2 = block_data(sector, track.mode, track.index1 + index)
             except NotDataSector:
                 if volume_end is None or index < volume_end:
                     raise
                 raw.update(sector)
-                if ranges and ranges[-1][1] == index:
-                    ranges[-1][1] = index + 1
-                else:
-                    ranges.append([index, index + 1])
+                add_to_ranges(ranges, index)
+            else:
+                user.update(data)
+                if empty_form2:
+                    add_to_ranges(empty, index)
             index += 1
     return {
         "track": track.number,
         "sectors": track.length,
         "sha256": user.hexdigest(),
+        "emptyForm2Sectors": empty,
         "nonDataSectors": ranges,
         "nonDataSha256": raw.hexdigest() if ranges else None,
     }
@@ -132,19 +142,25 @@ def fingerprint(disc: Disc) -> dict[str, object]:
     """The disc's layout and content hashes, the same whichever format holds it.
 
     The data hash covers the first data track's user data from INDEX 01 to the track's end, apart
-    from the sectors past the volume described below. Each audio hash covers the track's raw
+    from the sectors past the volume described below, with empty form 2 sectors read as zeros. Each audio hash covers the track's raw
     samples from INDEX 01 to the next track's INDEX 00, the range restorations fingerprint.
+
+    An empty MODE2 form 2 sector of a raw MODE2 track (see ``disc.is_empty_form2``), anywhere on
+    the track, adds 2,048 zero bytes to ``data.sha256``: the block a MODE1 image of the disc and an
+    ISO file hold there, and the bytes the toolkit's ``OriginalContentSource.OpenVolume`` reads for
+    it. Those sectors are listed in ``data.emptyForm2Sectors`` as ``[first, stop)`` ranges counted
+    from INDEX 01, since no ISO keeps the fact that they were form 2.
 
     A raw data track may run past the ISO 9660 volume its primary volume descriptor declares, and
     the sectors there may hold no user data of the track's mode (no sync pattern, another mode, or
-    a MODE2 form 2 sector). Those sectors are listed in ``data.nonDataSectors`` as ``[first,
-    stop)`` ranges counted from INDEX 01, their raw 2,352 bytes are hashed in order into
-    ``data.nonDataSha256``, and they add nothing to ``data.sha256``. The declared volume space
-    size is an address, counted from the track's first sector or, for a volume mastered with the
-    disc's addresses (a CD-Extra disc's second session), from the start of the disc;
+    a MODE2 form 2 sector that carries data). Those sectors are listed in ``data.nonDataSectors``
+    as ``[first, stop)`` ranges counted from INDEX 01, their raw 2,352 bytes are hashed in order
+    into ``data.nonDataSha256``, and they add nothing to ``data.sha256``. The declared volume
+    space size is an address, counted from the track's first sector or, for a volume mastered with
+    the disc's addresses (a CD-Extra disc's second session), from the start of the disc;
     ``isofs.locate`` finds which from the root directory. Every sector inside the declared volume,
-    and every sector of a track whose volume cannot be located, must hold user data, or a
-    :class:`DiscError` names the first that does not. The sector headers' stored addresses are
+    and every sector of a track whose volume cannot be located, must hold user data or be an empty
+    form 2 sector, or a :class:`DiscError` names the first that is neither. The sector headers' stored addresses are
     not checked; the address in the header of sector 16 is one of the bases ``isofs.locate`` tries.
     """
     data = None
@@ -221,12 +237,25 @@ class Verification:
         }
 
 
-def _compare(reference: dict, found: dict, result: Verification, layout: bool, audio: bool) -> None:  # type: ignore[type-arg]
+def _compare(reference: dict, found: dict, result: Verification, layout: bool, audio: bool, form2: bool = True) -> None:  # type: ignore[type-arg]
+    """Compare a copy's fingerprint with the source's. ``form2`` is False for a copy whose data
+    track is an ISO file, which holds an empty form 2 sector as a zero block and cannot say which
+    sectors were form 2; that is then listed as not compared."""
     if reference["data"] is not None:
         mine, theirs = reference["data"], found["data"]
         result.compared.append("data track user data")
         if theirs is None or theirs["sha256"] != mine["sha256"]:
             result.differences.append("the data track's user data differs from the source")
+        if not form2:
+            if mine["emptyForm2Sectors"]:
+                result.not_compared.append(
+                    "which data track sectors are empty MODE2 form 2 sectors (in the source, "
+                    f"{describe_ranges(mine['emptyForm2Sectors'])}), which an ISO holds as zero blocks"
+                )
+        elif mine["emptyForm2Sectors"] or (theirs is not None and theirs["emptyForm2Sectors"]):
+            result.compared.append("which data track sectors are empty MODE2 form 2 sectors")
+            if theirs is not None and theirs["emptyForm2Sectors"] != mine["emptyForm2Sectors"]:
+                result.differences.append("the data track's empty form 2 sectors differ from the source")
         if mine["nonDataSectors"] or (theirs is not None and theirs["nonDataSectors"]):
             result.compared.append("raw sectors past the ISO 9660 volume that hold no user data")
         if theirs is not None and (theirs["nonDataSectors"], theirs["nonDataSha256"]) != (mine["nonDataSectors"], mine["nonDataSha256"]):
@@ -270,17 +299,17 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
                 for mine, theirs in zip(reference["tracks"], found["tracks"], strict=False)
             ]
             result.not_compared.append("the data track's MODE2 sector mode, which an ISO does not hold")
-        _compare(reference, found, result, layout=True, audio=True)
+        _compare(reference, found, result, layout=True, audio=True, form2=kind != "iso-wav")
         if kind == "iso-wav" and any(a["pregapSilent"] is False for a in reference["audio"]):
             result.not_compared.append("audio in pregaps, which the format does not hold")
     elif kind == "iso":
         found = fingerprint(read_iso(output.entry))
-        _compare(reference, found, result, layout=False, audio=False)
+        _compare(reference, found, result, layout=False, audio=False, form2=False)
         if reference["audio"]:
             result.not_compared.append("audio tracks, which an ISO does not hold")
     elif kind in ("iso-flac", "iso-ogg"):
         found = fingerprint(read_iso(output.entry.with_suffix(".iso")))
-        _compare(reference, found, result, layout=False, audio=False)
+        _compare(reference, found, result, layout=False, audio=False, form2=False)
         if kind == "iso-ogg":
             result.not_compared.append("audio samples, because Ogg Vorbis is lossy")
         else:
@@ -332,13 +361,13 @@ def derive(
     log("Reading the source and computing its fingerprint")
     reference = fingerprint(disc)
     requested = set(formats)
-    # The fingerprint admits sectors without user data past the volume, and a file extent that
-    # reaches one fails only when the file is read. Reading the files here stops such a run
-    # before any format is written, as a damaged dump stops at the fingerprint.
+    # The fingerprint admits sectors without user data past the volume and empty form 2 sectors,
+    # and a file extent that reaches one fails only when the file is read. Reading the files here
+    # stops such a run before any format is written, as a damaged dump stops at the fingerprint.
     data = reference["data"]
-    past_volume = data is not None and bool(data["nonDataSectors"])  # type: ignore[index]
+    admitted = data is not None and bool(data["nonDataSectors"] or data["emptyForm2Sectors"])  # type: ignore[index]
     paths = profile_paths(profile, disc)
-    if paths is None and disc.data_tracks and "files" in requested and past_volume:
+    if paths is None and disc.data_tracks and "files" in requested and admitted:
         try:
             isofs.walk(disc.first_data_track())
         except isofs.UnsupportedFileSystem:
