@@ -777,6 +777,24 @@ test("inventory-check places an overlay entry two FBOV trampoline calls reach by
   assert.equal(listed.counts["entry-path call"].inventoryStarts, 1);
 });
 
+test("inventory-check names the instruction a call target lies inside", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // pushf; or bh,0 (an IRET byte at 1000:0002); push cs; call 1000:0002; ret
+  data.set([0x9c, 0x80, 0xcf, 0x00, 0x0e, 0xe8, 0xfa, 0xff, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  writeFileSync(join(dir, "inventory.tsv"), "start\tsize\n1000:0000\t9\n");
+  const path = join(dir, "config.json");
+  writeFileSync(path, JSON.stringify({ ...config, xxh3: sourceXxh3(data), inventory: "inventory.tsv" }));
+  const r = run(["inventory-check", path]);
+  assert.deepEqual(
+    r.targets.map((row: Report) => [row.address, row.status, row.evidence, row.insideInstruction]),
+    [["1000:0002", "inside another row's body", "entry-path call", { site: 65, address: "1000:0001", size: 3 }]],
+  );
+  assert.equal(r.counts["entry-path call"].insideAnInstruction, 1);
+  assert.match(r.summary, /1 of them starts inside an instruction the entry-path walk decoded from another start\./);
+});
+
 test("callee graph through the source bridge compares its edges with a Ghidra export", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);

@@ -141,6 +141,31 @@ class InventoryCheckTests(unittest.TestCase):
                                                 "starts: 0 inside another row's body, 0 outside every row. 1 more entry-path "
                                                 "call target lies outside declared code and is not compared with the inventory."))
 
+    def test_a_target_inside_an_established_instruction_names_that_instruction(self):
+        # 0001 or bh,0 holds an IRET byte at 0002, which the push-CS/call frame at 0004 calls; the walk decodes
+        # both streams. 0009 is an unreached call to 0003, the immediate byte of the same instruction.
+        data = bytes.fromhex("9c" "80cf00" "0e" "e8faff" "c3" "e8f7ff" "c3")
+        r = self.check("start\tsize\n1000:0000\t9\n", data=data)
+        self.assertEqual([(t["target"], t["status"], t["evidence"], t["insideInstruction"]) for t in r["targets"]], [
+            (2, "inside another row's body", "entry-path call", {"site": 1, "address": "1000:0001", "size": 3}),
+            (3, "inside another row's body", "raw byte candidate only", {"site": 1, "address": "1000:0001", "size": 3})])
+        self.assertEqual(r["counts"]["entry-path call"]["insideAnInstruction"], 1)
+        self.assertEqual(r["counts"]["raw byte candidate only"]["insideAnInstruction"], 1)
+        self.assertTrue(r["summary"].startswith(
+            "1 of the 1 call target that entry-path calls resolve to is not inventory starts: 1 inside another row's body, "
+            "0 outside every row. 1 of them starts inside an instruction the entry-path walk decoded from another start."))
+        # Without an inventory row the target keeps its status, and still names the instruction.
+        outside = self.check("start\tsize\n1000:0000\t1\n", data=data)
+        self.assertEqual([(t["status"], t["insideInstruction"]["site"]) for t in outside["targets"]],
+                         [("outside every row", 1), ("outside every row", 1)])
+        # A target in bytes no walk decoded, or at an instruction start, names none.
+        unread = self.check("start\tsize\n1000:0000\t6\n1000:0006\t1\n1000:000B\t1\n", data=RAW)
+        self.assertNotIn("insideInstruction", unread["targets"][0])
+        self.assertEqual(sum(t["insideAnInstruction"] for k, t in unread["counts"].items() if isinstance(t, dict)), 0)
+        self.assertNotIn("inside an instruction", unread["summary"])
+        missing = self.check("start\tsize\n1000:0000\t6\n1000:0006\t1\n")
+        self.assertNotIn("insideInstruction", missing["targets"][0])
+
     def test_a_scan_limit_short_of_the_code_makes_the_search_partial(self):
         # The region lies in no container or declared segment, so only the scan gap shows the stop.
         r = self.check("start\tsize\n1000:0000\t6\n1000:0006\t1\n", data=RAW, scanLimit=12)
