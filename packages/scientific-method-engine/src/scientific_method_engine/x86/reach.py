@@ -11,9 +11,9 @@ UNSUPPORTED = "unsupported control-transfer frame encoding"
 LEAF_OVERLAP = "leaf start inside a reached instruction; the leaf is not decoded, so its boundary is unchecked"
 
 
-def _sites(value, label, image, limit=256):
-    if not isinstance(value, list) or not 1 <= len(value) <= limit or len(set(map(repr, value))) != len(value):
-        raise ValueError(f"{label} must be a list of 1..{limit} distinct file offsets")
+def _sites(value, label, image, limit=256, least=1):
+    if not isinstance(value, list) or not least <= len(value) <= limit or len(set(map(repr, value))) != len(value):
+        raise ValueError(f"{label} must be a list of {least}..{limit} distinct file offsets")
     for at in value:
         integer(at, 0, len(image.data) - 1, label)
         if image.region(at) is None:
@@ -106,10 +106,15 @@ def reach(image, config):
             raise ValueError(f"Reach start {at} must be an established region entry")
     targets = _sites(config.get("targets"), "targets", image)
     leaves = _leaves(config.get("leaves", []), image, set(starts))
-    controls = config.get("controls", [])
-    if (not isinstance(controls, list) or len(controls) > 256 or any(type(at) is not int for at in controls)
-            or len(set(controls)) != len(controls)):
-        raise ValueError("Positive controls must be at most 256 distinct file offsets")
+    controls = _sites(config.get("controls", []), "controls", image, least=0)
+    instruction_controls = _sites(config.get("instructionControls", []), "instructionControls", image, least=0)
+    # The walk decodes a site as image.decode does, so a control whose bytes are no call can never pass.
+    for at in controls:
+        ins = image.decode(at)
+        if ins is None or base_mnemonic(ins) not in CALLS:
+            decoded = f"decodes as {(ins.mnemonic + ' ' + ins.op_str).strip()}" if ins is not None else "does not decode"
+            raise ValueError(f"control {at} is not a call site ({decoded}); controls are call sites the walk must "
+                             "reach and resolve, and instructionControls are sites the walk must decode")
     limit = integer(config.get("limit", 1000), 1, 10000, "result limit")
     instruction_limit = config.get("instructionLimit", 10000)
     seen, walk_gaps, _, _, contested = walk(image, starts, instruction_limit, follow_interrupts=True, stops=frozenset(leaves))
@@ -191,6 +196,12 @@ def reach(image, config):
                 "route": {"assumedReturns": assumed_returns[::-1], "declaredTableJumps": tables[::-1],
                           "interruptsContinued": continued[::-1]}}
 
+    def unreached(site):
+        holder = holding_instruction(seen, site)
+        return {"status": "inside a reached instruction" if holder is not None
+                else "start of a contested instruction" if site in contested else "not reached",
+                **({"insideInstruction": holder} if holder is not None else {})}
+
     rows = []
     for target in targets:
         row = {"target": target}
@@ -203,10 +214,7 @@ def reach(image, config):
             row |= {"reached": True, "routine": routine[target], "leaf": target in leaves, **chain(target),
                     "throughEveryRoute": cut[::-1]}
         else:
-            holder = holding_instruction(seen, target)
-            row |= {"reached": False, "status": "inside a reached instruction" if holder is not None
-                    else "start of a contested instruction" if target in contested else "not reached",
-                    **({"insideInstruction": holder} if holder is not None else {})}
+            row |= {"reached": False, **unreached(target)}
         rows.append(row)
 
     for row in unresolved + interrupts:
@@ -216,16 +224,32 @@ def reach(image, config):
     # The walk never decodes a leaf, so its overlap check cannot see a leaf start inside a decoded instruction.
     gaps += [{"site": at, "reason": LEAF_OVERLAP, "insideInstruction": holding_instruction(seen, at)}
              for at in sorted(leaves) if at in distance and holding_instruction(seen, at) is not None]
-    for at in controls:
-        if at not in resolved_calls:
-            raise ValueError(f"Positive control {at} missed or not resolved")
+    # Kept apart from the gap rows, which the result limit can cut.
+    stopped = any(g["reason"] == LIMIT_REASON for g in walk_gaps)
+    # Not reached and reached-but-unresolved need different fixes, so each failure says which it is.
+    failures = []
+    for label, sites in (("control", controls), ("instruction control", instruction_controls)):
+        for at in sites:
+            if at in resolved_calls or (at in seen and label == "instruction control"):
+                continue
+            if at in seen:
+                reasons = sorted({row["reason"] for row in unresolved if row["site"] == at})
+                failures.append(f"{label} {at} is reached but its call target is unresolved ({'; '.join(reasons)})")
+            elif at in leaves:
+                failures.append(f"{label} {at} is the start of a leaf, which the walk reaches but does not decode")
+            else:
+                state = unreached(at)
+                detail = (f"inside the reached instruction at {state['insideInstruction']}" if "insideInstruction" in state
+                          else state["status"])
+                failures.append(f"{label} {at} is {detail}"
+                                + (" (the walk stopped at its instruction limit)" if stopped else ""))
+    if failures:
+        raise ValueError("Positive controls failed: " + "; ".join(failures))
     call_sites = {}
     for site, target in sorted(resolved_calls.items()):
         call_sites.setdefault(target, []).append(site)
     leaf_rows = [{"routine": at, "reason": reason, "reached": at in distance, "callSites": call_sites.get(at, [])}
                  for at, reason in leaves.items()]
-    # Kept apart from the gap rows, which the result limit can cut.
-    stopped = any(g["reason"] == LIMIT_REASON for g in walk_gaps)
     counts = {"routines": len(routine_starts), "instructions": len(seen), "unresolved": len(unresolved),
               "interrupts": len(interrupts), "gaps": len(gaps), "contested": len(contested)}
     return {"starts": starts, "targets": rows, "leaves": leaf_rows,
@@ -235,7 +259,9 @@ def reach(image, config):
             "truncated": any(len(x) > limit for x in (unresolved, interrupts, gaps, contested)),
             "instructionLimitReached": stopped,
             "controls": [{"site": at, "target": resolved_calls[at]} for at in controls],
-            "negativeUsable": bool(controls) and not (stopped or unresolved or gaps or contested),
+            "instructionControls": [{"site": at, "instruction": (seen[at].mnemonic + " " + seen[at].op_str).strip(),
+                                     "routine": routine.get(at)} for at in instruction_controls],
+            "negativeUsable": bool(controls or instruction_controls) and not (stopped or unresolved or gaps or contested),
             "assumptions": ["each reached call returns to its next instruction",
                             "each reached interrupt returns to its next instruction; interrupt handlers are not read",
                             "each leaf calls nothing, for the reason it gives",
@@ -245,7 +271,7 @@ def reach(image, config):
             "interpretation": "Routes over the decoded entry-path CFG from the starts. A chain has the fewest calls; "
                               "throughEveryRoute lists the routine starts every read route to the target passes, "
                               "and an unresolved transfer may add a route that passes none of them. "
-                              "negativeUsable needs controls, a walk that did not stop at its instruction limit, "
+                              "negativeUsable needs a control of either kind, a walk that did not stop at its instruction limit, "
                               "and no unresolved transfer, gap or contested instruction, "
                               "and still rests on the listed assumptions and leaves. "
                               "When instructionLimitReached holds, the walk stopped before reading all it reaches: "

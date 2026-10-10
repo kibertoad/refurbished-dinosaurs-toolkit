@@ -1043,7 +1043,8 @@ for questions such as "can anything between program start and this point write t
 | `starts` | 1..256 file offsets, each an established region entry |
 | `targets` | 1..256 file offsets in declared code, such as the starts of a variable's writers or the writes themselves |
 | `leaves` | optional, at most 256 `{ "routine", "reason" }` objects: routines the walk reaches but does not read, so they call nothing. `reason` is required free text, and the report repeats it. A start cannot be a leaf |
-| `controls` | optional, at most 256 distinct call sites the walk must decode and resolve; a missed or unresolved control fails the report |
+| `controls` | optional, at most 256 distinct call sites the walk must decode and resolve. An offset whose bytes do not decode as a call fails the report before the walk |
+| `instructionControls` | optional, at most 256 distinct sites the walk must decode as instruction starts, such as a store the walk is known to reach |
 | `indirectJumps` | the [declared tables](#evidenced-indirect-jump-tables) the walk follows |
 | `instructionLimit` | instructions the walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000) |
 | `limit` | rows kept in each of `unresolved`, `interrupts`, `gaps` and `contested` (1..10000, default 1000) |
@@ -1094,7 +1095,15 @@ The stop is also an `instruction limit` row in `gaps`, but the result `limit` ca
 before the stop, and which part that is depends on the walk order, so adding starts can lower the
 counts. A target that is not reached may lie past the stop.
 
-`negativeUsable` holds when `controls` were given, the walk did not stop at its instruction limit,
+A failed control of either kind fails the report, and the error names every failed control with
+what the walk found there: a call it reached whose target is unresolved (with the reason), a leaf
+start (reached, never decoded), a site inside a reached instruction (with that instruction's
+start), the start of a contested instruction, or a site the walk did not reach, noting when the
+walk stopped at its instruction limit. A passing call-site control is reported in `controls` with
+its `site` and resolved `target`, and an instruction control in `instructionControls` with its
+`site`, `instruction` text and the `routine` the walk read it in.
+
+`negativeUsable` holds when a control of either kind was given, the walk did not stop at its instruction limit,
 nothing is unresolved, no gap was recorded and no instruction is contested. Even then a target
 that is not reached is unreached only on the walk's assumptions, which the report lists: each call
 and interrupt returns to the next instruction, each leaf calls nothing for its stated reason, and
