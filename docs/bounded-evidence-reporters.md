@@ -1993,15 +1993,19 @@ occurrence where an assumption cannot apply (see below).
 ### Arithmetic and assumptions
 
 Each value's expression becomes a linear form over its unknown subterms, reading additions,
-subtractions, offsets, multiplications and shifts by constants, and zero and sign extensions. A
-value counts as an integer only when the ranges of its unknowns show it cannot wrap its width;
+subtractions, offsets, multiplications and shifts by constants, zero and sign extensions, and a
+join that fills the value's width, which a partial register write or a multi-byte load leaves and
+which is the sum of its parts each shifted to its offset, so BX after `mov bl,[x]; xor bh,bh` equals
+BL. A value counts as an integer only when the ranges of its unknowns show it cannot wrap its width;
 otherwise the whole value is one unknown of its width. Such an unknown ranges over its whole width
 unless its expression bounds it: `and` is at most the smaller operand bound, so a constant mask
 bounds it by the mask; `or` and `xor` stay below the next power of two above both operands, and
 `or` is at least its larger operand; a shift right or a division by a constant divides the
 operand's bounds, an arithmetic shift only when its operand's sign bit is clear; a remainder by a
-constant is below the constant; a zero extension keeps the narrower value's bounds; and an extracted
-field keeps the bounds of the bits it takes when the operand cannot reach the bits above them. These
+constant is below the constant; a zero extension keeps the narrower value's bounds; an extracted
+field keeps the bounds of the bits it takes when the operand cannot reach the bits above them; and a
+join, which a partial register write or a multi-byte load leaves, is the sum of each part's bounds
+shifted to the part's offset, so `mov bl,[x]; xor bh,bh` leaves BX at most 0FFh as `movzx` does. These
 are unsigned bounds. A signed reading uses them only when they keep the sign bit the same for every
 value, clear or set. A relation holds when every value the unknowns allow satisfies it, is violated
 when none does, and is undecided otherwise. The branches a path took are not solved, so a relation
@@ -2009,7 +2013,8 @@ that fails for part of a range is undecided.
 
 `assume`, accepted on `containment` and `relation` controls, lists at most 16 ranges, each `{ "value": reference, "min", "max", "evidence" }`, with an
 unsigned range inside the value's width. The value should be one unknown, such as an entry register
-or a loaded word. Each occurrence resolves it again: a known value inside the range needs no
+or a loaded word. An assumed join, such as a loaded word, stays one unknown of its width in every
+form, so the assumption applies to it whole. Each occurrence resolves it again: a known value inside the range needs no
 assumption, while a known value outside it, a value computed from unknowns or a reference the path
 does not supply leaves that occurrence undecided. When the value's own expression also bounds it
 (a masked word, say), the narrower of the two ranges applies, and an assumed range the expression

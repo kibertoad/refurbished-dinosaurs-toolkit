@@ -2524,7 +2524,7 @@ class ReporterTests(unittest.TestCase):
 
     def test_symbolic_growth_is_bounded(self):
         # test_term_limit.py covers the stop beside other paths.
-        path = report("01 d8 " * 200 + "c3")["paths"][0]
+        path = report("01 d8 " * 400 + "c3")["paths"][0]
         self.assertFalse(path["returned"])
         self.assertTrue(path["stop"].startswith("expression term limit"))
 

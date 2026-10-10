@@ -160,9 +160,9 @@ class TermLimitTests(unittest.TestCase):
         self.assertIn("was not formed: " + STOP, occurrence["reason"])
 
     def test_an_entry_frame_whose_sp_cannot_be_formed_is_not_established(self):
-        # The entry SP's root starts at twelve terms, so 506 NOTs of ESP leave it at the limit; SP
+        # The entry SP's root starts at six terms, so 509 NOTs of ESP leave it at the limit; SP
         # at the arrival is past it, and no offset is claimed.
-        c = Code().emit("66 f7 d4" * 506).label("entry").emit("c3")
+        c = Code().emit("66 f7 d4" * 509).label("entry").emit("c3")
         data = c.bytes()
         regions = [{"name": "synthetic", "start": 0, "end": len(data), "ip": 0, "segment": 0x1000, "resident": True,
                     "entries": [0, c.labels["entry"]], "evidence": "synthetic declared code extent"}]
@@ -174,7 +174,7 @@ class TermLimitTests(unittest.TestCase):
         self.assertEqual(frame["reasons"], ["SP at an arrival could not be formed: " + STOP])
 
     def test_an_entry_frame_whose_bp_cannot_be_formed_names_the_limit(self):
-        # BP copies the entry SP's twelve terms, so 506 NOTs of EBP leave it at the limit; BP at the
+        # BP copies the entry SP's six terms, so 509 NOTs of EBP leave it at the limit; BP at the
         # arrival is past it. SP is unaffected, so the frame is still established.
         def frame(count):
             c = Code().emit("66 89 e5" + " 66 f7 d5" * count).label("entry").emit("c3")
@@ -185,11 +185,11 @@ class TermLimitTests(unittest.TestCase):
                           entryFrame={"from": 0}, maxSteps=520)["entryFrame"]
 
         # The positive control: one NOT fewer forms BP, which is just not an offset.
-        formed = frame(505)
+        formed = frame(508)
         self.assertTrue(formed["established"])
         self.assertIsNone(formed["bp"])
         self.assertNotIn("bpUnresolved", formed)
-        unformed = frame(506)
+        unformed = frame(509)
         self.assertTrue(unformed["established"])
         self.assertIsNone(unformed["bp"])
         self.assertEqual(unformed["reasons"], [])
