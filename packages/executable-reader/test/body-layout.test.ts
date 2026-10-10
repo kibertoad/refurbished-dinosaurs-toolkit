@@ -74,6 +74,16 @@ function overlays() {
 }
 const controls = { relocations: 1, descriptors: 3, overlays: 2, fixups: 4, trampolines: 1 };
 
+// An MZ image of `size` bytes without an FBOV envelope: a 64-byte header and a load image of `pages`
+// full 512-byte pages, so the load image ends at `pages * 512`.
+function plainMz(size: number, pages: number) {
+  const data = Buffer.alloc(size);
+  data.write("MZ");
+  data.writeUInt16LE(pages, 4);
+  data.writeUInt16LE(4, 8);
+  return data;
+}
+
 test("the layout partitions the whole file by the MZ and FBOV tables", () => {
   const layout = fileLayout(readMz(overlays()));
   assert.deepEqual(
@@ -285,11 +295,64 @@ test("a candidate body is compared with the analyzer's: bytes in both and in onl
   assert.deepEqual(c.candidateOnly.regions, [{ kind: "overlay-code", descriptor: 1, bytes: 12 }]);
 });
 
+test("a resident candidate that fills gaps inside the body and misses its distant chunks keeps every range", (t) => {
+  // Header 0..64, load image 64..2560, nothing after it.
+  const { query } = harness(t, plainMz(2560, 5), { formatControls: { overlays: 0 } });
+  const body = [
+    { start: 200, end: 260 },
+    { start: 270, end: 450 },
+    { start: 455, end: 600 },
+    { start: 900, end: 940 },
+    { start: 1500, end: 1530 },
+  ];
+  const r = query({
+    functions: [
+      {
+        entry: 200,
+        body,
+        candidate: { ranges: [{ start: 200, end: 600 }], evidence: "bounds intervals" },
+      },
+    ],
+  });
+  const f = r.functions[0];
+  const c = f.candidate;
+  const resident = (bytes: number) => [{ kind: "resident", descriptor: null, bytes }];
+  assert.equal(f.bytes, 455);
+  assert.deepEqual(f.regions, resident(455));
+  assert.equal(f.outsideEntryRegion, 0);
+  assert.deepEqual(c.ranges, [{ start: 200, end: 600 }]);
+  assert.equal(c.bytes, 400);
+  assert.deepEqual(c.regions, resident(400));
+  assert.equal(c.outsideEntryRegion, 0);
+  assert.equal(c.entryInCandidate, true);
+  assert.equal(c.both.bytes, 385);
+  assert.deepEqual(c.both.ranges, [
+    { start: 200, end: 260 },
+    { start: 270, end: 450 },
+    { start: 455, end: 600 },
+  ]);
+  assert.deepEqual(c.both.regions, resident(385));
+  assert.equal(c.candidateOnly.bytes, 15);
+  assert.deepEqual(c.candidateOnly.ranges, [
+    { start: 260, end: 270 },
+    { start: 450, end: 455 },
+  ]);
+  assert.equal(c.bodyOnly.bytes, 70);
+  assert.deepEqual(c.bodyOnly.ranges, [
+    { start: 900, end: 940 },
+    { start: 1500, end: 1530 },
+  ]);
+  assert.deepEqual(c.bodyOnly.regions, resident(70));
+  assert.deepEqual(c.candidateOnly.regions, resident(15));
+  // The body is kept whole: every fragment is the body range it came from, the chunks outside the candidate unclipped.
+  assert.deepEqual(
+    f.fragments.map((g: Report) => ({ start: g.start, end: g.end })),
+    body,
+  );
+});
+
 test("a file without an envelope ends in undeclared bytes after its load image", (t) => {
-  const data = Buffer.alloc(600);
-  data.write("MZ");
-  data.writeUInt16LE(1, 4);
-  data.writeUInt16LE(4, 8);
+  const data = plainMz(600, 1);
   data[520] = 1;
   const { query } = harness(t, data, { formatControls: { overlays: 0 } });
   const r = query({
