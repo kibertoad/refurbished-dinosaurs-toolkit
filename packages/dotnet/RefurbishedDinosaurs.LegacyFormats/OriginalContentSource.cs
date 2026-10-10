@@ -53,14 +53,14 @@ public abstract class OriginalContentSource : IDisposable
     /// <summary>The cue sheet of a <see cref="ContentSourceKinds.CueBin"/> source, otherwise <see langword="null"/>.</summary>
     public virtual CueBinSheet? Cue => null;
     /// <summary>
-    /// The full path of the <c>.cue</c> file a <see cref="ContentSourceKinds.CueBin"/> source was
+    /// The full path of the cue sheet file a <see cref="ContentSourceKinds.CueBin"/> source was
     /// opened from, as <see cref="OpenCueBin"/> chose it, otherwise <see langword="null"/>. The source
     /// reads the file once, when it opens. Reading the path again can see a file replaced since then,
     /// so hash <see cref="CueSheetBytes"/> to record the sheet <see cref="Cue"/> was parsed from.
     /// </summary>
     public virtual string? CuePath => null;
     /// <summary>
-    /// The bytes of the <c>.cue</c> file that <see cref="OpenCueBin"/> read and parsed into
+    /// The bytes of the cue sheet file that <see cref="OpenCueBin"/> read and parsed into
     /// <see cref="Cue"/>, for a <see cref="ContentSourceKinds.CueBin"/> source, otherwise
     /// <see langword="null"/>. Hash them with <c>FileFingerprint.Xxh3(source.CueSheetBytes.Value.Span)</c>
     /// to record the sheet as a role file.
@@ -129,7 +129,9 @@ public abstract class OriginalContentSource : IDisposable
     /// default limits when it is a <c>.hdr</c> file, as an InstallShield 3 archive (see
     /// <see cref="OpenInstallShieldArchive(string, InstallShieldArchiveLimits?)"/>) with the default
     /// limits when any other file starts with that format's signature, and as an ISO 9660 image (see
-    /// <see cref="OpenIso9660(string)"/>) otherwise.
+    /// <see cref="OpenIso9660(string)"/>) otherwise. A cue sheet with another extension is not
+    /// recognized here: open it with <see cref="OpenCueBin"/> or with the
+    /// <see cref="ContentSourceKinds.CueBin"/> kind.
     /// </summary>
     /// <exception cref="NotSupportedException">
     /// The cabinet set's InstallShield major version is not 0, 5 or 6, or the InstallShield 3 archive
@@ -239,9 +241,14 @@ public abstract class OriginalContentSource : IDisposable
 
     /// <summary>
     /// Opens the ISO 9660 volume on the data track of a cue/bin raw disc image. <paramref name="path"/>
-    /// is the <c>.cue</c> file, the <c>.bin</c> file, or the directory holding them; the other file is
-    /// the one the sheet's <c>FILE</c> names, else the one with the same name, else the only one there.
-    /// A sheet found for a given <c>.bin</c> must not name a different BIN that is present.
+    /// is the <c>.bin</c> file, the directory holding a <c>.cue</c> and the image, or any other file,
+    /// which is read as the cue sheet whatever its extension. The image is the file the sheet's first
+    /// <c>FILE</c> names, whatever its extension, else the <c>.bin</c> with the sheet's name, else the
+    /// only <c>.bin</c> there; for a <c>.bin</c> input the sheet is the <c>.cue</c> with the same name,
+    /// else the only one. A sheet found for a given <c>.bin</c> must not name a different BIN that is
+    /// present. The sheet may name later <c>FILE</c> entries holding only audio tracks, such as one
+    /// compressed audio file per track; they are not opened, need not exist, and the source reads only
+    /// the image.
     /// The returned source gives the chosen files as <see cref="CuePath"/> and <see cref="BinPath"/>,
     /// and the bytes of the sheet it parsed as <see cref="CueSheetBytes"/>. It records the BIN's length
     /// and last-write time here. Every later read of the BIN through the source
@@ -250,7 +257,8 @@ public abstract class OriginalContentSource : IDisposable
     /// <see cref="IOException"/> when either has changed. A rewrite that keeps both the length and the
     /// last-write time is not detected.
     /// The sheet is checked as <see cref="CueBinSheet.Parse"/> and <see cref="CueBinSheet.ValidateBin"/>
-    /// describe, the data track ends where the second track's pregap or audio begins, and the volume is
+    /// describe, the data track ends where the image's second track's pregap or audio begins, or at
+    /// the end of the image when the image holds no second track, and the volume is
     /// checked as <see cref="OpenIso9660(string)"/> describes. Every raw sector read is checked against
     /// the type the sheet declares for the data track: for <c>MODE1/2352</c> the sync pattern and mode
     /// byte 1, and for <c>MODE2/2352</c> the sync pattern, mode byte 2, and a CD-XA subheader whose two
@@ -269,8 +277,8 @@ public abstract class OriginalContentSource : IDisposable
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="IOException">The BIN changed while the source was being opened.</exception>
     /// <exception cref="InvalidDataException">
-    /// The sheet, image or volume is not valid, the input is not a directory or a <c>.cue</c> or <c>.bin</c>
-    /// file, a sheet or BIN cannot be found next to the other, or the files are ambiguous.
+    /// The sheet, image or volume is not valid, a file given as the sheet is not a cue sheet, a sheet
+    /// or BIN cannot be found next to the other, or the files are ambiguous.
     /// </exception>
     public static OriginalContentSource OpenCueBin(string path)
     {

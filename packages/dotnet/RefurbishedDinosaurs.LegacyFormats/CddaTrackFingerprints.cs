@@ -48,14 +48,18 @@ public static class CddaTrackFingerprints
     /// <paramref name="cueBinPath"/>, found and checked as <see cref="OriginalContentSource.OpenCueBin"/>
     /// finds and checks the sheet and image.
     /// </summary>
-    /// <param name="cueBinPath">The <c>.cue</c> file, the <c>.bin</c> file, or the directory holding them.</param>
+    /// <param name="cueBinPath">
+    /// The cue sheet file, whatever its extension, the <c>.bin</c> file, or the directory holding a
+    /// <c>.cue</c> and the image.
+    /// </param>
     /// <param name="track">The audio track's number.</param>
     /// <param name="toleranceSamples">See <see cref="CddaTrackFingerprint.ToleranceSamples"/>.</param>
     /// <param name="anchorOffset">See <see cref="CddaTrackFingerprint.AnchorOffset"/>.</param>
     /// <param name="anchorSamples">See <see cref="CddaTrackFingerprint.AnchorSamples"/>.</param>
     /// <param name="cancellationToken">Cancels the reads.</param>
     /// <exception cref="ArgumentException">
-    /// The track is not an audio track of the sheet, the values would make an invalid fingerprint, or
+    /// The track is not an audio track of the sheet or is stored in a later <c>FILE</c> than the
+    /// image, the values would make an invalid fingerprint, or
     /// the anchor's samples also match at another shift within twice the tolerance.
     /// </exception>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="cueBinPath"/>.</exception>
@@ -72,6 +76,10 @@ public static class CddaTrackFingerprints
         sheet.ValidateBin(binPath);
         if (track < 1 || track > sheet.Tracks.Count || sheet.Tracks[track - 1].Type != "AUDIO")
             throw new ArgumentException($"Track {track:D2} is not an audio track of the cue sheet.", nameof(track));
+        if (track > sheet.ImageTracks)
+            throw new ArgumentException(
+                $"Track {track:D2} is stored in {sheet.FileOf(track).Path}, not in the BIN image; only tracks in the image can be recorded.",
+                nameof(track));
         await using var image = OpenImage(binPath);
         var extent = sheet.TrackExtent(track, image.Length / CueBinSheet.RawSectorSize);
         return await RecordAsync(image, extent, toleranceSamples, anchorOffset, anchorSamples, cancellationToken)

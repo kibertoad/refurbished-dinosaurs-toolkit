@@ -1,3 +1,4 @@
+using System.Text;
 using RefurbishedDinosaurs.Core.Assets;
 using RefurbishedDinosaurs.LegacyFormats;
 using Xunit;
@@ -256,8 +257,137 @@ public sealed class CueBinSourceTests
     [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nINDEX 02 00:01\n")]
     [InlineData("FILE a.wav WAVE\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n")]
     [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nTRACK 02 AUDIO\nINDEX 00 00:04:00\nINDEX 01 00:02:00\n")]
+    [InlineData("TRACK 01 MODE1/2352\nFILE a.bin BINARY\nINDEX 01 00:00:00\n")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nFILE b.ogg MP3\n")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nFILE b.ogg MP3\nFILE c.ogg MP3\nTRACK 02 AUDIO\nINDEX 01 00:00:00\n")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nFILE \"../b.ogg\" MP3\nTRACK 02 AUDIO\nINDEX 01 00:00:00\n")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nFILE b.ogg MP3\nTRACK 03 AUDIO\nINDEX 01 00:00:00\n")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nFILE b.bin BINARY\nTRACK 02 AUDIO\nINDEX 01 00:00:10\nTRACK 03 AUDIO\nINDEX 01 00:00:05\n")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nFILE b.bin BINARY\nTRACK 02 AUDIO\nINDEX 01 00:00:00\nINDEX 01 00:00:10\n")]
     public void CueParserRejectsUnsupportedSheets(string text) =>
         Assert.Throws<InvalidDataException>(() => CueBinSheet.Parse(text));
+
+    [Theory]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nFILE b.bin BINARY\nTRACK 02 MODE1/2352\nINDEX 01 00:00:00\n",
+        "later FILE entries may hold only AUDIO tracks")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nFILE b.ogg MP3\nFILE c.ogg MP3\nTRACK 02 AUDIO\nINDEX 01 00:00:00\n",
+        "Cue FILE b.ogg holds no track")]
+    [InlineData("FILE a.bin BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\nFILE \"../b.ogg\" MP3\nTRACK 02 AUDIO\nINDEX 01 00:00:00\n",
+        "Cue FILE ../b.ogg must be a safe relative path")]
+    [InlineData("FILE a.ogg MP3\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n", "for the first FILE, the image; expected BINARY")]
+    [InlineData("TRACK 01 MODE1/2352\nFILE a.bin BINARY\nINDEX 01 00:00:00\n", "Cue TRACK appears before FILE")]
+    public void CueParserNamesTheRuleAMultiFileSheetBreaks(string text, string rule) =>
+        Assert.Contains(rule, Assert.Throws<InvalidDataException>(() => CueBinSheet.Parse(text)).Message,
+            StringComparison.Ordinal);
+
+    [Fact]
+    public void CueParserReadsLaterFilesOfAudioTracks()
+    {
+        // The image holds the data track and track 02; tracks 03 and 04 are compressed audio files
+        // whose indices count from the start of their own file.
+        var sheet = CueBinSheet.Parse(
+            "FILE \"disc.dat\" BINARY\nTRACK 01 MODE2/2352\nINDEX 01 00:00:00\n" +
+            "TRACK 02 AUDIO\nINDEX 00 00:01:00\nINDEX 01 00:03:00\n" +
+            "FILE \"music/Track03.ogg\" mp3\nTRACK 03 AUDIO\nINDEX 01 00:00:00\n" +
+            "FILE music/Track04.wav WAVE\nTRACK 04 AUDIO\nINDEX 00 00:00:00\nINDEX 01 00:02:00\n");
+        Assert.Equal("disc.dat", sheet.ReferencedFile);
+        Assert.Equal(4, sheet.Tracks.Count);
+        Assert.Equal(2, sheet.ImageTracks);
+        Assert.Equal(
+            [new CueBinFile("disc.dat", "BINARY", 1, 2), new CueBinFile("music/Track03.ogg", "MP3", 3, 3),
+                new CueBinFile("music/Track04.wav", "WAVE", 4, 4)],
+            sheet.Files);
+        Assert.Equal("music/Track04.wav", sheet.FileOf(4).Path);
+        Assert.Throws<ArgumentOutOfRangeException>(() => sheet.FileOf(5));
+        Assert.Equal(75, sheet.DataTrackSectors);
+        // Track 02 is the image's last track, so it runs to the end of the image.
+        Assert.Equal(new CueBinTrackExtent(2, 225, 300), sheet.TrackExtent(2, 300));
+        var failure = Assert.Throws<InvalidDataException>(() => sheet.TrackExtent(3, 300));
+        Assert.Contains("music/Track03.ogg", failure.Message, StringComparison.Ordinal);
+        // Indices of later files are not checked against the image.
+        sheet.ValidateBinLength(300L * RawSector);
+
+        var single = CueBinSheet.Parse(SingleTrackCue);
+        Assert.Equal([new CueBinFile("game.bin", "BINARY", 1, 1)], single.Files);
+        Assert.Equal(1, single.ImageTracks);
+        Assert.Equal(1, new CueBinSheet("x.bin", single.Tracks).ImageTracks);
+    }
+
+    [Fact]
+    public void SingleFileCueSheetReaderRefusesMultiFileSheets()
+    {
+        string[] lines = ["FILE a.bin BINARY", "TRACK 01 MODE1/2352", "INDEX 01 00:00:00",
+            "FILE b.bin BINARY", "TRACK 02 AUDIO", "INDEX 01 00:00:00"];
+        Assert.Contains("more than one FILE",
+            Assert.Throws<InvalidDataException>(() => CueSheet.Tracks(lines)).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task CueBinSourceOpensASheetWithAnyExtension()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var payload = new byte[] { 8, 6, 7 };
+            await File.WriteAllBytesAsync(Path.Combine(root, "disc.dat"),
+                ToRaw(OriginalContentSourceTests.BuildIso(payload)), TestContext.Current.CancellationToken);
+            var sheetPath = Path.Combine(root, "disc.sheet");
+            var text = "FILE \"disc.dat\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n";
+            await File.WriteAllTextAsync(sheetPath, text, TestContext.Current.CancellationToken);
+
+            foreach (var open in new Func<OriginalContentSource>[]
+            {
+                () => OriginalContentSource.OpenCueBin(sheetPath),
+                () => OriginalContentSource.Open(sheetPath, ContentSourceKinds.CueBin),
+            })
+            {
+                using var source = open();
+                Assert.Equal(Path.GetFullPath(sheetPath), source.CuePath);
+                Assert.Equal(Path.GetFullPath(Path.Combine(root, "disc.dat")), source.BinPath);
+                Assert.Equal(Encoding.UTF8.GetBytes(text), Assert.NotNull(source.CueSheetBytes).ToArray());
+                Assert.Equal(new ContentSourceEntry("EI/TEST.BIN", payload.Length), Assert.Single(source.Files));
+            }
+
+            // The directory holds no .cue, so a directory input still finds no sheet.
+            Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenCueBin(root));
+            // An image given where the sheet belongs says it was read as one.
+            var failure = Assert.Throws<InvalidDataException>(
+                () => OriginalContentSource.OpenCueBin(Path.Combine(root, "disc.dat")));
+            Assert.Contains("disc.dat was read as a cue sheet", failure.Message, StringComparison.Ordinal);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public async Task CueBinSourceReadsTheImageOfAMultiFileSheet()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            // The audio files the sheet names do not exist; the source never opens them.
+            var payload = new byte[] { 2, 7, 1 };
+            await File.WriteAllBytesAsync(Path.Combine(root, "disc.dat"),
+                ToRaw(OriginalContentSourceTests.BuildIso(payload)), TestContext.Current.CancellationToken);
+            var sheetPath = Path.Combine(root, "disc.sheet");
+            await File.WriteAllTextAsync(sheetPath,
+                "FILE \"disc.dat\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n" +
+                "FILE \"music\\Track02.ogg\" MP3\nTRACK 02 AUDIO\nINDEX 01 00:00:00\n" +
+                "FILE \"music/Track03.ogg\" MP3\nTRACK 03 AUDIO\nINDEX 01 00:00:00\n",
+                TestContext.Current.CancellationToken);
+
+            using var source = OriginalContentSource.OpenCueBin(sheetPath);
+            var sheet = source.Cue!;
+            Assert.Equal(1, sheet.ImageTracks);
+            Assert.Null(sheet.DataTrackSectors);
+            Assert.Equal(3, sheet.Files.Count);
+            Assert.Equal(new ContentSourceEntry("EI/TEST.BIN", payload.Length), Assert.Single(source.Files));
+            await using var stream = source.OpenRead("EI/TEST.BIN");
+            var actual = new byte[payload.Length];
+            await stream.ReadExactlyAsync(actual, TestContext.Current.CancellationToken);
+            Assert.Equal(payload, actual);
+        }
+        finally { Directory.Delete(root, true); }
+    }
 
     [Fact]
     public void CueParserNamesTheRuleAFileReferenceBreaks() =>

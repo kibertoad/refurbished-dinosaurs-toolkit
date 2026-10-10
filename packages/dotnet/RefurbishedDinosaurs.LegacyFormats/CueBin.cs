@@ -22,15 +22,38 @@ public sealed record CueBinTrackExtent(int Track, long StartSector, long EndSect
     public long Sectors => EndSector - StartSector;
 }
 
+/// <summary>One <c>FILE</c> entry of a <see cref="CueBinSheet"/> and the tracks it holds.</summary>
+/// <param name="Path">The file, as the relative path the sheet gives.</param>
+/// <param name="Type">The file type in upper case, such as <c>BINARY</c>, <c>WAVE</c> or <c>MP3</c>.</param>
+/// <param name="FirstTrack">The number of the first track the entry holds.</param>
+/// <param name="LastTrack">The number of the last track the entry holds.</param>
+public sealed record CueBinFile(string Path, string Type, int FirstTrack, int LastTrack);
+
 /// <summary>
-/// A checked cue sheet for a single-file raw disc image: one <c>MODE1/2352</c> or <c>MODE2/2352</c>
-/// data track followed by any number of audio tracks, all in the one <c>.bin</c> the sheet's
-/// <c>FILE</c> line names.
+/// A checked cue sheet for a raw disc image: one <c>MODE1/2352</c> or <c>MODE2/2352</c> data track
+/// followed by any number of audio tracks. The first <c>FILE</c> is the <c>.bin</c> image, which
+/// holds the data track and may hold audio tracks after it. Each later <c>FILE</c> holds only audio
+/// tracks; the sheet records them, but they are not part of the image and are never read.
 /// </summary>
-/// <param name="ReferencedFile">The <c>FILE</c> the sheet names, as a relative path.</param>
-/// <param name="Tracks">The tracks in order, numbered consecutively from 1.</param>
+/// <param name="ReferencedFile">The first <c>FILE</c> the sheet names, the image, as a relative path.</param>
+/// <param name="Tracks">
+/// Every track of the sheet in order, numbered consecutively from 1, including those in later
+/// <c>FILE</c> entries. Only the first <see cref="ImageTracks"/> are in the image.
+/// </param>
 public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<CueBinTrack> Tracks)
 {
+    /// <summary>
+    /// The sheet's <c>FILE</c> entries in order. The first is <see cref="ReferencedFile"/>. A sheet
+    /// built without this property set has the one <c>BINARY</c> entry holding every track.
+    /// </summary>
+    public IReadOnlyList<CueBinFile> Files { get; init; } = [new(ReferencedFile, "BINARY", 1, Tracks.Count)];
+
+    /// <summary>
+    /// The number of tracks stored in the image, the first <c>FILE</c>: tracks 1 to this number.
+    /// Later tracks are in other files, which <see cref="TrackExtent"/> refuses.
+    /// </summary>
+    public int ImageTracks => Files[0].LastTrack;
+
     /// <summary>Bytes in one raw sector of the image.</summary>
     public const int RawSectorSize = 2352;
 
@@ -53,33 +76,41 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     private static partial Regex IndexPattern();
 
     /// <summary>
-    /// Sectors of the image that belong to the data track, or <see langword="null"/> when there is no
-    /// second track to bound it and the data track runs to the end of the image.
+    /// Sectors of the image that belong to the data track, or <see langword="null"/> when the image
+    /// holds no second track to bound it and the data track runs to the end of the image. A second
+    /// track in another <c>FILE</c> does not bound it.
     /// </summary>
     /// <remarks>
     /// The data track ends where the next track's content begins. A pregap the second track declares
     /// with <c>INDEX 00</c> is stored in the image ahead of the audio, so <c>INDEX 00</c>, not
     /// <c>INDEX 01</c>, is the boundary; taking <c>INDEX 01</c> would read the pregap as data.
     /// </remarks>
-    public int? DataTrackSectors => Tracks.Count > 1 ? StoredStart(1) : null;
+    public int? DataTrackSectors => ImageTracks > 1 ? StoredStart(1) : null;
 
     /// <summary>
-    /// The sectors of track <paramref name="number"/>: from its <c>INDEX 01</c> to the next track's
-    /// <c>INDEX 00</c>, that track's <c>INDEX 01</c> when it has no <c>INDEX 00</c>, or the end of the
-    /// image for the last track. A track's own pregap, before its <c>INDEX 01</c>, is left out. A
-    /// track whose next track's pregap or audio begins at its own <c>INDEX 01</c> has no sectors.
+    /// The sectors of track <paramref name="number"/> in the image: from its <c>INDEX 01</c> to the
+    /// next track's <c>INDEX 00</c>, that track's <c>INDEX 01</c> when it has no <c>INDEX 00</c>, or
+    /// the end of the image for the image's last track. A track's own pregap, before its
+    /// <c>INDEX 01</c>, is left out. A track whose next track's pregap or audio begins at its own
+    /// <c>INDEX 01</c> has no sectors.
     /// </summary>
     /// <param name="number">The track number, from 1 to the number of tracks.</param>
-    /// <param name="imageSectors">Raw sectors in the image, which bound the last track.</param>
+    /// <param name="imageSectors">Raw sectors in the image, which bound the image's last track.</param>
     /// <exception cref="ArgumentOutOfRangeException">The sheet has no such track, or <paramref name="imageSectors"/> is negative.</exception>
-    /// <exception cref="InvalidDataException">The track ends past the image or before it starts.</exception>
+    /// <exception cref="InvalidDataException">
+    /// The track is in a later <c>FILE</c>, not in the image, or it ends past the image or before it starts.
+    /// </exception>
     public CueBinTrackExtent TrackExtent(int number, long imageSectors)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(number, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(number, Tracks.Count);
         ArgumentOutOfRangeException.ThrowIfNegative(imageSectors);
+        if (number > ImageTracks)
+            throw new InvalidDataException(
+                $"Track {number:D2} is stored in {Truncate(FileOf(number).Path)}, not in the BIN image " +
+                $"{Truncate(ReferencedFile)}; only the tracks of the sheet's first FILE are read.");
         long start = Tracks[number - 1].Indices[1];
-        long end = number < Tracks.Count ? StoredStart(number) : imageSectors;
+        long end = number < ImageTracks ? StoredStart(number) : imageSectors;
         if (end > imageSectors || start > end)
             throw new InvalidDataException($"Track {number:D2} ends past the BIN image or before it starts.");
         return new(number, start, end);
@@ -95,7 +126,13 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     private int StoredStart(int position) =>
         Tracks[position].Indices.TryGetValue(0, out var pregap) ? pregap : Tracks[position].Indices[1];
 
-    /// <summary>Reads and parses a <c>.cue</c> file.</summary>
+    /// <summary>The <c>FILE</c> entry that holds track <paramref name="number"/>.</summary>
+    /// <exception cref="ArgumentOutOfRangeException">No entry holds the track.</exception>
+    public CueBinFile FileOf(int number) =>
+        Files.FirstOrDefault(file => number >= file.FirstTrack && number <= file.LastTrack)
+        ?? throw new ArgumentOutOfRangeException(nameof(number), number, "The cue sheet has no such track.");
+
+    /// <summary>Reads and parses a cue sheet file, whatever its extension.</summary>
     /// <exception cref="FileNotFoundException">The file does not exist.</exception>
     /// <exception cref="InvalidDataException">The file is too large or is not a supported cue sheet.</exception>
     public static CueBinSheet Load(string path) => Read(path).Sheet;
@@ -132,13 +169,16 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     }
 
     /// <summary>
-    /// Parses a cue sheet. It must name exactly one <c>BINARY</c> <c>FILE</c> by a relative path
-    /// <see cref="PortableAssetPath.Relative"/> accepts,
-    /// number its 1 to 99 tracks consecutively from 1, begin with a <c>MODE1/2352</c> or
-    /// <c>MODE2/2352</c> track whose <c>INDEX 01</c> is at <c>00:00:00</c> followed only by
-    /// <c>AUDIO</c> tracks, give each track an <c>INDEX 01</c>, and keep every index in order,
-    /// within a track and across tracks. A
-    /// <c>FILE</c>, <c>TRACK</c> or <c>INDEX</c> line it cannot read is rejected, not skipped.
+    /// Parses a cue sheet. Every <c>FILE</c> it names must be a relative path
+    /// <see cref="PortableAssetPath.Relative"/> accepts and hold at least one track. The first
+    /// <c>FILE</c> is the image: it must be <c>BINARY</c> and begin with a <c>MODE1/2352</c> or
+    /// <c>MODE2/2352</c> track whose <c>INDEX 01</c> is at <c>00:00:00</c>. Every other track must be
+    /// <c>AUDIO</c>, so a later <c>FILE</c>, of any type, holds only audio tracks. The sheet must
+    /// number its 1 to 99 tracks consecutively from 1, give each track an <c>INDEX 01</c>, and keep
+    /// every index in order, within a track and across the tracks of one <c>FILE</c>; each
+    /// <c>FILE</c>'s indices count from its own start. A <c>TRACK</c> before the first <c>FILE</c>
+    /// is rejected, and a <c>FILE</c>, <c>TRACK</c> or <c>INDEX</c> line it cannot read is
+    /// rejected, not skipped.
     /// </summary>
     /// <exception cref="InvalidDataException">The text breaks one of these rules or a timestamp is invalid.</exception>
     public static CueBinSheet Parse(string text)
@@ -146,25 +186,29 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
         ArgumentNullException.ThrowIfNull(text);
         if (text.Length > MaximumCueLength) throw new InvalidDataException("Cue sheet is too large.");
 
-        string? referencedFile = null;
+        // Each FILE with the list position of its first track.
+        var files = new List<(string Path, string Type, int FirstPosition)>();
         var tracks = new List<(int Number, string Type, Dictionary<int, int> Indices)>();
         foreach (var line in text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
         {
             var file = FilePattern().Match(line);
             if (file.Success)
             {
-                if (referencedFile is not null)
-                    throw new InvalidDataException("Multi-file cue sheets are not supported.");
-                if (!file.Groups["type"].Value.Equals("BINARY", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidDataException($"Unsupported cue FILE type {Truncate(file.Groups["type"].Value)}; expected BINARY.");
-                referencedFile = file.Groups["quoted"].Success
-                    ? file.Groups["quoted"].Value : file.Groups["plain"].Value;
+                var path = file.Groups["quoted"].Success ? file.Groups["quoted"].Value : file.Groups["plain"].Value;
+                var type = file.Groups["type"].Value.ToUpperInvariant();
+                if (files.Count == 0 && type != "BINARY")
+                    throw new InvalidDataException(
+                        $"Unsupported cue FILE type {Truncate(type)} for the first FILE, the image; expected BINARY.");
+                if (files.Count > 0 && files[^1].FirstPosition == tracks.Count)
+                    throw new InvalidDataException($"Cue FILE {Truncate(files[^1].Path)} holds no track.");
+                files.Add((path, type, tracks.Count));
                 continue;
             }
 
             var track = TrackPattern().Match(line);
             if (track.Success)
             {
+                if (files.Count == 0) throw new InvalidDataException("Cue TRACK appears before FILE.");
                 if (!int.TryParse(track.Groups["number"].Value, out var number))
                     throw new InvalidDataException("Cue track number is invalid.");
                 tracks.Add((number, track.Groups["type"].Value.ToUpperInvariant(), []));
@@ -196,23 +240,36 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
                 throw new InvalidDataException($"Duplicate INDEX {indexNumber:D2} in track {current.Number:D2}.");
         }
 
-        if (string.IsNullOrWhiteSpace(referencedFile))
+        if (files.Count == 0 || string.IsNullOrWhiteSpace(files[0].Path))
             throw new InvalidDataException("Cue sheet has no FILE entry.");
-        try { PortableAssetPath.Relative(referencedFile); }
-        catch (InvalidDataException exception)
+        if (files[^1].FirstPosition == tracks.Count)
+            throw new InvalidDataException($"Cue FILE {Truncate(files[^1].Path)} holds no track.");
+        foreach (var (path, _, _) in files)
         {
-            throw new InvalidDataException($"Cue FILE must be a safe relative path. {exception.Message}", exception);
+            try { PortableAssetPath.Relative(path); }
+            catch (InvalidDataException exception)
+            {
+                throw new InvalidDataException(
+                    $"Cue FILE {Truncate(path)} must be a safe relative path. {exception.Message}", exception);
+            }
         }
-        if (tracks.Count is 0 or > 99)
+        if (tracks.Count > 99)
             throw new InvalidDataException("Cue sheet must contain between 1 and 99 tracks.");
         if (tracks[0].Type is not ("MODE1/2352" or "MODE2/2352"))
             throw new InvalidDataException(
                 $"First cue track must be MODE1/2352 or MODE2/2352, not {Truncate(tracks[0].Type)}.");
 
         var previous = -1;
+        var fileIndex = 0;
         for (var offset = 0; offset < tracks.Count; offset++)
         {
             var (number, type, indices) = tracks[offset];
+            // Each FILE's indices count from the start of that file.
+            if (fileIndex + 1 < files.Count && files[fileIndex + 1].FirstPosition == offset)
+            {
+                fileIndex++;
+                previous = -1;
+            }
             if (number != offset + 1)
                 throw new InvalidDataException("Cue track numbers must be consecutive and start at 1.");
             if (!indices.TryGetValue(1, out var start))
@@ -224,9 +281,13 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
             if (offset == 0 && start != 0)
                 throw new InvalidDataException("Track 01 INDEX 01 must be at 00:00:00.");
             if (offset > 0 && type != "AUDIO")
-                throw new InvalidDataException($"Unsupported non-audio track {number:D2}: {type}.");
-            // Every index of a track must follow every index of the track before it, and the
-            // indices of one track must rise with their numbers.
+                throw new InvalidDataException(fileIndex == 0
+                    ? $"Unsupported non-audio track {number:D2}: {Truncate(type)}."
+                    : $"Unsupported non-audio track {number:D2}: {Truncate(type)} in FILE " +
+                      $"{Truncate(files[fileIndex].Path)}. Only the first FILE may hold the data track; " +
+                      "later FILE entries may hold only AUDIO tracks.");
+            // Every index of a track must follow every index of the track before it in the same
+            // FILE, and the indices of one track must rise with their numbers.
             foreach (var (_, sector) in indices.OrderBy(entry => entry.Key))
             {
                 if (sector < previous) throw new InvalidDataException("Cue track indices are not in order.");
@@ -234,15 +295,21 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
             }
         }
 
-        return new(referencedFile, tracks.Select(track =>
-            new CueBinTrack(track.Number, track.Type, track.Indices)).ToArray());
+        var entries = new CueBinFile[files.Count];
+        for (var i = 0; i < files.Count; i++)
+        {
+            var last = i + 1 < files.Count ? files[i + 1].FirstPosition : tracks.Count;
+            entries[i] = new(files[i].Path, files[i].Type, files[i].FirstPosition + 1, last);
+        }
+        return new(files[0].Path, tracks.Select(track =>
+            new CueBinTrack(track.Number, track.Type, track.Indices)).ToArray()) { Files = entries };
     }
 
     private static string Truncate(string value) => value.Length <= 80 ? value : value[..80] + "...";
 
     /// <summary>
     /// Checks that <paramref name="path"/> is a whole number of raw sectors and that every index of
-    /// the sheet lies inside it.
+    /// the tracks in the image, those of the first <c>FILE</c>, lies inside it.
     /// </summary>
     /// <exception cref="FileNotFoundException">The image does not exist.</exception>
     /// <exception cref="InvalidDataException">The image's length or an index does not fit.</exception>
@@ -259,7 +326,7 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
         if (length == 0 || length % RawSectorSize != 0)
             throw new InvalidDataException($"BIN length must be a positive multiple of {RawSectorSize} bytes.");
         var sectors = length / RawSectorSize;
-        foreach (var track in Tracks)
+        foreach (var track in Tracks.Take(ImageTracks))
             foreach (var index in track.Indices)
                 if (index.Value >= sectors)
                     throw new InvalidDataException(
@@ -267,10 +334,12 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     }
 
     /// <summary>
-    /// Finds the sheet and image a path names: a <c>.cue</c> file, a <c>.bin</c> file, or a directory
-    /// holding them. The other file is the one the sheet's <c>FILE</c> names, else the one with the
-    /// same name, else the only one in the directory. <c>CueBytes</c> are the bytes of the sheet that
-    /// were parsed.
+    /// Finds the sheet and image a path names: a <c>.bin</c> file, a directory holding a <c>.cue</c>
+    /// and the image, or any other file, which is read as the cue sheet whatever its extension. The
+    /// image is the file the sheet's first <c>FILE</c> names, else the <c>.bin</c> with the same
+    /// name, else the only <c>.bin</c> in the directory; for a <c>.bin</c> input, the sheet is the
+    /// <c>.cue</c> with the same name, else the only one. <c>CueBytes</c> are the bytes of the
+    /// sheet that were parsed.
     /// </summary>
     internal static (string CuePath, string BinPath, CueBinSheet Sheet, byte[] CueBytes) Resolve(string input)
     {
@@ -284,17 +353,32 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
         string? binPath = null;
         if (File.Exists(fullInput))
         {
-            var extension = Path.GetExtension(fullInput);
-            if (extension.Equals(".cue", StringComparison.OrdinalIgnoreCase)) cuePath = fullInput;
-            else if (extension.Equals(".bin", StringComparison.OrdinalIgnoreCase)) binPath = fullInput;
-            else throw new InvalidDataException("Cue/bin source must be a directory or a .cue or .bin file.");
+            if (Path.GetExtension(fullInput).Equals(".bin", StringComparison.OrdinalIgnoreCase)) binPath = fullInput;
+            else cuePath = fullInput;
         }
         else if (!Directory.Exists(fullInput))
             throw new FileNotFoundException("Cue/bin source does not exist.", fullInput);
 
-        var cues = Enumerate(directory, ".cue");
-        cuePath ??= MatchStem(binPath, cues) ?? Single(cues, "cue sheet");
-        var (cueBytes, sheet) = Read(cuePath);
+        byte[] cueBytes;
+        CueBinSheet sheet;
+        if (cuePath is not null && !Path.GetExtension(cuePath).Equals(".cue", StringComparison.OrdinalIgnoreCase))
+        {
+            // A file given by any other name is read as a cue sheet. Say so when it is not one, since
+            // the input may be an image passed in place of its sheet.
+            try { (cueBytes, sheet) = Read(cuePath); }
+            catch (InvalidDataException exception)
+            {
+                throw new InvalidDataException(
+                    $"{Path.GetFileName(cuePath)} was read as a cue sheet, since a cue/bin input that is " +
+                    $"a file and not a .bin is the sheet: {exception.Message}", exception);
+            }
+        }
+        else
+        {
+            var cues = Enumerate(directory, ".cue");
+            cuePath ??= MatchStem(binPath, cues) ?? Single(cues, "cue sheet");
+            (cueBytes, sheet) = Read(cuePath);
+        }
         var referenced = ResolveReference(directory, sheet.ReferencedFile);
         // A sheet found for a given BIN must not describe another BIN that is present.
         if (binPath is not null && referenced is not null && !string.Equals(referenced, binPath,

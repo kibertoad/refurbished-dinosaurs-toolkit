@@ -264,6 +264,33 @@ public sealed class BuildListingTests : IDisposable
     }
 
     [Fact]
+    public async Task GivesAnAudioTrackInALaterFileAsStopped()
+    {
+        // The sheet has another extension; track 02 is in the image and track 03 in an audio file
+        // that does not exist, since the listing never opens it.
+        var data = CueBinSourceTests.ToRaw(OriginalContentSourceTests.BuildIso([1, 2, 3]));
+        var bin = new byte[data.Length + 30 * RawSector];
+        data.CopyTo(bin, 0);
+        var cue = "FILE \"disc.dat\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n" +
+            $"TRACK 02 AUDIO\nINDEX 01 {Msf(data.Length / RawSector)}\n" +
+            "FILE \"music/Track03.ogg\" MP3\nTRACK 03 AUDIO\nINDEX 01 00:00:00\n";
+        await File.WriteAllBytesAsync(Path.Combine(_work, "disc.dat"), bin, Token);
+        await File.WriteAllTextAsync(Path.Combine(_work, "disc.sheet"), cue, Token);
+
+        var record = BuildListing.Make(null,
+            [new BuildListingDisc("CD:", Path.Combine(_work, "disc.sheet"), "disc.sheet")], Day);
+
+        Assert.Equal(
+            [
+                new BuildListingItem("CD:EI/TEST.BIN", 3, null, null),
+                new BuildListingItem("CD:track02", 30L * RawSector, null, null),
+                new BuildListingItem("CD:track03", null, null,
+                    "stored in music/Track03.ogg, a separate file the listing does not read")
+            ],
+            record.Items);
+    }
+
+    [Fact]
     public async Task ListsTheInstallationAndADiscTogether()
     {
         var install = Path.Combine(_work, "install");

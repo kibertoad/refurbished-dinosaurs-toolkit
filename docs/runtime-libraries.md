@@ -52,10 +52,13 @@ LegacyFormats parts of it:
   declares ([Cue/bin data tracks](../packages/dotnet/README.md#cuebin-data-tracks)).
   `OpenVolume` also reads a Form 2 sector whose 2324 data bytes are all zero, as 2048 zero bytes,
   so a disc with empty Form 2 padding in its volume space can pin `VolumeXxh3`. A cue/bin source
-  names the cue sheet and the raw image file it chose from a directory, a `.cue` or a `.bin` input as
-  `CuePath` and `BinPath` (the image is the file the sheet's `FILE` names, whatever its
-  extension), so the importer hashes and reads the same files instead of repeating the selection.
-  The source reads the `.cue` once, when it opens, and gives those bytes as `CueSheetBytes`: hash
+  names the cue sheet and the raw image file it chose from a directory, a sheet or a `.bin` input as
+  `CuePath` and `BinPath` (a sheet input may have any extension, and the image is the file the
+  sheet's first `FILE` names, whatever its extension), so the importer hashes and reads the same
+  files instead of repeating the selection. Later `FILE` entries holding only audio tracks are
+  recorded in `Cue.Files` and never read
+  ([Cue sheets](../packages/dotnet/README.md#cue-sheets)).
+  The source reads the sheet once, when it opens, and gives those bytes as `CueSheetBytes`: hash
   them, since the file at `CuePath` may have
   been replaced after the sheet was parsed. An `.iso` or cue/bin source records the image's length
   and last-write time when it opens, and every read of the `.iso` or BIN through the source,

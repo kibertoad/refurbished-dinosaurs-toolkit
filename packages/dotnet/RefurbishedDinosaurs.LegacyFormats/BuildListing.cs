@@ -133,7 +133,8 @@ public sealed class BuildListingRecord
 /// ends a name with no extension, except where dropping them would give two entries of one directory
 /// the same name ignoring case. A cue/bin image's audio tracks are file items under their track references
 /// (<c>CD:track02</c>), each with the size of its raw audio from its <c>INDEX 01</c> to where the next
-/// track's pregap or audio begins, as <see cref="CueBinSheet.TrackExtent"/> gives it.
+/// track's pregap or audio begins, as <see cref="CueBinSheet.TrackExtent"/> gives it. An audio track
+/// the sheet stores in a later <c>FILE</c> is a stopped item under its track reference, naming the file.
 /// </para>
 /// <para>
 /// The listing goes inside no archive. A record shows what was listed, not what the game uses; the
@@ -148,8 +149,6 @@ public static partial class BuildListing
     // A path that starts like this is a disc path, so no installation path may.
     [GeneratedRegex("^CD[0-9]*:", RegexOptions.CultureInvariant)]
     private static partial Regex StartsWithDiscPrefix();
-
-    private static readonly string[] ImageExtensions = [".iso", ".cue", ".bin"];
 
     private static readonly EnumerationOptions OneDirectory = new()
     {
@@ -167,7 +166,7 @@ public static partial class BuildListing
     /// <exception cref="ArgumentException">
     /// Nothing is to be listed, a disc's prefix is not <c>CD:</c> or <c>CD</c> followed by a number and a
     /// colon, two discs share a prefix, a disc's <see cref="BuildListingDisc.Source"/> is blank or holds
-    /// a <c>\</c>, or a disc's image is not an <c>.iso</c>, <c>.cue</c> or <c>.bin</c> file. These are
+    /// a <c>\</c>, or a disc's image path is blank or a directory, such as a mounted disc. These are
     /// checked before anything is listed.
     /// </exception>
     /// <exception cref="DirectoryNotFoundException">The installation directory does not exist.</exception>
@@ -200,10 +199,9 @@ public static partial class BuildListing
                 throw new ArgumentException(
                     $"Disc {disc.Prefix} source {AssetVerifier.JsonString(disc.Source)} uses '\\'; a listing path uses forward slashes.",
                     nameof(discs));
-            var extension = Path.GetExtension(disc.ImagePath ?? "");
-            if (!ImageExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase))
+            if (string.IsNullOrWhiteSpace(disc.ImagePath) || Directory.Exists(disc.ImagePath))
                 throw new ArgumentException(
-                    $"Disc {disc.Prefix} is read from an .iso, .cue or .bin image, not {disc.ImagePath}. " +
+                    $"Disc {disc.Prefix} is read from an .iso image or a cue/bin image's sheet or .bin, not {disc.ImagePath}. " +
                     "A mounted disc gives the names the drive chooses, such as Joliet names, not those of the primary volume.",
                     nameof(discs));
         }
@@ -308,6 +306,14 @@ public static partial class BuildListing
         using (var bin = source.OpenBin()) imageSectors = bin.Length / CueBinSheet.RawSectorSize;
         foreach (var track in sheet.Tracks.Skip(1))
         {
+            if (track.Number > sheet.ImageTracks)
+            {
+                // The track's audio is in a separate file the sheet names, which may be compressed,
+                // so its raw size is not known without decoding it.
+                items.Add(new($"{disc.Prefix}track{track.Number:D2}", null, null,
+                    $"stored in {sheet.FileOf(track.Number).Path}, a separate file the listing does not read"));
+                continue;
+            }
             var extent = sheet.TrackExtent(track.Number, imageSectors);
             items.Add(new($"{disc.Prefix}track{track.Number:D2}", extent.Sectors * CueBinSheet.RawSectorSize, null, null));
         }
