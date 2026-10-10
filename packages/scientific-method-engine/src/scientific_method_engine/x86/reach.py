@@ -1,7 +1,8 @@
 """Transitive reachability from established starts to target sites over the entry-path CFG."""
 from collections import deque
 from .image import integer
-from .trace import walk, cfg_step, base_mnemonic, unsupported_transfer, holding_instruction, INTERRUPTS, RETURNS, LIMIT_REASON
+from .trace import (walk, cfg_step, base_mnemonic, unsupported_transfer, holding_instruction, INTERRUPTS, RETURNS,
+                    LIMIT_REASON, OVERLAP_REASON, UNDECODED_REASON)
 from .pcode_backend import interrupt_vector
 
 # The virtual root of the dominator computation; no file offset is negative.
@@ -9,6 +10,10 @@ ROOT = -1
 CALLS = ("call", "lcall")
 UNSUPPORTED = "unsupported control-transfer frame encoding"
 LEAF_OVERLAP = "leaf start inside a reached instruction; the leaf is not decoded, so its boundary is unchecked"
+
+
+def _text(ins):
+    return (ins.mnemonic + " " + ins.op_str).strip()
 
 
 def _sites(value, label, image, limit=256, least=1):
@@ -112,9 +117,14 @@ def reach(image, config):
     for at in controls:
         ins = image.decode(at)
         if ins is None or base_mnemonic(ins) not in CALLS:
-            decoded = f"decodes as {(ins.mnemonic + ' ' + ins.op_str).strip()}" if ins is not None else "does not decode"
+            decoded = f"decodes as {_text(ins)}" if ins is not None else "does not decode"
             raise ValueError(f"control {at} is not a call site ({decoded}); controls are call sites the walk must "
                              "reach and resolve, and instructionControls are sites the walk must decode")
+    # The walk decodes every start it is given, so a start as an instruction control would pass whatever the walk misses.
+    for at in instruction_controls:
+        if at in starts:
+            raise ValueError(f"instruction control {at} is a start; the walk decodes every start, so it shows nothing "
+                             "the walk found")
     limit = integer(config.get("limit", 1000), 1, 10000, "result limit")
     instruction_limit = config.get("instructionLimit", 10000)
     seen, walk_gaps, _, _, contested = walk(image, starts, instruction_limit, follow_interrupts=True, stops=frozenset(leaves))
@@ -124,7 +134,7 @@ def reach(image, config):
         step = cfg_step(image, at, ins, follow_interrupts=True)
         graph[at] = [(s, kind) for s, kind in _kinds(at, ins, step) if s in seen or s in leaves]
         m = base_mnemonic(ins)
-        text = (ins.mnemonic + " " + ins.op_str).strip()
+        text = _text(ins)
         kind = "call" if m in CALLS else "return" if m in RETURNS else "jump"
         if unsupported_transfer(image, ins):
             unresolved.append({"site": at, "instruction": text, "kind": kind, "reason": UNSUPPORTED})
@@ -196,11 +206,18 @@ def reach(image, config):
                 "route": {"assumedReturns": assumed_returns[::-1], "declaredTableJumps": tables[::-1],
                           "interruptsContinued": continued[::-1]}}
 
+    # The walk decodes both instructions of an unresolved overlap and keeps neither, so their starts are not in seen.
+    overlapping = {g["site"] for g in walk_gaps if g["reason"] == OVERLAP_REASON}
+    # A site an edge leads to whose bytes do not decode is reached, though no instruction starts there.
+    undecodable = {g["site"] for g in walk_gaps if g["reason"] == UNDECODED_REASON}
+
     def unreached(site):
         holder = holding_instruction(seen, site)
-        return {"status": "inside a reached instruction" if holder is not None
-                else "start of a contested instruction" if site in contested else "not reached",
-                **({"insideInstruction": holder} if holder is not None else {})}
+        if holder is not None:
+            return {"status": "inside a reached instruction", "insideInstruction": holder}
+        return {"status": "start of a contested instruction" if site in contested
+                else "start of an unresolved overlapping instruction" if site in overlapping
+                else "reached but not decodable" if site in undecodable else "not reached"}
 
     rows = []
     for target in targets:
@@ -228,19 +245,20 @@ def reach(image, config):
     stopped = any(g["reason"] == LIMIT_REASON for g in walk_gaps)
     # Not reached and reached-but-unresolved need different fixes, so each failure says which it is.
     failures = []
-    for label, sites in (("control", controls), ("instruction control", instruction_controls)):
+    for label, sites, passed in (("control", controls, resolved_calls), ("instruction control", instruction_controls, seen)):
         for at in sites:
-            if at in resolved_calls or (at in seen and label == "instruction control"):
+            if at in passed:
                 continue
+            # Only a call-site control can be decoded and still fail.
             if at in seen:
                 reasons = sorted({row["reason"] for row in unresolved if row["site"] == at})
                 failures.append(f"{label} {at} is reached but its call target is unresolved ({'; '.join(reasons)})")
-            elif at in leaves:
+            elif at in leaves and at in distance:
                 failures.append(f"{label} {at} is the start of a leaf, which the walk reaches but does not decode")
             else:
                 state = unreached(at)
                 detail = (f"inside the reached instruction at {state['insideInstruction']}" if "insideInstruction" in state
-                          else state["status"])
+                          else "the " + state["status"] if state["status"].startswith("start") else state["status"])
                 failures.append(f"{label} {at} is {detail}"
                                 + (" (the walk stopped at its instruction limit)" if stopped else ""))
     if failures:
@@ -259,8 +277,8 @@ def reach(image, config):
             "truncated": any(len(x) > limit for x in (unresolved, interrupts, gaps, contested)),
             "instructionLimitReached": stopped,
             "controls": [{"site": at, "target": resolved_calls[at]} for at in controls],
-            "instructionControls": [{"site": at, "instruction": (seen[at].mnemonic + " " + seen[at].op_str).strip(),
-                                     "routine": routine.get(at)} for at in instruction_controls],
+            "instructionControls": [{"site": at, "instruction": _text(seen[at]), "routine": routine.get(at)}
+                                    for at in instruction_controls],
             "negativeUsable": bool(controls or instruction_controls) and not (stopped or unresolved or gaps or contested),
             "assumptions": ["each reached call returns to its next instruction",
                             "each reached interrupt returns to its next instruction; interrupt handlers are not read",

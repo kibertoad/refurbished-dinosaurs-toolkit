@@ -88,6 +88,8 @@ def far_pointer_transfer(state, image):
 # The gap reason walk() records when it stops at its instruction limit with code left to read.
 LIMIT_REASON = "instruction limit"
 OVERLAP_REASON = "overlapping entry-path instructions; boundary unresolved"
+# The gap reason walk() records at a site it reaches but cannot decode.
+UNDECODED_REASON = "undecoded or unmapped edge"
 RETURNS = {"ret": "near return", "retf": "far return", "iret": "interrupt return", "iretd": "interrupt return"}
 INTERRUPTS = ("int", "int1", "int3", "into")
 PORTS = ("in", "out", "insb", "insw", "insd", "outsb", "outsw", "outsd")
@@ -259,7 +261,7 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
             break
         ins = image.decode(at)
         if ins is None:
-            gaps.append({"site": at, "reason": "undecoded or unmapped edge"})
+            gaps.append({"site": at, "reason": UNDECODED_REASON})
             continue
         seen[at] = ins
         step = cfg_step(image, at, ins, follow_flat_ports, follow_interrupts=follow_interrupts,
