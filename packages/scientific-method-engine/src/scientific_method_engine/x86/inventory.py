@@ -3,6 +3,7 @@ import re
 from bisect import bisect_right
 from pathlib import Path
 from .image import integer
+from .trace import LIMIT_REASON
 
 MAX_INVENTORY = 16 * 1024 * 1024
 MAX_ROWS = 200000
@@ -241,7 +242,7 @@ def inventory_check(image, config):
     stopped = {g.get("reason") for g in calls["gaps"]}
     if partial:
         summary += " The search is partial."
-    if "instruction limit" in stopped:
+    if LIMIT_REASON in stopped:
         summary += " The entry-path walk stopped at its instruction limit, so it can reach more calls."
     summary += " Calls the search does not resolve can add targets."
     return {"inventory": {"path": config["inventory"], "rows": len(rows)},

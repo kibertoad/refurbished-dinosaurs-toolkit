@@ -1,7 +1,7 @@
 """Transitive reachability from established starts to target sites over the entry-path CFG."""
 from collections import deque
 from .image import integer
-from .trace import walk, cfg_step, base_mnemonic, unsupported_transfer, holding_instruction, INTERRUPTS, RETURNS
+from .trace import walk, cfg_step, base_mnemonic, unsupported_transfer, holding_instruction, INTERRUPTS, RETURNS, LIMIT_REASON
 from .pcode_backend import interrupt_vector
 
 # The virtual root of the dominator computation; no file offset is negative.
@@ -224,6 +224,8 @@ def reach(image, config):
         call_sites.setdefault(target, []).append(site)
     leaf_rows = [{"routine": at, "reason": reason, "reached": at in distance, "callSites": call_sites.get(at, [])}
                  for at, reason in leaves.items()]
+    # Kept apart from the gap rows, which the result limit can cut.
+    stopped = any(g["reason"] == LIMIT_REASON for g in walk_gaps)
     counts = {"routines": len(routine_starts), "instructions": len(seen), "unresolved": len(unresolved),
               "interrupts": len(interrupts), "gaps": len(gaps), "contested": len(contested)}
     return {"starts": starts, "targets": rows, "leaves": leaf_rows,
@@ -231,8 +233,9 @@ def reach(image, config):
             "unresolved": unresolved[:limit], "interrupts": interrupts[:limit], "gaps": gaps[:limit],
             "contested": sorted(contested)[:limit],
             "truncated": any(len(x) > limit for x in (unresolved, interrupts, gaps, contested)),
+            "instructionLimitReached": stopped,
             "controls": [{"site": at, "target": resolved_calls[at]} for at in controls],
-            "negativeUsable": bool(controls) and not (unresolved or gaps or contested),
+            "negativeUsable": bool(controls) and not (stopped or unresolved or gaps or contested),
             "assumptions": ["each reached call returns to its next instruction",
                             "each reached interrupt returns to its next instruction; interrupt handlers are not read",
                             "each leaf calls nothing, for the reason it gives",
@@ -242,5 +245,9 @@ def reach(image, config):
             "interpretation": "Routes over the decoded entry-path CFG from the starts. A chain has the fewest calls; "
                               "throughEveryRoute lists the routine starts every read route to the target passes, "
                               "and an unresolved transfer may add a route that passes none of them. "
-                              "negativeUsable needs controls and no unresolved transfer, gap or contested instruction, "
-                              "and still rests on the listed assumptions and leaves."}
+                              "negativeUsable needs controls, a walk that did not stop at its instruction limit, "
+                              "and no unresolved transfer, gap or contested instruction, "
+                              "and still rests on the listed assumptions and leaves. "
+                              "When instructionLimitReached holds, the walk stopped before reading all it reaches: "
+                              "every list and count covers only the part read, which part depends on the walk order, "
+                              "and an unreached target may lie past the stop."}
