@@ -2,15 +2,15 @@
 
 Owned DOSBox-X debugger sessions for a restoration's research tooling: the original program runs
 under DOSBox-X's structured debugger, and the tooling reads registers and memory, stops at
-breakpoints, observes operations and makes checked writes to stopped guest memory beside the
-static evidence. The design is
+breakpoints, observes operations, makes checked writes to stopped guest memory and keeps an event
+log of the run beside the static evidence. The design is
 [ADR 0026](../../docs/decisions/0026-dosbox-x-session-package.md).
 
 The package owns the parts that decide whether a recorded run can be trusted and that carry no
 game knowledge: the emulator process, the machine-wide run lock, the guest drives, muted host
-audio, the session record, request IDs, operation observation and guarded writes. What a run
-means (executable fingerprints, address maps, state layouts and which fields may be written,
-input, screens) stays in the restoration. A restored
+audio, the session record, request IDs, operation observation, guarded writes and the event log.
+What a run means (executable fingerprints, address maps, state layouts and which fields may be
+written, input, screens, event kinds and what an outcome must say) stays in the restoration. A restored
 game never depends on this package.
 
 Windows only. On another platform a session refuses to start and says so.
@@ -59,6 +59,8 @@ Entering `DosboxSession` (or calling `start()`):
 
 1. Refuses a platform other than Windows, a checkout that fails the check above, a missing
    emulator, and a run directory that is not empty (a `drive-c` from an earlier run included).
+   With `event_log` set, hashes the named modules (refusing one that is not imported) and writes
+   the log header.
 2. Takes the run lock (below), or refuses with a report of the recorded owner and processes.
 3. Creates `drive-c` empty in the run directory and calls `prepare_drive` on it.
 4. Writes `dosbox.conf` and `agent.env` and launches the emulator with a native console that is
@@ -71,7 +73,8 @@ Entering `DosboxSession` (or calling `start()`):
 6. Builds the first client through the factory, reads the server's capabilities, and starts the
    target stopped at its entry. Fails unless the session stops with reason `startup`.
 
-Any failure cleans up as leaving does, then raises.
+Any failure cleans up as leaving does, then raises. A failure after the log header was written
+ends the log with an outcome that records it.
 
 Leaving (or `close()`) stops the debugger session, closes every client, terminates the owned
 emulator and releases the run lock. If the emulator is still running afterwards, it writes
@@ -134,6 +137,7 @@ fails. Exit code 0 means it removed the lock or found none; 2 is a usage error.
 | `debugger_session` | The debugger session's ID. |
 | `writes` | Each guarded write in order: the contract's name, the field, its address (as the address object's `repr`) and length, the expected hash, the hash of the data the write carried (`null` when it was not bytes), `verified` or `failed`, and the failure, which says how far a failed write got. |
 | `run_failure` | Why the run failed, or `null`. |
+| `event_log` | The event log's path, or `null` when the session keeps none. |
 
 ### Calls, capabilities and request IDs
 
@@ -187,6 +191,84 @@ so a guest that was running when the write failed can be stopped, and reads stil
 failed state can be inspected. Closing the session cleans up as usual. Start a new
 run to try again.
 
+### The event log
+
+With `SessionSettings.event_log` set, the session writes `events.jsonl` in the run directory: one
+header line, one line per event, and one outcome line, as JSON. Each line is written, flushed and
+synced to disk before the call that writes it returns, so anything logged before a continuation
+survives the owning process being killed. Everything the log checks comes from you:
+
+```python
+from dinorefurb_dosbox_session import EventLogSettings, EventSchema, OutcomeContract
+
+event_log = EventLogSettings(
+    contract=OutcomeContract("startup-probe", 2, {"reached_menu": "boolean", "frames": "integer"}),
+    schemas=(
+        EventSchema("stop", required={"frame": "integer", "ip": "string"}),
+        EventSchema("input", required={"key": "string"}, optional={"note": ["string", "null"]}),
+    ),
+    modules=("probe.adapter", "probe.startup"),  # imported before the session starts
+)
+settings = SessionSettings(..., event_log=event_log)
+with DosboxSession(settings) as session:
+    session.log_event("stop", {"frame": 0, "ip": "0x0100"})
+    ...
+    session.finish_log({"reached_menu": True, "frames": 412})
+```
+
+- An `EventSchema` names an event kind and its `required` and `optional` fields, each with a JSON
+  type (`string`, `integer`, `number`, `boolean`, `null`, `array`, `object`) or a list of them.
+  An `integer` is also a `number`. An event carries every required field, may carry the optional
+  ones, and carries nothing else. Only the top level is checked.
+- The `OutcomeContract` has a name, a version and the fields the final outcome must carry, all
+  required and no others. Give a changed contract a higher version.
+- The header records the schemas, the contract and, for each module in `modules`, the file it was
+  imported from and that file's SHA-256, taken after the modules are imported and before the
+  emulator starts. A named module that is not imported then, or that has no file (a built-in or a
+  namespace package), is refused with `ModuleRefused` before the lock is taken.
+- `session.finish_log(values)` ends the log with a completed outcome, and
+  `session.fail_log(failure, values=None)` with one that records a failure. The outcome records
+  how many events came before it, a SHA-256 over them in order and a SHA-256 of the header.
+- An event the log refuses (a kind with no schema, data that does not fit it or that JSON cannot
+  hold), outcome values that do not fit the contract, or a failed write to the file ends the log
+  with a failure outcome that names it, raises `LogEntryRefused` and fails the run, as a failed
+  guarded write does. A failed guarded write ends the log with the run's failure too, and so does
+  a session that fails to start after writing the header.
+- A session closed without an outcome leaves the log without one, and it reads as incomplete.
+
+The package does not decide what an event or an outcome means. Boundary names, what counts as a
+pending operation, replay and comparison with your own journal stay in your restoration.
+
+#### Reading a log
+
+```python
+from dinorefurb_dosbox_session import read_event_log
+
+log = read_event_log(run_directory / "events.jsonl", {"reached_menu": True, "frames": 412})
+```
+
+`read_event_log(path, expected_outcome, max_bytes=DEFAULT_MAX_LOG_BYTES)` returns an `EventLog`
+with the recorded contract, schemas, module hashes, events and outcome, or raises a subclass of
+`LogRejected` that says which check failed. The checks run in this order:
+
+| Error | The log |
+|---|---|
+| `LogOversized` | is larger than `max_bytes` (64 MiB by default). It is not parsed. |
+| `LogMalformed` | has a line that is not a JSON record this package writes, a header that is not first or has another format, or a record after the outcome. |
+| `LogTruncated` | ends partway through a line, or is empty. |
+| `EventSchemaViolation` | has an event whose kind or data does not fit the schemas its header records. |
+| `LogIncomplete` | has no outcome. |
+| `EventsMismatch` | has events or a header that differ from the count and hashes its outcome recorded: an event is missing, extra, changed or reordered. |
+| `OutcomeFailed` | ends with an outcome that records a failure. |
+| `OutcomeContractViolation` | has an outcome with a contract field absent or of the wrong type, or a field the contract lacks. Nothing is filled in. |
+| `OutcomeMismatch` | has outcome values that differ from `expected_outcome`, which is compared whole, so a field you do not expect fails too. |
+
+Each error's `line` is the line the check failed on, or `None` for `LogOversized` and
+`LogIncomplete`. A log is read against the contract its own header records, never against a
+newer version you have defined since, so a version 1 log still reads as version 1 and a field
+version 2 added is not filled in. `log.contract.version` says which one it was. The header is
+covered by the outcome's hash, so a header changed to name another contract is rejected.
+
 ### Observation
 
 `session.observe(operation, timeout)` waits on one operation. Each poll first checks that the owned
@@ -217,6 +299,9 @@ both. When a `continue_` or `pause` request itself raises, the server may still 
 | `WriteReadbackMismatch` | The field does not hold the written bytes afterwards. The run fails. |
 | `WriteFailed` | A write was refused for another reason, such as a guest that is not stopped. The run fails. The three errors above derive from it. |
 | `RunFailed` | A write, continuation or step was asked for after the run failed. Not sent. |
+| `ModuleRefused` | A module the event log names is not imported, or has no file to hash. Nothing was started. |
+| `LogEntryRefused` | The event log refused an event or outcome, or has already ended. A refusal ends the log as failed and fails the run. |
+| `LogRejected` | Reading an event log refused it; its subclasses are in the table above. |
 | `CleanupFailed` | The emulator still ran after teardown; the lock was kept. |
 
 All of them derive from `SessionError`.

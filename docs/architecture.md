@@ -139,6 +139,12 @@ Owns DOSBox-X debugger sessions for a restoration's research tooling
 - Writes to stopped guest memory only for fields in a contract the caller supplies, checks the
   hash of the bytes each write replaces and reads the write back. A refused or failed write fails
   the run. The package has no default contract.
+- Keeps an event log when asked: JSON lines synced as they are written, each event checked
+  against the caller's schemas, ending in an outcome that fits the caller's versioned contract
+  and records the count and an ordered hash of the events. The header records the schemas, the
+  contract and hashes of modules the caller names, which must be imported before the session
+  starts. A log is read against the contract it recorded and the outcome the caller expected,
+  and reading names the check that failed.
 - Windows only.
 
 What a run means stays in the restoration. A restored game never depends on this package.
