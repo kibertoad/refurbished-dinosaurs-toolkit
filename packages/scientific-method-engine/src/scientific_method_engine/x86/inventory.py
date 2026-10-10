@@ -3,7 +3,7 @@ import re
 from bisect import bisect_right
 from pathlib import Path
 from .image import integer
-from .trace import LIMIT_REASON, CONTESTED_REASON, walk, holding_instruction
+from .trace import LIMIT_REASON, CONTESTED_REASON, OVERLAP_REASON, walk, holding_instruction
 from .dispatch import indirect_call_declarations, call_ends
 
 MAX_INVENTORY = 16 * 1024 * 1024
@@ -139,15 +139,48 @@ def _row_fields(row):
     return {k: row[k] for k in ("start", "size", "name") if k in row}
 
 
-def _row_starts(image, rows, starts, domains, seen, contested, routine_of):
-    """Each row whose start lies inside an instruction the entry-path walk established, and counts of the rest.
+def _routine_fields(image, starts, routine):
+    """The ``routine``, ``routineAddress`` and ``routineIsRow`` fields for a routine start, or none when it is None."""
+    if routine is None:
+        return {}
+    place = _target_place(image, routine)
+    return {"routine": routine, "routineAddress": place[2], "routineIsRow": place[:2] in starts}
+
+
+def _overlaps(image, starts, at, decoded, routine_of):
+    """Every instruction in ``decoded`` other than the one at ``at`` whose bytes meet the bytes of the
+    instruction at ``at``, or the byte ``at`` when no instruction starts there, with its evidence.
+
+    ``decoded`` maps a site to ``(instruction, evidence)``.
+    """
+    end = at + decoded[at][0].size if at in decoded else at + 1
+    found = []
+    # An x86 instruction is at most 15 bytes, so only the starts just before the site can reach into it.
+    for site in range(max(at - 14, 0), end):
+        if site == at or site not in decoded or site + decoded[site][0].size <= at:
+            continue
+        ins, evidence = decoded[site]
+        found.append({"site": site, "address": _target_place(image, site)[2], "size": ins.size, "text": _text(ins),
+                      "evidence": evidence, **_routine_fields(image, starts, routine_of(site))})
+    return found
+
+
+def _row_starts(image, rows, starts, domains, seen, contested, unresolved, routine_of):
+    """Each row whose start lies inside an instruction the entry-path walk established, or at or inside
+    an instruction of an overlap the walk left unresolved, and counts of the rest.
 
     A start is checked against the walk's instructions only; bytes the walk did not decode are not
-    decoded here, so a row start in them is counted as not read rather than placed. A start at or
-    inside an instruction the walk decoded but rejected as contested is counted as contested.
+    decoded here, so a row start in them is counted as not read rather than placed. ``unresolved``
+    holds the instructions at the walk's overlap gaps, which it decoded on the entry path and
+    rejected because no boundary between them is proven. A row start at or inside one is listed with
+    every instruction it overlaps, since the row's own entry can be one side of the overlap. A start
+    at or inside an instruction the walk decoded but rejected as contested is counted as contested.
     """
     found, counts = [], {"instructionStarts": 0, "insideAnInstruction": 0, "overlappingInstructionStarts": 0,
-                         "contested": 0, "notRead": 0}
+                         "unresolvedOverlaps": 0, "contested": 0, "notRead": 0}
+    decoded = ({at: (ins, CONTESTED_REASON) for at, ins in contested.items()}
+               | {at: (ins, OVERLAP_REASON) for at, ins in unresolved.items()}
+               | {at: (ins, "entry-path instruction") for at, ins in seen.items()})
     for row in rows:
         offsets = _offsets(image, domains, row["space"], row["at"])
         if not offsets:
@@ -156,6 +189,23 @@ def _row_starts(image, rows, starts, domains, seen, contested, routine_of):
         if held is None:
             if any(at in seen for at in offsets):
                 counts["instructionStarts"] += 1
+                continue
+            at = next((at for at in offsets if at in unresolved or holding_instruction(unresolved, at) is not None), None)
+            if at is not None:
+                counts["unresolvedOverlaps"] += 1
+                entry = {**_row_fields(row), "site": at}
+                holder = holding_instruction(unresolved, at)
+                if at in unresolved:
+                    entry |= {"status": "start of an unresolved overlapping instruction",
+                              "rowStartInstructionSize": unresolved[at].size, "rowStartInstructionText": _text(unresolved[at])}
+                else:
+                    entry["status"] = "inside an unresolved overlapping instruction"
+                if holder is not None:
+                    entry |= {"insideInstruction": holder, "insideInstructionAddress": _target_place(image, holder)[2],
+                              "insideInstructionSize": unresolved[holder].size,
+                              "insideInstructionText": _text(unresolved[holder]),
+                              **_routine_fields(image, starts, routine_of(holder))}
+                found.append(entry | {"overlaps": _overlaps(image, starts, at, decoded, routine_of)})
             elif any(at in contested or holding_instruction(contested, at) is not None for at in offsets):
                 counts["contested"] += 1
             else:
@@ -164,17 +214,13 @@ def _row_starts(image, rows, starts, domains, seen, contested, routine_of):
         at, holder = held
         overlapping = at in seen
         counts["overlappingInstructionStarts" if overlapping else "insideAnInstruction"] += 1
-        routine = routine_of(holder)
         entry = {**_row_fields(row), "site": at,
                  "status": "start of an overlapping instruction" if overlapping else "inside an instruction",
                  "insideInstruction": holder, "insideInstructionAddress": _target_place(image, holder)[2],
                  "insideInstructionSize": seen[holder].size, "insideInstructionText": _text(seen[holder])}
         if overlapping:
             entry |= {"rowStartInstructionSize": seen[at].size, "rowStartInstructionText": _text(seen[at])}
-        if routine is not None:
-            place = _target_place(image, routine)
-            entry |= {"routine": routine, "routineAddress": place[2], "routineIsRow": place[:2] in starts}
-        found.append(entry)
+        found.append(entry | _routine_fields(image, starts, routine_of(holder)))
     return found, counts
 
 
@@ -212,7 +258,8 @@ def inventory_check(image, config):
     the first of an instruction the entry-path walk established names that instruction.
 
     The rows are checked against the same walk: each row whose start lies inside an instruction the
-    walk established is listed in ``rowStarts``. ``noReturn`` declarations, in ``reach``'s shape, end
+    walk established, or at or inside an instruction of an overlap the walk left unresolved, is listed
+    in ``rowStarts``. ``noReturn`` declarations, in ``reach``'s shape, end
     the walk at a call to a declared routine and at a declared interrupt site, are checked for a
     return on the routine's own paths, and list in ``rowsPastNoReturn`` each row whose body
     continues past such a call or interrupt. ``indirectCalls`` declarations, in ``reach``'s shape,
@@ -310,17 +357,23 @@ def inventory_check(image, config):
             entry["rows"] = [_row_fields(rows[i]) for i in held]
         missing.append(entry)
 
+    # The instructions of the overlaps the walk left unresolved. The walk decoded each at its gap site.
+    overlapping = {g["site"]: image.decode(g["site"]) for g in calls["gaps"] if g.get("reason") == OVERLAP_REASON}
+
     # The routine the walk read an instruction in, by the route with the fewest calls, as reach names it.
+    # An unresolved instruction is a node that ends its route, so it gets the routine of the established
+    # instruction that steps into it, or its own when it is an entry, and no route passes through it.
     # The graph is built only when a row start needs it.
     routines = None
 
     def routine_of(site):
         nonlocal routines
         if routines is None:
-            graph = successor_graph(image, seen, **declared)
-            routines = fewest_calls(graph, [at for at in entries(image) if at in seen])[2]
+            graph = successor_graph(image, seen | overlapping, **declared)
+            graph = {at: [] if at in overlapping else successors for at, successors in graph.items()}
+            routines = fewest_calls(graph, [at for at in entries(image) if at in seen or at in overlapping])[2]
         return routines.get(site)
-    row_starts, start_counts = _row_starts(image, rows, starts, domains, seen, contested, routine_of)
+    row_starts, start_counts = _row_starts(image, rows, starts, domains, seen, contested, overlapping, routine_of)
 
     # Each declaration with the calls it kept from their return sites, as reach reports them.
     returns, check_read, check_stopped = _no_return_check(image, no_return_routines, declared,
@@ -412,6 +465,8 @@ def inventory_check(image, config):
             summary += (f", {start_counts['overlappingInstructionStarts']} of them at the start of an overlapping "
                         "instruction it also established")
         summary += "."
+    if start_counts["unresolvedOverlaps"]:
+        summary += " " + _count(start_counts["unresolvedOverlaps"], "row start lies", "row starts lie")                    + " at or inside an instruction of an overlap the walk left unresolved, listed with the instructions it overlaps."
     if start_counts["notRead"]:
         summary += " " + _count(start_counts["notRead"], "row start in declared code lies", "row starts in declared code lie") \
                    + " in bytes where the walk established no instruction, so its boundary is not checked."
@@ -469,9 +524,10 @@ def inventory_check(image, config):
                               "notation and compared with its rows. A target only raw byte candidates or contested "
                               "instructions call is not shown to be code. The counts are lower bounds on the targets "
                               "the inventory lacks: calls the search does not resolve can add more. Row starts are "
-                              "compared only with the instructions the entry-path walk established; a start where it "
-                              "established no instruction is counted as notRead or contested and not placed, so linear decoding past data "
-                              "never reports one. A start inside an instruction can be deliberately overlapping code, "
+                              "compared only with the instructions the entry-path walk decoded; a start at or inside an instruction "
+                              "of an overlap the walk left unresolved is listed with every instruction it overlaps, and a "
+                              "start where it established no instruction is counted as notRead or contested and not placed, "
+                              "so linear decoding past data never reports one. A start inside an instruction can be deliberately overlapping code, "
                               "which the row names with both instructions for a reader to judge. rowsPastNoReturn rests "
                               "on the noReturn declarations: followingRead says whether the walk reached the bytes after "
                               "the call by another route, only a site the walk established counts a row, and an empty "

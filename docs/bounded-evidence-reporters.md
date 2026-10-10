@@ -124,7 +124,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
 | `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; the inventory continues past interrupts, which it assumes return to the next instruction, and a stop inside a called function also continues it at the return site of each call open at the stop, each named in `dependsOn`; each `rawCandidates` row gives the encoded footprint of every unreached operand that may intersect the query field | this section, [hardware boundaries](#hardware-boundaries) |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
-| `inventory-check` | every resolved direct call target in the searched regions that a function inventory does not list as a start, with one calling site each and counts for a coverage report; each row whose start lies inside an instruction the entry-path walk established; with `noReturn`, each row that continues past a call or interrupt declared never to return; with `indirectCalls`, the declared targets of computed calls as call targets | [inventory call targets](#call-targets-a-function-inventory-lacks), [declared call targets](#declared-computed-call-targets) |
+| `inventory-check` | every resolved direct call target in the searched regions that a function inventory does not list as a start, with one calling site each and counts for a coverage report; each row whose start lies inside an instruction the entry-path walk established, or at or inside an instruction of an overlap it left unresolved; with `noReturn`, each row that continues past a call or interrupt declared never to return; with `indirectCalls`, the declared targets of computed calls as call targets | [inventory call targets](#call-targets-a-function-inventory-lacks), [declared call targets](#declared-computed-call-targets) |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
 | `dispatch` | the target of each input through a switch's jump table | this section, [jump tables](#evidenced-indirect-jump-tables) |
 | `allocation` | allocation requests, returned pointers and later writes; checks `relationalControls` | this section, [relational controls](#relational-controls) |
@@ -1250,27 +1250,40 @@ size an analyzer gives it, and the `address` column is the list to seed discover
 ### Row starts inside an instruction
 
 Each row start that a declared region places is compared with the instructions the entry-path
-walk established. A row whose start lies past the first byte of one of them is a row of
-`rowStarts`:
+walk decoded. A row whose start lies past the first byte of an instruction the walk established,
+or at or inside an instruction of an overlap the walk left unresolved, is a row of `rowStarts`:
 
 | Field | Meaning |
 |---|---|
 | `start`, `size`, `name` | the row |
 | `site` | the row start's file offset |
-| `status` | `inside an instruction`, or `start of an overlapping instruction` when the walk also established an instruction at the row start, as it does for deliberately overlapping code that a direct edge proves. The reader decides which of the two the routine starts with |
-| `insideInstruction`, `insideInstructionAddress`, `insideInstructionSize`, `insideInstructionText` | the established instruction that holds the row start: its site, its place in the inventory's notation, its size and its text |
-| `rowStartInstructionSize`, `rowStartInstructionText` | for `start of an overlapping instruction`, the instruction established at the row start |
+| `status` | `inside an instruction`, or `start of an overlapping instruction` when the walk also established an instruction at the row start, as it does for deliberately overlapping code that a direct edge proves. The reader decides which of the two the routine starts with. `start of an unresolved overlapping instruction` and `inside an unresolved overlapping instruction` mark a row start at or inside an instruction of an overlap the walk left unresolved (see below) |
+| `insideInstruction`, `insideInstructionAddress`, `insideInstructionSize`, `insideInstructionText` | the instruction that holds the row start, established or, for the unresolved statuses, of the unresolved overlap: its site, its place in the inventory's notation, its size and its text. A row start that no instruction before it holds has none |
+| `rowStartInstructionSize`, `rowStartInstructionText` | for `start of an overlapping instruction` and `start of an unresolved overlapping instruction`, the instruction the walk decoded at the row start |
+| `overlaps` | for the unresolved statuses, every instruction the walk decoded whose bytes meet those of the row start's instruction (or the row start's byte, when no instruction starts there), with its `site`, `address`, `size`, `text`, `evidence` (`entry-path instruction`, `overlapping entry-path instructions; boundary unresolved` or `reached only through a rejected overlapping start`) and `routine`, `routineAddress` and `routineIsRow` as below when the walk read it in a routine |
 | `routine`, `routineAddress`, `routineIsRow` | the routine the walk read the holding instruction in (the target of the last call on the route with the fewest calls, or the entry, as `reach` names it), its place, and whether a row starts there. A routine no row starts at is usually the routine's real entry, and is also a row of `targets` when a call resolves to it |
+
+A row start is often a declared entry of the walk as well, since a restoration seeds the walk with
+the starts its inventory lists. When such a start lies inside an instruction that another entry's
+path decodes, the walk proves neither boundary, rejects both instructions and records each as an
+`overlapping entry-path instructions; boundary unresolved` gap, so no instruction is established
+at either. The row is then listed with the unresolved status and `overlaps`, which names the
+instruction on the other side, and `routine` names the routine whose path reached the holding
+instruction. A row at the other side of the pair, at an instruction a misplaced row start cuts, is
+listed the same way, so a misplaced row and the row it overlaps both appear and the reader decides
+which is right ([ADR 0036](decisions/0036-inventory-row-starts-at-unresolved-overlaps.md)).
 
 `counts.rowStarts` counts the rows that start at an established instruction
 (`instructionStarts`), inside one (`insideAnInstruction`), at an overlapping instruction
-(`overlappingInstructionStarts`), at or inside an instruction the walk decoded but rejected as
+(`overlappingInstructionStarts`), at or inside an instruction of an unresolved overlap
+(`unresolvedOverlaps`), at or inside an instruction the walk decoded but rejected as
 contested (`contested`), and in bytes where the walk established no instruction (`notRead`). The check
 decodes nothing the walk did not: a row start in bytes the walk never reached, such as one after
 data that a linear decode would run over, is counted as `notRead` and not placed, whatever a
 linear decode of those bytes would show. Raise `instructionLimit` to the size of the declared code
-so that a stop does not add to `notRead`. The summary states the rows inside an instruction and
-the rows not read and, when there are any, the rows at contested instructions.
+so that a stop does not add to `notRead`. The summary states the rows inside an instruction, the
+rows at unresolved overlaps and the rows not read and, when there are any, the rows at contested
+instructions.
 
 ### Rows past a call that does not return
 
