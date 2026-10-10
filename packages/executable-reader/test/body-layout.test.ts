@@ -285,6 +285,55 @@ test("a candidate body is compared with the analyzer's: bytes in both and in onl
   assert.deepEqual(c.candidateOnly.regions, [{ kind: "overlay-code", descriptor: 1, bytes: 12 }]);
 });
 
+test("a resident candidate that fills gaps inside the body and misses its distant chunks keeps every range", (t) => {
+  // An MZ image without an envelope: header 0..64, load image 64..2560.
+  const data = Buffer.alloc(2560);
+  data.write("MZ");
+  data.writeUInt16LE(5, 4);
+  data.writeUInt16LE(4, 8);
+  const { query } = harness(t, data, { formatControls: { overlays: 0 } });
+  const r = query({
+    functions: [
+      {
+        entry: 200,
+        body: [
+          { start: 200, end: 260 },
+          { start: 270, end: 450 },
+          { start: 455, end: 600 },
+          { start: 900, end: 940 },
+          { start: 1500, end: 1530 },
+        ],
+        candidate: { ranges: [{ start: 200, end: 600 }], evidence: "bounds intervals" },
+      },
+    ],
+  });
+  const f = r.functions[0];
+  const c = f.candidate;
+  assert.equal(f.bytes, 455);
+  assert.equal(c.bytes, 400);
+  assert.equal(c.entryInCandidate, true);
+  assert.equal(c.both.bytes, 385);
+  assert.deepEqual(c.both.ranges, [
+    { start: 200, end: 260 },
+    { start: 270, end: 450 },
+    { start: 455, end: 600 },
+  ]);
+  assert.equal(c.candidateOnly.bytes, 15);
+  assert.deepEqual(c.candidateOnly.ranges, [
+    { start: 260, end: 270 },
+    { start: 450, end: 455 },
+  ]);
+  assert.equal(c.bodyOnly.bytes, 70);
+  assert.deepEqual(c.bodyOnly.ranges, [
+    { start: 900, end: 940 },
+    { start: 1500, end: 1530 },
+  ]);
+  assert.deepEqual(c.bodyOnly.regions, [{ kind: "resident", descriptor: null, bytes: 70 }]);
+  assert.deepEqual(c.candidateOnly.regions, [{ kind: "resident", descriptor: null, bytes: 15 }]);
+  // The body is kept whole: no chunk outside the candidate is clipped.
+  assert.equal(f.fragments.length, 5);
+});
+
 test("a file without an envelope ends in undeclared bytes after its load image", (t) => {
   const data = Buffer.alloc(600);
   data.write("MZ");
