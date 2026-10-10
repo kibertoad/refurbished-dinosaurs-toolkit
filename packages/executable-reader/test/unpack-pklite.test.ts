@@ -348,7 +348,7 @@ test("a relocation past the load module, or a table that runs into the footer, f
   const short = Buffer.from([5, 0, 0, 0x01, 0]);
   assert.throws(
     () => unpack(pklite(encode(literals("abcd")), { table: short })),
-    /The relocation table runs into the footer's 8 bytes/,
+    /The relocation table runs past the end of the image before its 8-byte footer/,
   );
 });
 
@@ -370,6 +370,13 @@ test("a stub part the reader does not know is refused, naming it", () => {
     /reads literals in a way the reader does not know/,
   );
   assert.throws(() => unpack(pklite(stream, { model: 0x10 })), /has no length table the reader knows/);
+  // A decompressor whose paragraph operand would lie past the end of the image.
+  const cut = pklite(stream);
+  const copierAt = cut.indexOf(Buffer.from(hexBytes("33 FF 57 BE"))) + 4;
+  const decompressorAt = cut.length - 6;
+  cut.writeUInt16LE(decompressorAt - 0x20 + 0x100, copierAt);
+  Buffer.from(hexBytes("FD 8C DB 53 83 C3")).copy(cut, decompressorAt);
+  assert.throws(() => unpack(cut), /moves a decompressor at 0x[0-9A-F]{8} that the reader does not know/);
   const noIntro = pklite(stream);
   noIntro[0x20 + 6] = 0x06;
   assert.throws(() => unpack(noIntro), /No packer the reader unpacks.*PKLITE by the intro of a 1\.00 to 1\.15 stub/);

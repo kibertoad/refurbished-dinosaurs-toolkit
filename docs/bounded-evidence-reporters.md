@@ -1590,8 +1590,9 @@ the same format are not told apart, and neither are the versions of EXEPACK and 
 The report gives `packer` (`LZEXE 0.91`, `LZEXE 0.90`, `EXEPACK` or `PKLITE`), `unpacked` (`size`, `xxh3`,
 `format: "MZ"` and `tool`, the reader's package name and version), `layout`, the rebuilt `header`,
 `loadModuleSize`, `sourceIdentity`, and under `packed` the file offsets it read: the
-decompressor's header (`decompressor`), the compressed `stream`, the `slack` between the stream's
-end and the decompressor's CS:0, and the `relocationTable`. For LZEXE the stream runs from its
+decompressor's header (`decompressor`), the compressed `stream`, the `slack`, which counts the bytes
+of the image the decoder reads nothing from (for LZEXE and EXEPACK those between the stream's end
+and the decompressor's CS:0, for PKLITE the padding after its footer), and the `relocationTable`. For LZEXE the stream runs from its
 first flag word to the byte after its end mark. `setByLayout` names the header fields the packed
 file did not supply.
 

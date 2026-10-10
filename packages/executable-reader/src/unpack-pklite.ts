@@ -5,7 +5,7 @@
 // positions inside the matched sequences. It never runs the stub. The sequences and the code tables
 // follow Deark's PKLITE module (MIT license, Jason Summers); NOTICE.md has the credit.
 import { hex } from "./legacy-image.ts";
-import type { PackedParts } from "./unpack.ts";
+import { type Decoded, type Image, reader } from "./unpack-image.ts";
 
 // The stub is read from the first 1000 bytes at the entry point, as Deark reads it.
 const WINDOW = 1000;
@@ -20,11 +20,12 @@ const INTRO_112 = pattern("B8 ?? ?? BA ?? ?? 05 00 00 3B 06");
 const DESCRAMBLER = pattern(
   "2D 20 00 8E D0 2D ?? ?? 50 52 B9 ?? ?? BE ?? ?? 8B FE FD 90 49 74 ?? AD 92 33 C2 AB EB F6",
 );
-const COPIER = pattern("B9 ?? ?? 33 FF 57 BE ?? ?? FC F3 A5");
-const DECOMPRESSOR_BYTE = pattern("FD 8C DB 53 83 C3");
-const DECOMPRESSOR_WORD = pattern("FD 8C DB 53 81 C3");
+const COPIER = pattern("B9 ?? ?? 33 FF 57 BE ?? ?? FC F3 A5 CB");
+// The decompressor's patterns take in its paragraph operand, so a match holds the operand too.
+const DECOMPRESSOR_BYTE = pattern("FD 8C DB 53 83 C3 ??");
+const DECOMPRESSOR_WORD = pattern("FD 8C DB 53 81 C3 ?? ??");
 const LITERAL_STANDARD = pattern("AD 95 B2 10 72 08 A4 D1 ED 4A 74");
-const LITERAL_EXTRA = pattern("AD 95 B2 10 72 0B AC ?? ?? AA D1 ED 4A 74");
+const LITERAL_EXTRA = pattern("AD 95 B2 10 72 0B AC 32 C2 AA D1 ED 4A 74");
 const LENGTH_TABLE = pattern("01 02 00 00 03 04 05 06 00 00 00 00 00 00 00 00 07 08 09 0A 0B");
 
 function matches(w: Buffer, at: number, p: Pattern): boolean {
@@ -38,7 +39,10 @@ function search(w: Buffer, from: number, to: number, p: Pattern): number {
   return -1;
 }
 
-/** Which intro a PKLITE stub starts with: the 1.00 form, or the 1.12 form that may be followed by a descrambler. */
+/**
+ * Which intro a PKLITE stub starts with: the 1.00 form, the 1.12 form that falls through to what
+ * follows it, or the 1.14 form that jumps over data to it. A descrambler may follow either of the last two.
+ */
 export type PkliteIntro = "1.00" | "1.12" | "1.14";
 
 /**
@@ -75,19 +79,6 @@ export interface PkliteParts {
   footer: number;
 }
 
-/** What the PKLITE decoder gives `unpack`'s layout rule. */
-export interface PkliteDecoded {
-  packer: string;
-  data: Buffer;
-  ip: number;
-  cs: number;
-  sp: number;
-  ss: number;
-  /** Each relocation as [file offset of the entry, load-module offset]. */
-  linear: Array<[number, number]>;
-  packed: PackedParts;
-}
-
 // Codes as length << 12 | code, read high bit first, listed by the value they decode to.
 const LENGTHS_SMALL = [0x2000, 0x3004, 0x3005, 0x400c, 0x400d, 0x400e, 0x400f, 0x3003, 0x3002];
 const LENGTHS_LARGE = [
@@ -108,18 +99,12 @@ const OFFSET_CODES = lookup(OFFSETS);
  * Decodes a PKLITE executable whose intro {@link pkliteIntro} recognized. The stub's parts are found
  * in order (descrambler, copier, decompressor) and each must match a known sequence, or the file is
  * refused with an error naming the part and its file offset.
- * @param bytes The whole file.
- * @param headerBytes File offset of the load module, which is also the entry point.
- * @param end File offset one past the MZ image.
+ * @param image The packed MZ image; its load module starts at the entry point.
+ * @param intro The intro {@link pkliteIntro} gave.
  * @param cap The largest load module to write.
  */
-export function decodePklite(
-  bytes: Buffer,
-  intro: PkliteIntro,
-  headerBytes: number,
-  end: number,
-  cap: number,
-): PkliteDecoded {
+export function decodePklite(image: Image, intro: PkliteIntro, cap: number): Decoded {
+  const { bytes, headerBytes, end } = image;
   // A copy, because a scrambled stub is descrambled in it.
   const w = Buffer.from(bytes.subarray(headerBytes, Math.min(end, headerBytes + WINDOW)));
   const at = (rel: number) => hex(headerBytes + rel);
@@ -138,6 +123,8 @@ export function decodePklite(
   let copier = next;
   let scrambled = false;
   if (intro !== "1.00" && matches(w, next, DESCRAMBLER)) {
+    // The jump to the copier is read before descrambling, as the descrambler's own bytes are read.
+    copier = next + 23 + w[next + 22]!;
     // The descrambler walks down from its last word: each word is XORed with the scrambled word
     // above it, and the last with the key the intro loads into DX.
     const count = Math.max(0, word(next + 11) - 1);
@@ -151,11 +138,10 @@ export function decodePklite(
     for (let p = first; count > 0 && p <= last; p += 2)
       w.writeUInt16LE(w.readUInt16LE(p) ^ (p === last ? key : w.readUInt16LE(p + 2)), p);
     scrambled = count > 0;
-    copier = next + 23 + w[next + 22]!;
   }
 
   const found = search(w, copier, copier + 75, COPIER);
-  if (found < 0 || w[found + 12] !== 0xcb) refuse(`No copier the reader knows lies within 75 bytes of ${at(copier)}`);
+  if (found < 0) refuse(`No copier the reader knows lies within 75 bytes of ${at(copier)}`);
   const decompressor = rel(word(found + 7));
   const stubEnd = matches(w, decompressor, DECOMPRESSOR_BYTE)
     ? rel(w[decompressor + 6]! * 16)
@@ -167,14 +153,12 @@ export function decodePklite(
       `The decompressor at ${at(decompressor)} gives the compressed data at ${at(stubEnd)}, outside the load module after it`,
     );
 
-  let extra: boolean;
-  if (search(w, decompressor, stubEnd, LITERAL_STANDARD) >= 0) extra = false;
-  else {
-    const literal = search(w, decompressor, stubEnd, LITERAL_EXTRA);
-    if (literal < 0 || w[literal + 7] !== 0x32 || w[literal + 8] !== 0xc2)
-      refuse(`The decompressor at ${at(decompressor)} reads literals in a way the reader does not know`);
-    extra = true;
-  }
+  const extra =
+    search(w, decompressor, stubEnd, LITERAL_STANDARD) >= 0
+      ? false
+      : search(w, decompressor, stubEnd, LITERAL_EXTRA) >= 0
+        ? true
+        : refuse(`The decompressor at ${at(decompressor)} reads literals in a way the reader does not know`);
   const table = search(w, stubEnd - 60, stubEnd, LENGTH_TABLE);
   const model = table > 0 ? w[table - 1] : undefined;
   if (model !== 0x09 && model !== 0x18)
@@ -294,22 +278,13 @@ function decodeStream(bytes: Buffer, start: number, limit: number, extra: boolea
   return { data: Buffer.from(out.subarray(0, size)), end: p };
 }
 
-function reader(bytes: Buffer, start: number, limit: number) {
-  let p = start;
-  const byte = () => {
-    if (p >= limit)
-      throw new Error(
-        `The relocation table runs into the footer's 8 bytes before the end of the image at ${hex(limit)}`,
-      );
-    return bytes[p++]!;
-  };
-  return { byte, word: () => byte() | (byte() << 8), at: () => p };
-}
+// The relocation table ends before the footer's 8 bytes.
+const BOUND = "image before its 8-byte footer";
 
 // Standard compression: groups of a count byte, a segment word and that many offset words, ended by
 // a count of 0.
 function relocationsBySegment(bytes: Buffer, start: number, limit: number) {
-  const r = reader(bytes, start, limit);
+  const r = reader(bytes, start, limit, BOUND);
   const linear: Array<[number, number]> = [];
   for (let count = r.byte(); count > 0; count = r.byte()) {
     const segment = r.word();
@@ -324,7 +299,7 @@ function relocationsBySegment(bytes: Buffer, start: number, limit: number) {
 // Extra compression: groups of a count word and that many offset words, for segments 0000, 0FFF,
 // 1FFE and on, ended by a count of 0xFFFF.
 function relocationsByGroup(bytes: Buffer, start: number, limit: number) {
-  const r = reader(bytes, start, limit);
+  const r = reader(bytes, start, limit, BOUND);
   const linear: Array<[number, number]> = [];
   for (let segment = 0, count = r.word(); count !== 0xffff; segment += 0x0fff, count = r.word()) {
     if (segment > 0xffff)
