@@ -268,7 +268,10 @@ located.
 
 A restoration describes its disc in a profile file
 ([schema](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/schemas/disc-profile.schema.json))
-and keeps it in its own repository:
+and keeps it in its own repository. The file is UTF-8, with or without one leading byte order mark
+(which Windows PowerShell 5.1 writes for `-Encoding utf8`); a file starting with a UTF-16 or UTF-32
+byte order mark or with more than one UTF-8 mark, or bytes that are not UTF-8, are refused with the
+cause named:
 
 ```json
 {

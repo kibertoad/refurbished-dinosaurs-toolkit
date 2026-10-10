@@ -78,6 +78,19 @@ class ProfileTests(unittest.TestCase):
             path = Path(temp) / "p.json"
             path.write_text(json.dumps({"profile": 1, "title": "x", "recommendedFormats": ["iso"]}))
             self.assertEqual(load_profile(path).source, path)
+            text = json.dumps({"profile": 1, "title": "Côte", "recommendedFormats": ["iso"]}, ensure_ascii=False)
+            path.write_bytes(b"\xef\xbb\xbf" + text.encode("utf-8"))
+            self.assertEqual(load_profile(path).title, "Côte")
+            for data, message in (
+                (b"\xef\xbb\xbf\xef\xbb\xbf" + text.encode("utf-8"), "more than one byte order mark"),
+                (b"\xff\xfe" + text.encode("utf-16-le"), "is UTF-16 text"),
+                (b"\xfe\xff" + text.encode("utf-16-be"), "is UTF-16 text"),
+                (b"\xff\xfe\x00\x00" + text.encode("utf-32-le"), "is UTF-32 text"),
+                (text.encode("latin-1"), "is not valid UTF-8"),
+            ):
+                path.write_bytes(data)
+                with self.assertRaisesRegex(DiscError, message):
+                    load_profile(path)
             path.write_text("{")
             with self.assertRaisesRegex(DiscError, "not JSON"):
                 load_profile(path)

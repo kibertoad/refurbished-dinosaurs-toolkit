@@ -51,9 +51,22 @@ def load_profile(reference: str | Path) -> Profile:
         raise DiscError(f"{reference} is neither a built-in profile ({', '.join(BUILTIN_PROFILES)}) nor a file")
     if path.stat().st_size > MAXIMUM_PROFILE_BYTES:
         raise DiscError(f"{path} is larger than a profile can be")
+    # Windows PowerShell 5.1 writes a UTF-8 byte order mark with -Encoding utf8 and UTF-16 by default.
+    raw = path.read_bytes()
+    if raw[:4] in (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff"):
+        raise DiscError(f"{path} is UTF-32 text; save it as UTF-8")
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        raise DiscError(f"{path} is UTF-16 text; save it as UTF-8")
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        # utf-8-sig drops one leading byte order mark.
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise DiscError(f"{path} is not valid UTF-8; save it as UTF-8") from None
+    if text.startswith("﻿"):
+        raise DiscError(f"{path} starts with more than one byte order mark; save it as UTF-8 with at most one")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as error:
         raise DiscError(f"{path} is not JSON: {error}") from None
     return parse_profile(data, path)
 
