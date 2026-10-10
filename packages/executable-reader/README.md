@@ -47,7 +47,11 @@ lies in an `mz` source by its MZ and FBOV tables: the load image, the FBOV descr
 overlay stub, overlay code, a fixup table, zero padding or undeclared bytes, with bytes past
 everything the tables declare marked `trailing`. It places each entry on its own, keeps every
 fragment, marks the parts outside the entry's region, and can compare a body with a candidate body
-found another way. It needs `formatControls` and decodes no instruction.
+found another way. It needs `formatControls` and decodes no instruction. In a file with an FBOV
+envelope it cuts the load image at the spans the resident descriptors' offset words give, so the
+bytes between two segments' spans are padding or undeclared bytes. `descriptors` lists every
+descriptor's four words, its span and the span's loaded `segment:ip`, the mapping a code region
+declares; with no `functions`, the report gives the layout and this list alone.
 
 `imports` lists the import the file's import tables put in each slot of a PE32 or PE32+ import
 address table, by slot address, and needs at least one positive control: a slot with the import
@@ -108,6 +112,7 @@ import { bodyLayout, fileLayout } from "@scientific-method/executable-reader/bod
 | `MzImage.address(segment, offset)` | `legacy-image` | File offset of a resident loaded address. |
 | `MzImage.resolveOperand(site, targetOffset?)` | `legacy-image` | Resolves a stored segment word through the relocation or fixup tables. |
 | `MzImage.envelope`, `FbovEnvelope` | `legacy-image` | File offsets of the FBOV envelope header, the end of its payload and its descriptor table, or null without an envelope. |
+| `descriptorExtents(image)`, `DescriptorExtent`, `DescriptorExtentStatus` | `legacy-image` | The load-image span each FBOV descriptor's `minOffset` and `maxOffset` words give, its status and its loaded `segment:ip`. Refuses nothing. |
 | `formatCounts(image)` | `legacy-image` | Counts of relocations, descriptors, overlays, fixups and trampolines. |
 | `checkFormatControls(image, expected)` | `legacy-image` | Throws unless the source yields the expected counts. |
 | `selectedTarget(image, selector, target?)` | `legacy-image` | Canonical overlay entry named by a descriptor and trampoline. |
@@ -126,7 +131,7 @@ import { bodyLayout, fileLayout } from "@scientific-method/executable-reader/bod
 | `bodyLayout(bytes, config)` | `body-layout` | The `bodies` report over an already hash-checked buffer. |
 | `fileLayout(image)` | `body-layout` | The regions an `MzImage`'s tables declare, with the runs between them, covering the whole file. |
 | `MAX_BODY_FUNCTIONS`, `MAX_BODY_RANGES` | `body-layout` | The most functions one query takes (10000) and the most ranges in one body or candidate (4096). |
-| `BodyConfig`, `BodyFunction`, `ByteRange`, `BodyPart`, `LayoutRegion`, `RegionKind`, `RegionTotal` | `body-layout` | Types of the `bodies` query, the layout and the classified parts. |
+| `BodyConfig`, `BodyFunction`, `ByteRange`, `BodyPart`, `DescriptorRow`, `LayoutRegion`, `RegionKind`, `RegionTotal` | `body-layout` | Types of the `bodies` query, the layout and the classified parts. |
 | `unpack(bytes)` | `unpack` | Unpacks an LZEXE 0.90 or 0.91, an EXEPACK or a PKLITE 1.00 to 1.15 file in memory into an `UnpackResult`: the unpacked bytes, the rebuilt header and relocations, and the packed parts read. |
 | `UNPACK_LAYOUT` | `unpack` | The layout rule number the unpacked bytes are written by. |
 | `MAX_PACKED_BYTES`, `MAX_UNPACKED_BYTES` | `unpack` | The caps on the packed file and on the unpacked load module, 1 MiB each. |

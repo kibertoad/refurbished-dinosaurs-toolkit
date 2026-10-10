@@ -3,15 +3,15 @@ import json
 import sys
 from pathlib import Path
 
-import capstone
 import pypcode
 
 from . import PREPARED_PROTOCOL
+from .x86.image import CAPSTONE_VERSION
 
 CONFIG_LIMIT = 1024 * 1024
 PREPARED_CONFIG_LIMIT = 16 * 1024 * 1024
 # The header names the decoder and instruction semantics that actually ran, not the pins in pyproject.toml.
-DECODER = "capstone " + capstone.__version__
+DECODER = f"capstone {CAPSTONE_VERSION or 'without distribution metadata'}"
 INSTRUCTION_SEMANTICS = f"pypcode {pypcode.__version__} (Ghidra SLEIGH x86)"
 USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bounds|owner|callees|reach|trace|uses|arguments|"
          "effects|returns|memory|incoming|inventory-check|call-order|guards|allocation|dispatch> <config.json|->\n"
@@ -25,7 +25,9 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "and the routines every read route passes, and lists every reached transfer it could not resolve;\n"
          "a leaves routine is reached but not read, and its reason is repeated in the report;\n"
          "a call to a noReturn routine and a noReturn interrupt do not continue at the next instruction,\n"
-         "and a noReturn routine with a return on its own read paths is reported contradicted.\n"
+         "and a noReturn routine with a return on its own read paths is reported contradicted;\n"
+         "controls are call sites the walk must reach and resolve, instructionControls sites it must decode,\n"
+         "and a failed control fails the report saying whether it was reached.\n"
          "inventory-check places every resolved direct call target in the notation of the function inventory TSV\n"
          "that inventory names and lists each target no row starts at: inside another row's body or outside every row,\n"
          "with one calling site, near or far, and whether an entry-path call, a contested one or only raw bytes call it;\n"

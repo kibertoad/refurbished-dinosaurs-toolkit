@@ -7,9 +7,9 @@ condition. Remove a milestone from this file once it lands.
 ## Where things stand
 
 Engine 0.9.0 completed ADR 0003: values come from pypcode, the handwritten semantics are gone, and
-the callee graph is cross-checked against Ghidra. Engine 5.0.0, reader 2.1.0 and checker 0.2.0
-are current, and the engine and reader speak prepared protocol 3. Reader and engine 2.0.0 shipped
-scoped memory hypotheses ([ADR 0009](decisions/0009-scoped-memory-hypotheses-on-call-models.md)),
+the callee graph is cross-checked against Ghidra. Engine 18.0.0, reader 2.10.1 and checker 4.2.0
+are current, and the engine and reader speak prepared protocol 3. `dinorefurb-dosbox-session`
+0.3.0 carries the three M7 slices. Reader and engine 2.0.0 shipped scoped memory hypotheses ([ADR 0009](decisions/0009-scoped-memory-hypotheses-on-call-models.md)),
 and engine 4.0.0 gives declared-table continuations their own budget
 ([ADR 0011](decisions/0011-separate-continuation-budget.md)). PR 60 (conditional
 table-target continuations) and PR 69 (boundary budget) are merged.
@@ -103,27 +103,30 @@ and enemy-reinfestation's open requests against this toolkit's Ghidra scripts. I
 these are items 12, 13, 20 to 27 and 32. Some name scripts the toolkit does not ship. Re-verify
 each against main and fix the ones that belong here.
 
-### M7. Owned DOSBox-X debugger sessions (issue 403, tracked in issue 406)
+### M7. Owned DOSBox-X debugger sessions (issue 403, tracked in issue 406; slices shipped)
 
-Build `dinorefurb-dosbox-session` as [ADR 0026](decisions/0026-dosbox-x-session-package.md)
+`dinorefurb-dosbox-session` is built as [ADR 0026](decisions/0026-dosbox-x-session-package.md)
 sets out. Each slice is one PR with synthetic tests against a stand-in emulator and a stand-in
 client on a Windows runner, and no game or DOSBox-X in CI:
 
-1. The package, its CI area, release path and catalog rows, with the owned process, run lock,
-   drives, muted host audio, session records, request IDs and operation observation. Tests cover
-   readiness, an early exit, an expired observation, a transport error, a refused capability, a
-   checkout at another revision or with local changes, an existing C: drive, an existing lock and
-   a stale one, cleanup that fails while the process lives and another platform. The owner-local
-   native procedure's breakpoint stop and register read pass on the pinned revision.
-2. Guarded writes to stopped state against a caller-supplied field contract. Tests cover a write
-   outside the contract, an expected-hash mismatch and a readback mismatch. The native procedure
-   gains the guarded memory write and readback, and passes on the pinned revision.
-3. The event log, with caller-supplied event schemas, a versioned outcome contract and module
-   hashes. Tests cover a log cut off mid-run, an event that fails its schema, an outcome that
-   differs from the expected one or carries a failure, a required outcome field that is missing or
-   of the wrong type, a missing, extra or reordered event, a log read against the contract version
-   it recorded after a newer version exists, a malformed or oversized log, and a named module that
-   is not imported when the guest starts.
+1. Shipped in PR 414, released as 0.1.0. The package, its CI area, release path and catalog
+   rows, with the owned process, run lock, drives, muted host audio, session records, request IDs
+   and operation observation. Tests cover readiness, an early exit, an expired observation, a
+   transport error, a refused capability, a checkout at another revision or with local changes,
+   an existing C: drive, an existing lock and a stale one, cleanup that fails while the process
+   lives and another platform. The owner-local native procedure's breakpoint stop and register
+   read pass on the pinned revision. Issue 416 is still open: an owner killed between launching
+   the emulator and recording it in the lock leaves an emulator that no lock names.
+2. Shipped in PR 419, released as 0.2.0. Guarded writes to stopped state against a
+   caller-supplied field contract. Tests cover a write outside the contract, an expected-hash
+   mismatch and a readback mismatch. The native procedure gains the guarded memory write and
+   readback, and passes on the pinned revision.
+3. Shipped in PR 426, released as 0.3.0. The event log, with caller-supplied event schemas, a
+   versioned outcome contract and module hashes. Tests cover a log cut off mid-run, an event that
+   fails its schema, an outcome that differs from the expected one or carries a failure, a
+   required outcome field that is missing or of the wrong type, a missing, extra or reordered
+   event, a log read against the contract version it recorded after a newer version exists, a
+   malformed or oversized log, and a named module that is not imported when the guest starts.
 
 What must stay explicit: an expired observation is pending, a log without its final outcome is
 incomplete, and no write is supported unless the caller's contract says so. The milestone ends

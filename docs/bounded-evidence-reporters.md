@@ -137,7 +137,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved | [reachability](#reachability-from-starts-to-targets) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
-| `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (load image, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own and an optional comparison with a candidate body (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
+| `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (the resident span of each FBOV descriptor, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own, an optional comparison with a candidate body, and every FBOV descriptor with its load-image span (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
 | `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables and checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots) |
 | `unpack` | writes the unpacked form of an LZEXE 0.90 or 0.91, an EXEPACK or a PKLITE 1.00 to 1.15 executable and gives the `size`, `xxh3`, `format` and `tool` of a build's `unpacked` item (reader only, no engine) | [unpacking packed executables](#unpacking-packed-executables) |
 
@@ -488,15 +488,20 @@ terms ([ADR 0003](decisions/0003-established-instruction-semantics.md)). Segment
 memory accesses, producers and every control transfer stay with the engine. A p-code memory access
 that does not match the decoded operand, an unsupported p-code operation and a decode length that
 differs from Capstone's stop the path. Every report names both in `decoder` and
-`instructionSemantics`.
+`instructionSemantics`. `decoder` gives the version of the installed Capstone distribution, since
+the Capstone 5.0.8 and 5.0.9 bindings still report 5.0.7 as `capstone.__version__`. The engine
+refuses to build a report under any Capstone other than 5.0.9 or any pypcode other than 4.0.1.
 
 The decoder supports 16-bit addressing and a bounded subset of ordinary integer
 operations: MOV/MOVZX/MOVSX, XCHG, low-result two/three-operand IMUL (flags unresolved),
 one-operand MUL/IMUL/DIV/IDIV, LEA, LDS/LES, PUSH/POP, ENTER, LEAVE, ADD/SUB, ADC/SBB,
 NEG/NOT, bitwise logic, shifts, ROL/ROR/RCL/RCR with a known count, CLC/STC/CMC,
-INC/DEC and effective-size sign extension. ENTER runs at nesting levels 0 and 1 (the level byte
-modulo 32): its saved frame pointer and, at level 1, the new frame pointer are stack writes at
-ENTER's site, and BP and SP take ENTER's site as their producer. A higher level copies frame
+INC/DEC and effective-size sign extension. A shift or rotate keeps OF only for a count of 1,
+because the CPU leaves OF undefined for larger counts, and SHR keeps it only in its D0 and D1
+encodings, because the SLEIGH specification writes OF as 0 for SHR by a count operand of 1. A
+branch that reads OF after any other shift or rotate is undecided. ENTER runs at nesting levels 0
+and 1 (the level byte modulo 32): its saved frame pointer and, at level 1, the new frame pointer
+are stack writes at ENTER's site, and BP and SP take ENTER's site as their producer. A higher level copies frame
 pointers from the caller's frame chain and stops the path with `ENTER nesting level <n> copies the
 caller's frame chain, which is not modeled`, where `<n>` is the level in effect (the byte modulo
 32). ENTER and LEAVE with an operand-size or address-size override stop the path. The decoder
@@ -1074,7 +1079,8 @@ for questions such as "can anything between program start and this point write t
 | `targets` | 1..256 file offsets in declared code, such as the starts of a variable's writers or the writes themselves |
 | `leaves` | optional, at most 256 `{ "routine", "reason" }` objects: routines the walk reaches but does not read, so they call nothing. `reason` is required free text, and the report repeats it. A start cannot be a leaf |
 | `noReturn` | optional, at most 256 `{ "routine", "reason" }` or `{ "interrupt", "reason" }` objects ([ADR 0029](decisions/0029-declared-non-returning-routines-and-interrupts.md)): a resolved call to the `routine` and the interrupt instruction at the `interrupt` site do not continue at the next instruction. `reason` is required free text, and the report repeats it. An `interrupt` site must decode as an unconditional interrupt instruction |
-| `controls` | optional, at most 256 distinct call sites the walk must decode and resolve; a missed or unresolved control fails the report |
+| `controls` | optional, at most 256 distinct call sites the walk must decode and resolve. An offset whose bytes do not decode as a call fails the report before the walk |
+| `instructionControls` | optional, at most 256 distinct sites the walk must decode as instruction starts, such as a store the walk is known to reach. A start is refused, since the walk decodes every start |
 | `indirectJumps` | the [declared tables](#evidenced-indirect-jump-tables) the walk follows |
 | `instructionLimit` | instructions the walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000) |
 | `limit` | rows kept in each of `unresolved`, `interrupts`, `gaps` and `contested` (1..10000, default 1000) |
@@ -1114,8 +1120,11 @@ Each `targets` row gives `reached`. A reached target has:
 | `leaf` | whether the target is the start of a leaf |
 
 An unreached target gives `status`: `not reached`, `inside a reached instruction` (with
-`insideInstruction`) or `start of a contested instruction`. A leaf's body is not read, so a target
-inside it past its start is not reached through it.
+`insideInstruction`), `start of a contested instruction`, `start of an unresolved overlapping
+instruction` (the walk decoded it, but it overlaps another reached instruction and neither boundary
+is proven, so the walk keeps neither) or `reached but not decodable` (an edge leads there and its
+bytes do not decode). A leaf's body is not read, so a target inside it past its start is not reached
+through it.
 
 `reachedRoutines` lists the starts and the resolved targets of reached calls, leaves included.
 `counts` gives the routines, the decoded instructions and the full length of each list. `leaves`
@@ -1142,15 +1151,24 @@ The stop is also an `instruction limit` row in `gaps`, but the result `limit` ca
 before the stop, and which part that is depends on the walk order, so adding starts can lower the
 counts. A target that is not reached may lie past the stop.
 
-`negativeUsable` holds when `controls` were given, the walk did not stop at its instruction limit,
-nothing is unresolved, no gap was recorded, no instruction is contested and no `noReturn` routine
-is contradicted. Even then a target that is not reached is unreached only on the walk's
-assumptions, which the report lists: each call and interrupt returns to the next instruction
-except where `noReturn` declares otherwise, each leaf calls nothing and each `noReturn` routine
-and interrupt never returns, for its stated reason, and each declared table holds the routes its
-declaration gives. `throughEveryRoute` describes the
-routes the walk read; an unresolved transfer may add a route that passes none of those routines.
-None of this proves runtime reachability.
+A failed control of either kind fails the report, and the error names every failed control with what
+the walk found there: a call it reached whose target is unresolved (with the reason), the start of a
+reached leaf (never decoded), a site inside a reached instruction (with that instruction's start),
+the start of a contested or unresolved overlapping instruction, a reached site whose bytes do not
+decode, or a site the walk did not reach, noting when the walk stopped at its instruction limit. A
+passing call-site control is reported in `controls` with its `site` and resolved `target`, and an
+instruction control in `instructionControls` with its `site`, `instruction` text and the `routine`
+the walk read it in.
+
+`negativeUsable` holds when a control of either kind was given, the walk did not stop at its
+instruction limit, nothing is unresolved, no gap was recorded, no instruction is contested and no
+`noReturn` routine is contradicted. Even then a target that is not reached is unreached only on
+the walk's assumptions, which the report lists: each call and interrupt returns to the next
+instruction except where `noReturn` declares otherwise, each leaf calls nothing and each
+`noReturn` routine and interrupt never returns, for its stated reason, and each declared table
+holds the routes its declaration gives. `throughEveryRoute` describes the routes the walk read; an
+unresolved transfer may add a route that passes none of those routines. None of this proves
+runtime reachability.
 
 ## Call targets a function inventory lacks
 
@@ -1540,12 +1558,13 @@ Run `scientific-method bodies <config.json>` to see where the bytes of an analyz
 lie in an `mz` source, by the file's own MZ and FBOV tables. It runs in the reader and needs no
 engine. Use it on a function inventory whose rows fail a check such as the Code ranges one, to
 tell an entry outside code from a body fragment that runs into a fixup table, padding or another
-overlay. It decodes no instruction.
+overlay. It decodes no instruction. Run without `functions`, it gives the layout and the FBOV
+descriptor table alone, from which a config can take its code regions.
 
 | Field | Meaning |
 |---|---|
 | `formatControls` | Required. The counts the build is known to have (see [format-table controls](#format-table-controls)). The classification rests on the tables, so a count that differs fails the report before anything is classified. |
-| `functions` | 1..10000 objects `{ name?, entry, body, candidate? }`. `entry` is a file offset in the file. `body` is 1..4096 half-open ranges `{ start, end }` of file offsets, in any order, none overlapping another; ranges that touch are kept as given. |
+| `functions` | Optional, 0..10000 objects `{ name?, entry, body, candidate? }`. `entry` is a file offset in the file. `body` is 1..4096 half-open ranges `{ start, end }` of file offsets, in any order, none overlapping another; ranges that touch are kept as given. |
 | `functions[].candidate` | Optional `{ ranges, evidence }`: a body found another way, such as the `intervals` of a `bounds` report, and where it comes from. Same range rules as `body`. |
 
 A range outside the file, an empty or reversed range, an unknown field and overlapping ranges in one
@@ -1557,7 +1576,7 @@ body or candidate fail the report.
 | Kind | Bytes |
 |---|---|
 | `mz-header` | the MZ header and its relocation table |
-| `resident` | the MZ load image, less the FBOV descriptor table and the overlay stubs |
+| `resident` | the MZ load image, less the FBOV descriptor table and the overlay stubs. In a file with an FBOV envelope, only the bytes of a resident descriptor's span, with `descriptor` naming it (see below) |
 | `fbov-descriptors` | the FBOV descriptor table in the load image, 8 bytes per descriptor |
 | `overlay-stub` | one overlay's stub in the load image: its 32-byte header and its trampolines |
 | `fbov-header` | the 16-byte FBOV envelope header |
@@ -1573,6 +1592,40 @@ file without an envelope. A run is split there, so a body that runs past the las
 bytes appended after the envelope shows apart from one that runs into a gap inside the payload.
 Stubs of two overlays that overlap, or a stub that overlaps the descriptor table, fail the MZ/FBOV
 loader, so they fail this report and every other command that reads an `mz` source.
+
+Each 8-byte FBOV descriptor holds four words: the segment, `maxOffset`, `flags` and `minOffset`,
+the names a public description of the table gives (`seg`, `maxoff`, `flags`, `minoff`). The
+reader reads the words as a span of the load image, from `segment * 16 + minOffset` up to
+`segment * 16 + maxOffset`, and gives the flags no meaning beyond bit 1, which marks an overlay.
+`descriptors` lists every descriptor in table order:
+
+| Field | Meaning |
+|---|---|
+| `index`, `segment`, `maxOffset`, `flags`, `minOffset` | the descriptor's position and its four words as stored |
+| `overlay` | true when bit 1 of `flags` is set |
+| `extent` | `bytes` when `minOffset` is below `maxOffset` and the span lies in the load image, `empty` when the two words are equal, `inverted` when `maxOffset` is below `minOffset` (no bytes either), and `outside-load-image` when the span, or the place an empty span names, ends past the load image |
+| `start`, `end` | the span as file offsets; `end` is below `start` for an `inverted` descriptor |
+| `loadedSegment`, `ip` | `start` as a loaded address: the load segment plus `segment`, and `minOffset`. `loadedSegment` is null past FFFF |
+
+In a file with an envelope, the layout reads the load image through the resident descriptors (those
+without the overlay bit) whose span holds bytes. Each span's bytes, less the envelope's tables,
+are `resident` with that descriptor, and load-image bytes no span holds are runs between declared
+regions, `zero-padding` or `undeclared` as above, the way bytes in the FBOV payload that no overlay
+holds are. A body that runs from one segment into the next is therefore outside its entry's region
+there. A resident span that runs past the load image, such as a segment whose end is memory the
+program gets at load time and the file does not store, keeps the part in the load image; its row
+still reports `outside-load-image`. Two resident spans that overlap in the load image fail the
+report; the loader itself does not refuse them, so every other command still reads the file.
+Overlay descriptors' spans are listed and leave the layout alone.
+
+A resident descriptor's `start`, `end`, `loadedSegment` and `ip` are the `start`, `end`, `segment`
+and `ip` of a code region, which the reader checks against the file when a query declares it. The caller
+decides which descriptors hold code: the reader does not read it from `flags`, so a config
+picks the descriptors it treats as code, adds `name`, `entries` and `evidence`, and declares overlay
+code regions from the `overlay-code` layout rows with an analysis segment of its choosing. An
+overlay row (`overlay` true) reads its words the same way, but what those words mean for an
+overlay's stub is not established, so its span is never a code region: filter rows by `overlay` as
+well as by `extent`.
 
 Each function's `entry` gives its `offset`, the `kind` and `descriptor` of the region holding it,
 `inBody` (whether a body range holds it) and `trampolines`, the stub trampolines whose target it

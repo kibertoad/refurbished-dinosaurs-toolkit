@@ -331,9 +331,9 @@ def _unsigned(term, bits, ranges):
             return 0, top
         if tag in ("shr", "sar"):
             # With the sign bit clear, an arithmetic shift right is the logical one.
-            # Shift terms carry x86's five-bit count mask; a count the mask changes keeps only the upper bound.
-            s = k & 31
-            return lo >> s if s == k else 0, hi >> s
+            # A p-code shift takes the whole count (values.op): SLEIGH masks an x86 count itself.
+            s = min(k, bits)
+            return lo >> s, hi >> s
         if k == 0:
             return 0, top
         return (lo // k, hi // k) if tag == "udiv" else (0, min(hi, k - 1))
