@@ -362,12 +362,37 @@ trailing its line or the nearest comment-only line above it (with that line's bl
 that entry's evidence. With `images` set, a `0x` value of eight hex digits inside an image counts as
 an address wherever the code writes it; neutral names count without it.
 
-Correct each address the check reports. Put the finding that records it in the comment above the
-code, or above the table of addresses it belongs to, which then covers every row of the table. An
+Correct each address the check reports. Put the entry that records it, or whose evidence does, in
+the comment above the code, or above the table of addresses it belongs to, which then covers every
+row of the table. In the rebuild's source that entry is the rule, format, screen or bug the code
+implements (see the next section). An
 exclusive bound such as `a < 0x00401010` passes when that comment gives the range it ends
 (`0x00401000..0x00401010`). A value that is not an address but falls inside an image, such as a
 colour written with eight digits, is reported too: write it with fewer digits, or give `images` the
 image's exact extent.
+
+### Findings and experiments cited in the rebuild's source fail
+
+The work protocol has code in `src/` cite the rules, formats, screens and bugs it implements and no
+findings or experiments, but the checker accepted any existing finding or experiment there, and the
+address check's message suggested citing one. Each `FND-` or `EXP-` ID cited in a file under a
+`--rebuild-source` directory (`src` by default, the action's `rebuild-source` input) now fails, and
+the message names the rules, formats, screens and bugs whose `evidence` lists it. A repository
+that passed fails wherever its source cites one.
+
+Settle each citation the check reports as the work protocol's
+[Implementation batches](https://dinorefurb.com/work-protocol/#implementation-batches) section says:
+move it to each named entry the code implements that the comment does not cite yet, give each row
+it moves to Code `partial` with a note naming the finding or experiment, and delete it where there
+is no such entry. Where the message says no entry lists it and no live entry or deviation
+describes what the code does, the code goes with its tests. Citations in `tests` and `tools` are
+not reported. A restoration whose source sits in other directories names them in
+`--rebuild-source`.
+
+For an address in the rebuild's source, the address check's message now names the rules, formats,
+screens and bugs that record the address or cite evidence that does, and, where none does, says to
+leave the address out and treat the code that needs it as a gap in the spec. A script that matches
+`cite the finding that records it` matches it only for files outside `--rebuild-source`.
 
 ### The spec may not name the rebuild's files
 

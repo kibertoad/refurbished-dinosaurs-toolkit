@@ -3984,11 +3984,12 @@ test("a code range needs a code location in its own file, not only elsewhere", (
 });
 
 // Addresses in code comments. establishByReading records 0x00401000..0x00401010 in FND-SCORE-001,
-// which RULE-SCORE-001 cites as evidence.
+// which RULE-SCORE-001 cites as evidence. withCode writes to tests/, where code may cite findings;
+// the rebuild's source in src/ gets its own tests below.
 const IMAGE = ["--images", "0x00400000..0x00410000"];
 function withCode(root: string, name: string, text: string) {
-  mkdirSync(join(root, "src"), { recursive: true });
-  writeFileSync(join(root, "src", name), text);
+  mkdirSync(join(root, "tests"), { recursive: true });
+  writeFileSync(join(root, "tests", name), text);
 }
 
 for (const [comment, ok, why] of [
@@ -4057,7 +4058,7 @@ for (const [comment, ok, why] of [
     if (!ok)
       assert.match(
         result.output,
-        /src\/Game\.cs: line \d+ gives (?:0x|fn_)004010[0-9A-F]{2}, but .*cite the finding that records it/,
+        /tests\/Game\.cs: line \d+ gives (?:0x|fn_)004010[0-9A-F]{2}, but .*cite the finding that records it/,
       );
   });
 
@@ -4069,9 +4070,9 @@ test("JavaScript comments are read, and a template literal is not a comment", (t
   });
   const result = run(root, ...IMAGE);
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /src\/b\.ts: line 1 gives 0x00401004/);
+  assert.match(result.output, /tests\/b\.ts: line 1 gives 0x00401004/);
   // Read as part of the template literal, which is code.
-  assert.match(result.output, /src\/a\.mjs: line 2 uses 0x00401004 in code/);
+  assert.match(result.output, /tests\/a\.mjs: line 2 uses 0x00401004 in code/);
   assert.doesNotMatch(result.output, /a\.mjs: line \d+ gives/);
 });
 
@@ -4083,8 +4084,8 @@ test("an address inside a string is read as code, not as a comment", (t) => {
   });
   const result = run(root, ...IMAGE);
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /src\/a\.cs: line 1 uses 0x00401004 in code/);
-  assert.match(result.output, /src\/b\.cs: line 2 uses 0x00401004 in code/);
+  assert.match(result.output, /tests\/a\.cs: line 1 uses 0x00401004 in code/);
+  assert.match(result.output, /tests\/b\.cs: line 2 uses 0x00401004 in code/);
   assert.doesNotMatch(result.output, / gives /);
 });
 
@@ -4144,9 +4145,9 @@ test("a regular expression literal is not read as a string or a comment", (t) =>
   });
   const result = run(root, ...IMAGE);
   assert.equal(result.status, 1, result.output);
-  assert.match(result.output, /src\/b\.mjs: line 2 gives 0x00401004/);
+  assert.match(result.output, /tests\/b\.mjs: line 2 gives 0x00401004/);
   // Line 2 of a.mjs is code, so its address is one the code uses, not one a comment gives.
-  assert.match(result.output, /src\/a\.mjs: line 2 uses 0x00401004 in code/);
+  assert.match(result.output, /tests\/a\.mjs: line 2 uses 0x00401004 in code/);
   assert.doesNotMatch(result.output, /a\.mjs: line \d+ gives|c\.mjs/);
 });
 
@@ -4208,7 +4209,7 @@ for (const [code, ok, why] of [
     if (!ok)
       assert.match(
         result.output,
-        /src\/Game\.cs: line \d+ uses 0x004010[0-9A-F]{2} in code, but .*cite the finding that records it in that comment/,
+        /tests\/Game\.cs: line \d+ uses 0x004010[0-9A-F]{2} in code, but .*cite the finding that records it in that comment/,
       );
   });
 
@@ -4256,6 +4257,148 @@ test("PowerShell strings and here-strings are code, and # inside a word starts n
   ])
     assert.match(result.output, new RegExp(`tools/Probe\\.ps1: line ${line} uses ${address} in code`));
   assert.doesNotMatch(result.output, / gives /);
+});
+
+// The rebuild's source (--rebuild-source, src by default) cites the rules, formats, screens and bugs
+// it implements. establishByReading lists FND-SCORE-001 in RULE-SCORE-001's evidence.
+function inDir(root: string, dir: string, name: string, text: string) {
+  mkdirSync(join(root, dir), { recursive: true });
+  writeFileSync(join(root, dir, name), text);
+}
+
+// A second finding, copied from FND-SCORE-001 with edit applied, that no rule cites.
+function secondFinding(root: string, edit = (text: string) => text) {
+  const findings = join(root, "spec", "findings");
+  const text = readFileSync(join(findings, "FND-SCORE-001.md"), "utf8").replace(
+    "id: FND-SCORE-001",
+    "id: FND-SCORE-002",
+  );
+  writeFileSync(join(findings, "FND-SCORE-002.md"), edit(text));
+}
+
+test("a finding cited in the rebuild's source names the rule whose evidence lists it", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    inDir(
+      r,
+      "src",
+      "Game.cs",
+      "// Kills score one point (RULE-SCORE-001, FND-SCORE-001).\nvar x = 1;\n// FND-SCORE-001\n",
+    );
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(
+    result.output,
+    /src\/Game\.cs: lines 1, 3 cite FND-SCORE-001, a finding, and code in the rebuild's source cites only the rules, formats, screens and bugs it implements; RULE-SCORE-001 lists it in its evidence: move the citation to it where the code implements it and the comment does not cite it yet, and delete it otherwise$/m,
+  );
+  writeFileSync(join(root, "src", "Game.cs"), "// Kills score one point (RULE-SCORE-001).\n");
+  const settled = run(root);
+  assert.equal(settled.status, 0, settled.output);
+});
+
+test("a finding cited in tests or tools passes, and --rebuild-source chooses the directories", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    inDir(r, "tests", "GameTests.cs", "// FND-SCORE-001\n");
+    inDir(r, "tools", "Probe.ps1", "# FND-SCORE-001\n");
+  });
+  const outside = run(root);
+  assert.equal(outside.status, 0, outside.output);
+  const tools = run(root, "--rebuild-source", "src,tools");
+  assert.equal(tools.status, 1, tools.output);
+  assert.match(tools.output, /tools\/Probe\.ps1: line 1 cites FND-SCORE-001, a finding/);
+  assert.doesNotMatch(tools.output, /GameTests\.cs/);
+  inDir(root, "src", "Game.cs", "// FND-SCORE-001\n");
+  const off = run(root, "--rebuild-source", "");
+  assert.equal(off.status, 0, off.output);
+});
+
+test("a finding in the rebuild's source that no rule, format, screen or bug lists says so", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    secondFinding(r);
+    inDir(r, "src", "Game.ts", "// The handler (FND-SCORE-002).\n");
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(
+    result.output,
+    /src\/Game\.ts: line 1 cites FND-SCORE-002, a finding, and code in the rebuild's source cites only the rules, formats, screens and bugs it implements; no rule, format, screen or bug that is not superseded lists it in its evidence, so the citation is deleted, and where no entry that is not superseded and no deviation that has not been dropped describes what the code does, the code goes with its tests$/m,
+  );
+});
+
+test("a superseded finding in the rebuild's source names what its replacements lead to, once", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    secondFinding(r, (text) =>
+      text
+        .replace("status: recorded", "status: superseded")
+        .replace("superseded_by: []", "superseded_by: [FND-SCORE-001]"),
+    );
+    replaceIn(
+      r,
+      "spec/findings/FND-SCORE-001.md",
+      "## Alternatives\n\nNone known.",
+      "## Alternatives\n\nFND-SCORE-002 recorded the same handler and is replaced by this finding.",
+    );
+    inDir(r, "src", "Game.cs", "// FND-SCORE-002\n");
+    inDir(r, "tests", "GameTests.cs", "// FND-SCORE-002\n");
+  });
+  const result = run(root);
+  assert.equal(result.status, 1, result.output);
+  assert.match(
+    result.output,
+    /src\/Game\.cs: line 1 cites FND-SCORE-002, a superseded finding, and code in the rebuild's source cites only the rules, formats, screens and bugs it implements; RULE-SCORE-001 replaces it, or lists in its evidence an entry that replaces it: move the citation to it/,
+  );
+  // The reference check reports the superseded citation in tests/, and leaves the one in src/ to
+  // the check above.
+  assert.match(result.output, /GameTests\.cs: cites FND-SCORE-002, which is superseded; cite what replaced it$/m);
+  assert.doesNotMatch(result.output, /src\/Game\.cs: cites FND-SCORE-002/);
+});
+
+test("an address in the rebuild's source names the rule whose evidence records it", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    inDir(r, "src", "Game.cs", "// The handler at fn_00401004 adds one.\nconst uint Handler = 0x00401008;\n");
+  });
+  const result = run(root, ...IMAGE);
+  assert.equal(result.status, 1, result.output);
+  assert.match(
+    result.output,
+    /src\/Game\.cs: line 1 gives fn_00401004, but the comment cites no entry that records it; RULE-SCORE-001 records it or cites evidence that does: cite the one the code implements$/m,
+  );
+  assert.match(
+    result.output,
+    /src\/Game\.cs: line 2 uses 0x00401008 in code, but .*; RULE-SCORE-001 records it or cites evidence that does: cite the one the code implements in that comment$/m,
+  );
+  assert.doesNotMatch(result.output, /cite the finding/);
+  writeFileSync(
+    join(root, "src", "Game.cs"),
+    "// The handler at fn_00401004 adds one (RULE-SCORE-001).\nconst uint Handler = 0x00401008;\n",
+  );
+  const cited = run(root, ...IMAGE);
+  assert.equal(cited.status, 0, cited.output);
+});
+
+test("an address in the rebuild's source that no rule's evidence records is a gap in the spec", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    secondFinding(r, (text) => text.replace("address: 0x00401000..0x00401010", "address: 0x00402000..0x00402010"));
+    inDir(r, "src", "Game.cs", "// RULE-SCORE-001: the handler at fn_00402004.\nconst uint Handler = 0x00402008;\n");
+  });
+  const result = run(root, ...IMAGE);
+  assert.equal(result.status, 1, result.output);
+  // FND-SCORE-002 records both addresses, but no rule lists it, so the hint names no finding.
+  assert.match(
+    result.output,
+    /src\/Game\.cs: line 1 gives fn_00402004, but neither RULE-SCORE-001 nor the evidence it cites records it; no rule, format, screen or bug that is not superseded records it or cites evidence that does, so leave it out of the comment, and treat code that needs it as a gap in the spec$/m,
+  );
+  assert.match(
+    result.output,
+    /src\/Game\.cs: line 2 uses 0x00402008 in code, but .*; no rule, format, screen or bug that is not superseded records it or cites evidence that does, so code that needs it is a gap in the spec until an entry the code implements records it$/m,
+  );
+  assert.doesNotMatch(result.output, /cite the finding/);
 });
 
 // Runs the checker on a commit message in root.

@@ -1,8 +1,14 @@
 // Addresses in code: an address of the original that the code gives, written 0x… or as a neutral
 // name (fn_…, g_…), is recorded in an entry that the comment it belongs to cites, or in an entry
 // that one of those cites as evidence. Evidence lives in the spec, so code that relies on an
-// address cites the finding that shows it; citing an ID only proves that the ID exists. A
+// address cites an entry whose evidence shows it; citing an ID only proves that the ID exists. A
 // superseded entry records nothing.
+//
+// The hint for an address that fails depends on where the file is. In the rebuild's source (the
+// --rebuild-source directories), code cites the rules, formats, screens and bugs it implements and
+// no findings, so the hint names those that record the address or cite evidence that does, and
+// where none does, says that the address is a gap in the spec. Elsewhere, such as in tests and
+// tools, it suggests the finding that records it.
 //
 // Comments are found by reading .cs, .ts, .js, .mjs and .ps1 files as code, so `//` or `#` inside a
 // string is not a comment and `/* … */` or `<# … #>` is. A comment block is a run of consecutive
@@ -27,6 +33,7 @@
 import { addressesIn, recordedAddresses } from "../addresses.ts";
 import { codeText, commentsOf } from "../code-comments.ts";
 import type { Context } from "../context.ts";
+import { implementedEntries } from "../evidence.ts";
 import { idsIn } from "../ids.ts";
 
 /** Checks the addresses that the files of the --code and --references directories give. */
@@ -35,7 +42,23 @@ export function checkCommentAddresses(ctx: Context) {
   const { entries } = ctx.spec;
   const { images, maxRange } = ctx.config;
   const recorded = recordedAddresses(entries, maxRange);
-  for (const { file, text } of ctx.codeFiles()) {
+  const implemented = implementedEntries(entries);
+  // What to do about an address value that fails, for a file of the rebuild's source (source) or
+  // not, and for an address a comment gives or one the code uses (inCode).
+  const hint = (source: boolean, value: number, inCode: boolean) => {
+    if (!source)
+      return inCode
+        ? "cite the finding that records it in that comment, or record it in a new one"
+        : "cite the finding that records it, or record it in a new one";
+    const by = implemented.filter((id) => recorded.records(recorded.reach([id]), value));
+    if (by.length)
+      return `${by.join(", ")} ${by.length === 1 ? "records it or cites evidence that does" : "record it or cite evidence that does"}: cite the one the code implements${inCode ? " in that comment" : ""}`;
+    const none = "no rule, format, screen or bug that is not superseded records it or cites evidence that does";
+    return inCode
+      ? `${none}, so code that needs it is a gap in the spec until an entry the code implements records it`
+      : `${none}, so leave it out of the comment, and treat code that needs it as a gap in the spec`;
+  };
+  for (const { file, text, source: inSource } of ctx.codeFiles()) {
     const lines = commentsOf(file, text);
     if (!lines) continue;
     const source = text.replace(/\r\n?/g, "\n").split("\n");
@@ -82,7 +105,7 @@ export function checkCommentAddresses(ctx: Context) {
           if (recorded.records(scope, value)) continue;
           problem(
             file,
-            `line ${i + 1} gives ${written}, but ${cited.length ? `neither ${cited.join(", ")} nor the evidence ${cited.length === 1 ? "it cites" : "they cite"} records it` : "the comment cites no entry that records it"}; cite the finding that records it, or record it in a new one`,
+            `line ${i + 1} gives ${written}, but ${cited.length ? `neither ${cited.join(", ")} nor the evidence ${cited.length === 1 ? "it cites" : "they cite"} records it` : "the comment cites no entry that records it"}; ${hint(inSource, value, false)}`,
           );
         }
       }
@@ -110,7 +133,7 @@ export function checkCommentAddresses(ctx: Context) {
           if (recorded.records(scope, value) || (end && recorded.records(scope, value - 1))) continue;
           problem(
             file,
-            `line ${i + 1} uses ${written} in code, but ${cited.length ? `neither ${cited.join(", ")}, which ${citing}, nor the evidence ${cited.length === 1 ? "it cites" : "they cite"} records it` : "no comment on that line or above it cites an entry that records it"}; cite the finding that records it in that comment, or record it in a new one`,
+            `line ${i + 1} uses ${written} in code, but ${cited.length ? `neither ${cited.join(", ")}, which ${citing}, nor the evidence ${cited.length === 1 ? "it cites" : "they cite"} records it` : "no comment on that line or above it cites an entry that records it"}; ${hint(inSource, value, true)}`,
           );
         }
       }

@@ -65,6 +65,8 @@ export interface Facts {
 export interface CodeFile {
   /** True for a --code directory, false for a --references one. */
   code: boolean;
+  /** True for a file of a --code directory that is also under a --rebuild-source directory. */
+  source: boolean;
   /** The absolute path. */
   file: string;
   /** The file's text. */

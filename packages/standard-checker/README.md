@@ -91,9 +91,34 @@ not let it pass, and the problem names which of them stopped it.
 | `--max-range <bytes>` | The largest address range an entry can record an address by. A larger one, such as a whole section, records only its two ends. | `0x10000` |
 | `--data-dirs <dirs>` | Comma-separated top-level directories of the original's data. A path into one must name, with its exact case, a file of some build's manifest or a path of some build's `<ID>.other-files.yaml`. A path under a directory exclusion counts only when the list gives it by its own path. A path that names nothing known is reported only when its last part holds a digit and no placeholder such as `nn`. | the top-level directories of the files the manifests list |
 | `--rebuild <dirs>` | Comma-separated directories that hold the rebuild. No Markdown file in `spec/` may name a path in them, or a source file found in them by its file name. In a source entry in `spec/sources/`, a path counts only when it exists, in any case, so the entry can cite the external source's own paths. An empty value turns the check off. | `src,tests` |
+| `--rebuild-source <dirs>` | Comma-separated directories that hold the rebuild's source, which cites the rules, formats, screens and bugs it implements (see below). Only files that a `--code` directory also holds are read. An empty value turns the check off, and the address hint goes back to suggesting a finding. | `src` |
 | `--message <file>` | Check only the commit message in the file: every address it gives must be recorded in an entry it cites, as for a code comment. Everything from the scissors line of `git commit --verbose` on is left out; comment lines before it are checked, since git keeps them under `git commit -m`. Exits with 0 or 1, or 2 when the file cannot be read. For a `commit-msg` hook. | not checked |
 | `--record-validation <builds>` | Write `validation/<date>-<commit>.md` for the marked test files of validated parity rows, naming the comma-separated build IDs the run used and HEAD as the commit the run tested, and delete every other run file, except one that lists a test file git tracks but a sparse checkout does not hold. Run it only after every test in those files passed with none skipped, against HEAD as committed: it refuses, with exit code 2, when the working tree differs from HEAD in anything outside `validation/`, counting untracked files that git does not ignore. | not written |
 | `--help` | Print the options. | |
+
+The work protocol's
+[Implementation batches](https://dinorefurb.com/work-protocol/#implementation-batches) section has
+code in `src/` cite the rules, formats, screens and bugs it implements and no findings or
+experiments. Each `FND-` or `EXP-` ID that a file under a `--rebuild-source` directory cites fails,
+once per file with the lines that cite it. The message names the candidates the protocol moves the
+citation to: the rules, formats, screens and bugs that are not superseded and list the finding or
+experiment in their `evidence`, or, for a superseded one, those its `superseded_by` leads to. For
+example:
+`src/Game.cs: line 3 cites FND-SCORE-001, a finding, and code in the rebuild's source cites only the rules, formats, screens and bugs it implements; RULE-SCORE-001 lists it in its evidence: move the citation to it where the code implements it and the comment does not cite it yet, and delete it otherwise`.
+Where there is no candidate, the message says so: the citation is deleted, and the code goes with
+its tests unless an entry or a deviation that is still live describes what it does. The check
+cannot tell which entries the code implements, so the choice among the candidates is the
+session's, and so is the row that each new citation sends back to Code `partial`. A superseded
+finding or experiment cited there is reported by this check alone, with its replacements, in place
+of the citation check's `which is superseded; cite what replaced it`.
+
+The address check's hint follows the same rule. For an address in a file of the rebuild's source
+that no entry the comment cites records, the message names the rules, formats, screens and bugs
+that record it or cite evidence that does (`RULE-SCORE-001 records it or cites evidence that does:
+cite the one the code implements`). Where none does, it says to leave the address out of the
+comment and to treat code that needs it as a gap in the spec, and suggests no finding. In other
+code directories, such as `tests` and `tools`, the hint still suggests the finding that records the
+address.
 
 The `KSC` environment variable names the Kaitai Struct compiler. Without it, the checker looks for
 `kaitai-struct-compiler` or `ksc` on `PATH`. When it finds neither, it skips the compilation and
