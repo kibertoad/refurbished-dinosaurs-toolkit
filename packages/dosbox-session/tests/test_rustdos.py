@@ -231,6 +231,12 @@ class Refusals(RustDosCase):
                 assert session.emulator_process is not None
                 self.assertEqual(processes.process_state(session.emulator_process), "exited")
 
+    def test_a_server_that_refuses_the_version_request_is_refused_at_once(self) -> None:
+        session = RustDosSession(self.settings("no-version", readiness_timeout=30))
+        with self.assertRaisesRegex(EmulatorRefused, "does not answer /api/version"):
+            session.start()
+        self.assertFalse(self.lock_path.exists())
+
     def test_an_emulator_that_exits_before_its_server_answers_fails(self) -> None:
         with self.assertRaisesRegex(EmulatorExited, "code 3 before the debug server printed its address"):
             RustDosSession(self.settings("exit-early")).start()
@@ -359,6 +365,12 @@ class GuardedWrites(RustDosCase):
         self.assertEqual(written.written_sha256, hashlib.sha256(WORD_AFTER).hexdigest())
         self.assertEqual(data["writes"][0]["status"], "verified")
         self.assertEqual(data["writes"][0]["address"], "'05AA:0110'")
+
+    def test_a_write_reply_that_carries_its_state_only_in_the_header_is_verified(self) -> None:
+        with RustDosSession(self.settings("state-in-header-only")) as session:
+            session.write(CONTRACT, "probe word", WORD_AFTER, hashlib.sha256(WORD_BEFORE).hexdigest())
+            self.assertIsNone(session.run_failure)
+            self.assertEqual(record(session)["writes"][0]["status"], "verified")
 
     def test_a_write_to_bytes_with_another_hash_writes_nothing_and_fails_the_run(self) -> None:
         with RustDosSession(self.settings()) as session:

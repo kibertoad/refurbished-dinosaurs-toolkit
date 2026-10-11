@@ -160,6 +160,8 @@ class Machine:
         if if_state is not None and (not self.paused or if_state != self.state_seq or self.pending_ops()):
             raise Refusal(409, {"error": f"the state changed since entry {if_state}", "precondition": "state", "paused": self.paused, "pending_ops": self.pending_ops(), "input_queued": 0, "settings_window": False, **self.meta()})
         if path == "/api/version":
+            if "no-version" in self.modes:
+                raise Refusal(404, {"error": "not found"})
             features = [f for f in FEATURES if not ("no-ops" in self.modes and f == "ops")]
             return 200, {"name": "rust-dos", "version": "1.6.0", "api_version": 2 if "api-2" in self.modes else 1, "instance": "5eed", "features": features}
         if path == "/api/status":
@@ -194,7 +196,10 @@ class Machine:
                 self.memory[start : start + len(data)] = data
             reported_old = b"\xee" * len(old) if "lying-old" in self.modes else old
             entry = self.append("memory_written", req, tag, {"addr": f"{start:05X}"})
-            return 200, {"addr": f"{start:05X}", "old": reported_old.hex(" ").upper(), "new": data.hex(" ").upper(), "written": len(data), "ok": True, "seq": entry["seq"], **self.meta()}
+            meta = self.meta()
+            if "state-in-header-only" in self.modes:
+                del meta["state_seq"]
+            return 200, {"addr": f"{start:05X}", "old": reported_old.hex(" ").upper(), "new": data.hex(" ").upper(), "written": len(data), "ok": True, "seq": entry["seq"], **meta}
         if path == "/api/breakpoints":
             if method == "POST":
                 if "addr" in body:
