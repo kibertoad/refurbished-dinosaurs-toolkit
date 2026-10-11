@@ -1,5 +1,11 @@
 # @scientific-method/standard-checker
 
+## 4.3.1
+
+### Patch Changes
+
+- The range-end check reads `ends_on_last_byte` more strictly and reports it more precisely. An item the front matter reader does not read as text, such as a number or a block list item like `- C000:0000..C000:001F` that it takes for a map, fails with `ends_on_last_byte must be a list of ranges`, with or without inventories; it used to be compared as `[object Object]` or `4096`. A listed range matches the entry's text with backticks and spaces around `..` ignored, so `0x00401000 .. 0x0040101F` in the text matches the same range listed that way. A listed range that no function inventory checks anywhere the entry gives it, because its file has no inventory or it is in the text of an entry whose locations name several files, fails with `ends_on_last_byte lists <range>, which no function inventory checks where the entry gives it, so nothing shows the listing is needed; list it once an inventory covers it` in place of the message telling the author to leave it out.
+
 ## 4.3.0
 
 ### Minor Changes
