@@ -1,4 +1,4 @@
-"""Owned DOSBox-X debugger sessions for restoration research tooling (ADR 0026).
+"""Owned DOSBox-X and rust-dos debugger sessions for restoration research tooling (ADR 0026, ADR 0040).
 
 The package owns the emulator process, the machine-wide run lock, the guest drives, muted host
 audio, session records, request IDs, operation observation, guarded writes to stopped guest
@@ -6,7 +6,8 @@ memory against a field contract the caller supplies, gated breakpoints that stop
 only after the guest runs a wake address, and an event log checked against the
 caller's event schemas and versioned outcome contract. It never imports the DOSBox-X
 Agent client: the caller imports it from its own checkout and passes a :data:`ClientFactory`.
-Windows only.
+:class:`RustDosSession` runs rust-dos instead, through its HTTP debug server, with the same run
+lock, drives, guarded writes and event log. Windows only.
 
 The supported imports are below. Everything else is internal.
 """
@@ -29,6 +30,7 @@ from .errors import (
     ConfigurationRefused,
     EmulatorExited,
     EmulatorLaunchFailed,
+    EmulatorRefused,
     EventSchemaViolation,
     EventsMismatch,
     GateRefused,
@@ -49,6 +51,7 @@ from .errors import (
     RunDirectoryRefused,
     RunEnded,
     RunFailed,
+    ServerRefused,
     SessionError,
     WriteFailed,
     WriteHashMismatch,
@@ -79,25 +82,43 @@ from .lock import (
     resolve_lock_path,
 )
 from .processes import ProcessIdentity
+from .rustdos import (
+    AUTOEXEC,
+    EMULATOR_LOG,
+    EMULATOR_OUTPUT,
+    RUST_DOS_API_VERSION,
+    RUST_DOS_FEATURES,
+    RUST_DOS_RECORD_FORMAT,
+    RustDosConfig,
+    RustDosObservation,
+    RustDosOperation,
+    RustDosSession,
+    RustDosSettings,
+)
+from .rustdos_client import MemoryRead, Reply, RustDosClient
 from .session import DosboxSession, EventLogSettings, Observation, SessionSettings, Target
 from .writes import FieldContract, VerifiedWrite, WritableField
 
 __all__ = [
+    "AUTOEXEC",
     "AgentClientLike",
     "AgentLimits",
     "CapabilityRefused",
     "CheckoutIdentity",
     "CheckoutRefused",
     "CleanupFailed",
-    "CodeAddress",
     "ClientFactory",
+    "CodeAddress",
     "ConfigurationRefused",
     "DEFAULT_LOCK_PATH",
     "DEFAULT_MAX_LOG_BYTES",
     "DosboxSession",
+    "EMULATOR_LOG",
+    "EMULATOR_OUTPUT",
     "EmulatorConfig",
     "EmulatorExited",
     "EmulatorLaunchFailed",
+    "EmulatorRefused",
     "Endpoint",
     "EventLog",
     "EventLogSettings",
@@ -122,6 +143,7 @@ __all__ = [
     "LogTruncated",
     "LoggedEvent",
     "Media",
+    "MemoryRead",
     "ModuleHash",
     "ModuleRefused",
     "Observation",
@@ -138,12 +160,23 @@ __all__ = [
     "ProtectedResolver",
     "READINESS_MARKER",
     "REAL_ADDRESSING_MODES",
+    "RUST_DOS_API_VERSION",
+    "RUST_DOS_FEATURES",
+    "RUST_DOS_RECORD_FORMAT",
     "ReadinessNotObserved",
     "RecordedProcess",
+    "Reply",
     "RequestIds",
     "RunDirectoryRefused",
     "RunEnded",
     "RunFailed",
+    "RustDosClient",
+    "RustDosConfig",
+    "RustDosObservation",
+    "RustDosOperation",
+    "RustDosSession",
+    "RustDosSettings",
+    "ServerRefused",
     "SessionClient",
     "SessionError",
     "SessionSettings",

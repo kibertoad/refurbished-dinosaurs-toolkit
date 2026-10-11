@@ -112,6 +112,25 @@ class LockRecords(unittest.TestCase):
         self.assertEqual(child.wait(), 259)
         self.assertEqual(processes.process_state(identity), "exited")
 
+    def test_an_owned_process_gets_the_environment_and_output_file_it_is_given(self) -> None:
+        directory = Path(self.path).parent
+        output = directory / "out.txt"
+        script = "import os, sys; print(os.environ.get('PROBE_VARIABLE')); print('err', file=sys.stderr)"
+        environment = {**os.environ, "PROBE_VARIABLE": "given"}
+        process = processes.launch_owned(
+            [str(PYTHON), "-c", script], directory, environment=environment, output=output
+        )
+        try:
+            self.assertEqual(process.wait(timeout=10), 0)
+        finally:
+            process.close()
+        # Python buffers stdout and not stderr, so the order of the two lines is not fixed.
+        self.assertEqual(sorted(output.read_text(encoding="utf-8").split()), ["err", "given"])
+
+    def test_an_environment_variable_a_process_cannot_take_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "cannot be passed"):
+            processes.launch_owned([str(PYTHON), "-c", "pass"], Path(self.path).parent, environment={"A=B": "1"})
+
     def test_a_second_acquire_is_refused_while_the_first_holds_the_lock(self) -> None:
         first = RunLock.acquire(self.path, "one", processes.current())
         with self.assertRaises(LockHeld) as raised:

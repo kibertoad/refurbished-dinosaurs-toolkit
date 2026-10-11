@@ -219,3 +219,27 @@ class OutcomeContractViolation(LogRejected):
 
 class OutcomeMismatch(LogRejected):
     """The outcome's values differ from the outcome the caller expected."""
+
+
+class EmulatorRefused(SessionError):
+    """The rust-dos executable is not the one the settings name by hash, or its debug server does
+    not offer the API version and features the session relies on. Nothing was changed in the guest.
+    """
+
+
+class ServerRefused(SessionError):
+    """The rust-dos debug server answered a request with a status of 400 or above.
+
+    :attr:`status` is the HTTP status, :attr:`body` the reply's body (the parsed JSON object, with
+    ``error``, when the server sent one), :attr:`precondition` the precondition the server found
+    unmet (``state``, ``paused`` or ``quiescent``), or ``None``, and :attr:`reply` the whole reply.
+    """
+
+    def __init__(self, method: str, path: str, reply: Any) -> None:
+        body = reply.body
+        error = body.get("error") if isinstance(body, dict) else None
+        super().__init__(f"{method} {path} was refused with status {reply.status}: {error or body!r}")
+        self.status: int = reply.status
+        self.body = body
+        self.precondition = body.get("precondition") if isinstance(body, dict) else None
+        self.reply = reply

@@ -1,10 +1,13 @@
 # dinorefurb-dosbox-session
 
-Owned DOSBox-X debugger sessions for a restoration's research tooling: the original program runs
-under DOSBox-X's structured debugger, and the tooling reads registers and memory, stops at
-breakpoints, observes operations, makes checked writes to stopped guest memory and keeps an event
-log of the run beside the static evidence. The design is
-[ADR 0026](../../docs/decisions/0026-dosbox-x-session-package.md).
+Owned emulator debugger sessions for a restoration's research tooling: the original program runs
+under DOSBox-X's structured debugger or under rust-dos's debug server, and the tooling reads
+registers and memory, stops at breakpoints, observes operations, makes checked writes to stopped
+guest memory and keeps an event log of the run beside the static evidence. The design is
+[ADR 0026](../../docs/decisions/0026-dosbox-x-session-package.md) for DOSBox-X and
+[ADR 0040](../../docs/decisions/0040-rust-dos-session-backend.md) for rust-dos, which
+[has its own section](#rust-dos-sessions). Both backends take the same run lock and keep the same
+event log.
 
 The package owns the parts that decide whether a recorded run can be trusted and that carry no
 game knowledge: the emulator process, the machine-wide run lock, the guest drives, muted host
@@ -405,6 +408,155 @@ gate = GatedBreakpoint(session, CodeAddress(0x0028, 0x00012345), (CodeAddress(0x
 The pinned DOSBox-X has no breakpoint conditions, run-until, hit counts or batch reads, so the
 package offers none of them. To read several fields at one stop, read one range that covers them.
 
+## rust-dos sessions
+
+`RustDosSession` runs [rust-dos](https://github.com/dividebysandwich/rust-dos) instead of DOSBox-X.
+rust-dos serves its debugger over HTTP and JSON on a local port, in its normal release binaries,
+so there is no source build, no client to import and no console to hide. The package speaks that
+API with the standard library and imports nothing of rust-dos.
+
+The session needs a rust-dos with debug server API version 1 and the features `journal`, `ops`,
+`if_state_seq`, `request_ids`, `write_expect`, `run`, `program_stops` and `quit`
+(`RUST_DOS_FEATURES`). No rust-dos release has them yet; build kibertoad/rust-dos `main` (on
+Windows, the linker needs the SDL2 VC development package's `lib/x64` on `LIB`, and `SDL2.dll`
+goes beside `rust-dos.exe`).
+
+```python
+from pathlib import Path
+
+from dinorefurb_dosbox_session import Media, RustDosConfig, RustDosSession, RustDosSettings, Target
+
+settings = RustDosSettings(
+    emulator=Path("tools/rust-dos/rust-dos.exe"),
+    emulator_sha256=None,  # or the executable's SHA-256, to refuse any other
+    run_directory=Path("artifacts/runs/2026-10-11-startup"),  # new or empty for each run
+    target=Target("GAME.EXE"),
+    prepare_drive=lambda drive_c: ...,  # put the target's files on the new, empty C:
+    emulator_config=RustDosConfig(media=(Media("D", Path("game.cue"), "iso"),)),
+)
+with RustDosSession(settings) as session:
+    cs = session.entry["registers"]["cs"]  # stopped at the target's first instruction
+    session.client.set_breakpoint(f"{cs}:0120")
+    operation = session.continue_()
+    observation = session.observe(operation, timeout=10)
+    while observation.pending:
+        observation = session.observe(operation, timeout=10)
+    print(observation.stop["reason"], session.client.registers()["ax"])
+```
+
+### What a rust-dos session does
+
+Entering `RustDosSession` (or calling `start()`):
+
+1. Refuses a platform other than Windows, a missing emulator, an emulator whose SHA-256 differs
+   from `emulator_sha256` when that is given (`EmulatorRefused`), options the session sets itself
+   in `emulator_arguments` (`ConfigurationRefused`), a deterministic run without a numeric speed,
+   media on C: or two media on one letter, a target command line with a line break, and a run
+   directory that is not empty. With `event_log` set, hashes the named modules.
+2. Takes the run lock, the same one `DosboxSession` takes, or refuses with `LockHeld`.
+3. Creates `drive-c` empty in the run directory and calls `prepare_drive` on it. A prepared drive
+   that holds `AUTOEXEC.BAT` or the readiness marker is refused. The session writes
+   `AUTOEXEC.BAT`, which writes the readiness marker `C:\DRREADY.TXT`.
+4. Launches rust-dos in a job object that ends it with its owner, with `--no-config`, `-d` on
+   `drive-c`, `--debug-server 127.0.0.1:0`, `--log` on `rust-dos.log` in the run directory, and
+   `--cycles`, `--deterministic` and `--start-time` from `RustDosConfig`. SDL's dummy video driver
+   hides the window and its dummy audio driver mutes the host, unless `show_window` or
+   `keep_host_sound` is set; the emulated sound devices stay. The emulator's output goes to
+   `rust-dos.out`, where the session reads the port the server took.
+5. Checks `/api/version`: the name `rust-dos`, API version 1 and every feature above, or refuses
+   with `EmulatorRefused`.
+6. Mounts each medium read-only through the server (an `iso` as a CD-ROM drive, any CD image
+   rust-dos reads; a `directory` as a hard disk) and fails unless the server reports it read-only.
+7. Waits for the readiness marker, then runs the target at the DOS prompt with `stop_at_entry`.
+   A deterministic machine starts paused before `AUTOEXEC.BAT` runs and takes no run command until
+   the batch file ends, so in that mode `AUTOEXEC.BAT` starts the target after the marker and a
+   `program_start` stop catches it. Either way the start fails unless the machine stops at the
+   entry of a program with the target's file name. `session.entry` holds that stop.
+
+Any failure cleans up as leaving does, then raises.
+
+Leaving (or `close()`) asks the emulator to quit, terminates it if it has not exited, and releases
+the run lock once it has. A process that outlives termination keeps the lock and raises
+`CleanupFailed`, as for DOSBox-X.
+
+### The rust-dos session record
+
+`session.json` has the format `dinorefurb-dosbox-session.rust-dos-record/1` and holds `backend`
+(`rust-dos`), `emulator` (path, SHA-256 and the expected SHA-256 or `null`), `server` (the
+`/api/version` answer, with the instance ID that is new at every start), `endpoint`
+(`127.0.0.1:<port>`), `arguments` (the launch command line), `emulator_log`, `run_lock`,
+`owner_process`, `emulator_process`, `host_sound`, `window` (`hidden` or `shown`),
+`deterministic` (the speed and start time, or `null`), `media` (each drive as the server reported
+it), `readiness`, `request_id_prefixes`, `entry` (the entry stop's `CS:IP`, program and journal
+number), `writes`, `run_failure` and `event_log`.
+
+### Calls, operations and observation
+
+`session.client` and each `session.open_diagnostic_client()` are a `RustDosClient`. Every request
+carries an `X-Request-Id` from that client's own namespace (`<session>.c<client>.<n>`), and the
+server copies it into each journal entry the request causes. A reply with a status of 400 or above
+raises `ServerRefused` with the status, the body and, for a refused precondition, its name. The
+client offers reads (`status`, `registers`, `read_memory`, `disassemble`, `screen_text`,
+`screenshot`, `drives`, `log`), breakpoints and watchpoints (`set_breakpoint` with `once`,
+`break_on` for `program_start` and `program_exit`), the journal and operations. `request` sends any
+other call.
+
+Requests that resume or change the guest go through the session:
+
+- `continue_(until=None, until_ms=None)`, `step(count=1)` and `step_over()` start a continuation
+  and return a `RustDosOperation`. One continuation runs at a time: another raises
+  `OperationPending` until an observation has seen the first end.
+- `send_input(kind, event)` queues keys, typed text, mouse events or a batch; the operation ends
+  once the input is delivered. Input may be sent while a continuation runs.
+- `pause()` stops the guest. The continuation it interrupts ends `stopped` with reason `request`;
+  observe it to clear it. A pause is still sent after the run failed.
+- `observe(operation, timeout)` waits on any operation, checking on each poll that the emulator
+  still runs (`EmulatorExited`). It returns a `RustDosObservation`: `completed` with the state the
+  operation ended in (`stopped`, `done`, `failed`, `superseded` or `cancelled`) and the stop, or
+  `pending` when the time ran out.
+- When a continuation request raises a transport error, the server may have taken it. Before the
+  next continuation the session looks for the request's ID in the journal: if it is there, its
+  operation is the pending one; if it is not and the machine is paused and quiet, the server did
+  not take it; otherwise the session raises `OperationPending` and sends nothing.
+
+Continuations, steps, input and writes raise `RunFailed` after the run failed and `RunEnded` once
+the event log has its outcome, as for DOSBox-X. The event log calls (`log_event`, `finish_log`,
+`fail_log`, `read_event_log`) are the ones described above.
+
+### Guarded writes in a rust-dos session
+
+`session.write(contract, field, data, expected_sha256)` takes the same `FieldContract` and
+`WritableField` as a DOSBox-X session, with the field's address as a rust-dos address string, such
+as `"1234:0200"` or `"phys:12540"`. A segment-register form such as `"DS:0200"` resolves against
+the registers at each request, so a contract should name fixed addresses. Each write:
+
+1. Refuses a field outside the contract or `data` of another length (`WriteOutsideContract`).
+2. Reads the field. It refuses a guest that is running (`WriteFailed`) and bytes that do not hash
+   to `expected_sha256` (`WriteHashMismatch`); nothing is written.
+3. Writes with `expect` (the bytes read) and `If-State-Seq` (the journal state they were read in).
+   The server refuses the write, and writes nothing, if anything changed the machine since the read,
+   if it is not paused, or if an operation or input is under way (`WriteFailed`), or if the bytes
+   differ (`WriteHashMismatch`).
+4. Requires the bytes the server reports replacing to be the bytes read (`WriteFailed` otherwise:
+   the field may hold the new bytes) and the bytes it reports leaving to be `data`
+   (`WriteReadbackMismatch`).
+5. Reads the field back, which must hold `data` in the state the write left
+   (`WriteReadbackMismatch`, or `WriteFailed` when the machine changed in between).
+
+Any refusal or failure fails the run and is recorded in `session.json`, as for DOSBox-X.
+
+### Deterministic runs
+
+With `RustDosConfig(deterministic=True, cycles="10000")` rust-dos runs on emulated time alone: the
+clock starts at `start_time` (rust-dos's default is 1995-04-11 12:34:56), the speed is fixed, and
+input is delivered at emulated times. `continue_(until_ms=N)` stops when emulated time reaches N
+milliseconds since power-on. Two runs with the same input and the same stops reach the same state
+at the same emulated time. rust-dos takes input and changes to the machine only while it is
+paused in this mode. `cycles` must be a number, because rust-dos replaces `auto` or `max` with a
+speed of its own choosing.
+
+Gated breakpoints are offered for DOSBox-X sessions only, and neither backend offers save states yet.
+
 ## Errors
 
 | Error | Raised when |
@@ -415,6 +567,8 @@ package offers none of them. To read several fields at one stop, read one range 
 | `ConfigurationRefused` | A setting is one the session owns or one known to break the debugger. |
 | `LockHeld` | The run lock is held, or cannot be read. `report` describes it. |
 | `EmulatorLaunchFailed` | Windows refused to start the emulator in its job. Nothing runs and the lock is released. |
+| `EmulatorRefused` | A rust-dos executable has another hash than `emulator_sha256`, or its debug server is not rust-dos, speaks another API version or lacks a feature the session relies on. |
+| `ServerRefused` | The rust-dos debug server answered a request with a status of 400 or above. `status`, `body` and `precondition` say why. |
 | `EmulatorExited` | The owned emulator exited while the session needed it. |
 | `ReadinessNotObserved` | The guest did not write its readiness marker in time. |
 | `CapabilityRefused` | An operation needs a capability the server did not report. Not sent. |
@@ -435,7 +589,11 @@ All of them derive from `SessionError`.
 
 ## Native verification
 
-CI runs the tests against a stand-in emulator and a stand-in client, with no DOSBox-X and no game.
+CI runs the tests against a stand-in emulator and a stand-in client, and against a stand-in
+rust-dos debug server, with no DOSBox-X, no rust-dos and no game.
+
+### DOSBox-X
+
 Before each release that changes process, transport or drive handling, the owner runs this
 procedure on the pinned revision and puts its output in the pull request:
 
@@ -464,6 +622,24 @@ that one field, reads the word back and steps over the load. It passes when the 
 observed, `AX` and `BX` hold the values the program set, the write verifies, the readback holds
 the new bytes and `AX` holds the new word after the step. It prints the checks, the checkout
 revision, the emulator hash, the reported capabilities and the recorded writes.
+
+### rust-dos
+
+Before each release that changes the rust-dos backend's process, transport or drive handling, the
+owner builds the rust-dos the package targets and runs, from this directory:
+
+```powershell
+python native/verify_rustdos.py --emulator <rust-dos.exe> --run-directory <new directory>
+python native/verify_rustdos.py --emulator <rust-dos.exe> --run-directory <another new directory> --deterministic
+```
+
+The script starts the same synthetic `.COM` program in an owned rust-dos session, continues to a
+breakpoint, reads the registers, checks that the server refuses a write whose `If-State-Seq` is
+stale, makes a guarded write, steps over the load and runs the program to its exit. It passes when
+the breakpoint stop is observed, `AX` and `BX` hold the values the program set, the stale write is
+refused with 409 and `precondition: state`, the guarded write verifies, `AX` holds the new word
+after the step and the program exits with code 0. It prints the checks, the emulator's hash, the
+server's version answer and the recorded writes.
 
 ## Tests
 

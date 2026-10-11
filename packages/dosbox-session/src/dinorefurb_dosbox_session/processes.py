@@ -11,7 +11,9 @@ import functools
 import os
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 from .errors import PlatformRefused
@@ -27,6 +29,9 @@ _CREATE_NEW_CONSOLE = 0x00000010
 _EXTENDED_STARTUPINFO_PRESENT = 0x00080000
 _STARTF_USESHOWWINDOW = 0x00000001
 _SW_HIDE = 0
+_STARTF_USESTDHANDLES = 0x00000100
+_CREATE_UNICODE_ENVIRONMENT = 0x00000400
+_PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
 _PROC_THREAD_ATTRIBUTE_JOB_LIST = 0x0002000D
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
@@ -360,23 +365,53 @@ class OwnedProcess:
             self._job = None
 
 
-def launch_owned(arguments: list[str], cwd: str | os.PathLike[str]) -> OwnedProcess:
+def _environment_block(environment: Mapping[str, str]) -> ctypes.Array[ctypes.c_wchar]:
+    """A Unicode environment block for ``CreateProcessW``: ``name=value`` strings, sorted, each
+    ended by a NUL, and one more NUL after the last."""
+    for name, value in environment.items():
+        if not name or "=" in name[1:] or "\0" in name or "\0" in value:
+            raise ValueError(f"environment variable {name!r} cannot be passed to a process")
+    entries = sorted(environment.items(), key=lambda item: item[0].upper())
+    # The buffer adds the final NUL after the one that ends the last entry.
+    return ctypes.create_unicode_buffer("".join(f"{name}={value}\0" for name, value in entries))
+
+
+def launch_owned(
+    arguments: list[str],
+    cwd: str | os.PathLike[str],
+    *,
+    environment: Mapping[str, str] | None = None,
+    output: Path | None = None,
+) -> OwnedProcess:
     """Starts ``arguments`` with a new console, created hidden, as an :class:`OwnedProcess`.
 
-    ``arguments[0]`` is the executable's path. The process inherits no handles from this one.
+    ``arguments[0]`` is the executable's path. ``environment``, when given, is the process's whole
+    environment; otherwise it inherits this process's. ``output``, when given, is a file created
+    (or emptied) for the process's standard output and error, and the only handle the process
+    inherits. Without it the process inherits no handles from this one.
 
     :raises OSError: Windows refused to create the job object or the process: the file is not an
         executable, say, or this process runs in a job that does not let it nest another.
     :raises PlatformRefused: this platform is not Windows.
+    :raises ValueError: an environment variable cannot be passed to a process.
     """
     kernel32 = _kernel32()
+    block = None if environment is None else _environment_block(environment)
+    sink = None if output is None else open(output, "wb")  # noqa: SIM115 - closed once the process holds it
     job = _kill_on_close_job(kernel32)
     information = _ProcessInformation()
     try:
+        inherited = None
+        if sink is not None:
+            import msvcrt
+
+            inherited = msvcrt.get_osfhandle(sink.fileno())
+            os.set_handle_inheritable(inherited, True)
+        count = 1 if inherited is None else 2
         size = ctypes.c_size_t()
-        kernel32.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(size))
+        kernel32.InitializeProcThreadAttributeList(None, count, 0, ctypes.byref(size))
         attributes = ctypes.create_string_buffer(size.value)
-        if not kernel32.InitializeProcThreadAttributeList(attributes, 1, 0, ctypes.byref(size)):
+        if not kernel32.InitializeProcThreadAttributeList(attributes, count, 0, ctypes.byref(size)):
             raise _windows_error("Preparing the process attributes")
         try:
             jobs = (ctypes.c_void_p * 1)(job)
@@ -384,20 +419,35 @@ def launch_owned(arguments: list[str], cwd: str | os.PathLike[str]) -> OwnedProc
                 attributes, 0, _PROC_THREAD_ATTRIBUTE_JOB_LIST, jobs, ctypes.sizeof(jobs), None, None
             ):
                 raise _windows_error("Naming the job object in the process attributes")
+            handles = None
+            if inherited is not None:
+                # Only the output handle is inherited, whatever else this process holds as inheritable.
+                handles = (ctypes.c_void_p * 1)(inherited)
+                if not kernel32.UpdateProcThreadAttribute(
+                    attributes, 0, _PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles, ctypes.sizeof(handles), None, None
+                ):
+                    raise _windows_error("Naming the inherited handle in the process attributes")
             startup = _StartupInfoEx()
             startup.StartupInfo.cb = ctypes.sizeof(startup)
             startup.StartupInfo.dwFlags = _STARTF_USESHOWWINDOW
             startup.StartupInfo.wShowWindow = _SW_HIDE
+            if inherited is not None:
+                startup.StartupInfo.dwFlags |= _STARTF_USESTDHANDLES
+                startup.StartupInfo.hStdOutput = inherited
+                startup.StartupInfo.hStdError = inherited
             startup.lpAttributeList = ctypes.cast(attributes, ctypes.c_void_p)
             command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(arguments))
+            flags = _CREATE_NEW_CONSOLE | _EXTENDED_STARTUPINFO_PRESENT
+            if block is not None:
+                flags |= _CREATE_UNICODE_ENVIRONMENT
             if not kernel32.CreateProcessW(
                 arguments[0],
                 command_line,
                 None,
                 None,
-                False,
-                _CREATE_NEW_CONSOLE | _EXTENDED_STARTUPINFO_PRESENT,
-                None,
+                inherited is not None,
+                flags,
+                None if block is None else ctypes.cast(block, ctypes.c_void_p),
                 os.fspath(cwd),
                 ctypes.byref(startup),
                 ctypes.byref(information),
@@ -408,6 +458,9 @@ def launch_owned(arguments: list[str], cwd: str | os.PathLike[str]) -> OwnedProc
     except BaseException:
         kernel32.CloseHandle(job)
         raise
+    finally:
+        if sink is not None:
+            sink.close()
     kernel32.CloseHandle(information.hThread)
     start = _start_time(kernel32, information.hProcess)
     if start is None:

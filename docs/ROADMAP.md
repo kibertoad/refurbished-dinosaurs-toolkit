@@ -195,6 +195,12 @@ A protected-mode guest is placed through a resolver the caller supplies
 The issue closes once reconqueror's native control shows the same readiness, input order and RNG
 events as its loop-stop run.
 
+A second backend runs rust-dos through its HTTP debug server (issue 446,
+[ADR 0040](decisions/0040-rust-dos-session-backend.md)), with the same run lock, C:, guarded
+writes and event log, and a deterministic mode. It is built against kibertoad/rust-dos `main`,
+since no rust-dos release has the journal, operations and state preconditions it relies on.
+Issue 446 closes once a rust-dos release with them is pinned by hash.
+
 ### Writing rules
 
 The writing-rule halves of gaps 27, 29, 32 to 34, 37 and 41 to 43 go back to Dark Sun as proposed
