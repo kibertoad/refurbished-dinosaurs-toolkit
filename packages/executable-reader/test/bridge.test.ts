@@ -811,7 +811,10 @@ test("reach follows a resident far call and an overlay fixup call through the FB
   const { dir, config } = overlayFixture(t);
   const leaf = "synthetic: calls nothing while its flag holds its start value";
   const path = join(dir, "config.json");
-  writeFileSync(path, JSON.stringify({ ...config, starts: [80, 532], targets: [528], controls: [80, 532] }));
+  writeFileSync(
+    path,
+    JSON.stringify({ ...config, starts: [80, 532], targets: [528], controls: [80, 532], decodedRanges: true }),
+  );
   const r = run(["reach", path]);
   const target = r.targets[0];
   assert.equal(target.reached, true);
@@ -821,6 +824,12 @@ test("reach follows a resident far call and an overlay fixup call through the FB
     { site: 532, target: 528 },
   ]);
   assert.deepEqual(r.reachedRoutines, [80, 528, 532]);
+  // The overlay entry the trampoline leads to is decoded as its own routine's range.
+  assert.deepEqual(r.decodedRanges, [
+    { start: 80, end: 86, routine: 80 },
+    { start: 528, end: 529, routine: 528 },
+    { start: 532, end: 538, routine: 532 },
+  ]);
   assert.equal(r.negativeUsable, true);
   assert.equal(r.instructionLimitReached, false);
   // The overlay entry is no call, so it is refused as a call-site control and holds as an instruction control.
@@ -875,6 +884,24 @@ test("reach keeps the return site of a far call to a noReturn routine unread thr
   ]);
   // The walk reads a return in the declared routine, so no negative rests on the declaration.
   assert.equal(r.negativeUsable, false);
+  // Declared by its call site instead, the call ends there while its target's return is listed, not contradicted.
+  writeFileSync(
+    path,
+    JSON.stringify({ ...config, starts: [64], targets: [69], controls: [64], noReturn: [{ call: 64, reason }] }),
+  );
+  const site = run(["reach", path]);
+  assert.equal(site.targets[0].reached, false);
+  assert.deepEqual(site.noReturn, [
+    {
+      call: 64,
+      reason,
+      reached: true,
+      targets: [{ routine: 80, read: true, returnSites: [83] }],
+      following: 69,
+      followingRead: false,
+    },
+  ]);
+  assert.equal(site.negativeUsable, true);
   writeFileSync(
     path,
     JSON.stringify({ ...config, starts: [64], targets: [69], noReturn: [{ interrupt: 80, reason }] }),

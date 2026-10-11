@@ -2,7 +2,8 @@
 
 Status: accepted. Extends [ADR 0023](0023-reachability-over-the-entry-path-cfg.md) with a
 `noReturn` input to `reach`. [ADR 0031](0031-inventory-boundaries-against-the-entry-path-walk.md)
-extends the input to `inventory-check`.
+extends the input to `inventory-check`, and [ADR 0035](0035-declared-non-returning-call-sites.md)
+adds declared call sites.
 
 ## Context
 

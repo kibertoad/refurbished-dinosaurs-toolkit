@@ -50,6 +50,25 @@ EXITS = bytes.fromhex(
     "c3"            # 0014 what a walk past the interrupt reads
 )
 
+# EXITS with the exit behind a wrapper: 0003 calls W at 000C, which calls the worker K at 0010. K
+# returns when AX is nonzero and otherwise ends the program, so whether W returns depends on what its
+# caller passes. The bytes after 0003 are data that decode over B's entry, as in EXITS.
+WORKER = bytes.fromhex(
+    "e80500"        # 0000 call 0008
+    "e80600"        # 0003 call 000C
+    "b841"          # 0006 data: decodes as mov ax, 0B841h through 0008
+    "b890c3"        # 0008 B: mov ax, 0C390h
+    "c3"            # 000B ret
+    "e80100"        # 000C W: call 0010
+    "c3"            # 000F ret
+    "85c0"          # 0010 K: test ax, ax
+    "7401"          # 0012 je 0015
+    "c3"            # 0014 ret
+    "b44c"          # 0015 mov ah, 4Ch
+    "cd21"          # 0017 int 21h
+    "c3"            # 0019 what a walk past the interrupt reads
+)
+
 
 def config(data=DISPATCH, entries=(0,), **extra):
     return {"regions": [{"name": "synthetic", "start": 0, "end": len(data), "ip": 0, "segment": 0x1000, "resident": True,
@@ -270,6 +289,12 @@ class ReachTests(unittest.TestCase):
             with self.subTest(site=site), self.assertRaisesRegex(ValueError, "Positive controls failed: " + message):
                 run_report(EXITS, config(EXITS, targets=[9], instructionControls=[site], noReturn=exits), "reach")
 
+    def test_a_control_after_a_call_declared_both_ways_names_both_declarations(self):
+        exits = [{"routine": 0x10, "reason": "synthetic exit"}, {"call": 3, "reason": "synthetic exit"}]
+        with self.assertRaisesRegex(ValueError, r"instruction control 6 is not reached \(it follows the call at 3 to "
+                                                r"noReturn routine 16 and the noReturn call at 3\)$"):
+            run_report(EXITS, config(EXITS, targets=[9], instructionControls=[6], noReturn=exits), "reach")
+
     def test_an_unreached_no_return_interrupt_still_gives_its_following_site(self):
         # 0000 ret; 0001 int 21h, which nothing reaches.
         data = bytes.fromhex("c3" "cd21")
@@ -285,6 +310,59 @@ class ReachTests(unittest.TestCase):
         exit_interrupt = {"interrupt": 0x12, "reason": "synthetic"}
         with self.assertRaisesRegex(ValueError, "Duplicate noReturn interrupt"):
             run_report(EXITS, config(EXITS, targets=[9], noReturn=[exit_interrupt, exit_interrupt]), "reach")
+
+    def test_a_no_return_call_ends_one_call_whose_target_returns_to_other_callers(self):
+        exits = "synthetic: this call passes the argument that makes the worker exit"
+        # Declared as a routine, W is contradicted: K returns at 0014, so W returns at 000F. K declared
+        # instead is contradicted by its own return, which other callers take.
+        for routine, returns in ((0x0C, [0x0F]), (0x10, [0x14, 0x19])):
+            r = run_report(WORKER, config(WORKER, targets=[9], controls=[0, 3],
+                                          noReturn=[{"routine": routine, "reason": exits}]), "reach")
+            self.assertEqual((r["noReturn"][0]["returnSites"], r["noReturn"][0]["contradicted"]), (returns, True))
+            self.assertFalse(r["negativeUsable"])
+        # Declaring W's call to K instead ends W's paths there, so W's own declaration holds, and K's returns
+        # are listed on the call row without contradicting it.
+        r = run_report(WORKER, config(WORKER, targets=[9], controls=[0, 3], noReturn=[
+            {"routine": 0x0C, "reason": exits}, {"call": 0x0C, "reason": exits}]), "reach")
+        self.assertEqual((r["gaps"], r["contested"], r["unresolved"]), ([], [], []))
+        self.assertTrue(r["negativeUsable"])
+        self.assertEqual(r["noReturn"], [
+            {"routine": 0x0C, "reason": exits, "reached": True, "read": True, "returnSites": [],
+             "contradicted": False, "callSites": [{"site": 3, "following": 6, "followingRead": False}]},
+            {"call": 0x0C, "reason": exits, "reached": True,
+             "targets": [{"routine": 0x10, "read": True, "returnSites": [0x14, 0x19]}],
+             "following": 0x0F, "followingRead": False}])
+        self.assertIn("each reached call returns to its next instruction, except a call to a noReturn routine and a "
+                      "noReturn call", r["assumptions"])
+        self.assertIn("each noReturn call never returns to its next instruction, for the reason it gives, though its "
+                      "target may return to other callers", r["assumptions"])
+
+    def test_a_no_return_call_alone_keeps_the_bytes_after_it_unread_and_names_itself_in_a_failed_control(self):
+        exits = [{"call": 3, "reason": "synthetic: W never returns to this caller"}]
+        r = run_report(WORKER, config(WORKER, targets=[9], controls=[0, 3], noReturn=exits), "reach")
+        self.assertEqual((r["gaps"], r["contested"]), ([], []))
+        self.assertTrue(r["negativeUsable"])
+        self.assertEqual(r["noReturn"][0]["targets"], [{"routine": 0x0C, "read": True, "returnSites": [0x0F]}])
+        self.assertEqual((r["noReturn"][0]["following"], r["noReturn"][0]["followingRead"]), (6, False))
+        self.assertEqual(r["assumptions"][0],
+                         "each reached call returns to its next instruction, except a noReturn call")
+        self.assertNotIn("each noReturn routine and interrupt never returns, for the reason it gives", r["assumptions"])
+        with self.assertRaisesRegex(ValueError, r"instruction control 6 is not reached \(it follows the noReturn call "
+                                                r"at 3\)$"):
+            run_report(WORKER, config(WORKER, targets=[9], instructionControls=[6], noReturn=exits), "reach")
+
+    def test_a_no_return_call_with_an_unresolved_target_stays_unresolved_and_ends_its_branch(self):
+        # 0006 calls through a far pointer in memory; the ret at 000A follows it and nothing else reaches it.
+        r = reach(targets=[0x0A], noReturn=[{"call": 6, "reason": "synthetic: the far routine exits"}])
+        self.assertEqual(r["targets"][0]["status"], "not reached")
+        self.assertIn(6, [row["site"] for row in r["unresolved"]])
+        self.assertEqual(r["noReturn"], [{"call": 6, "reason": "synthetic: the far routine exits", "reached": True,
+                                          "targets": [], "following": 0x0A, "followingRead": False}])
+        # An unreached declared call keeps its row. 0000 ret; 0001 call 0004, which nothing reaches; 0004 ret.
+        data = bytes.fromhex("c3" "e80000" "c3")
+        unreached = run_report(data, config(data, targets=[4], noReturn=[{"call": 1, "reason": "synthetic"}]), "reach")
+        self.assertEqual(unreached["noReturn"], [{"call": 1, "reason": "synthetic", "reached": False, "targets": [],
+                                                  "following": 4, "followingRead": False}])
 
     def test_a_control_that_is_no_call_is_refused_before_the_walk_and_an_instruction_control_takes_it(self):
         # 0000 calls 0004, which stores AX at [0100] and returns.
@@ -353,6 +431,44 @@ class ReachTests(unittest.TestCase):
                                                 "start of an unresolved overlapping instruction$"):
             run_report(data, config(data, targets=[6], indirectJumps=[table], instructionControls=[3, 5]), "reach")
 
+    def test_decoded_ranges_give_each_run_of_decoded_instructions_with_its_routine(self):
+        r = reach(indirectJumps=[TABLE], decodedRanges=True)
+        # The table row 0020 is read in 000B, which jumped there; 001C..0020, 0025..0028 and the table are not decoded.
+        self.assertEqual([(x["start"], x["end"], x["routine"]) for x in r["decodedRanges"]],
+                         [(0x0, 0xB, 0x0), (0xB, 0x18, 0xB), (0x18, 0x1C, 0x18), (0x20, 0x25, 0xB), (0x28, 0x2F, 0x28)])
+        self.assertNotIn("decodedRanges", reach(indirectJumps=[TABLE]))
+
+    def test_decoded_ranges_leave_out_a_leaf_and_the_result_limit_does_not_cut_them(self):
+        r = reach(indirectJumps=[TABLE], decodedRanges=True, limit=1, leaves=[{"routine": 0x18, "reason": "synthetic leaf"}])
+        self.assertEqual([x["start"] for x in r["decodedRanges"]], [0x0, 0xB, 0x20, 0x28])
+
+    def test_decoded_ranges_hold_an_undecodable_start_that_a_decoded_instruction_covers(self):
+        # 0000 je 0004 enters the immediate of 0002 mov ax, 0F90, where 0F 04 does not decode; 0005 add al, C3.
+        data = bytes.fromhex("7402b8900f04c3")
+        r = run_report(data, config(data, targets=[4], decodedRanges=True), "reach")
+        self.assertEqual([(x["start"], x["end"]) for x in r["decodedRanges"]], [(0, 7)])
+        self.assertIn({"site": 4, "reason": "undecoded or unmapped edge"}, r["gaps"])
+        self.assertEqual(r["targets"][0]["insideInstruction"], 2)
+
+    def test_decoded_ranges_of_a_stopped_walk_cover_the_part_read(self):
+        r = reach(indirectJumps=[TABLE], decodedRanges=True, instructionLimit=5)
+        self.assertTrue(r["instructionLimitReached"])
+        self.assertEqual(sum(x["end"] - x["start"] for x in r["decodedRanges"]), 0xB + 3)
+
+    def test_decoded_ranges_overlap_where_the_walk_proves_overlapping_instructions(self):
+        # 0000 je 0003 falls through to the mov at 0002, whose immediate holds 0003 nop; 0004 ret. 0005 ret.
+        # The branch and the fall-through each prove a start, so the walk keeps both instructions.
+        data = bytes.fromhex("7401b890c3c3")
+        r = run_report(data, config(data, targets=[3, 4], decodedRanges=True), "reach")
+        self.assertEqual([(x["start"], x["end"]) for x in r["decodedRanges"]], [(0, 5), (3, 6)])
+        self.assertEqual([t["reached"] for t in r["targets"]], [True, True])
+        # 0000 je 0003; 0002 mov ax, 00C3 holds 0003 ret; 0005 ret. The ret at 0005 continues the run
+        # the mov ends, though the ret at 0003 opened a run after it.
+        data = bytes.fromhex("7401b8c300c3")
+        r = run_report(data, config(data, targets=[3, 5], decodedRanges=True), "reach")
+        self.assertEqual([(x["start"], x["end"]) for x in r["decodedRanges"]], [(0, 6), (3, 4)])
+        self.assertEqual([t["reached"] for t in r["targets"]], [True, True])
+
     def test_rejected_inputs(self):
         too_many = list(range(257))
         for extra, message in [({"starts": [0x18]}, "established region entry"),
@@ -362,9 +478,15 @@ class ReachTests(unittest.TestCase):
                                ({"leaves": [{"routine": 0x18, "reason": " "}]}, "nonempty reason"),
                                ({"leaves": [{"routine": 0, "reason": "x"}]}, "start cannot be a leaf"),
                                ({"noReturn": {}}, "noReturn must be a list"),
-                               ({"noReturn": [{"routine": 0x18}]}, "exactly one of routine and interrupt"),
+                               ({"noReturn": [{"routine": 0x18}]}, "exactly one of routine, call and interrupt"),
                                ({"noReturn": [{"routine": 0x18, "interrupt": 0x18, "reason": "x"}]},
-                                "exactly one of routine and interrupt"),
+                                "exactly one of routine, call and interrupt"),
+                               ({"noReturn": [{"routine": 0x18, "call": 0x18, "reason": "x"}]},
+                                "exactly one of routine, call and interrupt"),
+                               ({"noReturn": [{"call": 0x0B, "reason": "x"}]}, "noReturn call 11 is not a call instruction"),
+                               ({"noReturn": [{"call": 0x1000, "reason": "x"}]}, "noReturn call"),
+                               ({"noReturn": [{"call": 0x18, "reason": "x"}, {"call": 0x18, "reason": "y"}]},
+                                "Duplicate noReturn call"),
                                ({"noReturn": [{"routine": 0x1000, "reason": "x"}]}, "noReturn routine"),
                                ({"noReturn": [{"routine": 0x18, "reason": ""}]}, "nonempty reason"),
                                ({"noReturn": [{"routine": 0x18, "reason": "x"}, {"routine": 0x18, "reason": "y"}]},
@@ -377,6 +499,8 @@ class ReachTests(unittest.TestCase):
                                ({"instructionControls": [0x3, 0x3]}, "distinct file offsets"),
                                ({"instructionControls": [0x1000]}, "instructionControls must be an integer"),
                                ({"instructionControls": [0x0]}, "instruction control 0 is a start"),
+                               ({"targets": too_many}, r"targets must be a list of 1\.\.256"),
+                               ({"decodedRanges": "yes"}, "decodedRanges must be a boolean"),
                                ({"controls": too_many}, r"controls must be a list of 0\.\.256"),
                                ({"instructionControls": too_many}, r"instructionControls must be a list of 0\.\.256")]:
             with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, message):
@@ -510,6 +634,15 @@ class DeclaredIndirectCallTests(unittest.TestCase):
         self.assertTrue(mixed["targets"][0]["reached"])
         self.assertEqual(mixed["noReturn"][0]["callSites"], [])
         self.assertFalse(mixed["noReturn"][0]["contradicted"])
+
+    def test_a_no_return_call_ends_a_declared_call_whose_targets_return(self):
+        r = computed(indirectCalls=[FAR_TARGETS], targets=[0x11],
+                     noReturn=[{"call": 0x0D, "reason": "synthetic: this call never comes back"}])
+        self.assertEqual(r["targets"][0]["status"], "not reached")
+        self.assertEqual(r["noReturn"], [{"call": 0x0D, "reason": "synthetic: this call never comes back", "reached": True,
+                                          "targets": [{"routine": 0x110, "read": True, "returnSites": [0x110]},
+                                                      {"routine": 0x130, "read": True, "returnSites": []}],
+                                          "following": 0x11, "followingRead": False}])
 
     def test_a_declared_target_inside_a_reached_instruction_is_unread_and_keeps_the_negative_unusable(self):
         r = computed(indirectCalls=[NEAR_TABLE, {**FAR_TARGETS, "targets": [0x141]}], instructionControls=[0x08])

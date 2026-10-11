@@ -329,7 +329,8 @@ if not ready(session):
 # The guest is stopped at the loop's top, the first pass at which ready() held.
 ```
 
-- Opening needs a stopped guest in real or virtual-8086 mode. It sets an execution breakpoint at
+- Opening needs a stopped guest in real or virtual-8086 mode, or in protected mode with a resolver
+  (below). It sets an execution breakpoint at
   each wake. `run(timeout, poll_ms=100)` continues the guest through the session. At a wake stop
   it sets a breakpoint at the boundary that the server removes when it is hit, unless one is set,
   and continues. It returns a `GateStop`: `boundary`, `other` (any stop that is not the gate's, with
@@ -345,19 +346,61 @@ if not ready(session):
   at the pinned revision a breakpoint removed when hit is removed without a stop of its own when
   another breakpoint at its address is reported. So the gate refuses a boundary at a wake's
   address, two wakes at one address, and any breakpoint it did not create at the boundary or a wake
-  address (`GateRefused`). It compares addresses as `segment * 16 + offset`, with and without the
-  A20 wrap, and checks before each `run` that continues the guest.
+  address (`GateRefused`). In real and virtual-8086 mode it compares addresses as
+  `segment * 16 + offset`, with and without the A20 wrap, and refuses an offset of its own above
+  0xFFFF. It checks when it opens and before each `run` that continues the guest. A gate works in
+  the mode it opened in: it refuses to continue in another, and stops if a wake stop that arms the
+  boundary is in another.
 - Continuations go through the session, so a pending operation, a failed run or an ended log
   refuses them as usual. A pending continuation is observed again by the next `run`, which never
   sends a second one. Transport errors propagate. Each `run` that continues the guest first reads
   the session's status. After a continue request raised, the next `run` compares the status with
   the `state_revision` the guest had when that request was sent: a higher one is handled as an
-  observed stop, so a wake the lost reply reached still arms the boundary. After a breakpoint
+  observed stop, so a wake the lost reply reached still arms the boundary. Breakpoint requests
+  raise the revision too, so after arming the boundary the gate reads the registers and keeps
+  their revision. A write, step or breakpoint request the session sends after a failed continue
+  request would look like a stop, so the next `run` raises `GateRefused` and the gate stops
+  (`session.changes` counts them): run the gate again before changing anything. After a breakpoint
   request raised, the gate raises `GateRefused` instead of continuing, and closing removes any
   breakpoint left at its addresses. Closing after a continuation the gate has not seen end reads
   the session's status: while it shows the guest running, closing raises `OperationPending` and
   keeps the breakpoints; once you have paused the guest and observed the pause, closing removes
   them. The session's own teardown is unaffected.
+
+#### Protected mode
+
+The debugger places a protected-mode breakpoint at the linear address its selector's descriptor
+gives when the breakpoint is created, and the Agent reports neither descriptor bases nor linear
+addresses. So in protected mode the gate places addresses only through `resolve`, which you
+supply ([ADR 0037](../../docs/decisions/0037-gated-breakpoints-in-protected-mode.md)):
+
+```python
+def resolve(address: CodeAddress) -> int | None:
+    # The linear address the debugger places selector:offset at, from descriptors you verified:
+    # base + offset, with the offset wrapped to 16 bits for a 16-bit segment. None if unknown.
+    descriptor = verified_descriptors.get(address.segment)
+    if descriptor is None:
+        return None
+    offset = address.offset if descriptor.big else address.offset & 0xFFFF
+    return descriptor.base + offset
+
+gate = GatedBreakpoint(session, CodeAddress(0x0028, 0x00012345), (CodeAddress(0x0030, 0x0100),), resolve=resolve)
+```
+
+- The gate asks `resolve` for its own addresses and for every other execution breakpoint when it
+  opens and before each `run` that continues the guest. It refuses a breakpoint `resolve` cannot
+  place, and two places that are equal.
+- When `resolve` places one of the gate's own addresses somewhere else than where its breakpoint
+  was set, the gate stops: the breakpoint stays where the debugger put it. At a wake stop it asks
+  `resolve` for the boundary again before arming it, and stops without arming it when the place
+  differs from the one it compared when it opened. An error from `resolve` while the gate judges a
+  stop also stops the gate.
+- `resolve` answering as the debugger places addresses is yours to show, including the hidden
+  base of the current `CS` and a descriptor that changes while the gate is open. A breakpoint you
+  set in another mode is placed where it was created; `resolve` has to answer with that place.
+- All of a gate's addresses are placed in the mode it opened in, so a wake that runs in real
+  mode (such as a BIOS handler the extender reflects an interrupt to) cannot arm a protected-mode
+  boundary. Pick wakes in the boundary's mode.
 
 The pinned DOSBox-X has no breakpoint conditions, run-until, hit counts or batch reads, so the
 package offers none of them. To read several fields at one stop, read one range that covers them.
@@ -376,7 +419,7 @@ package offers none of them. To read several fields at one stop, read one range 
 | `ReadinessNotObserved` | The guest did not write its readiness marker in time. |
 | `CapabilityRefused` | An operation needs a capability the server did not report. Not sent. |
 | `OperationPending` | A continuation was asked for while another operation is pending. |
-| `GateRefused` | A gated breakpoint refused its addresses, a guest outside real or virtual-8086 mode, or a breakpoint it did not create at its addresses, or a breakpoint request of its own failed. Raised before a continuation, nothing was sent. |
+| `GateRefused` | A gated breakpoint refused its addresses, a protected-mode guest without a resolver, a guest in another mode than the gate opened in, an address it cannot place, or a breakpoint it did not create at its addresses; or it stopped because a breakpoint request of its own failed, a resolver moved one of its addresses, or the session changed the guest after a failed continue request. Raised before a continuation, nothing was sent. |
 | `WriteOutsideContract` | A write names no field in the contract, has no contract, or differs from the field's length. The run fails. |
 | `WriteHashMismatch` | The field's bytes do not hash to the expected value. Nothing was written; the run fails. |
 | `WriteReadbackMismatch` | The field does not hold the written bytes afterwards. The run fails. |

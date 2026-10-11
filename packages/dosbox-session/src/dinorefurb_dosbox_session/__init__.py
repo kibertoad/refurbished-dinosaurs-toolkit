@@ -68,7 +68,7 @@ from .events import (
     hash_modules,
     read_event_log,
 )
-from .gates import REAL_ADDRESSING_MODES, CodeAddress, GatedBreakpoint, GateStop
+from .gates import PROTECTED_MODE, REAL_ADDRESSING_MODES, CodeAddress, GatedBreakpoint, GateStop, ProtectedResolver
 from .lock import (
     DEFAULT_LOCK_PATH,
     LOCK_PATH_VARIABLE,
@@ -132,8 +132,10 @@ __all__ = [
     "OutcomeMismatch",
     "PINNED_REVISION",
     "PINNED_TAG",
+    "PROTECTED_MODE",
     "PlatformRefused",
     "ProcessIdentity",
+    "ProtectedResolver",
     "READINESS_MARKER",
     "REAL_ADDRESSING_MODES",
     "ReadinessNotObserved",
