@@ -260,17 +260,19 @@ test("bytes that two resident spans hold are an overlapping-spans run naming bot
     ],
   );
   assert.equal(r.descriptors.length, 5);
-  // A body running from its own span into bytes another span also holds is outside its entry's region there.
+  // Bytes its own span holds with another stay inside the entry's region; bytes only the other
+  // span holds are outside it.
   const [inResident, inOverlap] = r.functions;
   assert.deepEqual(
     inResident.fragments[0].parts.map((p: Report) => [p.kind, p.descriptor, p.descriptors, p.outsideEntryRegion]),
     [
       ["resident", 1, undefined, false],
-      ["overlapping-spans", null, [1, 2], true],
+      ["overlapping-spans", null, [1, 2], false],
       ["resident", 2, undefined, true],
     ],
   );
-  // An entry in an overlap run names the descriptors; another overlap run is outside it.
+  // An entry in an overlap run names the descriptors. A part is outside it unless both of them hold
+  // the part, since either could be the entry's segment.
   assert.deepEqual(inOverlap.entry, {
     offset: 130,
     kind: "overlapping-spans",
@@ -292,8 +294,57 @@ test("bytes that two resident spans hold are an overlapping-spans run naming bot
     { kind: "overlapping-spans", descriptor: null, descriptors: [1, 2], bytes: 8 },
     { kind: "overlapping-spans", descriptor: null, descriptors: [2, 3], bytes: 6 },
   ]);
-  assert.equal(r.counts.entriesOutsideCode, 1);
+  // The entry in the overlap is in resident code, held by more than one span.
+  assert.equal(r.counts.entriesOutsideCode, 0);
+  assert.equal(r.counts.entriesInOverlappingSpans, 1);
   assert.equal(r.counts.functionsWithBytesOutsideEntryRegion, 2);
+});
+
+test("an overlap run cut by the descriptor table stays the entry's region past the table", (t) => {
+  // Load image 64..200 with two descriptors, their table at 100..116: 0 (0, 0x40, 0, 0) at 64..128
+  // and 1 (1, 0x40, 0, 0) at 80..144. Their overlap 80..128 is cut by the table.
+  const data = Buffer.alloc(224),
+    w = (p: number, n: number) => data.writeUInt16LE(n, p);
+  data.write("MZ");
+  w(2, 200);
+  w(4, 1);
+  w(8, 4);
+  data.write("FBOV", 208);
+  data.writeUInt32LE(100, 216);
+  data.writeUInt32LE(2, 220);
+  [
+    [0, 0x40, 0, 0],
+    [1, 0x40, 0, 0],
+  ].forEach((words, i) => words.forEach((word, j) => w(100 + i * 8 + j * 2, word)));
+  const { query } = harness(t, data, { formatControls: { descriptors: 2 } });
+  const r = query({ functions: [{ entry: 84, body: [{ start: 84, end: 124 }] }] });
+  assert.deepEqual(
+    r.layout.map((g: Report) => [g.kind, g.descriptor, g.descriptors, g.start, g.end]),
+    [
+      ["mz-header", null, undefined, 0, 64],
+      ["resident", 0, undefined, 64, 80],
+      ["overlapping-spans", null, [0, 1], 80, 100],
+      ["fbov-descriptors", null, undefined, 100, 116],
+      ["overlapping-spans", null, [0, 1], 116, 128],
+      ["resident", 1, undefined, 128, 144],
+      ["zero-padding", null, undefined, 144, 208],
+      ["fbov-header", null, undefined, 208, 224],
+    ],
+  );
+  const [f] = r.functions;
+  assert.deepEqual(
+    f.fragments[0].parts.map((p: Report) => [p.kind, p.start, p.end, p.outsideEntryRegion]),
+    [
+      ["overlapping-spans", 84, 100, false],
+      ["fbov-descriptors", 100, 116, true],
+      ["overlapping-spans", 116, 124, false],
+    ],
+  );
+  assert.deepEqual(f.regions, [
+    { kind: "overlapping-spans", descriptor: null, descriptors: [0, 1], bytes: 24 },
+    { kind: "fbov-descriptors", descriptor: null, bytes: 16 },
+  ]);
+  assert.equal(f.outsideEntryRegion, 16);
 });
 
 test("a span inside two overlapping spans gives a run for each set of descriptors", () => {
@@ -441,6 +492,7 @@ test("a body that runs from overlay code through its fixups into padding is spli
   assert.deepEqual(r.counts, {
     functions: 1,
     entriesOutsideCode: 0,
+    entriesInOverlappingSpans: 0,
     entriesNotInBody: 1,
     functionsWithBytesOutsideEntryRegion: 1,
     fragmentsOutsideEntryRegion: 2,

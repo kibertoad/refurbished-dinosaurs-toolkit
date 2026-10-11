@@ -1735,8 +1735,8 @@ holds are. A body that runs from one segment into the next is therefore outside 
 there. A resident span that runs past the load image, such as a segment whose end is memory the
 program gets at load time and the file does not store, keeps the part in the load image; its row
 still reports `outside-load-image`. Bytes that two or more resident spans hold are an
-`overlapping-spans` run naming every descriptor whose span holds them, one run for each stretch held
-by the same descriptors, so the layout gives none of them to one segment. A descriptor whose span
+`overlapping-spans` run naming every descriptor whose span holds them, a new run wherever that set of
+descriptors changes or an FBOV table cuts the stretch, so the layout gives none of them to one segment. A descriptor whose span
 starts inside another's, such as a segment that runs on to the end of its 64 KiB past the next
 segment's start, shows this way, and the rest of the file is laid out as usual. Overlay
 descriptors' spans are listed and leave the layout alone.
@@ -1754,17 +1754,24 @@ Each function's `entry` gives its `offset`, the `kind` and `descriptor` of the r
 `inBody` (whether a body range holds it) and `trampolines`, the stub trampolines whose target it
 is. Each body range is a `fragments` row with `start`, `end`, `size`, `crossesRegions` and `parts`:
 the range cut at every region boundary, each part with its `kind`, `descriptor`, size and
-`outsideEntryRegion`, true when its kind or descriptor differs from the entry's, or when the entry
-lies in an `overlapping-spans`, `zero-padding` or `undeclared` run and the part lies in another run.
-The entry and the parts of an `overlapping-spans` run also carry its `descriptors`, and `regions`
-totals those bytes per set of descriptors. An entry in such a run counts as outside resident code,
-since the table gives it no single segment. Code of another
+`outsideEntryRegion`. When the entry and the part both lie in resident descriptors' spans
+(`resident` runs of a file with an FBOV envelope, or `overlapping-spans` runs), the part is outside
+unless every descriptor whose span holds the entry also holds the part: then the part is in the
+entry's segment whichever of those descriptors that is. So a body whose entry only descriptor 1
+holds stays inside where it runs into bytes descriptors 1 and 2 both hold, and a body whose entry
+both hold is outside where it runs into bytes only descriptor 2 holds. Otherwise a part is outside
+when its kind or descriptor differs from the entry's, or when the entry lies in a `zero-padding` or
+`undeclared` run and the part lies in another run. The entry and the parts of an
+`overlapping-spans` run also carry its `descriptors`, and `regions` totals those bytes per set of
+descriptors. Code of another
 overlay is outside the entry's region, since being code says nothing about which procedure owns it.
 Every fragment is kept, however much of it lies outside. The parts of a range add up to the range,
 and the report fails rather than give a partition that does not. Per function, `bytes`, `regions`
 (bytes per kind and descriptor) and `outsideEntryRegion` total the fragments. `counts` totals the
-functions: entries outside resident or overlay code, entries in no body range, functions with bytes
-outside their entry's region, and fragments outside it or crossing regions.
+functions: entries outside resident or overlay code (`entriesOutsideCode`), entries in an
+`overlapping-spans` run (`entriesInOverlappingSpans`, resident code the table gives no single
+segment, so not in `entriesOutsideCode`), entries in no body range, functions with bytes outside
+their entry's region, and fragments outside it or crossing regions.
 
 With a `candidate`, the function's `candidate` row gives the candidate's joined `ranges`,
 `entryInCandidate`, and three range sets, each with `ranges`, `bytes`, `regions` and

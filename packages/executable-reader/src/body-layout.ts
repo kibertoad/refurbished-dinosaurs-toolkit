@@ -82,8 +82,9 @@ export interface BodyPart extends ByteRange {
   /** The descriptors of an `overlapping-spans` run, as in {@link LayoutRegion}. */
   descriptors?: number[];
   /**
-   * True when the part's kind or descriptor differs from the entry's, or when the entry lies in an
-   * `overlapping-spans`, `zero-padding` or `undeclared` run and the part lies in another run.
+   * In resident descriptors' spans, true unless every descriptor whose span holds the entry holds the
+   * part. Elsewhere, true when the part's kind or descriptor differs from the entry's, or when the
+   * entry lies in a `zero-padding` or `undeclared` run and the part lies in another run.
    */
   outsideEntryRegion: boolean;
 }
@@ -116,10 +117,12 @@ const KIND_ORDER: RegionKind[] = [
   "zero-padding",
   "undeclared",
 ];
-// Kinds whose runs no single descriptor owns: runs no table declares, and runs several resident
-// spans hold. Each run is its own region, so a part in another run of the same kind is outside an
-// entry's run.
-const RUN_KINDS: ReadonlySet<RegionKind> = new Set(["overlapping-spans", "zero-padding", "undeclared"]);
+// Runs no table declares: each is its own region, so another run of the same kind is outside it.
+const RUN_KINDS: ReadonlySet<RegionKind> = new Set(["zero-padding", "undeclared"]);
+// The resident descriptors whose spans hold a run, or null for a run outside their spans. Only
+// `overlapping-spans` runs carry `descriptors`.
+const spanHolders = (r: LayoutRegion) =>
+  r.descriptors ?? (r.kind === "resident" && r.descriptor !== null ? [r.descriptor] : null);
 
 /**
  * One FBOV descriptor in the `bodies` report: its four words as stored, whether its flags carry the
@@ -143,26 +146,20 @@ function residentRuns(image: MzImage): LayoutRegion[] {
     .filter((e) => !e.overlay && (e.status === "bytes" || e.status === "outside-load-image"))
     .map((e) => ({ descriptor: e.descriptor, start: e.start, end: Math.min(e.end, image.end) }))
     .filter((e) => e.end > e.start);
-  // Every span starts and ends at a cut, so each piece between two cuts is held by the same spans throughout.
+  // Every span starts and ends at a cut, so each piece between two cuts is held by the same spans
+  // throughout, and the set changes at every cut: a span that ends there cannot start there too.
   const cuts = [...new Set(spans.flatMap((e) => [e.start, e.end]))].sort((a, b) => a - b);
+  const byStart = [...spans].sort((a, b) => a.start - b.start);
   const runs: LayoutRegion[] = [];
-  for (let i = 1; i < cuts.length; i++) {
+  let open: typeof spans = [];
+  for (let i = 1, next = 0; i < cuts.length; i++) {
     const start = cuts[i - 1]!,
       end = cuts[i]!;
-    const holders = spans
-      .filter((e) => e.start <= start && end <= e.end)
-      .map((e) => e.descriptor)
-      .sort((a, b) => a - b);
-    if (!holders.length) continue;
-    const last = runs.at(-1);
-    const sameHolders =
-      last !== undefined &&
-      last.end === start &&
-      (holders.length === 1
-        ? last.kind === "resident" && last.descriptor === holders[0]
-        : last.descriptors?.join() === holders.join());
-    if (sameHolders) last.end = end;
-    else if (holders.length === 1) runs.push({ kind: "resident", descriptor: holders[0]!, start, end });
+    open = open.filter((e) => e.end > start);
+    while (next < byStart.length && byStart[next]!.start === start) open.push(byStart[next++]!);
+    if (!open.length) continue;
+    const holders = open.map((e) => e.descriptor).sort((a, b) => a - b);
+    if (holders.length === 1) runs.push({ kind: "resident", descriptor: holders[0]!, start, end });
     else runs.push({ kind: "overlapping-spans", descriptor: null, descriptors: holders, start, end });
   }
   return runs;
@@ -348,9 +345,14 @@ export function bodyLayout(bytes: Buffer, config: BodyConfig) {
     extent: status,
   }));
 
-  // The entry's own region: parts of another kind or descriptor, or of another run no single descriptor owns, lie outside it.
-  const outside = (region: LayoutRegion, home: LayoutRegion) =>
-    region.kind !== home.kind || region.descriptor !== home.descriptor || (RUN_KINDS.has(home.kind) && region !== home);
+  // In resident spans a part is inside when every span holding the entry holds it, so it is in the
+  // entry's segment whichever that is. Elsewhere, another kind, descriptor or undeclared run is outside.
+  const outside = (r: LayoutRegion, home: LayoutRegion) => {
+    const own = spanHolders(home);
+    const part = spanHolders(r);
+    if (own && part) return !own.every((d) => part.includes(d));
+    return r.kind !== home.kind || r.descriptor !== home.descriptor || (RUN_KINDS.has(home.kind) && r !== home);
+  };
   const split = (range: ByteRange, home: LayoutRegion): BodyPart[] => {
     const parts: BodyPart[] = [];
     for (let i = regionAt(layout, range.start), at = range.start; at < range.end; i++) {
@@ -405,6 +407,7 @@ export function bodyLayout(bytes: Buffer, config: BodyConfig) {
   const counts = {
     functions: functions.length,
     entriesOutsideCode: 0,
+    entriesInOverlappingSpans: 0,
     entriesNotInBody: 0,
     functionsWithBytesOutsideEntryRegion: 0,
     fragmentsOutsideEntryRegion: 0,
@@ -447,7 +450,8 @@ export function bodyLayout(bytes: Buffer, config: BodyConfig) {
       home,
       fragments.flatMap((g) => g.parts),
     );
-    if (entry.kind !== "resident" && entry.kind !== "overlay-code") counts.entriesOutsideCode++;
+    if (entry.kind === "overlapping-spans") counts.entriesInOverlappingSpans++;
+    else if (entry.kind !== "resident" && entry.kind !== "overlay-code") counts.entriesOutsideCode++;
     if (!entry.inBody) counts.entriesNotInBody++;
     if (whole.outsideEntryRegion) counts.functionsWithBytesOutsideEntryRegion++;
     counts.fragmentsOutsideEntryRegion += fragments.filter((g) => g.outsideEntryRegion).length;
