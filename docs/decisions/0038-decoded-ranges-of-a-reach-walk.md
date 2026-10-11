@@ -27,10 +27,11 @@ ones reported; or, per reached routine, the ranges of the instructions the walk 
    and the result `limit` does not cut them: a caller that intersects a site set with them needs
    all of them. The instruction limit bounds their number.
 3. The ranges hold only decoded instructions. A leaf is reached and not decoded, and contested,
-   unresolved overlapping and undecodable starts are not instructions the walk kept, so none of
-   them is in a range; each stays in `leaves`, `contested` or `gaps`. Ranges overlap only where
-   the walk proved two overlapping instructions. A site inside a range lies in a decoded
-   instruction, which may start before it; a target or instruction control at the site says which.
+   unresolved overlapping and undecodable starts are not instructions the walk kept, so no range
+   starts at one; each stays in `leaves`, `contested` or `gaps`. One can still lie inside a range
+   when another decoded instruction covers its bytes. Ranges overlap only where the walk proved two
+   overlapping instructions. A site inside a range lies in a decoded instruction, which may start
+   before it; a target at the site says which.
    In a walk stopped at its instruction limit, the ranges cover the part read.
 4. `targets` keeps its limit of 256. The walk's cost does not depend on the targets, so the limit
    bounds each per-target row (chain, route and dominator cut), and a many-site query is answered

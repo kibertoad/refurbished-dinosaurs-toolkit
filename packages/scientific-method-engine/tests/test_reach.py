@@ -364,6 +364,14 @@ class ReachTests(unittest.TestCase):
         r = reach(indirectJumps=[TABLE], decodedRanges=True, limit=1, leaves=[{"routine": 0x18, "reason": "synthetic leaf"}])
         self.assertEqual([x["start"] for x in r["decodedRanges"]], [0x0, 0xB, 0x20, 0x28])
 
+    def test_decoded_ranges_hold_an_undecodable_start_that_a_decoded_instruction_covers(self):
+        # 0000 je 0004 enters the immediate of 0002 mov ax, 0F90, where 0F 04 does not decode; 0005 add al, C3.
+        data = bytes.fromhex("7402b8900f04c3")
+        r = run_report(data, config(data, targets=[4], decodedRanges=True), "reach")
+        self.assertEqual([(x["start"], x["end"]) for x in r["decodedRanges"]], [(0, 7)])
+        self.assertIn({"site": 4, "reason": "undecoded or unmapped edge"}, r["gaps"])
+        self.assertEqual(r["targets"][0]["insideInstruction"], 2)
+
     def test_decoded_ranges_of_a_stopped_walk_cover_the_part_read(self):
         r = reach(indirectJumps=[TABLE], decodedRanges=True, instructionLimit=5)
         self.assertTrue(r["instructionLimitReached"])
@@ -375,6 +383,12 @@ class ReachTests(unittest.TestCase):
         data = bytes.fromhex("7401b890c3c3")
         r = run_report(data, config(data, targets=[3, 4], decodedRanges=True), "reach")
         self.assertEqual([(x["start"], x["end"]) for x in r["decodedRanges"]], [(0, 5), (3, 6)])
+        self.assertEqual([t["reached"] for t in r["targets"]], [True, True])
+        # 0000 je 0003; 0002 mov ax, 00C3 holds 0003 ret; 0005 ret. The ret at 0005 continues the run
+        # the mov ends, though the ret at 0003 opened a run after it.
+        data = bytes.fromhex("7401b8c300c3")
+        r = run_report(data, config(data, targets=[3, 5], decodedRanges=True), "reach")
+        self.assertEqual([(x["start"], x["end"]) for x in r["decodedRanges"]], [(0, 6), (3, 4)])
         self.assertEqual([t["reached"] for t in r["targets"]], [True, True])
 
     def test_rejected_inputs(self):

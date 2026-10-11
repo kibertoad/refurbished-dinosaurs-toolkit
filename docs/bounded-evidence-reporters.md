@@ -1138,11 +1138,14 @@ With `decodedRanges: true`, `decodedRanges` lists every instruction the walk dec
 `{ "start", "end", "routine" }` ranges in file order, for placing a site set larger than `targets`
 takes, or one chosen after the run, in the walk. A range is a run of instructions that abut and
 were read in the same `routine`, named as a target's `routine` is, so an instruction several
-routines share appears once and a range is not a routine's whole body. A leaf is not decoded and
-is in no range, and neither is a contested, unresolved overlapping or undecodable start. Ranges
+routines share appears once and a range is not a routine's whole body. A leaf is not decoded, and
+contested, unresolved overlapping and undecodable starts are not instructions the walk kept, so no
+range starts at one. Such a start can still lie inside a range, where another decoded instruction
+covers its bytes: a leaf start there is a gap, and an undecodable start is a gap either way. Ranges
 overlap only where the walk proved two overlapping instructions. A site inside a range lies in a
-decoded instruction that may start before it; giving the site as a target or an instruction
-control says whether an instruction starts there. The result `limit` does not cut the ranges,
+decoded instruction that may start before it; giving the site as a target says whether an
+instruction starts there, and an instruction control at it fails the report when none does. The
+result `limit` does not cut the ranges,
 which the instruction limit bounds, and a stopped walk's ranges cover the part read. Without the
 option the field is absent.
 

@@ -181,14 +181,17 @@ def decoded_ranges(seen, routine):
     overlap only where ``seen`` holds instructions that overlap, which the walk keeps when it proves
     both boundaries.
     """
-    ranges = []
+    # Past an overlap, the run an instruction continues need not be the last one opened, so each open
+    # run is found by where it ends and in which routine.
+    ranges, ending = [], {}
     for at, ins in sorted(seen.items()):
         owner = routine.get(at)
-        last = ranges[-1] if ranges else None
-        if last is not None and last["end"] == at and last["routine"] == owner:
-            last["end"] = at + ins.size
-        else:
-            ranges.append({"start": at, "end": at + ins.size, "routine": owner})
+        run = ending.pop((at, owner), None)
+        if run is None:
+            run = {"start": at, "end": at, "routine": owner}
+            ranges.append(run)
+        run["end"] = at + ins.size
+        ending[(run["end"], owner)] = run
     return ranges
 
 
@@ -466,9 +469,11 @@ def reach(image, config):
                               "A noReturn routine is contradicted when a return instruction, or a leaf entered "
                               "other than by a call, lies on its own read paths; an empty returnSites means only "
                               "that the walk read none. "
-                              "decodedRanges, when asked for, covers the instructions the walk decoded and no leaf; "
-                              "a site inside a range lies in a decoded instruction, which a target or "
-                              "instructionControls entry at the site shows to start there or not. "
+                              "decodedRanges, when asked for, covers the instructions the walk decoded; no range "
+                              "starts at a leaf or at a contested, unresolved overlapping or undecodable start, though "
+                              "one can lie inside a decoded instruction. A site inside a range lies in a decoded "
+                              "instruction, which may start before it; a target at the site shows whether one starts "
+                              "there. "
                               "When instructionLimitReached holds, the walk stopped before reading all it reaches: "
                               "every list and count covers only the part read, which part depends on the walk order, "
                               "and an unreached target may lie past the stop."}
