@@ -9,6 +9,17 @@ guest memory and keeps an event log of the run beside the static evidence. The d
 [has its own section](#rust-dos-sessions). Both backends take the same run lock and keep the same
 event log.
 
+Prefer rust-dos for new research sessions: its release binaries include the HTTP debugger,
+need no imported client, and support deterministic runs. Use the pinned release below.
+If a known incompatibility affects the target or the required observation, investigate it,
+check existing upstream issues and PRs for duplicates, and open a fix PR against
+[rust-dos](https://github.com/dividebysandwich/rust-dos). On Windows, use
+`C:\sources\rust-dos` to create a separate worktree for the fix. Add a synthetic regression
+test and keep original game files and extracted evidence outside both repositories and the PR.
+Until the fix is released, use DOSBox-X as a temporary fallback for the affected work. Record
+the incompatibility, upstream PR, emulator version and reason for the fallback in the
+restoration's research notes; verify the released fix before returning to rust-dos.
+
 The package owns the parts that decide whether a recorded run can be trusted and that carry no
 game knowledge: the emulator process, the machine-wide run lock, the guest drives, muted host
 audio, the session record, request IDs, operation observation, guarded writes, gated breakpoints and the event log.
@@ -417,18 +428,25 @@ API with the standard library and imports nothing of rust-dos.
 
 The session needs a rust-dos with debug server API version 1 and the features `journal`, `ops`,
 `if_state_seq`, `request_ids`, `write_expect`, `run`, `program_stops` and `quit`
-(`RUST_DOS_FEATURES`). No rust-dos release has them yet; build kibertoad/rust-dos `main` (on
-Windows, the linker needs the SDL2 VC development package's `lib/x64` on `LIB`, and `SDL2.dll`
-goes beside `rust-dos.exe`).
+(`RUST_DOS_FEATURES`). The supported release is
+[v1.7.0](https://github.com/dividebysandwich/rust-dos/releases/tag/v1.7.0)
+(`RUST_DOS_PINNED_TAG`), commit `5b7053fd618abcc0f7ea15784e6c881294cc0da3`.
+Download `rust-dos-v1.7.0-windows-x86_64.zip` and keep `SDL2.dll` beside `rust-dos.exe`.
+The archive's SHA-256 is `122aec9895bf45bbcc3086e5db294b1d432a4eef5b84044aa103a4dcd9238309`;
+the executable's is `ee2fa0aaaab5628e982ff6edc834c84a245bbb384d8639bcf634177e27177354`
+(`RUST_DOS_PINNED_SHA256`). These hashes apply to that ZIP, not the Win7, MSI or libretro builds.
+Pass the executable pin explicitly; `emulator_sha256=None` still permits other builds that
+satisfy the API and feature checks, and the session records their actual hash.
 
 ```python
 from pathlib import Path
 
 from dinorefurb_dosbox_session import Media, RustDosConfig, RustDosSession, RustDosSettings, Target
+from dinorefurb_dosbox_session import RUST_DOS_PINNED_SHA256
 
 settings = RustDosSettings(
     emulator=Path("tools/rust-dos/rust-dos.exe"),
-    emulator_sha256=None,  # or the executable's SHA-256, to refuse any other
+    emulator_sha256=RUST_DOS_PINNED_SHA256,
     run_directory=Path("artifacts/runs/2026-10-11-startup"),  # new or empty for each run
     target=Target("GAME.EXE"),
     prepare_drive=lambda drive_c: ...,  # put the target's files on the new, empty C:
@@ -631,7 +649,8 @@ revision, the emulator hash, the reported capabilities and the recorded writes.
 ### rust-dos
 
 Before each release that changes the rust-dos backend's process, transport or drive handling, the
-owner builds the rust-dos the package targets and runs, from this directory:
+owner downloads the pinned rust-dos release and runs, from this directory, passing
+`--emulator-sha256` with `RUST_DOS_PINNED_SHA256` to both commands:
 
 ```powershell
 python native/verify_rustdos.py --emulator <rust-dos.exe> --run-directory <new directory>

@@ -22,6 +22,7 @@ from dinorefurb_dosbox_session import (
     OutcomeContract,
     OutcomeFailed,
     ReadinessNotObserved,
+    RUST_DOS_PINNED_SHA256,
     RunDirectoryRefused,
     RunEnded,
     RunFailed,
@@ -160,7 +161,7 @@ class StartAndStop(RustDosCase):
 @windows_only
 class Refusals(RustDosCase):
     def test_an_executable_with_another_hash_is_refused_before_anything_starts(self) -> None:
-        settings = self.settings(emulator_sha256="0" * 64)
+        settings = self.settings(emulator_sha256=RUST_DOS_PINNED_SHA256)
         with self.assertRaisesRegex(EmulatorRefused, "not the expected"):
             RustDosSession(settings).start()
         self.assertFalse(self.lock_path.exists())

@@ -31,7 +31,8 @@ what a session relies on. Its `main` (kibertoad/rust-dos, 0f21e03) now has:
 - strict-match save states, which are refused unless the machine is paused and quiet and its
   hardware and media match, and which reset the debugger on load.
 
-None of it is in a release yet.
+These features shipped in upstream v1.7.0. The package now exports the release tag and the
+Windows x86-64 ZIP executable's SHA-256; its README records the archive hash and source commit.
 
 ## Decision
 
@@ -47,8 +48,8 @@ None of it is in a release yet.
    (`journal`, `ops`, `if_state_seq`, `request_ids`, `write_expect`, `run`, `program_stops`,
    `quit`). The caller names the executable and may give its SHA-256, which the session then
    requires. The session record holds the executable's hash and the server's version answer.
-   Until rust-dos publishes a release with these features there is no default to pin; moving to
-   one is a package release.
+   The supported release is v1.7.0. Callers pass `RUST_DOS_PINNED_SHA256` to require its Windows
+   x86-64 release executable; an omitted hash still allows another compatible build.
 4. The target starts stopped at its entry. Readiness is the marker that the session's own
    `AUTOEXEC.BAT` writes on C:, as for DOSBox-X; an answering server is not readiness. In normal
    mode the session then starts the target with `run` and `stop_at_entry`. A deterministic machine
@@ -83,4 +84,6 @@ None of it is in a release yet.
 - Restoration evidence recorded through DOSBox-X (issue 403) stays valid; nothing about
   `DosboxSession` changes.
 - The rust-dos backend follows a fast-moving API. The version and feature check refuses a server
-  that breaks it, and the issue tracks a release to pin.
+  that breaks it. Prefer the pinned rust-dos release for new sessions. Investigate known
+  incompatibilities and open upstream fix PRs with synthetic regression tests; DOSBox-X is a
+  temporary fallback for affected work until the fix is released and verified.

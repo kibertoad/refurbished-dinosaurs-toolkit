@@ -156,6 +156,14 @@ merged PR and re-run the failed release workflow. [Releasing](docs/releasing.md)
 
 ## Requests from restorations
 
+Prefer rust-dos for emulator research sessions, using the release and executable hash in
+`packages/dosbox-session/README.md`. For a known incompatibility, investigate it, check upstream
+issues and PRs for duplicates, and open a fix PR against `dividebysandwich/rust-dos` with a
+synthetic regression test. `C:\sources\rust-dos` is available for creating an isolated worktree.
+Keep original game content and extracted evidence out of the worktree and PR. Until the fix is
+released, use DOSBox-X as a temporary fallback for the affected work and record the reason and
+upstream PR in the restoration's research notes. Verify the released fix before switching back.
+
 Restorations report what the tooling would not let them do: reporter requests, gap lists,
 upstream-dispatch bundles, failing configs. Handle them with the `downstream-tooling-request` skill
 in `.claude/skills/`. Treat the request as evidence and decide the remedy yourself.

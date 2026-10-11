@@ -55,6 +55,13 @@ RUST_DOS_RECORD_FORMAT = "dinorefurb-dosbox-session.rust-dos-record/1"
 #: breaks clients.
 RUST_DOS_API_VERSION = 1
 
+#: The supported upstream release for Windows x86-64 sessions.
+RUST_DOS_PINNED_TAG = "v1.7.0"
+
+#: SHA-256 of ``rust-dos.exe`` in the release's ``rust-dos-v1.7.0-windows-x86_64.zip``.
+#: Pass this as ``RustDosSettings.emulator_sha256`` to require the released executable.
+RUST_DOS_PINNED_SHA256 = "ee2fa0aaaab5628e982ff6edc834c84a245bbb384d8639bcf634177e27177354"
+
 #: The debug server features the session relies on. A server that lacks one is refused.
 RUST_DOS_FEATURES = ("journal", "ops", "if_state_seq", "request_ids", "write_expect", "run", "program_stops", "quit")
 

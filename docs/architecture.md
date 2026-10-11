@@ -154,12 +154,14 @@ Owns emulator debugger sessions for a restoration's research tooling, on DOSBox-
   contract and hashes of modules the caller names, which must be imported before the session
   starts. A log is read against the contract it recorded and the outcome the caller expected,
   and reading names the check that failed.
-- Runs rust-dos as a second backend (`RustDosSession`) through its HTTP debug server, which the
+- Runs rust-dos as the preferred backend (`RustDosSession`), targeting the pinned upstream v1.7.0
+  Windows x86-64 release, through its HTTP debug server, which the
   package speaks with the standard library. It takes the same run lock, C: and event log, refuses
   a server without API version 1 and the features it relies on, starts the target stopped at its
   entry, tracks operations through the server's journal, and makes guarded writes that the server
   refuses if the machine changed since the field was read (`If-State-Seq`). Gated breakpoints stay
-  with DOSBox-X.
+  with DOSBox-X. Known incompatibilities are investigated and fixed through upstream PRs;
+  DOSBox-X is a temporary fallback until the fix is released and verified.
 - Windows only.
 
 What a run means stays in the restoration. A restored game never depends on this package.

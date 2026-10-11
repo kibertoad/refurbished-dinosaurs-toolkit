@@ -197,9 +197,10 @@ events as its loop-stop run.
 
 A second backend runs rust-dos through its HTTP debug server (issue 446,
 [ADR 0040](decisions/0040-rust-dos-session-backend.md)), with the same run lock, C:, guarded
-writes and event log, and a deterministic mode. It is built against kibertoad/rust-dos `main`,
-since no rust-dos release has the journal, operations and state preconditions it relies on.
-Issue 446 closes once a rust-dos release with them is pinned by hash.
+writes and event log, and a deterministic mode. It targets upstream v1.7.0, with the Windows
+x86-64 release executable pinned by SHA-256 in the package. Prefer it for new sessions;
+investigate incompatibilities and open upstream fix PRs, using DOSBox-X as a temporary fallback
+until a verified fix is released.
 
 ### Writing rules
 
