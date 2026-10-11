@@ -12,6 +12,8 @@ import { tableContents } from "./table-contents.ts";
 import type { TableConfig } from "./table-contents.ts";
 import { importReport } from "./pe-imports.ts";
 import type { ImportConfig } from "./pe-imports.ts";
+import { neImportReport } from "./ne-imports.ts";
+import type { NeExporter, NeImportConfig } from "./ne-imports.ts";
 import { unpack } from "./unpack.ts";
 import { bodyLayout } from "./body-layout.ts";
 import type { BodyConfig } from "./body-layout.ts";
@@ -108,7 +110,7 @@ export function prepare(config: ReportConfig, base: string): PreparedConfig {
   if (config.sourceKind === "pe32") return { ...config, source };
   if (config.sourceKind !== "mz")
     throw new Error(
-      "sourceKind must be mz, pe32 or synthetic-raw; pe32+ is read only by imports, and other loaders are unsupported",
+      "sourceKind must be mz, pe32 or synthetic-raw; pe32+ and ne are read only by imports, and other loaders are unsupported",
     );
   const image = readMz(bytes, config.loadSegment);
   const formatTables = {
@@ -174,6 +176,20 @@ export function prepare(config: ReportConfig, base: string): PreparedConfig {
     })),
   );
   return { ...config, source, relocations, formatTables, overlayExports };
+}
+
+// An exporting module the NE import report reads names from, hash-checked as the source is.
+function readExporter(exporter: NeExporter, base: string) {
+  if (typeof exporter.xxh3 !== "string" || !/^[0-9a-f]{32}$/.test(exporter.xxh3))
+    throw new Error(`Exporting module ${exporter.file} needs its XXH3-128 hash as 32 lower-case hex digits`);
+  const path = resolve(base, exporter.file),
+    stat = statSync(path);
+  if (!stat.isFile() || stat.size > 256 * 1024 * 1024)
+    throw new Error(`Exporting module ${exporter.file} exceeds 256 MiB`);
+  const bytes = readFileSync(path);
+  if (sourceXxh3(bytes) !== exporter.xxh3)
+    throw new Error(`Exporting module ${exporter.file} xxh3 differs from the supplied baseline`);
+  return { path, bytes };
 }
 
 /** The reader's package name and version, as the `unpack` report gives it for a build's `unpacked.tool`. */
@@ -269,8 +285,12 @@ export function run(args: string[]): Report {
   const supplied = JSON.parse(readConfigText(file)) as ReportConfig,
     base = dirname(resolve(file));
   if (command === "imports") {
-    // The import report reads the PE import tables itself; the engine has no part in it.
+    // The import report reads the PE or NE import tables itself; the engine has no part in it.
     const { source, bytes } = readVerifiedSource(supplied, base);
+    if (supplied.sourceKind === "ne")
+      return neImportReport(bytes, { ...supplied, source } as NeImportConfig, (exporter) =>
+        readExporter(exporter, base),
+      );
     return importReport(bytes, { ...supplied, source } as ImportConfig);
   }
   if (command === "pointers") {

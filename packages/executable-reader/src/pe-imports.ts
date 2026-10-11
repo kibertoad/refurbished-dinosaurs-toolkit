@@ -163,7 +163,7 @@ function checkControls(controls: unknown): ImportControl[] {
  */
 export function importReport(bytes: Buffer, config: ImportConfig) {
   const kind = config.sourceKind;
-  if (kind !== "pe32" && kind !== "pe32+") throw new Error("The import report requires sourceKind pe32 or pe32+");
+  if (kind !== "pe32" && kind !== "pe32+") throw new Error("The PE import report requires sourceKind pe32 or pe32+");
   // A control the report does not check would read as a passed one.
   if (config.formatControls !== undefined) throw new Error("formatControls apply only to mz sources");
   const controls = checkControls(config.controls);

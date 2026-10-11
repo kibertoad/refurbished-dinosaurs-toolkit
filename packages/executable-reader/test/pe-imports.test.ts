@@ -244,7 +244,7 @@ test("import report requires positive controls and a source kind that matches th
   // Only the import report reads PE32+; the engine's commands refuse it before running.
   const wide = fixture(t, true);
   wide.report([{ slot: wide.slot(0, 0), dll: "KERNEL32.dll", name: "CreateFileA" }]);
-  assert.throws(() => run(["trace", wide.path]), /pe32\+ is read only by imports/);
+  assert.throws(() => run(["trace", wide.path]), /pe32\+ and ne are read only by imports/);
 });
 
 test("import report refuses a lookup entry that is neither an ordinal nor a hint/name", (t) => {
