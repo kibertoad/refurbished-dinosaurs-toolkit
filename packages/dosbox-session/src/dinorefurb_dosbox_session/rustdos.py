@@ -45,7 +45,7 @@ from .lock import RunLock, resolve_lock_path
 from .run import OwnedRun, RunState, package_version
 from .rustdos_client import MemoryRead, Reply, RustDosClient
 from .session import EventLogSettings, Target
-from .writes import FieldContract, VerifiedWrite, WritableField, payload, resolve, sha256, write_entry
+from .writes import FieldContract, VerifiedWrite, WritableField, sha256
 from .writes import _normalize_sha256 as normalize_sha256
 
 #: The ``format`` field of a rust-dos session's ``session.json``.
@@ -67,6 +67,7 @@ EMULATOR_OUTPUT = "rust-dos.out"
 AUTOEXEC = "AUTOEXEC.BAT"
 
 _DRIVE_C = "drive-c"
+_JOURNAL_PAGE = 4096
 _SESSION_RECORD = "session.json"
 _EVENT_LOG = "events.jsonl"
 _CLEANUP_DIAGNOSTIC = "cleanup-diagnostic.txt"
@@ -220,6 +221,13 @@ def _check_config(settings: RustDosSettings) -> None:
     command = " ".join((settings.target.command, *settings.target.arguments))
     if not settings.target.command or any(c in command for c in "\r\n\x00"):
         raise ConfigurationRefused(f"The target's command line {command!r} must be one line.")
+    if config.deterministic and (not command.isascii() or "%" in command):
+        # AUTOEXEC.BAT starts the target in this mode: it is written as ASCII, and a batch file
+        # replaces %...% with variables and parameters, so the target would get another command line.
+        raise ConfigurationRefused(
+            f"The target's command line {command!r} goes into AUTOEXEC.BAT in a deterministic run, so it must be "
+            "ASCII without %."
+        )
 
 
 def _program_name(command: str) -> str:
@@ -408,9 +416,19 @@ class RustDosSession(OwnedRun):
             try:
                 version = client.version()
                 break
-            except (OSError, ServerRefused):
+            except ServerRefused as error:
+                # A server error may pass while it starts; a refusal of /api/version will not.
+                if error.status < 500:
+                    raise EmulatorRefused(
+                        f"The debug server at {self.endpoint} does not answer /api/version: {error}"
+                    ) from error
                 self._deadline_passed(deadline, "the debug server answered")
                 time.sleep(0.05)
+            except OSError:
+                self._deadline_passed(deadline, "the debug server answered")
+                time.sleep(0.05)
+        if not isinstance(version, dict):
+            raise EmulatorRefused(f"The debug server at {self.endpoint} answered /api/version with {version!r}.")
         self.server = version
         self._write_record()
         if version.get("name") != "rust-dos":
@@ -433,7 +451,7 @@ class RustDosSession(OwnedRun):
                 "type": "cdrom" if media.kind == "iso" else "hdd",
                 "read_only": True,
             }
-            drives = self.client.request("PUT", f"/api/drive/{letter}", body=body).body.get("drives", {})
+            drives = self.client.request("PUT", f"/api/drive/{letter}", body=body).field("drives")
             drive = drives.get(letter) if isinstance(drives, dict) else None
             if not isinstance(drive, dict) or drive.get("read_only") is not True:
                 raise SessionError(f"Drive {letter}: is not mounted read-only after mounting {media.path}: {drive!r}.")
@@ -472,6 +490,8 @@ class RustDosSession(OwnedRun):
         self._seen(reply)
         # The reply carries the journal's paused entry as ``stop``, with its own number.
         stop = reply.field("stop") if isinstance(reply.field("stop"), dict) else reply.body
+        if not isinstance(stop, dict):
+            raise SessionError(f"The run command's reply carries no stop: {reply.body!r}.")
         if stop.get("reason") != "program_start" or not _started_target(stop, command):
             raise SessionError(
                 f"The target did not stop at its entry: reason {stop.get('reason')!r}, program {stop.get('program')!r}."
@@ -543,12 +563,20 @@ class RustDosSession(OwnedRun):
         if unconfirmed is None:
             return
         request_id, after = unconfirmed
-        page = self.client.journal(after, limit=4096)
-        for entry in page.get("entries", []):
-            if entry.get("request_id") == request_id and isinstance(entry.get("op"), int):
-                self._continuations.pending = RustDosOperation(entry["op"], str(entry.get("kind", "resume")), request_id)
-                self._continuations.unconfirmed = None
-                return
+        while True:
+            page = self.client.journal(after, limit=_JOURNAL_PAGE)
+            entries = page.get("entries")
+            if not isinstance(entries, list) or not entries:
+                break
+            for entry in entries:
+                if entry.get("request_id") == request_id and isinstance(entry.get("op"), int):
+                    self._continuations.pending = RustDosOperation(entry["op"], str(entry.get("kind", "resume")), request_id)
+                    self._continuations.unconfirmed = None
+                    return
+            following = page.get("next")
+            if not isinstance(following, int) or following <= after:
+                break
+            after = following
         status = self.client.status()
         if status.get("paused") is True and status.get("quiescent") is True:
             # The journal records every request the machine carried out, and this one is not in it.
@@ -635,7 +663,12 @@ class RustDosSession(OwnedRun):
         Each poll first checks that the owned emulator still runs, and raises
         :class:`EmulatorExited` if not. When the time runs out the result is ``pending``; observe
         the same operation again to keep waiting. Observation never resumes the guest.
+
+        :raises ValueError: ``poll_ms`` is not a positive integer.
         """
+        if isinstance(poll_ms, bool) or not isinstance(poll_ms, int) or poll_ms <= 0:
+            # A poll that does not wait would ask the server again at once, as fast as it answers.
+            raise ValueError(f"poll_ms must be a positive number of milliseconds, not {poll_ms!r}")
         op = operation.op if isinstance(operation, RustDosOperation) else operation
         return self._observe(self.client, op, timeout, poll_ms)
 
@@ -684,32 +717,13 @@ class RustDosSession(OwnedRun):
         :raises RunEnded: the event log already ends with its outcome.
         """
         self._continuations.refuse_if_over()
-        written: str | None = None
-        try:
-            content = payload(data)
-            written = sha256(content)
-            target = resolve(contract, field, content)
-            assert contract is not None
-            verified = _guarded_write(self.client, contract, target, content, expected_sha256)
-        except BaseException as error:
-            self._fail_run(f"Write to field {field} failed: {error}")
-            expected = expected_sha256.lower() if isinstance(expected_sha256, str) else repr(expected_sha256)
-            self._writes.append(
-                write_entry(
-                    None if contract is None else contract.name,
-                    field,
-                    None if contract is None else contract.field(field),
-                    expected,
-                    written,
-                    "failed",
-                    str(error),
-                )
-            )
-            self._write_record()
-            raise
-        self._writes.append(verified.to_json())
-        self._write_record()
-        return verified
+        return self._recorded_write(
+            contract,
+            field,
+            data,
+            expected_sha256,
+            lambda contract, target, content: _guarded_write(self.client, contract, target, content, expected_sha256),
+        )
 
     # Records
 
@@ -876,9 +890,13 @@ def _guarded_write(
             written,
             sha256(after.data),
         )
-    if after.state_seq != reply.field("state_seq"):
+    # The body's state_seq, else the X-Debug-State-Seq header, which carries the same entry.
+    write_state = reply.field("state_seq")
+    if not isinstance(write_state, int):
+        write_state = reply.state_seq
+    if after.state_seq != write_state:
         raise WriteFailed(
-            f"The machine changed between the write to field {field.name} (state {reply.field('state_seq')}) and its "
+            f"The machine changed between the write to field {field.name} (state {write_state}) and its "
             f"readback (state {after.state_seq})."
         )
     return VerifiedWrite(contract.name, field, expected, written)

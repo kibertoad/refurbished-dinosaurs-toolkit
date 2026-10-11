@@ -451,8 +451,10 @@ Entering `RustDosSession` (or calling `start()`):
 1. Refuses a platform other than Windows, a missing emulator, an emulator whose SHA-256 differs
    from `emulator_sha256` when that is given (`EmulatorRefused`), options the session sets itself
    in `emulator_arguments` (`ConfigurationRefused`), a deterministic run without a numeric speed,
-   media on C: or two media on one letter, a target command line with a line break, and a run
-   directory that is not empty. With `event_log` set, hashes the named modules.
+   media on C: or two media on one letter, a target command line with a line break, a
+   deterministic target command line that is not ASCII or holds `%` (it goes into
+   `AUTOEXEC.BAT`, which would expand it), and a run directory that is not empty. With
+   `event_log` set, hashes the named modules.
 2. Takes the run lock, the same one `DosboxSession` takes, or refuses with `LockHeld`.
 3. Creates `drive-c` empty in the run directory and calls `prepare_drive` on it. A prepared drive
    that holds `AUTOEXEC.BAT` or the readiness marker is refused. The session writes
@@ -464,7 +466,8 @@ Entering `RustDosSession` (or calling `start()`):
    `keep_host_sound` is set; the emulated sound devices stay. The emulator's output goes to
    `rust-dos.out`, where the session reads the port the server took.
 5. Checks `/api/version`: the name `rust-dos`, API version 1 and every feature above, or refuses
-   with `EmulatorRefused`.
+   with `EmulatorRefused`. A server that refuses `/api/version` with a status below 500 is
+   refused the same way.
 6. Mounts each medium read-only through the server (an `iso` as a CD-ROM drive, any CD image
    rust-dos reads; a `directory` as a hard disk) and fails unless the server reports it read-only.
 7. Waits for the readiness marker, then runs the target at the DOS prompt with `stop_at_entry`.
@@ -495,7 +498,8 @@ number), `writes`, `run_failure` and `event_log`.
 `session.client` and each `session.open_diagnostic_client()` are a `RustDosClient`. Every request
 carries an `X-Request-Id` from that client's own namespace (`<session>.c<client>.<n>`), and the
 server copies it into each journal entry the request causes. A reply with a status of 400 or above
-raises `ServerRefused` with the status, the body and, for a refused precondition, its name. The
+raises `ServerRefused` with the status, the body and, for a refused precondition, its name. A
+reply cut short or unreadable raises `ConnectionError`, like a dropped connection. The
 client offers reads (`status`, `registers`, `read_memory`, `disassemble`, `screen_text`,
 `screenshot`, `drives`, `log`), breakpoints and watchpoints (`set_breakpoint` with `once`,
 `break_on` for `program_start` and `program_exit`), the journal and operations. `request` sends any
@@ -510,8 +514,9 @@ Requests that resume or change the guest go through the session:
   once the input is delivered. Input may be sent while a continuation runs.
 - `pause()` stops the guest. The continuation it interrupts ends `stopped` with reason `request`;
   observe it to clear it. A pause is still sent after the run failed.
-- `observe(operation, timeout)` waits on any operation, checking on each poll that the emulator
-  still runs (`EmulatorExited`). It returns a `RustDosObservation`: `completed` with the state the
+- `observe(operation, timeout, poll_ms=500)` waits on any operation, checking on each poll that
+  the emulator still runs (`EmulatorExited`); `poll_ms` must be a positive integer. It returns a
+  `RustDosObservation`: `completed` with the state the
   operation ended in (`stopped`, `done`, `failed`, `superseded` or `cancelled`) and the stop, or
   `pending` when the time ran out.
 - When a continuation request raises a transport error, the server may have taken it. Before the

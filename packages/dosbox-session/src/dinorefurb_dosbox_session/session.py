@@ -37,7 +37,7 @@ from .errors import (
 from .events import EventLogWriter, EventSchema, OutcomeContract
 from .lock import RunLock, resolve_lock_path
 from .run import OwnedRun, RunState, package_version
-from .writes import FieldContract, VerifiedWrite, guarded_write, payload, resolve, sha256, write_entry
+from .writes import FieldContract, VerifiedWrite, guarded_write
 
 #: The ``format`` field of ``session.json``.
 RECORD_FORMAT = "dinorefurb-dosbox-session.record/1"
@@ -443,33 +443,15 @@ class DosboxSession(OwnedRun):
         self._continuations.refuse_if_over()
         self._continuations.changes += 1
         session_id = self.session_id
-        written: str | None = None
-        try:
-            content = payload(data)
-            written = sha256(content)
-            target = resolve(contract, field, content)
-            assert contract is not None
-            verified = guarded_write(self.client, session_id, contract, target, content, expected_sha256)
-        except BaseException as error:
-            self._continuations.run_failure = f"Write to field {field} failed: {error}"
-            self._end_log(self._continuations.run_failure)
-            expected = expected_sha256.lower() if isinstance(expected_sha256, str) else repr(expected_sha256)
-            self._writes.append(
-                write_entry(
-                    None if contract is None else contract.name,
-                    field,
-                    None if contract is None else contract.field(field),
-                    expected,
-                    written,
-                    "failed",
-                    str(error),
-                )
-            )
-            self._write_record()
-            raise
-        self._writes.append(verified.to_json())
-        self._write_record()
-        return verified
+        return self._recorded_write(
+            contract,
+            field,
+            data,
+            expected_sha256,
+            lambda contract, target, content: guarded_write(
+                self.client, session_id, contract, target, content, expected_sha256
+            ),
+        )
 
     def observe(self, operation: OperationLike, timeout: float, poll_ms: int = 100) -> Observation:
         """Waits on ``operation`` for up to ``timeout`` seconds.

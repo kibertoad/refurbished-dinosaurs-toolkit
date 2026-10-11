@@ -21,6 +21,7 @@ Modes, comma-separated:
 - lying-old: reports replacing other bytes than a write found.
 - lost-write: reports a write it did not make.
 - drop-resume-reply: takes the first resume and closes the connection without answering.
+- cut-resume-reply: takes the first resume and closes the connection halfway through its answer.
 - ignore-quit: answers quit and keeps running.
 """
 
@@ -207,7 +208,10 @@ class Machine:
         if path == "/api/journal":
             after = int(query.get("after", "0"))
             entries = [e for e in self.journal if e["seq"] > after]
-            return 200, {"instance": "5eed", "first": 1, "last": len(self.journal), "entries": entries, "next": len(self.journal)}
+            if "limit" in query:
+                entries = entries[: int(query["limit"])]
+            following = entries[-1]["seq"] if entries else after
+            return 200, {"instance": "5eed", "first": 1, "last": len(self.journal), "entries": entries, "next": following}
         if path.startswith("/api/ops/"):
             op = self.ops.get(int(path.rsplit("/", 1)[1]))
             if op is None:
@@ -266,6 +270,8 @@ class Machine:
                 self.pause_now("program_exit", req, tag, op=req, exit=exit_info)
             if "drop-resume-reply" in self.modes and self.resumes == 1:
                 return -1, None
+            if "cut-resume-reply" in self.modes and self.resumes == 1:
+                return -2, {"ok": True, "op": req, "paused": self.paused, **self.meta()}
             return 200, {"ok": True, "op": req, "paused": self.paused, **self.meta()}
         if action in ("step", "step_over"):
             if not self.paused:
@@ -311,9 +317,12 @@ def serve(machine: Machine) -> ThreadingHTTPServer:
                 except Refusal as refusal:
                     status, reply = refusal.status, refusal.body
                 state_seq = machine.state_seq
-            if status < 0:
+            if status == -1:
                 self.close_connection = True
                 return
+            cut = status == -2
+            if cut:
+                status = 200
             data = reply if isinstance(reply, bytes) else json.dumps({"req": req, **reply} if isinstance(reply, dict) else reply).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/octet-stream" if isinstance(reply, bytes) else "application/json")
@@ -324,7 +333,9 @@ def serve(machine: Machine) -> ThreadingHTTPServer:
             if tag is not None:
                 self.send_header("X-Request-Id", tag)
             self.end_headers()
-            self.wfile.write(data)
+            self.wfile.write(data[: len(data) // 2] if cut else data)
+            if cut:
+                self.close_connection = True
 
         def do_GET(self) -> None:
             self.answer("GET")

@@ -397,14 +397,15 @@ def launch_owned(
     """
     kernel32 = _kernel32()
     block = None if environment is None else _environment_block(environment)
-    sink = None if output is None else open(output, "wb")  # noqa: SIM115 - closed once the process holds it
     job = _kill_on_close_job(kernel32)
     information = _ProcessInformation()
+    sink = None
     try:
         inherited = None
-        if sink is not None:
+        if output is not None:
             import msvcrt
 
+            sink = open(output, "wb")  # noqa: SIM115 - closed below once the process holds it
             inherited = msvcrt.get_osfhandle(sink.fileno())
             os.set_handle_inheritable(inherited, True)
         count = 1 if inherited is None else 2

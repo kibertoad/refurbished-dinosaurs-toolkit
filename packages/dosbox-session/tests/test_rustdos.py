@@ -195,6 +195,17 @@ class Refusals(RustDosCase):
         with self.assertRaisesRegex(ConfigurationRefused, "must be one line"):
             RustDosSession(self.settings(target=Target("PROBE.COM", ("a\r\nDEL *.*",)))).start()
 
+    def test_a_deterministic_command_line_the_batch_file_would_change_is_refused(self) -> None:
+        from dinorefurb_dosbox_session import Target
+
+        config = RustDosConfig(cycles="10000", deterministic=True)
+        for argument in ("%PATH%", "café"):
+            with self.subTest(argument=argument):
+                settings = self.settings(config=config, target=Target("PROBE.COM", (argument,)))
+                with self.assertRaisesRegex(ConfigurationRefused, "ASCII without %"):
+                    RustDosSession(settings).start()
+                self.assertFalse(self.lock_path.exists())
+
     def test_a_prepared_drive_with_its_own_batch_file_is_refused(self) -> None:
         def prepare(drive: Path) -> None:
             (drive / "autoexec.bat").write_text("echo hi\r\n", encoding="ascii")
@@ -226,10 +237,12 @@ class Refusals(RustDosCase):
         self.assertFalse(self.lock_path.exists())
 
     def test_a_server_that_never_gives_its_address_or_a_guest_that_never_writes_the_marker_is_not_ready(self) -> None:
-        for mode, message in (("silent", "printed its address"), ("never-ready", "wrote DRREADY.TXT")):
+        # never-ready has to start and print its address within the timeout first, so it gets
+        # longer: a loaded machine can take more than a second to start the stand-in.
+        for mode, message, timeout in (("silent", "printed its address", 1.5), ("never-ready", "wrote DRREADY.TXT", 5.0)):
             with self.subTest(mode=mode):
                 with self.assertRaisesRegex(ReadinessNotObserved, message):
-                    RustDosSession(self.settings(mode, readiness_timeout=1.5)).start()
+                    RustDosSession(self.settings(mode, readiness_timeout=timeout)).start()
                 self.assertFalse(self.lock_path.exists())
 
     def test_a_held_run_lock_refuses_a_rust_dos_session_as_it_does_a_dosbox_one(self) -> None:
@@ -289,6 +302,29 @@ class Operations(RustDosCase):
             session.pause()
             self.assertEqual(session.observe(pending, timeout=5).state, "stopped")
             session.observe(session.step(), timeout=5)
+
+    def test_a_lost_continuation_is_found_on_a_later_journal_page(self) -> None:
+        with RustDosSession(self.settings("drop-resume-reply")) as session:
+            # The lookup starts at the first entry, so the start's entries come before the resume.
+            session._last_seq = 0
+            with self.assertRaises(OSError):
+                session.continue_()
+            with mock.patch("dinorefurb_dosbox_session.rustdos._JOURNAL_PAGE", 1):
+                with self.assertRaisesRegex(OperationPending, r"Operation \d+ \(resume\) is still pending"):
+                    session.continue_()
+
+    def test_a_continuation_whose_reply_was_cut_short_is_found_in_the_journal(self) -> None:
+        with RustDosSession(self.settings("cut-resume-reply")) as session:
+            with self.assertRaises(ConnectionError):
+                session.continue_()
+            with self.assertRaisesRegex(OperationPending, r"Operation \d+ \(resume\) is still pending"):
+                session.continue_()
+
+    def test_an_observation_that_would_not_wait_between_polls_is_refused(self) -> None:
+        with RustDosSession(self.settings()) as session:
+            operation = session.continue_()
+            with self.assertRaisesRegex(ValueError, "poll_ms"):
+                session.observe(operation, timeout=1, poll_ms=0)
 
     def test_observation_raises_once_the_emulator_has_exited(self) -> None:
         with RustDosSession(self.settings()) as session:

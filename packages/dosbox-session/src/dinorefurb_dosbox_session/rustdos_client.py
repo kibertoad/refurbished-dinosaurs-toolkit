@@ -105,7 +105,8 @@ class RustDosClient:
         server carries the request out only while the machine is still paused in that state.
 
         :raises ServerRefused: the server answered with a status of 400 or above.
-        :raises OSError: the request or its reply did not get through.
+        :raises OSError: the request or its reply did not get through. A reply that arrives
+            incomplete or unreadable raises ``ConnectionError``.
         """
         if query:
             pairs = {
@@ -141,6 +142,10 @@ class RustDosClient:
                 _int_header(response.headers, "X-Debug-Req"),
                 _int_header(response.headers, "X-Debug-State-Seq"),
             )
+        except (http.client.HTTPException, ValueError) as error:
+            # A reply cut short (a bad status line, a short body, JSON that ends early) leaves the
+            # request's fate as unknown as a dropped connection does, so it raises the same way.
+            raise ConnectionError(f"{method} {path} got no complete reply: {error!r}") from error
         finally:
             connection.close()
         if reply.status >= 400:

@@ -12,6 +12,7 @@ from typing import Any
 from . import processes
 from .errors import EmulatorExited, LogEntryRefused, RunDirectoryRefused, RunEnded, RunFailed, SessionError
 from .events import EventLogWriter, EventSchema, OutcomeContract
+from .writes import FieldContract, VerifiedWrite, WritableField, payload, resolve, sha256, write_entry
 
 
 @functools.cache
@@ -50,8 +51,8 @@ class OwnedRun:
     """The event log, run directory and liveness checks of an owned session.
 
     A subclass sets ``settings`` (with ``event_log``), ``token``, ``run_directory``, ``drive_c``,
-    ``_log``, ``_process`` and ``_continuations`` (a :class:`RunState`), and writes its record in
-    ``_write_record``.
+    ``_log``, ``_process``, ``_writes`` and ``_continuations`` (a :class:`RunState`), and writes
+    its record in ``_write_record``.
     """
 
     settings: Any
@@ -60,6 +61,7 @@ class OwnedRun:
     drive_c: Path
     _log: EventLogWriter | None
     _process: processes.OwnedProcess | None
+    _writes: list[dict[str, Any]]
     _continuations: RunState
 
     def _write_record(self) -> None:
@@ -124,6 +126,46 @@ class OwnedRun:
         if self._continuations.run_failure is None:
             self._continuations.run_failure = failure
         self._end_log(failure)
+
+    def _recorded_write(
+        self,
+        contract: FieldContract | None,
+        field: str,
+        data: bytes,
+        expected_sha256: str,
+        write: Callable[[FieldContract, WritableField, bytes], VerifiedWrite],
+    ) -> VerifiedWrite:
+        """Resolves ``field`` in ``contract`` and makes the write with ``write``, recording it.
+
+        Any refusal or failure fails the run, adds a failed entry to the record and propagates.
+        The caller checks first that the run may still change the guest.
+        """
+        written: str | None = None
+        try:
+            content = payload(data)
+            written = sha256(content)
+            target = resolve(contract, field, content)
+            assert contract is not None
+            verified = write(contract, target, content)
+        except BaseException as error:
+            self._fail_run(f"Write to field {field} failed: {error}")
+            expected = expected_sha256.lower() if isinstance(expected_sha256, str) else repr(expected_sha256)
+            self._writes.append(
+                write_entry(
+                    None if contract is None else contract.name,
+                    field,
+                    None if contract is None else contract.field(field),
+                    expected,
+                    written,
+                    "failed",
+                    str(error),
+                )
+            )
+            self._write_record()
+            raise
+        self._writes.append(verified.to_json())
+        self._write_record()
+        return verified
 
     # The event log
 
