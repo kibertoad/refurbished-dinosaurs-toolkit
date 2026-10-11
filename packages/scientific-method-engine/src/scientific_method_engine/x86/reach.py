@@ -4,7 +4,7 @@ from .image import integer
 from .trace import (walk, cfg_step, base_mnemonic, unsupported_transfer, holding_instruction, INTERRUPTS, RETURNS,
                     LIMIT_REASON, OVERLAP_REASON, UNDECODED_REASON)
 from .pcode_backend import interrupt_vector
-from .dispatch import indirect_call_declarations, call_ends
+from .dispatch import indirect_call_declarations, call_ends, derived_assumptions
 
 # The virtual root of the dominator computation; no file offset is negative.
 ROOT = -1
@@ -599,6 +599,7 @@ def reach(image, config):
         assumptions.append("each declared indirect call can call the targets its declaration gives, for the evidence "
                            "it gives, and only those when it is declared exhaustive")
     assumptions += no_return_assumptions(no_return_routines, no_return_interrupts, no_return_sites)
+    assumptions += derived_assumptions(image, indirect_calls)
     stopped = stopped or check_stopped
     # Every range is kept whatever the result limit, so a caller can place any site in the walk; the
     # instruction limit bounds their number.

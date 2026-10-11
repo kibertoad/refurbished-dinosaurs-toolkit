@@ -1106,13 +1106,20 @@ computed call that is not exhaustive, and a call, jump or
 return whose frame encoding the walk does not model (an operand-size override, or a far transfer
 in the flat model) are listed in `unresolved` with their `site`, `instruction` text, `kind`
 (`call`, `jump` or `return`), `reason` and the `routine` the walk read them in. The walk never
-reads table words for an undeclared jump, and it does not bound a table from the guard before it:
-a table's rows come from an `indirectJumps` declaration with its evidence, which `dispatch` can
-check. `gaps` lists edges that could not be decoded (invalid bytes or an address outside declared
+reads table words for an undeclared jump: a table's rows come from an `indirectJumps` declaration
+with its evidence, which `dispatch` can check, and only a declaration that names a `bound` has its
+count derived from the code. `gaps` lists edges that could not be decoded (invalid bytes or an address outside declared
 code), the instruction limit, a reached leaf whose start lies inside a decoded instruction (with
 `insideInstruction`; the leaf is not decoded, so its boundary is not checked), and the other walk
 gaps. `interrupts` lists each interrupt the walk continued past, with its vector. Interrupt
 handlers are not read.
+
+A declared table or computed call whose count the code proves ([derived table
+counts](#table-counts-derived-from-the-code)) is followed at its derived rows. One whose count the
+code does not prove is listed in `unresolved` with the reason `indirect jump table count is not
+proven by the code` or `indirect call table count is not proven by the code`, and a derived count
+whose routine an edge of the walk enters other than at its start is a gap, as the section
+describes.
 
 Each `targets` row gives `reached`. A reached target has:
 
@@ -1398,9 +1405,12 @@ reason.
 CFG discovery commands (`bounds`, `owner`, `callees`, `reach`, `incoming`, and entry-path queries)
 accept `indirectJumps` for segmented16 computed near word jumps. Each declaration
 names `site`, consumer/mapping `evidence`, an explicit boolean `exhaustive`, and
-`table: { start, count, stride, fieldOffset, evidence }`. The target field is a
+`table: { start, count, stride, fieldOffset, evidence, bound }`. The target field is a
 little-endian word; `fieldOffset` defaults to zero. Counts are 1..256, declarations
 are limited to 256 and every target must resolve inside a declared code mapping.
+An exhaustive table can leave out `count` and give `bound` instead, and the engine then
+derives the count from the code ([table counts derived from the
+code](#table-counts-derived-from-the-code)).
 Table evidence must justify the layout/count; consumer evidence must connect the
 jump's register or memory operand to those words and account for every producer
 and index gate. `exhaustive: true` asserts that complete reading; the reporter
@@ -1476,23 +1486,91 @@ Each of at most 256 declarations names:
 | `site` | the call. It must decode as an unprefixed near call through a word register or memory operand, or a far call through memory |
 | `evidence` | required free text connecting the call's operand to the targets: the producers of the index or pointer and every gate on them |
 | `exhaustive` | required boolean. `true` asserts that the call can reach no other target; the engine does not infer it |
-| `table` | `{ start, count, stride, fieldOffset, width, evidence }`, as for [indirect jump tables](#evidenced-indirect-jump-tables): `count` 1..256, `fieldOffset` defaults to 0, and `evidence` justifies the layout and count. A near call's rows are little-endian words placed through the call site's region mapping (`width` 2, the default). A far call's rows are `offset, segment` word pairs (`width` 4): the segment word needs a declared relocation, and the pointer is admitted as a [traced far pointer](#indirect-far-transfers-through-a-traced-pointer) is, through one region's exact mapping or a source FBOV trampoline |
+| `table` | `{ start, count, stride, fieldOffset, width, evidence, bound }`, as for [indirect jump tables](#evidenced-indirect-jump-tables): `count` 1..256, `fieldOffset` defaults to 0, and `evidence` justifies the layout and count. An exhaustive declaration can leave out `count` and give `bound`, and its rows then come from the code ([table counts derived from the code](#table-counts-derived-from-the-code)). A near call's rows are little-endian words placed through the call site's region mapping (`width` 2, the default). A far call's rows are `offset, segment` word pairs (`width` 4): the segment word needs a declared relocation, and the pointer is admitted as a [traced far pointer](#indirect-far-transfers-through-a-traced-pointer) is, through one region's exact mapping or a source FBOV trampoline |
 | `targets` | in place of `table`: 1..256 distinct file offsets in declared code, for targets that no table in the build holds, such as a far pointer stored from instruction immediates on every path into the call. A near call's target must be a byte that some IP in the call site's segment places, since a near call keeps CS |
 
 A declaration has exactly one of `table` and `targets`. Every target must lie in declared code. The
 walk enters each declared target as a call and continues at the call's return site, unless the
-declaration is exhaustive and every target is a `noReturn` routine. A declaration that is not
-exhaustive leaves the site in `unresolved` with the reason `indirect call targets are not declared
-exhaustive`, so `negativeUsable` stays false, and an exhaustive one leaves nothing unresolved.
+declaration is exhaustive, its count is proven when it has none, and every target is a `noReturn`
+routine. A declaration that is not exhaustive leaves the site in `unresolved` with the reason
+`indirect call targets are not declared exhaustive`, and a table whose count the code does not prove
+leaves it there with `indirect call table count is not proven by the code`, calls nothing and
+continues at its return site; either keeps `negativeUsable` false. Any other exhaustive declaration
+leaves nothing unresolved.
 
 Table rows are read from the build's bytes, and a `targets` list rests on its evidence alone; the
 report repeats each declaration with its `instruction` text, a table's `rows` (`index`,
 `operandSite`, `rawOffset`, for a far call `rawSegment`, `resolvedSegment` and, for a pointer at an FBOV
-trampoline, the `trampoline` whose overlay entry is the `target`, and `target`) and its
-distinct `targets` in row order. Neither form proves that the call runs, which target a given path
+trampoline, the `trampoline` whose overlay entry is the `target`, and `target`), a table's
+`derivation` when it gives `bound`, and its distinct `targets` in row order. Neither form proves that the call runs, which target a given path
 calls, or an instruction boundary: like table jump rows, declared call edges never prove an
 overlapping start. `trace` and the other path commands do not take the declarations, and their
 paths still stop at a computed call they cannot resolve.
+
+## Table counts derived from the code
+
+An `indirectJumps` or `indirectCalls` table can name the routine whose code bounds its index, and
+the engine then derives the rows the dispatch can read with a value-range analysis over p-code
+([ADR 0034](decisions/0034-value-ranges-over-p-code-for-table-bounds.md)). The table gives `bound`:
+
+| Field | Meaning |
+|---|---|
+| `routine` | required, the file offset of the routine's start in declared code. The analysis walks from it to the dispatch site |
+| `tableOffset` | optional, 0..65535: the offset, in the segment the dispatch reads its table through, of the first row's target field. Without it the dispatch must read through CS, and the dispatch site's region mapping places the table's `start` plus `fieldOffset`. With it and a CS read, the mapping must place that offset |
+| `passes` | optional, 1..64, default 3: the updates a loop head takes before its ranges widen |
+| `instructionLimit` | optional, 1..10000, default 10000: the instructions the analysis reads |
+
+A table without `count` needs `bound` and an exhaustive declaration. A table with both is checked
+against the code.
+
+The analysis starts at `routine` with every register unknown and follows its branches, jumps and
+declared table rows, stepping over each call and interrupt to the next instruction. It joins ranges
+where paths merge, widens at a loop head after `passes` updates, and narrows a register on each
+edge of a conditional branch while the register still holds the value the comparison read. Memory
+is unknown except a stack slot a store on every path wrote, and a call or interrupt makes every
+register and slot unknown. When it proves the range of the offset the dispatch reads its row at,
+the rows that range steps through are the table's rows: the range's first value lies on a row and
+its stride is a multiple of the table's `stride`. A dispatch jump's analysis continues at its own
+rows, and those rows can widen its range, so every derived table is derived again with the rows the
+last round gave until no rows change. Rows that still change after 64 rounds are not proven.
+
+Each such declaration carries `derivation`:
+
+| Field | Meaning |
+|---|---|
+| `routine` | the routine the analysis walked from |
+| `proven` | whether the rows are proven: the analysis proved the offset's range, the range steps through the table's rows, and every row it admits is in the source and names an admitted target |
+| `segment`, `offset` | the segment register the dispatch reads its row through, and the offset's range (`bits`, `min`, `max`, `stride`, `count`), or null when the dispatch reads no single row or is not reached |
+| `tableOffset` | the offset of the first row's target field in that segment, from `bound` or the CS mapping |
+| `rowIndexes`, `count` | `{ first, last, step }`, the rows the range admits, and `last + 1`, the count a declaration would need to hold them; null when not proven |
+| `bounds` | the sites that bounded the offset, such as the `and` of a mask or the branch after a guard |
+| `reasons` | each with its `site`, why the rows are not proven: no bound, a path that skips the bound (with `boundSites`), an unknown memory read, an operation without a transfer function, an operation that faults, a call or interrupt not walked, the widening limit, a transfer the analysis could not follow, the instruction limit, the dispatch not reached from the start, a dispatch that reads no table or another width than the table's rows hold, an offset before the table's first row, an index that does not step by the table stride, a table read through a segment other than CS whose offset is not declared, a table offset the dispatch site's code segment does not place, rows that leave the source bytes, a row whose target is not admitted (with `row` and `detail`), or rows that did not settle |
+| `unread`, `widened`, `instructions`, `instructionLimitReached` | the transfers the analysis could not follow, the loop heads that widened, and how many instructions it read and whether it stopped at its limit |
+| `assumptions` | what the rows rest on: the routine is entered only at its start, each call and interrupt it steps over returns to its next instruction, and the table lies at `tableOffset` in the segment the dispatch reads |
+| `declaredCount`, `rowsLeftOut` | for a table that also declares `count`: that count, and the row indexes the code admits at or past it |
+
+A table without `count` takes the rows `rowIndexes` admits when `proven` holds. Otherwise it has no
+rows, and the site stays unresolved with the reason `indirect jump table count is not proven by the
+code` or `indirect call table count is not proven by the code`; `trace` and the other path commands
+record that reason as a gap and continue no path at the jump. A table that also declares `count`
+keeps its declared rows. A declared count larger than the proven `count` is refused before any
+report, because the rows past it cannot be read. A smaller one is followed, and `rowsLeftOut` lists
+the rows it leaves out.
+
+The analysis reads only paths that enter the routine at its start, so each command checks that
+assumption against the edges its own walk reads: `reach`, `inventory-check` and every other command
+that walks the CFG from its entries, `bounds`, `owner`, `callees` and the other commands that read a
+routine's body over the body they read, and the path commands over the boundary walk from a path's
+entry. When a walk reads the dispatch site of a derived table and one of
+its edges, or one of its starts, enters a site the analysis read other than at the routine's start
+(other than by an edge the analysis read too), the walk records a gap at the dispatch site with the
+reason `a path enters the routine a table count was derived over other than at its start`, the
+`routine`, the `entry` it entered at and, for an edge, the site it came `from`. The walk still
+follows the derived rows, the gap keeps `negativeUsable` false, and a path command continues no path
+at that jump. A table that also declares `count` is not checked this way: its rows rest on the
+declaration. When a table takes its rows from the code, `reach` and `inventory-check` add to their
+`assumptions` that each such table holds only the rows its derivation gives, under the assumptions
+the derivation lists.
 
 ## Relocated pointer-pair inventory
 

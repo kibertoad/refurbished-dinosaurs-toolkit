@@ -3,30 +3,98 @@ from capstone.x86 import X86_OP_IMM, X86_OP_MEM
 from .image import integer
 
 CALL_NOT_EXHAUSTIVE = "indirect call targets are not declared exhaustive"
+JUMP_NOT_EXHAUSTIVE = "indirect jump table is not declared exhaustive"
+# The reason a dispatch whose count the analysis did not prove stays unresolved.
+JUMP_NOT_DERIVED = "indirect jump table count is not proven by the code"
+CALL_NOT_DERIVED = "indirect call table count is not proven by the code"
+# The gap a walk records when one of its edges enters an analysed routine other than at its start.
+ENTERED = "a path enters the routine a table count was derived over other than at its start"
 
 
 def _word(image, at):
     return int.from_bytes(image.data[at:at + 2], "little")
 
 
-def _table_operands(image, table, width, label, field_label):
-    """The file offset of each row's target field in a declared ``table`` of ``width``-byte targets."""
+def _capital(label):
+    return label[0].upper() + label[1:]
+
+
+def _layout(image, table, width, label, field_label):
+    """A declared ``table``'s ``(start, count, stride, fieldOffset)``, with ``count`` None when it is not declared."""
     start = integer(table.get("start"), 0, len(image.data) - 1, f"{label} start")
-    count = integer(table.get("count"), 1, 256, f"{label} count")
+    count = integer(table["count"], 1, 256, f"{label} count") if "count" in table else None
     stride = integer(table.get("stride"), width, 65536, f"{label} stride")
     field = integer(table.get("fieldOffset", 0), 0, stride - width, field_label)
-    if start + (count - 1) * stride + field + width > len(image.data):
-        raise ValueError(f"{label[0].upper()}{label[1:]} leaves source bounds")
-    return [start + index * stride + field for index in range(count)]
+    if count is not None and start + (count - 1) * stride + field + width > len(image.data):
+        raise ValueError(f"{_capital(label)} leaves source bounds")
+    return start, count, stride, field
+
+
+def _bound(image, table, layout, exhaustive, label):
+    """The table's parsed ``bound``, or None. A table without ``count`` needs one, and an exhaustive declaration."""
+    from .derived_counts import bound_input
+    bound = bound_input(table["bound"], label, image) if "bound" in table else None
+    if layout[1] is None:
+        if bound is None:
+            raise ValueError(f"{_capital(label)} needs count, or bound to derive the count from the code")
+        if not exhaustive:
+            raise ValueError(f"{_capital(label)} without count needs exhaustive true: only an exhaustive table takes "
+                             "its count from the code")
+    return bound
+
+
+def _rows(layout, indexes, make_row):
+    start, _, stride, field = layout
+    rows = []
+    for index in indexes:
+        row = make_row(start + index * stride + field, index)
+        if isinstance(row, str):
+            raise ValueError(row)
+        rows.append(row)
+    return rows
+
+
+def _check_count(site, layout, derivation, label):
+    """Compare a declared count with a proven derivation: a larger one is refused, a smaller one followed."""
+    count = layout[1]
+    derivation["declaredCount"] = count
+    derivation["rowsLeftOut"] = []
+    if not derivation["proven"]:
+        return
+    if count > derivation["count"]:
+        raise ValueError(f"{_capital(label)} at {site} declares count {count}, but the code bounds the rows its "
+                         f"dispatch can read to {derivation['count']}; the rows past them cannot be read")
+    found = derivation["rowIndexes"]
+    derivation["rowsLeftOut"] = [i for i in range(found["first"], found["last"] + 1, found["step"]) if i >= count]
+
+
+def _jump_row(image, site):
+    def make_row(operand, index):
+        raw = _word(image, operand)
+        target = image.near_target(site, raw)
+        if target is None:
+            return "Indirect table target leaves declared code mappings"
+        return {"index": index, "operandSite": operand, "rawOffset": raw, "target": target}
+    return make_row
 
 
 def read_indirect_jumps(image):
+    """The declared indirect jump tables by site, with their rows; also sets ``image.indirect_jumps`` to them.
+
+    A table without ``count`` takes its rows from the code (``derived_counts.derive``), and one with
+    both ``count`` and ``bound`` is checked against the code. A jump's rows feed its own analysis and
+    every analysis whose routine holds the jump, so each round derives every such table again with
+    the rows the round before gave, until no rows change. A table's own analysis continues through
+    every row an earlier round gave it, so those only grow. The successors each proven analysis read
+    are kept in ``image.derived_reads`` for ``entry_gaps``.
+    """
+    from .derived_counts import ROUNDS, UNSETTLED, derive
     declarations = image.config.get("indirectJumps", [])
     if not isinstance(declarations, list) or len(declarations) > 256:
         raise ValueError("indirectJumps must contain at most 256 declarations")
     if declarations and image.flat:
         raise ValueError("indirectJumps currently requires segmented16")
-    result = {}
+    result, pending = {}, {}
     for claim in declarations:
         if not isinstance(claim, dict):
             raise ValueError("Each indirect jump needs an object")
@@ -47,19 +115,78 @@ def read_indirect_jumps(image):
             raise ValueError("Indirect table needs layout/count evidence")
         if type(table.get("width", 2)) is not int or table.get("width", 2) != 2:
             raise ValueError("Indirect table targets must be word width 2")
-        rows = []
-        operands = _table_operands(image, table, 2, "indirect table", "indirect target field offset")
-        for index, operand in enumerate(operands):
-            raw = _word(image, operand)
-            target = image.near_target(site, raw)
-            if target is None:
-                raise ValueError("Indirect table target leaves declared code mappings")
-            rows.append({"index": index, "operandSite": operand, "rawOffset": raw, "target": target})
+        layout = _layout(image, table, 2, "indirect table", "indirect target field offset")
+        bound = _bound(image, table, layout, claim["exhaustive"], "indirect table")
+        rows = _rows(layout, range(layout[1] or 0), _jump_row(image, site))
         result[site] = {"site": site, "evidence": claim["evidence"], "table": table,
                         "exhaustive": claim["exhaustive"], "rows": rows,
                         "interpretation": "source words under supplied consumer, mapping and exhaustiveness evidence; "
                                           "not executed dispatch or an overlap-boundary proof"}
+        if bound is not None:
+            pending[site] = (layout, bound)
+            result[site]["derivation"] = None
+    image.indirect_jumps, image.derived_reads = result, {}
+    # Every row each table without a count has been given, which its own analysis continues through.
+    through = {site: {} for site, (layout, _) in pending.items() if layout[1] is None}
+    changed = set()
+    for _ in range(ROUNDS if pending else 0):
+        changed = set()
+        for site, (layout, bound) in pending.items():
+            declaration = result[site]
+            followed = declaration["rows"] if layout[1] is not None else list(through[site].values())
+            record, found, graph = derive(image, site, layout, 2, bound, [row["target"] for row in followed],
+                                          _jump_row(image, site))
+            previous, declaration["derivation"] = declaration["derivation"], record
+            if layout[1] is not None:
+                continue
+            found = found or []
+            if (previous is None or previous["proven"] != record["proven"] or declaration["rows"] != found
+                    or any(row["index"] not in through[site] for row in found)):
+                changed.add(site)
+            through[site] |= {row["index"]: row for row in found}
+            declaration["rows"] = found
+            if record["proven"]:
+                image.derived_reads[site] = (bound["routine"], graph)
+            else:
+                image.derived_reads.pop(site, None)
+        if not changed:
+            break
+    for site in sorted(changed):
+        # The rows still changed in the last round, so the table's count is not proven.
+        derivation = result[site]["derivation"]
+        derivation["proven"] = False
+        derivation["reasons"].append({"reason": UNSETTLED, "site": site, "rounds": ROUNDS})
+        result[site]["rows"] = []
+        image.derived_reads.pop(site, None)
+    for site, (layout, _) in pending.items():
+        if layout[1] is not None:
+            _check_count(site, layout, result[site]["derivation"], "indirect table")
     return result
+
+
+def _call_row(image, site, far):
+    def make_row(operand, index):
+        row = {"index": index, "operandSite": operand, "rawOffset": _word(image, operand)}
+        if far:
+            # The segment word is relocated at load time, and the pointer is admitted as a traced far
+            # call through memory admits the pointer it reads (Image.far_pointer_target).
+            fixup = image.fixups.get(operand + 2)
+            if fixup is None:
+                return (f"Indirect call table row {index} has no declared relocation for its segment word at "
+                        f"{operand + 2}")
+            target, admission = image.far_pointer_target(fixup["segment"], row["rawOffset"])
+            if target is None:
+                return f"Indirect call table row {index} target is not admitted: {admission['reason']}"
+            row |= {"rawSegment": _word(image, operand + 2), "resolvedSegment": fixup["segment"]}
+            # A pointer at an FBOV trampoline continues at its overlay entry, which the row names.
+            if "trampoline" in admission:
+                row["trampoline"] = admission["trampoline"]
+        else:
+            target = image.near_target(site, row["rawOffset"])
+        if target is None or image.region(target) is None:
+            return f"Indirect call table row {index} target leaves declared code mappings"
+        return row | {"target": target}
+    return make_row
 
 
 def indirect_call_declarations(value, image):
@@ -72,16 +199,21 @@ def indirect_call_declarations(value, image):
     region mapping for a near call, and for a far call ``offset, segment`` word pairs whose segment
     word has a declared relocation, admitted as ``Image.far_pointer_target`` admits the pointer a
     traced far call reads; a far row whose pointer names an FBOV trampoline carries its
-    ``trampoline``. ``targets`` gives file offsets in declared code, which rest on the evidence
-    alone; a near call's targets must be bytes some IP in the call site's segment places. Each
-    declaration is returned with the call's ``instruction`` text, a table's ``rows``, and its
-    distinct ``targets`` in row order.
+    ``trampoline``. A table without ``count`` takes its rows from the code, as ``indirectJumps`` does,
+    and one with both ``count`` and ``bound`` is checked against the code. ``targets`` gives file
+    offsets in declared code, which rest on the evidence alone; a near call's targets must be bytes
+    some IP in the call site's segment places. Each declaration is returned with the call's
+    ``instruction`` text, a table's ``rows`` and, with a ``bound``, its ``derivation``, and its
+    distinct ``targets`` in row order. The successors each proven analysis of a table without
+    ``count`` read are kept in ``image.derived_call_reads`` for ``entry_gaps``.
     """
+    from .derived_counts import derive
     if not isinstance(value, list) or len(value) > 256:
         raise ValueError("indirectCalls must be a list of at most 256 declarations")
     if value and image.flat:
         raise ValueError("indirectCalls currently requires segmented16")
     result = {}
+    image.derived_call_reads = {}
     for claim in value:
         keys = set(claim) if isinstance(claim, dict) else None
         if keys not in ({"site", "evidence", "exhaustive", "table"}, {"site", "evidence", "exhaustive", "targets"}):
@@ -109,29 +241,20 @@ def indirect_call_declarations(value, image):
             if type(table.get("width", width)) is not int or table.get("width", width) != width:
                 raise ValueError(f"An indirect {'far' if far else 'near'} call table holds {width}-byte targets, "
                                  f"so its width must be {width}")
-            rows = []
-            operands = _table_operands(image, table, width, "indirect call table", "indirect call target field offset")
-            for index, operand in enumerate(operands):
-                row = {"index": index, "operandSite": operand, "rawOffset": _word(image, operand)}
-                if far:
-                    # The segment word is relocated at load time, and the pointer is admitted as a traced far
-                    # call through memory admits the pointer it reads (Image.far_pointer_target).
-                    fixup = image.fixups.get(operand + 2)
-                    if fixup is None:
-                        raise ValueError(f"Indirect call table row {index} has no declared relocation for its segment "
-                                         f"word at {operand + 2}")
-                    target, admission = image.far_pointer_target(fixup["segment"], row["rawOffset"])
-                    if target is None:
-                        raise ValueError(f"Indirect call table row {index} target is not admitted: {admission['reason']}")
-                    row |= {"rawSegment": _word(image, operand + 2), "resolvedSegment": fixup["segment"]}
-                    # A pointer at an FBOV trampoline continues at its overlay entry, which the row names.
-                    if "trampoline" in admission:
-                        row["trampoline"] = admission["trampoline"]
+            layout = _layout(image, table, width, "indirect call table", "indirect call target field offset")
+            bound = _bound(image, table, layout, claim["exhaustive"], "indirect call table")
+            make_row = _call_row(image, site, far)
+            rows = _rows(layout, range(layout[1] or 0), make_row)
+            if bound is not None:
+                # A call continues at its return site, so its rows never feed its own analysis.
+                record, found, graph = derive(image, site, layout, width, bound, [], make_row)
+                declaration["derivation"] = record
+                if layout[1] is None:
+                    rows = found or []
+                    if record["proven"]:
+                        image.derived_call_reads[site] = (bound["routine"], graph)
                 else:
-                    target = image.near_target(site, row["rawOffset"])
-                if target is None or image.region(target) is None:
-                    raise ValueError(f"Indirect call table row {index} target leaves declared code mappings")
-                rows.append(row | {"target": target})
+                    _check_count(site, layout, record, "indirect call table")
             declaration |= {"table": table, "rows": rows}
             targets = [row["target"] for row in rows]
         else:
@@ -155,9 +278,34 @@ def indirect_call_declarations(value, image):
     return result
 
 
+def open_reason(declaration, call):
+    """Why a declared table or call leaves its site unresolved, or None.
+
+    A declaration that is not exhaustive may have other targets, and a table without ``count``
+    whose count the code did not prove has no rows to follow.
+    """
+    if not declaration["exhaustive"]:
+        return CALL_NOT_EXHAUSTIVE if call else JUMP_NOT_EXHAUSTIVE
+    # A derivation still pending (None) has proven nothing yet.
+    if "derivation" in declaration and "count" not in declaration["table"] and not (declaration["derivation"] or {}).get("proven"):
+        return CALL_NOT_DERIVED if call else JUMP_NOT_DERIVED
+    return None
+
+
+def derived_assumptions(image, indirect_calls):
+    """The assumption a report adds when a declared table takes its rows from the code, or an empty list."""
+    declarations = [*image.indirect_jumps.values(), *indirect_calls.values()]
+    if any("derivation" in d and "count" not in d["table"] for d in declarations):
+        return ["each table whose count is derived from the code holds only the rows its derivation gives, "
+                "under the assumptions the derivation lists"]
+    return []
+
+
 def declared_call_ends(declaration, no_return_calls):
-    """Whether a declared indirect call ends its branch: it is exhaustive and every target is in ``no_return_calls``."""
-    return declaration["exhaustive"] and all(target in no_return_calls for target in declaration["targets"])
+    """Whether a declared indirect call ends its branch: nothing leaves it unresolved (``open_reason``) and
+    every target is in ``no_return_calls``."""
+    return open_reason(declaration, True) is None and all(target in no_return_calls
+                                                          for target in declaration["targets"])
 
 
 def call_ends(site, target, indirect_calls, no_return_calls):

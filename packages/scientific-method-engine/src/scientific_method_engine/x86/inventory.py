@@ -4,7 +4,7 @@ from bisect import bisect_right
 from pathlib import Path
 from .image import integer
 from .trace import LIMIT_REASON, CONTESTED_REASON, OVERLAP_REASON, walk, holding_instruction
-from .dispatch import indirect_call_declarations, call_ends
+from .dispatch import indirect_call_declarations, call_ends, derived_assumptions
 
 MAX_INVENTORY = 16 * 1024 * 1024
 MAX_ROWS = 200000
@@ -537,7 +537,8 @@ def inventory_check(image, config):
     if indirect_calls:
         assumptions.append("each declared indirect call can call the targets its declaration gives, for the evidence "
                            "it gives, and only those when it is declared exhaustive")
-    indirect_rows = [declaration | {"reached": site in seen} for site, declaration in indirect_calls.items()]
+    assumptions += derived_assumptions(image, indirect_calls)
+    indirect_rows =[declaration | {"reached": site in seen} for site, declaration in indirect_calls.items()]
     return {"inventory": {"path": config["inventory"], "rows": len(rows)},
             "targets": missing[:limit], "unresolved": unresolved[:limit],
             "rowsOutsideDeclaredCode": outside_code[:limit],

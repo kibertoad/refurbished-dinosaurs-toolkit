@@ -692,6 +692,11 @@ def reasons(why):
 
 
 def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
+    """The offsets the dispatch at ``site`` can read its table at, as ``analyse`` gives them, without its graph."""
+    return analyse(image, start, site, through, passes, limit)[0]
+
+
+def analyse(image, start, site, through=(), passes=PASSES, limit=10000):
     """The offsets the dispatch at ``site`` can read its table at, over every path from ``start``.
 
     ``site`` decodes as a computed jump or call. A jump's successors are ``through``, the row
@@ -707,6 +712,9 @@ def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
     ``proven`` holds. ``unread`` gives the transfers the walk could not follow and the starts of
     instructions that overlap another decoded one, ``widened`` the loop
     heads that widened, and ``instructions`` how many instructions the walk read.
+
+    Returns the result, the successors the walk read from each site it read, and the offset's
+    ``Range`` (None when ``table`` is None).
     """
     if image.flat:
         raise ValueError("table bounds currently require segmented16")
@@ -733,7 +741,7 @@ def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
     result = {"start": start, "site": site, "reached": site in states, "proven": False, "table": None,
               "bounds": [], "reasons": [], "unread": gaps, "widened": sorted(widened),
               "instructions": len(graph), "instructionLimitReached": stopped}
-    found = []
+    found, offset_range = [], None
     if site in states:
         flow = states[site].copy()
         flow.drop_below_stack()
@@ -742,6 +750,7 @@ def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
         rows = {(address[0], id(address[1])) for address, _ in step.loads if address is not None}
         if len(rows) == 1 and all(address is not None for address, _ in step.loads):
             (name, offset, _), _ = step.loads[0]
+            offset_range = offset.range
             width = max(address[2] + size for address, size in step.loads)
             result["table"] = {"segment": LIFTER.register(False, *name) if name else None, "width": width,
                                "offset": offset.range.report()}
@@ -758,7 +767,7 @@ def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
         found.append({"reason": LIMIT, "site": start})
     result["reasons"] = found
     result["proven"] = not found
-    return result
+    return result, {at: list(targets) for at, (_, _, targets) in graph.items()}, offset_range
 
 
 def fixpoint(graph, start, passes):

@@ -103,7 +103,7 @@ and enemy-reinfestation's open requests against this toolkit's Ghidra scripts. I
 these are items 12, 13, 20 to 27 and 32. Some name scripts the toolkit does not ship. Re-verify
 each against main and fix the ones that belong here.
 
-### M8. Derived dispatch-table bounds (issue 460; slice 2 in progress)
+### M8. Derived dispatch-table bounds (issue 460; slice 3 in progress)
 
 The engine derives a table's entry count from the code where the code proves it, with a value-range
 analysis over p-code ([ADR 0034](decisions/0034-value-ranges-over-p-code-for-table-bounds.md)).
@@ -139,20 +139,21 @@ Slices, one PR each:
 1. Shipped in PR 461 (`release:skip`). The domain, its transfer functions and a per-instruction
    evaluation over register ranges in `x86/ranges.py`, checked against `pcode.evaluate` and
    Unicorn (`tests/test_ranges.py`).
-2. In progress. The analysis over a routine's control flow to a dispatch site in
-   `x86/table_bounds.py`: joins, the widening limit, refinement on `CBRANCH` edges, stack slots,
-   calls and interrupts not walked, and the bounding sites or causes each value carries. Tested in
-   `tests/test_table_bounds.py` on the positive controls, unproven cases and loop above, with
-   Unicorn checking every range it gives on fixed and random routines. Nothing reads it yet, so no
-   report changes. Release label `release:skip`.
-3. Reports: `table.count` becomes optional for an exhaustive `indirectJumps` declaration, the
-   derived-count record and the unresolved reasons, the declared-against-derived check, in
-   `reach`, `inventory-check` and the path commands that read tables. The command checks that no
-   edge it reads enters the analysed routine other than at its start, and gives a dispatch jump
-   the rows of its derived count until they stop changing. Reporter guide, migration guide and
-   bridge case; a prepared-config change, if any, increments `PREPARED_PROTOCOL`.
-4. Declared computed call targets take derived counts, once their declaration (issue 457) has
-   landed. If it lands before slice 3, slice 3 covers both.
+2. Shipped in PR 476 (`release:skip`). The analysis over a routine's control flow to a dispatch
+   site in `x86/table_bounds.py`: joins, the widening limit, refinement on `CBRANCH` edges, stack
+   slots, calls and interrupts not walked, and the bounding sites or causes each value carries.
+   Tested in `tests/test_table_bounds.py` on the positive controls, unproven cases and loop above,
+   with Unicorn checking every range it gives on fixed and random routines.
+3. In progress. Reports, in `x86/derived_counts.py`: an exhaustive `indirectJumps` or
+   `indirectCalls` table can leave out `count` and give `bound`, the routine the analysis starts
+   at. The declaration carries the derivation record and its reasons, a site whose count is not
+   proven stays unresolved, and a declared count is checked against a proven one. Every walk
+   checks that none of its edges enters an analysed routine other than at its start, and dispatch
+   jumps are derived in rounds until their rows stop changing. Tested in
+   `tests/test_derived_counts.py` and a bridge case; the prepared config is unchanged. Release
+   label `release:minor`.
+4. Declared computed call targets take derived counts. Issue 457 landed first, so slice 3 covers
+   them.
 
 Exit condition: a table with no declared count gets a derived count only when the analysis proves
 the bound on every path into the dispatch, the report marks it as derived, and every case it cannot
