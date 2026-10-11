@@ -9,9 +9,11 @@
 // An entry lists in ends_on_last_byte the ranges it gives that end on a last byte on purpose, such
 // as a function body cited without its one-byte return (ENTRY-TYPES-22). A listed range passes
 // wherever the entry gives it, written the same way. A listed range fails when the entry gives it
-// nowhere, or when the check would pass it everywhere the entry gives it without the listing, so
-// the list holds only the ranges that need it. Whether a listed range was corrected in place is a
-// question about history, which this check does not compare.
+// nowhere, when no inventory checks it anywhere the entry gives it, or when the check would pass
+// it everywhere the entry gives it without the listing, so the list holds only the ranges that
+// need it. The second gets its own message, since an unchecked range is not shown to need no
+// listing. Whether a listed range was corrected in place is a question about history, which this
+// check does not compare.
 //
 // Every location of a current entry that gives a range in a file with an inventory is checked, by
 // address or by offset into overlay code. A range written in an entry's body or tables is checked
@@ -50,12 +52,19 @@ const BODY_RANGE = new RegExp(String.raw`(?<![0-9A-Za-z:])(${ATOM})\`?\s*\.\.\s*
 
 const FIELD = "ends_on_last_byte";
 
+// A range as the entry writes it, without the backticks and spaces a body may put around `..`, the
+// form the body's ranges are compared in.
+const written = (range: string) => range.replace(/[`\s]/g, "");
+
 export function checkRangeEnds(ctx: Context) {
   const { problem, spec, config } = ctx;
   for (const e of spec.entries.values()) {
     if (e.meta.status === "superseded" || !(FIELD in e.meta)) continue;
     const listed = e.meta[FIELD];
-    if (!Array.isArray(listed)) problem(e.file, `${FIELD} must be a list of ranges`, "ENTRY-TYPES-22");
+    // An item the front matter reader did not read as text, such as a number or a block list item
+    // that starts like a field name (`- C000:0000..C000:0020`), is no range.
+    if (!Array.isArray(listed) || listed.some((x) => typeof x !== "string"))
+      problem(e.file, `${FIELD} must be a list of ranges`, "ENTRY-TYPES-22");
     else if (listed.length === 0)
       problem(e.file, `${FIELD} is empty; an entry with no such range leaves the field out`, "ENTRY-TYPES-22");
   }
@@ -71,12 +80,15 @@ export function checkRangeEnds(ctx: Context) {
   for (const inv of inventories)
     for (const fn of inv.functions) {
       const key = `${inv.build}\0${inv.file}\0${fn.space}`;
-      if (!lastBytes.has(key)) lastBytes.set(key, new Map());
-      if (!starts.has(key)) starts.set(key, new Set());
+      if (!lastBytes.has(key)) {
+        lastBytes.set(key, new Map());
+        starts.set(key, new Set());
+      }
       const ends = lastBytes.get(key)!;
-      starts.get(key)!.add(fn.at);
+      const begins = starts.get(key)!;
+      begins.add(fn.at);
       for (const r of fn.body) {
-        starts.get(key)!.add(r.start);
+        begins.add(r.start);
         const hit = ends.get(r.end - 1n);
         if (hit) hit.fns.push(fn);
         else ends.set(r.end - 1n, { fns: [fn], path: inv.path });
@@ -114,24 +126,35 @@ export function checkRangeEnds(ctx: Context) {
 
   for (const e of spec.entries.values()) {
     if (e.meta.status === "superseded") continue;
-    const listed = new Set(Array.isArray(e.meta[FIELD]) ? (e.meta[FIELD] as Yaml[]).map((x) => String(x).trim()) : []);
-    // Every range the entry gives, as it writes it, and the listed ones the check would fail.
+    const listed = new Set(
+      Array.isArray(e.meta[FIELD]) ? e.meta[FIELD].filter((x) => typeof x === "string").map(written) : [],
+    );
+    // Every range the entry gives, as it writes it, those compared with an inventory somewhere the
+    // entry gives them, and the listed ones the check would fail.
     const given = new Set<string>();
+    const checked = new Set<string>();
     const needed = new Set<string>();
-    const report = (written: string, what: string, end: string, hit: { fns: InventoryRow[]; path: string }) => {
-      if (listed.has(written)) needed.add(written);
+    const report = (range: string, what: string, end: string, hit: { fns: InventoryRow[]; path: string }) => {
+      if (listed.has(range)) needed.add(range);
       else problem(e.file, message(what, end, hit));
     };
     for (const loc of asList(e.meta.locations) as Meta[]) {
       if (!loc || typeof loc !== "object") continue;
       const value = String("address" in loc ? loc.address : "offset" in loc ? loc.offset : "");
-      if (value.includes("..")) given.add(value);
+      if (value.includes("..")) given.add(written(value));
     }
     for (const { loc, range } of codeLocations(e.meta, spec.buildFiles)) {
       const value = String("address" in loc ? loc.address : loc.offset);
       if (!range || !value.includes("..")) continue;
+      if (lastBytes.has(`${loc.build}\0${loc.file}\0${range.space}`)) checked.add(written(value));
       const hit = endsFunction(loc.build, loc.file, range.space, range.end);
-      if (hit) report(value, `location ${"address" in loc ? "address" : "offset"} ${value}`, value.split("..")[1], hit);
+      if (hit)
+        report(
+          written(value),
+          `location ${"address" in loc ? "address" : "offset"} ${value}`,
+          value.split("..")[1],
+          hit,
+        );
     }
     const bodyRanges = [...e.body.matchAll(BODY_RANGE)];
     for (const m of bodyRanges) given.add(`${m[1]}..${m[2]}`);
@@ -140,6 +163,7 @@ export function checkRangeEnds(ctx: Context) {
       for (const m of bodyRanges) {
         const [start, end] = [linear(m[1], place.format), linear(m[2], place.format)];
         if (start === null || end === null || end <= start) continue;
+        checked.add(`${m[1]}..${m[2]}`);
         const hit = endsFunction(place.build, place.file, "address", end);
         if (hit) report(`${m[1]}..${m[2]}`, `the body's range ${m[1]}..${m[2]}`, m[2], hit);
       }
@@ -148,6 +172,12 @@ export function checkRangeEnds(ctx: Context) {
         problem(
           e.file,
           `${FIELD} lists ${range}, which the entry does not give as a location or in its text or tables`,
+          "ENTRY-TYPES-22",
+        );
+      else if (!checked.has(range))
+        problem(
+          e.file,
+          `${FIELD} lists ${range}, which no function inventory checks where the entry gives it, so nothing shows the listing is needed; list it once an inventory covers it`,
           "ENTRY-TYPES-22",
         );
       else if (!needed.has(range))
