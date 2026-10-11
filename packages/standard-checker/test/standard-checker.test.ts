@@ -4328,6 +4328,30 @@ test("a finding in the rebuild's source that no rule, format, screen or bug list
   );
 });
 
+test("a finding that alone replaced a superseded rule passes in the rebuild's source", (t) => {
+  // A research batch that supersedes a rule with findings only moves the code's citation to them
+  // and leaves the documentation check passing; the next implementation session removes the code.
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    secondFinding(r);
+    copyRule(r, "RULE-SCORE-002", (text) =>
+      text.replace(/status: \w+/, "status: superseded").replace("superseded_by: []", "superseded_by: [FND-SCORE-002]"),
+    );
+    inDir(r, "src", "Game.ts", "// The bonus (FND-SCORE-002).\n");
+  });
+  const result = run(root);
+  assert.doesNotMatch(result.output, /Game\.ts/, result.output);
+  // A rule replaced by a rule as well leaves nothing for removal, so the citation is reported.
+  replaceIn(
+    root,
+    "spec/rules/RULE-SCORE-002.md",
+    "superseded_by: [FND-SCORE-002]",
+    "superseded_by: [FND-SCORE-002, RULE-SCORE-001]",
+  );
+  const mixed = run(root);
+  assert.match(mixed.output, /src\/Game\.ts: line 1 cites FND-SCORE-002, a finding/, mixed.output);
+});
+
 test("a superseded finding in the rebuild's source names what its replacements lead to, once", (t) => {
   const root = broken(t, (r) => {
     establishByReading(r);
@@ -4399,6 +4423,28 @@ test("an address in the rebuild's source that no rule's evidence records is a ga
     /src\/Game\.cs: line 2 uses 0x00402008 in code, but .*; no rule, format, screen or bug that is not superseded records it or cites evidence that does, so code that needs it is a gap in the spec until an entry the code implements records it$/m,
   );
   assert.doesNotMatch(result.output, /cite the finding/);
+});
+
+test("a finding or address in the rebuild's source that two rules settle names both", (t) => {
+  const root = broken(t, (r) => {
+    establishByReading(r);
+    copyRule(r, "RULE-SCORE-002");
+    inDir(r, "src", "Game.cs", "// The handler at fn_00401004 (FND-SCORE-001).\nconst uint Handler = 0x00401008;\n");
+  });
+  const result = run(root, ...IMAGE);
+  assert.equal(result.status, 1, result.output);
+  assert.match(
+    result.output,
+    /src\/Game\.cs: line 1 cites FND-SCORE-001, a finding, .*; RULE-SCORE-001, RULE-SCORE-002 list it in their evidence: move the citation to each of them that the code implements and the comment does not cite yet, and delete it where there is none$/m,
+  );
+  // The finding the comment cites records both addresses, so the address check passes them.
+  assert.doesNotMatch(result.output, /Game\.cs: line \d+ (?:gives|uses)/);
+  writeFileSync(join(root, "src", "Game.cs"), "// The handler at fn_00401004.\nconst uint Handler = 0x00401008;\n");
+  const uncited = run(root, ...IMAGE);
+  assert.match(
+    uncited.output,
+    /src\/Game\.cs: line 1 gives fn_00401004, but the comment cites no entry that records it; RULE-SCORE-001, RULE-SCORE-002 record it or cite evidence that does: cite the one the code implements$/m,
+  );
 });
 
 // Runs the checker on a commit message in root.

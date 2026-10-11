@@ -136,7 +136,6 @@ by kind. Reviewing that agreement is part of the restoration's own review of its
 the checker does not compare prose with titles, because a paraphrase is a legitimate way to cite an
 entry.
 
-
 ### Addresses in code
 
 An address of the original that the code gives, in a comment or in the code itself, must be
@@ -204,6 +203,14 @@ the entries its `superseded_by` leads to, a replacement that is itself a rule, f
 bug included. Where the list is empty, the message says that no such entry lists it: the citation
 is deleted, and where no live entry or deviation describes what the code does, the code goes with
 its tests.
+
+A finding or experiment that alone replaced a superseded rule, format, screen or bug, because the
+mechanic does not exist, is not reported. The work protocol's Research batches section has the code
+written for that entry cite it from then on and leaves the code's removal to the next
+implementation session, and the research batch must leave the check passing. The implementation
+session finds those citations itself. The check follows the entry's `superseded_by` through
+superseded findings and experiments, and reports the citation once a replacement on the way is a
+rule, format, screen or bug.
 
 The checker cannot tell what the code implements, so it does not pick among the candidates, and it
 does not check the Code `partial` that the protocol gives each row a citation moves to. Tests and

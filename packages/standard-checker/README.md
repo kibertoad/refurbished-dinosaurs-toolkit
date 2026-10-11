@@ -110,7 +110,10 @@ its tests unless an entry or a deviation that is still live describes what it do
 cannot tell which entries the code implements, so the choice among the candidates is the
 session's, and so is the row that each new citation sends back to Code `partial`. A superseded
 finding or experiment cited there is reported by this check alone, with its replacements, in place
-of the citation check's `which is superseded; cite what replaced it`.
+of the citation check's `which is superseded; cite what replaced it`. A finding or experiment that
+alone replaced a superseded rule, format, screen or bug is not reported: the protocol's research
+batch leaves the code written for that entry citing it, with the check passing, until an
+implementation session removes the code.
 
 The address check's hint follows the same rule. For an address in a file of the rebuild's source
 that no entry the comment cites records, the message names the rules, formats, screens and bugs

@@ -42,7 +42,9 @@ export function checkCommentAddresses(ctx: Context) {
   const { entries } = ctx.spec;
   const { images, maxRange } = ctx.config;
   const recorded = recordedAddresses(entries, maxRange);
-  const implemented = implementedEntries(entries);
+  // Each rule, format, screen and bug not superseded, with the entries within its reach, worked
+  // out once for every address that fails.
+  const implemented = implementedEntries(entries).map((id) => ({ id, scope: recorded.reach([id]) }));
   // What to do about an address value that fails, for a file of the rebuild's source (source) or
   // not, and for an address a comment gives or one the code uses (inCode).
   const hint = (source: boolean, value: number, inCode: boolean) => {
@@ -50,7 +52,7 @@ export function checkCommentAddresses(ctx: Context) {
       return inCode
         ? "cite the finding that records it in that comment, or record it in a new one"
         : "cite the finding that records it, or record it in a new one";
-    const by = implemented.filter((id) => recorded.records(recorded.reach([id]), value));
+    const by = implemented.filter(({ scope }) => recorded.records(scope, value)).map(({ id }) => id);
     if (by.length)
       return `${by.join(", ")} ${by.length === 1 ? "records it or cites evidence that does" : "record it or cite evidence that does"}: cite the one the code implements${inCode ? " in that comment" : ""}`;
     const none = "no rule, format, screen or bug that is not superseded records it or cites evidence that does";

@@ -23,6 +23,12 @@ export const isSuperseded = (entries: Map<string, Entry>, id: string) =>
 /** The kinds of entry that code implements: rules, formats, screens and bugs. */
 export const IMPLEMENTED_KINDS = ["RULE", "FMT", "SCR", "BUG"];
 
+/**
+ * The kinds of entry that the rebuild's source may not cite: findings and experiments. The source
+ * citation check reports them there, and the reference check leaves a superseded one there to it.
+ */
+export const EVIDENCE_KINDS = ["FND", "EXP"];
+
 /** The rules, formats, screens and bugs that are not superseded, in the order the spec was read. */
 export const implementedEntries = (entries: Map<string, Entry>): string[] =>
   [...entries].filter(([id, e]) => IMPLEMENTED_KINDS.includes(e.kind) && !isSuperseded(entries, id)).map(([id]) => id);

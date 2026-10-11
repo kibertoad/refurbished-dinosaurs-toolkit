@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import type { Context } from "../context.ts";
-import { isSuperseded, whyMissing } from "../evidence.ts";
+import { EVIDENCE_KINDS, isSuperseded, whyMissing } from "../evidence.ts";
 import { walk } from "../files.ts";
 import { idsIn, isAlias, kindOf } from "../ids.ts";
 import { DEV_RE } from "../standard.ts";
@@ -33,7 +33,7 @@ export function checkReferences(ctx: Context, deviations: Map<string, Deviation>
       if (isAlias(x) && !entries.has(x) && !squashed.has(x)) continue;
       if (!entries.has(x))
         problem(f, `cites ${x}, ${squashed.has(x) ? whyMissing(ctx, x) : "which does not exist in the spec"}`);
-      else if (isSuperseded(entries, x) && !isDeviationFile(f) && !(source && ["FND", "EXP"].includes(kindOf(x))))
+      else if (isSuperseded(entries, x) && !isDeviationFile(f) && !(source && EVIDENCE_KINDS.includes(kindOf(x))))
         problem(f, `cites ${x}, which is superseded; cite what replaced it`);
     }
     if (!isDeviationFile(f))

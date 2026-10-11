@@ -386,7 +386,9 @@ move it to each named entry the code implements that the comment does not cite y
 it moves to Code `partial` with a note naming the finding or experiment, and delete it where there
 is no such entry. Where the message says no entry lists it and no live entry or deviation
 describes what the code does, the code goes with its tests. Citations in `tests` and `tools` are
-not reported. A restoration whose source sits in other directories names them in
+not reported, and neither is a finding or experiment that alone replaced a superseded rule, format,
+screen or bug: the code written for that entry keeps citing it until an implementation session
+removes the code, as the protocol's Research batches section says. A restoration whose source sits in other directories names them in
 `--rebuild-source`.
 
 For an address in the rebuild's source, the address check's message now names the rules, formats,

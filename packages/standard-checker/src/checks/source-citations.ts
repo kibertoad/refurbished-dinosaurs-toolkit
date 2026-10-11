@@ -12,10 +12,17 @@
 // their evidence (for a superseded one, those its replacements lead to). Where there are none, it
 // says so, since the citation then goes, and so does the code where no entry or deviation that is
 // still live describes it.
+//
+// One kind of citation passes. Where only findings or experiments replaced a superseded rule,
+// format, screen or bug, because the mechanic does not exist, the protocol's Research batches
+// section has the code cite them from then on, leaves its removal to the next implementation
+// session, and has the research batch leave this check passing. So a finding or experiment that is
+// not superseded and that such an entry's superseded_by leads to, through superseded findings and
+// experiments, is not reported. The implementation session finds those citations itself.
 // Tests and tools may cite findings and experiments, so they are left out by default.
 
 import type { Context } from "../context.ts";
-import { IMPLEMENTED_KINDS, implementedEntries, isSuperseded } from "../evidence.ts";
+import { EVIDENCE_KINDS, IMPLEMENTED_KINDS, implementedEntries, isSuperseded } from "../evidence.ts";
 import { asList, idsIn } from "../ids.ts";
 
 const KIND_NAMES: Record<string, string> = { FND: "finding", EXP: "experiment" };
@@ -33,7 +40,10 @@ export function checkSourceCitations(ctx: Context) {
     }
   // The entries that settle id: for one not superseded, those that list it in evidence; for a
   // superseded one, what its superseded_by leads to, followed through superseded replacements.
+  // Worked out once per ID, however many files cite it.
+  const settled = new Map<string, string[]>();
   const settling = (id: string) => {
+    if (settled.has(id)) return settled.get(id)!;
     const found = new Set<string>();
     const seen = new Set([id]);
     const visit = (x: string) => {
@@ -51,8 +61,25 @@ export function checkSourceCitations(ctx: Context) {
         }
     };
     visit(id);
-    return [...found];
+    settled.set(id, [...found]);
+    return settled.get(id)!;
   };
+  // The findings and experiments that alone replaced a superseded rule, format, screen or bug,
+  // which the code written for it cites until an implementation session removes that code.
+  const leftForRemoval = new Set<string>();
+  for (const [id, e] of entries) {
+    if (!IMPLEMENTED_KINDS.includes(e.kind) || !isSuperseded(entries, id)) continue;
+    const replacements = asList(e.meta.superseded_by).map(String);
+    if (!replacements.every((r) => EVIDENCE_KINDS.includes(entries.get(r)?.kind ?? ""))) continue;
+    const seen = new Set<string>();
+    const visit = (x: string) => {
+      if (seen.has(x) || !EVIDENCE_KINDS.includes(entries.get(x)?.kind ?? "")) return;
+      seen.add(x);
+      if (!isSuperseded(entries, x)) leftForRemoval.add(x);
+      else for (const r of asList(entries.get(x)!.meta.superseded_by).map(String)) visit(r);
+    };
+    for (const r of replacements) visit(r);
+  }
   for (const { file, text, source } of ctx.codeFiles()) {
     if (!source) continue;
     // cited finding or experiment -> the lines that cite it
@@ -62,7 +89,7 @@ export function checkSourceCitations(ctx: Context) {
       .split("\n")
       .forEach((line, i) => {
         for (const x of idsIn(line)) {
-          if (!KIND_NAMES[entries.get(x)?.kind ?? ""]) continue;
+          if (!EVIDENCE_KINDS.includes(entries.get(x)?.kind ?? "") || leftForRemoval.has(x)) continue;
           if (!cited.has(x)) cited.set(x, []);
           cited.get(x)!.push(i + 1);
         }
