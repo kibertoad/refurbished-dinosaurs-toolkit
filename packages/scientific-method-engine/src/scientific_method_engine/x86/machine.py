@@ -1,4 +1,5 @@
 """Path state for the evidence layer. Instruction semantics come from pypcode (pcode_backend.py)."""
+from bisect import bisect_right
 from copy import deepcopy
 from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
 from .values import Value, const, unknown, op, extract, join, resize, sources, address_parts, producers
@@ -27,6 +28,42 @@ MEMORY_CLEARED = ("memory-cleared",)
 
 # The ``unwritten`` cause of a byte that no write on the path stored.
 NO_WRITE = "no write on this path"
+
+# The ``unwritten`` cause of a read byte that lies inside a range the query's ``volatileMemory`` declares.
+VOLATILE = "declared volatile"
+VOLATILE_FIELDS = {"segment", "offset", "bytes", "evidence"}
+MAX_VOLATILE_RANGES = 64
+
+
+def volatile_ranges(config, bits, flat):
+    """Check the query's ``volatileMemory`` and return its ranges as linear ``(start, end, row)`` triples, sorted.
+
+    Each row names a concrete ``segment`` (a real-mode paragraph; 0 in the PE32 flat model, whose
+    data segment bases are 0), an ``offset``, a byte count and nonempty ``evidence``. Raises
+    ``ValueError`` on a malformed row, more than 64 rows, a range past the end of its segment, or
+    two ranges that share a linear byte.
+    """
+    rows = config.get("volatileMemory", [])
+    if not isinstance(rows, list) or len(rows) > MAX_VOLATILE_RANGES:
+        raise ValueError(f"volatileMemory must be a list of at most {MAX_VOLATILE_RANGES} ranges")
+    ranges = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict) or set(row) != VOLATILE_FIELDS:
+            raise ValueError("volatileMemory ranges name segment, offset, bytes and evidence")
+        segment, offset, size = row["segment"], row["offset"], row["bytes"]
+        if type(segment) is not int or not 0 <= segment <= 0xFFFF or flat and segment != 0:
+            raise ValueError("volatileMemory segment must be a 16-bit paragraph, or 0 in the PE32 flat model")
+        if type(offset) is not int or type(size) is not int or offset < 0 or size < 1 or offset + size > 1 << bits:
+            raise ValueError("volatileMemory offset and bytes must give a nonempty range inside the segment")
+        if not isinstance(row["evidence"], str) or not row["evidence"].strip():
+            raise ValueError("volatileMemory range requires nonempty evidence")
+        start = segment * (1 if flat else 16) + offset
+        ranges.append((start, start + size, index))
+    ranges.sort()
+    for before, after in zip(ranges, ranges[1:]):
+        if after[0] < before[1]:
+            raise ValueError("volatileMemory ranges overlap")
+    return tuple(ranges)
 
 
 class WriteLog:
@@ -166,6 +203,9 @@ class State:
         self.conditional = []
         # Values the query supplies for port reads, by site; trace validates them.
         self.port_inputs = Shared({row["site"]: row for row in config.get("portInputs", [])})
+        # The query's volatileMemory ranges, which every copy of the path shares.
+        ranges = volatile_ranges(config, self.bits, self.flat)
+        self.volatile = Shared(ranges=ranges, starts=[r[0] for r in ranges])
         flags = config.get("flags", {})
         if not isinstance(flags, dict) or set(flags) - {"direction"}:
             raise ValueError("Only an explicit starting direction flag is supported")
@@ -274,16 +314,46 @@ class State:
         built): the newest write that may alias it, the write that dropped its value, the modeled
         call that cleared memory, or none. Reads of the byte name the same term until such an event
         happens, so a reload across writes that cannot store the byte reads the earlier term, and the
-        term changes exactly when the reported cause does.
+        term changes exactly when the reported cause does. A declared volatile byte's row names the
+        read itself, so each read of it has its own term.
         """
-        if key in self.unread_memory:
+        volatile = unwritten is not None and unwritten["cause"] == VOLATILE
+        if key in self.unread_memory and not volatile:
             return self.unread_memory[key]
         order = (unwritten or self.unwritten(key))["order"]
         return f"memory:{'entry' if order is None else order}:{key}"
 
     def byte(self, key, unwritten=None):
-        """The modeled value of one memory byte, or an unknown term produced by the current site."""
-        return self.memory[key] if key in self.memory else unknown(self.unread_term(key, unwritten), 8, self.at)
+        """The modeled value of one memory byte, or an unknown term produced by the current site.
+
+        A read passes the byte's ``unwritten`` row, which a byte has exactly when the read sees no
+        modeled value, so a declared volatile byte reads the term that row names even when the path
+        stored a value there.
+        """
+        if unwritten is None and key in self.memory:
+            return self.memory[key]
+        return unknown(self.unread_term(key, unwritten), 8, self.at)
+
+    def volatility(self, key):
+        """How a byte relates to the query's volatileMemory ranges.
+
+        Returns ``("inside", row)`` with the index of the declared row whose range holds the byte when
+        the byte has a concrete linear address, ``("possible", None)`` when its address is not
+        concrete and the linear bytes it may name overlap a declared range, and ``None`` otherwise.
+        """
+        ranges = self.volatile["ranges"]
+        if not ranges:
+            return None
+        domain = key_domain(key, self.bits, self.flat)
+        if domain is None:
+            return "possible", None
+        at = bisect_right(self.volatile["starts"], domain[0]) - 1
+        if key[0] == ("linear",):
+            return ("inside", ranges[at][2]) if at >= 0 and domain[0] < ranges[at][1] else None
+        # The range starting at or before the domain overlaps it when it ends past the domain's start;
+        # the next range overlaps it when it starts before the domain's end.
+        overlaps = at >= 0 and domain[0] < ranges[at][1] or at + 1 < len(ranges) and ranges[at + 1][0] < domain[1]
+        return ("possible", None) if overlaps else None
 
     def latest_aliasing_write(self, group, domain):
         """The order of the newest write outside `group` that may have stored a byte of `domain`, or None."""
@@ -317,11 +387,27 @@ class State:
             return {"cause": "dropped by a modeled call", "order": self.memory_cleared}
         return {"cause": NO_WRITE, "order": None}
 
-    def byte_writer(self, index, key):
-        """The byteProducers row of one accessed byte: its producers and the write that stored it."""
+    def byte_writer(self, index, key, stored=False):
+        """The byteProducers row of one accessed byte: its producers and the write that stored it.
+
+        A row for a byte a read sees (``stored`` false) follows the query's volatileMemory: a byte
+        inside a declared range has no producers or writer and an ``unwritten`` row with cause
+        ``declared volatile`` and the order of the event this row belongs to, which names its term,
+        plus ``volatileMemory``, the index of the declared row. A byte whose address may name a
+        declared range carries ``mayBeVolatile: true`` and keeps its ordinary row. ``stored`` rows
+        report what a write has just stored.
+        """
+        volatility = None if stored else self.volatility(key)
+        if volatility is not None and volatility[0] == "inside":
+            return {"index": index, "producers": [], "writeOrder": None,
+                    "unwritten": {"cause": VOLATILE, "order": len(self.events)}, "volatileMemory": volatility[1]}
         if key in self.memory:
-            return {"index": index, "producers": producers(self.memory[key]), "writeOrder": self.memory_writers.get(key)}
-        return {"index": index, "producers": [], "writeOrder": None, "unwritten": self.unwritten(key)}
+            row = {"index": index, "producers": producers(self.memory[key]), "writeOrder": self.memory_writers.get(key)}
+        else:
+            row = {"index": index, "producers": [], "writeOrder": None, "unwritten": self.unwritten(key)}
+        if volatility is not None:
+            row["mayBeVolatile"] = True
+        return row
 
     def argument_slots(self, return_bytes, window):
         """The stack bytes above a call's return frame as a read of them would see them now.
@@ -442,11 +528,11 @@ class State:
             self.memory_groups.setdefault((seg, base), set()).update(keys)
             value = write
             missing = []
-            rows = [self.byte_writer(i, key) for i, key in enumerate(keys)]
+            rows = [self.byte_writer(i, key, stored=True) for i, key in enumerate(keys)]
         else:
-            missing = [i for i, key in enumerate(keys) if key not in self.memory]
             # Each row's "unwritten" cause names the term of a byte with no value, so it is built once.
             rows = [self.byte_writer(i, key) for i, key in enumerate(keys)]
+            missing = [row["index"] for row in rows if "unwritten" in row]
             value = join([self.byte(key, row.get("unwritten")) for key, row in zip(keys, rows)])
         relevant = []
         for g in self.guards:

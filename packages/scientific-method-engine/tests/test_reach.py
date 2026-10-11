@@ -36,6 +36,21 @@ TABLE = {"site": 0x12, "exhaustive": True, "evidence": "synthetic: bx is gated t
          "table": {"start": 0x30, "count": 2, "stride": 2, "evidence": "synthetic: two rows under cmp bx, 1"}}
 
 
+# 0000 calls B at 0008, then X at 0010, which ends the program through its interrupt. The bytes after
+# the second call are data that decode as a mov whose immediate runs over B's entry.
+EXITS = bytes.fromhex(
+    "e80500"        # 0000 call 0008
+    "e80a00"        # 0003 call 0010
+    "b841"          # 0006 data: decodes as mov ax, 0B841h through 0008
+    "b890c3"        # 0008 B: mov ax, 0C390h
+    "c3"            # 000B ret
+    "90909090"      # 000C padding
+    "b44c"          # 0010 X: mov ah, 4Ch
+    "cd21"          # 0012 int 21h
+    "c3"            # 0014 what a walk past the interrupt reads
+)
+
+
 def config(data=DISPATCH, entries=(0,), **extra):
     return {"regions": [{"name": "synthetic", "start": 0, "end": len(data), "ip": 0, "segment": 0x1000, "resident": True,
                          "entries": list(entries), "evidence": "synthetic declared code extent"}],
@@ -172,18 +187,374 @@ class ReachTests(unittest.TestCase):
         self.assertEqual(r["counts"]["unresolved"], 2)
         self.assertTrue(r["truncated"])
 
+    def test_a_no_return_declaration_keeps_the_bytes_after_its_calls_unread(self):
+        exits = "synthetic: ends the program through its interrupt"
+        # Without a declaration the walk reads the data after 0003 as an instruction over B's entry.
+        r = run_report(EXITS, config(EXITS, targets=[9], controls=[0, 3]), "reach")
+        self.assertIn("overlapping entry-path instructions; boundary unresolved", [g["reason"] for g in r["gaps"]])
+        self.assertTrue(r["contested"])
+        self.assertFalse(r["negativeUsable"])
+        self.assertEqual(r["noReturn"], [])
+        # Declaring X a leaf leaves it unread, but the call to it still falls through into the data.
+        r = run_report(EXITS, config(EXITS, targets=[9], controls=[0, 3],
+                                     leaves=[{"routine": 0x10, "reason": "synthetic leaf"}]), "reach")
+        self.assertIn("overlapping entry-path instructions; boundary unresolved", [g["reason"] for g in r["gaps"]])
+        r = run_report(EXITS, config(EXITS, targets=[9], controls=[0, 3], noReturn=[
+            {"routine": 0x10, "reason": exits}, {"interrupt": 0x12, "reason": exits}]), "reach")
+        self.assertEqual((r["gaps"], r["contested"], r["unresolved"], r["interrupts"]), ([], [], [], []))
+        # B is read from its own entry only, so its second byte is inside its first instruction.
+        self.assertEqual((r["targets"][0]["status"], r["targets"][0]["insideInstruction"]),
+                         ("inside a reached instruction", 8))
+        self.assertTrue(r["negativeUsable"])
+        self.assertEqual(r["noReturn"], [
+            {"routine": 0x10, "reason": exits, "reached": True, "read": True, "returnSites": [],
+             "contradicted": False, "callSites": [{"site": 3, "following": 6, "followingRead": False}]},
+            {"interrupt": 0x12, "reason": exits, "vector": 0x21, "reached": True, "following": 0x14,
+             "followingRead": False}])
+        self.assertIn("each reached call returns to its next instruction, except a call to a noReturn routine",
+                      r["assumptions"])
+        self.assertIn("each reached interrupt returns to its next instruction, except at a noReturn interrupt "
+                      "site; interrupt handlers are not read", r["assumptions"])
+        self.assertIn("each noReturn routine and interrupt never returns, for the reason it gives", r["assumptions"])
+
+    def test_a_no_return_routine_with_a_read_return_is_contradicted(self):
+        # Declared alone, X's interrupt is assumed to return, so the walk reads the ret after it.
+        r = run_report(EXITS, config(EXITS, targets=[9], controls=[0, 3],
+                                     noReturn=[{"routine": 0x10, "reason": "synthetic exit"}]), "reach")
+        row = r["noReturn"][0]
+        self.assertEqual((row["returnSites"], row["contradicted"]), ([0x14], True))
+        self.assertEqual(r["gaps"], [])
+        self.assertFalse(r["negativeUsable"])
+
+    def test_a_no_return_leaf_is_reached_unread_and_unchecked(self):
+        r = run_report(EXITS, config(EXITS, targets=[9], controls=[0, 3],
+                                     leaves=[{"routine": 0x10, "reason": "synthetic leaf"}],
+                                     noReturn=[{"routine": 0x10, "reason": "synthetic exit"}]), "reach")
+        row = r["noReturn"][0]
+        self.assertEqual((row["reached"], row["read"], row["returnSites"]), (True, False, []))
+        self.assertEqual(r["gaps"], [])
+        self.assertTrue(r["negativeUsable"])
+
+    def test_the_site_after_a_no_return_call_is_still_read_through_a_jump(self):
+        # 0000 call 0004; ret. 0004 je 0009; call 000A; 0009 ret. 000A mov ah, 4Ch; int 21h.
+        data = bytes.fromhex("e80100c3" "7403" "e80100" "c3" "b44c" "cd21")
+        exits = [{"routine": 0xA, "reason": "synthetic exit"}, {"interrupt": 0xC, "reason": "synthetic exit"}]
+        r = run_report(data, config(data, targets=[9], controls=[6], noReturn=exits), "reach")
+        self.assertTrue(r["targets"][0]["reached"])
+        self.assertEqual(r["targets"][0]["chain"], [{"routine": 0}, {"callSite": 0, "routine": 4}])
+        self.assertEqual(r["noReturn"][0]["callSites"], [{"site": 6, "following": 9, "followingRead": True}])
+        self.assertTrue(r["negativeUsable"])
+
+    def test_a_no_return_routine_that_jumps_into_a_leaf_is_contradicted(self):
+        # 0000 call 0004; 0003 ret. 0004 X: jmp 0007; 0006 nop. 0007 L, a leaf the walk assumes returns.
+        data = bytes.fromhex("e80100" "c3" "eb01" "90" "c3")
+        leaf = [{"routine": 7, "reason": "synthetic leaf"}]
+        r = run_report(data, config(data, targets=[3], controls=[0], leaves=leaf,
+                                    noReturn=[{"routine": 4, "reason": "synthetic exit"}]), "reach")
+        row = r["noReturn"][0]
+        self.assertEqual((row["returnSites"], row["contradicted"]), ([7], True))
+        self.assertFalse(r["negativeUsable"])
+        # A leaf that is declared noReturn as well is no way back.
+        r = run_report(data, config(data, targets=[3], controls=[0], leaves=leaf,
+                                    noReturn=[{"routine": 4, "reason": "synthetic exit"},
+                                              {"routine": 7, "reason": "synthetic exit"}]), "reach")
+        self.assertEqual([row["contradicted"] for row in r["noReturn"]], [False, False])
+        self.assertTrue(r["negativeUsable"])
+
+    def test_a_control_after_a_no_return_call_or_interrupt_names_the_declaration(self):
+        exits = [{"routine": 0x10, "reason": "synthetic exit"}, {"interrupt": 0x12, "reason": "synthetic exit"}]
+        for site, message in ((6, "instruction control 6 is not reached "
+                                  r"\(it follows the call at 3 to noReturn routine 16\)$"),
+                              (0x14, "instruction control 20 is not reached "
+                                     r"\(it follows the noReturn interrupt at 18\)$")):
+            with self.subTest(site=site), self.assertRaisesRegex(ValueError, "Positive controls failed: " + message):
+                run_report(EXITS, config(EXITS, targets=[9], instructionControls=[site], noReturn=exits), "reach")
+
+    def test_an_unreached_no_return_interrupt_still_gives_its_following_site(self):
+        # 0000 ret; 0001 int 21h, which nothing reaches.
+        data = bytes.fromhex("c3" "cd21")
+        r = run_report(data, config(data, targets=[1], noReturn=[{"interrupt": 1, "reason": "synthetic exit"}]),
+                       "reach")
+        self.assertEqual(r["noReturn"], [{"interrupt": 1, "reason": "synthetic exit", "vector": 0x21,
+                                          "reached": False, "following": 3, "followingRead": False}])
+
+    def test_a_conditional_interrupt_cannot_be_declared_no_return(self):
+        data = bytes.fromhex("cec3")  # into; ret
+        with self.assertRaisesRegex(ValueError, "noReturn interrupt 0 is conditional"):
+            run_report(data, config(data, targets=[1], noReturn=[{"interrupt": 0, "reason": "synthetic"}]), "reach")
+        exit_interrupt = {"interrupt": 0x12, "reason": "synthetic"}
+        with self.assertRaisesRegex(ValueError, "Duplicate noReturn interrupt"):
+            run_report(EXITS, config(EXITS, targets=[9], noReturn=[exit_interrupt, exit_interrupt]), "reach")
+
+    def test_a_control_that_is_no_call_is_refused_before_the_walk_and_an_instruction_control_takes_it(self):
+        # 0000 calls 0004, which stores AX at [0100] and returns.
+        data = bytes.fromhex("e80100c3" "a30001" "c3")
+        with self.assertRaisesRegex(ValueError, r"control 4 is not a call site \(decodes as mov .*\); controls are "
+                                                r"call sites the walk must reach and resolve"):
+            run_report(data, config(data, targets=[7], controls=[4]), "reach")
+        r = run_report(data, config(data, targets=[7], instructionControls=[4]), "reach")
+        self.assertEqual(r["instructionControls"], [{"site": 4, "instruction": "mov word ptr [0x100], ax", "routine": 4}])
+        self.assertEqual(r["controls"], [])
+        self.assertTrue(r["negativeUsable"])
+        # The call that enters the store's routine passes as a call-site control.
+        r = run_report(data, config(data, targets=[7], controls=[0]), "reach")
+        self.assertEqual(r["controls"], [{"site": 0, "target": 4}])
+        self.assertEqual(r["instructionControls"], [])
+
+    def test_a_control_that_does_not_decode_is_refused_before_the_walk(self):
+        data = bytes.fromhex("e80100c3" "0f")
+        with self.assertRaisesRegex(ValueError, r"control 4 is not a call site \(does not decode\)"):
+            run_report(data, config(data, targets=[3], controls=[4]), "reach")
+
+    def test_a_site_the_walk_reaches_but_cannot_decode_is_not_called_unreached(self):
+        # 0000 calls 0004, whose single byte does not decode.
+        data = bytes.fromhex("e80100c3" "0f")
+        r = run_report(data, config(data, targets=[4]), "reach")
+        self.assertEqual(r["targets"][0]["status"], "reached but not decodable")
+        with self.assertRaisesRegex(ValueError, r"Positive controls failed: instruction control 4 is reached but not "
+                                                r"decodable$"):
+            run_report(data, config(data, targets=[3], instructionControls=[4]), "reach")
+
+    def test_each_failed_control_says_whether_it_was_reached(self):
+        LEAF = {"routine": 0x18, "reason": "synthetic leaf"}
+        cases = [({"controls": [0x6]}, "control 6 is reached but its call target is unresolved "
+                                       r"\(computed transfer remains unresolved\)"),
+                 # Without the table declaration the walk never arrives at 0020.
+                 ({"controls": [0x20]}, r"control 32 is not reached$"),
+                 # With 0018 a leaf and no table, nothing reaches 0028.
+                 ({"instructionControls": [0x28], "leaves": [LEAF]}, r"instruction control 40 is not reached$"),
+                 ({"indirectJumps": [TABLE], "instructionControls": [0x29]},
+                  "instruction control 41 is inside the reached instruction at 40"),
+                 ({"indirectJumps": [TABLE], "instructionControls": [0x18], "leaves": [LEAF]},
+                  "instruction control 24 is the start of a leaf, which the walk reaches but does not decode"),
+                 ({"indirectJumps": [TABLE], "instructionLimit": 3, "instructionControls": [0x28]},
+                  r"instruction control 40 is not reached \(the walk stopped at its instruction limit\)")]
+        for extra, message in cases:
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, "Positive controls failed: " + message):
+                reach(**extra)
+        # No table declaration means nothing reaches 0020, so the leaf there is not reached either.
+        with self.assertRaisesRegex(ValueError, r"Positive controls failed: control 32 is not reached$"):
+            reach(controls=[0x20], leaves=[{"routine": 0x20, "reason": "synthetic leaf"}])
+        # Every failed control is named at once, in both lists.
+        with self.assertRaisesRegex(ValueError, "control 6 is reached but .*; control 32 is not reached; "
+                                                "instruction control 40 is not reached"):
+            reach(controls=[0x3, 0x6, 0x20], instructionControls=[0x3, 0x28], leaves=[LEAF])
+
+    def test_the_starts_of_an_unresolved_overlap_are_decoded_and_not_called_unreached(self):
+        # 0000 calls 0007, which jumps through a one-row table to 0005, inside the mov at 0003 (the return site).
+        # Neither boundary is proven, so the walk keeps neither instruction.
+        data = bytes.fromhex("e80400" "b890c3" "c3" "2effa71000" "90909090" "0500")
+        table = {"site": 7, "exhaustive": True, "evidence": "synthetic: one row",
+                 "table": {"start": 0x10, "count": 1, "stride": 2, "evidence": "synthetic: one row"}}
+        r = run_report(data, config(data, targets=[3, 5], indirectJumps=[table]), "reach")
+        self.assertEqual([t["status"] for t in r["targets"]], ["start of an unresolved overlapping instruction"] * 2)
+        with self.assertRaisesRegex(ValueError, "Positive controls failed: instruction control 3 is the start of an "
+                                                "unresolved overlapping instruction; instruction control 5 is the "
+                                                "start of an unresolved overlapping instruction$"):
+            run_report(data, config(data, targets=[6], indirectJumps=[table], instructionControls=[3, 5]), "reach")
+
     def test_rejected_inputs(self):
+        too_many = list(range(257))
         for extra, message in [({"starts": [0x18]}, "established region entry"),
                                ({"starts": []}, "starts must be"),
                                ({"targets": [0x1000]}, "targets"),
                                ({"leaves": [{"routine": 0x18}]}, "routine and reason"),
                                ({"leaves": [{"routine": 0x18, "reason": " "}]}, "nonempty reason"),
                                ({"leaves": [{"routine": 0, "reason": "x"}]}, "start cannot be a leaf"),
+                               ({"noReturn": {}}, "noReturn must be a list"),
+                               ({"noReturn": [{"routine": 0x18}]}, "exactly one of routine and interrupt"),
+                               ({"noReturn": [{"routine": 0x18, "interrupt": 0x18, "reason": "x"}]},
+                                "exactly one of routine and interrupt"),
+                               ({"noReturn": [{"routine": 0x1000, "reason": "x"}]}, "noReturn routine"),
+                               ({"noReturn": [{"routine": 0x18, "reason": ""}]}, "nonempty reason"),
+                               ({"noReturn": [{"routine": 0x18, "reason": "x"}, {"routine": 0x18, "reason": "y"}]},
+                                "Duplicate noReturn routine"),
+                               ({"noReturn": [{"interrupt": 0x18, "reason": "x"}]}, "not an interrupt instruction"),
+                               ({"noReturn": [{"routine": 0x18, "reason": "x"}] * 257},
+                                "noReturn must be a list of at most 256"),
                                ({"controls": [0x3, 0x3]}, "distinct file offsets"),
-                               ({"controls": [0x6]}, "Positive control 6 missed"),
-                               ({"controls": [0x10]}, "Positive control 16 missed")]:
+                               ({"controls": [0x1000]}, "controls must be an integer"),
+                               ({"instructionControls": [0x3, 0x3]}, "distinct file offsets"),
+                               ({"instructionControls": [0x1000]}, "instructionControls must be an integer"),
+                               ({"instructionControls": [0x0]}, "instruction control 0 is a start"),
+                               ({"controls": too_many}, r"controls must be a list of 0\.\.256"),
+                               ({"instructionControls": too_many}, r"instructionControls must be a list of 0\.\.256")]:
             with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, message):
                 reach(**extra)
+
+
+def _code(size, parts):
+    data = bytearray(b"\x90" * size)
+    for at, encoded in parts.items():
+        data[at:at + len(encoded) // 2] = bytes.fromhex(encoded)
+    return bytes(data)
+
+
+# 0000 masks its argument to 0..3, doubles it and calls through the four words at 0040, which name
+# 0100, 0110, 0120 and 0130. It then calls through the far pointer at 0200. Only 0120 calls 0140, which
+# stores a word. 0130 never returns. The far pointer pair at 0048 names 0110 once its segment word is relocated.
+COMPUTED = _code(0x160, {
+    0x00: "8b5e06",        # mov bx, [bp+6]
+    0x03: "83e303",        # and bx, 3
+    0x06: "d1e3",          # shl bx, 1
+    0x08: "2eff974000",    # call word ptr cs:[bx+0040]
+    0x0D: "ff1e0002",      # call far [0200]
+    0x11: "c3",            # ret
+    0x40: "0001100120013001",
+    0x48: "10010000",
+    0x100: "c3",
+    0x110: "c3",
+    0x120: "e81d00c3",     # call 0140; ret
+    0x130: "ebfe",         # jmp 0130
+    0x140: "c70600010100c3",  # mov word [0100], 1; ret
+    0x150: "c3",           # nothing reaches it
+})
+NEAR_TABLE = {"site": 0x08, "exhaustive": True, "evidence": "synthetic: bx is the argument masked to 0..3 and doubled",
+              "table": {"start": 0x40, "count": 4, "stride": 2, "evidence": "synthetic: four words under and bx, 3"}}
+FAR_TARGETS = {"site": 0x0D, "exhaustive": True, "targets": [0x110, 0x130],
+               "evidence": "synthetic: every path stores one of two far pointers at 0200 just before the call"}
+
+
+def computed(**extra):
+    return run_report(COMPUTED, config(COMPUTED, **{"targets": [0x140, 0x150], **extra}), "reach")
+
+
+class DeclaredIndirectCallTests(unittest.TestCase):
+    def test_an_undeclared_computed_call_is_unresolved_and_its_targets_are_not_reached(self):
+        r = computed()
+        self.assertEqual([t["status"] for t in r["targets"]], ["not reached", "not reached"])
+        self.assertEqual([(u["site"], u["kind"]) for u in r["unresolved"]], [(0x08, "call"), (0x0D, "call")])
+        self.assertEqual(r["reachedRoutines"], [0])
+        self.assertEqual(r["indirectCalls"], [])
+        self.assertFalse(r["negativeUsable"])
+
+    def test_declared_targets_are_called_and_an_exhaustive_declaration_leaves_the_negative_usable(self):
+        r = computed(indirectCalls=[NEAR_TABLE, FAR_TARGETS], controls=[0x120])
+        reached, unreached = r["targets"]
+        self.assertEqual(reached["chain"], [{"routine": 0}, {"callSite": 0x08, "routine": 0x120},
+                                            {"callSite": 0x120, "routine": 0x140}])
+        self.assertEqual(reached["route"]["declaredCalls"], [{"site": 0x08, "target": 0x120}])
+        self.assertEqual(reached["throughEveryRoute"], [0, 0x120])
+        self.assertEqual(unreached["status"], "not reached")
+        self.assertEqual(r["reachedRoutines"], [0, 0x100, 0x110, 0x120, 0x130, 0x140])
+        self.assertEqual((r["unresolved"], r["gaps"]), ([], []))
+        self.assertTrue(r["negativeUsable"])
+        near, far = r["indirectCalls"]
+        self.assertEqual(near["rows"], [{"index": i, "operandSite": 0x40 + 2 * i, "rawOffset": t, "target": t}
+                                        for i, t in enumerate((0x100, 0x110, 0x120, 0x130))])
+        self.assertEqual((near["targets"], near["reached"], near["routine"], near["unreadTargets"]),
+                         ([0x100, 0x110, 0x120, 0x130], True, 0, []))
+        self.assertIn("[bx + 0x40]", near["instruction"])
+        self.assertEqual({k: far[k] for k in ("site", "targets", "exhaustive", "evidence", "reached")},
+                         {"site": 0x0D, "targets": [0x110, 0x130], "exhaustive": True,
+                          "evidence": FAR_TARGETS["evidence"], "reached": True})
+        self.assertNotIn("rows", far)
+        self.assertIn("each declared indirect call can call the targets its declaration gives, for the evidence it "
+                      "gives, and only those when it is declared exhaustive", r["assumptions"])
+
+    def test_a_declaration_not_exhaustive_is_followed_and_stays_unresolved(self):
+        r = computed(indirectCalls=[{**NEAR_TABLE, "exhaustive": False}], controls=[0x120])
+        self.assertTrue(r["targets"][0]["reached"])
+        self.assertEqual([(u["site"], u["kind"], u["reason"]) for u in r["unresolved"]],
+                         [(0x08, "call", "indirect call targets are not declared exhaustive"),
+                          (0x0D, "call", "computed transfer remains unresolved")])
+        self.assertEqual(r["gaps"], [])
+        self.assertFalse(r["negativeUsable"])
+
+    def test_a_far_table_reads_its_segment_word_through_a_declared_relocation(self):
+        table = {"site": 0x0D, "exhaustive": True, "evidence": "synthetic: the pointer at 0200 is copied from 0048",
+                 "table": {"start": 0x48, "count": 1, "stride": 4, "width": 4, "evidence": "synthetic: one far pointer"}}
+        relocations = [{"site": 0x4A, "segment": 0x1000, "evidence": "synthetic relocation of the segment word"}]
+        r = computed(indirectCalls=[table], relocations=relocations, targets=[0x110])
+        self.assertEqual(r["indirectCalls"][0]["rows"], [{"index": 0, "operandSite": 0x48, "rawOffset": 0x110,
+                                                          "rawSegment": 0, "resolvedSegment": 0x1000, "target": 0x110}])
+        self.assertEqual(r["targets"][0]["chain"], [{"routine": 0}, {"callSite": 0x0D, "routine": 0x110}])
+        with self.assertRaisesRegex(ValueError, "row 0 has no declared relocation for its segment word at 74"):
+            computed(indirectCalls=[table])
+        with self.assertRaisesRegex(ValueError, "row 0 target is not admitted: far pointer names no declared code region"):
+            computed(indirectCalls=[table], relocations=[{**relocations[0], "segment": 0x2000}])
+        # A pointer at an FBOV trampoline continues at the overlay entry, and the row names the trampoline.
+        export = {"trampoline": 0x110, "descriptor": 1, "entry": 0x120, "evidence": "synthetic trampoline"}
+        through = computed(indirectCalls=[table], relocations=relocations, overlayExports=[export], targets=[0x140])
+        self.assertEqual(through["indirectCalls"][0]["rows"][0], {
+            "index": 0, "operandSite": 0x48, "rawOffset": 0x110, "rawSegment": 0, "resolvedSegment": 0x1000,
+            "trampoline": export, "target": 0x120})
+        self.assertEqual(through["targets"][0]["route"]["declaredCalls"], [{"site": 0x0D, "target": 0x120}])
+
+    def test_a_near_target_list_needs_a_target_the_call_sites_segment_places(self):
+        def regions(segment, ip, resident=False):
+            return [{"name": "low", "start": 0, "end": 0x100, "ip": 0, "segment": 0x1000, "entries": [0],
+                     "resident": True, "evidence": "synthetic"},
+                    {"name": "high", "start": 0x100, "end": 0x160, "ip": ip, "segment": segment, "entries": [],
+                     "resident": resident, "evidence": "synthetic"}]
+        near = {"site": 0x08, "exhaustive": True, "evidence": "synthetic", "targets": [0x120]}
+        with self.assertRaisesRegex(ValueError, "indirect call target 288 is not placed by any IP in the near call "
+                                                "site 8's segment"):
+            run_report(COMPUTED, {"regions": regions(0x2000, 0), "starts": [0], "targets": [0x140],
+                                  "indirectCalls": [near]}, "reach")
+        # 1010:0020 is 1000:0120, so a resident alias of the call site's segment places the target.
+        r = run_report(COMPUTED, {"regions": regions(0x1010, 0, resident=True), "starts": [0], "targets": [0x140],
+                                  "indirectCalls": [near]}, "reach")
+        self.assertTrue(r["targets"][0]["reached"])
+
+    def test_a_declared_call_ends_its_branch_only_when_every_target_is_no_return(self):
+        no_return = [{"routine": 0x130, "reason": "synthetic: spins forever"}]
+        ended = computed(indirectCalls=[{**FAR_TARGETS, "targets": [0x130]}], noReturn=no_return, targets=[0x11])
+        self.assertEqual(ended["targets"][0]["status"], "not reached")
+        self.assertEqual(ended["noReturn"][0]["callSites"], [{"site": 0x0D, "following": 0x11, "followingRead": False}])
+        with self.assertRaisesRegex(ValueError, r"instruction control 17 is not reached \(it follows the call at 13 "
+                                                r"to noReturn routine 304\)"):
+            computed(indirectCalls=[{**FAR_TARGETS, "targets": [0x130]}], noReturn=no_return, instructionControls=[0x11])
+        # 0110 returns, so the call continues at its return site.
+        mixed = computed(indirectCalls=[FAR_TARGETS], noReturn=no_return, targets=[0x11], instructionControls=[0x11])
+        self.assertTrue(mixed["targets"][0]["reached"])
+        self.assertEqual(mixed["noReturn"][0]["callSites"], [])
+        self.assertFalse(mixed["noReturn"][0]["contradicted"])
+
+    def test_a_declared_target_inside_a_reached_instruction_is_unread_and_keeps_the_negative_unusable(self):
+        r = computed(indirectCalls=[NEAR_TABLE, {**FAR_TARGETS, "targets": [0x141]}], instructionControls=[0x08])
+        self.assertEqual(r["indirectCalls"][1]["unreadTargets"], [0x141])
+        self.assertTrue(r["gaps"])
+        self.assertFalse(r["negativeUsable"])
+        # A walk that stops at its instruction limit leaves targets unread that are no gap or contested instruction.
+        stopped = computed(indirectCalls=[NEAR_TABLE], instructionLimit=6)
+        self.assertTrue(stopped["instructionLimitReached"])
+        self.assertEqual(stopped["indirectCalls"][0]["unreadTargets"], [0x100, 0x110, 0x120, 0x130])
+        self.assertFalse(stopped["negativeUsable"])
+
+    def test_a_declared_site_is_refused_as_a_call_control(self):
+        with self.assertRaisesRegex(ValueError, "control 8 is a declared indirect call"):
+            computed(indirectCalls=[NEAR_TABLE], controls=[0x08])
+        self.assertTrue(computed(indirectCalls=[NEAR_TABLE], instructionControls=[0x08])["targets"][0]["reached"])
+
+    def test_rejected_declarations(self):
+        table = NEAR_TABLE["table"]
+        for declaration, message in [
+                ({}, "site, evidence, exhaustive and exactly one of table and targets"),
+                ({**NEAR_TABLE, "targets": [0x100]}, "exactly one of table and targets"),
+                ({**FAR_TARGETS, "unknown": 1}, "exactly one of table and targets"),
+                ({**FAR_TARGETS, "evidence": " "}, "needs evidence"),
+                ({**FAR_TARGETS, "exhaustive": 1}, "explicit exhaustive"),
+                ({**FAR_TARGETS, "site": 0x120}, "site 288 must decode as an unprefixed computed near word call"),
+                ({**FAR_TARGETS, "site": 0x00}, "site 0 must decode"),
+                ({**FAR_TARGETS, "targets": []}, "1..256 distinct file offsets"),
+                ({**FAR_TARGETS, "targets": [0x110, 0x110]}, "1..256 distinct file offsets"),
+                ({**FAR_TARGETS, "targets": [0x1000]}, "indirect call target must be an integer"),
+                ({**NEAR_TABLE, "table": {**table, "evidence": ""}}, "layout/count evidence"),
+                ({**NEAR_TABLE, "table": {**table, "width": 4}}, "near call table holds 2-byte targets"),
+                ({**FAR_TARGETS, "targets": list(range(0x100, 0x100 + 257))}, "1..256 distinct file offsets"),
+                ({**NEAR_TABLE, "table": {**table, "count": 0}}, "table count"),
+                ({**NEAR_TABLE, "table": {**table, "count": 257}}, "table count must be an integer in 1..256"),
+                ({**NEAR_TABLE, "table": {**table, "start": 0x15E, "count": 2}}, "leaves source bounds"),
+                ({**NEAR_TABLE, "table": {**table, "start": 0x08, "count": 1}}, "row 0 target leaves declared code")]:
+            with self.subTest(declaration=declaration), self.assertRaisesRegex(ValueError, message):
+                computed(indirectCalls=[declaration])
+        with self.assertRaisesRegex(ValueError, "Duplicate indirect call site"):
+            computed(indirectCalls=[FAR_TARGETS, FAR_TARGETS])
+        with self.assertRaisesRegex(ValueError, "indirectCalls must be a list"):
+            computed(indirectCalls={})
+        with self.assertRaisesRegex(ValueError, "indirectCalls must be a list of at most 256 declarations"):
+            computed(indirectCalls=[FAR_TARGETS] * 257)
 
 
 if __name__ == "__main__":

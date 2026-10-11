@@ -67,8 +67,8 @@ width, full interval, byte producers and missing producers. Each `byteProducers`
 also gives `writeOrder`, the event order of the write that stored the byte. A byte
 with no modeled value has `writeOrder: null` and `unwritten`, whose `cause` is
 `no write on this path`, `possibly written by an aliasing write`, `dropped by a
-possibly aliasing write` or `dropped by a modeled call`, with the `order` of that
-write or modeled return. `dropped by a possibly aliasing write` names the write that dropped a
+possibly aliasing write`, `dropped by a modeled call` or `declared volatile`, with the `order` of that
+write or modeled return, or for `declared volatile` the order of the read itself (see below). `dropped by a possibly aliasing write` names the write that dropped a
 byte's modeled value, while no newer write through another segment or base may alias the byte.
 `possibly written by an aliasing write` names
 the newest write through another segment or base that may alias a byte with no value to lose,
@@ -91,10 +91,25 @@ modeled call. A modeled call keeps the term of a byte its `preservesMemory` scop
 keeps that term when it lies in the byte's own segment/base group at other offsets, or when both
 have concrete, disjoint address domains. A write that overlaps the byte, or whose segment or address
 may alias it, gives the next read a fresh term, so a reload is not shown equal to the earlier read.
-This identity assumes that only the path's own writes and modeled calls change memory: a byte that
+This identity assumes that only the path's own writes and modeled calls change memory. A byte that
 hardware, DMA or an interrupt handler updates between two reads (a timer counter, a polled status
-word) reads as one term across them, and a control that a reload of such a byte holds is
-conditional on that assumption.
+word, a DMA buffer) breaks that assumption, and only the program's restoration knows which of its
+addresses such a byte has. The query lists them in `volatileMemory`, at most 64 rows of `segment`
+(a real-mode paragraph, or 0 in the PE32 flat model), `offset`, `bytes` and `evidence`; rows that
+share a linear byte, or a range past the end of its segment, are rejected. A read of a byte whose
+concrete linear address lies in a declared range never uses a modeled value or an earlier term, even
+one the path stored itself: its `byteProducers` row has no producers, `writeOrder: null`, `unwritten`
+with cause `declared volatile` and the read's own `order`, and `volatileMemory`, the index of the
+declared row. Each read of the byte therefore reads its own term, so a `sameValue` control between
+two reads of it is undecided, a `lastWriter` control on it is undecided, a branch decided on one
+poll does not decide the next, and a far pointer read from it is not followed. A read whose address
+is not concrete (an unknown segment, or a concrete segment with a symbolic offset) but may name a
+byte of a declared range keeps its ordinary row and term, and the row carries `mayBeVolatile: true`:
+a control that such a reload holds is still conditional on the identity assumption. A `lastWriter`
+address probe reports its bytes as a read would, and its `declared volatile` rows give the order of
+the `checkpoint` event that carries the probe, since the probe adds no read. Writes, and
+every read when no range is declared, report as above. A byte outside every declared range keeps
+the identity assumption.
 All assumptions remain conditional, and matching numeric offsets alone never establish storage
 identity.
 
@@ -105,11 +120,11 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 
 | Command | Reports | Described in |
 |---|---|---|
-| `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; follows an indirect far call or jump whose pointer the path produced; declared-table continuations run on their own `continuationBudget`; checks `relationalControls`; `entryFrame` starts an entry inside its function's frame | this section, [narrower entries](#a-narrower-entry-inside-its-functions-frame), [indirect far transfers](#indirect-far-transfers-through-a-traced-pointer), [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
+| `trace` | ordered effects, hardware boundaries and every return along bounded paths from `entry`, and each path's loop restart edges and iteration changes; follows an indirect far call or jump whose pointer the path produced; declared-table continuations run on their own `continuationBudget`; checks `relationalControls`; `entryFrame` starts an entry inside its function's frame; `volatileMemory` gives each read of a declared range its own term | this section, [narrower entries](#a-narrower-entry-inside-its-functions-frame), [indirect far transfers](#indirect-far-transfers-through-a-traced-pointer), [hardware boundaries](#hardware-boundaries), [jump tables](#evidenced-indirect-jump-tables), [loop progress](#loop-restart-edges-and-iteration-changes), [relational controls](#relational-controls) |
 | `arguments`, `effects`, `returns`, `memory`, `guards` | the matching events of the same traversal; `returns` also follows each result's width through the caller; `arguments` also maps each traced call's stack slots onto its callee's read widths; `effects` also summarizes each path's ordered effects and local restoration witnesses; `callModels[].preservesMemory` adds scoped memory hypotheses; each checks `relationalControls` | this section, [return widths](#return-widths-declared-encodings-and-caller-dependencies), [ordered effect paths](#ordered-effect-path-summaries), [relational controls](#relational-controls) |
-| `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; the inventory continues past interrupts, which it assumes return to the next instruction, and a stop inside a called function also continues it at the return site of each call open at the stop, each named in `dependsOn` | this section, [hardware boundaries](#hardware-boundaries) |
+| `uses` | accesses to one memory offset from every established entry; each `conditionalAccesses` row is classified `entry-CFG operand past a stop; values and callee effects unresolved`, `operand past a PE32 port access; values and continuation unresolved` when the stops reach it only by continuing past a PE32 port access, or `unverified overlapping instruction path`; the inventory continues past interrupts, which it assumes return to the next instruction, and a stop inside a called function also continues it at the return site of each call open at the stop, each named in `dependsOn`; each `rawCandidates` row gives the encoded footprint of every unreached operand that may intersect the query field | this section, [hardware boundaries](#hardware-boundaries) |
 | `incoming` | calls that reach a canonical target, with search coverage | this section |
-| `inventory-check` | every resolved direct call target in the searched regions that a function inventory does not list as a start, with one calling site each and counts for a coverage report | [inventory call targets](#call-targets-a-function-inventory-lacks) |
+| `inventory-check` | every resolved direct call target in the searched regions that a function inventory does not list as a start, with one calling site each and counts for a coverage report; each row whose start lies inside an instruction the entry-path walk established; with `noReturn`, each row that continues past a call or interrupt declared never to return; with `indirectCalls`, the declared targets of computed calls as call targets | [inventory call targets](#call-targets-a-function-inventory-lacks), [declared call targets](#declared-computed-call-targets) |
 | `call-order` | the `incoming` report plus, per caller, the order of its calls to the target, the guards each needs and cleanup after them | [guarded call order](#guarded-caller-local-call-order) |
 | `dispatch` | the target of each input through a switch's jump table | this section, [jump tables](#evidenced-indirect-jump-tables) |
 | `allocation` | allocation requests, returned pointers and later writes; checks `relationalControls` | this section, [relational controls](#relational-controls) |
@@ -119,12 +134,12 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `bounds` | the instruction extent reached from one entry, with its interrupt and port instructions | [function bounds](#function-bounds-and-site-ownership), [hardware boundaries](#hardware-boundaries) |
 | `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
 | `callees` | the bounded call graph below an entry, with recursion and shared callees, optionally compared with Ghidra's edges | [function bounds](#function-bounds-and-site-ownership) |
-| `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved | [reachability](#reachability-from-starts-to-targets) |
+| `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved; follows the declared targets of computed calls | [reachability](#reachability-from-starts-to-targets), [declared call targets](#declared-computed-call-targets) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
-| `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (load image, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own and an optional comparison with a candidate body (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
+| `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (the resident span of each FBOV descriptor, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own, an optional comparison with a candidate body, and every FBOV descriptor with its load-image span (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
 | `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables and checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots) |
-| `unpack` | writes the unpacked form of an LZEXE 0.90 or 0.91 or an EXEPACK executable and gives the `size`, `xxh3`, `format` and `tool` of a build's `unpacked` item (reader only, no engine) | [unpacking packed executables](#unpacking-packed-executables) |
+| `unpack` | writes the unpacked form of an LZEXE 0.90 or 0.91, an EXEPACK or a PKLITE 1.00 to 2.01 executable and gives the `size`, `xxh3`, `format` and `tool` of a build's `unpacked` item (reader only, no engine) | [unpacking packed executables](#unpacking-packed-executables) |
 
 The engine also has `scientific-method-engine ghidra-scripts`, which prints the directory of the
 packaged Ghidra scripts (see the engine's README for the list).
@@ -337,12 +352,39 @@ an `instruction limit` gap at its start and continues no caller beyond it.
 Reachability is conditional on encoded guards and on
 execution continuing past every named stop; these observations do not prove callee
 preservation, effective-address values, or feasible native execution. A concrete
-segment query marks their `address` as a possible alias. They still satisfy a
+segment query marks their `address` as a possible alias. A concrete offset is
+matched by the footprint `rawCandidates` use (below): an operand of unknown width
+that starts below the field's end, or one that reaches the field only by wrapping
+past the top of the offset space, is a possible alias. An operand of unknown
+width has a `width` of `null` and a `value` whose `bits` are `null`. They still satisfy a
 positive control, since the control shows the search reached that instruction,
 and they always make `negativeUsable` false. LEA is not a use. The control is a known use of this
 query, so a controlled inventory normally contains at least that use. For an
 absence claim about additional uses, compare the inventory with that known set
 and account for every gap; `negativeUsable` is deliberately conservative.
+
+`rawCandidates` lists instructions decoded at a byte the entry walk never reached
+whose explicit memory operand has an encoded footprint intersecting the query
+field with an access the query's `access` mode asks for (an operand with no
+access, such as LEA's, under every mode). They are never counted as uses. Each row keeps the instruction's
+`mnemonic` and `prefixes`, and its `boundary`: `rejectedOverlap` when it
+intersects entry-path instructions, which `overlapsVerified` lists, or
+`unresolvedBoundary` otherwise. Its `operands` give, for each intersecting
+operand, the `operandIndex`, the encoded `displacement`, the `addressRegisters`
+(base and index) that move the real address away from it, the `width`, the
+`access` direction (none for LEA), the `effectiveSegmentRegister` and the
+`intersection` with the query field. The displacement is taken at the
+instruction's address size, so a 32-bit displacement past 0xFFFF in 16-bit code
+names no 16-bit offset. A footprint that runs past the top of the instruction's
+address space (64 KiB for a 16-bit address size) wraps to zero and is marked
+`wraps`. The x87 environment and state saves and loads, FXSAVE/FXRSTOR, the
+XSAVE family and any operand Capstone gives no size have a `width`, `wraps` and
+`intersection` of `null`: their footprint is unknown, so they are listed
+whenever they start below the field's end. They are not followed past the top
+of the address space, so one starting above the field is never listed even if
+its real footprint would wrap onto it. The footprint is the encoded
+displacement alone: segment values, register contents, implicit operands and
+reachability are not resolved.
 
 `incoming` adds a canonical `target`, a result `limit` and `controls` of known
 call sites to any resolved target. For FBOV a `targetSelector` may instead name a
@@ -446,15 +488,20 @@ terms ([ADR 0003](decisions/0003-established-instruction-semantics.md)). Segment
 memory accesses, producers and every control transfer stay with the engine. A p-code memory access
 that does not match the decoded operand, an unsupported p-code operation and a decode length that
 differs from Capstone's stop the path. Every report names both in `decoder` and
-`instructionSemantics`.
+`instructionSemantics`. `decoder` gives the version of the installed Capstone distribution, since
+the Capstone 5.0.8 and 5.0.9 bindings still report 5.0.7 as `capstone.__version__`. The engine
+refuses to build a report under any Capstone other than 5.0.9 or any pypcode other than 4.0.1.
 
 The decoder supports 16-bit addressing and a bounded subset of ordinary integer
 operations: MOV/MOVZX/MOVSX, XCHG, low-result two/three-operand IMUL (flags unresolved),
 one-operand MUL/IMUL/DIV/IDIV, LEA, LDS/LES, PUSH/POP, ENTER, LEAVE, ADD/SUB, ADC/SBB,
 NEG/NOT, bitwise logic, shifts, ROL/ROR/RCL/RCR with a known count, CLC/STC/CMC,
-INC/DEC and effective-size sign extension. ENTER runs at nesting levels 0 and 1 (the level byte
-modulo 32): its saved frame pointer and, at level 1, the new frame pointer are stack writes at
-ENTER's site, and BP and SP take ENTER's site as their producer. A higher level copies frame
+INC/DEC and effective-size sign extension. A shift or rotate keeps OF only for a count of 1,
+because the CPU leaves OF undefined for larger counts, and SHR keeps it only in its D0 and D1
+encodings, because the SLEIGH specification writes OF as 0 for SHR by a count operand of 1. A
+branch that reads OF after any other shift or rotate is undecided. ENTER runs at nesting levels 0
+and 1 (the level byte modulo 32): its saved frame pointer and, at level 1, the new frame pointer
+are stack writes at ENTER's site, and BP and SP take ENTER's site as their producer. A higher level copies frame
 pointers from the caller's frame chain and stops the path with `ENTER nesting level <n> copies the
 caller's frame chain, which is not modeled`, where `<n>` is the level in effect (the byte modulo
 32). ENTER and LEAVE with an operand-size or address-size override stop the path. The decoder
@@ -555,11 +602,13 @@ order without `preservedMemoryScopes`; the summary's `path` names the path that 
 `declaredContinuationPaths` for a continuation summary), and an allocation entry's `path` does the
 same. A scope entry holds `segmentRegister`, `segment`, `baseRegister`, `base` (values and
 producers), `displacement`, `offset`, `interval`, `linearStart`, `linearEnd`, `bytes`, `evidence`,
-`cachedBytes`, `uncachedBytes` and a fixed `meaning` text. `interval` names the bytes as a read or
+`cachedBytes`, `uncachedBytes`, `volatileBytes` and a fixed `meaning` text. `interval` names the bytes as a read or
 write event's `interval` does: the segment and base terms and the start and end offsets from that
 base, or `linear`/`absolute` and linear addresses when both are concrete. On a symbolic base,
 `offset`, `linearStart` and `linearEnd` are `null`. The two counts describe the model's cache: an
 uncached byte is labelled uncached and says nothing about whether the original program wrote it.
+A byte inside a declared `volatileMemory` range counts only in `volatileBytes`, since a read of it
+ignores any kept value; the three counts add up to `bytes`.
 Memory outside the scopes, flags, unpreserved registers and the service's native effects stay
 unknown, so the call keeps `unknownEffects: true` and the path's `effectCompleteWithinModel` stays
 false. Without `preservesMemory`, a model invalidates the whole frame as before. The input needs
@@ -582,6 +631,9 @@ program, 100,000 instructions take seconds and several hundred MB.
 Caps, undecoded ranges and unsupported cases are explicit. Source size is capped
 at 256 MiB, config size at 1 MiB (16 MiB for the relocation-expanded config the
 Node wrapper pipes to Python) and each symbolic expression at 1,024 tuple nodes.
+A config file is UTF-8, with or without one leading byte order mark; a file starting with a UTF-16
+or UTF-32 byte order mark or with more than one UTF-8 mark, or bytes that are not UTF-8, fail with
+the cause named. The prepared config the reader pipes to the engine is UTF-8 without a mark.
 An instruction whose value would pass that cap stops its path with `expression term limit: a value's
 expression would hold more than 1024 terms; narrow the query`, and `stopSite` names the instruction.
 Events and writes that instruction made before building the value, such as a memory read, stay on
@@ -1026,21 +1078,28 @@ for questions such as "can anything between program start and this point write t
 | `starts` | 1..256 file offsets, each an established region entry |
 | `targets` | 1..256 file offsets in declared code, such as the starts of a variable's writers or the writes themselves |
 | `leaves` | optional, at most 256 `{ "routine", "reason" }` objects: routines the walk reaches but does not read, so they call nothing. `reason` is required free text, and the report repeats it. A start cannot be a leaf |
-| `controls` | optional, at most 256 distinct call sites the walk must decode and resolve; a missed or unresolved control fails the report |
+| `noReturn` | optional, at most 256 `{ "routine", "reason" }` or `{ "interrupt", "reason" }` objects ([ADR 0029](decisions/0029-declared-non-returning-routines-and-interrupts.md)): a resolved call to the `routine` and the interrupt instruction at the `interrupt` site do not continue at the next instruction. `reason` is required free text, and the report repeats it. An `interrupt` site must decode as an unconditional interrupt instruction |
+| `controls` | optional, at most 256 distinct call sites the walk must decode and resolve. An offset whose bytes do not decode as a call fails the report before the walk |
+| `instructionControls` | optional, at most 256 distinct sites the walk must decode as instruction starts, such as a store the walk is known to reach. A start is refused, since the walk decodes every start |
 | `indirectJumps` | the [declared tables](#evidenced-indirect-jump-tables) the walk follows |
+| `indirectCalls` | optional, the [declared targets of computed calls](#declared-computed-call-targets) the walk follows ([ADR 0033](decisions/0033-declared-computed-call-targets.md)) |
 | `instructionLimit` | instructions the walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000) |
 | `limit` | rows kept in each of `unresolved`, `interrupts`, `gaps` and `contested` (1..10000, default 1000) |
 
 The walk is the entry-path walk `incoming` and `uses` read, started from `starts` alone. It
 follows every resolved call into its callee and on at its return site, every resolved jump and
-branch, the rows of a declared indirect jump table, and every interrupt to the next instruction.
+branch, the rows of a declared indirect jump table, the declared targets of a computed call, and
+every interrupt to the next instruction. A call to a `noReturn` routine continues only into the
+routine, and a `noReturn` interrupt ends its branch. A declared computed call continues at its
+return site unless it is declared exhaustive and every target it declares is a `noReturn` routine.
 Far calls resolve as `target` describes: through an MZ relocation, or through an FBOV fixup and
 the trampoline it names to the overlay entry. A near transfer resolves through the mapping of the
 region that holds it. Instruction boundaries are checked as in the entry-path walk, so an
 instruction reached only through a rejected overlapping start is `contested`.
 
-Nothing else is followed. A computed call or jump, a far call with no relocation or fixup, a
-table jump with no declaration, a declared table that is not exhaustive, and a call, jump or
+Nothing else is followed. A computed call with no `indirectCalls` declaration, a computed jump,
+a far call with no relocation or fixup, a table jump with no declaration, a declared table or
+computed call that is not exhaustive, and a call, jump or
 return whose frame encoding the walk does not model (an operand-size override, or a far transfer
 in the flat model) are listed in `unresolved` with their `site`, `instruction` text, `kind`
 (`call`, `jump` or `return`), `reason` and the `routine` the walk read them in. The walk never
@@ -1059,17 +1118,45 @@ Each `targets` row gives `reached`. A reached target has:
 | `chain` | one route with the fewest calls: the start as `{ "routine" }`, then each call as `{ "callSite", "routine" }` |
 | `calls` | the number of calls on the chain |
 | `routine` | the routine the chain's last call entered, or the start |
-| `route` | what the chain rests on: `assumedReturns` (calls whose return site it continued at), `declaredTableJumps` (the table rows it took) and `interruptsContinued` |
+| `route` | what the chain rests on: `assumedReturns` (calls whose return site it continued at), `declaredTableJumps` (the table rows it took), `declaredCalls` (the declared computed calls it took, as `{ "site", "target" }`) and `interruptsContinued` |
 | `throughEveryRoute` | the routine starts, outermost first, that every route the walk read to the target passes. A routine that only runs and returns before the target is not on such a route |
 | `leaf` | whether the target is the start of a leaf |
 
 An unreached target gives `status`: `not reached`, `inside a reached instruction` (with
-`insideInstruction`) or `start of a contested instruction`. A leaf's body is not read, so a target
-inside it past its start is not reached through it.
+`insideInstruction`), `start of a contested instruction`, `start of an unresolved overlapping
+instruction` (the walk decoded it, but it overlaps another reached instruction and neither boundary
+is proven, so the walk keeps neither) or `reached but not decodable` (an edge leads there and its
+bytes do not decode). A leaf's body is not read, so a target inside it past its start is not reached
+through it.
 
 `reachedRoutines` lists the starts and the resolved targets of reached calls, leaves included.
 `counts` gives the routines, the decoded instructions and the full length of each list. `leaves`
 repeats each leaf with its reason, whether the walk reached it and the call sites that entered it.
+
+`noReturn` repeats each declaration with its reason. A routine row gives whether the walk reached
+it (`reached`) and decoded it (`read`; a routine that is also a leaf is not read), and its
+`callSites`: each resolved call to it as `{ "site", "following", "followingRead" }`, where
+`following` is the return site the call no longer continues at and `followingRead` says whether
+the walk read an instruction there by another route. `returnSites` lists the return instructions
+on the routine's own read paths, which follow its jumps, branches and table rows and step over
+its calls and interrupts at their return sites as the walk does. It also lists the start of each
+leaf those paths enter other than by a call, since the walk assumes a leaf returns; a leaf that
+is itself declared `noReturn` is not listed. A routine with a return site is
+`contradicted`: the walk shows a way for it to return, so the declaration does not hold on the
+walk's own assumptions. A routine that ends in an interrupt the walk continues past is usually
+contradicted by whatever follows the interrupt, so such an interrupt is declared too. An empty
+`returnSites` means only that the walk read no return; the declaration stays an assumption. An
+interrupt row gives its `vector`, whether the walk `reached` it, its `following` site and
+`followingRead`. A declared interrupt is not in `interrupts`, which lists the interrupts the walk
+continued past. A declared computed call is among a routine's `callSites` only when the declaration
+ends its branch, that is when it is exhaustive and every target it declares is `noReturn`.
+
+`indirectCalls` repeats each declaration as the [declared call targets](#declared-computed-call-targets)
+section describes, with whether the walk `reached` its site, the `routine` the walk read the site in,
+and `unreadTargets`: for a reached site, the declared targets that are not leaves and at which the
+walk established no instruction, because the target overlaps another reached instruction, is
+contested or does not decode. Each such target is also a gap or a contested instruction, unless
+the walk stopped at its instruction limit before reading it.
 
 `instructionLimitReached` holds when the walk stopped at `instructionLimit` with code left to read.
 The stop is also an `instruction limit` row in `gaps`, but the result `limit` can cut that row, and
@@ -1077,13 +1164,28 @@ The stop is also an `instruction limit` row in `gaps`, but the result `limit` ca
 before the stop, and which part that is depends on the walk order, so adding starts can lower the
 counts. A target that is not reached may lie past the stop.
 
-`negativeUsable` holds when `controls` were given, the walk did not stop at its instruction limit,
-nothing is unresolved, no gap was recorded and no instruction is contested. Even then a target
-that is not reached is unreached only on the walk's assumptions, which the report lists: each call
-and interrupt returns to the next instruction, each leaf calls nothing for its stated reason, and
-each declared table holds the routes its declaration gives. `throughEveryRoute` describes the
-routes the walk read; an unresolved transfer may add a route that passes none of those routines.
-None of this proves runtime reachability.
+A failed control of either kind fails the report, and the error names every failed control with what
+the walk found there: a call it reached whose target is unresolved (with the reason), the start of a
+reached leaf (never decoded), a site inside a reached instruction (with that instruction's start),
+the start of a contested or unresolved overlapping instruction, a reached site whose bytes do not
+decode, or a site the walk did not reach, noting when the walk stopped at its instruction limit and
+when the site follows a reached `noReturn` call or interrupt, whose declaration may be wrong. A
+declared computed call is refused as a call-site control before the walk, since its targets rest on
+the declaration; give it as an instruction control, or give a call inside a declared target. A
+passing call-site control is reported in `controls` with its `site` and resolved `target`, and an
+instruction control in `instructionControls` with its `site`, `instruction` text and the `routine`
+the walk read it in.
+
+`negativeUsable` holds when a control of either kind was given, the walk did not stop at its
+instruction limit, nothing is unresolved, no gap was recorded, no instruction is contested and no
+`noReturn` routine is contradicted. Even then a target that is not reached is unreached only on
+the walk's assumptions, which the report lists: each call and interrupt returns to the next
+instruction except where `noReturn` declares otherwise, each leaf calls nothing and each
+`noReturn` routine and interrupt never returns, for its stated reason, each declared table
+holds the routes its declaration gives, and each declared computed call calls only the targets
+its declaration gives. `throughEveryRoute` describes the routes the walk read; an
+unresolved transfer may add a route that passes none of those routines. None of this proves
+runtime reachability.
 
 ## Call targets a function inventory lacks
 
@@ -1097,7 +1199,9 @@ state how many called routines the inventory misses next to its coverage figure
 | `inventory` | the inventory TSV, relative to the config file's directory as `source` is (a Python caller of `run_report` passes an absolute path, and a relative one is refused). Its columns are `start` and `size`, then optionally `name`, `out_of_scope` and `ranges`, as the work protocol gives them; a row that does not parse fails the report with its line number |
 | `searchRegions`, `scanLimit`, `instructionLimit` | as for `incoming`: the regions scanned (all by default), the bytes the raw scan reads (1 to 1,048,576 or the declared code size, whichever is larger; default 65536) and the instructions the entry-path walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000). Raise `scanLimit` to the size of the declared code, or the search is partial, and raise `instructionLimit` to it for a walk that cannot stop at its limit. A region with no `entries` can declare an overlay no inventory row starts, so targets in it are placed rather than `outside declared code` |
 | `controls` | optional, at most 256 call sites that must be entry-path calls with a resolved target; a missed one fails the report |
-| `limit` | rows kept in each of `targets`, `unresolved` and `rowsOutsideDeclaredCode` (1..10000, default 1000) |
+| `noReturn` | optional, the declarations `reach` takes, in the same shape and with the same validation ([ADR 0031](decisions/0031-inventory-boundaries-against-the-entry-path-walk.md)): at most 256 `{ "routine", "reason" }` or `{ "interrupt", "reason" }` objects. The entry-path walk does not continue past a resolved call to a declared routine, and a declared interrupt is no `hardware or interrupt boundary` gap |
+| `indirectCalls` | optional, the declarations `reach` takes, in the same shape and with the same validation ([declared call targets](#declared-computed-call-targets)). Each declared target of a computed call the entry-path walk reaches is a call target of that site, and the walk reads on in it. A declared site is refused as a control |
+| `limit` | rows kept in each of `targets`, `unresolved`, `rowsOutsideDeclaredCode`, `rowStarts` and `rowsPastNoReturn` (1..10000, default 1000) |
 
 The calls are the ones `incoming` reads: every E8 and 9A call start in the searched regions, and
 every call the entry-path walk from the established region entries reaches. Each resolves as
@@ -1132,10 +1236,81 @@ that `scanLimit` stopped) and a walk that `instructionLimit` stopped when there 
 written by an analysis segment, which no target can match. `unresolved`, `coverage`,
 `partialSearch` and `gaps` are as in `incoming`.
 
-The counts are lower bounds on what the inventory lacks. Computed calls, far calls with no
+A declared target's row carries the provenance `{ "encoding": "declared indirect call", "evidence" }`,
+and `indirectCalls` repeats each declaration with whether the entry-path walk `reached` its site. A
+declaration that is not exhaustive also leaves its site in `unresolved`. A declared call counts a
+row in `rowsPastNoReturn` only when it is exhaustive and every target it declares is `noReturn`.
+
+The counts are lower bounds on what the inventory lacks. Computed calls with no exhaustive
+declaration, far calls with no
 relocation or fixup, calls the walk does not reach that start with a prefix, and routines reached
 only by jumps are not targets of this search. The report writes no inventory rows: a row needs the
 size an analyzer gives it, and the `address` column is the list to seed discovery with.
+
+### Row starts inside an instruction
+
+Each row start that a declared region places is compared with the instructions the entry-path
+walk established. A row whose start lies past the first byte of one of them is a row of
+`rowStarts`:
+
+| Field | Meaning |
+|---|---|
+| `start`, `size`, `name` | the row |
+| `site` | the row start's file offset |
+| `status` | `inside an instruction`, or `start of an overlapping instruction` when the walk also established an instruction at the row start, as it does for deliberately overlapping code that a direct edge proves. The reader decides which of the two the routine starts with |
+| `insideInstruction`, `insideInstructionAddress`, `insideInstructionSize`, `insideInstructionText` | the established instruction that holds the row start: its site, its place in the inventory's notation, its size and its text |
+| `rowStartInstructionSize`, `rowStartInstructionText` | for `start of an overlapping instruction`, the instruction established at the row start |
+| `routine`, `routineAddress`, `routineIsRow` | the routine the walk read the holding instruction in (the target of the last call on the route with the fewest calls, or the entry, as `reach` names it), its place, and whether a row starts there. A routine no row starts at is usually the routine's real entry, and is also a row of `targets` when a call resolves to it |
+
+`counts.rowStarts` counts the rows that start at an established instruction
+(`instructionStarts`), inside one (`insideAnInstruction`), at an overlapping instruction
+(`overlappingInstructionStarts`), at or inside an instruction the walk decoded but rejected as
+contested (`contested`), and in bytes where the walk established no instruction (`notRead`). The check
+decodes nothing the walk did not: a row start in bytes the walk never reached, such as one after
+data that a linear decode would run over, is counted as `notRead` and not placed, whatever a
+linear decode of those bytes would show. Raise `instructionLimit` to the size of the declared code
+so that a stop does not add to `notRead`. The summary states the rows inside an instruction and
+the rows not read and, when there are any, the rows at contested instructions.
+
+### Rows past a call that does not return
+
+`noReturn` declares routines and interrupt sites that never return, as in
+[`reach`](#reachability-from-starts-to-targets). A resolved call to a declared routine continues
+only into the routine, so the walk no longer decodes the bytes its compiler placed after the call
+(often an error message or a data word), and calls in those bytes are no longer entry-path calls.
+`rowsPastNoReturn` lists each row whose body holds a resolved call to a declared routine, of any
+evidence, or a declared interrupt site, and also holds the byte after it:
+
+| Field | Meaning |
+|---|---|
+| `start`, `size`, `name` | the row |
+| `kind`, `site`, `siteAddress`, `siteClassification` | `call` or `interrupt`, the site, its place, and `entry-path instruction`, `reached only through a rejected overlapping start` (contested), `raw byte candidate` or, for an interrupt the walk did not reach, `declared site` |
+| `routine` | for a call, the declared routine it resolves to |
+| `routines` | in place of `routine`, for a declared computed call: every target it declares, all of them `noReturn`. The call is listed once |
+| `following`, `followingAddress` | the byte after the call or interrupt |
+| `followingRead` | whether the walk established an instruction at `following` by another route, such as a branch around an error exit. Without one, nothing the walk read shows the bytes after the call to be code |
+| `bytesAfter` | the bytes of the row's body range from `following` to the range's end |
+
+`noReturn` repeats each declaration as `reach` does: a routine row gives whether the entry-path
+walk `reached` it, whether the return check `read` it, its `returnSites`, `contradicted` and its
+entry-path `callSites` (each with `following` and `followingRead`); an interrupt row gives its
+`vector`, `reached`, `following` and `followingRead`. The entry-path walk ends a branch at every
+interrupt, so the return check reads each declared routine with a walk of its own that starts at
+the declared routines and continues past every interrupt except a declared one, as `reach` does.
+A routine that ends in an interrupt that returns is then contradicted by what follows it, unless
+that interrupt is declared too. This walk spends its own `instructionLimit`, and
+`noReturnCheckLimitReached` says when it stopped; an empty `returnSites` then may miss a return
+past the stop. A routine the check did not read (its start does not decode, or a rejected overlap
+removed it) has an empty `returnSites` that shows nothing, and the summary counts it. A row with
+several declared calls or interrupts in its body is listed once for each. `counts.rowsPastNoReturn`
+counts the distinct rows with such a call or interrupt at an entry-path instruction, and
+`counts.rowsPastNoReturnUnreadAfter` those of them with a listed `following` the walk did not read.
+A row listed only for sites that are not entry-path instructions (a raw byte candidate, a contested
+instruction, or an interrupt the walk did not reach) is not shown to run past anything: it is
+counted apart in `counts.rowsPastNoReturnUnverified`, and the summary states it separately. `assumptions` lists what the walks rest on: each reached call returns to
+its next instruction except a call to a declared routine, each interrupt the return check reads
+returns to its next instruction except at a declared site, and each declaration holds for its
+reason.
 
 ## Evidenced indirect jump tables
 
@@ -1208,6 +1383,35 @@ A returned conditional path never makes `completeWithinModel` or `allPathsRead`
 true. Split capped queries by explicitly partial evidenced table fields rather
 than raising limits; such a split cannot prove the complete dispatch.
 A true exhaustive flag is not independently validated behavior or native reachability.
+
+## Declared computed call targets
+
+`reach` and `inventory-check` accept `indirectCalls` for segmented16 computed calls
+([ADR 0033](decisions/0033-declared-computed-call-targets.md)); other commands refuse the field.
+Each of at most 256 declarations names:
+
+| Field | Meaning |
+|---|---|
+| `site` | the call. It must decode as an unprefixed near call through a word register or memory operand, or a far call through memory |
+| `evidence` | required free text connecting the call's operand to the targets: the producers of the index or pointer and every gate on them |
+| `exhaustive` | required boolean. `true` asserts that the call can reach no other target; the engine does not infer it |
+| `table` | `{ start, count, stride, fieldOffset, width, evidence }`, as for [indirect jump tables](#evidenced-indirect-jump-tables): `count` 1..256, `fieldOffset` defaults to 0, and `evidence` justifies the layout and count. A near call's rows are little-endian words placed through the call site's region mapping (`width` 2, the default). A far call's rows are `offset, segment` word pairs (`width` 4): the segment word needs a declared relocation, and the pointer is admitted as a [traced far pointer](#indirect-far-transfers-through-a-traced-pointer) is, through one region's exact mapping or a source FBOV trampoline |
+| `targets` | in place of `table`: 1..256 distinct file offsets in declared code, for targets that no table in the build holds, such as a far pointer stored from instruction immediates on every path into the call. A near call's target must be a byte that some IP in the call site's segment places, since a near call keeps CS |
+
+A declaration has exactly one of `table` and `targets`. Every target must lie in declared code. The
+walk enters each declared target as a call and continues at the call's return site, unless the
+declaration is exhaustive and every target is a `noReturn` routine. A declaration that is not
+exhaustive leaves the site in `unresolved` with the reason `indirect call targets are not declared
+exhaustive`, so `negativeUsable` stays false, and an exhaustive one leaves nothing unresolved.
+
+Table rows are read from the build's bytes, and a `targets` list rests on its evidence alone; the
+report repeats each declaration with its `instruction` text, a table's `rows` (`index`,
+`operandSite`, `rawOffset`, for a far call `rawSegment`, `resolvedSegment` and, for a pointer at an FBOV
+trampoline, the `trampoline` whose overlay entry is the `target`, and `target`) and its
+distinct `targets` in row order. Neither form proves that the call runs, which target a given path
+calls, or an instruction boundary: like table jump rows, declared call edges never prove an
+overlapping start. `trace` and the other path commands do not take the declarations, and their
+paths still stop at a computed call they cannot resolve.
 
 ## Relocated pointer-pair inventory
 
@@ -1383,7 +1587,12 @@ crosses a following jump. Known memory sites can be supplied as `controls`;
 a raw or contested candidate fails that control. `scanLimit`, `limit`, coverage
 and partial-search flags bound the inventory. Implicit/computed uses, segment
 alias proofs and runtime reachability are excluded; counts never prove their
-absence or promote a candidate to original behavior.
+absence or promote a candidate to original behavior. It matches the literal at
+the operand's start only, so a word store one byte below a field is not a
+candidate for the field's offset. To find the accesses that overlap a
+multi-byte field, run `uses` with the field's `offset` and `width`: it traces the
+accesses whose footprint intersects the field and lists the unreached ones in
+`rawCandidates` with their operand footprints.
 
 
 Argument and effect reports retain LEA `address-formation` events with the
@@ -1468,12 +1677,13 @@ Run `scientific-method bodies <config.json>` to see where the bytes of an analyz
 lie in an `mz` source, by the file's own MZ and FBOV tables. It runs in the reader and needs no
 engine. Use it on a function inventory whose rows fail a check such as the Code ranges one, to
 tell an entry outside code from a body fragment that runs into a fixup table, padding or another
-overlay. It decodes no instruction.
+overlay. It decodes no instruction. Run without `functions`, it gives the layout and the FBOV
+descriptor table alone, from which a config can take its code regions.
 
 | Field | Meaning |
 |---|---|
 | `formatControls` | Required. The counts the build is known to have (see [format-table controls](#format-table-controls)). The classification rests on the tables, so a count that differs fails the report before anything is classified. |
-| `functions` | 1..10000 objects `{ name?, entry, body, candidate? }`. `entry` is a file offset in the file. `body` is 1..4096 half-open ranges `{ start, end }` of file offsets, in any order, none overlapping another; ranges that touch are kept as given. |
+| `functions` | Optional, 0..10000 objects `{ name?, entry, body, candidate? }`. `entry` is a file offset in the file. `body` is 1..4096 half-open ranges `{ start, end }` of file offsets, in any order, none overlapping another; ranges that touch are kept as given. |
 | `functions[].candidate` | Optional `{ ranges, evidence }`: a body found another way, such as the `intervals` of a `bounds` report, and where it comes from. Same range rules as `body`. |
 
 A range outside the file, an empty or reversed range, an unknown field and overlapping ranges in one
@@ -1485,7 +1695,7 @@ body or candidate fail the report.
 | Kind | Bytes |
 |---|---|
 | `mz-header` | the MZ header and its relocation table |
-| `resident` | the MZ load image, less the FBOV descriptor table and the overlay stubs |
+| `resident` | the MZ load image, less the FBOV descriptor table and the overlay stubs. In a file with an FBOV envelope, only the bytes of a resident descriptor's span, with `descriptor` naming it (see below) |
 | `fbov-descriptors` | the FBOV descriptor table in the load image, 8 bytes per descriptor |
 | `overlay-stub` | one overlay's stub in the load image: its 32-byte header and its trampolines |
 | `fbov-header` | the 16-byte FBOV envelope header |
@@ -1501,6 +1711,40 @@ file without an envelope. A run is split there, so a body that runs past the las
 bytes appended after the envelope shows apart from one that runs into a gap inside the payload.
 Stubs of two overlays that overlap, or a stub that overlaps the descriptor table, fail the MZ/FBOV
 loader, so they fail this report and every other command that reads an `mz` source.
+
+Each 8-byte FBOV descriptor holds four words: the segment, `maxOffset`, `flags` and `minOffset`,
+the names a public description of the table gives (`seg`, `maxoff`, `flags`, `minoff`). The
+reader reads the words as a span of the load image, from `segment * 16 + minOffset` up to
+`segment * 16 + maxOffset`, and gives the flags no meaning beyond bit 1, which marks an overlay.
+`descriptors` lists every descriptor in table order:
+
+| Field | Meaning |
+|---|---|
+| `index`, `segment`, `maxOffset`, `flags`, `minOffset` | the descriptor's position and its four words as stored |
+| `overlay` | true when bit 1 of `flags` is set |
+| `extent` | `bytes` when `minOffset` is below `maxOffset` and the span lies in the load image, `empty` when the two words are equal, `inverted` when `maxOffset` is below `minOffset` (no bytes either), and `outside-load-image` when the span, or the place an empty span names, ends past the load image |
+| `start`, `end` | the span as file offsets; `end` is below `start` for an `inverted` descriptor |
+| `loadedSegment`, `ip` | `start` as a loaded address: the load segment plus `segment`, and `minOffset`. `loadedSegment` is null past FFFF |
+
+In a file with an envelope, the layout reads the load image through the resident descriptors (those
+without the overlay bit) whose span holds bytes. Each span's bytes, less the envelope's tables,
+are `resident` with that descriptor, and load-image bytes no span holds are runs between declared
+regions, `zero-padding` or `undeclared` as above, the way bytes in the FBOV payload that no overlay
+holds are. A body that runs from one segment into the next is therefore outside its entry's region
+there. A resident span that runs past the load image, such as a segment whose end is memory the
+program gets at load time and the file does not store, keeps the part in the load image; its row
+still reports `outside-load-image`. Two resident spans that overlap in the load image fail the
+report; the loader itself does not refuse them, so every other command still reads the file.
+Overlay descriptors' spans are listed and leave the layout alone.
+
+A resident descriptor's `start`, `end`, `loadedSegment` and `ip` are the `start`, `end`, `segment`
+and `ip` of a code region, which the reader checks against the file when a query declares it. The caller
+decides which descriptors hold code: the reader does not read it from `flags`, so a config
+picks the descriptors it treats as code, adds `name`, `entries` and `evidence`, and declares overlay
+code regions from the `overlay-code` layout rows with an analysis segment of its choosing. An
+overlay row (`overlay` true) reads its words the same way, but what those words mean for an
+overlay's stub is not established, so its span is never a code region: filter rows by `overlay` as
+well as by `extent`.
 
 Each function's `entry` gives its `offset`, the `kind` and `descriptor` of the region holding it,
 `inBody` (whether a body range holds it) and `trampolines`, the stub trampolines whose target it
@@ -1542,6 +1786,21 @@ and the slot's index in it, `dll`, `storedEntry` (the address table entry as sto
 `lookupEntry`, `namesFrom` and `import` (`{ name, hint }` or `{ ordinal }`). `descriptors` gives
 each descriptor's tables, time stamp and `namesFrom`.
 
+The directory ends at the first descriptor whose Name or FirstThunk is zero, whatever its other
+fields hold. The NT loader, Wine and ReactOS end it there; what the Windows 9x loader does is not
+confirmed, and `exclusions` says so. Some linkers and packers leave a time stamp or a lookup table
+RVA in that descriptor. `directoryEnd` gives it as `{ descriptor, rva, allZero, nonzeroFields }`,
+where `nonzeroFields` holds each of `originalFirstThunk`, `timeDateStamp`, `forwarderChain`, `name`
+and `firstThunk` that is not zero; it is null when the file has no import directory. A descriptor
+past a section's raw data, up to its VirtualSize, reads as the zeros the loader fills there. When
+the end is all zero, `pastEnd` is null. Otherwise the report reads on to the first all-zero
+descriptor, and `pastEnd.descriptors` lists each descriptor on the way that is not all zero, as
+`{ descriptor, rva, dll, nonzeroFields }`, where `dll` is the ASCII name at its Name RVA, or null
+when Name is zero or holds no ASCII name. A loader that read past the end would use these
+descriptors, and the report lists none of their slots. `pastEnd.stoppedAt` says where that read stopped: at an all-zero
+descriptor, at one neither loaded from the file nor zero-filled, or at the 4096-descriptor limit. In
+the last two cases descriptors may lie beyond it unread.
+
 A descriptor whose time stamp is not zero was bound, so its import address table as stored holds
 addresses in the DLLs, and such an address can have its top bit set, as every address in
 `KERNEL32.DLL` did under Windows 95. A descriptor with no lookup table, which some linkers of the
@@ -1578,21 +1837,24 @@ form, so that every restoration reading the same packed file gets the same bytes
 `unpacked.xxh3`. It runs in the reader without the engine, and it never runs the decompressor in
 the file: it reads the decompressor's header words and its relocation table, and decodes the
 compressed stream itself. For EXEPACK it also reads the message that ends the decompressor, to find
-where the relocation table starts. The config is `source`, its `xxh3`, `sourceKind: "mz"` and `output`, the
+where the relocation table starts, and for PKLITE it matches the stub's code against known byte
+sequences (see below). The config is `source`, its `xxh3`, `sourceKind: "mz"` and `output`, the
 path to write, relative to the config file. An existing output that already holds the same bytes
 is left alone (`outputWritten: false`); one that holds other bytes is refused.
 
 The reader unpacks LZEXE 0.91 and 0.90, recognized by `LZ91` or `LZ09` at offset 0x1C, and EXEPACK,
 recognized by `RB` at the end of an EXEPACK header that starts at CS:0 and ends at CS:IP, 16, 18
-or 20 bytes long. A file with none of these is refused with an error that says so; that does not
-show it is not packed. The signature names the format, so builds of LZEXE that write the same
-format are not told apart, and neither are the versions of EXEPACK and LINK `/EXEPACK`.
+or 20 bytes long, and PKLITE 1.00 to 2.01, Professional builds included, recognized by CS:IP
+FFF0:0100 and the intro of one of those stubs at the entry point. A file with none of these is refused with an error that says so;
+that does not show it is not packed. The signature names the format, so builds of LZEXE that write
+the same format are not told apart, and neither are the versions of EXEPACK and LINK `/EXEPACK`.
 
-The report gives `packer` (`LZEXE 0.91`, `LZEXE 0.90` or `EXEPACK`), `unpacked` (`size`, `xxh3`,
+The report gives `packer` (`LZEXE 0.91`, `LZEXE 0.90`, `EXEPACK` or `PKLITE`), `unpacked` (`size`, `xxh3`,
 `format: "MZ"` and `tool`, the reader's package name and version), `layout`, the rebuilt `header`,
 `loadModuleSize`, `sourceIdentity`, and under `packed` the file offsets it read: the
-decompressor's header (`decompressor`), the compressed `stream`, the `slack` between the stream's
-end and the decompressor's CS:0, and the `relocationTable`. For LZEXE the stream runs from its
+decompressor's header (`decompressor`), the compressed `stream`, the `slack`, which counts the bytes
+of the image the decoder reads nothing from (for LZEXE and EXEPACK those between the stream's end
+and the decompressor's CS:0, for PKLITE the padding after its footer), and the `relocationTable`. For LZEXE the stream runs from its
 first flag word to the byte after its end mark. `setByLayout` names the header fields the packed
 file did not supply.
 
@@ -1609,6 +1871,50 @@ load module is the longer; `packed.leftInPlace` counts them. No header field giv
 the EXEPACK block ends. Its 16 groups are a count word and that many offset words for segments
 0000, 1000, ... F000. A stub whose message is localized, or that holds it twice, is refused.
 
+PKLITE keeps its facts in the stub's code, and the version word at 0x1C does not reliably say which
+stub a file carries, so the reader matches each part of the stub against byte sequences listed from
+the released versions and reads the facts from operand positions inside them
+([ADR 0027](decisions/0027-pklite-stubs-matched-by-known-sequences.md)). The parts, in order:
+
+- the intro at the entry point, in its 1.00, 1.12, 1.14 or 1.50 form (the last saves AX first);
+- after any intro but the 1.00 one, an optional descrambler, in one of the nine forms of 1.14,
+  1.20, 1.50 and 2.01, which combines each word of the copier and decompressor with the scrambled
+  word above it and the last word with the key the intro loads into DX, by XOR or by ADD as its
+  opcode says; the reader descrambles a copy before matching on;
+- the copier, within 75 bytes, in its common form (ending in a far return, `CB`, or in scrambled
+  1.50 stubs `CA`, a far return that also releases stack bytes), its 2.01 form or its 1.20
+  small-model form, which gives the decompressor's address;
+- the decompressor, which gives the paragraph of the compressed data as a byte or a word operand,
+  or in its two 1.20 small-model forms an address two bytes before the compressed data;
+- between the decompressor and the compressed data, the literal sequence, which tells standard
+  from extra compression, and in its last 60 bytes the length table, whose preceding byte tells
+  the small model from the large. A 1.20 small-model decompressor has no length table. One with
+  extra compression and, in its last 50 bytes, the sequence `33 C0 8B D8 8B C8 8B D0 8B E8 8B F0 8B`
+  in its place is a 1.20 large-model one.
+
+A decompressor of 1.20 uses the 1.20 code tables. If it holds `AC 34 key 8A` after its first 200
+bytes, the low byte of every offset is XORed with that key, and if not the low bytes are read as
+they are. A stub that writes `PK` or `pk` at offset 0x5C of the program's PSP, which the program
+may check to detect that it was unpacked, is reported. A part that matches nothing listed is
+refused, naming the part and its offset; the beta versions, stubs patched by other tools, the
+customized literal sequence of a 1.23 build and PKLITE COM files are not decoded. The stream starts
+at the compressed data. Flag bits come from 16-bit words, low bit first, read as soon as the
+previous word's 16th bit is taken; 0 is a literal and 1 a copy, given by a length code, a byte for
+the long lengths, an offset code for the high bits of the distance (except in the two-byte copy) and
+a byte for the low bits. The 1.20 tables have two two-byte copies, from distances 1 to 255 and 256
+to 511, and a length code that writes a literal 0. The long-length byte 0xFF is the end mark, and
+in the large model 0xFE is the segment mark, which the decoder skips, and 0xFD an uncompressed
+area, which is refused. With extra compression each literal byte is XORed with the number of flag
+bits left in the current word. The relocation table follows the end mark: with standard
+compression, groups of a count byte, a segment word and that many offset words, ended by a count of
+0; with extra compression, groups of a count word and that many offset words for segments 0000,
+0FFF, 1FFE and on, ended by 0xFFFF, with each offset high byte first behind an ADD descrambler.
+Then comes an 8-byte footer of SS, SP, CS and IP, and at most 15 bytes of padding, which
+`packed.slack` counts. `packed.pklite` gives the `versionWord` as found, the `intro`, the
+`descrambler`'s method (`xor`, `add` or null), `extra`, `large`, the `codeTables` (`1.00` or
+`1.20`), the `offsetKey` (null where there is none), the `pspSignature` and the `footer` offset;
+`packed.decompressor` is the decompressor the copier moves.
+
 Every read is bounded, and each failure names the file offset:
 
 - The packed file holds at most 1 MiB, and no data may follow its MZ image.
@@ -1622,6 +1928,8 @@ Every read is bounded, and each failure names the file offset:
   A 17th byte of 0xFF padding is read as an opcode and refused, as the stub refuses it.
   `skip_len` must be at least 1 and at most one more than both CS and `dest_len`, and the EXEPACK
   block must lie inside the load module.
+- A PKLITE stream must reach its end mark inside the image, a copy may not have distance 0, and
+  the relocation table must end at least 8 bytes before the end of the image, leaving the footer.
 - A packed file with MZ relocations of its own is refused.
 - The relocation table must end inside the load module (for EXEPACK, exactly at the end of the
   EXEPACK block), and every relocation must name a whole word inside the unpacked load module. A
@@ -1640,7 +1948,7 @@ multiple of 16 bytes, then the load module. Nothing else is written.
 | header paragraphs | the header size above, divided by 16 |
 | minimum allocation | the packed file's load module in paragraphs plus its minimum allocation, less the unpacked load module in paragraphs, at least 0 |
 | maximum allocation | 0xFFFF when the packed file's is 0xFFFF; otherwise the same sum with the packed file's maximum allocation, at least the minimum |
-| SS, SP, IP, CS | LZEXE: the words at CS:6, CS:4, CS:0 and CS:2 of the decompressor; EXEPACK: `real_ss`, `real_sp`, `real_ip` and `real_cs` from its header |
+| SS, SP, IP, CS | LZEXE: the words at CS:6, CS:4, CS:0 and CS:2 of the decompressor; EXEPACK: `real_ss`, `real_sp`, `real_ip` and `real_cs` from its header; PKLITE: the footer |
 | checksum | 0 |
 | relocation table offset | 0x1C |
 | overlay number | 0 |
@@ -1958,15 +2266,19 @@ occurrence where an assumption cannot apply (see below).
 ### Arithmetic and assumptions
 
 Each value's expression becomes a linear form over its unknown subterms, reading additions,
-subtractions, offsets, multiplications and shifts by constants, and zero and sign extensions. A
-value counts as an integer only when the ranges of its unknowns show it cannot wrap its width;
+subtractions, offsets, multiplications and shifts by constants, zero and sign extensions, and a
+join that fills the value's width, which a partial register write or a multi-byte load leaves and
+which is the sum of its parts each shifted to its offset, so BX after `mov bl,[x]; xor bh,bh` equals
+BL. A value counts as an integer only when the ranges of its unknowns show it cannot wrap its width;
 otherwise the whole value is one unknown of its width. Such an unknown ranges over its whole width
 unless its expression bounds it: `and` is at most the smaller operand bound, so a constant mask
 bounds it by the mask; `or` and `xor` stay below the next power of two above both operands, and
 `or` is at least its larger operand; a shift right or a division by a constant divides the
 operand's bounds, an arithmetic shift only when its operand's sign bit is clear; a remainder by a
-constant is below the constant; a zero extension keeps the narrower value's bounds; and an extracted
-field keeps the bounds of the bits it takes when the operand cannot reach the bits above them. These
+constant is below the constant; a zero extension keeps the narrower value's bounds; an extracted
+field keeps the bounds of the bits it takes when the operand cannot reach the bits above them; and a
+join, which a partial register write or a multi-byte load leaves, is the sum of each part's bounds
+shifted to the part's offset, so `mov bl,[x]; xor bh,bh` leaves BX at most 0FFh as `movzx` does. These
 are unsigned bounds. A signed reading uses them only when they keep the sign bit the same for every
 value, clear or set. A relation holds when every value the unknowns allow satisfies it, is violated
 when none does, and is undecided otherwise. The branches a path took are not solved, so a relation
@@ -1974,7 +2286,8 @@ that fails for part of a range is undecided.
 
 `assume`, accepted on `containment` and `relation` controls, lists at most 16 ranges, each `{ "value": reference, "min", "max", "evidence" }`, with an
 unsigned range inside the value's width. The value should be one unknown, such as an entry register
-or a loaded word. Each occurrence resolves it again: a known value inside the range needs no
+or a loaded word. An assumed join, such as a loaded word, stays one unknown of its width in every
+form, so the assumption applies to it whole. Each occurrence resolves it again: a known value inside the range needs no
 assumption, while a known value outside it, a value computed from unknowns or a reference the path
 does not supply leaves that occurrence undecided. When the value's own expression also bounds it
 (a masked word, say), the narrower of the two ranges applies, and an assumed range the expression

@@ -1,9 +1,9 @@
 # Upstream gaps found while moving the engine to pypcode
 
 Gaps in pypcode, Ghidra's x86 SLEIGH specification and the other libraries the engine uses, found
-during ADR 0003. Each entry has the engine's workaround and what an upstream change would let it
-drop. Every observation used pypcode 4.0.0 (Ghidra 12.1 SLEIGH files), Capstone 5.0.7 and
-synthetic bytes only.
+during ADR 0003 and the dependency updates since. Each entry has the engine's workaround and what an
+upstream change would let it drop. Every entry holds for the versions the engine pins, pypcode 4.0.1
+and Capstone 5.0.9, and was observed with synthetic bytes only.
 
 ## pypcode
 
@@ -29,7 +29,11 @@ far transfer into the code loaded.
 - Engine workaround: recognise that exact three-op sequence and drop it, because the declared region
   supplies CS (`pcode.cs_idiom`).
 - Upstream: read CS as a register in real mode, as the other segment overrides do, instead of
-  computing it.
+  computing it. [ghidra#9703](https://github.com/NationalSecurityAgency/ghidra/pull/9703) makes
+  that change and is still open; pypcode 4.0.1 emits the same sequence as 4.0.0.
+- Once a pinned pypcode carries it: `tests/test_upstream_gaps.py` fails, because the sequence is
+  gone. Drop `cs_idiom`, keep CS from the declared region, and check that the default CS in the
+  language's pspec `tracked_set` does not reach reports as the value of CS.
 
 ### SCAS loads ES:[DI] once per flag
 
@@ -51,7 +55,7 @@ after the write. This happens in both `x86:LE:16:Real Mode` and `x86:LE:32:defau
 |---|---|
 | `add [bx],ax` (`01 07`) | `LOAD LOAD LOAD STORE LOAD LOAD LOAD` |
 | `inc byte [bx]` (`fe 07`) | `LOAD LOAD STORE LOAD LOAD LOAD` |
-| `rcl word [bx],1` (`d1 17`) | `LOAD LOAD STORE LOAD` |
+| `rcl word [bx],1` (`d1 17`) | `LOAD STORE LOAD` |
 | `shld [bx],ax,3` (`0f a4 07 03`) | `LOAD LOAD STORE LOAD LOAD LOAD LOAD` |
 
 `adc`, `neg`, `shl` and `sar` show the same shape. `not`, `xchg` and `cmpxchg` load once.
@@ -65,7 +69,32 @@ sees reads the CPU never performs.
 - Upstream: load the operand once into a temporary, and compute the flags from the result
   temporary, not from memory after the store.
 
+### SHR by a count operand writes OF from the wrong arm
+
+The `shrflags` and `shrdflags` macros in pypcode 4.0.1 write OF as
+`conditionalAssign(OF, count==1, 0, ...)`, with the two arms the wrong way round. `shr ax,cl` with
+CL = 1 and `shr ax,1` encoded as `c1 e8 01` set OF to 0, where the CPU sets it to the operand's top
+bit, and a larger count sets OF where the CPU leaves it undefined. The D0 and D1 encodings of SHR
+by one write OF correctly. pypcode 4.0.0 had the opposite gap: the D0 and D1 forms wrote OF as 0.
+
+- Engine workaround: drop OF after SHR in any encoding other than D0 and D1, and after every shift
+  or rotate by a count other than 1 (`pcode_backend.undefined_overflow`). A branch that reads OF
+  there is undecided.
+- Upstream: `conditionalAssign(OF, count==1, op1 s< 0, OF)` for SHR, and the matching fix for
+  SHRD.
+
 ## Capstone (not pypcode, recorded for completeness)
+
+### The 5.0.8 and 5.0.9 bindings report version 5.0.7
+
+`capstone.__version__` is built from `CS_VERSION_EXTRA`, which the 5.0.8 and 5.0.9 Python bindings
+leave at 7, and `cs_version()` gives only the major and minor version. A check of
+`capstone.__version__` cannot tell 5.0.9 from 5.0.7.
+
+- Engine workaround: read the installed distribution's version with
+  `importlib.metadata.version("capstone")` for the version check and the reports' `decoder`
+  (`image.CAPSTONE_VERSION`).
+- Upstream: set `CS_VERSION_EXTRA` with each release.
 
 ### RCL r/m, 1 on a memory operand reports its count with size 0
 

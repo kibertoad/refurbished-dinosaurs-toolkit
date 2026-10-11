@@ -53,14 +53,14 @@ public abstract class OriginalContentSource : IDisposable
     /// <summary>The cue sheet of a <see cref="ContentSourceKinds.CueBin"/> source, otherwise <see langword="null"/>.</summary>
     public virtual CueBinSheet? Cue => null;
     /// <summary>
-    /// The full path of the <c>.cue</c> file a <see cref="ContentSourceKinds.CueBin"/> source was
+    /// The full path of the cue sheet file a <see cref="ContentSourceKinds.CueBin"/> source was
     /// opened from, as <see cref="OpenCueBin"/> chose it, otherwise <see langword="null"/>. The source
     /// reads the file once, when it opens. Reading the path again can see a file replaced since then,
     /// so hash <see cref="CueSheetBytes"/> to record the sheet <see cref="Cue"/> was parsed from.
     /// </summary>
     public virtual string? CuePath => null;
     /// <summary>
-    /// The bytes of the <c>.cue</c> file that <see cref="OpenCueBin"/> read and parsed into
+    /// The bytes of the cue sheet file that <see cref="OpenCueBin"/> read and parsed into
     /// <see cref="Cue"/>, for a <see cref="ContentSourceKinds.CueBin"/> source, otherwise
     /// <see langword="null"/>. Hash them with <c>FileFingerprint.Xxh3(source.CueSheetBytes.Value.Span)</c>
     /// to record the sheet as a role file.
@@ -129,7 +129,9 @@ public abstract class OriginalContentSource : IDisposable
     /// default limits when it is a <c>.hdr</c> file, as an InstallShield 3 archive (see
     /// <see cref="OpenInstallShieldArchive(string, InstallShieldArchiveLimits?)"/>) with the default
     /// limits when any other file starts with that format's signature, and as an ISO 9660 image (see
-    /// <see cref="OpenIso9660(string)"/>) otherwise.
+    /// <see cref="OpenIso9660(string)"/>) otherwise. A cue sheet with another extension is not
+    /// recognized here: open it with <see cref="OpenCueBin"/> or with the
+    /// <see cref="ContentSourceKinds.CueBin"/> kind.
     /// </summary>
     /// <exception cref="NotSupportedException">
     /// The cabinet set's InstallShield major version is not 0, 5 or 6, or the InstallShield 3 archive
@@ -239,9 +241,14 @@ public abstract class OriginalContentSource : IDisposable
 
     /// <summary>
     /// Opens the ISO 9660 volume on the data track of a cue/bin raw disc image. <paramref name="path"/>
-    /// is the <c>.cue</c> file, the <c>.bin</c> file, or the directory holding them; the other file is
-    /// the one the sheet's <c>FILE</c> names, else the one with the same name, else the only one there.
-    /// A sheet found for a given <c>.bin</c> must not name a different BIN that is present.
+    /// is the <c>.bin</c> file, the directory holding a <c>.cue</c> and the image, or any other file,
+    /// which is read as the cue sheet whatever its extension. The image is the file the sheet's first
+    /// <c>FILE</c> names, whatever its extension, else the <c>.bin</c> with the sheet's name, else the
+    /// only <c>.bin</c> there; for a <c>.bin</c> input the sheet is the <c>.cue</c> with the same name,
+    /// else the only one. A sheet found for a given <c>.bin</c> must not name a different BIN that is
+    /// present. The sheet may name later <c>FILE</c> entries holding only audio tracks, such as one
+    /// compressed audio file per track; they are not opened, need not exist, and the source reads only
+    /// the image.
     /// The returned source gives the chosen files as <see cref="CuePath"/> and <see cref="BinPath"/>,
     /// and the bytes of the sheet it parsed as <see cref="CueSheetBytes"/>. It records the BIN's length
     /// and last-write time here. Every later read of the BIN through the source
@@ -250,7 +257,8 @@ public abstract class OriginalContentSource : IDisposable
     /// <see cref="IOException"/> when either has changed. A rewrite that keeps both the length and the
     /// last-write time is not detected.
     /// The sheet is checked as <see cref="CueBinSheet.Parse"/> and <see cref="CueBinSheet.ValidateBin"/>
-    /// describe, the data track ends where the second track's pregap or audio begins, and the volume is
+    /// describe, the data track ends where the image's second track's pregap or audio begins, or at
+    /// the end of the image when the image holds no second track, and the volume is
     /// checked as <see cref="OpenIso9660(string)"/> describes. Every raw sector read is checked against
     /// the type the sheet declares for the data track: for <c>MODE1/2352</c> the sync pattern and mode
     /// byte 1, and for <c>MODE2/2352</c> the sync pattern, mode byte 2, and a CD-XA subheader whose two
@@ -260,13 +268,19 @@ public abstract class OriginalContentSource : IDisposable
     /// as interleaved audio or video, throws <see cref="InvalidDataException"/> naming the sector when
     /// it is read: while opening for the descriptors and directories, and from the stream
     /// <see cref="OpenRead"/> or <see cref="OpenVolume"/> returns for a file's or the volume's sectors.
+    /// The one exception is a Form 2 sector whose 2324 data bytes are all zero, such as padding a
+    /// CD-XA master leaves inside the volume space: <see cref="OpenVolume"/>, and the reads of the
+    /// descriptors and directories while opening, read it as 2048 zero bytes, as a MODE1 image of the
+    /// disc holds there, while <see cref="OpenRead"/> still throws when a file covers it. Such a sector
+    /// inside a directory's extent holds no records, and one where a volume descriptor is expected
+    /// fails as an invalid descriptor.
     /// The EDC, the ECC and the address in each sector's header are not checked.
     /// </summary>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="IOException">The BIN changed while the source was being opened.</exception>
     /// <exception cref="InvalidDataException">
-    /// The sheet, image or volume is not valid, the input is not a directory or a <c>.cue</c> or <c>.bin</c>
-    /// file, a sheet or BIN cannot be found next to the other, or the files are ambiguous.
+    /// The sheet, image or volume is not valid, a file given as the sheet is not a cue sheet, a sheet
+    /// or BIN cannot be found next to the other, or the files are ambiguous.
     /// </exception>
     public static OriginalContentSource OpenCueBin(string path)
     {
@@ -281,7 +295,9 @@ public abstract class OriginalContentSource : IDisposable
             throw new InvalidDataException("Cue data track does not hold an ISO 9660 volume inside the BIN image.");
         return new Iso9660ContentSource(
             () => new RawDataTrackUserDataStream(bin.OpenBuffered(), dataSectors, sheet.DataTrackMode),
-            ContentSourceKinds.CueBin, new CueBinFiles(sheet, cuePath, cueBytes, bin));
+            ContentSourceKinds.CueBin, new CueBinFiles(sheet, cuePath, cueBytes, bin),
+            openVolume: () => new RawDataTrackUserDataStream(
+                bin.OpenBuffered(), dataSectors, sheet.DataTrackMode, emptyForm2AsZeros: true));
     }
 
     /// <summary>
@@ -516,6 +532,7 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     private const uint MaximumDirectoryBytes = 64 * 1024 * 1024;
 
     private readonly Func<Stream> openImage;
+    private readonly Func<Stream> openVolume;
     private readonly CueBinFiles? cueBin;
     private readonly long volumeLength;
     private readonly Dictionary<string, IsoEntry> files = new(StringComparer.OrdinalIgnoreCase);
@@ -523,15 +540,22 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
 
     // openImage returns a new seekable stream of 2048-byte sectors each time. A cue/bin source passes
     // the files it chose; its audio tracks are read from the BIN. When listing is given, every file
-    // is added to it in directory order, depth first, as Iso9660 lists them.
+    // is added to it in directory order, depth first, as Iso9660 lists them. openVolume, when given,
+    // opens the same sectors for OpenVolume and for the descriptors and directories read here, for a
+    // cue/bin source whose volume reads accept sectors that file reads reject.
     public Iso9660ContentSource(
-        Func<Stream> openImage, string kind, CueBinFiles? cueBin, List<IsoFile>? listing = null)
+        Func<Stream> openImage, string kind, CueBinFiles? cueBin, List<IsoFile>? listing = null,
+        Func<Stream>? openVolume = null)
     {
         this.openImage = openImage;
+        this.openVolume = openVolume ?? openImage;
         Kind = kind;
         this.cueBin = cueBin;
         this.listing = listing;
-        using var stream = openImage();
+        // The descriptors and directories are read as OpenVolume reads them, so a sector the volume
+        // reads as zeros reads as zeros here too. A zero descriptor sector fails the descriptor check,
+        // and a zero directory sector holds no records, so nothing is listed that the disc lacks.
+        using var stream = this.openVolume();
         var imageLength = stream.Length;
         if (imageLength < 18L * SectorSize)
             throw new InvalidDataException("Source is too small to be an ISO9660 image.");
@@ -583,7 +607,7 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
 
     public override long? VolumeBlocks => volumeLength / SectorSize;
 
-    public override Stream OpenVolume() => new ExtentReadStream(openImage(), 0, volumeLength);
+    public override Stream OpenVolume() => new ExtentReadStream(openVolume(), 0, volumeLength);
 
     public override void Dispose() { }
 
@@ -749,249 +773,4 @@ internal sealed class Iso9660ContentSource : OriginalContentSource
     private sealed record IsoEntry(ContentSourceEntry Entry, uint Extent);
     private sealed record DirectoryRecord(
         uint Extent, uint DataLength, string Identifier, bool IsDirectory, bool IsMultiExtent);
-}
-
-// The files a cue/bin source chose and what it read from them when it opened.
-internal sealed record CueBinFiles(CueBinSheet Sheet, string CuePath, byte[] CueBytes, ImageSnapshot Bin);
-
-// The length and last-write time of an .iso or BIN image when its source opened. The source checked
-// that file, so each time it opens the file again it compares both, and reading a file that changed
-// fails instead of describing bytes the source never checked.
-internal sealed class ImageSnapshot
-{
-    private readonly DateTime lastWriteTimeUtc;
-
-    private ImageSnapshot(string path, long length, DateTime lastWriteTimeUtc)
-    {
-        Path = path;
-        Length = length;
-        this.lastWriteTimeUtc = lastWriteTimeUtc;
-    }
-
-    public string Path { get; }
-    public long Length { get; }
-
-    public static ImageSnapshot Take(string path)
-    {
-        using var stream = CddaTrackFingerprints.OpenImage(path);
-        return new(path, stream.Length, File.GetLastWriteTimeUtc(stream.SafeFileHandle));
-    }
-
-    // For the audio checks and OpenBin, which read large ranges asynchronously.
-    public Stream Open() => Checked(CddaTrackFingerprints.OpenImage(Path));
-
-    // For the data track, which reads one raw sector at a time.
-    public Stream OpenBuffered() => Checked(new FileStream(Path, FileMode.Open, FileAccess.Read, FileShare.Read));
-
-    // One stat of the open handle per stream, so the check describes the file the stream reads.
-    private FileStream Checked(FileStream stream)
-    {
-        try
-        {
-            var length = stream.Length;
-            var lastWrite = File.GetLastWriteTimeUtc(stream.SafeFileHandle);
-            if (length != Length || lastWrite != lastWriteTimeUtc)
-                throw new IOException(
-                    $"The image {Path} changed after the source was opened: it was {Length} bytes " +
-                    $"written at {lastWriteTimeUtc:O} and is now {length} bytes written at {lastWrite:O}. " +
-                    "Open the source again.");
-            return stream;
-        }
-        catch
-        {
-            stream.Dispose();
-            throw;
-        }
-    }
-}
-
-internal sealed class ExtentReadStream : Stream
-{
-    private readonly long start;
-    private readonly long length;
-    private long position;
-
-    private readonly Stream stream;
-
-    public ExtentReadStream(Stream stream, long start, long length)
-    {
-        this.stream = stream;
-        this.start = start;
-        this.length = length;
-        stream.Position = start;
-    }
-
-    public override bool CanRead => true;
-    public override bool CanSeek => true;
-    public override bool CanWrite => false;
-    public override long Length => length;
-    public override long Position
-    {
-        get => position;
-        set => Seek(value, SeekOrigin.Begin);
-    }
-
-    public override int Read(byte[] buffer, int offset, int count)
-    {
-        ArgumentNullException.ThrowIfNull(buffer);
-        ArgumentOutOfRangeException.ThrowIfNegative(offset);
-        ArgumentOutOfRangeException.ThrowIfNegative(count);
-        if (buffer.Length - offset < count) throw new ArgumentException("Buffer range is invalid.");
-        var bounded = (int)Math.Min(count, length - position);
-        if (bounded <= 0) return 0;
-        var read = Counted(stream.Read(buffer, offset, bounded));
-        position += read;
-        return read;
-    }
-
-    public override int Read(Span<byte> buffer)
-    {
-        var bounded = (int)Math.Min(buffer.Length, length - position);
-        if (bounded <= 0) return 0;
-        var read = Counted(stream.Read(buffer[..bounded]));
-        position += read;
-        return read;
-    }
-
-    public override async ValueTask<int> ReadAsync(
-        Memory<byte> buffer, CancellationToken cancellationToken = default)
-    {
-        var bounded = (int)Math.Min(buffer.Length, length - position);
-        if (bounded <= 0) return 0;
-        var read = Counted(await stream.ReadAsync(buffer[..bounded], cancellationToken));
-        position += read;
-        return read;
-    }
-
-    // The image was checked to hold the extent when it was opened, so an image that ends inside the
-    // extent has changed since. Ending the stream early would hash a prefix as if it were the whole.
-    private static int Counted(int read) =>
-        read > 0 ? read : throw new EndOfStreamException("The image ended inside an ISO9660 extent.");
-
-    public override long Seek(long offset, SeekOrigin origin)
-    {
-        var next = origin switch
-        {
-            SeekOrigin.Begin => offset,
-            SeekOrigin.Current => checked(position + offset),
-            SeekOrigin.End => checked(length + offset),
-            _ => throw new ArgumentOutOfRangeException(nameof(origin))
-        };
-        if (next < 0 || next > length) throw new IOException("Seek lies outside the ISO9660 extent.");
-        stream.Position = checked(start + next);
-        return position = next;
-    }
-
-    public override void Flush() { }
-    public override void SetLength(long value) => throw new NotSupportedException();
-    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing) stream.Dispose();
-        base.Dispose(disposing);
-    }
-
-    public override async ValueTask DisposeAsync()
-    {
-        await stream.DisposeAsync();
-        GC.SuppressFinalize(this);
-    }
-}
-
-// A view of a stream that other views share, with its own position. Each read seeks the shared
-// stream and reads it while holding the gate, so views can be read at the same time. Every view of
-// one shared stream gets the same gate from GateFor, also across sources opened over it. Disposing a
-// view leaves the shared stream open, since its caller owns it.
-internal sealed class SharedStreamView(Stream shared, SemaphoreSlim gate) : Stream
-{
-    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Stream, SemaphoreSlim> Gates = new();
-
-    private long position;
-    private bool disposed;
-
-    // The gate for every view of shared, kept for as long as shared is alive.
-    public static SemaphoreSlim GateFor(Stream shared) => Gates.GetValue(shared, _ => new SemaphoreSlim(1, 1));
-
-    public override bool CanRead => !disposed;
-    public override bool CanSeek => !disposed;
-    public override bool CanWrite => false;
-    public override long Length
-    {
-        get
-        {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            gate.Wait();
-            try { return shared.Length; }
-            finally { gate.Release(); }
-        }
-    }
-    public override long Position
-    {
-        get => position;
-        set
-        {
-            ObjectDisposedException.ThrowIf(disposed, this);
-            ArgumentOutOfRangeException.ThrowIfNegative(value);
-            position = value;
-        }
-    }
-
-    public override int Read(byte[] buffer, int offset, int count)
-    {
-        ValidateBufferArguments(buffer, offset, count);
-        return Read(buffer.AsSpan(offset, count));
-    }
-
-    public override int Read(Span<byte> buffer)
-    {
-        ObjectDisposedException.ThrowIf(disposed, this);
-        gate.Wait();
-        try
-        {
-            shared.Position = position;
-            var read = shared.Read(buffer);
-            position += read;
-            return read;
-        }
-        finally { gate.Release(); }
-    }
-
-    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-    {
-        ObjectDisposedException.ThrowIf(disposed, this);
-        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            shared.Position = position;
-            var read = await shared.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-            position += read;
-            return read;
-        }
-        finally { gate.Release(); }
-    }
-
-    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-    {
-        ValidateBufferArguments(buffer, offset, count);
-        return ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
-    }
-
-    public override long Seek(long offset, SeekOrigin origin) => Position = origin switch
-    {
-        SeekOrigin.Begin => offset,
-        SeekOrigin.Current => checked(position + offset),
-        SeekOrigin.End => checked(Length + offset),
-        _ => throw new ArgumentOutOfRangeException(nameof(origin))
-    };
-
-    public override void Flush() { }
-    public override void SetLength(long value) => throw new NotSupportedException();
-    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
-    protected override void Dispose(bool disposing)
-    {
-        disposed = true;
-        base.Dispose(disposing);
-    }
 }

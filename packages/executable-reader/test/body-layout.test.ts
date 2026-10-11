@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { run, sourceXxh3 } from "../src/report.ts";
 import type { Report } from "../src/report.ts";
 import { fileLayout } from "../src/body-layout.ts";
-import { readMz } from "../src/legacy-image.ts";
+import { descriptorExtents, readMz } from "../src/legacy-image.ts";
 
 // Writes the source and a config beside it; `query` returns the `bodies` report for a config built on `base`.
 function harness(t: TestContext, data: Buffer, base: Record<string, unknown>) {
@@ -25,8 +25,9 @@ function harness(t: TestContext, data: Buffer, base: Record<string, unknown>) {
 
 // An MZ image with an FBOV envelope and two overlays:
 //   0..64     MZ header (one relocation, at 83)
-//   64..512   load image, with the three FBOV descriptors at 128..152, the stub of descriptor 1 at
-//             256..293 (one trampoline at 288, naming 544) and the stub of descriptor 2 at 320..352
+//   64..512   load image, all of it the span of resident descriptor 0, with the three FBOV
+//             descriptors at 128..152, the stub of descriptor 1 at 256..293 (one trampoline at
+//             288, naming 544) and the stub of descriptor 2 at 320..352
 //   512..528  FBOV header
 //   528..560  overlay 1 code, 560..568 its fixup table (four fixups)
 //   568..576  zero bytes
@@ -46,6 +47,8 @@ function overlays() {
   d(516, 64);
   d(520, 128);
   d(524, 3);
+  // Descriptor 0: segment 0, offsets 0 up to 448, the whole load image.
+  w(130, 448);
   w(136, 12);
   w(140, 2);
   w(144, 16);
@@ -84,19 +87,205 @@ function plainMz(size: number, pages: number) {
   return data;
 }
 
+// An MZ image whose FBOV descriptors cut the load image into spans, with no overlays:
+//   0..64     MZ header
+//   64..200   load image of 0x88 bytes, read through five descriptors (segment, maxOffset, flags,
+//             minOffset): 0 (0, 0x21, 1, 0) at 64..97, 1 (3, 0x10, 0, 0) at 112..128, 2 (4, 0x20,
+//             1, 0) at 128..160, 3 (5, 3, 4, 4) holding no bytes, and 4 (6, 0x28, 0, 0) at 160..200,
+//             which is the descriptor table itself. 97..112 are 15 zero bytes no span holds.
+//   200..208  zero bytes
+//   208..224  FBOV header, with an empty payload
+function spans() {
+  const data = Buffer.alloc(224),
+    w = (p: number, n: number) => data.writeUInt16LE(n, p);
+  data.write("MZ");
+  w(2, 200);
+  w(4, 1);
+  w(8, 4);
+  data.write("FBOV", 208);
+  data.writeUInt32LE(160, 216);
+  data.writeUInt32LE(5, 220);
+  [
+    [0, 0x21, 1, 0],
+    [3, 0x10, 0, 0],
+    [4, 0x20, 1, 0],
+    [5, 3, 4, 4],
+    [6, 0x28, 0, 0],
+  ].forEach((words, i) => words.forEach((word, j) => w(160 + i * 8 + j * 2, word)));
+  data.fill(0x90, 64, 97);
+  data.fill(0xff, 112, 128);
+  data.fill(0x90, 128, 160);
+  return data;
+}
+
+test("each descriptor's offset words give its span of the load image and its loaded address", () => {
+  const image = readMz(spans());
+  assert.deepEqual(image.descriptors[3], { index: 3, segment: 5, maxOffset: 3, flags: 4, minOffset: 4 });
+  assert.deepEqual(
+    descriptorExtents(image).map((e) => [e.descriptor, e.overlay, e.status, e.start, e.end, e.loadedSegment, e.ip]),
+    [
+      [0, false, "bytes", 64, 97, 0x1000, 0],
+      [1, false, "bytes", 112, 128, 0x1003, 0],
+      [2, false, "bytes", 128, 160, 0x1004, 0],
+      [3, false, "inverted", 148, 147, 0x1005, 4],
+      [4, false, "bytes", 160, 200, 0x1006, 0],
+    ],
+  );
+  // The overlay descriptors of the other fixture have zero offset words: empty, and flagged as overlays.
+  assert.deepEqual(
+    descriptorExtents(readMz(overlays())).map((e) => [e.descriptor, e.overlay, e.status]),
+    [
+      [0, false, "bytes"],
+      [1, true, "empty"],
+      [2, true, "empty"],
+    ],
+  );
+  assert.deepEqual(descriptorExtents(readMz(plainMz(600, 1))), []);
+});
+
+test("the layout cuts the load image at the resident descriptors' spans, with padding between them", (t) => {
+  const { query } = harness(t, spans(), { formatControls: { descriptors: 5, overlays: 0 } });
+  const r = query({ functions: [{ entry: 64, body: [{ start: 64, end: 116 }] }] });
+  assert.deepEqual(
+    r.layout.map((g: Report) => [g.kind, g.descriptor, g.start, g.end]),
+    [
+      ["mz-header", null, 0, 64],
+      ["resident", 0, 64, 97],
+      ["zero-padding", null, 97, 112],
+      ["resident", 1, 112, 128],
+      ["resident", 2, 128, 160],
+      ["fbov-descriptors", null, 160, 200],
+      ["zero-padding", null, 200, 208],
+      ["fbov-header", null, 208, 224],
+    ],
+  );
+  assert.deepEqual(r.layout[2], {
+    kind: "zero-padding",
+    descriptor: null,
+    start: 97,
+    end: 112,
+    nonzeroBytes: 0,
+    trailing: false,
+  });
+  assert.deepEqual(r.descriptors[0], {
+    index: 0,
+    segment: 0,
+    maxOffset: 0x21,
+    flags: 1,
+    minOffset: 0,
+    overlay: false,
+    extent: "bytes",
+    start: 64,
+    end: 97,
+    loadedSegment: 0x1000,
+    ip: 0,
+  });
+  assert.deepEqual(
+    r.descriptors.map((d: Report) => d.extent),
+    ["bytes", "bytes", "bytes", "inverted", "bytes"],
+  );
+  // A body running out of its segment through the padding into the next segment is outside its entry's region there.
+  assert.deepEqual(
+    r.functions[0].fragments[0].parts.map((p: Report) => [p.kind, p.descriptor, p.start, p.end, p.outsideEntryRegion]),
+    [
+      ["resident", 0, 64, 97, false],
+      ["zero-padding", null, 97, 112, true],
+      ["resident", 1, 112, 116, true],
+    ],
+  );
+  // Without functions the report gives the layout and the descriptors alone.
+  const tables = query({ functions: undefined });
+  assert.deepEqual(tables.functions, []);
+  assert.equal(tables.descriptors.length, 5);
+});
+
+test("a nonzero byte between two descriptors' spans makes the run undeclared", (t) => {
+  const data = spans();
+  data[100] = 1;
+  const { query } = harness(t, data, { formatControls: { descriptors: 5 } });
+  assert.deepEqual(query().layout[2], {
+    kind: "undeclared",
+    descriptor: null,
+    start: 97,
+    end: 112,
+    nonzeroBytes: 1,
+    trailing: false,
+  });
+});
+
+test("resident spans that overlap fail the layout but not the loader", () => {
+  const overlapping = spans();
+  overlapping.writeUInt16LE(0x11, 170);
+  assert.equal(readMz(overlapping).descriptors[1]!.maxOffset, 0x11);
+  assert.throws(
+    () => fileLayout(readMz(overlapping)),
+    /FBOV descriptors 1 and 2 give overlapping spans 112\.\.129 and 128\.\.160/,
+  );
+});
+
+test("a resident span that runs past the load image keeps its bytes in the load image", (t) => {
+  // Descriptor 0 runs from 64 to 320, past the load image's end at 200; the others hold no bytes.
+  const past = spans();
+  past.writeUInt16LE(0x100, 162);
+  for (const p of [170, 178, 194]) past.writeUInt16LE(0, p);
+  assert.deepEqual(
+    descriptorExtents(readMz(past)).map((e) => [e.descriptor, e.status, e.start, e.end]),
+    [
+      [0, "outside-load-image", 64, 320],
+      [1, "empty", 112, 112],
+      [2, "empty", 128, 128],
+      [3, "inverted", 148, 147],
+      [4, "empty", 160, 160],
+    ],
+  );
+  const { query } = harness(t, past, { formatControls: { descriptors: 5 } });
+  const r = query({ functions: [{ entry: 64, body: [{ start: 64, end: 160 }] }] });
+  assert.deepEqual(
+    r.layout.map((g: Report) => [g.kind, g.descriptor, g.start, g.end]),
+    [
+      ["mz-header", null, 0, 64],
+      ["resident", 0, 64, 160],
+      ["fbov-descriptors", null, 160, 200],
+      ["zero-padding", null, 200, 208],
+      ["fbov-header", null, 208, 224],
+    ],
+  );
+  assert.equal(r.descriptors[0].extent, "outside-load-image");
+  assert.equal(r.functions[0].outsideEntryRegion, 0);
+});
+
+test("spans past the load image and empty or overlay descriptors leave the rest of the layout alone", () => {
+  const past = spans();
+  past.writeUInt16LE(0x30, 194);
+  assert.equal(descriptorExtents(readMz(past))[4]!.status, "outside-load-image");
+  assert.deepEqual(fileLayout(readMz(past)), fileLayout(readMz(spans())));
+  // A resident descriptor that holds no bytes, at a place past the load image, leaves the layout alone.
+  const empty = spans();
+  empty.writeUInt16LE(0x40, 184);
+  empty.writeUInt16LE(0, 186);
+  empty.writeUInt16LE(0, 190);
+  assert.equal(descriptorExtents(readMz(empty))[3]!.status, "outside-load-image");
+  assert.deepEqual(fileLayout(readMz(empty)), fileLayout(readMz(spans())));
+  // An overlay descriptor's span is reported and leaves the layout alone.
+  const overlay = overlays();
+  overlay.writeUInt16LE(0xffff, 138);
+  assert.equal(descriptorExtents(readMz(overlay))[1]!.status, "outside-load-image");
+  assert.equal(fileLayout(readMz(overlay)).length, 14);
+});
+
 test("the layout partitions the whole file by the MZ and FBOV tables", () => {
   const layout = fileLayout(readMz(overlays()));
   assert.deepEqual(
     layout.map((r) => [r.kind, r.descriptor, r.start, r.end]),
     [
       ["mz-header", null, 0, 64],
-      ["resident", null, 64, 128],
+      ["resident", 0, 64, 128],
       ["fbov-descriptors", null, 128, 152],
-      ["resident", null, 152, 256],
+      ["resident", 0, 152, 256],
       ["overlay-stub", 1, 256, 293],
-      ["resident", null, 293, 320],
+      ["resident", 0, 293, 320],
       ["overlay-stub", 2, 320, 352],
-      ["resident", null, 352, 512],
+      ["resident", 0, 352, 512],
       ["fbov-header", null, 512, 528],
       ["overlay-code", 1, 528, 560],
       ["fixup-table", 1, 560, 568],
@@ -129,7 +318,7 @@ test("a body that runs from overlay code through its fixups into padding is spli
   assert.deepEqual(f.entry, { offset: 544, kind: "overlay-code", descriptor: 1, inBody: false, trampolines: [288] });
   // The resident fragment is kept whole and marked.
   assert.deepEqual(f.fragments[0].parts, [
-    { start: 80, end: 84, size: 4, kind: "resident", descriptor: null, outsideEntryRegion: true },
+    { start: 80, end: 84, size: 4, kind: "resident", descriptor: 0, outsideEntryRegion: true },
   ]);
   assert.equal(f.fragments[0].crossesRegions, false);
   assert.deepEqual(
@@ -149,7 +338,7 @@ test("a body that runs from overlay code through its fixups into padding is spli
     24,
   );
   assert.deepEqual(f.regions, [
-    { kind: "resident", descriptor: null, bytes: 4 },
+    { kind: "resident", descriptor: 0, bytes: 4 },
     { kind: "overlay-code", descriptor: 1, bytes: 8 },
     { kind: "fixup-table", descriptor: 1, bytes: 8 },
     { kind: "zero-padding", descriptor: null, bytes: 4 },
@@ -210,7 +399,7 @@ test("another overlay's code counts as outside the entry's region, and so does a
     stub.fragments[0].parts.map((p: Report) => [p.kind, p.descriptor, p.size, p.outsideEntryRegion]),
     [
       ["overlay-stub", 1, 7, false],
-      ["resident", null, 3, true],
+      ["resident", 0, 3, true],
     ],
   );
   assert.equal(outside.entry.inBody, false);
@@ -287,7 +476,7 @@ test("a candidate body is compared with the analyzer's: bytes in both and in onl
   assert.equal(c.both.bytes + c.bodyOnly.bytes, r.functions[0].bytes);
   assert.equal(c.both.bytes + c.candidateOnly.bytes, c.bytes);
   assert.deepEqual(c.bodyOnly.regions, [
-    { kind: "resident", descriptor: null, bytes: 4 },
+    { kind: "resident", descriptor: 0, bytes: 4 },
     { kind: "overlay-code", descriptor: 1, bytes: 4 },
     { kind: "fixup-table", descriptor: 1, bytes: 8 },
     { kind: "zero-padding", descriptor: null, bytes: 4 },
@@ -418,7 +607,8 @@ test("invalid ranges, entries and missing or failed format controls are refused"
     /Format control fixups: expected 3, source tables yield 4/,
   );
   assert.throws(() => query({ sourceKind: "synthetic-raw", functions: [] }), /reads mz sources/);
-  assert.throws(() => query({ functions: [] }), /functions must be 1\.\./);
+  assert.throws(() => query({ functions: {} }), /functions must be 0\.\./);
+  assert.throws(() => query({ functions: null }), /functions must be 0\.\./);
   assert.throws(() => one({ entry: 544, body: [{ start: 548, end: 548 }] }), /body\[0\] must be/);
   assert.throws(() => one({ entry: 544, body: [{ start: 580, end: 593 }] }), /<= 592, the file's length/);
   assert.throws(() => one({ entry: 544, body: [{ start: -1, end: 4 }] }), /body\[0\] must be/);

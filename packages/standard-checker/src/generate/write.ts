@@ -4,7 +4,7 @@
 
 import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
-import { baseTarget, forkPoint, gitIn } from "../checks/base.ts";
+import { baseTarget, gitIn, revParse } from "../checks/base.ts";
 import type { Context } from "../context.ts";
 import { markdownTree, toSlash, walk } from "../files.ts";
 import { lineCount, readText } from "../markdown.ts";
@@ -57,12 +57,12 @@ export function writeGenerated(ctx: Context, generated: Map<string, string>) {
 
 /**
  * For --scheduled-generation: reports each generated file that the working tree changes, adds or
- * removes since base (the base checkBase compared with, or null when there was none), untracked
- * files that git does not ignore included. They are updated on the main branch only, so a branch
- * that edits them would conflict with every other branch that does.
+ * removes since from (the commit checkBase compared with, where HEAD forked from --base or from the
+ * base branch, or null when there was none), untracked files that git does not ignore included. They
+ * are updated on the main branch only, so a branch that edits them would conflict with every other
+ * branch that does.
  *
- * An explicit --base that HEAD has not reached, such as the base branch's tip, is compared from
- * where HEAD forked from it. A file that matches its copy at the base branch's tip (--base, or
+ * A file that matches its copy at the base branch's tip (--base, or
  * origin/$GITHUB_BASE_REF or origin/main) is not this change either, which covers a squash merge
  * or a cherry-pick of the base branch's newer copies. A change that only regenerates the files,
  * touching nothing else and leaving each one as the check would write it, passes: that is the
@@ -70,18 +70,11 @@ export function writeGenerated(ctx: Context, generated: Map<string, string>) {
  * comparison does not run, and checkBase has already named it as skipped or, with --require-base,
  * reported it.
  */
-export function checkGeneratedUnchanged(ctx: Context, generated: Map<string, string>, base: string | null) {
+export function checkGeneratedUnchanged(ctx: Context, generated: Map<string, string>, from: string | null) {
   const { problem, skip } = ctx;
   const { repoDir, specDir, baseArg } = ctx.config;
   skip("comparison of the generated files with the spec (--scheduled-generation)");
-  if (!base) return;
-  let from = base;
-  if (baseArg)
-    try {
-      from = forkPoint(repoDir, base);
-    } catch {
-      // A base with no history in common with HEAD is compared as it is.
-    }
+  if (!from) return;
   const indexDir = join(specDir, "index");
   const relIndex = toSlash(relative(repoDir, indexDir));
   const generatedRel = new Set([...generated.keys()].map((p) => toSlash(relative(repoDir, p))));
@@ -112,13 +105,7 @@ export function checkGeneratedUnchanged(ctx: Context, generated: Map<string, str
   // A file that matches its copy at the base branch's tip. A target that does not resolve
   // matches nothing.
   const target = baseTarget(baseArg);
-  const blobAt = (spec: string) => {
-    try {
-      return git("rev-parse", "-q", "--verify", spec).trim();
-    } catch {
-      return null;
-    }
-  };
+  const blobAt = (spec: string) => revParse(git, spec);
   const targetResolves = blobAt(`${target}^{commit}`) !== null;
   const atTarget = (p: string) => {
     if (!targetResolves) return false;

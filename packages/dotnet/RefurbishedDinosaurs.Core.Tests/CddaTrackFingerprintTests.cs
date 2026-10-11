@@ -185,6 +185,30 @@ public sealed class CddaTrackFingerprintTests
     }
 
     [Fact]
+    public async Task ATrackInALaterFileIsUnreadableAndCannotBeRecorded()
+    {
+        var root = CreateTemporaryDirectory();
+        try
+        {
+            var manifest = await RecordAsync(root);
+            // Track 03 moves to a separate audio file the sheet names; the image keeps its sectors.
+            var cue = "FILE \"game.bin\" BINARY\nTRACK 01 MODE1/2352\nINDEX 01 00:00:00\n" +
+                "TRACK 02 AUDIO\nINDEX 01 00:00:23\nFILE \"music/track03.ogg\" MP3\nTRACK 03 AUDIO\nINDEX 01 00:00:00\n";
+            await WriteAsync(root, Rip(0), cue);
+            var result = await AssetVerifier.VerifyAsync(root, manifest, TestContext.Current.CancellationToken);
+            var issue = Assert.Single(result.Issues, found => found.AudioTrack == 3);
+            Assert.Equal(AssetProblem.Unreadable, issue.Problem);
+            Assert.Contains("\"music/track03.ogg\"", issue.Detail, StringComparison.Ordinal);
+
+            var refused = await Assert.ThrowsAsync<ArgumentException>(() => CddaTrackFingerprints.RecordAsync(
+                Path.Combine(root, "game.cue"), 3, Tolerance, AnchorOffset, AnchorSamples,
+                TestContext.Current.CancellationToken));
+            Assert.Contains("music/track03.ogg", refused.Message, StringComparison.Ordinal);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public async Task AnOpenedSourceRecordsFromItsBinAndRefusesTracksOfAChangedBin()
     {
         var root = CreateTemporaryDirectory();

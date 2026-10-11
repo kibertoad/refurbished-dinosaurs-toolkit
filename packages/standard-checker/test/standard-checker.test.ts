@@ -322,6 +322,55 @@ test("a glossary term that names a superseded entry is reported", (t) => {
   assert.match(output, /add_points cites RULE-SCORE-002, which is superseded/);
 });
 
+// STATUS-17 lists the fields and rows where a live entry may not cite a superseded one, and an
+// entry's body text is not among them: a replacement names the entry it replaced in its
+// Alternatives section (IDENTIFIERS-8), and entries that replaced nothing may name it as well.
+test("an entry body that names a superseded entry passes, and its related field does not", (t) => {
+  const root = broken(t, (r) => {
+    copyRule(r, "RULE-SCORE-002", (text) =>
+      text
+        .replace("status: sourced", "status: superseded")
+        .replace("superseded_by: []", "superseded_by: [RULE-SCORE-001]"),
+    );
+    rangeFinding(r, locatedAt("0x00401000..0x00401010"));
+    const findings = join(r, "spec", "findings");
+    const live = readFileSync(join(findings, "FND-SCORE-001.md"), "utf8");
+    writeFileSync(
+      join(findings, "FND-SCORE-002.md"),
+      live
+        .replace("id: FND-SCORE-001", "id: FND-SCORE-002")
+        .replace("status: recorded", "status: superseded")
+        .replace("superseded_by: []", "superseded_by: [FND-SCORE-001]"),
+    );
+    // A live finding that replaced nothing names the superseded one in its observation.
+    writeFileSync(
+      join(findings, "FND-SCORE-003.md"),
+      live
+        .replace("id: FND-SCORE-001", "id: FND-SCORE-003")
+        .replace("The handler adds 1 to the score.", "The handler adds 1 to the score, as FND-SCORE-002 read it."),
+    );
+    replaceIn(
+      r,
+      "spec/findings/FND-SCORE-001.md",
+      "## Alternatives\n\nNone known.",
+      "## Alternatives\n\nFND-SCORE-002 recorded the same handler and is replaced by this finding.",
+    );
+    // The replacement rule names the rule it replaced, and a finding it did not replace.
+    replaceIn(
+      r,
+      "spec/rules/RULE-SCORE-001.md",
+      "Each kill adds one point.",
+      "Each kill adds one point, as RULE-SCORE-002 said and FND-SCORE-002 observed.",
+    );
+  });
+  const prose = run(root);
+  assert.equal(prose.status, 0, prose.output);
+  replaceIn(root, "spec/rules/RULE-SCORE-001.md", "related: []", "related: [RULE-SCORE-002]");
+  const linked = run(root);
+  assert.equal(linked.status, 1);
+  assert.match(linked.output, /RULE-SCORE-001\.md: related cites RULE-SCORE-002, which is superseded \[STATUS-17\]$/m);
+});
+
 test("a Markdown file under --references that cites a superseded entry is reported, and a deviation file is not", (t) => {
   const root = broken(t, (r) => {
     copyRule(r, "RULE-SCORE-002", (text) =>
@@ -1331,6 +1380,164 @@ test("the fork point during an octopus merge takes in every head being merged", 
   git("merge", "-q", "--no-commit", "--no-ff", "topic", "origin/main");
   const { output } = run(root, "--require-base");
   assert.doesNotMatch(output, /RULE-SCORE-001 exists at/);
+});
+
+// A copy of RULE-SCORE-001 under id with its own title, and its parity row after the last rule's.
+function addRule(root: string, id: string, title: string) {
+  copyRule(root, id, (text) => text.replace(/^title: .*$/m, `title: ${title}`));
+  const parity = join(root, "parity", "SCORE.md");
+  const lines = readFileSync(parity, "utf8").split("\n");
+  const last = lines.findLastIndex((line) => line.startsWith("| `RULE-SCORE-"));
+  lines.splice(last + 1, 0, row(id).replace("A kill adds one point to the score", title));
+  writeFileSync(parity, lines.join("\n"));
+}
+
+// Commits everything in root on the branch checked out, with message.
+function commitEverything(root: string, message: string) {
+  const git = gitAt(root);
+  git("add", "-A");
+  git("commit", "-q", "-m", message);
+}
+
+const TAKEN = (id: string, ref: string) =>
+  new RegExp(
+    `${id}\\.md: ${id} also exists at ${ref} with content this branch never held; renumber this one before it is merged \\[IDENTIFIERS-6\\]$`,
+    "m",
+  );
+
+test("an ID the change adds that the base branch's tip took for another entry is reported", (t) => {
+  const root = broken(t, (r) => withForkPoint(r));
+  const git = gitAt(root);
+  git("checkout", "-q", "-b", "feature");
+  // The base branch takes RULE-SCORE-002 after this branch forked.
+  git("checkout", "-q", "-b", "other", "origin/main");
+  addRule(root, "RULE-SCORE-002", "A combo adds two points to the score");
+  commitEverything(root, "other");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "feature");
+  // Before it is committed, as a pre-commit hook runs it.
+  addRule(root, "RULE-SCORE-002", "A bonus adds ten points to the score");
+  const draft = run(root, "--require-base");
+  assert.equal(draft.status, 1, draft.output);
+  assert.match(draft.output, TAKEN("RULE-SCORE-002", "origin/main"));
+  // After it is committed.
+  commitEverything(root, "feature");
+  const committed = run(root, "--check", "--require-base");
+  assert.equal(committed.status, 1, committed.output);
+  assert.match(committed.output, TAKEN("RULE-SCORE-002", "origin/main"));
+  // Renumbered, it passes.
+  git("mv", "spec/rules/RULE-SCORE-002.md", "spec/rules/RULE-SCORE-003.md");
+  replaceIn(root, "spec/rules/RULE-SCORE-003.md", "id: RULE-SCORE-002", "id: RULE-SCORE-003");
+  replaceIn(root, "parity/SCORE.md", "| `RULE-SCORE-002` |", "| `RULE-SCORE-003` |");
+  const renumbered = run(root, "--require-base");
+  assert.equal(renumbered.status, 0, renumbered.output);
+});
+
+test("a new ID whose copy at the base branch's tip this branch once held is its own entry", (t) => {
+  const root = broken(t, (r) => withForkPoint(r));
+  const git = gitAt(root);
+  git("checkout", "-q", "-b", "feature");
+  addRule(root, "RULE-SCORE-002", "A bonus adds ten points to the score");
+  commitEverything(root, "first");
+  // The base branch took the entry as the branch first wrote it, as a squash merge of an earlier
+  // pull request does; the branch went on to edit it.
+  git("checkout", "-q", "-b", "squashed", "origin/main");
+  git("checkout", "feature", "--", "spec/rules/RULE-SCORE-002.md", "parity/SCORE.md");
+  commitEverything(root, "squashed");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "feature");
+  replaceIn(root, "spec/rules/RULE-SCORE-002.md", "title: A bonus adds", "title: A bonus always adds");
+  replaceIn(root, "parity/SCORE.md", "| A bonus adds", "| A bonus always adds");
+  commitEverything(root, "second");
+  const { status, output } = run(root, "--require-base");
+  assert.equal(status, 0, output);
+  assert.doesNotMatch(output, /also exists at/);
+});
+
+test("a new ID that the base branch took from this branch and edited since is its own entry", (t) => {
+  const root = broken(t, (r) => withForkPoint(r));
+  const git = gitAt(root);
+  git("checkout", "-q", "-b", "feature");
+  addRule(root, "RULE-SCORE-002", "A bonus adds ten points to the score");
+  commitEverything(root, "first");
+  // The base branch squash merges the entry, then edits it there.
+  git("checkout", "-q", "-b", "squashed", "origin/main");
+  git("checkout", "feature", "--", "spec/rules/RULE-SCORE-002.md", "parity/SCORE.md");
+  commitEverything(root, "squashed");
+  replaceIn(root, "spec/rules/RULE-SCORE-002.md", "title: A bonus adds", "title: A bonus later adds");
+  replaceIn(root, "parity/SCORE.md", "| A bonus adds", "| A bonus later adds");
+  commitEverything(root, "edited on the base branch");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "feature");
+  const { status, output } = run(root, "--require-base");
+  assert.equal(status, 0, output);
+  assert.doesNotMatch(output, /also exists at/);
+});
+
+test("a deviation moved out of DEVIATIONS.md on both branches is not a new ID", (t) => {
+  const root = broken(t, (r) => {
+    writeFileSync(join(r, "DEVIATIONS.md"), "# Deviation log\n\n## DEV-SCORE-001\n");
+    withForkPoint(r);
+  });
+  const git = gitAt(root);
+  git("checkout", "-q", "-b", "feature");
+  git("checkout", "-q", "-b", "other", "origin/main");
+  rmSync(join(root, "DEVIATIONS.md"));
+  withDeviation(root);
+  commitEverything(root, "other");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "feature");
+  rmSync(join(root, "DEVIATIONS.md"));
+  withDeviation(root);
+  replaceIn(root, "deviations/DEV-SCORE-001.md", "Counts two points.", "Counts three points.");
+  const { output } = run(root, "--require-base");
+  assert.doesNotMatch(output, /also exists at/);
+});
+
+test("--base names the branch a change merges into: its newer entries are not deletions, and its IDs are taken", (t) => {
+  const root = broken(t, (r) => withForkPoint(r));
+  const git = gitAt(root);
+  git("branch", "goal");
+  git("checkout", "-q", "-b", "session");
+  addRule(root, "RULE-SCORE-002", "A bonus adds ten points to the score");
+  commitEverything(root, "session");
+  // The goal branch moves on with an entry under the same ID and one more.
+  git("checkout", "-q", "goal");
+  addRule(root, "RULE-SCORE-002", "A combo adds two points to the score");
+  addRule(root, "RULE-SCORE-004", "A miss takes one point from the score");
+  commitEverything(root, "goal");
+  git("checkout", "-q", "session");
+  const { status, output } = run(root, "--base", "goal");
+  assert.equal(status, 1, output);
+  assert.match(output, TAKEN("RULE-SCORE-002", "goal"));
+  assert.doesNotMatch(output, /RULE-SCORE-004 exists at/);
+  // origin/main has not moved, so the default comparison finds nothing.
+  assert.doesNotMatch(run(root, "--require-base").output, /also exists at/);
+  // A deletion since the fork point names the commit and the ref.
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-001.md"));
+  assert.match(
+    run(root, "--base", "goal").output,
+    /^spec: RULE-SCORE-001 exists at [0-9a-f]{40} \(where HEAD forked from goal\) and has been deleted or renamed \[IDENTIFIERS-6\]$/m,
+  );
+});
+
+test("a deviation ID the base branch's tip took for another deviation is reported", (t) => {
+  const root = broken(t, (r) => withForkPoint(r));
+  const git = gitAt(root);
+  git("checkout", "-q", "-b", "feature");
+  git("checkout", "-q", "-b", "other", "origin/main");
+  withDeviation(root);
+  commitEverything(root, "other");
+  git("update-ref", "refs/remotes/origin/main", "HEAD");
+  git("checkout", "-q", "feature");
+  withDeviation(root);
+  replaceIn(root, "deviations/DEV-SCORE-001.md", "Counts two points.", "Counts three points.");
+  const { status, output } = run(root, "--require-base");
+  assert.equal(status, 1, output);
+  assert.match(
+    output,
+    /DEV-SCORE-001\.md: DEV-SCORE-001 also exists at origin\/main with content this branch never held; renumber this one before it is merged$/m,
+  );
 });
 
 test("--scheduled-generation passes the base branch's newer generated files taken by a squash merge", (t) => {
@@ -5109,4 +5316,62 @@ test("a range that ends where two ranges of a body touch passes", (t) => {
   const { status, output } = run(root);
   assert.equal(status, 0, output);
   assert.ok(!output.includes("last byte"), output);
+});
+
+// 0x00401000 for 32 bytes, followed by a one-byte function at 0x00401020, whose last byte is its first.
+const WITH_ONE_BYTE_FUNCTION = "0x00401000\t32\n0x00401020\t1\n";
+
+test("a range that ends where a one-byte function starts passes", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x00401020"), "The handler spans 0x00401000..0x00401020.");
+    inventory(r, WITH_ONE_BYTE_FUNCTION);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});
+
+test("a range that ends where a one-byte range of a body starts passes", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x00401010"));
+    inventory(
+      r,
+      "0x00401000\t16\n0x00401100\t17\t0x00401010..0x00401011 0x00401100..0x00401110\n",
+      "start\tsize\tranges",
+    );
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});
+
+test("a range that ends on a function's last byte fails when a one-byte function follows", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F"), "The handler spans 0x00401000..0x0040101F.");
+    inventory(r, WITH_ONE_BYTE_FUNCTION);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes(LAST_BYTE("location address 0x00401000..0x0040101F")), output);
+  assert.ok(output.includes(LAST_BYTE("the body's range 0x00401000..0x0040101F")), output);
+});
+
+test("a range that ends on a function's last byte fails when another function starts on that byte", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F"));
+    inventory(r, "0x00401000\t32\n0x0040101F\t16\n");
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes(LAST_BYTE("location address 0x00401000..0x0040101F")), output);
+});
+
+test("a range that ends where a one-byte function shares another function's last byte fails", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F"));
+    inventory(r, "0x00401000\t32\n0x0040101F\t1\n");
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes(LAST_BYTE("location address 0x00401000..0x0040101F")), output);
 });

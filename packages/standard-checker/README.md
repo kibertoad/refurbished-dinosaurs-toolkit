@@ -34,6 +34,20 @@ merge-base with origin/main, fetch it with enough history or pass --base).` With
 the skipped step names the missing git instead. With `--require-base`, either case is a problem and
 the run fails.
 
+The same comparison finds an ID taken twice before the two branches meet. A spec ID or deviation
+whose file this change adds since the fork point, committed or not, fails when the tip of the base
+branch (`--base`, or `origin/$GITHUB_BASE_REF` or `origin/main`) holds a file under that ID that
+matches neither the working tree, the index, nor the file at any commit of this branch since the
+fork point: another change took the ID first, and IDENTIFIERS-6 has the branch merged second
+renumber its entry before it is merged, as in
+`spec/findings/FND-SCORE-012.md: FND-SCORE-012 also exists at origin/main with content this branch never held; renumber this one before it is merged [IDENTIFIERS-6]`.
+A tip that holds the branch's own entry, merged or cherry-picked there in an earlier version,
+passes, and so does one the base branch edited after taking it. Run the check before committing an entry, for example from a `pre-commit` hook, so the
+renumbering happens before commit messages and other files cite the ID. Pass the branch a change
+merges into as `--base` when it is not the default, such as a long-lived branch that several working
+branches merge into. Only the tip of that one branch is read: an ID taken on another branch, or in a
+draft no one has committed, is not seen until it reaches it.
+
 A problem that breaks a numbered rule of the standard ends with the rule's label in brackets, such
 as `[STATUS-14]`. The standard opens that rule with the heading `###### STATUS-14`, anchored at
 `#status-14` on the site and in the copies restorations vendor, so the rule can be read on its
@@ -65,7 +79,7 @@ not let it pass, and the problem names which of them stopped it.
 | `--root <dir>` | The repository to check. | the current directory |
 | `--check` | Fail when an index or `PARITY.md` is stale, instead of rewriting it. | rewrite |
 | `--scheduled-generation` | For a restoration that updates the indexes and `PARITY.md` on its main branch only, such as from a scheduled job. Neither write nor compare them with the spec, and fail when the change since the base (where HEAD forked from `--base`, or the fork point) edits, adds or removes one, untracked files git does not ignore included. A file that matches its copy at the base branch's tip (`--base`, or `origin/$GITHUB_BASE_REF` or `origin/main`) passes, as does a change that only regenerates them and touches nothing else. The result line names the comparison with the spec as skipped. Without a base the change is not compared either, and the base comparison is named as skipped or, with `--require-base`, fails. | write or compare |
-| `--base <ref>` | Also fail when a spec ID, area or deviation that exists at `<ref>` is gone, or when a superseded format entry has no layout table although it had one at `<ref>`. | where HEAD forked from `origin/$GITHUB_BASE_REF` or `origin/main`; when that does not resolve, the comparison is named as skipped |
+| `--base <ref>` | The branch this one merges into. Fail when a spec ID, area or deviation that exists where HEAD forked from `<ref>` is gone, when a superseded format entry has no layout table although it had one there, or when an ID this change adds exists at `<ref>` with content this branch never held (see below). | `origin/$GITHUB_BASE_REF` or `origin/main`; when HEAD's fork point with it does not resolve, the comparison is named as skipped |
 | `--squashed <list>` | Comma-separated items `OLD=NEW`, or `OLD=NEW+NEW` for an entry replaced by several: superseded entries this change deleted, squashed into the replacements that keep the final content. Without it, a deleted ID fails `IDENTIFIERS-6`. A listed deletion passes when the entry's `superseded_by` at the base names exactly the listed replacements and each replacement exists now and is not superseded, or is listed too, so `A=B,B=C` squashes a chain. An `OLD` that still exists fails, so keeping the option after the squash reaches the main branch stops a squashed ID from being used again. One the base does not have is named as a skipped step. A squashed ID still cited in the spec, the glossary, the `--code` and `--references` directories, `parity/` or `deviations/` fails, a build or source alias included, and the message names the replacements to cite. The indexes and `PARITY.md` are written by the check, not searched for citations, so with `--scheduled-generation` they may name a squashed ID until the main branch regenerates them. Keep the list where the reference check does not read it, such as a workflow file or a text file a wrapper script reads: a `.js`, `.mjs`, `.ts`, `.cs` or `.ps1` file under a checked directory that spells the list out cites every squashed ID in it and fails. | none |
 | `--require-base` | Fail when no `--base` is given and the fork point does not resolve, instead of passing with the comparison skipped. | pass with the comparison skipped |
 | `--no-ksy` | Skip compiling the Kaitai definitions in `spec/formats/`. The result line names the skipped compilation. | compile |
@@ -149,7 +163,10 @@ many locations in files of code did not parse, since those cite nothing.
 inventoried function's last byte (`start` plus `size` minus one, or for a row with `ranges` the last
 byte of each range, with ranges that touch taken as one) stops a byte short, the usual slip when a
 range is copied from an analyzer that gives last bytes, and the check fails it with the end it
-should have, naming every function whose range ends on that byte. It checks every range a location
+should have, naming every function whose range ends on that byte. A one-byte function, or a
+one-byte range of a body, is left out: its last byte is its first, where a range that stops before
+it ends, so such an end fails only when a longer range of another function ends on that byte
+too. It checks every range a location
 of a current entry gives in that build and file, by address or by offset, and the address ranges
 written in the body of an entry whose locations all name that one build and file. Without
 inventories it checks nothing and reports no skipped step.

@@ -23,7 +23,7 @@ from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
 
 from .machine import ALIASES, StopPath, FLAT_PORT_REASON
 from .pcode import LIFTER, Address, Run, FLAGS, SEGMENT_BASES, segment_base
-from .values import Value, const, unknown, op, extract, join, resize, sources
+from .values import Value, const, unknown, op, extract, join, join_offsets, resize, sources
 
 # Conditional branches by the condition code SLEIGH decodes from 0x70 + code.
 CONDITION_CODES = {}
@@ -210,8 +210,10 @@ def known_bit(term, position, width):
     if head == "extract":
         return known_bit(term[1], term[2] + position, term[4]) if position < term[3] else None
     if head == "join":
-        parts = term[1]
-        return known_bit(parts[position // 8], position % 8, 8) if position // 8 < len(parts) else None
+        for part, bits, offset in join_offsets(term):
+            if offset <= position < offset + bits:
+                return known_bit(part, position - offset, bits)
+        return None
     if head in ("or", "and"):
         bits = [known_bit(t, position, width) for t in term[1:]]
         decisive, other = (1, 0) if head == "or" else (0, 1)
@@ -744,7 +746,19 @@ def shift(state, ins, image):
         state.carry = carry if carry is not None else unknown(f"carry:{state.at}:{state.flag_serial}", 1, state.at)
         flags_written(state, f.run)
         state.flag_values["CF"] = resize(state.carry, 8)
+        # SLEIGH's SHR with a count operand (C0, C1, D2, D3) swaps the arms of its OF selection,
+        # writing 0 for a count of 1; only the D0 and D1 forms write OF as the CPU does.
+        if n != 1 or (m == "shr" and ins.opcode[0] not in (0xD0, 0xD1)):
+            undefined_overflow(state)
     state.event("arithmetic", operation=m, left=a.report(), right=b.report(), result=result.report(), modulus=1 << a.bits)
+
+
+def undefined_overflow(state):
+    """Drop OF after a shift or rotate whose OF the CPU leaves undefined or SLEIGH writes wrongly.
+
+    The CPU defines OF only for a count of 1. A branch that reads OF afterwards stays undecided.
+    """
+    state.flag_values.pop("OF", None)
 
 
 def rotate(state, ins, image):
@@ -788,6 +802,8 @@ def rotate(state, ins, image):
     state.carry = Value(1, carry.term, sources(a, count, site=state.at))
     flags_written(state, f.run)
     state.flag_values["CF"] = resize(state.carry, 8)
+    if count.number & 31 != 1:
+        undefined_overflow(state)
     state.event("arithmetic", operation=m, left=a.report(), count=n, result=value.report(),
                 carryOut=state.carry.report(), modulus=1 << bits)
 

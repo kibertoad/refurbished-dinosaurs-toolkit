@@ -7,9 +7,9 @@ condition. Remove a milestone from this file once it lands.
 ## Where things stand
 
 Engine 0.9.0 completed ADR 0003: values come from pypcode, the handwritten semantics are gone, and
-the callee graph is cross-checked against Ghidra. Engine 5.0.0, reader 2.1.0 and checker 0.2.0
-are current, and the engine and reader speak prepared protocol 3. Reader and engine 2.0.0 shipped
-scoped memory hypotheses ([ADR 0009](decisions/0009-scoped-memory-hypotheses-on-call-models.md)),
+the callee graph is cross-checked against Ghidra. Engine 18.0.0, reader 2.10.1 and checker 4.2.0
+are current, and the engine and reader speak prepared protocol 3. `dinorefurb-dosbox-session`
+0.3.0 carries the three M7 slices. Reader and engine 2.0.0 shipped scoped memory hypotheses ([ADR 0009](decisions/0009-scoped-memory-hypotheses-on-call-models.md)),
 and engine 4.0.0 gives declared-table continuations their own budget
 ([ADR 0011](decisions/0011-separate-continuation-budget.md)). PR 60 (conditional
 table-target continuations) and PR 69 (boundary budget) are merged.
@@ -103,27 +103,82 @@ and enemy-reinfestation's open requests against this toolkit's Ghidra scripts. I
 these are items 12, 13, 20 to 27 and 32. Some name scripts the toolkit does not ship. Re-verify
 each against main and fix the ones that belong here.
 
-### M7. Owned DOSBox-X debugger sessions (issue 403, tracked in issue 406)
+### M8. Derived dispatch-table bounds (issue 460; slice 1 in progress)
 
-Build `dinorefurb-dosbox-session` as [ADR 0026](decisions/0026-dosbox-x-session-package.md)
+The engine derives a table's entry count from the code where the code proves it, with a value-range
+analysis over p-code ([ADR 0034](decisions/0034-value-ranges-over-p-code-for-table-bounds.md)).
+Today the researcher declares the count of every `indirectJumps` table, and declared computed call
+targets (issue 457) rest on the same kind of reading.
+
+Outcome: an exhaustive table that declares no count gets a derived count when the analysis proves
+the index's range on every path into the dispatch, and the report marks it as derived, with the
+range, the dispatch site, the bounding sites and the assumptions it rests on.
+
+What reports must keep explicit:
+
+- A site whose bound is not proven stays unresolved, with its reason: no bound, a path that skips
+  the bound, an operation without a transfer function, an unknown memory read, a call or interrupt
+  not walked, the widening limit, or an index that does not step by the table stride.
+- A declared count larger than the proven range is refused. A smaller one is followed, and the
+  report lists the rows it leaves out.
+- The table's segment and location stay declared and are listed among the derivation's
+  assumptions.
+
+Synthetic tests, all built from synthetic bytes:
+
+- Positive controls: `and bx, 3; shl bx, 1` before a word table call, the same with `add bx, bx`,
+  a `cmp bx, 9; ja default` guard, and a 4-entry table indexed by `x * 2 & 7`.
+- Unproven cases: a second path into the dispatch that skips the mask, a write to the index
+  between the bound and the dispatch, a call that is not walked between them, and an index loaded
+  from memory.
+- A loop that increments the index, which reaches the widening limit.
+- Unicorn oracle cases for each transfer function, and a bridge case in `bridge.test.ts`.
+
+Slices, one PR each:
+
+1. In progress. The domain, its transfer functions and a per-instruction evaluation over
+   register ranges in `x86/ranges.py`, checked against `pcode.evaluate` and Unicorn
+   (`tests/test_ranges.py`). Nothing reads it yet, so no report changes. Release label
+   `release:skip`.
+2. The analysis over a routine's control flow to a dispatch site: joins, the widening limit,
+   refinement on `CBRANCH` edges, stack slots, and calls and interrupts not walked. Tested on the
+   positive controls, unproven cases and the loop above, before any report uses it.
+3. Reports: `table.count` becomes optional for an exhaustive `indirectJumps` declaration, the
+   derived-count record and the unresolved reasons, the declared-against-derived check, in
+   `reach`, `inventory-check` and the path commands that read tables. Reporter guide, migration
+   guide and bridge case; a prepared-config change, if any, increments `PREPARED_PROTOCOL`.
+4. Declared computed call targets take derived counts, once their declaration (issue 457) has
+   landed. If it lands before slice 3, slice 3 covers both.
+
+Exit condition: a table with no declared count gets a derived count only when the analysis proves
+the bound on every path into the dispatch, the report marks it as derived, and every case it cannot
+prove stays unresolved with its reason. Issue 460 then closes.
+
+### M7. Owned DOSBox-X debugger sessions (issue 403, tracked in issue 406; slices shipped)
+
+`dinorefurb-dosbox-session` is built as [ADR 0026](decisions/0026-dosbox-x-session-package.md)
 sets out. Each slice is one PR with synthetic tests against a stand-in emulator and a stand-in
 client on a Windows runner, and no game or DOSBox-X in CI:
 
-1. The package, its CI area, release path and catalog rows, with the owned process, run lock,
-   drives, muted host audio, session records, request IDs and operation observation. Tests cover
-   readiness, an early exit, an expired observation, a transport error, a refused capability, a
-   checkout at another revision or with local changes, an existing C: drive, an existing lock and
-   a stale one, cleanup that fails while the process lives and another platform. The owner-local
-   native procedure's breakpoint stop and register read pass on the pinned revision.
-2. Guarded writes to stopped state against a caller-supplied field contract. Tests cover a write
-   outside the contract, an expected-hash mismatch and a readback mismatch. The native procedure
-   gains the guarded memory write and readback, and passes on the pinned revision.
-3. The event log, with caller-supplied event schemas, a versioned outcome contract and module
-   hashes. Tests cover a log cut off mid-run, an event that fails its schema, an outcome that
-   differs from the expected one or carries a failure, a required outcome field that is missing or
-   of the wrong type, a missing, extra or reordered event, a log read against the contract version
-   it recorded after a newer version exists, a malformed or oversized log, and a named module that
-   is not imported when the guest starts.
+1. Shipped in PR 414, released as 0.1.0. The package, its CI area, release path and catalog
+   rows, with the owned process, run lock, drives, muted host audio, session records, request IDs
+   and operation observation. Tests cover readiness, an early exit, an expired observation, a
+   transport error, a refused capability, a checkout at another revision or with local changes,
+   an existing C: drive, an existing lock and a stale one, cleanup that fails while the process
+   lives and another platform. The owner-local native procedure's breakpoint stop and register
+   read pass on the pinned revision. Issue 416 found that an owner killed between launching the
+   emulator and recording it in the lock left an emulator that no lock names; the emulator now
+   runs in a job that ends it with its owner (ADR 0030).
+2. Shipped in PR 419, released as 0.2.0. Guarded writes to stopped state against a
+   caller-supplied field contract. Tests cover a write outside the contract, an expected-hash
+   mismatch and a readback mismatch. The native procedure gains the guarded memory write and
+   readback, and passes on the pinned revision.
+3. Shipped in PR 426, released as 0.3.0. The event log, with caller-supplied event schemas, a
+   versioned outcome contract and module hashes. Tests cover a log cut off mid-run, an event that
+   fails its schema, an outcome that differs from the expected one or carries a failure, a
+   required outcome field that is missing or of the wrong type, a missing, extra or reordered
+   event, a log read against the contract version it recorded after a newer version exists, a
+   malformed or oversized log, and a named module that is not imported when the guest starts.
 
 What must stay explicit: an expired observation is pending, a log without its final outcome is
 incomplete, and no write is supported unless the caller's contract says so. The milestone ends
@@ -134,6 +189,11 @@ save or restore through its structured debugger, and its own save states neither
 writable drive nor restore atomically, so [ADR 0028](decisions/0028-no-emulator-checkpoints-at-the-pinned-dosbox-x.md)
 defers them until an upstream revision provides what it lists. They then become a slice that
 depends on slices 2 and 3.
+
+Gated breakpoints (issue 456, [ADR 0032](decisions/0032-gated-breakpoints-for-polling-waits.md))
+follow the milestone: a polling wait stops once per wake the caller names instead of on every pass.
+The issue closes once reconqueror's native control shows the same readiness, input order and RNG
+events as its loop-stop run.
 
 ### Writing rules
 

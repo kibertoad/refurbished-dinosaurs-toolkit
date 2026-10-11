@@ -27,7 +27,9 @@ scientific-method <command> <config.json>
 The config is JSON with at least `source` (a path relative to the config file), its `xxh3` (the
 XXH3-128 hash the spec's build entry gives, as 32 lower-case hex digits; a `sha256` is refused),
 and `sourceKind`: `mz` for DOS executables, `pe32` for 32-bit Windows executables (parsed by the engine),
-`pe32+` for 64-bit Windows executables (read only by `imports`), or `synthetic-raw` for test data. The report is printed as JSON. On failure the command prints
+`pe32+` for 64-bit Windows executables (read only by `imports`), or `synthetic-raw` for test data. The config file is UTF-8, with or without one leading byte order mark
+(which Windows PowerShell 5.1 writes for `-Encoding utf8`); a file starting with a UTF-16 or UTF-32 byte order mark or with
+more than one UTF-8 mark, or bytes that are not UTF-8, are refused with the cause named. The report is printed as JSON. On failure the command prints
 `Evidence report: <reason>` to stderr and exits with 1.
 
 Commands: `trace`, `arguments`, `effects`, `returns`, `memory`, `guards`, `uses`, `incoming`,
@@ -45,13 +47,21 @@ lies in an `mz` source by its MZ and FBOV tables: the load image, the FBOV descr
 overlay stub, overlay code, a fixup table, zero padding or undeclared bytes, with bytes past
 everything the tables declare marked `trailing`. It places each entry on its own, keeps every
 fragment, marks the parts outside the entry's region, and can compare a body with a candidate body
-found another way. It needs `formatControls` and decodes no instruction.
+found another way. It needs `formatControls` and decodes no instruction. In a file with an FBOV
+envelope it cuts the load image at the spans the resident descriptors' offset words give, so the
+bytes between two segments' spans are padding or undeclared bytes. `descriptors` lists every
+descriptor's four words, its span and the span's loaded `segment:ip`, the mapping a code region
+declares; with no `functions`, the report gives the layout and this list alone.
 
 `imports` lists the import the file's import tables put in each slot of a PE32 or PE32+ import
 address table, by slot address, and needs at least one positive control: a slot with the import
-other evidence shows. A control that maps to anything else rejects the report.
+other evidence shows. A control that maps to anything else rejects the report. The import
+directory ends at the first descriptor whose Name or FirstThunk is zero, where the NT loader ends
+it; `directoryEnd` gives that descriptor's nonzero fields, and `pastEnd` lists each later
+descriptor, up to an all-zero one, that a loader reading on would meet, with its DLL name and
+nonzero fields.
 
-`unpack` decodes an LZEXE 0.90 or 0.91 or an EXEPACK executable (an `mz` source) and writes its unpacked form to
+`unpack` decodes an LZEXE 0.90 or 0.91, an EXEPACK or a PKLITE 1.00 to 2.01 executable (an `mz` source) and writes its unpacked form to
 the config's `output`, a path relative to the config file. It prints the `size`, `xxh3`, `format`
 and `tool` a build's `unpacked` item gives, and never runs the decompressor in the file. The
 unpacked file is written by a documented layout rule, so every run of a reader major version gives
@@ -102,6 +112,7 @@ import { bodyLayout, fileLayout } from "@scientific-method/executable-reader/bod
 | `MzImage.address(segment, offset)` | `legacy-image` | File offset of a resident loaded address. |
 | `MzImage.resolveOperand(site, targetOffset?)` | `legacy-image` | Resolves a stored segment word through the relocation or fixup tables. |
 | `MzImage.envelope`, `FbovEnvelope` | `legacy-image` | File offsets of the FBOV envelope header, the end of its payload and its descriptor table, or null without an envelope. |
+| `descriptorExtents(image)`, `DescriptorExtent`, `DescriptorExtentStatus` | `legacy-image` | The load-image span each FBOV descriptor's `minOffset` and `maxOffset` words give, its status and its loaded `segment:ip`. Refuses nothing. |
 | `formatCounts(image)` | `legacy-image` | Counts of relocations, descriptors, overlays, fixups and trampolines. |
 | `checkFormatControls(image, expected)` | `legacy-image` | Throws unless the source yields the expected counts. |
 | `selectedTarget(image, selector, target?)` | `legacy-image` | Canonical overlay entry named by a descriptor and trampoline. |
@@ -115,15 +126,16 @@ import { bodyLayout, fileLayout } from "@scientific-method/executable-reader/bod
 | `TableConfig`, `TableLayout`, `TableCodeSource`, `TableControl`, `TableListingRow`, `TablePointerKind`, `TableEntryResult` | `table-contents` | Types of the `table` query and its results. |
 | `importReport(bytes, config)` | `pe-imports` | The `imports` report over an already hash-checked buffer. |
 | `ImportConfig`, `ImportControl`, `ImportSlot`, `SlotImport`, `NamesFrom` | `pe-imports` | Types of the `imports` query, its controls and its slot rows. |
+| `DirectoryEnd`, `PastEnd`, `DescriptorField`, `DESCRIPTOR_FIELDS` | `pe-imports` | The descriptor that ends the import directory, the descriptors after it, and the descriptor field names. |
 | `IgnoredRawData` | `pe-imports` | A `rawIgnored` row: a section whose PointerToRawData is 0 and whose SizeOfRawData is not. |
 | `bodyLayout(bytes, config)` | `body-layout` | The `bodies` report over an already hash-checked buffer. |
 | `fileLayout(image)` | `body-layout` | The regions an `MzImage`'s tables declare, with the runs between them, covering the whole file. |
 | `MAX_BODY_FUNCTIONS`, `MAX_BODY_RANGES` | `body-layout` | The most functions one query takes (10000) and the most ranges in one body or candidate (4096). |
-| `BodyConfig`, `BodyFunction`, `ByteRange`, `BodyPart`, `LayoutRegion`, `RegionKind`, `RegionTotal` | `body-layout` | Types of the `bodies` query, the layout and the classified parts. |
-| `unpack(bytes)` | `unpack` | Unpacks an LZEXE 0.90 or 0.91 or an EXEPACK file in memory into an `UnpackResult`: the unpacked bytes, the rebuilt header and relocations, and the packed parts read. |
+| `BodyConfig`, `BodyFunction`, `ByteRange`, `BodyPart`, `DescriptorRow`, `LayoutRegion`, `RegionKind`, `RegionTotal` | `body-layout` | Types of the `bodies` query, the layout and the classified parts. |
+| `unpack(bytes)` | `unpack` | Unpacks an LZEXE 0.90 or 0.91, an EXEPACK or a PKLITE 1.00 to 2.01 file in memory into an `UnpackResult`: the unpacked bytes, the rebuilt header and relocations, and the packed parts read. |
 | `UNPACK_LAYOUT` | `unpack` | The layout rule number the unpacked bytes are written by. |
 | `MAX_PACKED_BYTES`, `MAX_UNPACKED_BYTES` | `unpack` | The caps on the packed file and on the unpacked load module, 1 MiB each. |
-| `UnpackResult`, `UnpackedHeader`, `UnpackedRelocation`, `PackedParts` | `unpack` | Types of the result. |
+| `UnpackResult`, `UnpackedHeader`, `UnpackedRelocation`, `PackedParts`, `PkliteParts`, `PkliteIntro`, `PkliteCodeTables` | `unpack` | Types of the result. |
 
 Each export carries a doc comment with its exact checks and errors.
 

@@ -215,8 +215,19 @@ My Game/
   data track's user data from INDEX 01, and the SHA-256 of each audio track's samples
   from INDEX 01 to the next track's INDEX 00. These hashes are the same whichever format holds the
   disc, so they are what restorations' fingerprints and the formats are compared by.
+  CD-ROM XA masters leave empty form 2 sectors on MODE2 data tracks as padding and postgaps: mode 2
+  sectors whose two subheader copies agree and set the form 2 bit, with all 2,324 data bytes zero
+  (the EDC is not checked). Wherever such a sector sits on the track, it adds 2,048 zero bytes to
+  the data hash, the block a MODE1 image of the disc and an ISO hold there and the bytes the
+  toolkit's `OriginalContentSource.OpenVolume` reads for it. `data.emptyForm2Sectors` lists those
+  sectors as `[first, stop)` ranges counted from INDEX 01 (`[]` when there are none), since no ISO
+  keeps the fact that they were form 2. A form 2 sector with any nonzero data byte, and a mode 2
+  sector of either form whose two subheader copies differ, holds no user data. A file whose extent covers an empty form 2
+  sector is not read: the `files` format, or a profile that lists expected paths (whose check
+  reads the files), stops the run with its sector number before any format is written.
   A raw data track can run on past the ISO 9660 volume its primary volume descriptor declares,
-  and some discs hold sectors there with no user data: no sync pattern, or another mode.
+  and some discs hold sectors there with no user data: no sync pattern, another mode, a form 2
+  sector that carries data, or subheader copies that differ.
   `data.nonDataSectors` lists those sectors as `[first, stop)` ranges counted from INDEX 01, and
   `data.nonDataSha256` is the SHA-256 of their raw 2,352 bytes in order (`[]` and `null` when there
   are none). They add nothing to `data.sha256`. Inside the declared volume, or on a track with no
@@ -233,7 +244,8 @@ My Game/
   - `matched`: everything the source holds was compared and agreed.
   - `partial`: everything compared agreed, and `notCompared` lists what the format does not hold
     or could not be compared: audio left out of an ISO, lossy Ogg audio, sound in a pregap that
-    ISO-plus-audio formats drop.
+    ISO-plus-audio formats drop, which sectors were empty form 2 sectors (an ISO holds them as zero
+    blocks, and its `notes` name them).
   - `mismatched`: `differences` says what differs.
 - `unavailable`: formats that could not be made from this source, and why. A plain ISO has no raw
   sectors, so no BIN/CUE, CloneCD or CHD can be made from it. A data track with sectors that hold
@@ -268,7 +280,10 @@ located.
 
 A restoration describes its disc in a profile file
 ([schema](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/schemas/disc-profile.schema.json))
-and keeps it in its own repository:
+and keeps it in its own repository. The file is UTF-8, with or without one leading byte order mark
+(which Windows PowerShell 5.1 writes for `-Encoding utf8`); a file starting with a UTF-16 or UTF-32
+byte order mark or with more than one UTF-8 mark, or bytes that are not UTF-8, are refused with the
+cause named:
 
 ```json
 {

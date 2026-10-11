@@ -1,5 +1,17 @@
 # @scientific-method/standard-checker
 
+## 4.2.0
+
+### Minor Changes
+
+- bf0da8a: The comparison with the base branch now finds an ID taken twice before the two branches meet. A spec ID or deviation whose file the change adds since the fork point, committed or not, fails `IDENTIFIERS-6` when the tip of the base branch (`--base`, or `origin/$GITHUB_BASE_REF` or `origin/main`) holds a file under that ID that matches neither the working tree, the index, nor the file at any commit of the branch since the fork point: `<ID> also exists at <ref> with content this branch never held; renumber this one before it is merged`. A copy at the tip that began as one of the branch's versions, merged or cherry-picked there and possibly edited since, passes. Run before committing, such as from a `pre-commit` hook, it lets the branch renumber before commit messages cite the ID. `--base <ref>` now names the branch the change merges into: deleted IDs, areas, deviations and layout tables are compared from where HEAD forked from `<ref>`, so entries that branch gained since are no longer reported as deleted, and a message about that comparison names the fork point and the ref when they differ.
+
+## 4.1.2
+
+### Patch Changes
+
+- 27ecade: The range-end check no longer fails a range whose end is the byte of a one-byte function, or of a one-byte range of a function's body. That byte is both its first and its last, so a correct range that stops where such a function starts was failed with an end that would claim the function's byte. A range ending there still fails when a longer range of another function ends on the same byte.
+
 ## 4.1.1
 
 ### Patch Changes

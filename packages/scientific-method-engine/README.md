@@ -13,7 +13,10 @@ For original MZ/FBOV executables, run reports through
 [`@scientific-method/executable-reader`](https://www.npmjs.com/package/@scientific-method/executable-reader). The
 reader derives relocation, fixup and trampoline data from the hash-checked source and pipes a
 prepared config to this engine. Running the engine directly trusts whatever relocation data the
-config supplies, so use it directly only for synthetic inputs, PE32 sources and checked mappings:
+config supplies, so use it directly only for synthetic inputs, PE32 sources and checked mappings. A config
+file is read as the reader reads it: UTF-8, with or without one leading byte order mark, and a file starting
+with a UTF-16 or UTF-32 byte order mark or with more than one UTF-8 mark, or bytes that are not UTF-8, are
+refused with the cause named.
 
 ```sh
 scientific-method-engine trace analysis/query.json
@@ -166,6 +169,16 @@ reported as `undecided` and never counts as held. Access reports also give each 
 `writeOrder`, or why it has no modeled value. A last-writer control with an `address` asks the
 same of memory the program never reads back, at a checkpoint. See the
 [controls contract](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#relational-controls).
+
+Two reads of a byte the model holds no value for read one term until a write that may store it or a
+modeled call, which assumes nothing else changes memory. A query whose program polls memory that
+hardware, DMA or an interrupt handler updates lists those addresses in `volatileMemory`: up to 64
+rows of `segment` (a real-mode paragraph, or 0 in the PE32 flat model), `offset`, `bytes` and
+`evidence`. Each read of a byte inside a declared range reads its own term, ignoring any value the
+path stored, and its `byteProducers` row gives cause `declared volatile` with the read's order and
+the declared row's index in `volatileMemory`. A read whose address is not concrete but may name a
+declared byte keeps its term and carries `mayBeVolatile: true`. See the
+[memory model](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/blob/main/docs/bounded-evidence-reporters.md#bounded-instruction-reports).
 
 A trace-family query whose entry lies inside a function body names the function's entry in
 `entryFrame: { "from": <site> }`. The engine traces from there to the query's entry and, when SP

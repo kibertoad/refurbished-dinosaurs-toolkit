@@ -3,15 +3,15 @@ import json
 import sys
 from pathlib import Path
 
-import capstone
 import pypcode
 
 from . import PREPARED_PROTOCOL
+from .x86.image import CAPSTONE_VERSION
 
 CONFIG_LIMIT = 1024 * 1024
 PREPARED_CONFIG_LIMIT = 16 * 1024 * 1024
 # The header names the decoder and instruction semantics that actually ran, not the pins in pyproject.toml.
-DECODER = "capstone " + capstone.__version__
+DECODER = f"capstone {CAPSTONE_VERSION or 'without distribution metadata'}"
 INSTRUCTION_SEMANTICS = f"pypcode {pypcode.__version__} (Ghidra SLEIGH x86)"
 USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bounds|owner|callees|reach|trace|uses|arguments|"
          "effects|returns|memory|incoming|inventory-check|call-order|guards|allocation|dispatch> <config.json|->\n"
@@ -23,11 +23,26 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "or continues at another address than the next instruction (ghidraFallsThroughElsewhere).\n"
          "reach lists the target sites the starts reach over resolved calls and jumps, with the fewest-call chain\n"
          "and the routines every read route passes, and lists every reached transfer it could not resolve;\n"
-         "a leaves routine is reached but not read, and its reason is repeated in the report.\n"
+         "a leaves routine is reached but not read, and its reason is repeated in the report;\n"
+         "a call to a noReturn routine and a noReturn interrupt do not continue at the next instruction,\n"
+         "and a noReturn routine with a return, or a jump into a returning leaf, on its own read paths\n"
+         "is reported contradicted;\n"
+         "indirectCalls declares the targets of a computed call as a table read from the build or a list,\n"
+         "and the walk calls each of them; one not declared exhaustive stays unresolved;\n"
+         "controls are call sites the walk must reach and resolve, instructionControls sites it must decode,\n"
+         "and a failed control fails the report saying whether it was reached.\n"
          "inventory-check places every resolved direct call target in the notation of the function inventory TSV\n"
          "that inventory names and lists each target no row starts at: inside another row's body or outside every row,\n"
          "with one calling site, near or far, and whether an entry-path call, a contested one or only raw bytes call it;\n"
          "a target inside an instruction the entry-path walk established from another start names it as insideInstruction.\n"
+         "It lists each row whose start lies inside an instruction the walk established (rowStarts), with the\n"
+         "routine the walk read it in; a row start in bytes the walk did not decode is counted, not placed.\n"
+         "noReturn takes reach's declarations: the walk stops at a call to a declared routine and at a declared\n"
+         "interrupt, a declared routine with a return on its own read paths is reported contradicted, and\n"
+         "rowsPastNoReturn lists each row whose body continues past such a call or interrupt.\n"
+         "indirectCalls takes reach's declarations: each declared target of a reached computed call is a call target.\n"
+         "uses matches accesses whose footprint intersects query offset..offset+width; its rawCandidates give each unreached\n"
+         "operand's encoded displacement, width, access, segment register and intersection, and never count as uses.\n"
          "trace, arguments, effects, returns, guards, memory and allocation check relationalControls:\n"
          "a violated control fails the report; an undecided one is reported and never counts as held.\n"
          "A lastWriter control with an address inspects that memory at its checkpoint anchors without a read.\n"
@@ -35,6 +50,8 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "Declared table continuations are separate conditional paths that spend continuationBudget\n"
          "(paths, totalSteps, maxSteps, visitLimit, stringIterations); ordinary computed transfers remain stopped.\n"
          "Port accesses and interrupts are hardware-boundary events; portInputs supplies port reads as assumptions.\n"
+         "volatileMemory lists memory hardware or an interrupt may change (segment, offset, bytes, evidence);\n"
+         "each read of a declared byte reads its own term, cause declared volatile.\n"
          "A callModels entry at an INT n site (real mode) returns past the interrupt under its cases (leavesFlags: true\n"
          "keeps the interrupt's FLAGS word on the stack); other interrupts stop.\n"
          "callModels[].preservesMemory keeps explicit, bounded pre-call byte scopes across a modeled call; other memory stays unknown.\n"
@@ -46,6 +63,24 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
 def ghidra_scripts():
     """The directory to pass to Ghidra's analyzeHeadless -scriptPath."""
     return Path(__file__).resolve().parent / "ghidra"
+
+
+def _read_config_text(path):
+    # Windows PowerShell 5.1 writes a UTF-8 byte order mark with -Encoding utf8 and UTF-16 by default.
+    # The reader's readConfigText in report.ts applies the same rules with the same messages.
+    data = path.read_bytes()
+    if data[:4] in (b"\xff\xfe\x00\x00", b"\x00\x00\xfe\xff"):
+        raise ValueError(f"Config {path} is UTF-32 text; save it as UTF-8")
+    if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        raise ValueError(f"Config {path} is UTF-16 text; save it as UTF-8")
+    try:
+        # utf-8-sig drops one leading byte order mark.
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise ValueError(f"Config {path} is not valid UTF-8; save it as UTF-8") from None
+    if text.startswith("\ufeff"):
+        raise ValueError(f"Config {path} starts with more than one byte order mark; save it as UTF-8 with at most one")
+    return text
 
 
 def main(argv):
@@ -62,14 +97,22 @@ def main(argv):
     if config_path == "-":
         # The reader caps its input at 1 MiB, then adds every source relocation.
         limit, label = PREPARED_CONFIG_LIMIT, "Prepared config exceeds 16 MiB"
-        text = sys.stdin.read(limit + 1)
+        # The reader writes UTF-8. sys.stdin decodes with the locale's encoding (cp1252 on Windows), which
+        # would garble a non-ASCII source path or evidence string, so the bytes are decoded here.
+        data = sys.stdin.buffer.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError(label)
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError("Prepared config is not valid UTF-8") from None
         base = Path.cwd()
     else:
         limit, label = CONFIG_LIMIT, "Config exceeds 1 MiB"
         path = Path(config_path).resolve()
         if path.stat().st_size > limit:
             raise ValueError(label)
-        text, base = path.read_text(encoding="utf-8"), path.parent
+        text, base = _read_config_text(path), path.parent
         reject_derived = True
     if len(text.encode("utf-8")) > limit:
         raise ValueError(label)
@@ -106,6 +149,9 @@ def main(argv):
 
 def run():
     """Entry point of the ``scientific-method-engine`` command; exits with 1 on any error."""
+    # The reader decodes this process's stderr as UTF-8; the locale's encoding (cp1252 on Windows) would
+    # garble a non-ASCII path in an error message.
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     try:
         main(sys.argv[1:])
     except (ValueError, TypeError, KeyError, OSError, ImportError) as error:

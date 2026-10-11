@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "dinorefurb-dosbox-session"
 # The release workflow writes the published version from the package's release tag.
 version = "0.0.0"
-description = "Owned DOSBox-X debugger sessions for clean-room restoration research: process, run lock, drives, records and observation."
+description = "Owned DOSBox-X debugger sessions for clean-room restoration research: process, run lock, drives, records, observation, guarded writes and an event log."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"

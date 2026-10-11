@@ -1,5 +1,51 @@
 # @scientific-method/executable-reader
 
+## 4.0.0
+
+### Major Changes
+
+- 2ec163f: `unpack` and the `unpack` export now decode PKLITE 1.20 to 2.01 executables, Professional builds included, besides 1.00 to 1.15. The reader matches the 1.50 intro, the ADD descramblers of 1.20 and later and the XOR descramblers of 1.50, the 2.01 and 1.20 small-model copiers, and the 1.20 small-model decompressors, and decodes streams with the 1.20 code tables, whose two-byte copies reach 511 bytes back, with their literal-0 code, and with the key some 1.20 stubs XOR each offset's low byte with. Behind an ADD descrambler the extra-compression relocation table gives its offsets high byte first. A stub part that matches nothing listed is still refused, naming the part and its offset; the betas, stubs patched by other tools and PKLITE COM files are not decoded.
+
+  Breaking: `packed.pklite.scrambled` is replaced by `packed.pklite.descrambler`, which is `xor`, `add` or null; read `descrambler !== null` where `scrambled` was read. `packed.pklite` also gives `codeTables` (`1.00` or `1.20`, the exported `PkliteCodeTables` type), `offsetKey` and `pspSignature`, the `PK` or `pk` signature a stub writes into the program's PSP, which the unpacked program may check. Files an earlier release unpacked give the same bytes and `unpacked.xxh3` as before. The migration guide has the entry.
+
+## 3.0.0
+
+### Major Changes
+
+- 3091168: `readMz` now keeps all four words of each FBOV descriptor: `Descriptor` gains `maxOffset` (word 2)
+  and `minOffset` (word 6). The new `descriptorExtents(image)` gives the load-image span each
+  descriptor's words declare, from `segment * 16 + minOffset` up to `segment * 16 + maxOffset`, with
+  its status (`bytes`, `empty`, `inverted` or `outside-load-image`) and the span's loaded
+  `segment:ip`. It refuses nothing, and the reader gives the flags no meaning beyond the overlay bit.
+
+  `bodies` reads the load image of a file with an FBOV envelope through those spans. Each resident
+  descriptor's span is `resident` with that descriptor, where `descriptor` used to be null, and
+  load-image bytes no span holds are `zero-padding` or `undeclared` runs, where they used to be
+  `resident`. A body part in another descriptor's span is outside its entry's region. A resident
+  span that runs past the load image keeps its part in the load image, and two resident spans that
+  overlap fail the report. The report gains
+  `descriptors`, every descriptor's words, span and loaded address, which a config can take its code
+  regions from, and `functions` may be left out or empty to get the layout and descriptors alone.
+  Files without an envelope get the same layout as before.
+
+## 2.10.1
+
+### Patch Changes
+
+- ebc4fba: A config file with a leading UTF-8 byte order mark, as Windows PowerShell 5.1 writes with `-Encoding utf8`, now reads the same as one without. A config starting with a UTF-16 or UTF-32 byte order mark, one starting with more than one UTF-8 byte order mark, or one whose bytes are not UTF-8, fails with an error naming the cause, where before these failed as a JSON syntax error and bytes that are not UTF-8 were replaced with U+FFFD. Non-ASCII text in a config, such as a source path in a folder with an accented name, now reaches the engine intact on Windows, once `scientific-method-engine` is the release from the same change, which reads the reader's pipe as UTF-8.
+
+## 2.10.0
+
+### Minor Changes
+
+- b79e569: The `imports` report ends the import directory at the first descriptor whose Name or FirstThunk is zero, where the NT loader, Wine and ReactOS end it. A file whose last descriptor is followed by one with a stray time stamp or lookup table RVA, which some linkers and packers write, used to fail with `Import descriptor N has no DLL name or address table` and is now reported. The new `directoryEnd` field gives the descriptor the directory ended at and its nonzero fields. When any field is nonzero, `pastEnd` lists each later descriptor that is not all zero, up to an all-zero one, with its DLL name and nonzero fields, since a loader reading past the end would use them, and says where that read stopped. A descriptor in the zeros the loader fills past a section's raw data reads as zero. `exclusions` names the Windows 9x loader's directory end, which the report does not check.
+
+## 2.9.0
+
+### Minor Changes
+
+- 47ccb42: `unpack` and the `unpack` export now decode PKLITE 1.00 to 1.15 executables, standard and extra compression, small and large model, and report them as `packer: "PKLITE"`. PKLITE keeps its facts in the stub's code, so the reader matches each part of the stub (intro, optional XOR descrambler, copier, decompressor, literal sequence, length table) against known byte sequences and reads the facts from their operands; a part that matches nothing listed is refused, naming the part and its offset. `packed.pklite` gives the version word at 0x1C as found, the intro, whether the stub was scrambled, extra compression, the large model and the footer offset. The unpacked file follows layout rule 1, with SS, SP, CS and IP from the footer. An uncompressed area in the stream is refused.
+
 ## 2.8.0
 
 ### Minor Changes

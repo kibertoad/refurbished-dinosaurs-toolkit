@@ -17,16 +17,26 @@ from .errors import CapabilityRefused
 
 
 class StopReasonLike(Protocol):
-    """Why a session stopped. ``kind`` is ``startup`` after the target starts."""
+    """Why a session stopped. ``kind`` is ``startup`` after the target starts.
+
+    After a breakpoint stop, ``breakpoint_id`` names the breakpoint the server matched (``None``
+    when it matched none) and ``address`` is that breakpoint's address.
+    """
 
     kind: str
+    breakpoint_id: str | None
+    address: Any
 
 
 class SessionStateLike(Protocol):
-    """A debugger session's state as the client returns it."""
+    """A debugger session's state as the client returns it.
+
+    ``state_revision`` grows with each change to the guest's state, such as a stop.
+    """
 
     id: str
     state: str
+    state_revision: int
     stop_reason: StopReasonLike | None
 
 
@@ -74,6 +84,16 @@ class AgentClientLike(Protocol):
     def get_registers(self, session_id: str, request_id: str | None = None) -> Any: ...
 
     def read_memory(self, session_id: str, address: Any, length: int, request_id: str | None = None) -> Any: ...
+
+    def write_memory(
+        self,
+        session_id: str,
+        address: Any,
+        data: bytes,
+        *,
+        expected_sha256: str | None = None,
+        request_id: str | None = None,
+    ) -> Any: ...
 
     def create_execution_breakpoint(
         self, session_id: str, segment: str | int, offset: str | int, *, once: bool = False, request_id: str | None = None
@@ -160,7 +180,8 @@ class SessionClient:
     """A caller's client with this session's request IDs and capability checks.
 
     Every call carries an ID from the client's own namespace. A call that needs a capability the
-    server did not report is refused before it is sent. Writes to guest state are not offered here.
+    server did not report is refused before it is sent. Writes to guest state are not offered here;
+    :meth:`~dinorefurb_dosbox_session.DosboxSession.write` makes them against a field contract.
     """
 
     def __init__(self, client: AgentClientLike, ids: RequestIds, capabilities: Mapping[str, Any] | None) -> None:

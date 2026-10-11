@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,6 +49,49 @@ test("source loader derives relocation membership and far return frames", (t) =>
   assert.equal(report.completeWithinModel, true);
   assert.equal(report.paths[0].registers.ax.value, 65535);
   assert.ok(report.paths[0].events.some((e: Report) => e.kind === "call-return"));
+});
+
+test("config files read the same with a UTF-8 byte order mark and refuse other encodings", (t) => {
+  const { dir, config } = fixture(t);
+  const path = join(dir, "config.json"),
+    text = JSON.stringify({ ...config, regions: [{ ...config.regions[0]!, evidence: "synthetic côte" }] });
+  writeFileSync(path, text);
+  const plain = run(["returns", path]);
+  assert.equal(plain.completeWithinModel, true);
+  writeFileSync(path, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(text)]));
+  assert.deepEqual(run(["returns", path]), plain);
+  // Only one mark is an encoding signature; a second is refused by name.
+  writeFileSync(path, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf]), Buffer.from(text)]));
+  assert.throws(() => run(["returns", path]), /starts with more than one byte order mark/);
+  writeFileSync(path, Buffer.concat([Buffer.from([0xff, 0xfe, 0, 0]), Buffer.from("{}")]));
+  assert.throws(() => run(["returns", path]), /is UTF-32 text; save it as UTF-8/);
+  writeFileSync(path, Buffer.from([0, 0, 0xfe, 0xff, 0, 0, 0, 0x7b, 0, 0, 0, 0x7d]));
+  assert.throws(() => run(["returns", path]), /is UTF-32 text; save it as UTF-8/);
+  writeFileSync(path, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(text, "utf16le")]));
+  assert.throws(() => run(["returns", path]), /is UTF-16 text; save it as UTF-8/);
+  writeFileSync(path, Buffer.concat([Buffer.from([0xfe, 0xff]), Buffer.from(text, "utf16le").swap16()]));
+  assert.throws(() => run(["returns", path]), /is UTF-16 text; save it as UTF-8/);
+  writeFileSync(path, Buffer.from(text, "latin1"));
+  assert.throws(() => run(["returns", path]), /is not valid UTF-8; save it as UTF-8/);
+});
+
+test("non-ASCII config text reaches the engine intact whatever the engine's locale", (t) => {
+  const { dir, data, config } = fixture(t);
+  // The engine decodes the pipe and writes stderr as UTF-8, not in the locale's encoding (cp1252 on Windows).
+  const previous = process.env.PYTHONIOENCODING;
+  process.env.PYTHONIOENCODING = "latin-1";
+  t.after(() =>
+    previous === undefined ? delete process.env.PYTHONIOENCODING : (process.env.PYTHONIOENCODING = previous),
+  );
+  const folder = join(dir, "côte");
+  mkdirSync(folder);
+  writeFileSync(join(folder, "source.bin"), data);
+  const path = join(folder, "config.json");
+  writeFileSync(path, JSON.stringify({ ...config, regions: [{ ...config.regions[0]!, name: "résident" }] }));
+  const report = run(["trace", path]);
+  assert.equal(report.completeWithinModel, true);
+  assert.match(JSON.stringify(report), /résident/);
+  assert.doesNotMatch(JSON.stringify(report), /rÃ©sident/);
 });
 
 test("return flow bridge keeps full-width failures and declared roles", (t) => {
@@ -287,6 +330,37 @@ test("uses inventories an operand past an unmodeled interrupt conditionally and 
   );
   assert.deepEqual(modeled.unresolvedAccesses, []);
   assert.deepEqual(modeled.conditionalAccesses, []);
+});
+
+test("uses reports each raw candidate operand's footprint against the query field", (t) => {
+  const { dir, config } = fixture(t);
+  // ret; then unreached: mov [31],ax; es: mov [33],al; ret
+  const source = Buffer.from([0xc3, 0x89, 0x06, 0x1f, 0x00, 0x26, 0x88, 0x06, 0x21, 0x00, 0xc3]);
+  writeFileSync(join(dir, "source.bin"), source);
+  const query = {
+    source: "source.bin",
+    sourceKind: "synthetic-raw",
+    xxh3: sourceXxh3(source),
+    entry: 0,
+    regions: [{ ...config.regions[0]!, start: 0, end: source.length, entries: [0] }],
+    query: { offset: 32, width: 2 },
+  };
+  writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+  const report = run(["uses", join(dir, "config.json")]);
+  assert.deepEqual(
+    report.rawCandidates.map((r: Report) => [
+      r.site,
+      r.boundary,
+      r.operands.map((o: Report) => [o.displacement, o.width, o.intersection, o.access, o.effectiveSegmentRegister]),
+    ]),
+    [
+      [1, "unresolvedBoundary", [[31, 2, { start: 32, end: 33 }, ["write"], "ds"]]],
+      [5, "unresolvedBoundary", [[33, 1, { start: 33, end: 34 }, ["write"], "es"]]],
+      // The same store decoded from the byte after its prefix is a separate candidate.
+      [6, "unresolvedBoundary", [[33, 1, { start: 33, end: 34 }, ["write"], "ds"]]],
+    ],
+  );
+  assert.equal(report.negativeUsable, false);
 });
 
 test("PE32 uses takes the access direction of an x87 or INS operand from its mnemonic", (t) => {
@@ -749,6 +823,19 @@ test("reach follows a resident far call and an overlay fixup call through the FB
   assert.deepEqual(r.reachedRoutines, [80, 528, 532]);
   assert.equal(r.negativeUsable, true);
   assert.equal(r.instructionLimitReached, false);
+  // The overlay entry is no call, so it is refused as a call-site control and holds as an instruction control.
+  writeFileSync(path, JSON.stringify({ ...config, starts: [80], targets: [528], controls: [528] }));
+  assert.throws(() => run(["reach", path]), /control 528 is not a call site/);
+  writeFileSync(
+    path,
+    JSON.stringify({ ...config, starts: [80], targets: [528], controls: [], instructionControls: [528] }),
+  );
+  const instruction = run(["reach", path]);
+  assert.deepEqual(
+    instruction.instructionControls.map((c: Report) => [c.site, c.routine]),
+    [[528, 528]],
+  );
+  assert.equal(instruction.negativeUsable, true);
   // Stopped after its first instruction, the walk says so at the top level and claims no negative,
   // though the control it read holds.
   writeFileSync(path, JSON.stringify({ ...config, starts: [80], targets: [528], controls: [80], instructionLimit: 1 }));
@@ -762,6 +849,102 @@ test("reach follows a resident far call and an overlay fixup call through the FB
   const leafReport = run(["reach", path]);
   assert.equal(leafReport.targets[0].leaf, true);
   assert.deepEqual(leafReport.leaves, [{ routine: 528, reason: leaf, reached: true, callSites: [532] }]);
+});
+
+test("reach keeps the return site of a far call to a noReturn routine unread through the real MZ prepared bridge", (t) => {
+  const { dir, config } = fixture(t);
+  const path = join(dir, "config.json");
+  const reason = "synthetic: declared to end the program";
+  // 64 calls 80 far through its relocation; 69 is the return site, and 80 ends in a far return at 83.
+  writeFileSync(
+    path,
+    JSON.stringify({ ...config, starts: [64], targets: [69], controls: [64], noReturn: [{ routine: 80, reason }] }),
+  );
+  const r = run(["reach", path]);
+  assert.equal(r.targets[0].reached, false);
+  assert.deepEqual(r.noReturn, [
+    {
+      routine: 80,
+      reason,
+      reached: true,
+      read: true,
+      returnSites: [83],
+      contradicted: true,
+      callSites: [{ site: 64, following: 69, followingRead: false }],
+    },
+  ]);
+  // The walk reads a return in the declared routine, so no negative rests on the declaration.
+  assert.equal(r.negativeUsable, false);
+  writeFileSync(
+    path,
+    JSON.stringify({ ...config, starts: [64], targets: [69], noReturn: [{ interrupt: 80, reason }] }),
+  );
+  assert.throws(() => run(["reach", path]), /noReturn interrupt 80 is not an interrupt instruction/);
+});
+
+test("reach follows declared near and far computed call tables through the real MZ prepared bridge", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "bounded-report-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const data = Buffer.alloc(512);
+  data.write("MZ");
+  data.writeUInt16LE(1, 4);
+  data.writeUInt16LE(1, 6);
+  data.writeUInt16LE(4, 8);
+  data.writeUInt16LE(28, 24);
+  // The one MZ relocation is the segment word of the far pointer at load offset 0028.
+  data.writeUInt16LE(0x2a, 28);
+  // 0000 calls through the words at 0020 (0010, 0018), then through the far pointer at 0028 (0000:0014).
+  data.set([0x2e, 0xff, 0x97, 0x20, 0x00, 0x2e, 0xff, 0x1e, 0x28, 0x00, 0xc3], 64);
+  data.set([0xb8, 0xff, 0xff, 0xc3, 0xb8, 0x01, 0x00, 0xcb, 0xc3], 80);
+  data.set([0x10, 0x00, 0x18, 0x00, 0, 0, 0, 0, 0x14, 0x00, 0x00, 0x00], 96);
+  writeFileSync(join(dir, "source.bin"), data);
+  const base = {
+    source: "source.bin",
+    sourceKind: "mz",
+    xxh3: sourceXxh3(data),
+    entry: 64,
+    regions: [{ name: "resident", start: 64, end: 112, ip: 0, segment: 4096, entries: [64], evidence: "synthetic" }],
+    starts: [64],
+    targets: [80, 84, 88],
+    instructionControls: [74],
+  };
+  const path = join(dir, "config.json");
+  writeFileSync(path, JSON.stringify(base));
+  const undeclared = run(["reach", path]);
+  assert.deepEqual(
+    undeclared.unresolved.map((u: Report) => u.site),
+    [64, 69],
+  );
+  assert.equal(undeclared.negativeUsable, false);
+  const indirectCalls = [
+    {
+      site: 64,
+      exhaustive: true,
+      evidence: "synthetic: bx is 0 or 2",
+      table: { start: 96, count: 2, stride: 2, evidence: "synthetic: two words" },
+    },
+    {
+      site: 69,
+      exhaustive: true,
+      evidence: "synthetic: the pointer is fixed",
+      table: { start: 104, count: 1, stride: 4, width: 4, evidence: "synthetic: one far pointer" },
+    },
+  ];
+  writeFileSync(path, JSON.stringify({ ...base, indirectCalls }));
+  const r = run(["reach", path]);
+  assert.deepEqual(
+    r.targets.map((row: Report) => [row.target, row.reached, row.route.declaredCalls]),
+    [
+      [80, true, [{ site: 64, target: 80 }]],
+      [84, true, [{ site: 69, target: 84 }]],
+      [88, true, [{ site: 64, target: 88 }]],
+    ],
+  );
+  assert.deepEqual(r.indirectCalls[1].rows, [
+    { index: 0, operandSite: 104, rawOffset: 0x14, rawSegment: 0, resolvedSegment: 4096, target: 84 },
+  ]);
+  assert.deepEqual(r.unresolved, []);
+  assert.equal(r.negativeUsable, true);
 });
 
 test("inventory-check places an overlay entry two FBOV trampoline calls reach by its file offset", (t) => {
@@ -813,6 +996,50 @@ test("inventory-check names the instruction a call target lies inside", (t) => {
   );
 });
 
+test("inventory-check reports a row start inside a far call and a row past a noReturn call through the real MZ prepared bridge", (t) => {
+  const { dir, config } = fixture(t);
+  const path = join(dir, "config.json");
+  const reason = "synthetic: declared to end the program";
+  // 1000:0000 (file 64) calls 1000:0010 (file 80) far through its relocation, then returns at 69. The row
+  // 1000:0003 starts three bytes into that call, and the row 1000:0000 covers the RET after it.
+  writeFileSync(join(dir, "inventory.tsv"), "start\tsize\n1000:0000\t6\n1000:0003\t3\n1000:0010\t4\n");
+  writeFileSync(path, JSON.stringify({ ...config, inventory: "inventory.tsv", noReturn: [{ routine: 80, reason }] }));
+  const r = run(["inventory-check", path]);
+  assert.deepEqual(
+    r.rowStarts.map((row: Report) => [
+      row.start,
+      row.status,
+      row.insideInstruction,
+      row.insideInstructionAddress,
+      row.insideInstructionSize,
+      row.routineAddress,
+      row.routineIsRow,
+    ]),
+    [["1000:0003", "inside an instruction", 64, "1000:0000", 5, "1000:0000", true]],
+  );
+  assert.deepEqual(r.rowsPastNoReturn, [
+    {
+      start: "1000:0000",
+      size: 6,
+      kind: "call",
+      site: 64,
+      siteAddress: "1000:0000",
+      siteClassification: "entry-path instruction",
+      routine: 80,
+      following: 69,
+      followingAddress: "1000:0005",
+      followingRead: false,
+      bytesAfter: 1,
+    },
+  ]);
+  // The declared routine ends in a far return, so the declaration is contradicted.
+  assert.deepEqual(
+    r.noReturn.map((row: Report) => [row.routine, row.returnSites, row.contradicted]),
+    [[80, [83], true]],
+  );
+  assert.match(r.summary, /1 noReturn routine has a return on its own read paths/);
+});
+
 test("inventory-check places a target in an overlay region that lists no entries", (t) => {
   const { dir, config } = overlayFixture(t);
   const path = join(dir, "config.json");
@@ -827,6 +1054,72 @@ test("inventory-check places a target in an overlay region that lists no entries
     [[528, "0x210", "outside every row", "entry-path call", { entryPath: 1, contested: 0, rawCandidates: 1 }]],
   );
   assert.deepEqual(r.gaps, []);
+});
+
+test("inventory-check runs over code regions taken from the FBOV descriptor spans the bodies report gives", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "bounded-spans-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // Header 0..64 with one relocation (the far call's segment word at 70), load image 64..200 cut by
+  // five descriptors (segment, maxOffset, flags, minOffset), FBOV header 208..224.
+  const data = Buffer.alloc(224),
+    w = (p: number, n: number) => data.writeUInt16LE(n, p);
+  data.write("MZ");
+  w(2, 200);
+  w(4, 1);
+  w(6, 1);
+  w(8, 4);
+  w(24, 28);
+  w(28, 6);
+  data.write("FBOV", 208);
+  data.writeUInt32LE(160, 216);
+  data.writeUInt32LE(5, 220);
+  [
+    [0, 0x21, 1, 0],
+    [3, 0x10, 0, 0],
+    [4, 0x20, 1, 0],
+    [5, 3, 4, 4],
+    [6, 0x28, 0, 0],
+  ].forEach((words, i) => words.forEach((word, j) => w(160 + i * 8 + j * 2, word)));
+  // Segment 0: call 0010; call far 0004:0000; ret. 0010: ret. Segment 3 holds 0xFF data, segment 4 a retf.
+  data.set([0xe8, 0x0d, 0x00, 0x9a, 0x00, 0x00, 0x04, 0x00, 0xc3], 64);
+  data[80] = 0xc3;
+  data.fill(0xff, 112, 128);
+  data[128] = 0xcb;
+  writeFileSync(join(dir, "source.bin"), data);
+  const base = { source: "source.bin", sourceKind: "mz", xxh3: sourceXxh3(data) };
+  const path = join(dir, "config.json");
+  writeFileSync(path, JSON.stringify({ ...base, formatControls: { relocations: 1, descriptors: 5, overlays: 0 } }));
+  const tables = run(["bodies", path]);
+  // The caller decides which flags mark code; here, flags 1.
+  const regions = tables.descriptors
+    .filter((d: Report) => d.flags === 1 && d.extent === "bytes")
+    .map((d: Report) => ({
+      name: `descriptor-${d.index}`,
+      start: d.start,
+      end: d.end,
+      ip: d.ip,
+      segment: d.loadedSegment,
+      entries: d.index === 0 ? [64] : [],
+      evidence: `FBOV descriptor ${d.index} span`,
+    }));
+  assert.deepEqual(
+    regions.map((r: Region) => [r.name, r.start, r.end, r.segment, r.ip]),
+    [
+      ["descriptor-0", 64, 97, 0x1000, 0],
+      ["descriptor-2", 128, 160, 0x1004, 0],
+    ],
+  );
+  writeFileSync(join(dir, "inventory.tsv"), "start\tsize\n1000:0000\t9\n");
+  writeFileSync(path, JSON.stringify({ ...base, regions, inventory: "inventory.tsv", controls: [64, 67] }));
+  const r = run(["inventory-check", path]);
+  assert.deepEqual(
+    r.targets.map((row: Report) => [row.target, row.address, row.status, row.call, row.evidence]),
+    [
+      [80, "1000:0010", "outside every row", "near", "entry-path call"],
+      [128, "1004:0000", "outside every row", "far", "entry-path call"],
+    ],
+  );
+  assert.deepEqual(r.rowsOutsideDeclaredCode, []);
 });
 
 test("callee graph through the source bridge compares its edges with a Ghidra export", (t) => {
@@ -1680,6 +1973,36 @@ test("trace follows an indirect far call through a pointer the path stored, with
   assert.equal(stopped.completeWithinModel, false);
 });
 
+test("trace gives each read of declared volatile memory its own term through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // l: mov ax, es:[0x6c]; cmp ax, dx; je l; ret
+  data.set([0x26, 0xa1, 0x6c, 0, 0x39, 0xd0, 0x74, 0xf8, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const timer = { segment: 0x40, offset: 0x6c, bytes: 2, evidence: "synthetic timer counter" };
+  const polls = (volatileMemory: object[]) => {
+    const query = { ...config, xxh3: sourceXxh3(data), registers: { es: 0x40 }, visitLimit: 3, volatileMemory };
+    writeFileSync(join(dir, "config.json"), JSON.stringify(query));
+    const result = run(["trace", join(dir, "config.json")]);
+    return result.paths
+      .filter((p: Report) => p.returned)
+      .map((p: Report) => p.events.filter((e: Report) => e.kind === "read"));
+  };
+  // Without the range every poll reads one term, so the path leaves only after the first poll.
+  assert.deepEqual(
+    polls([]).map((reads: Report[]) => reads.length),
+    [1],
+  );
+  const exits = polls([timer]);
+  assert.deepEqual(exits.map((reads: Report[]) => reads.length).sort(), [1, 2, 3]);
+  const last = exits.find((reads: Report[]) => reads.length === 3)!;
+  assert.deepEqual(
+    last.map((e: Report) => e.byteProducers[0].unwritten),
+    last.map((e: Report) => ({ cause: "declared volatile", order: e.order })),
+  );
+  assert.equal(new Set(last.map((e: Report) => JSON.stringify(e.value.expression))).size, 3);
+});
+
 test("effects reports port accesses as hardware boundaries apart from RAM writes through the source bridge", (t) => {
   const { dir, data, config } = fixture(t);
   data.writeUInt16LE(0, 6);
@@ -2120,6 +2443,40 @@ test("relational controls pass through preparation and fail, hold or stay undeci
     [0x22, 0x22],
   );
   assert.throws(() => run(["memory", query({ relationalControls: [atReturn([68])] })]), /cleanup slot violated/);
+});
+
+test("a partial register write reports a join with its part widths and bounds a relation through the source bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  // mov bl,[0200h]; xor bh,bh; ret
+  data.set([0x8a, 0x1e, 0x00, 0x02, 0x30, 0xff, 0xc3], 64);
+  writeFileSync(join(dir, "source.bin"), data);
+  const bound = (op: string, right: number) => {
+    writeFileSync(
+      join(dir, "config.json"),
+      JSON.stringify({
+        ...config,
+        xxh3: sourceXxh3(data),
+        registers: { ds: 0x2000, ss: 0x3000, sp: 0xff00 },
+        relationalControls: [
+          {
+            name: "bx byte",
+            kind: "relation",
+            at: { site: 70, event: "checkpoint" },
+            left: { field: "registers.bx" },
+            op,
+            right,
+          },
+        ],
+      }),
+    );
+    return run(["trace", join(dir, "config.json")]);
+  };
+  const held = bound("le", 0xff);
+  const [kind, parts, widths] = held.paths[0].registers.bx.expression;
+  assert.deepEqual([kind, parts.length, parts[1], widths], ["join", 2, ["constant", 0], [8, 8]]);
+  assert.equal(held.relationalControls.controls[0].verdict, "held");
+  assert.deepEqual(held.relationalControls.controls[0].paths[0].occurrences[0].leftMinusRight, { min: -0xff, max: 0 });
+  assert.equal(bound("le", 0xfe).relationalControls.controls[0].verdict, "undecided");
 });
 
 test("an output count past a modeled call is a lower bound through the source bridge", (t) => {

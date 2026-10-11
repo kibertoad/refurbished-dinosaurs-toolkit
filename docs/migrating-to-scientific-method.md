@@ -41,14 +41,16 @@ for example `requirements-evidence.txt`:
 scientific-method-engine==<version>
 ```
 
-The engine needs Python 3.12 or later, because pypcode 4.0.0, which supplies its instruction
+The engine needs Python 3.12 or later, because pypcode 4.0, which supplies its instruction
 semantics, publishes wheels only for 3.12 and later. Move CI and research environments that run an
 older Python to 3.12 in the same change.
 
-A requirements file that also pins the engine's dependencies, such as `capstone==5.0.7`, adds
-`pypcode==4.0.0` and, from engine 1.0, `xxhash==4.0.1` beside it. Neither has runtime dependencies
-of its own. Under `pip install --require-hashes` every dependency needs its hashes, so list the hash
-of each of their wheels for the platforms you install on, or pip refuses the whole file.
+A requirements file that also pins the engine's dependencies pins the versions its engine release
+requires: `capstone==5.0.9`, `pypcode==4.0.1` and `xxhash==4.0.1` from engine 18.0.0, and
+`capstone==5.0.7`, `pypcode==4.0.0` and, from engine 1.0, `xxhash==4.0.1` before it. None of them
+has runtime dependencies of its own. Under `pip install --require-hashes` every dependency needs its
+hashes, so list the hash of each of their wheels for the platforms you install on, or pip refuses
+the whole file.
 
 A gate that checks the installed versions asks pip whether the environment satisfies the
 requirements file, instead of repeating version literals or parsing the file. A literal goes stale
@@ -423,6 +425,63 @@ Correct each experiment it reports: `new-game` for a run that starts by launchin
 a save, with the choices made on the way in given in Setup, and null for a save that cannot be
 committed and is kept with the captures, with its hash in the fixture's `starting_state.xxh3`.
 
+## Reader upgrades
+
+### Reader 4.0.0: `packed.pklite.scrambled` is replaced by `descrambler`
+
+The `unpack` report and the `unpack` export gave `packed.pklite.scrambled`, true when a descrambler
+XORed the stub before it was matched. PKLITE 1.20 and later stubs are also scrambled by ADD, so the
+field is now `packed.pklite.descrambler`: `xor` or `add` for the method of the descrambler the stub
+carries, and null when it carries none. A script that read `scrambled` reads `descrambler !== null`.
+The two differ only for a descrambler whose word count descrambles no word: `scrambled` was false
+for it, and `descrambler` names its method, which still decides how an extra-compression relocation
+table is read. `packed.pklite` also gives the new `codeTables`, `offsetKey` and `pspSignature`. The
+unpacked bytes of a file an earlier release unpacked are unchanged, so its `unpacked.xxh3` stays
+valid.
+
+### Reader 3.0.0: `bodies` reads the load image through the FBOV descriptor spans
+
+In a file with an FBOV envelope, the `bodies` layout used to call the whole load image `resident`,
+with a null `descriptor`. It now cuts the load image at the spans the resident descriptors'
+`minOffset` and `maxOffset` words give: a span's bytes are `resident` with that descriptor's index,
+and bytes no span holds are `zero-padding` or `undeclared` runs. A body that runs from one segment's
+span into the next now has bytes outside its entry's region, and a report on a file whose resident
+spans overlap fails. Files without an envelope keep their layout.
+
+A script that reads `bodies` output and matches `resident` regions or totals by `descriptor: null`
+matches them by kind alone, or by the descriptor index. A function flagged by the new
+`outsideEntryRegion` bytes runs across a segment boundary in the file's own table; check its body
+before listing it. A config that hand-built resident code regions can take them from the report's
+new `descriptors` rows of resident descriptors: `start`, `end`, `loadedSegment` and `ip` are a
+region's `start`, `end`, `segment` and `ip`.
+
+## Disc archiver upgrades
+
+### Disc archiver 2.0.0: empty form 2 sectors are zero blocks of the data hash
+
+An empty CD-ROM XA form 2 sector on a MODE2 data track (subheader copies equal with the form 2 bit
+set, all 2,324 data bytes zero) used to stop the run inside the declared ISO 9660 volume, and past
+the volume it was listed in `data.nonDataSectors` and hashed raw into `data.nonDataSha256`. Now it
+adds 2,048 zero bytes to `data.sha256` wherever it sits, the block a MODE1 image or an ISO of the
+disc holds there and the bytes `OriginalContentSource.OpenVolume` reads for it, and the manifest
+lists it in the new `data.emptyForm2Sectors`. An ISO is written for such a track, with a note
+naming the sectors, and its verification lists their form 2 mode under `notCompared`.
+
+A restoration that recorded `data.sha256`, `data.nonDataSectors` or `data.nonDataSha256` for a
+MODE2 disc with a form 2 postgap or padding runs `disc-archiver check` on its dump again and
+records the new values. On a track with no other sectors in `data.nonDataSectors`, the data hash
+is the SHA-256 of an ISO of the track that holds zero blocks for those sectors, as the archiver's
+own `iso` format does.
+
+A MODE2 sector whose two subheader copies differ now holds no user data whatever its form, as
+`OriginalContentSource` reads it. Earlier versions read such a sector as form 1 user data when its first
+copy marked form 1. Inside the declared volume it now stops the run with its sector number, and past
+the volume it is listed in `data.nonDataSectors` and hashed raw into `data.nonDataSha256`. A disc
+whose dump `check` refuses for this reason is dumped again.
+
+Discs without empty form 2 sectors or MODE2 sectors with differing subheader copies keep every
+value.
+
 ## Engine upgrades
 
 Engine releases that need a change in a restoration are listed here, newest first. Each entry is
@@ -432,6 +491,9 @@ not in the table has no entry.
 
 | Engine | Entry |
 |---|---|
+| 18.0.0 | [Capstone 5.0.9 and pypcode 4.0.1](#engine-1800-capstone-509-and-pypcode-401) |
+| 17.0.0 | [A `uses` conditional access of unknown width has no width](#engine-1700-a-uses-conditional-access-of-unknown-width-has-no-width) |
+| 16.0.0 | [A `join` expression lists its parts' widths](#engine-1600-a-join-expression-lists-its-parts-widths) |
 | 15.0.0 | [`ExportFunctionInventory` writes a regions file](#engine-1500-exportfunctioninventory-writes-a-regions-file) |
 | 14.0.0 | [`ExportFunctionInventory` writes the Standard's notation and a provenance file](#engine-1400-exportfunctioninventory-writes-the-standards-notation-and-a-provenance-file) |
 | 13.0.0 | [The scalar constant scripts match absolute memory operands](#engine-1300-the-scalar-constant-scripts-match-absolute-memory-operands) |
@@ -452,6 +514,67 @@ not in the table has no entry.
 | 3.0.0 | [The Ghidra report scripts state coverage](#engine-300-the-ghidra-report-scripts-state-coverage) |
 | 2.0.0 | [Prepared-config protocol 3, with reader 2.0.0](#prepared-config-protocol-3-scoped-memory-on-call-models) |
 | 1.0.0 | [Prepared-config protocol 2, with reader 1.0.0](#prepared-config-protocol-2) |
+
+### Engine 18.0.0: Capstone 5.0.9 and pypcode 4.0.1
+
+The engine requires `capstone==5.0.9` and `pypcode==4.0.1`, up from 5.0.7 and 4.0.0. pypcode
+4.0.1 carries a newer x86 SLEIGH specification. A requirements file that pins the engine's
+dependencies changes both pins, with the hashes of their wheels under `--require-hashes`, in the
+same change as the engine pin. The engine refuses to build a report under any other pypcode, as it
+already did for any other Capstone, with `This reporter requires pypcode==4.0.1; pypcode <version> is
+installed`.
+
+Reports change in these ways:
+
+- `decoder` reads `capstone 5.0.9`. It names the installed Capstone distribution; the 5.0.9
+  binding's own `capstone.__version__` still says 5.0.7.
+- `instructionSemantics` reads `pypcode 4.0.1 (Ghidra SLEIGH x86)`.
+- After `shr r/m,1` in its D0 or D1 encoding, OF is the operand's top bit, as on the CPU. Earlier
+  releases took 0 from pypcode 4.0.0, so a branch that read OF there could be decided the wrong way.
+- A branch that reads OF (JO, JNO, JL, JGE, JLE, JG) after a shift or rotate by a count other than
+  1, or after SHR by a count operand (C0, C1, D2 or D3 encoding), is undecided: the trace splits
+  where earlier releases decided it. The CPU leaves OF undefined past a count of 1, and the SLEIGH
+  specification in pypcode 4.0.1 writes 0 as the OF of SHR by a count operand of 1.
+- A shift by a count the engine does not know keeps the count's five-bit mask in its expression:
+  `shl ax,cl` reads `["shl", ax, ["zeroExtend", ["and", cl, ["constant", 31]], 8, 16]]` where
+  earlier releases wrote `["shl", ax, ["zeroExtend", cl, 8, 16]]`. A shift term now means the
+  p-code shift, whose count is not masked, so a count of the width or more gives 0.
+
+A saved report compared with a new one differs in `decoder` and `instructionSemantics`. Rerun the
+positive controls of any query whose path branches on OF after a shift or rotate.
+
+### Engine 17.0.0: a `uses` conditional access of unknown width has no width
+
+A `uses` `conditionalAccesses` row for an x87 environment or state save or load (FNSTENV, FLDENV,
+FNSAVE, FRSTOR), FXSAVE/FXRSTOR or the XSAVE family had the operand size Capstone reports as its
+`width` (4 for FNSAVE, 2 for FXSAVE in 16-bit code), which is not the bytes the instruction
+touches. Such a row now has a `width` of `null` and a `value` whose `bits` are `null`, and its
+`address` is `possible alias` unless it starts inside the query field. A tool that reads `width` or
+`value.bits` from these rows handles `null`.
+
+The same rows are now kept whenever they start below the field's end, and a word or wider operand
+that reaches the field only by wrapping past 0xFFFF is kept as a `possible alias`. Before, both were
+left out when Capstone's size missed the field.
+
+### Engine 16.0.0: a `join` expression lists its parts' widths
+
+A value built from parts, such as a register after a partial write or a word loaded byte by byte,
+reports its expression as `["join", parts, widths]`: the parts' expressions and their widths in
+bits, lowest part first. Earlier releases wrote `["join", parts]` and left each part's width to the
+reader, which assumed bytes. A part that is itself a join now contributes its own parts, so a join
+never nests. Adjacent constant parts become one constant, and adjacent fields of one value become
+one field, so a register after a partial write lists the written bytes and the untouched rest as
+wider parts where earlier releases listed every byte. A field read out of a join, such as AH of a
+register built from two words, is a field of the part that holds it instead of a field of the whole
+join. A tool that reads `join` expressions out of reports reads the third element for each part's
+width and offset. A saved report compared with a new one differs in every `join` expression, and
+expressions after partial writes are shorter, so a query that stopped at the expression term limit
+may now run further.
+
+Relation controls now read a join that fills its value's width as the sum of its parts at their
+offsets. A control over such a value, for example `registers.bx le 0FFh` or `registers.bx eq
+registers.bl` after `mov bl,[x]; xor bh,bh`, can hold where it was undecided. An assumption that
+names a join, such as a loaded word, still applies to the whole value.
 
 ### Engine 15.0.0: `ExportFunctionInventory` writes a regions file
 

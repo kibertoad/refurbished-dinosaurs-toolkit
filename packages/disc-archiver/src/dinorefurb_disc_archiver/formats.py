@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import ccd, isofs, tools
 from .cue import CueFile, render_cue
-from .disc import COOKED_SECTOR, RAW_SECTOR, Disc, DiscError, NotDataSector, Track, user_data
+from .disc import COOKED_SECTOR, RAW_SECTOR, Disc, DiscError, NotDataSector, Track, block_data, describe_ranges
 from .tools import Log
 
 
@@ -180,7 +180,7 @@ def _first_non_data_past_volume(track: Track, volume: isofs.Volume | None) -> No
     for chunk in track.iter_raw(volume_end, track.length):
         for offset in range(0, len(chunk), RAW_SECTOR):
             try:
-                user_data(chunk[offset : offset + RAW_SECTOR], track.mode, track.index1 + index)
+                block_data(chunk[offset : offset + RAW_SECTOR], track.mode, track.index1 + index)
             except NotDataSector as error:
                 return error
             index += 1
@@ -211,13 +211,20 @@ def _write_iso(disc: Disc, path: Path) -> list[str]:
                 f"track {track.number}: {problem}, and an ISO file holds only the 2,048 bytes of user data of "
                 "each sector. BIN/CUE, CloneCD and CHD keep the track's raw sectors."
             )
+        empty: list[list[int]] = []
         try:
-            _write(path, track.iter_user_data())
+            _write(path, track.iter_user_data(empty_form2=empty))
         except DiscError:
             # A sector inside the volume without user data is a damaged dump or a BIN that does
             # not match its sheet, which the error names. No partial ISO is left behind.
             path.unlink(missing_ok=True)
             raise
+        if empty:
+            notes.append(
+                f"Track {track.number} has empty MODE2 form 2 sectors at {describe_ranges(empty)} (counted from INDEX 01). "
+                "The ISO holds each as 2,048 zero bytes and does not record that it was form 2; BIN/CUE, CloneCD and CHD "
+                "keep the raw sectors."
+            )
     if track.mode == "MODE2":
         notes.append(f"Track {track.number} is a MODE2 (CD-ROM XA) track; the ISO holds its form 1 user data.")
     if volume is not None and volume.base:

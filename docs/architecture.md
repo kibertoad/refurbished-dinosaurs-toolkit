@@ -42,7 +42,7 @@ engine.
   counts from the source, and enforces `formatControls`. A query may not supply any of these.
 - Owns the `pointers` inventory, the `table` contents report, the `bodies` report on where function
   bodies lie by file region, the `imports` report on PE32
-  and PE32+ import tables, and `unpack`, which writes the unpacked form of an LZEXE or EXEPACK executable by
+  and PE32+ import tables, and `unpack`, which writes the unpacked form of an LZEXE, EXEPACK or PKLITE executable by
   a documented layout rule. These run without the engine.
 - Provides the `scientific-method` command. For every other command it builds a prepared config
   and pipes it to `python -m scientific_method_engine <command> -`.
@@ -127,8 +127,9 @@ Owns DOSBox-X debugger sessions for a restoration's research tooling
 - Takes a factory for the DOSBox-X Agent client from the caller, who imports the client from a
   DOSBox-X checkout at the pinned revision. The package never imports, vendors or depends on the
   client, which is GPL-2.0, and refuses a checkout at another revision or with local changes.
-- Launches the emulator with a generated configuration and a hidden native console, waits for a
-  marker the guest writes once its drives are set up, and starts the target stopped at its entry.
+- Launches the emulator with a generated configuration and a hidden native console, inside a job
+  that Windows ends when the owner process ends, waits for a marker the guest writes once its
+  drives are set up, and starts the target stopped at its entry.
 - Holds the machine-wide run lock, which records processes by ID and start time; a held lock
   refuses the session, and only the `stale-lock` command removes a lock whose processes have
   exited.
@@ -136,6 +137,19 @@ Owns DOSBox-X debugger sessions for a restoration's research tooling
 - Writes a session record, gives every call a request ID from its client's own namespace, refuses
   calls the reported capabilities lack, and reports an observation that runs out of time as
   pending.
+- Writes to stopped guest memory only for fields in a contract the caller supplies, checks the
+  hash of the bytes each write replaces and reads the write back. A refused or failed write fails
+  the run. The package has no default contract.
+- Offers gated breakpoints: a boundary armed only after the guest runs a wake address the caller
+  names, so a polling loop stops once per wake instead of on every pass
+  ([ADR 0032](decisions/0032-gated-breakpoints-for-polling-waits.md)). The caller's condition
+  and the proof that only wake code changes its inputs stay with the caller.
+- Keeps an event log when asked: JSON lines synced as they are written, each event checked
+  against the caller's schemas, ending in an outcome that fits the caller's versioned contract
+  and records the count and an ordered hash of the events. The header records the schemas, the
+  contract and hashes of modules the caller names, which must be imported before the session
+  starts. A log is read against the contract it recorded and the outcome the caller expected,
+  and reading names the check that failed.
 - Windows only.
 
 What a run means stays in the restoration. A restored game never depends on this package.

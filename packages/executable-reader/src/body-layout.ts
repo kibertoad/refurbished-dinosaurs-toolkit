@@ -1,11 +1,12 @@
 // Where an analyzer's function bodies lie in an MZ/FBOV file, by the file's own tables. No original
 // bytes are emitted, and no instruction is decoded.
-import { readMz, formatCounts, checkFormatControls } from "./legacy-image.ts";
-import type { MzImage } from "./legacy-image.ts";
+import { readMz, formatCounts, checkFormatControls, descriptorExtents } from "./legacy-image.ts";
+import type { MzImage, Descriptor, DescriptorExtent } from "./legacy-image.ts";
 
 /**
  * What the file's tables make of a run of bytes. `mz-header` is the MZ header with its relocation
- * table, `resident` the MZ load image outside the FBOV tables kept in it, `fbov-descriptors` the
+ * table, `resident` the MZ load image outside the FBOV tables kept in it (in a file with an FBOV
+ * envelope, only the bytes of a resident descriptor's span, see {@link fileLayout}), `fbov-descriptors` the
  * FBOV descriptor table in the load image, `overlay-stub` an FBOV overlay's stub header and
  * trampolines in the load image, `fbov-header` the 16-byte FBOV envelope header, `overlay-code` and
  * `fixup-table` an overlay's code and the fixup table after it. Bytes no table declares are
@@ -24,7 +25,8 @@ export type RegionKind =
 
 /**
  * One run of the file's layout, as half-open file offsets. `descriptor` is the FBOV descriptor index
- * of an overlay's stub, code or fixup table, and null otherwise. A run no table declares carries
+ * of an overlay's stub, code or fixup table, or of the resident descriptor whose span holds a
+ * `resident` run, and null otherwise. A run no table declares carries
  * `nonzeroBytes`, which is 0 exactly for `zero-padding`, and `trailing`, true when the run lies past
  * everything the tables declare: past the end of the FBOV payload, or past the load image when the
  * file has no FBOV envelope. A run never crosses that boundary.
@@ -56,7 +58,10 @@ export interface BodyFunction {
   candidate?: { ranges: ByteRange[]; evidence: string };
 }
 
-/** The `bodies` query. `sourceKind` must be `mz`, and `formatControls` is required. */
+/**
+ * The `bodies` query. `sourceKind` must be `mz`, and `formatControls` is required. `functions` may be
+ * left out or empty, for the layout and the descriptor table alone.
+ */
 export interface BodyConfig {
   sourceKind?: string;
   loadSegment?: number;
@@ -105,10 +110,47 @@ const KIND_ORDER: RegionKind[] = [
 const GAP_KINDS: ReadonlySet<RegionKind> = new Set(["zero-padding", "undeclared"]);
 
 /**
+ * One FBOV descriptor in the `bodies` report: its four words as stored, whether its flags carry the
+ * overlay bit, and the load-image span its offset words give (see {@link DescriptorExtent}).
+ */
+export interface DescriptorRow extends Descriptor, Omit<DescriptorExtent, "descriptor" | "status"> {
+  extent: DescriptorExtent["status"];
+}
+
+/**
+ * The bytes of the load image the resident descriptors' words give (see {@link descriptorExtents}),
+ * sorted by start. Overlay descriptors and descriptors that hold no bytes are left out. A span that
+ * runs past the load image keeps only its bytes in the load image, since the file stores nothing of
+ * the rest (memory the program gets at load time, such as a stack); its descriptor row still reports
+ * `outside-load-image`. Throws when two of the kept spans overlap, since a byte would then have no
+ * single place in the layout.
+ */
+function residentSpans(image: MzImage): { descriptor: number; start: number; end: number }[] {
+  const spans = descriptorExtents(image)
+    .filter((e) => !e.overlay && (e.status === "bytes" || e.status === "outside-load-image"))
+    .map((e) => ({ descriptor: e.descriptor, start: e.start, end: Math.min(e.end, image.end) }))
+    .filter((e) => e.end > e.start)
+    .sort((a, b) => a.start - b.start);
+  for (let i = 1; i < spans.length; i++)
+    if (spans[i]!.start < spans[i - 1]!.end)
+      throw new Error(
+        `FBOV descriptors ${spans[i - 1]!.descriptor} and ${spans[i]!.descriptor} give overlapping spans ${spans[i - 1]!.start}..${spans[i - 1]!.end} and ${spans[i]!.start}..${spans[i]!.end}`,
+      );
+  return spans;
+}
+
+/**
  * Partitions the whole file, from offset 0 to its length, into the regions its MZ and FBOV tables
  * declare, in file order. Runs between declared regions are `zero-padding` or `undeclared`, split
  * where the declared file ends (see {@link LayoutRegion}). {@link readMz} has already refused
  * tables that overlap, so each byte has at most one declared meaning.
+ *
+ * Without an FBOV envelope the load image is one `resident` region. With one, the load image is
+ * read through the descriptor table: the bytes of each resident descriptor's span (see
+ * {@link descriptorExtents}) are `resident` with that descriptor, outside the envelope's own tables,
+ * and load-image bytes no span holds are runs between declared regions, like bytes in the FBOV
+ * payload no overlay holds. A resident span that runs past the load image is cut at its end. Throws
+ * when two resident spans overlap in the load image.
  */
 export function fileLayout(image: MzImage): LayoutRegion[] {
   // The tables the FBOV envelope keeps in the load image: each overlay's stub and the descriptors.
@@ -123,15 +165,22 @@ export function fileLayout(image: MzImage): LayoutRegion[] {
     tables.push({ kind: "fbov-descriptors", descriptor: null, start, end: start + image.descriptors.length * 8 });
   }
   tables.sort((a, b) => a.start - b.start);
-  const declared: LayoutRegion[] = [{ kind: "mz-header", descriptor: null, start: 0, end: image.header }];
-  // The load image is resident except where the envelope's tables sit in it.
-  let at = image.header;
-  for (const table of tables) {
-    if (table.start > at) declared.push({ kind: "resident", descriptor: null, start: at, end: table.start });
-    declared.push(table);
-    at = table.end;
+  const declared: LayoutRegion[] = [{ kind: "mz-header", descriptor: null, start: 0, end: image.header }, ...tables];
+  // Without an envelope the whole load image is resident; with one, only the resident descriptors'
+  // spans are. Either way the envelope's tables are cut out of it.
+  const spans = image.envelope
+    ? residentSpans(image)
+    : [{ descriptor: null as number | null, start: image.header, end: image.end }];
+  for (const span of spans) {
+    let at = span.start;
+    for (const table of tables) {
+      if (table.end <= at || table.start >= span.end) continue;
+      if (table.start > at)
+        declared.push({ kind: "resident", descriptor: span.descriptor, start: at, end: table.start });
+      at = Math.max(at, table.end);
+    }
+    if (span.end > at) declared.push({ kind: "resident", descriptor: span.descriptor, start: at, end: span.end });
   }
-  if (image.end > at) declared.push({ kind: "resident", descriptor: null, start: at, end: image.end });
   if (image.envelope) {
     const fbov = image.envelope.header;
     declared.push({ kind: "fbov-header", descriptor: null, start: fbov, end: fbov + 16 });
@@ -157,7 +206,7 @@ export function fileLayout(image: MzImage): LayoutRegion[] {
       run(declaredEnd, end);
     } else run(start, end);
   };
-  at = 0;
+  let at = 0;
   for (const region of declared) {
     if (region.start < at) throw new Error(`Declared ${region.kind} at ${region.start} overlaps another table`);
     if (region.start > at) gap(at, region.start);
@@ -250,7 +299,8 @@ function overlap(a: ByteRange[], b: ByteRange[], keep: boolean): ByteRange[] {
  * range add up to the range, and the report fails rather than give a partition that does not. With
  * a `candidate`, the report gives the bytes both sets hold and those only one holds, each classified
  * the same way. The report says where bytes lie in the file; it decodes no instruction and does not
- * say which code runs them or which function owns them.
+ * say which code runs them or which function owns them. The report also lists every FBOV
+ * descriptor as a {@link DescriptorRow}, so a config can take its code regions from the spans.
  * `sourceKind` must be `mz`, and `formatControls` must pass before anything is classified.
  */
 export function bodyLayout(bytes: Buffer, config: BodyConfig) {
@@ -260,9 +310,15 @@ export function bodyLayout(bytes: Buffer, config: BodyConfig) {
     throw new Error("bodies needs formatControls: the classification rests on the tables being read right");
   const controls = checkFormatControls(image, config.formatControls);
   const layout = fileLayout(image);
-  const functions = config.functions;
-  if (!Array.isArray(functions) || functions.length < 1 || functions.length > MAX_BODY_FUNCTIONS)
-    throw new Error(`functions must be 1..${MAX_BODY_FUNCTIONS} objects`);
+  // Left out means none; an explicit null is refused like any other non-list.
+  const functions = config.functions === undefined ? [] : config.functions;
+  if (!Array.isArray(functions) || functions.length > MAX_BODY_FUNCTIONS)
+    throw new Error(`functions must be 0..${MAX_BODY_FUNCTIONS} objects`);
+  const descriptors: DescriptorRow[] = descriptorExtents(image).map(({ descriptor, status, ...extent }) => ({
+    ...image.descriptors[descriptor]!,
+    ...extent,
+    extent: status,
+  }));
 
   // The entry's own region: parts of another kind or descriptor, or of another undeclared run, lie outside it.
   const outside = (region: LayoutRegion, home: LayoutRegion) =>
@@ -392,6 +448,7 @@ export function bodyLayout(bytes: Buffer, config: BodyConfig) {
     report: "bodies",
     formatTables: { loadSegment: image.loadSegment, counts: formatCounts(image), controls },
     layout,
+    descriptors,
     functions: rows,
     counts,
     scope:

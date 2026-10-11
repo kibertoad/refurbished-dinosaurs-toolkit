@@ -11,6 +11,7 @@ from .result_flow import validate_contracts, result_contracts
 from .loops import LoopTracker
 from .memory_scopes import validate_scopes, capture_scopes, retain_scopes, scope_history
 from .pcode_backend import interrupt_vector
+from .dispatch import CALL_NOT_EXHAUSTIVE, declared_call_ends
 from .relational import checkpoint_anchors, memory_probes, probe_memory
 
 # What stops one path and leaves the others: the model cannot follow it, or a value it built
@@ -31,14 +32,16 @@ def far_pointer_word(state, read, low):
 
     ``row`` reports the word's value and the producers and writers of its two bytes. ``word`` is the
     modeled value of those bytes with all their sources, including the markers of declared return
-    results that ``producers`` leaves out, or None when a byte has no modeled value.
+    results that ``producers`` leaves out, or None when a byte has no modeled value or lies in
+    declared volatile memory, whose read has no producer.
     """
     rows = read["byteProducers"][low // 8:low // 8 + 2]
     interval = read["interval"]
     seg, base, start = interval["segment"], interval["base"], interval["start"]
     keys = [(seg, base, start + i if seg == ("linear",) else (start + i) % (1 << state.bits))
             for i in (low // 8, low // 8 + 1)]
-    word = join([state.memory[key] for key in keys]) if all(key in state.memory for key in keys) else None
+    word = (join([state.memory[key] for key in keys])
+            if all(key in state.memory and "unwritten" not in row for key, row in zip(keys, rows)) else None)
     return ({"value": None if word is None else word.number,
              "producers": sorted({p for row in rows for p in row["producers"]}), "bytes": rows}, word)
 
@@ -86,6 +89,8 @@ def far_pointer_transfer(state, image):
 # The gap reason walk() records when it stops at its instruction limit with code left to read.
 LIMIT_REASON = "instruction limit"
 OVERLAP_REASON = "overlapping entry-path instructions; boundary unresolved"
+# The gap reason walk() records at a site it reaches but cannot decode.
+UNDECODED_REASON = "undecoded or unmapped edge"
 RETURNS = {"ret": "near return", "retf": "far return", "iret": "interrupt return", "iretd": "interrupt return"}
 INTERRUPTS = ("int", "int1", "int3", "into")
 PORTS = ("in", "out", "insb", "insw", "insd", "outsb", "outsw", "outsd")
@@ -165,7 +170,7 @@ class Step(NamedTuple):
     interrupt the walk continues past once its handler returns, or None for anything else and, when
     the call's target is followed, for a call whose target is that same site. ``gaps`` and ``edges`` are the gap and transfer-edge rows ``walk`` reports for the
     instruction. ``supplied`` is true when the successors are the rows of a declared indirect jump
-    table, which never prove an instruction boundary.
+    table or the declared targets of an indirect call, which never prove an instruction boundary.
     """
     successors: list
     returns: bool
@@ -176,7 +181,8 @@ class Step(NamedTuple):
 
 
 def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, follow_interrupts=False,
-             modeled_interrupts=frozenset()):
+             modeled_interrupts=frozenset(), no_return_calls=frozenset(), no_return_interrupts=frozenset(),
+             indirect_calls=None):
     """The successors of ``ins`` decoded at ``at``, under the rule ``walk`` and the ``uses`` caller continuation share.
 
     An unsupported transfer encoding, a return, an unconditional jump without a resolved target,
@@ -185,7 +191,11 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
     conditional jump or loop continues at its resolved target and at the next instruction. A declared
     indirect jump continues at its table rows only. A call continues at its resolved target and at
     its return site; with ``step_over_calls`` it continues at its return site only and its target
-    is neither resolved nor reported.
+    is neither resolved nor reported. A call whose resolved target is in ``no_return_calls``, and an
+    interrupt whose site is in ``no_return_interrupts``, have no return site: the query declared that
+    they never come back. A call whose site is in ``indirect_calls`` (``indirect_call_declarations``)
+    continues at each declared target and at its return site, unless the declaration is exhaustive
+    and every target is in ``no_return_calls``.
     """
     m, following = base_mnemonic(ins), at + ins.size
     if unsupported_transfer(image, ins):
@@ -201,6 +211,20 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
             edges.append({"site": at, "target": None, "kind": "jmp",
                           "provenance": {"reason": "indirect jump table is not declared exhaustive"}})
         return Step(targets, False, None, gaps, edges, supplied=True)
+    declaration = (indirect_calls or {}).get(at)
+    if declaration is not None:
+        targets = list(declaration["targets"])
+        edges = [{"site": at, "target": target, "kind": m,
+                  "provenance": {"encoding": "declared indirect call", "evidence": declaration["evidence"]}}
+                 for target in targets]
+        gaps = []
+        if not declaration["exhaustive"]:
+            gaps.append({"site": at, "reason": CALL_NOT_EXHAUSTIVE})
+            edges.append({"site": at, "target": None, "kind": m, "provenance": {"reason": CALL_NOT_EXHAUSTIVE}})
+        if declared_call_ends(declaration, no_return_calls):
+            return Step(targets, False, None, gaps, edges, supplied=True)
+        return_site = following if following not in targets else None
+        return Step(targets + [following], False, return_site, gaps, edges, supplied=True)
     if m in RETURNS:
         return Step([], True, None, [], [])
     successors, gaps, edges = [], [], []
@@ -212,8 +236,10 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
             gaps.append({"site": at, "reason": provenance.get("reason", "target outside declared regions")})
         else:
             successors.append(target)
-        if m in ("jmp", "ljmp"):
+        if m in ("jmp", "ljmp") or (calls and target in no_return_calls):
             return Step(successors, False, None, gaps, edges)
+    if m in INTERRUPTS and at in no_return_interrupts:
+        return Step(successors, False, None, gaps, edges)
     if m == "hlt" or (m in INTERRUPTS and not follow_interrupts and at not in modeled_interrupts):
         gaps.append({"site": at, "reason": "hardware or interrupt boundary"})
         return Step(successors, False, None, gaps, edges)
@@ -229,7 +255,8 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
 
 
 def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts=False, stops=frozenset(),
-         modeled_interrupts=frozenset()):
+         modeled_interrupts=frozenset(), no_return_calls=frozenset(), no_return_interrupts=frozenset(),
+         indirect_calls=None):
     """Decode the CFG reached from ``entries`` and check its instruction boundaries.
 
     A port access in the flat model records a gap and ends that branch, as ``trace`` stops there.
@@ -238,7 +265,10 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
     for callers that list each interrupt as an assumption. ``modeled_interrupts`` continues past the
     interrupts at those sites only, the ones ``modeled_interrupt_sites`` names, which ``trace``
     continues past under a call model (ADR 0017). A site in ``stops`` is never decoded:
-    the walk reaches it and goes no further, so it is in no returned set.
+    the walk reaches it and goes no further, so it is in no returned set. ``no_return_calls`` and
+    ``no_return_interrupts`` end the branch at a call to one of those routines and at one of those
+    interrupt sites, and ``indirect_calls`` continues a declared indirect call at its declared
+    targets, as ``cfg_step`` describes.
     """
     instruction_limit(image, limit)
     pending, seen, gaps, edges = list(entries), {}, [], []
@@ -257,11 +287,12 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
             break
         ins = image.decode(at)
         if ins is None:
-            gaps.append({"site": at, "reason": "undecoded or unmapped edge"})
+            gaps.append({"site": at, "reason": UNDECODED_REASON})
             continue
         seen[at] = ins
         step = cfg_step(image, at, ins, follow_flat_ports, follow_interrupts=follow_interrupts,
-                        modeled_interrupts=modeled_interrupts)
+                        modeled_interrupts=modeled_interrupts, no_return_calls=no_return_calls,
+                        no_return_interrupts=no_return_interrupts, indirect_calls=indirect_calls)
         successors[at] = step.successors
         gaps.extend(step.gaps)
         edges.extend(step.edges)
