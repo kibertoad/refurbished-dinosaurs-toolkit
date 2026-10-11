@@ -5356,22 +5356,195 @@ test("a range that ends on a function's last byte fails when a one-byte function
   assert.ok(output.includes(LAST_BYTE("the body's range 0x00401000..0x0040101F")), output);
 });
 
-test("a range that ends on a function's last byte fails when another function starts on that byte", (t) => {
+// Notation passes an end where an inventoried function starts, whichever function's last byte it
+// also is.
+test("a range that ends on a function's last byte passes when another function starts on that byte", (t) => {
   const root = broken(t, (r) => {
-    rangeFinding(r, locatedAt("0x00401000..0x0040101F"));
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F"), "The handler spans 0x00401000..0x0040101F.");
     inventory(r, "0x00401000\t32\n0x0040101F\t16\n");
   });
   const { status, output } = run(root);
-  assert.equal(status, 1, output);
-  assert.ok(output.includes(LAST_BYTE("location address 0x00401000..0x0040101F")), output);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
 });
 
-test("a range that ends where a one-byte function shares another function's last byte fails", (t) => {
+test("a range that ends where a one-byte function shares another function's last byte passes", (t) => {
   const root = broken(t, (r) => {
     rangeFinding(r, locatedAt("0x00401000..0x0040101F"));
     inventory(r, "0x00401000\t32\n0x0040101F\t1\n");
   });
   const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});
+
+// Adds ends_on_last_byte, written as given, to the front matter of the finding rangeFinding writes.
+const listEndsOnLastByte = (root: string, value: string) =>
+  replaceIn(
+    root,
+    "spec/findings/FND-SCORE-001.md",
+    "tool: Ghidra 12.1.3",
+    `ends_on_last_byte: ${value}\ntool: Ghidra 12.1.3`,
+  );
+
+test("a failing range's message points at ends_on_last_byte", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F"));
+    inventory(r);
+  });
+  const { status, output } = run(root);
   assert.equal(status, 1, output);
-  assert.ok(output.includes(LAST_BYTE("location address 0x00401000..0x0040101F")), output);
+  assert.ok(
+    output.includes(
+      `${LAST_BYTE("location address 0x00401000..0x0040101F")}, or if it stops before a one-byte final instruction on purpose, list it in ends_on_last_byte`,
+    ),
+    output,
+  );
+});
+
+test("a range listed in ends_on_last_byte passes in a location and in the body", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(
+      r,
+      locatedAt("0x00401000..0x0040101F"),
+      "The handler without its one-byte return, `0x00401000`..`0x0040101F`, adds 1 to the score.",
+    );
+    listEndsOnLastByte(r, "[0x00401000..0x0040101F]");
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});
+
+test("a segmented range listed in ends_on_last_byte passes", (t) => {
+  const root = broken(t, (r) => {
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", "format: MZ");
+    rangeFinding(r, locatedAt("1000:0000..1000:001F"));
+    listEndsOnLastByte(r, "[1000:0000..1000:001F]");
+    inventory(r, "1000:0000\t32\n");
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});
+
+test("ends_on_last_byte lets through only the ranges it lists", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F"), "The table follows, 0x00401100..0x0040110F.");
+    listEndsOnLastByte(r, "[0x00401000..0x0040101F]");
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(!output.includes("location address 0x00401000..0x0040101F"), output);
+  assert.ok(
+    output.includes(
+      "the body's range 0x00401100..0x0040110F ends on the last byte of the function at 0x00401100 in " +
+        "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv; ranges are half-open, so it ends at 0x00401110",
+    ),
+    output,
+  );
+});
+
+test("ends_on_last_byte fails a range the entry does not give", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x00401020"));
+    listEndsOnLastByte(r, "[0x00401000..0x0040101F]");
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(
+    output.includes(
+      "ends_on_last_byte lists 0x00401000..0x0040101F, which the entry does not give as a location or in its text or tables [ENTRY-TYPES-22]",
+    ),
+    output,
+  );
+});
+
+test("ends_on_last_byte compares a range as the entry writes it", (t) => {
+  const root = broken(t, (r) => {
+    replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", "format: MZ");
+    // 0FF0:0100 is the linear address 1000:0000 names, written another way.
+    rangeFinding(r, locatedAt("1000:0000..1000:001F"));
+    listEndsOnLastByte(r, "[0FF0:0100..0FF0:011F]");
+    inventory(r, "1000:0000\t32\n");
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes("location address 1000:0000..1000:001F ends on the last byte"), output);
+  assert.ok(output.includes("ends_on_last_byte lists 0FF0:0100..0FF0:011F, which the entry does not give"), output);
+});
+
+test("ends_on_last_byte fails a range the check would pass without it", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(
+      r,
+      locatedAt("0x00401000..0x00401020"),
+      "The handler spans 0x00401000..0x00401020, and its return is at 0x00401100..0x0040110F.",
+    );
+    // The second range ends where a function starts, which passes without the listing.
+    listEndsOnLastByte(r, "[0x00401000..0x00401020, 0x00401100..0x0040110F]");
+    inventory(r, "0x00401000\t32\n0x00401100\t16\n0x0040110F\t1\n");
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  for (const range of ["0x00401000..0x00401020", "0x00401100..0x0040110F"])
+    assert.ok(
+      output.includes(
+        `ends_on_last_byte lists ${range}, which the check passes without the listing everywhere the entry gives it; leave it out [ENTRY-TYPES-22]`,
+      ),
+      output,
+    );
+});
+
+test("ends_on_last_byte fails a listed range given only where no inventory checks it", (t) => {
+  const root = broken(t, (r) => {
+    withSetupExe(r);
+    rangeFinding(r, locatedAt("0x00401000..0x0040101F", "SETUP.EXE"));
+    listEndsOnLastByte(r, "[0x00401000..0x0040101F]");
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes("ends_on_last_byte lists 0x00401000..0x0040101F, which the check passes without"), output);
+});
+
+test("ends_on_last_byte must be a non-empty list, with or without inventories", (t) => {
+  for (const [value, message] of [
+    ["0x00401000..0x0040101F", "ends_on_last_byte must be a list of ranges [ENTRY-TYPES-22]"],
+    ["[]", "ends_on_last_byte is empty; an entry with no such range leaves the field out [ENTRY-TYPES-22]"],
+  ]) {
+    const root = broken(t, (r) => {
+      rangeFinding(r, locatedAt("0x00401000..0x00401020"));
+      listEndsOnLastByte(r, value);
+    });
+    const { status, output } = run(root);
+    assert.equal(status, 1, output);
+    assert.ok(output.includes(message), output);
+  }
+});
+
+test("a superseded entry's ends_on_last_byte is not checked", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(r, locatedAt("0x00401000..0x00401020"));
+    listEndsOnLastByte(r, "[0x00401000..0x0040101F]");
+    const dir = join(r, "spec", "findings");
+    const current = readFileSync(join(dir, "FND-SCORE-001.md"), "utf8");
+    writeFileSync(
+      join(dir, "FND-SCORE-002.md"),
+      current.replace("id: FND-SCORE-001", "id: FND-SCORE-002").replace(/ends_on_last_byte: .*\n/, ""),
+    );
+    writeFileSync(
+      join(dir, "FND-SCORE-001.md"),
+      current
+        .replace("status: recorded", "status: superseded")
+        .replace("superseded_by: []", "superseded_by: [FND-SCORE-002]"),
+    );
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("ends_on_last_byte"), output);
 });
