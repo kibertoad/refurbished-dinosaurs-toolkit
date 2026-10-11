@@ -173,6 +173,25 @@ def fewest_calls(graph, starts):
     return distance, parent, routine
 
 
+def decoded_ranges(seen, routine):
+    """The instructions in ``seen`` as half-open ``[start, end)`` runs, each with the ``routine`` they were read in.
+
+    A run holds instructions that abut, each starting where the one before it ends, and that
+    ``routine`` gives the same routine. A site on no route from a start has the routine None. Runs
+    overlap only where ``seen`` holds instructions that overlap, which the walk keeps when it proves
+    both boundaries.
+    """
+    ranges = []
+    for at, ins in sorted(seen.items()):
+        owner = routine.get(at)
+        last = ranges[-1] if ranges else None
+        if last is not None and last["end"] == at and last["routine"] == owner:
+            last["end"] = at + ins.size
+        else:
+            ranges.append({"start": at, "end": at + ins.size, "routine": owner})
+    return ranges
+
+
 def _dominators(order, predecessors):
     """Immediate dominators (Cooper, Harvey and Kennedy) of every node in ``order``, a reverse postorder from ROOT."""
     index = {node: i for i, node in enumerate(order)}
@@ -209,7 +228,8 @@ def reach(image, config):
     ``noReturn`` routine and a ``noReturn`` interrupt site do not continue at the next instruction,
     nor does a declared indirect call that is exhaustive and whose targets are all ``noReturn``.
     Each reached target gets one chain with the fewest calls, the assumptions its route rests on,
-    and the routines on every route to it within the read graph.
+    and the routines on every route to it within the read graph. With ``decodedRanges`` the report
+    also gives every instruction the walk decoded, as ``decoded_ranges`` groups them.
     """
     from .reports import entries
     starts = _sites(config.get("starts"), "starts", image)
@@ -240,6 +260,9 @@ def reach(image, config):
             raise ValueError(f"instruction control {at} is a start; the walk decodes every start, so it shows nothing "
                              "the walk found")
     limit = integer(config.get("limit", 1000), 1, 10000, "result limit")
+    with_ranges = config.get("decodedRanges", False)
+    if not isinstance(with_ranges, bool):
+        raise ValueError("decodedRanges must be a boolean")
     instruction_limit = config.get("instructionLimit", 10000)
     no_return_routines, no_return_interrupts = no_return_declarations(config.get("noReturn", []), image)
     declared = {"no_return_calls": frozenset(no_return_routines), "no_return_interrupts": frozenset(no_return_interrupts),
@@ -414,8 +437,11 @@ def reach(image, config):
                            "it gives, and only those when it is declared exhaustive")
     if no_return:
         assumptions.append("each noReturn routine and interrupt never returns, for the reason it gives")
+    # Every range is kept whatever the result limit, so a caller can place any site in the walk; the
+    # instruction limit bounds their number.
+    ranges = {"decodedRanges": decoded_ranges(seen, routine)} if with_ranges else {}
     return {"starts": starts, "targets": rows, "leaves": leaf_rows, "noReturn": no_return, "indirectCalls": indirect_rows,
-            "reachedRoutines": sorted(routine_starts), "counts": counts,
+            "reachedRoutines": sorted(routine_starts), **ranges, "counts": counts,
             "unresolved": unresolved[:limit], "interrupts": interrupts[:limit], "gaps": gaps[:limit],
             "contested": sorted(contested)[:limit],
             "truncated": any(len(x) > limit for x in (unresolved, interrupts, gaps, contested)),
@@ -440,6 +466,9 @@ def reach(image, config):
                               "A noReturn routine is contradicted when a return instruction, or a leaf entered "
                               "other than by a call, lies on its own read paths; an empty returnSites means only "
                               "that the walk read none. "
+                              "decodedRanges, when asked for, covers the instructions the walk decoded and no leaf; "
+                              "a site inside a range lies in a decoded instruction, which a target or "
+                              "instructionControls entry at the site shows to start there or not. "
                               "When instructionLimitReached holds, the walk stopped before reading all it reaches: "
                               "every list and count covers only the part read, which part depends on the walk order, "
                               "and an unreached target may lie past the stop."}

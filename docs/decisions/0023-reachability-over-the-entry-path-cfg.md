@@ -1,7 +1,8 @@
 # ADR 0023: reachability over the entry-path CFG
 
 Status: accepted. Adds the `reach` command to the bounded evidence reporters.
-[ADR 0033](0033-declared-computed-call-targets.md) extends it with declared computed call targets.
+[ADR 0033](0033-declared-computed-call-targets.md) extends it with declared computed call targets, and
+[ADR 0038](0038-decoded-ranges-of-a-reach-walk.md) with the ranges the walk decoded.
 
 ## Context
 

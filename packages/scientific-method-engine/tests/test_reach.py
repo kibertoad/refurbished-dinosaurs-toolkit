@@ -353,6 +353,30 @@ class ReachTests(unittest.TestCase):
                                                 "start of an unresolved overlapping instruction$"):
             run_report(data, config(data, targets=[6], indirectJumps=[table], instructionControls=[3, 5]), "reach")
 
+    def test_decoded_ranges_give_each_run_of_decoded_instructions_with_its_routine(self):
+        r = reach(indirectJumps=[TABLE], decodedRanges=True)
+        # The table row 0020 is read in 000B, which jumped there; 001C..0020, 0025..0028 and the table are not decoded.
+        self.assertEqual([(x["start"], x["end"], x["routine"]) for x in r["decodedRanges"]],
+                         [(0x0, 0xB, 0x0), (0xB, 0x18, 0xB), (0x18, 0x1C, 0x18), (0x20, 0x25, 0xB), (0x28, 0x2F, 0x28)])
+        self.assertNotIn("decodedRanges", reach(indirectJumps=[TABLE]))
+
+    def test_decoded_ranges_leave_out_a_leaf_and_the_result_limit_does_not_cut_them(self):
+        r = reach(indirectJumps=[TABLE], decodedRanges=True, limit=1, leaves=[{"routine": 0x18, "reason": "synthetic leaf"}])
+        self.assertEqual([x["start"] for x in r["decodedRanges"]], [0x0, 0xB, 0x20, 0x28])
+
+    def test_decoded_ranges_of_a_stopped_walk_cover_the_part_read(self):
+        r = reach(indirectJumps=[TABLE], decodedRanges=True, instructionLimit=5)
+        self.assertTrue(r["instructionLimitReached"])
+        self.assertEqual(sum(x["end"] - x["start"] for x in r["decodedRanges"]), 0xB + 3)
+
+    def test_decoded_ranges_overlap_where_the_walk_proves_overlapping_instructions(self):
+        # 0000 je 0003 falls through to the mov at 0002, whose immediate holds 0003 nop; 0004 ret. 0005 ret.
+        # The branch and the fall-through each prove a start, so the walk keeps both instructions.
+        data = bytes.fromhex("7401b890c3c3")
+        r = run_report(data, config(data, targets=[3, 4], decodedRanges=True), "reach")
+        self.assertEqual([(x["start"], x["end"]) for x in r["decodedRanges"]], [(0, 5), (3, 6)])
+        self.assertEqual([t["reached"] for t in r["targets"]], [True, True])
+
     def test_rejected_inputs(self):
         too_many = list(range(257))
         for extra, message in [({"starts": [0x18]}, "established region entry"),
@@ -377,6 +401,8 @@ class ReachTests(unittest.TestCase):
                                ({"instructionControls": [0x3, 0x3]}, "distinct file offsets"),
                                ({"instructionControls": [0x1000]}, "instructionControls must be an integer"),
                                ({"instructionControls": [0x0]}, "instruction control 0 is a start"),
+                               ({"targets": too_many}, r"targets must be a list of 1\.\.256"),
+                               ({"decodedRanges": "yes"}, "decodedRanges must be a boolean"),
                                ({"controls": too_many}, r"controls must be a list of 0\.\.256"),
                                ({"instructionControls": too_many}, r"instructionControls must be a list of 0\.\.256")]:
             with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, message):
