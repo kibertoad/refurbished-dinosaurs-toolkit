@@ -184,6 +184,12 @@ What must stay explicit: an expired observation is pending, a log without its fi
 incomplete, and no write is supported unless the caller's contract says so. The milestone ends
 when issue 403 closes, after reconqueror reruns its own startup probe on the released package.
 
+Emulator checkpoints (issue 420) are not part of the milestone. The pinned DOSBox-X exposes no
+save or restore through its structured debugger, and its own save states neither carry the
+writable drive nor restore atomically, so [ADR 0028](decisions/0028-no-emulator-checkpoints-at-the-pinned-dosbox-x.md)
+defers them until an upstream revision provides what it lists. They then become a slice that
+depends on slices 2 and 3.
+
 Gated breakpoints (issue 456, [ADR 0032](decisions/0032-gated-breakpoints-for-polling-waits.md))
 follow the milestone: a polling wait stops once per wake the caller names instead of on every pass.
 The issue closes once reconqueror's native control shows the same readiness, input order and RNG
