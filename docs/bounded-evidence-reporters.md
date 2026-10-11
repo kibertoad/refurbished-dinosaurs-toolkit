@@ -134,7 +134,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `bounds` | the instruction extent reached from one entry, with its interrupt and port instructions | [function bounds](#function-bounds-and-site-ownership), [hardware boundaries](#hardware-boundaries) |
 | `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
 | `callees` | the bounded call graph below an entry, with recursion and shared callees, optionally compared with Ghidra's edges | [function bounds](#function-bounds-and-site-ownership) |
-| `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved; follows the declared targets of computed calls | [reachability](#reachability-from-starts-to-targets), [declared call targets](#declared-computed-call-targets) |
+| `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved; follows the declared targets of computed calls; with `decodedRanges`, the ranges of every instruction the walk decoded | [reachability](#reachability-from-starts-to-targets), [declared call targets](#declared-computed-call-targets) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
 | `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (the resident span of each FBOV descriptor, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own, an optional comparison with a candidate body, and every FBOV descriptor with its load-image span (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
@@ -1085,6 +1085,7 @@ for questions such as "can anything between program start and this point write t
 | `indirectCalls` | optional, the [declared targets of computed calls](#declared-computed-call-targets) the walk follows ([ADR 0033](decisions/0033-declared-computed-call-targets.md)) |
 | `instructionLimit` | instructions the walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000) |
 | `limit` | rows kept in each of `unresolved`, `interrupts`, `gaps` and `contested` (1..10000, default 1000) |
+| `decodedRanges` | optional boolean, default false: also report `decodedRanges`, the instructions the walk decoded ([ADR 0038](decisions/0038-decoded-ranges-of-a-reach-walk.md)) |
 
 The walk is the entry-path walk `incoming` and `uses` read, started from `starts` alone. It
 follows every resolved call into its callee and on at its return site, every resolved jump and
@@ -1133,6 +1134,21 @@ through it.
 `reachedRoutines` lists the starts and the resolved targets of reached calls, leaves included.
 `counts` gives the routines, the decoded instructions and the full length of each list. `leaves`
 repeats each leaf with its reason, whether the walk reached it and the call sites that entered it.
+
+With `decodedRanges: true`, `decodedRanges` lists every instruction the walk decoded as half-open
+`{ "start", "end", "routine" }` ranges in file order, for placing a site set larger than `targets`
+takes, or one chosen after the run, in the walk. A range is a run of instructions that abut and
+were read in the same `routine`, named as a target's `routine` is, so an instruction several
+routines share appears once and a range is not a routine's whole body. A leaf is not decoded, and
+contested, unresolved overlapping and undecodable starts are not instructions the walk kept, so no
+range starts at one. Such a start can still lie inside a range, where another decoded instruction
+covers its bytes: a leaf start there is a gap, and an undecodable start is a gap either way. Ranges
+overlap only where the walk proved two overlapping instructions. A site inside a range lies in a
+decoded instruction that may start before it; giving the site as a target says whether an
+instruction starts there, and an instruction control at it fails the report when none does. The
+result `limit` does not cut the ranges,
+which the instruction limit bounds, and a stopped walk's ranges cover the part read. Without the
+option the field is absent.
 
 `noReturn` repeats each declaration with its reason. A routine row gives whether the walk reached
 it (`reached`) and decoded it (`read`; a routine that is also a leaf is not read), and its
