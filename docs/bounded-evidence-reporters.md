@@ -134,7 +134,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `bounds` | the instruction extent reached from one entry, with its interrupt and port instructions | [function bounds](#function-bounds-and-site-ownership), [hardware boundaries](#hardware-boundaries) |
 | `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
 | `callees` | the bounded call graph below an entry, with recursion and shared callees, optionally compared with Ghidra's edges | [function bounds](#function-bounds-and-site-ownership) |
-| `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved; follows the declared targets of computed calls | [reachability](#reachability-from-starts-to-targets), [declared call targets](#declared-computed-call-targets) |
+| `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved; follows the declared targets of computed calls; ends the walk at the query's stop routines and stop sites | [reachability](#reachability-from-starts-to-targets), [declared call targets](#declared-computed-call-targets) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
 | `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (the resident span of each FBOV descriptor, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own, an optional comparison with a candidate body, and every FBOV descriptor with its load-image span (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
@@ -1079,6 +1079,7 @@ for questions such as "can anything between program start and this point write t
 | `targets` | 1..256 file offsets in declared code, such as the starts of a variable's writers or the writes themselves |
 | `leaves` | optional, at most 256 `{ "routine", "reason" }` objects: routines the walk reaches but does not read, so they call nothing. `reason` is required free text, and the report repeats it. A start cannot be a leaf |
 | `noReturn` | optional, at most 256 `{ "routine", "reason" }`, `{ "call", "reason" }` or `{ "interrupt", "reason" }` objects ([ADR 0029](decisions/0029-declared-non-returning-routines-and-interrupts.md), [ADR 0035](decisions/0035-declared-non-returning-call-sites.md)): a resolved call to the `routine`, the call instruction at the `call` site and the interrupt instruction at the `interrupt` site do not continue at the next instruction. `reason` is required free text, and the report repeats it. A `call` site must decode as a call instruction, and an `interrupt` site as an unconditional interrupt instruction |
+| `stops` | optional, at most 256 `{ "routine", "reason" }` or `{ "site", "reason" }` objects ([ADR 0039](decisions/0039-query-scoped-stops-in-reach.md)): where this query's walk ends, for a reason of the query's own, such as asking what runs before a routine is called. A `routine` is reached and not read, and a call to it does not continue at the next instruction. A `site` must decode; the walk decodes its instruction and follows nothing after it. `reason` is required free text, and the report repeats it. A start cannot be a stop, a stop routine cannot also be a leaf or a `noReturn` routine, and one offset cannot be both a stop routine and a stop site |
 | `controls` | optional, at most 256 distinct call sites the walk must decode and resolve. An offset whose bytes do not decode as a call fails the report before the walk |
 | `instructionControls` | optional, at most 256 distinct sites the walk must decode as instruction starts, such as a store the walk is known to reach. A start is refused, since the walk decodes every start |
 | `indirectJumps` | the [declared tables](#evidenced-indirect-jump-tables) the walk follows |
@@ -1122,6 +1123,7 @@ Each `targets` row gives `reached`. A reached target has:
 | `route` | what the chain rests on: `assumedReturns` (calls whose return site it continued at), `declaredTableJumps` (the table rows it took), `declaredCalls` (the declared computed calls it took, as `{ "site", "target" }`) and `interruptsContinued` |
 | `throughEveryRoute` | the routine starts, outermost first, that every route the walk read to the target passes. A routine that only runs and returns before the target is not on such a route |
 | `leaf` | whether the target is the start of a leaf |
+| `stop` | whether the target is a stop routine or a stop site |
 
 An unreached target gives `status`: `not reached`, `inside a reached instruction` (with
 `insideInstruction`), `start of a contested instruction`, `start of an unresolved overlapping
@@ -1162,14 +1164,36 @@ is never contradicted, since whether the target returns to this call depends on 
 does not follow; returnSites on a target are expected and the declaration rests on its reason
 alone. A call whose target is unresolved stays in `unresolved` and keeps `negativeUsable` false.
 Like the other declarations, a call row states a fact about the build and is listed among the
-assumptions, so it is the wrong tool for cutting a walk at a call that does return.
+assumptions, so a walk is cut at a call that does return with `stops` instead.
+
+`stops` repeats each stop with its reason. A stop narrows the question and claims nothing about
+the build, so it is neither checked nor listed among the `assumptions`, and it does not by itself
+make `negativeUsable` false. A target reached only past a stop is not reached, and the negative
+answers the narrowed question. A routine row gives whether the walk `reached` it and its
+`callSites`: each resolved or declared call to it as `{ "site", "following", "followingRead" }`.
+A call to a stop routine ends its branch under the rule for a call to a `noReturn` routine, so a
+declared computed call ends only when it is exhaustive and each of its targets is a stop or
+`noReturn` routine; otherwise the call keeps its return site, and `followingRead` shows it read.
+A jump into a stop routine ends there too. A reached stop routine whose start lies inside a
+decoded instruction is a gap, as for a leaf. A site row gives whether the walk `reached` it, its
+`instruction` text, the `routine` the walk read it in, and `successors`: each site the instruction
+would continue at, with whether the walk `read` an instruction there by another route. The walk
+follows nothing at a stop site, so a computed or unrelocated transfer there is not `unresolved`,
+and a call-site control at a stop site is refused before the walk. A failed control past a stop
+names it.
+
+The `noReturn` return check reads past the stops. When the query has stops, the check reads the
+reached declared routines and the targets of declared calls with a walk of its own that has none,
+so code a stop hides from the query can still contradict a declaration. That walk has the same
+`instructionLimit`, and stopping at it sets `instructionLimitReached`.
 
 `indirectCalls` repeats each declaration as the [declared call targets](#declared-computed-call-targets)
 section describes, with whether the walk `reached` its site, the `routine` the walk read the site in,
 and `unreadTargets`: for a reached site, the declared targets that are not leaves and at which the
 walk established no instruction, because the target overlaps another reached instruction, is
 contested or does not decode. Each such target is also a gap or a contested instruction, unless
-the walk stopped at its instruction limit before reading it.
+the walk stopped at its instruction limit before reading it. A stop routine is not listed, nor is
+any target of a call at a stop site.
 
 `instructionLimitReached` holds when the walk stopped at `instructionLimit` with code left to read.
 The stop is also an `instruction limit` row in `gaps`, but the result `limit` can cut that row, and
@@ -1197,7 +1221,8 @@ instruction except where `noReturn` declares otherwise, each leaf calls nothing,
 `noReturn` routine and interrupt never returns and each `noReturn` call never returns to its next
 instruction, for its stated reason, each declared table
 holds the routes its declaration gives, and each declared computed call calls only the targets
-its declaration gives. `throughEveryRoute` describes the routes the walk read; an
+its declaration gives. With `stops`, it answers the question as the stops narrow it.
+`throughEveryRoute` describes the routes the walk read; an
 unresolved transfer may add a route that passes none of those routines. None of this proves
 runtime reachability.
 
