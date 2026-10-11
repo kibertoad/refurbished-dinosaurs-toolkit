@@ -182,7 +182,7 @@ def _no_return_check(image, routines, declared, limit):
     """``(returns, read, stopped)``: the return sites on each of ``routines``' own read paths, the
     instructions the walk established, and whether the walk stopped.
 
-    ``routines`` are the declared routines and the targets of the declared calls. The walk starts at
+    ``routines`` are the declared routines, or the targets of the declared calls. The walk starts at
     them and continues past every interrupt except a declared one, as ``reach`` reads them, so a
     routine that ends in an interrupt that returns is contradicted by what follows it. Calls are
     stepped over at their return sites, except calls to declared routines and declared calls.
@@ -323,14 +323,24 @@ def inventory_check(image, config):
         return routines.get(site)
     row_starts, start_counts = _row_starts(image, rows, starts, domains, seen, contested, routine_of)
 
-    # Each declaration with the calls it kept from their return sites, as reach reports them.
+    # Each declaration with the calls it kept from their return sites, as reach reports them: only a call the
+    # entry-path walk established has targets, so a raw byte candidate at an unreached declared site gives none.
     site_targets = {at: [] for at in no_return_sites}
     for row in calls["rows"]:
-        if row["site"] in site_targets and row["target"] is not None and row["target"] not in site_targets[row["site"]]:
+        if (row["site"] in site_targets and row["site"] in seen and row["target"] is not None
+                and row["target"] not in site_targets[row["site"]]):
             site_targets[row["site"]].append(row["target"])
-    checked = set(no_return_routines) | {target for found in site_targets.values() for target in found}
-    returns, check_read, check_stopped = _no_return_check(image, checked, declared,
-                                                          config.get("instructionLimit", 10000))
+    # The targets of the declared calls get a walk of their own, so that their code, overlapping a declared
+    # routine's or spending the limit first, cannot change what the routine check reads.
+    call_targets = {target for found in site_targets.values() for target in found} - set(no_return_routines)
+    checked = set(no_return_routines) | call_targets
+    check_limit = config.get("instructionLimit", 10000)
+    returns, routine_read, routine_stopped = _no_return_check(image, no_return_routines, declared, check_limit)
+    target_returns, target_read, target_stopped = _no_return_check(image, call_targets, declared, check_limit)
+    returns |= target_returns
+    check_read = ({at for at in no_return_routines if at in routine_read}
+                  | {at for at in call_targets if at in target_read})
+    check_stopped = routine_stopped or target_stopped
     entry_calls = {}
     for row in calls["rows"]:
         if row["target"] in no_return_routines and row["site"] in seen and ends_branch(row):
@@ -351,13 +361,13 @@ def inventory_check(image, config):
             routine = list(indirect_calls[row["site"]]["targets"])
         ends.append((row["site"], image.decode(row["site"]).size, "call", routine, row["classification"]))
     # A declared call site is listed as one, whatever its targets, unless a routine declaration already listed it.
+    def site_classification(at):
+        return "entry-path instruction" if at in seen else CONTESTED_REASON if at in contested else "declared site"
     listed = {site for site, *_ in ends}
     ends += [(at, row["following"] - at, "call site",
-              site_targets[at][0] if len(site_targets[at]) == 1 else site_targets[at] or None,
-              "entry-path instruction" if at in seen else CONTESTED_REASON if at in contested else "declared site")
+              site_targets[at][0] if len(site_targets[at]) == 1 else site_targets[at] or None, site_classification(at))
              for at, row in no_return_sites.items() if at not in listed]
-    ends += [(at, row["following"] - at, "interrupt", None,
-              "entry-path instruction" if at in seen else CONTESTED_REASON if at in contested else "declared site")
+    ends += [(at, row["following"] - at, "interrupt", None, site_classification(at))
              for at, row in no_return_interrupts.items()]
     # Only a site the entry-path walk established counts a row; the rest are listed with their evidence.
     past, past_rows, past_unread, past_unverified = [], set(), set(), set()
@@ -446,8 +456,11 @@ def inventory_check(image, config):
     if unread:
         summary += " " + _count(unread, "noReturn routine is", "noReturn routines are") \
                    + " not an instruction the check walk established, so its return check reads nothing."
-    if check_stopped:
+    if routine_stopped:
         summary += " The walk that checks the noReturn routines stopped at its instruction limit, so it can miss returns."
+    if target_stopped:
+        summary += (" The walk that checks the targets of the noReturn calls stopped at its instruction limit, so it "
+                    "can miss returns.")
     assumptions = [call_assumption(no_return_routines, no_return_sites)]
     if checked:
         assumptions.append("each interrupt the noReturn check reads returns to its next instruction"

@@ -166,7 +166,7 @@ def successor_graph(image, seen, **step):
             for at, ins in seen.items()}
 
 
-def no_return_rows(routines, interrupts, returns, call_sites, seen, reached, read, calls=None, call_targets=None):
+def no_return_rows(routines, interrupts, returns, call_sites, seen, reached, read, calls, call_targets):
     """The ``noReturn`` report rows of the declared ``routines``, ``calls`` and ``interrupts``.
 
     ``returns`` gives the return sites of each routine and each target of a declared call,
@@ -185,9 +185,9 @@ def no_return_rows(routines, interrupts, returns, call_sites, seen, reached, rea
             for at, reason in routines.items()]
     rows += [{"call": at, "reason": row["reason"], "reached": at in seen,
               "targets": [{"routine": target, "read": target in read, "returnSites": returns.get(target, [])}
-                          for target in (call_targets or {}).get(at, [])],
+                          for target in call_targets.get(at, [])],
               "following": row["following"], "followingRead": row["following"] in seen}
-             for at, row in (calls or {}).items()]
+             for at, row in calls.items()]
     return rows + [{"interrupt": at, "reason": row["reason"], "vector": row["vector"], "reached": at in seen,
                     "following": row["following"], "followingRead": row["following"] in seen}
                    for at, row in interrupts.items()]
@@ -401,7 +401,11 @@ def reach(image, config):
     cut_by = {at + seen[at].size: f"the call at {at} to noReturn routine{'s' if len(found) > 1 else ''} "
                                   + ", ".join(map(str, found))
               for at, found in sorted(call_targets.items()) if ends(at, found)}
-    cut_by |= {row["following"]: f"the noReturn call at {at}" for at, row in no_return_sites.items() if at in seen}
+    # A call to a noReturn routine can be declared as a call too; the message then names both declarations.
+    for at, row in no_return_sites.items():
+        if at in seen:
+            cause = f"the noReturn call at {at}"
+            cut_by[row["following"]] = f"{cut_by[row['following']]} and {cause}" if row["following"] in cut_by else cause
     cut_by |= {row["following"]: f"the noReturn interrupt at {at}"
                for at, row in no_return_interrupts.items() if at in seen}
     # Not reached and reached-but-unresolved need different fixes, so each failure says which it is.

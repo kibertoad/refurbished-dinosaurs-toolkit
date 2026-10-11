@@ -289,6 +289,12 @@ class ReachTests(unittest.TestCase):
             with self.subTest(site=site), self.assertRaisesRegex(ValueError, "Positive controls failed: " + message):
                 run_report(EXITS, config(EXITS, targets=[9], instructionControls=[site], noReturn=exits), "reach")
 
+    def test_a_control_after_a_call_declared_both_ways_names_both_declarations(self):
+        exits = [{"routine": 0x10, "reason": "synthetic exit"}, {"call": 3, "reason": "synthetic exit"}]
+        with self.assertRaisesRegex(ValueError, r"instruction control 6 is not reached \(it follows the call at 3 to "
+                                                r"noReturn routine 16 and the noReturn call at 3\)$"):
+            run_report(EXITS, config(EXITS, targets=[9], instructionControls=[6], noReturn=exits), "reach")
+
     def test_an_unreached_no_return_interrupt_still_gives_its_following_site(self):
         # 0000 ret; 0001 int 21h, which nothing reaches.
         data = bytes.fromhex("c3" "cd21")

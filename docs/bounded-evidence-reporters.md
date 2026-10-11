@@ -1310,14 +1310,16 @@ also holds the byte after it:
 walk `reached` it, whether the return check `read` it, its `returnSites`, `contradicted` and its
 entry-path `callSites` (each with `following` and `followingRead`); a call row gives `reached`,
 its `targets` with whether the return check `read` each and its `returnSites`, `following` and
-`followingRead`, and is never contradicted; an interrupt row gives its
+`followingRead`, and is never contradicted (a call the entry-path walk did not reach has no
+`targets`, as in `reach`, even when the raw scan finds a candidate there); an interrupt row gives its
 `vector`, `reached`, `following` and `followingRead`. The entry-path walk ends a branch at every
-interrupt, so the return check reads each declared routine and each target of a declared call
-site with a walk of its own that starts there and continues past every interrupt except a
-declared one, as `reach` does.
+interrupt, so the return check reads the declared routines with a walk of its own that starts at
+them and continues past every interrupt except a declared one, as `reach` does. The targets of the
+declared call sites get a second walk of the same kind, so their code cannot change what the
+first one reads.
 A routine that ends in an interrupt that returns is then contradicted by what follows it, unless
-that interrupt is declared too. This walk spends its own `instructionLimit`, and
-`noReturnCheckLimitReached` says when it stopped; an empty `returnSites` then may miss a return
+that interrupt is declared too. Each of these walks spends its own `instructionLimit`, and
+`noReturnCheckLimitReached` says when one stopped; an empty `returnSites` then may miss a return
 past the stop. A routine the check did not read (its start does not decode, or a rejected overlap
 removed it) has an empty `returnSites` that shows nothing, and the summary counts it. A row with
 several declared calls or interrupts in its body is listed once for each. `counts.rowsPastNoReturn`

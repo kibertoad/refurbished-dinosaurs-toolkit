@@ -285,6 +285,30 @@ class InventoryCheckTests(unittest.TestCase):
         self.assertEqual([(row.get("routine"), row.get("contradicted")) for row in both["noReturn"]],
                          [(8, True), (None, None)])
 
+    def test_an_unreached_no_return_call_lists_no_targets_from_raw_byte_candidates(self):
+        # As above, 0003 decodes as a call to 0003 only in the raw scan. Declared, it is unreached and, as in
+        # reach, has no targets, though the raw scan still lists the candidate.
+        data = bytes.fromhex("e80500" "e8fdff" "0000" "e80100" "c3" "c3")
+        inventory = "start\tsize\n1000:0000\t8\n1000:0008\t4\n1000:000C\t1\n"
+        reason = "synthetic: this call never returns"
+        r = self.check(inventory, data=data, noReturn=[{"call": 0, "reason": reason}, {"call": 3, "reason": reason}])
+        self.assertEqual(r["noReturn"][1], {"call": 3, "reason": reason, "reached": False, "targets": [],
+                                            "following": 6, "followingRead": False})
+        self.assertEqual([(t["target"], t["evidence"]) for t in r["targets"]], [(3, "raw byte candidate only")])
+
+    def test_the_target_of_a_no_return_call_does_not_change_what_the_routine_check_reads(self):
+        # 0000 calls T at 0010 and returns at 0003. T: mov ax, 0C390h; ret. The declared routine R at 0011
+        # (nop; ret) lies inside T's mov, so a walk from both would reject the overlap and read neither.
+        data = bytes.fromhex("e80d00" "c3" + "90" * 12 + "b890c3" "c3")
+        inventory = "start\tsize\n1000:0000\t4\n1000:0010\t4\n"
+        routine = {"routine": 0x11, "reason": "synthetic: R exits"}
+        r = self.check(inventory, data=data, noReturn=[routine, {"call": 0, "reason": "synthetic: T exits here"}])
+        self.assertEqual(r["noReturn"], [
+            {"routine": 0x11, "reason": "synthetic: R exits", "reached": False, "read": True, "returnSites": [0x12],
+             "contradicted": True, "callSites": []},
+            {"call": 0, "reason": "synthetic: T exits here", "reached": True,
+             "targets": [{"routine": 0x10, "read": True, "returnSites": [0x13]}], "following": 3, "followingRead": False}])
+
     def test_a_row_with_two_calls_to_a_no_return_routine_lists_both_and_counts_one_row(self):
         # 0000 jz 0005; 0002 call 000C; 0005 jnz 000A; 0007 call 000C; 000A ret; 000B nop; 000C mov ah,4Ch; int 21h.
         data = bytes.fromhex("7403" "e80700" "7503" "e80200" "c3" "90" "b44c" "cd21")

@@ -35,9 +35,10 @@ the argument pattern would be handwritten semantics ([ADR 0003](0003-established
    return and that the declaration rests on its reason alone. `assumptions` names the exception to
    the call continuation and adds the claim that each declared call never returns to its next
    instruction, though its target may return to other callers.
-4. `inventory-check` takes the same form. Its return check also starts at the targets of the
-   declared calls, and `rowsPastNoReturn` lists a row past a declared call as kind `call site`,
-   unless a routine declaration already lists that call.
+4. `inventory-check` takes the same form. Its return check reads the targets of the declared
+   calls with a walk apart from the one that reads the declared routines, so a target's code
+   cannot change what the routine check reads, and `rowsPastNoReturn` lists a row past a
+   declared call as kind `call site`, unless a routine declaration already lists that call.
 
 ## Consequences
 
