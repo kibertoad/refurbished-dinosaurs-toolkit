@@ -40,9 +40,10 @@ The engine has no analysis that joins values across paths. `x86/values.py`, `mac
    did. No mnemonic is consulted. The CS-override idiom is dropped as the interpreter drops it.
 
 3. **Registers are held by varnode.** Held varnodes never overlap. A read inside a held varnode
-   takes its bytes, a read that held varnodes tile is pieced from them, and any other read is
-   unknown. A write keeps the bytes of overlapped varnodes that it does not cover, so `mov bl, al;
-   xor bh, bh` gives BX the range of AL.
+   takes its bytes. A read that covers held varnodes is pieced from them, with every byte no held
+   varnode covers unknown, so after `xor bh, bh` BX lies in 0..255 whatever BL holds. A read that a
+   held varnode only partly overlaps is unknown. A write keeps the bytes of overlapped varnodes that
+   it does not cover, so `mov bl, al; xor bh, bh` gives BX the range of AL.
 
 4. **Every transfer function is checked for soundness two ways.** For sampled input ranges, every
    output `pcode.evaluate` computes from values in them lies in the output range. Through instructions that lift
@@ -60,21 +61,40 @@ The engine has no analysis that joins values across paths. `x86/values.py`, `mac
    `cmp bx, 9; ja default` bounds BX on the fall-through edge, and a write to BX between the
    comparison and the dispatch undoes the bound.
 
+   In detail: the walk starts at the routine's start and follows the successors the CFG walk
+   gives, stepping over calls and interrupts. A loop head is a site that a back edge of a
+   depth-first walk from the start enters. A condition narrows through `BOOL_NEGATE`, through
+   `BOOL_AND` and `BOOL_OR` (where either side decides the result, the edge joins both cases, so
+   `jbe` after `cmp bx, 9` gives 0..9), and through a comparison of a register, or of a register
+   plus or minus a constant, with another such operand. The signed jumps test `OF` and `SF`, which
+   p-code writes from `INT_SBORROW` and the sign of the difference, so they narrow nothing; a signed
+   guard does not bound an unsigned table offset anyway. An edge that no value can take is not
+   walked. A dispatch jump continues at the rows its caller gives, and a dispatch call at its
+   return site. Paths that enter the routine's code other than at its start are not read; the
+   caller has to show that none exists.
+
 6. **Memory and calls are unknown unless shown otherwise.** A value in memory is unknown, except
-   a stack slot at a known offset from the frame that a store on every path into the read wrote.
-   A call to a routine the analysis does not walk, or an interrupt, makes every register and
-   tracked stack slot it may write unknown.
+   a stack slot at a known offset from the routine's entry stack pointer that a store on every path
+   into the read wrote and that lies at or above the stack pointer, since an interrupt can overwrite
+   the bytes below it. A store through any other address, and a write to SS, forget every slot.
+   The analysis walks no callee or handler, so a call or an interrupt makes every register and
+   every stack slot unknown. An instruction whose p-code branches inside itself (a repeated string
+   operation) makes every register it writes unknown.
 
 7. **A derived count is reported as derived.** It replaces a declaration's count only for an
    exhaustive table that declares none, and only when the analysis proves the index's range on
    every path into the dispatch and that range steps through the table's rows: its stride a
    multiple of the table stride and its first value on a row. The report gives the range, the
    dispatch site, the bounding sites and the assumptions the derivation rests on (the table's
-   segment and location stay declared). Without a proof the site stays unresolved, with one
-   reason: no bound, a path that skips the bound, an operation without a transfer function, an
-   unknown memory read, a call or interrupt not walked, the widening limit, or an index that does
-   not step by the table stride. A declared count larger than the proven range is refused,
-   because the extra rows cannot be read. A smaller one is followed, and the report lists the
+   segment and location stay declared). A range is bounded when it holds at most 256 values, the
+   most rows a declared table may have. Each value carries the sites that bounded it, or the
+   causes that left it unbounded, so without a proof the site stays unresolved with its reasons,
+   each at a site: no bound (a register value from the routine's entry), a path that skips the
+   bound (at the merge, with the bounding sites), an operation without a transfer function, an
+   operation that faults (a constant division by zero), an unknown memory read, a call or
+   interrupt not walked, the widening limit, a transfer the walk could not follow, the instruction
+   limit, or an index that does not step by the table stride. A declared count larger than the
+   proven range is refused, because the extra rows cannot be read. A smaller one is followed, and the report lists the
    rows it leaves out.
 
 8. **It applies wherever tables are read.** `reach`, `inventory-check` and the path commands that

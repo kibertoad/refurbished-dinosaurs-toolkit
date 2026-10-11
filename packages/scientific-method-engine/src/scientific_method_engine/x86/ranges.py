@@ -9,9 +9,9 @@ operation without a transfer function has no range, and its output is unknown.
 
 ``Evaluation`` runs one instruction's p-code over ``RegisterRanges``. Memory is not modelled:
 a ``LOAD`` or a direct ``ram`` operand yields an unknown value and a ``STORE`` changes no
-register. Control flow, joins across paths, widening and branch refinement belong to the
-analysis that walks the code (ADR 0034, slices 2 and later); ``Evaluation.execute`` stops at the
-first control-flow operation and hands it back.
+register. Control flow, memory, joins across paths, widening and branch refinement belong to the
+analysis that walks the code (``table_bounds.py``); ``Evaluation.execute`` stops at the first
+control-flow operation and hands it back.
 """
 from math import gcd
 
@@ -455,7 +455,8 @@ class RegisterRanges:
     """The ranges register varnodes hold, keyed by ``(offset, size)`` in the register space.
 
     Held varnodes never overlap. A read of a varnode inside a held one takes its bytes; a read
-    that held varnodes tile is pieced from them; any other read is unknown. A write keeps the
+    that covers held varnodes is pieced from them, with every byte no held varnode covers unknown;
+    a read that a held varnode only partly overlaps is unknown. A write keeps the
     bytes of overlapped varnodes that it does not cover. x86 SLEIGH's register space is
     little-endian, so byte ``k`` of a varnode holds its bits ``8k`` to ``8k + 7``.
     """
@@ -489,13 +490,18 @@ class RegisterRanges:
         for (o, n), r in self.held.items():
             if o <= offset and offset + size <= o + n:
                 return resize(shift_right(r, (offset - o) * 8), bits)
+        end = offset + size
+        inside = sorted((o, n) for (o, n) in self.held if o < end and offset < o + n)
+        if not inside or any(o < offset or o + n > end for o, n in inside):
+            return Range.top(bits)
+        # Held varnodes inside the read, with every byte between them unknown.
         parts, at = [], offset
-        while at < offset + size:
-            piece = next(((o, n) for (o, n) in self.held if o == at and o + n <= offset + size), None)
-            if piece is None:
-                return Range.top(bits)
-            parts.append(self.held[piece])
-            at += piece[1]
+        for o, n in inside + [(end, 0)]:
+            if at < o:
+                parts.append(Range.top((o - at) * 8))
+            if n:
+                parts.append(self.held[(o, n)])
+            at = o + n
         result = parts[0]
         for part in parts[1:]:
             result = t_piece(result.bits + part.bits, part, result)
