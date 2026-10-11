@@ -134,7 +134,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `bounds` | the instruction extent reached from one entry, with its interrupt and port instructions | [function bounds](#function-bounds-and-site-ownership), [hardware boundaries](#hardware-boundaries) |
 | `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
 | `callees` | the bounded call graph below an entry, with recursion and shared callees, optionally compared with Ghidra's edges | [function bounds](#function-bounds-and-site-ownership) |
-| `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved; follows the declared targets of computed calls; ends the walk at the query's stop routines and stop sites; with `decodedRanges`, the ranges of every instruction the walk decoded | [reachability](#reachability-from-starts-to-targets), [declared call targets](#declared-computed-call-targets) |
+| `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, the starts each target is reached from, and every reached transfer left unresolved; follows the declared targets of computed calls; ends the walk at the query's stop routines and stop sites; with `decodedRanges`, the ranges of every instruction the walk decoded | [reachability](#reachability-from-starts-to-targets), [declared call targets](#declared-computed-call-targets) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
 | `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (the resident span of each FBOV descriptor, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own, an optional comparison with a candidate body, and every FBOV descriptor with its load-image span (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
@@ -1087,6 +1087,7 @@ for questions such as "can anything between program start and this point write t
 | `instructionLimit` | instructions the walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000) |
 | `limit` | rows kept in each of `unresolved`, `interrupts`, `gaps` and `contested` (1..10000, default 1000) |
 | `decodedRanges` | optional boolean, default false: also report `decodedRanges`, the instructions the walk decoded ([ADR 0038](decisions/0038-decoded-ranges-of-a-reach-walk.md)) |
+| `startRoutes` | optional boolean, default false: also give each reached target `startRoutes`, the route from each start it is reached from |
 
 The walk is the entry-path walk `incoming` and `uses` read, started from `starts` alone. It
 follows every resolved call into its callee and on at its return site, every resolved jump and
@@ -1123,8 +1124,21 @@ Each `targets` row gives `reached`. A reached target has:
 | `routine` | the routine the chain's last call entered, or the start |
 | `route` | what the chain rests on: `assumedReturns` (calls whose return site it continued at), `declaredTableJumps` (the table rows it took), `declaredCalls` (the declared computed calls it took, as `{ "site", "target" }`) and `interruptsContinued` |
 | `throughEveryRoute` | the routine starts, outermost first, that every route the walk read to the target passes. A routine that only runs and returns before the target is not on such a route |
+| `reachedFrom` | the starts, in `starts` order, from which a route the walk read reaches the target |
+| `startRoutes` | with `startRoutes: true`, one `{ "start", "calls", "throughEveryRoute" }` row per `reachedFrom` start: the fewest calls on a read route from that start, and the routine starts every read route from it passes |
 | `leaf` | whether the target is the start of a leaf |
 | `stop` | whether the target is a stop routine or a stop site |
+
+`reachedFrom` and `startRoutes` read the same routes as the rest of the row: every route the walk
+read from any start, so a route from one start can pass through code the walk read from another,
+and when no instruction is contested and the walk did not stop at its instruction limit, a start's
+routes are the ones a walk from that start alone would read. `chain` names one start, and
+`throughEveryRoute` is empty when the routes from different starts share no routine; `reachedFrom`
+says which starts reach the target, and `startRoutes` what each start's routes pass. A target at a
+start lists that start, with no call and an empty `throughEveryRoute`. `reachedFrom` comes from one
+pass over the read graph whatever the number of starts. `startRoutes` costs one more pass over the
+routes that lead to a target for each start in `reachedFrom`, which with many starts and a large
+walk takes noticeably longer, so it is off by default.
 
 An unreached target gives `status`: `not reached`, `inside a reached instruction` (with
 `insideInstruction`), `start of a contested instruction`, `start of an unresolved overlapping
@@ -1244,7 +1258,9 @@ instruction except where `noReturn` declares otherwise, each leaf calls nothing,
 instruction, for its stated reason, each declared table
 holds the routes its declaration gives, and each declared computed call calls only the targets
 its declaration gives. With `stops`, it answers the question as the stops narrow it.
-`throughEveryRoute` describes the routes the walk read; an
+A start that `reachedFrom` does not list reaches the target by no route the walk read, which
+answers for that start only when `negativeUsable` holds, on the same assumptions.
+`throughEveryRoute` and `startRoutes` describe the routes the walk read; an
 unresolved transfer may add a route that passes none of those routines. None of this proves
 runtime reachability.
 

@@ -813,12 +813,25 @@ test("reach follows a resident far call and an overlay fixup call through the FB
   const path = join(dir, "config.json");
   writeFileSync(
     path,
-    JSON.stringify({ ...config, starts: [80, 532], targets: [528], controls: [80, 532], decodedRanges: true }),
+    JSON.stringify({
+      ...config,
+      starts: [80, 532],
+      targets: [528],
+      controls: [80, 532],
+      decodedRanges: true,
+      startRoutes: true,
+    }),
   );
   const r = run(["reach", path]);
   const target = r.targets[0];
   assert.equal(target.reached, true);
   assert.deepEqual(target.chain, [{ routine: 80 }, { callSite: 80, routine: 528 }]);
+  // The chain names one start; both reach the overlay entry, each through its own call.
+  assert.deepEqual(target.reachedFrom, [80, 532]);
+  assert.deepEqual(target.startRoutes, [
+    { start: 80, calls: 1, throughEveryRoute: [80] },
+    { start: 532, calls: 1, throughEveryRoute: [532] },
+  ]);
   assert.deepEqual(r.controls, [
     { site: 80, target: 528 },
     { site: 532, target: 528 },
