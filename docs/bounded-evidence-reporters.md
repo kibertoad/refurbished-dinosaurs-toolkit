@@ -1078,7 +1078,7 @@ for questions such as "can anything between program start and this point write t
 | `starts` | 1..256 file offsets, each an established region entry |
 | `targets` | 1..256 file offsets in declared code, such as the starts of a variable's writers or the writes themselves |
 | `leaves` | optional, at most 256 `{ "routine", "reason" }` objects: routines the walk reaches but does not read, so they call nothing. `reason` is required free text, and the report repeats it. A start cannot be a leaf |
-| `noReturn` | optional, at most 256 `{ "routine", "reason" }` or `{ "interrupt", "reason" }` objects ([ADR 0029](decisions/0029-declared-non-returning-routines-and-interrupts.md)): a resolved call to the `routine` and the interrupt instruction at the `interrupt` site do not continue at the next instruction. `reason` is required free text, and the report repeats it. An `interrupt` site must decode as an unconditional interrupt instruction |
+| `noReturn` | optional, at most 256 `{ "routine", "reason" }`, `{ "call", "reason" }` or `{ "interrupt", "reason" }` objects ([ADR 0029](decisions/0029-declared-non-returning-routines-and-interrupts.md), [ADR 0035](decisions/0035-declared-non-returning-call-sites.md)): a resolved call to the `routine`, the call instruction at the `call` site and the interrupt instruction at the `interrupt` site do not continue at the next instruction. `reason` is required free text, and the report repeats it. A `call` site must decode as a call instruction, and an `interrupt` site as an unconditional interrupt instruction |
 | `controls` | optional, at most 256 distinct call sites the walk must decode and resolve. An offset whose bytes do not decode as a call fails the report before the walk |
 | `instructionControls` | optional, at most 256 distinct sites the walk must decode as instruction starts, such as a store the walk is known to reach. A start is refused, since the walk decodes every start |
 | `indirectJumps` | the [declared tables](#evidenced-indirect-jump-tables) the walk follows |
@@ -1090,9 +1090,10 @@ The walk is the entry-path walk `incoming` and `uses` read, started from `starts
 follows every resolved call into its callee and on at its return site, every resolved jump and
 branch, the rows of a declared indirect jump table, the declared targets of a computed call, and
 every interrupt to the next instruction. A call to a `noReturn` routine continues only into the
-routine, and a `noReturn` interrupt ends its branch. A declared computed call continues at its
-return site unless it is declared exhaustive and every target it declares is a `noReturn` routine.
-Far calls resolve as `target` describes: through an MZ relocation, or through an FBOV fixup and
+routine, a `noReturn` call site continues only into its targets (or nowhere, when its target is
+unresolved), and a `noReturn` interrupt ends its branch. A declared computed call continues at its
+return site unless it is declared exhaustive and every target it declares is a `noReturn` routine,
+or its site is a `noReturn` call. Far calls resolve as `target` describes: through an MZ relocation, or through an FBOV fixup and
 the trampoline it names to the overlay entry. A near transfer resolves through the mapping of the
 region that holds it. Instruction boundaries are checked as in the entry-path walk, so an
 instruction reached only through a rejected overlapping start is `contested`.
@@ -1151,6 +1152,18 @@ interrupt row gives its `vector`, whether the walk `reached` it, its `following`
 continued past. A declared computed call is among a routine's `callSites` only when the declaration
 ends its branch, that is when it is exhaustive and every target it declares is `noReturn`.
 
+A call row is for a call that never returns because of what its caller passes, such as an exit
+routine that returns when an argument asks it to and a wrapper that always passes the value that
+makes it exit. Declaring the shared routine would be contradicted by its own return, which other
+callers take, so the call is declared instead. The row gives whether the walk `reached` the call,
+its `following` site and `followingRead`, and `targets`: each resolved or declared target of the
+call with whether the walk `read` it and its `returnSites`, found as for a routine row. A call row
+is never contradicted, since whether the target returns to this call depends on values the walk
+does not follow; returnSites on a target are expected and the declaration rests on its reason
+alone. A call whose target is unresolved stays in `unresolved` and keeps `negativeUsable` false.
+Like the other declarations, a call row states a fact about the build and is listed among the
+assumptions, so it is the wrong tool for cutting a walk at a call that does return.
+
 `indirectCalls` repeats each declaration as the [declared call targets](#declared-computed-call-targets)
 section describes, with whether the walk `reached` its site, the `routine` the walk read the site in,
 and `unreadTargets`: for a reached site, the declared targets that are not leaves and at which the
@@ -1180,8 +1193,9 @@ the walk read it in.
 instruction limit, nothing is unresolved, no gap was recorded, no instruction is contested and no
 `noReturn` routine is contradicted. Even then a target that is not reached is unreached only on
 the walk's assumptions, which the report lists: each call and interrupt returns to the next
-instruction except where `noReturn` declares otherwise, each leaf calls nothing and each
-`noReturn` routine and interrupt never returns, for its stated reason, each declared table
+instruction except where `noReturn` declares otherwise, each leaf calls nothing, each
+`noReturn` routine and interrupt never returns and each `noReturn` call never returns to its next
+instruction, for its stated reason, each declared table
 holds the routes its declaration gives, and each declared computed call calls only the targets
 its declaration gives. `throughEveryRoute` describes the routes the walk read; an
 unresolved transfer may add a route that passes none of those routines. None of this proves
@@ -1199,7 +1213,7 @@ state how many called routines the inventory misses next to its coverage figure
 | `inventory` | the inventory TSV, relative to the config file's directory as `source` is (a Python caller of `run_report` passes an absolute path, and a relative one is refused). Its columns are `start` and `size`, then optionally `name`, `out_of_scope` and `ranges`, as the work protocol gives them; a row that does not parse fails the report with its line number |
 | `searchRegions`, `scanLimit`, `instructionLimit` | as for `incoming`: the regions scanned (all by default), the bytes the raw scan reads (1 to 1,048,576 or the declared code size, whichever is larger; default 65536) and the instructions the entry-path walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000). Raise `scanLimit` to the size of the declared code, or the search is partial, and raise `instructionLimit` to it for a walk that cannot stop at its limit. A region with no `entries` can declare an overlay no inventory row starts, so targets in it are placed rather than `outside declared code` |
 | `controls` | optional, at most 256 call sites that must be entry-path calls with a resolved target; a missed one fails the report |
-| `noReturn` | optional, the declarations `reach` takes, in the same shape and with the same validation ([ADR 0031](decisions/0031-inventory-boundaries-against-the-entry-path-walk.md)): at most 256 `{ "routine", "reason" }` or `{ "interrupt", "reason" }` objects. The entry-path walk does not continue past a resolved call to a declared routine, and a declared interrupt is no `hardware or interrupt boundary` gap |
+| `noReturn` | optional, the declarations `reach` takes, in the same shape and with the same validation ([ADR 0031](decisions/0031-inventory-boundaries-against-the-entry-path-walk.md)): at most 256 `{ "routine", "reason" }`, `{ "call", "reason" }` or `{ "interrupt", "reason" }` objects. The entry-path walk does not continue past a resolved call to a declared routine or past a declared call site, and a declared interrupt is no `hardware or interrupt boundary` gap |
 | `indirectCalls` | optional, the declarations `reach` takes, in the same shape and with the same validation ([declared call targets](#declared-computed-call-targets)). Each declared target of a computed call the entry-path walk reaches is a call target of that site, and the walk reads on in it. A declared site is refused as a control |
 | `limit` | rows kept in each of `targets`, `unresolved`, `rowsOutsideDeclaredCode`, `rowStarts` and `rowsPastNoReturn` (1..10000, default 1000) |
 
@@ -1288,32 +1302,38 @@ instructions.
 
 ### Rows past a call that does not return
 
-`noReturn` declares routines and interrupt sites that never return, as in
-[`reach`](#reachability-from-starts-to-targets). A resolved call to a declared routine continues
-only into the routine, so the walk no longer decodes the bytes its compiler placed after the call
-(often an error message or a data word), and calls in those bytes are no longer entry-path calls.
-`rowsPastNoReturn` lists each row whose body holds a resolved call to a declared routine, of any
-evidence, or a declared interrupt site, and also holds the byte after it:
+`noReturn` declares routines, call sites and interrupt sites that never return, as in
+[`reach`](#reachability-from-starts-to-targets). A resolved call to a declared routine, and a
+declared call site, continue only into the callee, so the walk no longer decodes the bytes its
+compiler placed after the call (often an error message or a data word), and calls in those bytes
+are no longer entry-path calls. `rowsPastNoReturn` lists each row whose body holds a resolved call
+to a declared routine, of any evidence, a declared call site or a declared interrupt site, and
+also holds the byte after it:
 
 | Field | Meaning |
 |---|---|
 | `start`, `size`, `name` | the row |
-| `kind`, `site`, `siteAddress`, `siteClassification` | `call` or `interrupt`, the site, its place, and `entry-path instruction`, `reached only through a rejected overlapping start` (contested), `raw byte candidate` or, for an interrupt the walk did not reach, `declared site` |
-| `routine` | for a call, the declared routine it resolves to |
-| `routines` | in place of `routine`, for a declared computed call: every target it declares, all of them `noReturn`. The call is listed once |
+| `kind`, `site`, `siteAddress`, `siteClassification` | `call` (a call to a declared routine), `call site` (a declared call site that no routine declaration lists) or `interrupt`, the site, its place, and `entry-path instruction`, `reached only through a rejected overlapping start` (contested), `raw byte candidate` or, for a declared call or interrupt site the walk did not reach, `declared site` |
+| `routine` | for a `call`, the declared routine it resolves to; for a `call site`, the one routine it resolves to |
+| `routines` | in place of `routine`, for a declared computed call: every target it declares, all of them `noReturn`, and for a `call site` with several targets, every one of them. The call is listed once |
 | `following`, `followingAddress` | the byte after the call or interrupt |
 | `followingRead` | whether the walk established an instruction at `following` by another route, such as a branch around an error exit. Without one, nothing the walk read shows the bytes after the call to be code |
 | `bytesAfter` | the bytes of the row's body range from `following` to the range's end |
 
 `noReturn` repeats each declaration as `reach` does: a routine row gives whether the entry-path
 walk `reached` it, whether the return check `read` it, its `returnSites`, `contradicted` and its
-entry-path `callSites` (each with `following` and `followingRead`); an interrupt row gives its
+entry-path `callSites` (each with `following` and `followingRead`); a call row gives `reached`,
+its `targets` with whether the return check `read` each and its `returnSites`, `following` and
+`followingRead`, and is never contradicted (a call the entry-path walk did not reach has no
+`targets`, as in `reach`, even when the raw scan finds a candidate there); an interrupt row gives its
 `vector`, `reached`, `following` and `followingRead`. The entry-path walk ends a branch at every
-interrupt, so the return check reads each declared routine with a walk of its own that starts at
-the declared routines and continues past every interrupt except a declared one, as `reach` does.
+interrupt, so the return check reads the declared routines with a walk of its own that starts at
+them and continues past every interrupt except a declared one, as `reach` does. The targets of the
+declared call sites get a second walk of the same kind, so their code cannot change what the
+first one reads.
 A routine that ends in an interrupt that returns is then contradicted by what follows it, unless
-that interrupt is declared too. This walk spends its own `instructionLimit`, and
-`noReturnCheckLimitReached` says when it stopped; an empty `returnSites` then may miss a return
+that interrupt is declared too. Each of these walks spends its own `instructionLimit`, and
+`noReturnCheckLimitReached` says when one stopped; an empty `returnSites` then may miss a return
 past the stop. A routine the check did not read (its start does not decode, or a rejected overlap
 removed it) has an empty `returnSites` that shows nothing, and the summary counts it. A row with
 several declared calls or interrupts in its body is listed once for each. `counts.rowsPastNoReturn`
@@ -1322,7 +1342,7 @@ counts the distinct rows with such a call or interrupt at an entry-path instruct
 A row listed only for sites that are not entry-path instructions (a raw byte candidate, a contested
 instruction, or an interrupt the walk did not reach) is not shown to run past anything: it is
 counted apart in `counts.rowsPastNoReturnUnverified`, and the summary states it separately. `assumptions` lists what the walks rest on: each reached call returns to
-its next instruction except a call to a declared routine, each interrupt the return check reads
+its next instruction except a call to a declared routine and a declared call, each interrupt the return check reads
 returns to its next instruction except at a declared site, and each declaration holds for its
 reason.
 

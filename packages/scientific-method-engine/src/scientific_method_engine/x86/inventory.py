@@ -233,12 +233,13 @@ def _row_starts(image, rows, starts, domains, seen, contested, unresolved, routi
 
 
 def _no_return_check(image, routines, declared, limit):
-    """``(returns, read, stopped)``: the return sites on each declared routine's own read paths, the
+    """``(returns, read, stopped)``: the return sites on each of ``routines``' own read paths, the
     instructions the walk established, and whether the walk stopped.
 
-    The walk starts at the declared routines and continues past every interrupt except a declared
-    one, as ``reach`` reads them, so a routine that ends in an interrupt that returns is contradicted
-    by what follows it. Calls are stepped over at their return sites, except calls to declared routines.
+    ``routines`` are the declared routines, or the targets of the declared calls. The walk starts at
+    them and continues past every interrupt except a declared one, as ``reach`` reads them, so a
+    routine that ends in an interrupt that returns is contradicted by what follows it. Calls are
+    stepped over at their return sites, except calls to declared routines and declared calls.
     A routine the walk did not establish, one that does not decode or that a rejected overlap removed,
     has no return sites and is not in ``read``.
     """
@@ -267,27 +268,27 @@ def inventory_check(image, config):
 
     The rows are checked against the same walk: each row whose start lies inside an instruction the
     walk established, or at or inside an instruction of an overlap the walk left unresolved, is listed
-    in ``rowStarts``. ``noReturn`` declarations, in ``reach``'s shape, end
-    the walk at a call to a declared routine and at a declared interrupt site, are checked for a
+    in ``rowStarts``. ``noReturn`` declarations, in ``reach``'s shape, end the walk at a call to a
+    declared routine, at a declared call site and at a declared interrupt site, are checked for a
     return on the routine's own paths, and list in ``rowsPastNoReturn`` each row whose body
     continues past such a call or interrupt. ``indirectCalls`` declarations, in ``reach``'s shape,
     make each declared target of a reached computed call a call target, and the walk reads on in them.
     """
     from .reports import call_controls, direct_calls, entries, search_coverage
-    from .reach import no_return_declarations, no_return_rows, successor_graph, fewest_calls
+    from .reach import (no_return_inputs, no_return_rows, successor_graph, fewest_calls, call_assumption,
+                        no_return_assumptions)
     if "inventory" not in config:
         raise ValueError("inventory-check needs inventory, the path of a function inventory TSV")
     rows = read_inventory(config["inventory"], image)
     limit = integer(config.get("limit", 1000), 1, 10000, "result limit")
-    no_return_routines, no_return_interrupts = no_return_declarations(config.get("noReturn", []), image)
     indirect_calls = indirect_call_declarations(config.get("indirectCalls", []), image)
+    no_return_routines, no_return_interrupts, no_return_sites, declared = no_return_inputs(
+        config.get("noReturn", []), image, indirect_calls)
     for at in config.get("controls", []) if isinstance(config.get("controls"), list) else []:
         # call_controls refuses a control that is no integer.
         if type(at) is int and at in indirect_calls:
             raise ValueError(f"Positive control {at} is a declared indirect call, whose targets rest on its "
                              "declaration; a control must resolve from its own encoding")
-    declared = {"no_return_calls": frozenset(no_return_routines), "no_return_interrupts": frozenset(no_return_interrupts),
-                "indirect_calls": indirect_calls}
     calls = direct_calls(image, config, **declared)
 
     def ends_branch(row):
@@ -383,15 +384,31 @@ def inventory_check(image, config):
         return routines.get(site)
     row_starts, start_counts = _row_starts(image, rows, starts, domains, seen, contested, overlapping, routine_of)
 
-    # Each declaration with the calls it kept from their return sites, as reach reports them.
-    returns, check_read, check_stopped = _no_return_check(image, no_return_routines, declared,
-                                                          config.get("instructionLimit", 10000))
+    # Each declaration with the calls it kept from their return sites, as reach reports them: only a call the
+    # entry-path walk established has targets, so a raw byte candidate at an unreached declared site gives none.
+    site_targets = {at: [] for at in no_return_sites}
+    for row in calls["rows"]:
+        if (row["site"] in site_targets and row["site"] in seen and row["target"] is not None
+                and row["target"] not in site_targets[row["site"]]):
+            site_targets[row["site"]].append(row["target"])
+    # The targets of the declared calls get a walk of their own, so that their code, overlapping a declared
+    # routine's or spending the limit first, cannot change what the routine check reads.
+    call_targets = {target for found in site_targets.values() for target in found} - set(no_return_routines)
+    checked = set(no_return_routines) | call_targets
+    check_limit = config.get("instructionLimit", 10000)
+    returns, routine_read, routine_stopped = _no_return_check(image, no_return_routines, declared, check_limit)
+    target_returns, target_read, target_stopped = _no_return_check(image, call_targets, declared, check_limit)
+    returns |= target_returns
+    check_read = ({at for at in no_return_routines if at in routine_read}
+                  | {at for at in call_targets if at in target_read})
+    check_stopped = routine_stopped or target_stopped
     entry_calls = {}
     for row in calls["rows"]:
         if row["target"] in no_return_routines and row["site"] in seen and ends_branch(row):
             entry_calls.setdefault(row["target"], []).append(row["site"])
     no_return = no_return_rows(no_return_routines, no_return_interrupts, returns,
-                               {at: sorted(sites) for at, sites in entry_calls.items()}, seen, seen, check_read)
+                               {at: sorted(sites) for at, sites in entry_calls.items()}, seen, seen, check_read,
+                               no_return_sites, site_targets)
 
     # A row whose body holds a declared call or interrupt and the byte after it still covers what follows.
     # A declared computed call has one row for each target, and is listed once with all of them.
@@ -404,8 +421,14 @@ def inventory_check(image, config):
             declared_ends.add(row["site"])
             routine = list(indirect_calls[row["site"]]["targets"])
         ends.append((row["site"], image.decode(row["site"]).size, "call", routine, row["classification"]))
-    ends += [(at, row["following"] - at, "interrupt", None,
-              "entry-path instruction" if at in seen else CONTESTED_REASON if at in contested else "declared site")
+    # A declared call site is listed as one, whatever its targets, unless a routine declaration already listed it.
+    def site_classification(at):
+        return "entry-path instruction" if at in seen else CONTESTED_REASON if at in contested else "declared site"
+    listed = {site for site, *_ in ends}
+    ends += [(at, row["following"] - at, "call site",
+              site_targets[at][0] if len(site_targets[at]) == 1 else site_targets[at] or None, site_classification(at))
+             for at, row in no_return_sites.items() if at not in listed]
+    ends += [(at, row["following"] - at, "interrupt", None, site_classification(at))
              for at, row in no_return_interrupts.items()]
     # Only a site the entry-path walk established counts a row; the rest are listed with their evidence.
     past, past_rows, past_unread, past_unverified = [], set(), set(), set()
@@ -500,16 +523,17 @@ def inventory_check(image, config):
     if unread:
         summary += " " + _count(unread, "noReturn routine is", "noReturn routines are") \
                    + " not an instruction the check walk established, so its return check reads nothing."
-    if check_stopped:
+    if routine_stopped:
         summary += " The walk that checks the noReturn routines stopped at its instruction limit, so it can miss returns."
-    assumptions = ["each reached call returns to its next instruction"
-                   + (", except a call to a noReturn routine" if no_return_routines else "")]
-    if no_return_routines:
+    if target_stopped:
+        summary += (" The walk that checks the targets of the noReturn calls stopped at its instruction limit, so it "
+                    "can miss returns.")
+    assumptions = [call_assumption(no_return_routines, no_return_sites)]
+    if checked:
         assumptions.append("each interrupt the noReturn check reads returns to its next instruction"
                            + (", except at a noReturn interrupt site" if no_return_interrupts else "")
                            + "; interrupt handlers are not read")
-    if no_return:
-        assumptions.append("each noReturn routine and interrupt never returns, for the reason it gives")
+    assumptions += no_return_assumptions(no_return_routines, no_return_interrupts, no_return_sites)
     if indirect_calls:
         assumptions.append("each declared indirect call can call the targets its declaration gives, for the evidence "
                            "it gives, and only those when it is declared exhaustive")
@@ -543,4 +567,6 @@ def inventory_check(image, config):
                               "which the row names with both instructions for a reader to judge. rowsPastNoReturn rests "
                               "on the noReturn declarations: followingRead says whether the walk reached the bytes after "
                               "the call by another route, only a site the walk established counts a row, and an empty "
-                              "returnSites means only that the walk read no return."}
+                              "returnSites means only that the walk read no return. A noReturn call is never "
+                              "contradicted: the return sites of its targets are listed, and the declaration rests "
+                              "on its reason alone."}

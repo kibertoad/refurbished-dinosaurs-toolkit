@@ -875,6 +875,24 @@ test("reach keeps the return site of a far call to a noReturn routine unread thr
   ]);
   // The walk reads a return in the declared routine, so no negative rests on the declaration.
   assert.equal(r.negativeUsable, false);
+  // Declared by its call site instead, the call ends there while its target's return is listed, not contradicted.
+  writeFileSync(
+    path,
+    JSON.stringify({ ...config, starts: [64], targets: [69], controls: [64], noReturn: [{ call: 64, reason }] }),
+  );
+  const site = run(["reach", path]);
+  assert.equal(site.targets[0].reached, false);
+  assert.deepEqual(site.noReturn, [
+    {
+      call: 64,
+      reason,
+      reached: true,
+      targets: [{ routine: 80, read: true, returnSites: [83] }],
+      following: 69,
+      followingRead: false,
+    },
+  ]);
+  assert.equal(site.negativeUsable, true);
   writeFileSync(
     path,
     JSON.stringify({ ...config, starts: [64], targets: [69], noReturn: [{ interrupt: 80, reason }] }),
