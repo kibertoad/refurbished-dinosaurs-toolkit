@@ -507,6 +507,156 @@ class ReachTests(unittest.TestCase):
                 reach(**extra)
 
 
+# A at 0000 calls S at 0007, then T at 0008; S and T return. B at 0009 calls T without calling S.
+BETWEEN = bytes.fromhex(
+    "e80400"        # 0000 A: call 0007
+    "e80200"        # 0003 call 0008
+    "c3"            # 0006 ret
+    "c3"            # 0007 S: ret
+    "c3"            # 0008 T: ret
+    "e8fcff"        # 0009 B: call 0008
+    "c3"            # 000C ret
+)
+CUT = "synthetic: the query asks what runs before S"
+
+
+def between(**extra):
+    return run_report(BETWEEN, config(BETWEEN, entries=(0, 9), **{"targets": [8], **extra}), "reach")
+
+
+class StopTests(unittest.TestCase):
+    def test_a_stop_routine_ends_the_walk_at_its_calls_and_is_neither_checked_nor_assumed(self):
+        r = between(controls=[0], stops=[{"routine": 7, "reason": CUT}])
+        self.assertEqual(r["targets"][0]["status"], "not reached")
+        self.assertEqual(r["stops"], [{"routine": 7, "reason": CUT, "reached": True,
+                                       "callSites": [{"site": 0, "following": 3, "followingRead": False}]}])
+        self.assertEqual((r["noReturn"], r["leaves"], r["gaps"], r["unresolved"]), ([], [], [], []))
+        self.assertTrue(r["negativeUsable"])
+        self.assertFalse(any("stop" in assumption for assumption in r["assumptions"]))
+        self.assertEqual(r["reachedRoutines"], [0, 7])
+        # S declared a leaf only is not read, and the walk goes on after the call to T.
+        leaf = between(controls=[0], leaves=[{"routine": 7, "reason": "synthetic leaf"}])
+        self.assertTrue(leaf["targets"][0]["reached"])
+        self.assertEqual(leaf["targets"][0]["route"]["assumedReturns"], [0])
+        self.assertFalse(leaf["targets"][0]["stop"])
+        # A route to T from another start that does not call S still reaches it.
+        other = between(starts=[0, 9], controls=[0, 9], stops=[{"routine": 7, "reason": CUT}])
+        self.assertTrue(other["targets"][0]["reached"])
+        self.assertEqual(other["targets"][0]["chain"], [{"routine": 9}, {"callSite": 9, "routine": 8}])
+        self.assertEqual(other["stops"][0]["callSites"], [{"site": 0, "following": 3, "followingRead": False}])
+        # A stop routine as a target is reached, unread, and says so.
+        target = between(targets=[7], stops=[{"routine": 7, "reason": CUT}])["targets"][0]
+        self.assertEqual((target["reached"], target["stop"], target["leaf"]), (True, True, False))
+
+    def test_a_stop_site_is_decoded_and_nothing_after_it_is_followed(self):
+        r = between(targets=[3, 8], instructionControls=[3], stops=[{"site": 3, "reason": CUT}])
+        at_stop, past = r["targets"]
+        self.assertEqual((at_stop["reached"], at_stop["stop"]), (True, True))
+        self.assertEqual(past["status"], "not reached")
+        self.assertEqual(r["stops"], [{"site": 3, "reason": CUT, "reached": True, "instruction": "call 8",
+                                       "routine": 0, "successors": [{"site": 8, "read": False},
+                                                                    {"site": 6, "read": False}]}])
+        self.assertEqual(r["unresolved"], [])
+        self.assertTrue(r["negativeUsable"])
+        # An unreached stop site still names what it would cut.
+        unreached = between(starts=[9], stops=[{"site": 3, "reason": CUT}])["stops"][0]
+        self.assertEqual((unreached["reached"], unreached["routine"]), (False, None))
+        self.assertEqual(unreached["successors"], [{"site": 8, "read": True}, {"site": 6, "read": False}])
+
+    def test_a_stop_at_an_unresolved_call_leaves_nothing_unresolved(self):
+        # 0006 calls through a far pointer in memory; a stop there follows nothing, so nothing is unresolved.
+        r = reach(indirectJumps=[TABLE], controls=[0x3], stops=[{"site": 6, "reason": CUT}])
+        self.assertEqual(r["unresolved"], [])
+        self.assertTrue(r["negativeUsable"])
+
+    def test_a_failed_control_names_the_stop_that_cut_it(self):
+        stop = [{"routine": 7, "reason": CUT}]
+        for extra, message in (({"instructionControls": [3], "stops": stop},
+                                r"instruction control 3 is not reached \(it follows the call at 0 to stop routine 7\)$"),
+                               ({"instructionControls": [7], "stops": stop},
+                                "instruction control 7 is the start of a stop routine, which the walk reaches but "
+                                "does not decode$"),
+                               ({"instructionControls": [6], "stops": [{"site": 3, "reason": CUT}]},
+                                r"instruction control 6 is not reached \(it follows the stop at 3\)$")):
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, "Positive controls failed: " + message):
+                between(**extra)
+        with self.assertRaisesRegex(ValueError, "control 3 is a stop site"):
+            between(controls=[3], stops=[{"site": 3, "reason": CUT}])
+
+    def test_a_stop_routine_start_inside_a_reached_instruction_is_a_gap(self):
+        data = bytes.fromhex("e80400" "b890c3" "c3" "2effa71000" "90909090" "0500")
+        table = {"site": 7, "exhaustive": True, "evidence": "synthetic: one row",
+                 "table": {"start": 0x10, "count": 1, "stride": 2, "evidence": "synthetic: one row"}}
+        r = run_report(data, config(data, targets=[5], controls=[0], indirectJumps=[table],
+                                    stops=[{"routine": 5, "reason": CUT}]), "reach")
+        self.assertIn({"site": 5, "reason": "stop routine start inside a reached instruction; the routine is not "
+                       "decoded, so its boundary is unchecked", "insideInstruction": 3}, r["gaps"])
+        self.assertFalse(r["negativeUsable"])
+
+    def test_the_no_return_check_reads_past_the_stops(self):
+        # 0000 call R at 0004; ret. R calls S at 0008, then returns at 0007.
+        data = bytes.fromhex("e80100" "c3" "e80100" "c3" "c3")
+        no_return = [{"routine": 4, "reason": "synthetic: declared to end the program"}]
+        for stop in ({"routine": 8, "reason": CUT}, {"site": 7, "reason": CUT}):
+            with self.subTest(stop=stop):
+                r = run_report(data, config(data, targets=[3], controls=[0], noReturn=no_return, stops=[stop]),
+                               "reach")
+                self.assertEqual((r["noReturn"][0]["returnSites"], r["noReturn"][0]["contradicted"]), ([7], True))
+                self.assertTrue(r["noReturn"][0]["read"])
+                self.assertFalse(r["negativeUsable"])
+        # The check has the walk's instruction limit. Here R spins after its call to S at 0009, so the walk
+        # reads only the call into R and R's call to S, and the check, which reads S too, stops before its end.
+        data = bytes.fromhex("e80100" "c3" "e80200" "ebfe" "9090c3")
+        stop = [{"routine": 9, "reason": CUT}]
+        r = run_report(data, config(data, targets=[3], controls=[0], noReturn=no_return, stops=stop), "reach")
+        self.assertEqual((r["noReturn"][0]["contradicted"], r["instructionLimitReached"], r["negativeUsable"]),
+                         (False, False, True))
+        r = run_report(data, config(data, targets=[3], controls=[0], noReturn=no_return, stops=stop,
+                                    instructionLimit=2), "reach")
+        self.assertEqual(r["counts"]["instructions"], 2)
+        self.assertTrue(r["instructionLimitReached"])
+        self.assertFalse(r["negativeUsable"])
+
+    def test_what_the_no_return_check_cannot_read_past_a_stop_keeps_the_negative_unusable(self):
+        # 0000 call R at 0004; ret. R is a nop, then jmp ax, which nothing resolves.
+        data = bytes.fromhex("e80100" "c3" "90" "ffe0")
+        no_return = [{"routine": 4, "reason": "synthetic: declared to end the program"}]
+        plain = run_report(data, config(data, targets=[3], controls=[0], noReturn=no_return), "reach")
+        self.assertEqual([row["site"] for row in plain["unresolved"]], [5])
+        self.assertEqual(plain["returnCheckGaps"], [])
+        self.assertFalse(plain["negativeUsable"])
+        r = run_report(data, config(data, targets=[3], controls=[0], noReturn=no_return,
+                                    stops=[{"site": 4, "reason": CUT}]), "reach")
+        self.assertEqual((r["unresolved"], r["gaps"], r["noReturn"][0]["contradicted"]), ([], [], False))
+        self.assertEqual([row["site"] for row in r["returnCheckGaps"]], [5])
+        self.assertFalse(r["negativeUsable"])
+
+    def test_rejected_stops(self):
+        site = {"site": 3, "reason": CUT}
+        for extra, message in [({"stops": {}}, "stops must be a list"),
+                               ({"stops": [site] * 257}, "stops must be a list of at most 256"),
+                               ({"stops": [{"site": 3}]}, "exactly one of routine and site"),
+                               ({"stops": [{"site": 3, "routine": 7, "reason": CUT}]}, "exactly one of routine and site"),
+                               ({"stops": [{"site": 3, "reason": " "}]}, "nonempty reason"),
+                               ({"stops": [{"site": 0x100, "reason": CUT}]}, "stop site must be an integer"),
+                               ({"stops": [site, site]}, "Duplicate stop site"),
+                               ({"stops": [{"routine": 0, "reason": CUT}]}, "stop routine 0 is a start"),
+                               ({"stops": [{"site": 0, "reason": CUT}]}, "stop site 0 is a start"),
+                               ({"stops": [{"routine": 7, "reason": CUT}], "leaves": [{"routine": 7, "reason": "x"}]},
+                                "stop routine 7 is a leaf"),
+                               ({"stops": [{"site": 7, "reason": CUT}], "leaves": [{"routine": 7, "reason": "x"}]},
+                                "stop site 7 is a leaf"),
+                               ({"stops": [{"routine": 7, "reason": CUT}], "noReturn": [{"routine": 7, "reason": "x"}]},
+                                "stop routine 7 is declared noReturn"),
+                               ({"stops": [{"routine": 7, "reason": CUT}, {"site": 7, "reason": CUT}]},
+                                "stop 7 is given as a routine and as a site")]:
+            with self.subTest(extra=extra), self.assertRaisesRegex(ValueError, message):
+                between(**extra)
+        data = bytes.fromhex("e80100c3" "0f")
+        with self.assertRaisesRegex(ValueError, "stop site 4 does not decode"):
+            run_report(data, config(data, targets=[3], stops=[{"site": 4, "reason": CUT}]), "reach")
+
+
 def _code(size, parts):
     data = bytearray(b"\x90" * size)
     for at, encoded in parts.items():
@@ -634,6 +784,18 @@ class DeclaredIndirectCallTests(unittest.TestCase):
         self.assertTrue(mixed["targets"][0]["reached"])
         self.assertEqual(mixed["noReturn"][0]["callSites"], [])
         self.assertFalse(mixed["noReturn"][0]["contradicted"])
+
+    def test_a_declared_call_ends_at_stop_routines_under_the_no_return_rule(self):
+        stop = [{"routine": 0x110, "reason": "synthetic: the query asks what runs before 0110"}]
+        # 0130 returns nowhere but is not declared, so the call continues at its return site.
+        mixed = computed(indirectCalls=[FAR_TARGETS], stops=stop, targets=[0x11], instructionControls=[0x11])
+        self.assertTrue(mixed["targets"][0]["reached"])
+        self.assertEqual(mixed["stops"][0]["callSites"], [{"site": 0x0D, "following": 0x11, "followingRead": True}])
+        self.assertEqual(mixed["indirectCalls"][0]["unreadTargets"], [])
+        with self.assertRaisesRegex(ValueError, r"instruction control 17 is not reached \(it follows the call at 13 "
+                                                r"to noReturn routine 304 and stop routine 272\)"):
+            computed(indirectCalls=[FAR_TARGETS], stops=stop, instructionControls=[0x11],
+                     noReturn=[{"routine": 0x130, "reason": "synthetic: spins forever"}])
 
     def test_a_no_return_call_ends_a_declared_call_whose_targets_return(self):
         r = computed(indirectCalls=[FAR_TARGETS], targets=[0x11],
