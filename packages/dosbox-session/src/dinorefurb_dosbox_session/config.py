@@ -17,8 +17,9 @@ READINESS_MARKER = "DRREADY.TXT"
 class Media:
     """A host path mounted read-only on a guest drive letter other than C:.
 
-    ``kind`` is ``iso`` for a CD image (mounted with ``imgmount -t iso``) or ``directory`` for a
-    folder (mounted with ``mount -ro``).
+    ``kind`` is ``iso`` for a CD image or ``directory`` for a folder. DOSBox-X mounts them with
+    ``imgmount -t iso`` and ``mount -ro``; rust-dos mounts them through its debug server as a
+    read-only CD-ROM drive (any CD image it reads, such as a CUE sheet) and a read-only hard disk.
     """
 
     drive: str

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import json
 import sys
 import time
@@ -10,7 +9,6 @@ import traceback
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from importlib import metadata
 from pathlib import Path
 from typing import Any, Literal
 
@@ -30,18 +28,16 @@ from .errors import (
     CleanupFailed,
     EmulatorExited,
     EmulatorLaunchFailed,
-    LogEntryRefused,
     OperationPending,
     PlatformRefused,
     ReadinessNotObserved,
     RunDirectoryRefused,
-    RunEnded,
-    RunFailed,
     SessionError,
 )
 from .events import EventLogWriter, EventSchema, OutcomeContract
 from .lock import RunLock, resolve_lock_path
-from .writes import FieldContract, VerifiedWrite, guarded_write, payload, resolve, sha256, write_entry
+from .run import OwnedRun, RunState, package_version
+from .writes import FieldContract, VerifiedWrite, guarded_write
 
 #: The ``format`` field of ``session.json``.
 RECORD_FORMAT = "dinorefurb-dosbox-session.record/1"
@@ -134,15 +130,7 @@ class Observation:
         return self.status == "pending"
 
 
-@functools.cache
-def _package_version() -> str:
-    try:
-        return metadata.version("dinorefurb-dosbox-session")
-    except metadata.PackageNotFoundError:
-        return "unknown"
-
-
-class _Continuations:
+class _Continuations(RunState):
     """The continuations and pauses a session has sent and not yet seen end, shared by its clients.
 
     Each of them ends with the guest stopped, so once a wait shows any of them ended, none of the
@@ -151,25 +139,14 @@ class _Continuations:
     """
 
     def __init__(self) -> None:
+        super().__init__()
         self.pending: set[str] = set()
         #: Set when a continuation or pause request raised, so the session cannot tell whether the
         #: server received it. Cleared once a status shows the guest not running.
         self.unconfirmed: str | None = None
-        #: Set when a guarded write failed or the event log refused an entry. The guest is not
-        #: resumed or changed again in this run, though it may still be paused.
-        self.run_failure: str | None = None
-        #: Set once the event log has its outcome. The guest is not resumed or changed again, so
-        #: the log covers everything the run did to it, though it may still be paused.
-        self.log_ended: str | None = None
         #: The writes, steps and breakpoint requests the session's clients have sent, counted as
         #: they are sent: each can raise the state revision without a continuation.
         self.changes = 0
-
-    def refuse_if_over(self) -> None:
-        if self.run_failure is not None:
-            raise RunFailed(self.run_failure)
-        if self.log_ended is not None:
-            raise RunEnded(self.log_ended)
 
     def clear(self) -> None:
         self.pending.clear()
@@ -249,7 +226,7 @@ class _GuardedClient(SessionClient):
         return result
 
 
-class DosboxSession:
+class DosboxSession(OwnedRun):
     """One owned DOSBox-X process with a debugger session in it.
 
     Use it as a context manager. Entering refuses to start on a platform other than Windows, with
@@ -330,45 +307,6 @@ class DosboxSession:
             self._end_log(f"The session did not start: {error}")
             self.close()
             raise
-
-    def _prepare_log(self) -> Callable[[Path], EventLogWriter] | None:
-        """Checks the log settings and hashes the named modules, before the lock is taken.
-
-        The header is written once the session holds the lock, so a refused module or a held lock
-        leaves the run directory empty and reusable.
-        """
-        log = self.settings.event_log
-        if log is None:
-            return None
-        return EventLogWriter._prepare(
-            log.contract, log.schemas, log.modules, session=self.token, package_version=_package_version()
-        )
-
-    def _end_log(self, failure: str) -> None:
-        """Ends a log that has no outcome yet with ``failure``. A log that cannot take it is left as it is."""
-        log = self._log
-        if log is None or log.outcome is not None:
-            return
-        try:
-            log.fail(failure)
-        except (LogEntryRefused, OSError):
-            pass
-        self._note_log_end()
-
-    def _close_log(self) -> None:
-        if self._log is not None:
-            self._log.close()
-
-    def _check_run_directory(self) -> None:
-        directory = self.run_directory
-        if self.drive_c.exists():
-            raise RunDirectoryRefused(
-                f"{self.drive_c} already exists. C: is created empty for each run and never reused; "
-                "use a new run directory."
-            )
-        if directory.exists() and any(directory.iterdir()):
-            raise RunDirectoryRefused(f"{directory} is not empty; use a new run directory for each run.")
-        directory.mkdir(parents=True, exist_ok=True)
 
     def _launch(self, emulator: Path, conf: str) -> None:
         settings = self.settings
@@ -458,14 +396,6 @@ class DosboxSession:
         self._write_record()
         return client
 
-    def check_alive(self) -> None:
-        """Raises :class:`EmulatorExited` when the owned emulator is no longer running."""
-        if self._process is None:
-            raise RuntimeError("the emulator has not been launched")
-        code = self._process.poll()
-        if code is not None:
-            raise EmulatorExited(f"The owned emulator exited with code {code}.")
-
     def continue_(self) -> OperationLike:
         """Resumes the guest.
 
@@ -483,11 +413,6 @@ class DosboxSession:
         sent, whether or not it succeeds.
         """
         return self._continuations.changes
-
-    @property
-    def run_failure(self) -> str | None:
-        """Why the run failed, or ``None`` while it has not."""
-        return self._continuations.run_failure
 
     def write(self, contract: FieldContract | None, field: str, data: bytes, expected_sha256: str) -> VerifiedWrite:
         """Writes ``data`` to a field of the stopped guest's memory and reads it back.
@@ -518,110 +443,15 @@ class DosboxSession:
         self._continuations.refuse_if_over()
         self._continuations.changes += 1
         session_id = self.session_id
-        written: str | None = None
-        try:
-            content = payload(data)
-            written = sha256(content)
-            target = resolve(contract, field, content)
-            assert contract is not None
-            verified = guarded_write(self.client, session_id, contract, target, content, expected_sha256)
-        except BaseException as error:
-            self._continuations.run_failure = f"Write to field {field} failed: {error}"
-            self._end_log(self._continuations.run_failure)
-            expected = expected_sha256.lower() if isinstance(expected_sha256, str) else repr(expected_sha256)
-            self._writes.append(
-                write_entry(
-                    None if contract is None else contract.name,
-                    field,
-                    None if contract is None else contract.field(field),
-                    expected,
-                    written,
-                    "failed",
-                    str(error),
-                )
-            )
-            self._write_record()
-            raise
-        self._writes.append(verified.to_json())
-        self._write_record()
-        return verified
-
-    # The event log
-
-    @property
-    def event_log_path(self) -> Path | None:
-        """The run's event log, or ``None`` when the settings give no event log or it is not created yet.
-
-        Entries go through :meth:`log_event`, :meth:`finish_log` and :meth:`fail_log`, which fail
-        the run when the log refuses one.
-        """
-        return None if self._log is None else self._log.path
-
-    def _logged(self, action: Callable[[EventLogWriter], None]) -> None:
-        log = self._log
-        if log is None:
-            raise SessionError("This session keeps no event log; give SessionSettings.event_log to keep one.")
-        ended = log.outcome is not None
-        try:
-            action(log)
-        except (LogEntryRefused, OSError) as error:
-            # A call after the outcome changes nothing the log records: the guest is not resumed
-            # or changed once the log has ended, so it does not fail the run.
-            if not ended and self._continuations.run_failure is None:
-                self._continuations.run_failure = f"The event log refused an entry: {error}"
-                self._write_record()
-            raise
-        finally:
-            self._note_log_end()
-
-    def _note_log_end(self) -> None:
-        log = self._log
-        if log is not None and log.outcome is not None and self._continuations.log_ended is None:
-            self._continuations.log_ended = (
-                f"The event log {log.path} ends with its outcome, so the guest is not resumed or changed again "
-                "and the log covers everything the run did. Close the session and start a new run."
-            )
-
-    def log_event(self, kind: str, data: Mapping[str, Any]) -> None:
-        """Appends an event to the run's log. It is synced to disk before this returns.
-
-        A refused event (a kind without a schema, data that does not fit it or that JSON cannot
-        hold) ends the log with a failure outcome and fails the run: from then on continuations,
-        steps and writes raise :class:`~dinorefurb_dosbox_session.errors.RunFailed`. A failed write
-        to the file also fails the run and raises the ``OSError``; the log takes nothing more and
-        is left without an outcome, so it reads as truncated or incomplete. An event logged after
-        the outcome is refused without failing the run, since the guest has not run since.
-
-        :raises LogEntryRefused: the event was refused, or the log has already ended.
-        :raises OSError: writing or syncing the line failed.
-        :raises SessionError: the session keeps no event log.
-        """
-        self._logged(lambda log: log.append(kind, data))
-
-    def finish_log(self, values: Mapping[str, Any]) -> None:
-        """Ends the run's log with a completed outcome. ``values`` must fit the outcome contract.
-
-        Values that do not fit end the log with a failure outcome instead and fail the run. After
-        a run failure the log already ends with that failure, so this raises. Once the log has its
-        outcome, continuations, steps and writes raise
-        :class:`~dinorefurb_dosbox_session.errors.RunEnded`, so the log covers everything the run
-        did to the guest. A pause is still sent.
-
-        :raises LogEntryRefused: the values do not fit the contract, or the log has already ended.
-        :raises SessionError: the session keeps no event log.
-        """
-        self._logged(lambda log: log.finish(values))
-
-    def fail_log(self, failure: str, values: Mapping[str, Any] | None = None) -> None:
-        """Ends the run's log with an outcome that records ``failure``; the log then reads as failed.
-
-        As after :meth:`finish_log`, continuations, steps and writes then raise
-        :class:`~dinorefurb_dosbox_session.errors.RunEnded`.
-
-        :raises LogEntryRefused: the log has already ended.
-        :raises SessionError: the session keeps no event log.
-        """
-        self._logged(lambda log: log.fail(failure, values))
+        return self._recorded_write(
+            contract,
+            field,
+            data,
+            expected_sha256,
+            lambda contract, target, content: guarded_write(
+                self.client, session_id, contract, target, content, expected_sha256
+            ),
+        )
 
     def observe(self, operation: OperationLike, timeout: float, poll_ms: int = 100) -> Observation:
         """Waits on ``operation`` for up to ``timeout`` seconds.
@@ -651,7 +481,7 @@ class DosboxSession:
         """The session record that ``session.json`` holds."""
         return {
             "format": RECORD_FORMAT,
-            "package_version": _package_version(),
+            "package_version": package_version(),
             "session": self.token,
             "checkout": None
             if self.checkout is None

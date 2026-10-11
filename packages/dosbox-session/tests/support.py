@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 import sys
 import tempfile
@@ -9,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from dinorefurb_dosbox_session import SessionSettings, Target, checkout, processes
+from dinorefurb_dosbox_session import RustDosConfig, RustDosSettings, SessionSettings, Target, checkout, processes
 from dinorefurb_dosbox_session.config import EmulatorConfig
 
 from standin_client import StandinServer
@@ -82,6 +83,46 @@ class SessionCase(unittest.TestCase):
             lock_path=self.lock_path,
             readiness_timeout=readiness_timeout,
         )
+
+
+STANDIN_RUSTDOS = HERE / "standin_rustdos.py"
+#: The synthetic program the rust-dos tests start: a word at 0x0110 that the guarded writes change.
+PROBE = bytes.fromhex("B83412" "BB7856" "A11001" "B8004C" "CD21" "0000" "CDAB")
+
+
+class RustDosCase(unittest.TestCase):
+    """A temporary directory and a private lock path for sessions against the stand-in rust-dos."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.lock_path = self.root / "locks" / "run.lock"
+        self.runs = 0
+
+    def settings(
+        self,
+        mode: str = "ready",
+        config: RustDosConfig | None = None,
+        readiness_timeout: float = 15.0,
+        **changes: object,
+    ) -> RustDosSettings:
+        self.runs += 1
+
+        def prepare(drive: Path) -> None:
+            (drive / "PROBE.COM").write_bytes(PROBE)
+
+        settings = RustDosSettings(
+            emulator=PYTHON,
+            emulator_arguments=(str(STANDIN_RUSTDOS), "--standin-mode", mode),
+            run_directory=self.root / f"run-{self.runs}",
+            target=Target("PROBE.COM"),
+            prepare_drive=prepare,
+            emulator_config=config or RustDosConfig(),
+            lock_path=self.lock_path,
+            readiness_timeout=readiness_timeout,
+        )
+        return dataclasses.replace(settings, **changes)  # type: ignore[arg-type]
 
 
 def exited_identity() -> processes.ProcessIdentity:

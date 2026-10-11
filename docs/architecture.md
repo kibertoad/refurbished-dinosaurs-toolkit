@@ -121,8 +121,9 @@ Restorations do not depend on it in code: players and researchers run it before 
 
 ### dinorefurb-dosbox-session
 
-Owns DOSBox-X debugger sessions for a restoration's research tooling
-([ADR 0026](decisions/0026-dosbox-x-session-package.md)).
+Owns emulator debugger sessions for a restoration's research tooling, on DOSBox-X
+([ADR 0026](decisions/0026-dosbox-x-session-package.md)) or on rust-dos
+([ADR 0040](decisions/0040-rust-dos-session-backend.md)).
 
 - Takes a factory for the DOSBox-X Agent client from the caller, who imports the client from a
   DOSBox-X checkout at the pinned revision. The package never imports, vendors or depends on the
@@ -153,6 +154,12 @@ Owns DOSBox-X debugger sessions for a restoration's research tooling
   contract and hashes of modules the caller names, which must be imported before the session
   starts. A log is read against the contract it recorded and the outcome the caller expected,
   and reading names the check that failed.
+- Runs rust-dos as a second backend (`RustDosSession`) through its HTTP debug server, which the
+  package speaks with the standard library. It takes the same run lock, C: and event log, refuses
+  a server without API version 1 and the features it relies on, starts the target stopped at its
+  entry, tracks operations through the server's journal, and makes guarded writes that the server
+  refuses if the machine changed since the field was read (`If-State-Seq`). Gated breakpoints stay
+  with DOSBox-X.
 - Windows only.
 
 What a run means stays in the restoration. A restored game never depends on this package.
@@ -177,8 +184,8 @@ through matching version numbers.
   to JavaScript with declaration files, because Node refuses to strip types under `node_modules`.
 - The Node workspace uses pnpm. oxlint lints and oxfmt formats the TypeScript.
 - The Python packages build with hatchling and are tested with `unittest`. The disc archiver pins
-  pycdlib and uses only the standard library otherwise; its window is tkinter. The DOSBox-X
-  session package has no dependencies; its tests run on Windows.
+  pycdlib and uses only the standard library otherwise; its window is tkinter. The session
+  package has no dependencies; its tests run on Windows.
 - The engine pins Capstone and pypcode, because reports depend on the decoder and the
   instruction specification they used.
   Its `test` extra adds Unicorn, the concrete oracle for synthetic tests. Unicorn's core is GPLv2,
