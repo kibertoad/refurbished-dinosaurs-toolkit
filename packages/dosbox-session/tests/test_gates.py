@@ -293,6 +293,112 @@ class GatedWaits(SessionCase):
         waiting.close()
         self.assertEqual(server.breakpoints, [])
 
+    def test_a_descriptor_that_moves_the_boundary_before_a_wake_does_not_arm_it(self) -> None:
+        servers: list[GuestServer] = []
+
+        def moves_the_boundary(guest: SimpleNamespace) -> Iterator[tuple[int, int]]:
+            yield P_POLL
+            # The guest changes the boundary's descriptor between the gate's checks and the wake.
+            servers[0].bases[0x0028] += 0x1000
+            yield P_TIMER
+            yield P_POLL
+            yield (0x0030, 0x0200)
+
+        server = protected_server(moves_the_boundary)
+        servers.append(server)
+        session = self.start(server)
+        waiting = protected_gate(session, server)
+        waiting.open()
+        wake_ids = [bp.id for bp in server.breakpoints]
+        with self.assertRaisesRegex(GateRefused, "places the boundary address 0028:00012345 at 0x413345"):
+            waiting.run(5)
+        # Nothing was armed at the moved place.
+        self.assertEqual([bp.id for bp in server.breakpoints], wake_ids)
+        sent = self.continues(server)
+        with self.assertRaisesRegex(GateRefused, "cannot vouch"):
+            waiting.run(5)
+        self.assertEqual(self.continues(server), sent)
+        waiting.close()
+        self.assertEqual(server.breakpoints, [])
+
+    def test_a_resolver_error_at_a_stop_stops_the_gate(self) -> None:
+        def reaches_the_caller_breakpoint(guest: SimpleNamespace) -> Iterator[tuple[int, int]]:
+            yield P_POLL
+            guest.lost = True
+            yield P_RNG
+            yield P_POLL
+
+        server = protected_server(reaches_the_caller_breakpoint)
+        session = self.start(server)
+        session.client.create_execution_breakpoint(session.session_id, *P_RNG)
+        placed = resolver(server)
+
+        def resolve(address: CodeAddress) -> int | None:
+            if getattr(server.guest, "lost", False):
+                server.guest.lost = False
+                raise LookupError("descriptor table unreadable")
+            return placed(address)
+
+        waiting = GatedBreakpoint(session, CodeAddress(*P_POLL), (CodeAddress(*P_TIMER),), resolve=resolve)
+        waiting.open()
+        with self.assertRaisesRegex(LookupError, "descriptor table unreadable"):
+            waiting.run(5)
+        sent = self.continues(server)
+        with self.assertRaisesRegex(GateRefused, "could not place the stop"):
+            waiting.run(5)
+        self.assertEqual(self.continues(server), sent)
+        waiting.close()
+
+    def test_a_resolver_error_when_arming_the_boundary_stops_the_gate(self) -> None:
+        def reaches_the_wake(guest: SimpleNamespace) -> Iterator[tuple[int, int]]:
+            yield P_POLL
+            guest.lost = True
+            yield P_TIMER
+            yield P_POLL
+
+        server = protected_server(reaches_the_wake)
+        session = self.start(server)
+        placed = resolver(server)
+
+        def resolve(address: CodeAddress) -> int | None:
+            if getattr(server.guest, "lost", False):
+                server.guest.lost = False
+                raise LookupError("descriptor table unreadable")
+            return placed(address)
+
+        waiting = GatedBreakpoint(session, CodeAddress(*P_POLL), (CodeAddress(*P_TIMER),), resolve=resolve)
+        waiting.open()
+        wake_ids = [bp.id for bp in server.breakpoints]
+        with self.assertRaisesRegex(LookupError, "descriptor table unreadable"):
+            waiting.run(5)
+        self.assertEqual([bp.id for bp in server.breakpoints], wake_ids)
+        sent = self.continues(server)
+        with self.assertRaisesRegex(GateRefused, "could not place the boundary"):
+            waiting.run(5)
+        self.assertEqual(self.continues(server), sent)
+        waiting.close()
+        self.assertEqual(server.breakpoints, [])
+
+    def test_an_open_that_failed_its_checks_does_not_run(self) -> None:
+        server = protected_server()
+        session = self.start(server)
+        calls = 0
+
+        def flaky(address: CodeAddress) -> int | None:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise LookupError("descriptor table unreadable")
+            return resolver(server)(address)
+
+        waiting = GatedBreakpoint(session, CodeAddress(*P_POLL), (CodeAddress(*P_TIMER),), resolve=flaky)
+        with self.assertRaisesRegex(LookupError, "descriptor table unreadable"):
+            waiting.open()
+        with self.assertRaisesRegex(GateRefused, "not open"):
+            waiting.run(5)
+        self.assertEqual(self.continues(server), 0)
+        self.assertEqual(server.breakpoints, [])
+
     def test_a_breakpoint_set_at_the_boundary_while_the_gate_is_open_is_refused_before_continuing(self) -> None:
         server = GuestServer(timer_gated)
         session = self.start(server)

@@ -42,7 +42,10 @@ next one raises the revision in the same way.
 3. Before each continuation that follows the caller's turn, the gate asks `resolve` again for its
    own addresses. An answer that differs from the place a breakpoint was set at stops the gate:
    the breakpoint stays where the debugger put it, and the gate can no longer say where its
-   boundary is.
+   boundary is. At a wake stop it asks `resolve` for the boundary once more before arming it, since
+   the debugger places the boundary then, and stops without arming it when the answer differs. An
+   error from `resolve` at a stop, after the gate has consumed it, also stops the gate, so a later
+   run never continues past a stop the gate did not judge.
 4. After arming the boundary, the gate reads the registers. Their `state_revision` replaces the
    one it kept, so a continue request that fails next is judged against the revision the arming
    left. Their CPU mode must be in the gate's class; otherwise the server placed the boundary in

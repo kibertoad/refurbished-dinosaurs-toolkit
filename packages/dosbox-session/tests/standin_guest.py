@@ -36,11 +36,10 @@ class GuestServer(StandinServer):
     """A stand-in server whose continuations run ``program`` until a breakpoint matches.
 
     ``hold`` keeps every wait, and the status after a continuation, reporting the guest as running
-    until a pause. ``fail_waits`` lists errors the next
-    waits raise, ``fail_continue`` is ``(error, received)``: the next continue raises ``error``,
-    after running the guest when ``received`` is true; ``fail_continue_after`` lets that many continues
-through first. ``fail_create`` is ``(error, created)`` for the
-    next breakpoint request.
+    until a pause. ``fail_waits`` lists errors the next waits raise, ``fail_continue`` is
+    ``(error, received)``: the next continue raises ``error``, after running the guest when
+    ``received`` is true; ``fail_continue_after`` lets that many continues through first.
+    ``fail_create`` is ``(error, created)`` for the next breakpoint request.
     """
 
     def __init__(self, program: Callable[[SimpleNamespace], Iterator[tuple[int, int]]], tick: int = 0) -> None:

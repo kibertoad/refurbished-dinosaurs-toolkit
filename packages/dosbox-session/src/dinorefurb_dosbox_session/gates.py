@@ -38,7 +38,8 @@ PROTECTED_MODE = "protected"
 #: Where the pinned debugger places a protected-mode ``selector:offset``: the linear address it
 #: resolves the address to, or ``None`` when the resolver cannot say. The caller supplies it. The
 #: gate calls it for its own addresses and for every other execution breakpoint when it opens and
-#: before each continuation that follows the caller's turn, and to place a breakpoint's stop.
+#: before each continuation that follows the caller's turn, for the boundary when it arms it, and
+#: to place a breakpoint's stop.
 ProtectedResolver = Callable[["CodeAddress"], "int | None"]
 
 _Mode = Literal["real", "protected"]
@@ -76,6 +77,11 @@ def _same_place(mode: _Mode, first: int, second: int) -> bool:
         return first == second
     # With the A20 line off, addresses past 1 MiB wrap, so compare them both ways.
     return first == second or (first & 0xFFFFF) == (second & 0xFFFFF)
+
+
+def _sharing(mode: _Mode, place: int, places: dict[CodeAddress, int]) -> CodeAddress | None:
+    """The address in ``places`` that ``place`` shares a place with in ``mode``, or ``None``."""
+    return next((address for address, other in places.items() if _same_place(mode, place, other)), None)
 
 
 def _number(value: Any) -> int:
@@ -231,7 +237,8 @@ class GatedBreakpoint:
         self._opened = True
         try:
             self._check_guest()
-        except GateRefused:
+        except BaseException:
+            # No breakpoint is set yet, so a gate whose checks did not finish must not run.
             self._closed = True
             raise
         try:
@@ -415,12 +422,7 @@ class GatedBreakpoint:
         if code is None:
             return None
         place = self._place(code, self._mode, own=False)
-        if place is None:
-            return None
-        for own, own_place in self._places.items():
-            if _same_place(self._mode, place, own_place):
-                return own
-        return None
+        return None if place is None else _sharing(self._mode, place, self._places)
 
     def _check_mode(self, mode: Any) -> _Mode:
         current = _mode_class(mode)
@@ -475,7 +477,7 @@ class GatedBreakpoint:
                     f"Breakpoint {entry.id} has an address the gate cannot place ({entry.address!r}), so it "
                     "cannot rule out that it shares the boundary's or a wake's address."
                 )
-            shared = next((own for own, own_place in places.items() if _same_place(mode, place, own_place)), None)
+            shared = _sharing(mode, place, places)
             if shared is not None:
                 raise GateRefused(
                     f"Breakpoint {entry.id} is at the address of {self._role(shared)} {shared}. Two breakpoints "
@@ -486,6 +488,25 @@ class GatedBreakpoint:
 
     def _arm(self) -> None:
         """Sets the boundary's breakpoint at a wake stop, then reads the mode and revision it left."""
+        assert self._mode is not None
+        # The debugger places the boundary now, so a descriptor that changed while the guest ran
+        # would put it somewhere other than where the gate compared it.
+        try:
+            place = self._place(self.boundary, self._mode, own=True)
+        except Exception as error:
+            # The wake stop is consumed, so a later run would continue with the boundary unarmed.
+            self._broken = (
+                f"At a wake stop the gate could not place the boundary address {self.boundary} ({error}), so the "
+                "boundary was not armed."
+            )
+            raise
+        if place != self._places[self.boundary]:
+            shown = "nowhere" if place is None else f"at 0x{place:X}"
+            self._broken = (
+                f"At a wake stop the resolver places the boundary address {self.boundary} {shown}, but the gate "
+                f"compared it at 0x{self._places[self.boundary]:X}, so the boundary was not armed."
+            )
+            raise GateRefused(f"{self._broken} The guest is stopped at the wake.")
         self._armed = self._create(self.boundary, once=True)
         # The request raises the state revision. Keep the new one, so that a continue request that
         # fails next is judged against it, and check the mode the server placed the boundary in.
@@ -531,7 +552,15 @@ class GatedBreakpoint:
         if breakpoint_id is not None and breakpoint_id == self._armed:
             return "boundary"
         if reason is not None and reason.kind == "breakpoint":
-            shared = self._gate_address(getattr(reason, "address", None))
+            try:
+                shared = self._gate_address(getattr(reason, "address", None))
+            except Exception as error:
+                # The stop is consumed, so a later run would continue past a stop it never judged.
+                self._broken = (
+                    f"The gate could not place the stop for breakpoint {breakpoint_id!r} ({error}), so it cannot "
+                    "rule out that a stop of its own there was lost."
+                )
+                raise
             if shared is not None:
                 self._broken = (
                     f"The guest stopped at {self._role(shared)} {shared} for breakpoint {breakpoint_id!r}, which "

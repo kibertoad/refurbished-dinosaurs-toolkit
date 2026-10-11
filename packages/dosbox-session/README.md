@@ -391,7 +391,10 @@ gate = GatedBreakpoint(session, CodeAddress(0x0028, 0x00012345), (CodeAddress(0x
   opens and before each `run` that continues the guest. It refuses a breakpoint `resolve` cannot
   place, and two places that are equal.
 - When `resolve` places one of the gate's own addresses somewhere else than where its breakpoint
-  was set, the gate stops: the breakpoint stays where the debugger put it.
+  was set, the gate stops: the breakpoint stays where the debugger put it. At a wake stop it asks
+  `resolve` for the boundary again before arming it, and stops without arming it when the place
+  differs from the one it compared when it opened. An error from `resolve` while the gate judges a
+  stop also stops the gate.
 - `resolve` answering as the debugger places addresses is yours to show, including the hidden
   base of the current `CS` and a descriptor that changes while the gate is open. A breakpoint you
   set in another mode is placed where it was created; `resolve` has to answer with that place.
