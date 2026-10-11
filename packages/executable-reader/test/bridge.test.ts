@@ -909,6 +909,33 @@ test("reach keeps the return site of a far call to a noReturn routine unread thr
   assert.throws(() => run(["reach", path]), /noReturn interrupt 80 is not an interrupt instruction/);
 });
 
+test("reach stops a walk at a far call to a stop routine that returns through the real MZ prepared bridge", (t) => {
+  const { dir, config } = fixture(t);
+  const path = join(dir, "config.json");
+  const reason = "synthetic: the query asks what runs before the routine at 80";
+  // 64 calls 80 far through its relocation; 69 is the return site, and 80 returns at 83.
+  writeFileSync(
+    path,
+    JSON.stringify({ ...config, starts: [64], targets: [69], controls: [64], stops: [{ routine: 80, reason }] }),
+  );
+  const r = run(["reach", path]);
+  assert.equal(r.targets[0].reached, false);
+  assert.deepEqual(r.stops, [
+    { routine: 80, reason, reached: true, callSites: [{ site: 64, following: 69, followingRead: false }] },
+  ]);
+  // The stop is no claim about the build: nothing is checked or assumed, and the negative stays usable.
+  assert.deepEqual(r.noReturn, []);
+  assert.deepEqual(r.returnCheckGaps, []);
+  assert.equal(
+    r.assumptions.some((a: string) => a.includes("stop")),
+    false,
+  );
+  assert.equal(r.negativeUsable, true);
+  // A stop site at a start would leave the walk nothing to read past it, so it is refused.
+  writeFileSync(path, JSON.stringify({ ...config, starts: [64], targets: [80], stops: [{ site: 64, reason }] }));
+  assert.throws(() => run(["reach", path]), /stop site 64 is a start/);
+});
+
 test("reach follows declared near and far computed call tables through the real MZ prepared bridge", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "bounded-report-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

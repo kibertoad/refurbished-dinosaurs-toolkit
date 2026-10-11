@@ -260,7 +260,7 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
 
 def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts=False, stops=frozenset(),
          modeled_interrupts=frozenset(), no_return_calls=frozenset(), no_return_interrupts=frozenset(),
-         indirect_calls=None, no_return_call_sites=frozenset()):
+         indirect_calls=None, no_return_call_sites=frozenset(), ends=frozenset()):
     """Decode the CFG reached from ``entries`` and check its instruction boundaries.
 
     A port access in the flat model records a gap and ends that branch, as ``trace`` stops there.
@@ -269,8 +269,9 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
     for callers that list each interrupt as an assumption. ``modeled_interrupts`` continues past the
     interrupts at those sites only, the ones ``modeled_interrupt_sites`` names, which ``trace``
     continues past under a call model (ADR 0017). A site in ``stops`` is never decoded:
-    the walk reaches it and goes no further, so it is in no returned set. ``no_return_calls`` and
-    ``no_return_interrupts`` end the branch at a call to one of those routines and at one of those
+    the walk reaches it and goes no further, so it is in no returned set. A site in ``ends`` is
+    decoded and its boundary checked, and the walk follows none of its successors.
+    ``no_return_calls`` and ``no_return_interrupts`` end the branch at a call to one of those routines and at one of those
     interrupt sites, ``no_return_call_sites`` at a call at one of those sites, and ``indirect_calls``
     continues a declared indirect call at its declared targets, as ``cfg_step`` describes.
     """
@@ -294,6 +295,9 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
             gaps.append({"site": at, "reason": UNDECODED_REASON})
             continue
         seen[at] = ins
+        if at in ends:
+            successors[at] = []
+            continue
         step = cfg_step(image, at, ins, follow_flat_ports, follow_interrupts=follow_interrupts,
                         modeled_interrupts=modeled_interrupts, no_return_calls=no_return_calls,
                         no_return_interrupts=no_return_interrupts, indirect_calls=indirect_calls,
