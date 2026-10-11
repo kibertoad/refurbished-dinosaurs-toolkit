@@ -15,6 +15,8 @@ if [ -n "$DOC_MAX_RANGE" ]; then args+=(--max-range "$DOC_MAX_RANGE"); fi
 if [ -n "$DOC_DATA_DIRS" ]; then args+=(--data-dirs "$DOC_DATA_DIRS"); fi
 # Set but empty names no rebuild directory, which turns the check of spec paths off.
 if [ -n "${DOC_REBUILD+set}" ]; then args+=(--rebuild "$DOC_REBUILD"); fi
+# Set but empty names no directory of the rebuild's source, which turns the check of its citations off.
+if [ -n "${DOC_REBUILD_SOURCE+set}" ]; then args+=(--rebuild-source "$DOC_REBUILD_SOURCE"); fi
 if [ "${DOC_SCHEDULED_GENERATION:-false}" = "true" ]; then args+=(--scheduled-generation); fi
 if [ -n "${DOC_SQUASHED:-}" ]; then args+=(--squashed "$DOC_SQUASHED"); fi
 if [ -n "$DOC_BASE" ]; then

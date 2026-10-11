@@ -19,6 +19,7 @@ interface Options {
   "data-dirs"?: string;
   "record-validation"?: string;
   rebuild?: string;
+  "rebuild-source"?: string;
   message?: string;
   squashed?: string;
 }
@@ -60,6 +61,11 @@ export interface Config {
   recordValidation: string[] | undefined;
   /** The --rebuild directories, relative to repoDir, whose paths and source files the spec may not name. */
   rebuildRoots: string[];
+  /**
+   * The --rebuild-source directories, relative to repoDir: the rebuild's source, whose files cite
+   * the rules, formats, screens and bugs they implement and no findings or experiments.
+   */
+  rebuildSourceRoots: string[];
   /** The --message file, or undefined when the option was not given. */
   message: string | undefined;
   /**
@@ -93,6 +99,7 @@ const VALUED = [
   "--data-dirs",
   "--record-validation",
   "--rebuild",
+  "--rebuild-source",
   "--message",
   "--squashed",
 ];
@@ -173,6 +180,7 @@ export function parseOptions(argv: string[]): Config {
     recordValidation:
       options["record-validation"] === undefined ? undefined : dirList(options["record-validation"], []),
     rebuildRoots: dirList(options.rebuild, ["src", "tests"]),
+    rebuildSourceRoots: dirList(options["rebuild-source"], ["src"]),
     message: options.message === undefined ? undefined : resolve(options.message),
     squashed,
   };

@@ -53,6 +53,13 @@
 //                       may name a path in them or a source file found in them. In a source entry,
 //                       a path counts only when it exists, in any case, so the entry can cite the
 //                       external source's own paths (default: src,tests)
+//   --rebuild-source <dirs>
+//                       comma-separated directories that hold the rebuild's source, which cites
+//                       the rules, formats, screens and bugs it implements: each finding or
+//                       experiment cited in a file of a --code directory under one of them fails,
+//                       naming the entries whose evidence lists it, and the address check's hint
+//                       there names the entries that record an address in place of a finding.
+//                       An empty value turns both off (default: src)
 //   --message <file>    check only the commit message in file: every address it gives must be
 //                       recorded in an entry it cites, as for a code comment. For a commit-msg hook
 //   --record-validation <builds>
@@ -107,6 +114,7 @@ import { compileKaitai } from "./checks/kaitai.ts";
 import { checkParity } from "./checks/parity.ts";
 import { checkReferences } from "./checks/references.ts";
 import { checkRules } from "./checks/rules.ts";
+import { checkSourceCitations } from "./checks/source-citations.ts";
 import { checkValidation } from "./checks/validation.ts";
 import { createCodeFiles } from "./code-files.ts";
 import type { Context } from "./context.ts";
@@ -148,6 +156,7 @@ const deviations = checkDeviations(ctx);
 const parity = checkParity(ctx, deviations);
 checkValidation(ctx, parity);
 checkReferences(ctx, deviations);
+checkSourceCitations(ctx);
 checkCommentAddresses(ctx);
 checkRebuildPaths(ctx);
 checkRangeEnds(ctx);

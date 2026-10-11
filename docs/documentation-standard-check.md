@@ -102,6 +102,8 @@ Most restorations need no inputs. Set one when the defaults do not match the rep
 | `images` | empty | Half-open address ranges of the original's flat 32-bit images, such as `0x00400000..0x004C9000`. See below. |
 | `max-range` | `0x10000` | The largest address range by which an entry records an address. |
 | `data-dirs` | from the manifests | Top-level directories of the original's data. A path into one must name, with its exact case, a manifest file or a path of a build's list of other files (see Other files below). |
+| `rebuild` | `src,tests` | Directories that hold the rebuild. No Markdown file in `spec/` may name a path in them or a source file found in them. Empty turns the check off. See below. |
+| `rebuild-source` | `src` | Directories that hold the rebuild's source, which cites the rules, formats, screens and bugs it implements. A finding or experiment cited in a file of a `code` directory under one of them fails. Empty turns the check off. See below. |
 | `base` | the base branch | Branch the change merges into. IDs, areas and deviations that exist where HEAD forked from it must still exist, and an ID the change adds must not exist at its tip with other content. When it is set, the action fetches nothing and does not pass `--require-base`. |
 | `kaitai-version` | `0.11` | Compiler release to install, or empty to skip the install. With no `.ksy` file the install is skipped anyway. |
 | `java-version` | empty | Java to install with `actions/setup-java` before the compiler. |
@@ -133,8 +135,6 @@ the line limit is a directory of the same name, such as `spec/index/by-kind/`, s
 by kind. Reviewing that agreement is part of the restoration's own review of its notes and plans;
 the checker does not compare prose with titles, because a paraphrase is a legitimate way to cite an
 entry.
-
-| `rebuild` | `src,tests` | Directories that hold the rebuild. No Markdown file in `spec/` may name a path in them or a source file found in them. Empty turns the check off. See below. |
 
 ### Addresses in code
 
@@ -180,10 +180,50 @@ Take the image's base and size from the finding that records them, for example a
           images: 0x00400000..0x004C9000
 ```
 
-When a comment fails, cite the finding that records the address. When no finding does, write
+When a comment in the rebuild's source (the `rebuild-source` directories) fails, cite the rule,
+format, screen or bug the code implements whose evidence records the address; the message names
+the entries that record it. When none does, the address is a gap in the spec: leave it out of the
+comment, and leave the code that needs it for after research records it, as the work protocol's
+Implementation batches section says. A citation of the finding itself would fail the check
+below. Elsewhere, such as in tests and tools, cite the finding that records the address, or write
 one in the same change. A value inside the image that is not an address, such as a colour written
 with eight digits, fails as well: write it with fewer digits, or give `images` the image's exact
 extent.
+
+### Findings and experiments in the rebuild's source
+
+The work protocol has code in `src/` cite the rules, formats, screens and bugs it implements and no
+findings or experiments, and has an implementation session settle each such citation by what the
+code does. The checker fails each `FND-` or `EXP-` ID cited in a file of a `code` directory under
+a `rebuild-source` directory, once per file, and names the lines. The message lists the rules,
+formats, screens and bugs that are not superseded and list the finding or experiment in their
+`evidence`: the citation moves to each of them that the code implements and the comment does not
+cite yet, and is deleted where there is none. For a superseded finding or experiment, it lists
+the entries its `superseded_by` leads to, a replacement that is itself a rule, format, screen or
+bug included. Where the list is empty, the message says that no such entry lists it: the citation
+is deleted, and where no live entry or deviation describes what the code does, the code goes with
+its tests.
+
+A finding or experiment that alone replaced a superseded rule, format, screen or bug, because the
+mechanic does not exist, is not reported. The work protocol's Research batches section has the code
+written for that entry cite it from then on and leaves the code's removal to the next
+implementation session, and the research batch must leave the check passing. The implementation
+session finds those citations itself. The check follows the entry's `superseded_by` through
+superseded findings and experiments, and reports the citation once a replacement on the way is a
+rule, format, screen or bug.
+
+The checker cannot tell what the code implements, so it does not pick among the candidates, and it
+does not check the Code `partial` that the protocol gives each row a citation moves to. Tests and
+tools may cite findings and experiments, so `tests` and `tools` are not in the default. A
+restoration whose rebuild's source has more directories adds them:
+
+```yaml
+      - uses: kibertoad/refurbished-dinosaurs-toolkit/actions/check-documentation@<sha>
+        with:
+          rebuild-source: src,multiplayer
+```
+
+A directory listed there and not in `code` is not read.
 
 ### Addresses in commit messages
 
@@ -397,7 +437,8 @@ pnpm exec standard-checker --help     # every option
 ```
 
 Run it from the restoration's root or pass `--root`. The command-line options match the action's
-inputs: `--code`, `--references`, `--images`, `--max-range`, `--data-dirs`, `--rebuild`, `--base`,
+inputs: `--code`, `--references`, `--images`, `--max-range`, `--data-dirs`, `--rebuild`,
+`--rebuild-source`, `--base`,
 `--scheduled-generation` and `--squashed`, plus `--no-ksy` to skip compiling
 and `--glossary <path>` to accept the terms of a draft term file or a directory of them. Set `KSC` to the compiler's
 launcher, or put `kaitai-struct-compiler` on `PATH`, to compile the `.ksy` definitions.

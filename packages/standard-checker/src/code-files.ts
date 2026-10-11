@@ -2,7 +2,7 @@
 // implementation-reference and the code comment checks.
 
 import { readFileSync } from "node:fs";
-import { join, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { walk } from "./files.ts";
 import type { Config } from "./options.ts";
 import type { CodeFile } from "./types.ts";
@@ -16,6 +16,8 @@ import type { CodeFile } from "./types.ts";
 export function createCodeFiles(config: Config, checkerDir: string): () => CodeFile[] {
   let cache: CodeFile[] | undefined;
   const own = (f: string) => f.startsWith(checkerDir + sep);
+  const sources = config.rebuildSourceRoots.map((root) => resolve(config.repoDir, root) + sep);
+  const inSource = (f: string) => sources.some((dir) => resolve(f).startsWith(dir));
   return () => {
     if (cache) return cache;
     const files: CodeFile[] = [];
@@ -26,7 +28,7 @@ export function createCodeFiles(config: Config, checkerDir: string): () => CodeF
     for (const { root, code } of roots)
       walk(join(config.repoDir, root), (f) => {
         if (!own(f) && /\.(cs|ts|mjs|js|ps1|fs|md|json)$/.test(f))
-          files.push({ code, file: f, text: readFileSync(f, "utf8") });
+          files.push({ code, source: code && inSource(f), file: f, text: readFileSync(f, "utf8") });
       });
     return (cache = files);
   };
