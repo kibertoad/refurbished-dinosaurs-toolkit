@@ -1,6 +1,6 @@
 # Roadmap
 
-As of 2026-10-10. This file orders the toolkit work that follows the ADR 0003 cutover. When a
+As of 2026-10-11. This file orders the toolkit work that follows the ADR 0003 cutover. When a
 milestone that takes several PRs starts, it gets a tracking issue stating its tests and exit
 condition. Remove a milestone from this file once it lands.
 
@@ -103,7 +103,7 @@ and enemy-reinfestation's open requests against this toolkit's Ghidra scripts. I
 these are items 12, 13, 20 to 27 and 32. Some name scripts the toolkit does not ship. Re-verify
 each against main and fix the ones that belong here.
 
-### M8. Derived dispatch-table bounds (issue 460; slice 1 in progress)
+### M8. Derived dispatch-table bounds (issue 460; slice 2 in progress)
 
 The engine derives a table's entry count from the code where the code proves it, with a value-range
 analysis over p-code ([ADR 0034](decisions/0034-value-ranges-over-p-code-for-table-bounds.md)).
@@ -136,17 +136,21 @@ Synthetic tests, all built from synthetic bytes:
 
 Slices, one PR each:
 
-1. In progress. The domain, its transfer functions and a per-instruction evaluation over
-   register ranges in `x86/ranges.py`, checked against `pcode.evaluate` and Unicorn
-   (`tests/test_ranges.py`). Nothing reads it yet, so no report changes. Release label
-   `release:skip`.
-2. The analysis over a routine's control flow to a dispatch site: joins, the widening limit,
-   refinement on `CBRANCH` edges, stack slots, and calls and interrupts not walked. Tested on the
-   positive controls, unproven cases and the loop above, before any report uses it.
+1. Shipped in PR 461 (`release:skip`). The domain, its transfer functions and a per-instruction
+   evaluation over register ranges in `x86/ranges.py`, checked against `pcode.evaluate` and
+   Unicorn (`tests/test_ranges.py`).
+2. In progress. The analysis over a routine's control flow to a dispatch site in
+   `x86/table_bounds.py`: joins, the widening limit, refinement on `CBRANCH` edges, stack slots,
+   calls and interrupts not walked, and the bounding sites or causes each value carries. Tested in
+   `tests/test_table_bounds.py` on the positive controls, unproven cases and loop above, with
+   Unicorn checking every range it gives on fixed and random routines. Nothing reads it yet, so no
+   report changes. Release label `release:skip`.
 3. Reports: `table.count` becomes optional for an exhaustive `indirectJumps` declaration, the
    derived-count record and the unresolved reasons, the declared-against-derived check, in
-   `reach`, `inventory-check` and the path commands that read tables. Reporter guide, migration
-   guide and bridge case; a prepared-config change, if any, increments `PREPARED_PROTOCOL`.
+   `reach`, `inventory-check` and the path commands that read tables. The command checks that no
+   edge it reads enters the analysed routine other than at its start, and gives a dispatch jump
+   the rows of its derived count until they stop changing. Reporter guide, migration guide and
+   bridge case; a prepared-config change, if any, increments `PREPARED_PROTOCOL`.
 4. Declared computed call targets take derived counts, once their declaration (issue 457) has
    landed. If it lands before slice 3, slice 3 covers both.
 

@@ -220,9 +220,17 @@ class RegisterFile(unittest.TestCase):
         state = RegisterRanges.named(False, {"AX": Range(16, 0x0100, 0x0300, 0x100)})
         self.assertEqual(state.get("AH"), Range(8, 1, 3, 1))
         self.assertEqual(state.get("AL"), Range.constant(8, 0))
-        self.assertEqual(state.get("EAX"), Range.top(32))
+        # The upper half of EAX is unknown, and AX's low byte stays 0 in every value.
+        self.assertEqual(state.get("EAX"), Range(32, 0x100, 0xFFFF0300, 0x100))
         state = RegisterRanges.named(False, {"BL": Range(8, 0, 3, 1), "BH": Range.constant(8, 0)})
         self.assertEqual(state.get("BX"), Range(16, 0, 3, 1))
+        # A byte no write holds is unknown, so a known high byte still bounds the word.
+        state = RegisterRanges.named(False, {"BH": Range.constant(8, 0)})
+        self.assertEqual(state.get("BX"), Range(16, 0, 0xFF, 1))
+        state = RegisterRanges.named(False, {"AX": Range.constant(16, 1)})
+        self.assertEqual(state.get("AH"), Range.constant(8, 0))
+        # A held varnode that reaches past the read leaves it unknown.
+        self.assertEqual(RegisterRanges.named(False, {"AX": Range.constant(16, 1)}).read(1, 2), Range.top(16))
 
     def test_a_write_keeps_the_bytes_it_does_not_cover(self):
         state = RegisterRanges.named(False, {"BX": Range(16, 0x1200, 0x12FF, 1)})
@@ -233,6 +241,8 @@ class RegisterFile(unittest.TestCase):
     def test_byte_writes_piece_together(self):
         # mov bl, al; xor bh, bh with AL masked to 0..3 first: BX is 0..3.
         oracle(self, "2403 88c3 30ff", {"AX": Range.top(16)}, {"BX": Range(16, 0, 3, 1), "AX": None})
+        # xor bh, bh alone: BL stays unknown, and BX is a byte.
+        oracle(self, "30ff", {"BX": Range.top(16)}, {"BX": Range(16, 0, 0xFF, 1)})
 
 
 def register(name):
