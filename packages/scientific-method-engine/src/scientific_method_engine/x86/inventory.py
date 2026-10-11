@@ -3,7 +3,7 @@ import re
 from bisect import bisect_right
 from pathlib import Path
 from .image import integer
-from .trace import LIMIT_REASON, CONTESTED_REASON, walk, holding_instruction
+from .trace import LIMIT_REASON, CONTESTED_REASON, OVERLAP_REASON, walk, holding_instruction
 from .dispatch import indirect_call_declarations, call_ends
 
 MAX_INVENTORY = 16 * 1024 * 1024
@@ -139,15 +139,53 @@ def _row_fields(row):
     return {k: row[k] for k in ("start", "size", "name") if k in row}
 
 
-def _row_starts(image, rows, starts, domains, seen, contested, routine_of):
-    """Each row whose start lies inside an instruction the entry-path walk established, and counts of the rest.
+def _routine_fields(image, starts, routine, prefix=""):
+    """The ``routine``, ``routineAddress`` and ``routineIsRow`` fields for a routine start, or none when it is None.
+
+    A ``prefix`` names the fields after it, as ``rowStartRoutine`` for ``prefix="rowStart"``.
+    """
+    if routine is None:
+        return {}
+    place = _target_place(image, routine)
+    name = prefix + "Routine" if prefix else "routine"
+    return {name: routine, name + "Address": place[2], name + "IsRow": place[:2] in starts}
+
+
+def _overlaps(image, starts, at, decoded, routine_of):
+    """Every instruction in ``decoded`` other than the one at ``at`` whose bytes meet the bytes of the
+    instruction at ``at``, or the byte ``at`` when no instruction starts there, with its evidence.
+
+    ``decoded`` maps a site to ``(instruction, evidence)``.
+    """
+    end = at + decoded[at][0].size if at in decoded else at + 1
+    found = []
+    # An x86 instruction is at most 15 bytes, so only the starts just before the site can reach into it.
+    for site in range(max(at - 14, 0), end):
+        if site == at or site not in decoded or site + decoded[site][0].size <= at:
+            continue
+        ins, evidence = decoded[site]
+        found.append({"site": site, "address": _target_place(image, site)[2], "size": ins.size, "text": _text(ins),
+                      "evidence": evidence, **_routine_fields(image, starts, routine_of(site))})
+    return found
+
+
+def _row_starts(image, rows, starts, domains, seen, contested, unresolved, routine_of):
+    """Each row whose start lies inside an instruction the entry-path walk established, or at or inside
+    an instruction of an overlap the walk left unresolved, and counts of the rest.
 
     A start is checked against the walk's instructions only; bytes the walk did not decode are not
-    decoded here, so a row start in them is counted as not read rather than placed. A start at or
-    inside an instruction the walk decoded but rejected as contested is counted as contested.
+    decoded here, so a row start in them is counted as not read rather than placed. ``unresolved``
+    holds the instructions at the walk's overlap gaps, which it decoded on the entry path and
+    rejected because no boundary between them is proven. A row start at or inside one is listed with
+    every instruction it overlaps, since the row's own entry can be one side of the overlap. A start
+    at or inside an instruction the walk decoded but rejected as contested is counted as contested.
     """
     found, counts = [], {"instructionStarts": 0, "insideAnInstruction": 0, "overlappingInstructionStarts": 0,
-                         "contested": 0, "notRead": 0}
+                         "unresolvedOverlaps": 0, "contested": 0, "notRead": 0}
+    # Every instruction the walk decoded, with its evidence. Only a row start at an unresolved overlap reads it.
+    decoded = ({at: (ins, CONTESTED_REASON) for at, ins in contested.items()}
+               | {at: (ins, OVERLAP_REASON) for at, ins in unresolved.items()}
+               | {at: (ins, "entry-path instruction") for at, ins in seen.items()}) if unresolved else {}
     for row in rows:
         offsets = _offsets(image, domains, row["space"], row["at"])
         if not offsets:
@@ -156,6 +194,25 @@ def _row_starts(image, rows, starts, domains, seen, contested, routine_of):
         if held is None:
             if any(at in seen for at in offsets):
                 counts["instructionStarts"] += 1
+                continue
+            hit = next(((at, holder) for at in offsets for holder in [holding_instruction(unresolved, at)]
+                        if at in unresolved or holder is not None), None)
+            if hit is not None:
+                at, holder = hit
+                counts["unresolvedOverlaps"] += 1
+                entry = {**_row_fields(row), "site": at}
+                if at in unresolved:
+                    entry |= {"status": "start of an unresolved overlapping instruction",
+                              "rowStartInstructionSize": unresolved[at].size, "rowStartInstructionText": _text(unresolved[at]),
+                              **_routine_fields(image, starts, routine_of(at), "rowStart")}
+                else:
+                    entry["status"] = "inside an unresolved overlapping instruction"
+                if holder is not None:
+                    entry |= {"insideInstruction": holder, "insideInstructionAddress": _target_place(image, holder)[2],
+                              "insideInstructionSize": unresolved[holder].size,
+                              "insideInstructionText": _text(unresolved[holder]),
+                              **_routine_fields(image, starts, routine_of(holder))}
+                found.append(entry | {"overlaps": _overlaps(image, starts, at, decoded, routine_of)})
             elif any(at in contested or holding_instruction(contested, at) is not None for at in offsets):
                 counts["contested"] += 1
             else:
@@ -164,27 +221,25 @@ def _row_starts(image, rows, starts, domains, seen, contested, routine_of):
         at, holder = held
         overlapping = at in seen
         counts["overlappingInstructionStarts" if overlapping else "insideAnInstruction"] += 1
-        routine = routine_of(holder)
         entry = {**_row_fields(row), "site": at,
                  "status": "start of an overlapping instruction" if overlapping else "inside an instruction",
                  "insideInstruction": holder, "insideInstructionAddress": _target_place(image, holder)[2],
                  "insideInstructionSize": seen[holder].size, "insideInstructionText": _text(seen[holder])}
         if overlapping:
-            entry |= {"rowStartInstructionSize": seen[at].size, "rowStartInstructionText": _text(seen[at])}
-        if routine is not None:
-            place = _target_place(image, routine)
-            entry |= {"routine": routine, "routineAddress": place[2], "routineIsRow": place[:2] in starts}
-        found.append(entry)
+            entry |= {"rowStartInstructionSize": seen[at].size, "rowStartInstructionText": _text(seen[at]),
+                      **_routine_fields(image, starts, routine_of(at), "rowStart")}
+        found.append(entry | _routine_fields(image, starts, routine_of(holder)))
     return found, counts
 
 
 def _no_return_check(image, routines, declared, limit):
-    """``(returns, read, stopped)``: the return sites on each declared routine's own read paths, the
+    """``(returns, read, stopped)``: the return sites on each of ``routines``' own read paths, the
     instructions the walk established, and whether the walk stopped.
 
-    The walk starts at the declared routines and continues past every interrupt except a declared
-    one, as ``reach`` reads them, so a routine that ends in an interrupt that returns is contradicted
-    by what follows it. Calls are stepped over at their return sites, except calls to declared routines.
+    ``routines`` are the declared routines, or the targets of the declared calls. The walk starts at
+    them and continues past every interrupt except a declared one, as ``reach`` reads them, so a
+    routine that ends in an interrupt that returns is contradicted by what follows it. Calls are
+    stepped over at their return sites, except calls to declared routines and declared calls.
     A routine the walk did not establish, one that does not decode or that a rejected overlap removed,
     has no return sites and is not in ``read``.
     """
@@ -212,27 +267,28 @@ def inventory_check(image, config):
     the first of an instruction the entry-path walk established names that instruction.
 
     The rows are checked against the same walk: each row whose start lies inside an instruction the
-    walk established is listed in ``rowStarts``. ``noReturn`` declarations, in ``reach``'s shape, end
-    the walk at a call to a declared routine and at a declared interrupt site, are checked for a
+    walk established, or at or inside an instruction of an overlap the walk left unresolved, is listed
+    in ``rowStarts``. ``noReturn`` declarations, in ``reach``'s shape, end the walk at a call to a
+    declared routine, at a declared call site and at a declared interrupt site, are checked for a
     return on the routine's own paths, and list in ``rowsPastNoReturn`` each row whose body
     continues past such a call or interrupt. ``indirectCalls`` declarations, in ``reach``'s shape,
     make each declared target of a reached computed call a call target, and the walk reads on in them.
     """
     from .reports import call_controls, direct_calls, entries, search_coverage
-    from .reach import no_return_declarations, no_return_rows, successor_graph, fewest_calls
+    from .reach import (no_return_inputs, no_return_rows, successor_graph, fewest_calls, call_assumption,
+                        no_return_assumptions)
     if "inventory" not in config:
         raise ValueError("inventory-check needs inventory, the path of a function inventory TSV")
     rows = read_inventory(config["inventory"], image)
     limit = integer(config.get("limit", 1000), 1, 10000, "result limit")
-    no_return_routines, no_return_interrupts = no_return_declarations(config.get("noReturn", []), image)
     indirect_calls = indirect_call_declarations(config.get("indirectCalls", []), image)
+    no_return_routines, no_return_interrupts, no_return_sites, declared = no_return_inputs(
+        config.get("noReturn", []), image, indirect_calls)
     for at in config.get("controls", []) if isinstance(config.get("controls"), list) else []:
         # call_controls refuses a control that is no integer.
         if type(at) is int and at in indirect_calls:
             raise ValueError(f"Positive control {at} is a declared indirect call, whose targets rest on its "
                              "declaration; a control must resolve from its own encoding")
-    declared = {"no_return_calls": frozenset(no_return_routines), "no_return_interrupts": frozenset(no_return_interrupts),
-                "indirect_calls": indirect_calls}
     calls = direct_calls(image, config, **declared)
 
     def ends_branch(row):
@@ -310,27 +366,49 @@ def inventory_check(image, config):
             entry["rows"] = [_row_fields(rows[i]) for i in held]
         missing.append(entry)
 
+    # The instructions of the overlaps the walk left unresolved. The walk decoded each at its gap site.
+    overlapping = {g["site"]: image.decode(g["site"]) for g in calls["gaps"] if g.get("reason") == OVERLAP_REASON}
+
     # The routine the walk read an instruction in, by the route with the fewest calls, as reach names it.
+    # An unresolved instruction is a node that ends its route, so it gets the routine of the established
+    # instruction that steps into it, or its own when it is an entry, and no route passes through it.
     # The graph is built only when a row start needs it.
     routines = None
 
     def routine_of(site):
         nonlocal routines
         if routines is None:
-            graph = successor_graph(image, seen, **declared)
-            routines = fewest_calls(graph, [at for at in entries(image) if at in seen])[2]
+            graph = successor_graph(image, seen | overlapping, **declared)
+            graph = {at: [] if at in overlapping else successors for at, successors in graph.items()}
+            routines = fewest_calls(graph, [at for at in entries(image) if at in seen or at in overlapping])[2]
         return routines.get(site)
-    row_starts, start_counts = _row_starts(image, rows, starts, domains, seen, contested, routine_of)
+    row_starts, start_counts = _row_starts(image, rows, starts, domains, seen, contested, overlapping, routine_of)
 
-    # Each declaration with the calls it kept from their return sites, as reach reports them.
-    returns, check_read, check_stopped = _no_return_check(image, no_return_routines, declared,
-                                                          config.get("instructionLimit", 10000))
+    # Each declaration with the calls it kept from their return sites, as reach reports them: only a call the
+    # entry-path walk established has targets, so a raw byte candidate at an unreached declared site gives none.
+    site_targets = {at: [] for at in no_return_sites}
+    for row in calls["rows"]:
+        if (row["site"] in site_targets and row["site"] in seen and row["target"] is not None
+                and row["target"] not in site_targets[row["site"]]):
+            site_targets[row["site"]].append(row["target"])
+    # The targets of the declared calls get a walk of their own, so that their code, overlapping a declared
+    # routine's or spending the limit first, cannot change what the routine check reads.
+    call_targets = {target for found in site_targets.values() for target in found} - set(no_return_routines)
+    checked = set(no_return_routines) | call_targets
+    check_limit = config.get("instructionLimit", 10000)
+    returns, routine_read, routine_stopped = _no_return_check(image, no_return_routines, declared, check_limit)
+    target_returns, target_read, target_stopped = _no_return_check(image, call_targets, declared, check_limit)
+    returns |= target_returns
+    check_read = ({at for at in no_return_routines if at in routine_read}
+                  | {at for at in call_targets if at in target_read})
+    check_stopped = routine_stopped or target_stopped
     entry_calls = {}
     for row in calls["rows"]:
         if row["target"] in no_return_routines and row["site"] in seen and ends_branch(row):
             entry_calls.setdefault(row["target"], []).append(row["site"])
     no_return = no_return_rows(no_return_routines, no_return_interrupts, returns,
-                               {at: sorted(sites) for at, sites in entry_calls.items()}, seen, seen, check_read)
+                               {at: sorted(sites) for at, sites in entry_calls.items()}, seen, seen, check_read,
+                               no_return_sites, site_targets)
 
     # A row whose body holds a declared call or interrupt and the byte after it still covers what follows.
     # A declared computed call has one row for each target, and is listed once with all of them.
@@ -343,8 +421,14 @@ def inventory_check(image, config):
             declared_ends.add(row["site"])
             routine = list(indirect_calls[row["site"]]["targets"])
         ends.append((row["site"], image.decode(row["site"]).size, "call", routine, row["classification"]))
-    ends += [(at, row["following"] - at, "interrupt", None,
-              "entry-path instruction" if at in seen else CONTESTED_REASON if at in contested else "declared site")
+    # A declared call site is listed as one, whatever its targets, unless a routine declaration already listed it.
+    def site_classification(at):
+        return "entry-path instruction" if at in seen else CONTESTED_REASON if at in contested else "declared site"
+    listed = {site for site, *_ in ends}
+    ends += [(at, row["following"] - at, "call site",
+              site_targets[at][0] if len(site_targets[at]) == 1 else site_targets[at] or None, site_classification(at))
+             for at, row in no_return_sites.items() if at not in listed]
+    ends += [(at, row["following"] - at, "interrupt", None, site_classification(at))
              for at, row in no_return_interrupts.items()]
     # Only a site the entry-path walk established counts a row; the rest are listed with their evidence.
     past, past_rows, past_unread, past_unverified = [], set(), set(), set()
@@ -412,6 +496,12 @@ def inventory_check(image, config):
             summary += (f", {start_counts['overlappingInstructionStarts']} of them at the start of an overlapping "
                         "instruction it also established")
         summary += "."
+    if start_counts["unresolvedOverlaps"]:
+        summary += " " + _count(start_counts["unresolvedOverlaps"],
+                                "row start lies at or inside an instruction of an overlap the walk left unresolved, "
+                                "listed with the instructions it overlaps.",
+                                "row starts lie at or inside an instruction of an overlap the walk left unresolved, "
+                                "each listed with the instructions it overlaps.")
     if start_counts["notRead"]:
         summary += " " + _count(start_counts["notRead"], "row start in declared code lies", "row starts in declared code lie") \
                    + " in bytes where the walk established no instruction, so its boundary is not checked."
@@ -433,16 +523,17 @@ def inventory_check(image, config):
     if unread:
         summary += " " + _count(unread, "noReturn routine is", "noReturn routines are") \
                    + " not an instruction the check walk established, so its return check reads nothing."
-    if check_stopped:
+    if routine_stopped:
         summary += " The walk that checks the noReturn routines stopped at its instruction limit, so it can miss returns."
-    assumptions = ["each reached call returns to its next instruction"
-                   + (", except a call to a noReturn routine" if no_return_routines else "")]
-    if no_return_routines:
+    if target_stopped:
+        summary += (" The walk that checks the targets of the noReturn calls stopped at its instruction limit, so it "
+                    "can miss returns.")
+    assumptions = [call_assumption(no_return_routines, no_return_sites)]
+    if checked:
         assumptions.append("each interrupt the noReturn check reads returns to its next instruction"
                            + (", except at a noReturn interrupt site" if no_return_interrupts else "")
                            + "; interrupt handlers are not read")
-    if no_return:
-        assumptions.append("each noReturn routine and interrupt never returns, for the reason it gives")
+    assumptions += no_return_assumptions(no_return_routines, no_return_interrupts, no_return_sites)
     if indirect_calls:
         assumptions.append("each declared indirect call can call the targets its declaration gives, for the evidence "
                            "it gives, and only those when it is declared exhaustive")
@@ -469,10 +560,13 @@ def inventory_check(image, config):
                               "notation and compared with its rows. A target only raw byte candidates or contested "
                               "instructions call is not shown to be code. The counts are lower bounds on the targets "
                               "the inventory lacks: calls the search does not resolve can add more. Row starts are "
-                              "compared only with the instructions the entry-path walk established; a start where it "
-                              "established no instruction is counted as notRead or contested and not placed, so linear decoding past data "
-                              "never reports one. A start inside an instruction can be deliberately overlapping code, "
+                              "compared only with the instructions the entry-path walk decoded; a start at or inside an instruction "
+                              "of an overlap the walk left unresolved is listed with every instruction it overlaps, and a "
+                              "start where it established no instruction is counted as notRead or contested and not placed, "
+                              "so linear decoding past data never reports one. A start inside an instruction can be deliberately overlapping code, "
                               "which the row names with both instructions for a reader to judge. rowsPastNoReturn rests "
                               "on the noReturn declarations: followingRead says whether the walk reached the bytes after "
                               "the call by another route, only a site the walk established counts a row, and an empty "
-                              "returnSites means only that the walk read no return."}
+                              "returnSites means only that the walk read no return. A noReturn call is never "
+                              "contradicted: the return sites of its targets are listed, and the declaration rests "
+                              "on its reason alone."}

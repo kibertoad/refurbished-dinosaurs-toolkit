@@ -1,6 +1,6 @@
 {
   "name": "@scientific-method/executable-reader",
-  "version": "4.0.0",
+  "version": "4.1.0",
   "description": "Hash-guarded MZ and Borland FBOV executable reader, and the command line for scientific-method-engine reports.",
   "type": "module",
   "license": "MIT",

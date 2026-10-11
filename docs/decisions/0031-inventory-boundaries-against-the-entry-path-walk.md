@@ -4,6 +4,7 @@ Status: accepted. Extends [ADR 0024](0024-call-targets-a-function-inventory-lack
 checks, and [ADR 0029](0029-declared-non-returning-routines-and-interrupts.md) with `noReturn`
 declarations in `inventory-check`.
 [ADR 0033](0033-declared-computed-call-targets.md) adds `indirectCalls` declarations to it.
+[ADR 0036](0036-inventory-row-starts-at-unresolved-overlaps.md) lists row starts at unresolved overlaps.
 
 ## Context
 

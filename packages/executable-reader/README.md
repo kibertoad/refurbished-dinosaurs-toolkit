@@ -49,7 +49,8 @@ everything the tables declare marked `trailing`. It places each entry on its own
 fragment, marks the parts outside the entry's region, and can compare a body with a candidate body
 found another way. It needs `formatControls` and decodes no instruction. In a file with an FBOV
 envelope it cuts the load image at the spans the resident descriptors' offset words give, so the
-bytes between two segments' spans are padding or undeclared bytes. `descriptors` lists every
+bytes between two segments' spans are padding or undeclared bytes, and bytes two or more spans
+hold are `overlapping-spans` runs that name those descriptors. `descriptors` lists every
 descriptor's four words, its span and the span's loaded `segment:ip`, the mapping a code region
 declares; with no `functions`, the report gives the layout and this list alone.
 

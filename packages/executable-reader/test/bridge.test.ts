@@ -884,6 +884,24 @@ test("reach keeps the return site of a far call to a noReturn routine unread thr
   ]);
   // The walk reads a return in the declared routine, so no negative rests on the declaration.
   assert.equal(r.negativeUsable, false);
+  // Declared by its call site instead, the call ends there while its target's return is listed, not contradicted.
+  writeFileSync(
+    path,
+    JSON.stringify({ ...config, starts: [64], targets: [69], controls: [64], noReturn: [{ call: 64, reason }] }),
+  );
+  const site = run(["reach", path]);
+  assert.equal(site.targets[0].reached, false);
+  assert.deepEqual(site.noReturn, [
+    {
+      call: 64,
+      reason,
+      reached: true,
+      targets: [{ routine: 80, read: true, returnSites: [83] }],
+      following: 69,
+      followingRead: false,
+    },
+  ]);
+  assert.equal(site.negativeUsable, true);
   writeFileSync(
     path,
     JSON.stringify({ ...config, starts: [64], targets: [69], noReturn: [{ interrupt: 80, reason }] }),
@@ -1047,6 +1065,52 @@ test("inventory-check reports a row start inside a far call and a row past a noR
     [[80, [83], true]],
   );
   assert.match(r.summary, /1 noReturn routine has a return on its own read paths/);
+});
+
+test("inventory-check lists a row start that is also an entry inside a far call through the real MZ prepared bridge", (t) => {
+  const { dir, config } = fixture(t);
+  const path = join(dir, "config.json");
+  // The row 1000:0003 starts three bytes into the far call at 1000:0000 and is declared an entry too, so the
+  // walk leaves the call and the instruction decoded at the row start as an unresolved overlap. Both rows
+  // are listed: 1000:0000 at the call, with the instruction that starts inside it, and 1000:0003 inside the call.
+  writeFileSync(join(dir, "inventory.tsv"), "start\tsize\n1000:0000\t6\n1000:0003\t3\n1000:0010\t4\n");
+  const regions = [{ ...config.regions[0]!, entries: [64, 67] }];
+  writeFileSync(path, JSON.stringify({ ...config, regions, inventory: "inventory.tsv" }));
+  const r = run(["inventory-check", path]);
+  const unresolved = "overlapping entry-path instructions; boundary unresolved";
+  assert.deepEqual(
+    r.rowStarts.map((row: Report) => [
+      row.start,
+      row.status,
+      row.insideInstruction,
+      row.insideInstructionSize,
+      row.routineAddress,
+      row.rowStartRoutineAddress,
+      row.overlaps.map((o: Report) => [o.address, o.evidence]),
+    ]),
+    [
+      [
+        "1000:0000",
+        "start of an unresolved overlapping instruction",
+        undefined,
+        undefined,
+        undefined,
+        "1000:0000",
+        [["1000:0003", unresolved]],
+      ],
+      [
+        "1000:0003",
+        "start of an unresolved overlapping instruction",
+        64,
+        5,
+        "1000:0000",
+        "1000:0003",
+        [["1000:0000", unresolved]],
+      ],
+    ],
+  );
+  assert.equal(r.counts.rowStarts.unresolvedOverlaps, 2);
+  assert.equal(r.counts.rowStarts.notRead, 0);
 });
 
 test("inventory-check places a target in an overlay region that lists no entries", (t) => {
