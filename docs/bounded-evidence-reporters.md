@@ -1262,14 +1262,15 @@ or at or inside an instruction of an overlap the walk left unresolved, is a row 
 | `rowStartInstructionSize`, `rowStartInstructionText` | for `start of an overlapping instruction` and `start of an unresolved overlapping instruction`, the instruction the walk decoded at the row start |
 | `overlaps` | for the unresolved statuses, every instruction the walk decoded whose bytes meet those of the row start's instruction (or the row start's byte, when no instruction starts there), with its `site`, `address`, `size`, `text`, `evidence` (`entry-path instruction`, `overlapping entry-path instructions; boundary unresolved` or `reached only through a rejected overlapping start`) and `routine`, `routineAddress` and `routineIsRow` as below when the walk read it in a routine |
 | `routine`, `routineAddress`, `routineIsRow` | the routine the walk read the holding instruction in (the target of the last call on the route with the fewest calls, or the entry, as `reach` names it), its place, and whether a row starts there. A routine no row starts at is usually the routine's real entry, and is also a row of `targets` when a call resolves to it |
+| `rowStartRoutine`, `rowStartRoutineAddress`, `rowStartRoutineIsRow` | for `start of an overlapping instruction` and `start of an unresolved overlapping instruction`, the same three fields for the instruction decoded at the row start, when the walk read it in a routine. A row at the instruction a misplaced row start cuts has no holding instruction and so no `routine`, and these fields name the routine whose path reached its instruction |
 
 A row start is often a declared entry of the walk as well, since a restoration seeds the walk with
 the starts its inventory lists. When such a start lies inside an instruction that another entry's
 path decodes, the walk proves neither boundary, rejects both instructions and records each as an
 `overlapping entry-path instructions; boundary unresolved` gap, so no instruction is established
 at either. The row is then listed with the unresolved status and `overlaps`, which names the
-instruction on the other side, and `routine` names the routine whose path reached the holding
-instruction. A row at the other side of the pair, at an instruction a misplaced row start cuts, is
+instruction on the other side, `routine` names the routine whose path reached the holding
+instruction, and `rowStartRoutine` the routine whose path reached the instruction at the row start. A row at the other side of the pair, at an instruction a misplaced row start cuts, is
 listed the same way, so a misplaced row and the row it overlaps both appear and the reader decides
 which is right ([ADR 0036](decisions/0036-inventory-row-starts-at-unresolved-overlaps.md)).
 
@@ -1277,7 +1278,7 @@ which is right ([ADR 0036](decisions/0036-inventory-row-starts-at-unresolved-ove
 (`instructionStarts`), inside one (`insideAnInstruction`), at an overlapping instruction
 (`overlappingInstructionStarts`), at or inside an instruction of an unresolved overlap
 (`unresolvedOverlaps`), at or inside an instruction the walk decoded but rejected as
-contested (`contested`), and in bytes where the walk established no instruction (`notRead`). The check
+contested (`contested`), and in bytes the walk did not decode (`notRead`). The check
 decodes nothing the walk did not: a row start in bytes the walk never reached, such as one after
 data that a linear decode would run over, is counted as `notRead` and not placed, whatever a
 linear decode of those bytes would show. Raise `instructionLimit` to the size of the declared code

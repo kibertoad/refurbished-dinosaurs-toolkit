@@ -217,6 +217,7 @@ class InventoryCheckTests(unittest.TestCase):
             "start": "1000:000A", "size": 4, "name": "shifted", "site": 10,
             "status": "start of an unresolved overlapping instruction",
             "rowStartInstructionSize": 2, "rowStartInstructionText": "add byte ptr [bx + si], dl",
+            "rowStartRoutine": 10, "rowStartRoutineAddress": "1000:000A", "rowStartRoutineIsRow": True,
             "insideInstruction": 7, "insideInstructionAddress": "1000:0007", "insideInstructionSize": 5,
             "insideInstructionText": "lcall 0x1000, 0xe", "routine": 4, "routineAddress": "1000:0004",
             "routineIsRow": False, "overlaps": [call]}])
@@ -240,6 +241,11 @@ class InventoryCheckTests(unittest.TestCase):
             ("1000:0009", "inside an unresolved overlapping instruction"),
             ("1000:000A", "start of an unresolved overlapping instruction")])
         self.assertNotIn("insideInstruction", rows["1000:0007"])
+        # No instruction holds the row at the call, so it has no routine; its own instruction's routine is the
+        # routine whose path reached the call.
+        self.assertNotIn("routine", rows["1000:0007"])
+        self.assertEqual([rows["1000:0007"][k] for k in ("rowStartRoutine", "rowStartRoutineAddress",
+                                                          "rowStartRoutineIsRow")], [4, "1000:0004", False])
         self.assertEqual(rows["1000:0007"]["overlaps"], [{
             "site": 10, "address": "1000:000A", "size": 2, "text": "add byte ptr [bx + si], dl",
             "evidence": "overlapping entry-path instructions; boundary unresolved",
@@ -247,8 +253,8 @@ class InventoryCheckTests(unittest.TestCase):
         self.assertNotIn("rowStartInstructionSize", rows["1000:0009"])
         self.assertEqual((rows["1000:0009"]["insideInstruction"], rows["1000:0009"]["overlaps"]), (7, [call]))
         self.assertEqual(both["counts"]["rowStarts"]["unresolvedOverlaps"], 3)
-        self.assertIn(" 3 row starts lie at or inside an instruction of an overlap the walk left unresolved",
-                      both["summary"])
+        self.assertIn(" 3 row starts lie at or inside an instruction of an overlap the walk left unresolved, each "
+                      "listed with the instructions it overlaps.", both["summary"])
 
     def test_a_row_start_only_a_misaligned_decode_would_cut_is_not_placed_inside_an_instruction(self):
         # 0000 calls 0007. 0004..0006 is data the walk never decodes; decoded linearly, its 9A byte starts a
@@ -273,6 +279,7 @@ class InventoryCheckTests(unittest.TestCase):
             "start": "1000:0002", "size": 1, "site": 2, "status": "start of an overlapping instruction",
             "insideInstruction": 1, "insideInstructionAddress": "1000:0001", "insideInstructionSize": 3,
             "insideInstructionText": "or bh, 0", "rowStartInstructionSize": 1, "rowStartInstructionText": "iret",
+            "rowStartRoutine": 2, "rowStartRoutineAddress": "1000:0002", "rowStartRoutineIsRow": True,
             "routine": 0, "routineAddress": "1000:0000", "routineIsRow": True}])
         self.assertEqual(r["counts"]["rowStarts"]["overlappingInstructionStarts"], 1)
         self.assertIn(" 1 row start lies inside an instruction the entry-path walk established, 1 of them at the start "

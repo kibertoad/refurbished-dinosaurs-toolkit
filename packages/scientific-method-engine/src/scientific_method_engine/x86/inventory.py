@@ -139,12 +139,16 @@ def _row_fields(row):
     return {k: row[k] for k in ("start", "size", "name") if k in row}
 
 
-def _routine_fields(image, starts, routine):
-    """The ``routine``, ``routineAddress`` and ``routineIsRow`` fields for a routine start, or none when it is None."""
+def _routine_fields(image, starts, routine, prefix=""):
+    """The ``routine``, ``routineAddress`` and ``routineIsRow`` fields for a routine start, or none when it is None.
+
+    A ``prefix`` names the fields after it, as ``rowStartRoutine`` for ``prefix="rowStart"``.
+    """
     if routine is None:
         return {}
     place = _target_place(image, routine)
-    return {"routine": routine, "routineAddress": place[2], "routineIsRow": place[:2] in starts}
+    name = prefix + "Routine" if prefix else "routine"
+    return {name: routine, name + "Address": place[2], name + "IsRow": place[:2] in starts}
 
 
 def _overlaps(image, starts, at, decoded, routine_of):
@@ -178,9 +182,10 @@ def _row_starts(image, rows, starts, domains, seen, contested, unresolved, routi
     """
     found, counts = [], {"instructionStarts": 0, "insideAnInstruction": 0, "overlappingInstructionStarts": 0,
                          "unresolvedOverlaps": 0, "contested": 0, "notRead": 0}
+    # Every instruction the walk decoded, with its evidence. Only a row start at an unresolved overlap reads it.
     decoded = ({at: (ins, CONTESTED_REASON) for at, ins in contested.items()}
                | {at: (ins, OVERLAP_REASON) for at, ins in unresolved.items()}
-               | {at: (ins, "entry-path instruction") for at, ins in seen.items()})
+               | {at: (ins, "entry-path instruction") for at, ins in seen.items()}) if unresolved else {}
     for row in rows:
         offsets = _offsets(image, domains, row["space"], row["at"])
         if not offsets:
@@ -190,14 +195,16 @@ def _row_starts(image, rows, starts, domains, seen, contested, unresolved, routi
             if any(at in seen for at in offsets):
                 counts["instructionStarts"] += 1
                 continue
-            at = next((at for at in offsets if at in unresolved or holding_instruction(unresolved, at) is not None), None)
-            if at is not None:
+            hit = next(((at, holder) for at in offsets for holder in [holding_instruction(unresolved, at)]
+                        if at in unresolved or holder is not None), None)
+            if hit is not None:
+                at, holder = hit
                 counts["unresolvedOverlaps"] += 1
                 entry = {**_row_fields(row), "site": at}
-                holder = holding_instruction(unresolved, at)
                 if at in unresolved:
                     entry |= {"status": "start of an unresolved overlapping instruction",
-                              "rowStartInstructionSize": unresolved[at].size, "rowStartInstructionText": _text(unresolved[at])}
+                              "rowStartInstructionSize": unresolved[at].size, "rowStartInstructionText": _text(unresolved[at]),
+                              **_routine_fields(image, starts, routine_of(at), "rowStart")}
                 else:
                     entry["status"] = "inside an unresolved overlapping instruction"
                 if holder is not None:
@@ -219,7 +226,8 @@ def _row_starts(image, rows, starts, domains, seen, contested, unresolved, routi
                  "insideInstruction": holder, "insideInstructionAddress": _target_place(image, holder)[2],
                  "insideInstructionSize": seen[holder].size, "insideInstructionText": _text(seen[holder])}
         if overlapping:
-            entry |= {"rowStartInstructionSize": seen[at].size, "rowStartInstructionText": _text(seen[at])}
+            entry |= {"rowStartInstructionSize": seen[at].size, "rowStartInstructionText": _text(seen[at]),
+                      **_routine_fields(image, starts, routine_of(at), "rowStart")}
         found.append(entry | _routine_fields(image, starts, routine_of(holder)))
     return found, counts
 
@@ -466,7 +474,11 @@ def inventory_check(image, config):
                         "instruction it also established")
         summary += "."
     if start_counts["unresolvedOverlaps"]:
-        summary += " " + _count(start_counts["unresolvedOverlaps"], "row start lies", "row starts lie")                    + " at or inside an instruction of an overlap the walk left unresolved, listed with the instructions it overlaps."
+        summary += " " + _count(start_counts["unresolvedOverlaps"],
+                                "row start lies at or inside an instruction of an overlap the walk left unresolved, "
+                                "listed with the instructions it overlaps.",
+                                "row starts lie at or inside an instruction of an overlap the walk left unresolved, "
+                                "each listed with the instructions it overlaps.")
     if start_counts["notRead"]:
         summary += " " + _count(start_counts["notRead"], "row start in declared code lies", "row starts in declared code lie") \
                    + " in bytes where the walk established no instruction, so its boundary is not checked."

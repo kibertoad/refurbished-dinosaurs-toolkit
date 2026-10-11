@@ -1058,6 +1058,7 @@ test("inventory-check lists a row start that is also an entry inside a far call 
       row.insideInstruction,
       row.insideInstructionSize,
       row.routineAddress,
+      row.rowStartRoutineAddress,
       row.overlaps.map((o: Report) => [o.address, o.evidence]),
     ]),
     [
@@ -1067,9 +1068,18 @@ test("inventory-check lists a row start that is also an entry inside a far call 
         undefined,
         undefined,
         undefined,
+        "1000:0000",
         [["1000:0003", unresolved]],
       ],
-      ["1000:0003", "start of an unresolved overlapping instruction", 64, 5, "1000:0000", [["1000:0000", unresolved]]],
+      [
+        "1000:0003",
+        "start of an unresolved overlapping instruction",
+        64,
+        5,
+        "1000:0000",
+        "1000:0003",
+        [["1000:0000", unresolved]],
+      ],
     ],
   );
   assert.equal(r.counts.rowStarts.unresolvedOverlaps, 2);

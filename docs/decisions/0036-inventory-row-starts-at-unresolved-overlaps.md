@@ -34,6 +34,11 @@ a walk whose entries leave that row out.
 3. The routine of an unresolved instruction is the routine of the established instruction that
    steps into it, found on the walk's graph with each unresolved instruction as a node no route
    passes through, so the routines of established instructions do not change.
+   A row that starts an instruction, established or unresolved, also names that instruction's
+   routine in `rowStartRoutine`, `rowStartRoutineAddress` and `rowStartRoutineIsRow`. `routine`
+   keeps naming the routine of the holding instruction, and a row at the instruction a misplaced
+   row start cuts has none, so without these fields the report would not say which routine the
+   correct side of the pair belongs to.
 4. No walk per row. Leaving one row out of the entries still leaves every other row in, so a
    second misplaced row can make the same unresolved pair, and a walk per row costs one walk for
    each of thousands of rows.
