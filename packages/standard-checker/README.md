@@ -164,22 +164,24 @@ inventoried function's last byte (`start` plus `size` minus one, or for a row wi
 byte of each range, with ranges that touch taken as one) stops a byte short, the usual slip when a
 range is copied from an analyzer that gives last bytes, and the check fails it with the end it
 should have, naming every function whose range ends on that byte. An end where an inventoried
-function, or a range of a function's body, starts passes, as the standard's Notation says: a
-correct range that stops before that function ends there, and a one-byte function's last byte is
-its first. So the slip in a range whose last item is a one-byte function is not caught. It checks
+function starts passes, as the standard's Notation says: a correct range that stops before that
+function ends there, and a one-byte function's last byte is its first. An end where a later range
+of a function's body starts passes for the same reason. So the slip in a range whose last item is a one-byte function is not caught. It checks
 every range a location of a current entry gives in that build and file, by address or by offset,
 and the address ranges written in the body of an entry whose locations all name that one build and
 file. Without inventories it checks nothing and reports no skipped step.
 
 A range that ends on a last byte on purpose, such as a function body cited without its one-byte
 return, passes when the entry lists it in `ends_on_last_byte` (`ENTRY-TYPES-22`), written as the
-entry writes it: `ends_on_last_byte: [0x00401000..0x0040103F]`. The listing covers every place the
-entry gives that range, its locations, text and tables. With inventories, the check fails a listed
-range that the entry does not give, and one it would pass without the listing everywhere the entry
-gives it, so the list holds only the ranges that need it. It fails a field that is not a list, or
-an empty one, with or without inventories. It does not compare a listed range with the base branch,
-so a listed range corrected in place, which the standard requires to be superseded instead, is not
-caught.
+entry writes it: `ends_on_last_byte: [0x00401000..0x0040103F]`. Backticks and spaces around `..`
+are ignored, so `0x00401000 .. 0x0040103F` in the text matches that listing. The listing covers
+every place the entry gives that range, its locations, text and tables. With inventories, the check
+fails a listed range that the entry does not give, one that no inventory checks anywhere the entry
+gives it (its file has no inventory, or it is in the text of an entry whose locations name several
+files), and one it would pass without the listing everywhere the entry gives it, so the list holds
+only the ranges that need it. It fails a field that is not a list of text items, or an empty one,
+with or without inventories. It does not compare a listed range with the base branch, so a listed
+range corrected in place, which the standard requires to be superseded instead, is not caught.
 
 ## In GitHub Actions
 

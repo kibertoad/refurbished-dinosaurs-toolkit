@@ -5417,6 +5417,21 @@ test("a range listed in ends_on_last_byte passes in a location and in the body",
   assert.ok(!output.includes("last byte"), output);
 });
 
+test("a body range listed in ends_on_last_byte with the spaces the body writes it with passes", (t) => {
+  const root = broken(t, (r) => {
+    rangeFinding(
+      r,
+      locatedAt("0x00401000..0x00401020"),
+      "The handler without its return, 0x00401000 .. 0x0040101F, adds 1.",
+    );
+    listEndsOnLastByte(r, `["0x00401000 .. 0x0040101F"]`);
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.ok(!output.includes("last byte"), output);
+});
+
 test("a segmented range listed in ends_on_last_byte passes", (t) => {
   const root = broken(t, (r) => {
     replaceIn(r, "spec/builds/BLD-EXAMPLE-1.0.files.yaml", "format: PE", "format: MZ");
@@ -5508,12 +5523,41 @@ test("ends_on_last_byte fails a listed range given only where no inventory check
   });
   const { status, output } = run(root);
   assert.equal(status, 1, output);
-  assert.ok(output.includes("ends_on_last_byte lists 0x00401000..0x0040101F, which the check passes without"), output);
+  assert.ok(
+    output.includes(
+      "ends_on_last_byte lists 0x00401000..0x0040101F, which no function inventory checks where the entry gives it, so nothing shows the listing is needed; list it once an inventory covers it [ENTRY-TYPES-22]",
+    ),
+    output,
+  );
+  assert.ok(!output.includes("leave it out"), output);
+});
+
+test("ends_on_last_byte fails a listed body range that no inventory checks", (t) => {
+  const root = broken(t, (r) => {
+    withSetupExe(r);
+    // Locations in two files leave the body's ranges unchecked.
+    rangeFinding(
+      r,
+      [...locatedAt("0x00401000..0x00401020"), ...locatedAt("0x00401000..0x00401020", "SETUP.EXE")],
+      "The handler without its return, 0x00401000..0x0040101F, adds 1.",
+    );
+    listEndsOnLastByte(r, "[0x00401000..0x0040101F]");
+    inventory(r);
+  });
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(
+    output.includes("ends_on_last_byte lists 0x00401000..0x0040101F, which no function inventory checks"),
+    output,
+  );
 });
 
 test("ends_on_last_byte must be a non-empty list, with or without inventories", (t) => {
   for (const [value, message] of [
     ["0x00401000..0x0040101F", "ends_on_last_byte must be a list of ranges [ENTRY-TYPES-22]"],
+    // The front matter reader takes a block list item that starts like a field name for a map.
+    ["\n  - C000:0000..C000:001F", "ends_on_last_byte must be a list of ranges [ENTRY-TYPES-22]"],
+    ["[4096]", "ends_on_last_byte must be a list of ranges [ENTRY-TYPES-22]"],
     ["[]", "ends_on_last_byte is empty; an entry with no such range leaves the field out [ENTRY-TYPES-22]"],
   ]) {
     const root = broken(t, (r) => {
