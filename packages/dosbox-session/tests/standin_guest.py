@@ -1,10 +1,13 @@
 """A stand-in client whose guest runs a scripted program, for gated breakpoints.
 
-The program is a generator that yields each real-mode code address the guest is about to run,
-as ``(segment, offset)``, and changes the guest's state as it runs it. Breakpoints behave as the
-pinned DOSBox-X debugger's do: the newest breakpoint at an address is the one reported, one created
-with ``once`` is removed when it is reported, and a breakpoint reported at an address also removes
-every ``once`` breakpoint there in the debugger while the server keeps listing it.
+The program is a generator that yields each code address the guest is about to run, as
+``(segment, offset)``, and changes the guest's state as it runs it. In protected mode the segment is
+a selector, placed at the base ``bases`` gives it. Breakpoints behave as the pinned DOSBox-X
+debugger's do: a breakpoint is placed at a linear address in the mode the guest is in when it is
+created, the newest breakpoint at an address is the one reported, one created with ``once`` is
+removed when it is reported, and a breakpoint reported at an address also removes every ``once``
+breakpoint there in the debugger while the server keeps listing it. Creating or deleting a
+breakpoint raises the state revision, as at the pinned revision.
 """
 
 from __future__ import annotations
@@ -33,18 +36,20 @@ class GuestServer(StandinServer):
     """A stand-in server whose continuations run ``program`` until a breakpoint matches.
 
     ``hold`` keeps every wait, and the status after a continuation, reporting the guest as running
-    until a pause. ``fail_waits`` lists errors the next
-    waits raise, ``fail_continue`` is ``(error, received)``: the next continue raises ``error``,
-    after running the guest when ``received`` is true. ``fail_create`` is ``(error, created)`` for the
-    next breakpoint request.
+    until a pause. ``fail_waits`` lists errors the next waits raise, ``fail_continue`` is
+    ``(error, received)``: the next continue raises ``error``, after running the guest when
+    ``received`` is true; ``fail_continue_after`` lets that many continues through first.
+    ``fail_create`` is ``(error, created)`` for the next breakpoint request.
     """
 
     def __init__(self, program: Callable[[SimpleNamespace], Iterator[tuple[int, int]]], tick: int = 0) -> None:
         super().__init__()
-        self.guest = SimpleNamespace(tick=tick, polls=0, rng=[])
+        #: The program can switch ``cpu_mode`` as it runs.
+        self.guest = SimpleNamespace(tick=tick, polls=0, rng=[], cpu_mode="real")
         self._program = program(self.guest)
         self.pc: tuple[int, int] | None = next(self._program)
-        self.cpu_mode = "real"
+        #: Protected-mode selector bases, as the guest's descriptors give them.
+        self.bases: dict[int, int] = {}
         self.revision = 1
         self.state = SimpleNamespace(
             id="ses-1", state="stopped", state_revision=1, stop_reason=SimpleNamespace(kind="startup", breakpoint_id=None, address=None)
@@ -58,12 +63,27 @@ class GuestServer(StandinServer):
         self.running = False
         self.fail_waits: list[BaseException] = []
         self.fail_continue: tuple[BaseException, bool] | None = None
+        self.fail_continue_after = 0
         self.fail_create: tuple[BaseException, bool] | None = None
         self.breakpoint_stops = 0
+
+    @property
+    def cpu_mode(self) -> str:
+        return self.guest.cpu_mode
+
+    @cpu_mode.setter
+    def cpu_mode(self, mode: str) -> None:
+        self.guest.cpu_mode = mode
 
     def factory(self, endpoint: Any) -> GuestClient:
         self.endpoints.append(endpoint)
         return GuestClient(self)
+
+    def place(self, segment: int, offset: int) -> int:
+        """The linear address ``segment:offset`` is at in the guest's current mode."""
+        if self.cpu_mode == "protected":
+            return self.bases[segment] + offset
+        return linear(segment, offset)
 
     def add_breakpoint(self, segment: int, offset: int, once: bool) -> SimpleNamespace:
         self._next_breakpoint += 1
@@ -71,7 +91,7 @@ class GuestServer(StandinServer):
             id=f"bp-{self._next_breakpoint}",
             kind="execution",
             address=address(segment, offset),
-            linear=linear(segment, offset),
+            linear=self.place(segment, offset),
             once=once,
             enabled=True,
             alive=True,
@@ -106,7 +126,7 @@ class GuestServer(StandinServer):
                 self.state = SimpleNamespace(id="ses-1", state="exited", state_revision=self.revision, stop_reason=None)
                 return
             if not first:
-                here = linear(*self.pc)
+                here = self.place(*self.pc)
                 matched = next((bp for bp in self.breakpoints if bp.alive and bp.linear == here), None)
                 if matched is not None:
                     if matched.once:
@@ -152,7 +172,11 @@ class GuestClient(StandinClient):
         self.server.running = self.server.hold
         operation = self._operation("op")
         failure = self.server.fail_continue
-        self.server.fail_continue = None
+        if failure is not None and self.server.fail_continue_after > 0:
+            self.server.fail_continue_after -= 1
+            failure = None
+        elif failure is not None:
+            self.server.fail_continue = None
         if failure is not None and not failure[1]:
             raise failure[0]
         self.server.run()
@@ -174,7 +198,7 @@ class GuestClient(StandinClient):
 
     def get_registers(self, session_id, request_id=None):
         self._call("get_registers", request_id)
-        return SimpleNamespace(cpu_mode=self.server.cpu_mode, general={})
+        return SimpleNamespace(cpu_mode=self.server.cpu_mode, general={}, state_revision=self.server.revision)
 
     def read_memory(self, session_id, address_, length, request_id=None):
         self._call("read_memory", request_id)
@@ -189,6 +213,7 @@ class GuestClient(StandinClient):
         if failure is not None and not failure[1]:
             raise failure[0]
         entry = self.server.add_breakpoint(segment, offset, once)
+        self.server.touch()
         if failure is not None:
             raise failure[0]
         return SimpleNamespace(id=entry.id, kind="execution", address=entry.address, once=once)
@@ -203,4 +228,5 @@ class GuestClient(StandinClient):
         if entry is None or not entry.alive:
             raise RuntimeError(f"the debugger could not delete {breakpoint_id}")
         self.server.breakpoints.remove(entry)
+        self.server.touch()
         return self.server.revision
