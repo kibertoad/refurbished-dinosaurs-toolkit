@@ -491,6 +491,7 @@ not in the table has no entry.
 
 | Engine | Entry |
 |---|---|
+| 19.0.0 | [`inventory-check` lists row starts at unresolved overlaps](#engine-1900-inventory-check-lists-row-starts-at-unresolved-overlaps) |
 | 18.0.0 | [Capstone 5.0.9 and pypcode 4.0.1](#engine-1800-capstone-509-and-pypcode-401) |
 | 17.0.0 | [A `uses` conditional access of unknown width has no width](#engine-1700-a-uses-conditional-access-of-unknown-width-has-no-width) |
 | 16.0.0 | [A `join` expression lists its parts' widths](#engine-1600-a-join-expression-lists-its-parts-widths) |
@@ -514,6 +515,25 @@ not in the table has no entry.
 | 3.0.0 | [The Ghidra report scripts state coverage](#engine-300-the-ghidra-report-scripts-state-coverage) |
 | 2.0.0 | [Prepared-config protocol 3, with reader 2.0.0](#prepared-config-protocol-3-scoped-memory-on-call-models) |
 | 1.0.0 | [Prepared-config protocol 2, with reader 1.0.0](#prepared-config-protocol-2) |
+
+### Engine 19.0.0: `inventory-check` lists row starts at unresolved overlaps
+
+A row start at or inside an instruction of an overlap the entry-path walk left unresolved is
+listed in `rowStarts` with the status `start of an unresolved overlapping instruction` or `inside
+an unresolved overlapping instruction`, and counted in the new `counts.rowStarts.unresolvedOverlaps`
+([ADR 0036](decisions/0036-inventory-row-starts-at-unresolved-overlaps.md)). Earlier releases
+counted it in `notRead`, so the same inventory and walk now give a lower `notRead` and more
+`rowStarts` rows. This is the usual case for a misplaced row start, since a restoration seeds the
+walk with its row starts.
+
+- A gate that requires an empty `rowStarts`, or compares `notRead` with a saved value, fails or
+  differs where it passed before. Read each new row's `overlaps` to decide which side of the pair
+  is the routine's start, and fix the inventory row that is wrong.
+- A row at the start of an unresolved instruction that no earlier instruction holds has no
+  `insideInstruction*` fields and no `routine` fields. Code that reads `insideInstruction` from every
+  row checks for it first.
+- A row with either `start of ...` status carries `rowStartRoutine`, `rowStartRoutineAddress` and
+  `rowStartRoutineIsRow` for the instruction at the row start, when the walk read it in a routine.
 
 ### Engine 18.0.0: Capstone 5.0.9 and pypcode 4.0.1
 
