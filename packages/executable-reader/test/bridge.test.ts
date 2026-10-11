@@ -916,6 +916,7 @@ test("reach stops a walk at a far call to a stop routine that returns through th
   ]);
   // The stop is no claim about the build: nothing is checked or assumed, and the negative stays usable.
   assert.deepEqual(r.noReturn, []);
+  assert.deepEqual(r.returnCheckGaps, []);
   assert.equal(
     r.assumptions.some((a: string) => a.includes("stop")),
     false,

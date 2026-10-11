@@ -13,6 +13,7 @@ UNSUPPORTED = "unsupported control-transfer frame encoding"
 LEAF_OVERLAP = "leaf start inside a reached instruction; the leaf is not decoded, so its boundary is unchecked"
 STOP_OVERLAP = ("stop routine start inside a reached instruction; the routine is not decoded, so its boundary is "
                 "unchecked")
+CHECK_CONTESTED = "contested instruction in the noReturn return check's walk"
 
 
 def _text(ins):
@@ -73,6 +74,8 @@ def _stops(value, image, starts, leaves, no_return_routines):
         if kind == "routine" and at in no_return_routines:
             raise ValueError(f"stop routine {at} is declared noReturn; the declaration is a claim about the build and "
                              "the stop a cut of this query, so give one of them")
+        if kind == "site" and at in leaves:
+            raise ValueError(f"stop site {at} is a leaf; the walk does not decode a leaf, so the stop would never be read")
         if kind == "site" and image.decode(at) is None:
             raise ValueError(f"stop site {at} does not decode")
         found[at] = stop["reason"]
@@ -196,10 +199,18 @@ def successor_kinds(at, ins, step):
     return rows
 
 
-def successor_graph(image, seen, **step):
-    """Each site of ``seen`` mapped to its ``successor_kinds`` rows that stay in ``seen``, under ``cfg_step``'s ``step`` options."""
-    return {at: [(s, kind) for s, kind in successor_kinds(at, ins, cfg_step(image, at, ins, **step)) if s in seen]
+def successor_graph(image, seen, kept=frozenset(), **step):
+    """Each site of ``seen`` mapped to its ``successor_kinds`` rows that stay in ``seen`` or lead to ``kept``,
+    under ``cfg_step``'s ``step`` options."""
+    return {at: [(s, kind) for s, kind in successor_kinds(at, ins, cfg_step(image, at, ins, **step))
+                 if s in seen or s in kept]
             for at, ins in seen.items()}
+
+
+def _call_site_rows(sites, seen):
+    """Each call site in ``sites`` as ``{ "site", "following", "followingRead" }``, from its instruction in ``seen``."""
+    return [{"site": site, "following": site + seen[site].size, "followingRead": site + seen[site].size in seen}
+            for site in sites]
 
 
 def no_return_rows(routines, interrupts, returns, call_sites, seen, reached, read, calls, call_targets):
@@ -215,9 +226,7 @@ def no_return_rows(routines, interrupts, returns, call_sites, seen, reached, rea
     """
     rows = [{"routine": at, "reason": reason, "reached": at in reached, "read": at in read,
              "returnSites": returns[at], "contradicted": bool(returns[at]),
-             "callSites": [{"site": site, "following": site + seen[site].size,
-                            "followingRead": site + seen[site].size in seen}
-                           for site in call_sites.get(at, [])]}
+             "callSites": _call_site_rows(call_sites.get(at, []), seen)}
             for at, reason in routines.items()]
     rows += [{"call": at, "reason": row["reason"], "reached": at in seen,
               "targets": [{"routine": target, "read": target in read, "returnSites": returns.get(target, [])}
@@ -451,10 +460,8 @@ def reach(image, config):
     # Kept apart from the gap rows, which the result limit can cut.
     stopped = any(g["reason"] == LIMIT_REASON for g in walk_gaps)
     # A control at a site a noReturn declaration kept the walk from names that declaration, which may be the cause.
-    ending = set(no_return_routines) | set(stop_routines)
-
     def ends(at, found):
-        return call_ends(at, found[0], indirect_calls, ending)
+        return call_ends(at, found[0], indirect_calls, options["no_return_calls"])
 
     def ended_by(at, found):
         parts = []
@@ -511,9 +518,7 @@ def reach(image, config):
     leaf_rows = [{"routine": at, "reason": reason, "reached": at in distance, "callSites": call_sites.get(at, [])}
                  for at, reason in leaves.items()]
     stop_rows = [{"routine": at, "reason": reason, "reached": at in distance,
-                  "callSites": [{"site": site, "following": site + seen[site].size,
-                                 "followingRead": site + seen[site].size in seen}
-                                for site in call_sites.get(at, [])]}
+                  "callSites": _call_site_rows(call_sites.get(at, []), seen)}
                  for at, reason in stop_routines.items()]
     for at, reason in stop_sites.items():
         ins = image.decode(at)
@@ -525,17 +530,26 @@ def reach(image, config):
     returning_leaves = set(leaves) - set(no_return_routines)
     site_targets = {at: call_targets.get(at, []) for at in no_return_sites}
     checked = set(no_return_routines) | {target for found in site_targets.values() for target in found}
-    check_graph, read, check_stopped = graph, seen, False
-    if (stop_routines or stop_sites) and checked:
+    check_graph, read, check_stopped, check_gap_rows = graph, seen, False, []
+    # A stop the walk never met cut nothing, so the walk read what a walk without stops reads.
+    stop_met = (any(at in distance for at in stop_routines)
+                or any(at in seen or at in contested or at in overlapping for at in stop_sites))
+    if stop_met and checked:
         # A stop cuts the query and says nothing about the build, so the return check reads the reached
         # declared routines without the stops: code a stop hid can still contradict a declaration.
-        read, check_gaps, _, _, _ = walk(image, sorted(at for at in checked if at in distance), instruction_limit,
-                                         follow_interrupts=True, stops=frozenset(leaves), **declared)
+        read, check_gaps, _, _, check_contested = walk(image, sorted(at for at in checked if at in distance),
+                                                       instruction_limit, follow_interrupts=True,
+                                                       stops=frozenset(leaves), **declared)
         check_stopped = any(g["reason"] == LIMIT_REASON for g in check_gaps)
-        check_graph = {at: [(s, kind) for s, kind in successor_kinds(
-                           at, ins, cfg_step(image, at, ins, follow_interrupts=True, **declared))
-                            if s in read or s in leaves]
-                       for at, ins in read.items()}
+        # What the check could not read past a stop leaves its declarations unchecked there, as a gap of the
+        # query's own walk would; the rows the query's walk already holds are not repeated.
+        known = {(g["site"], g["reason"]) for g in walk_gaps}
+        check_gap_rows = sorted(
+            [g for g in check_gaps if g["reason"] != LIMIT_REASON and (g["site"], g["reason"]) not in known
+             and g["site"] not in check_contested]
+            + [{"site": at, "reason": CHECK_CONTESTED} for at in check_contested if at not in contested],
+            key=lambda g: (g["site"], g["reason"]))
+        check_graph = successor_graph(image, read, kept=frozenset(leaves), follow_interrupts=True, **declared)
     returns = {at: returns_from(check_graph, read, returning_leaves, at) for at in checked}
     no_return = no_return_rows(no_return_routines, no_return_interrupts, returns, ended_sites, seen, distance, read,
                                no_return_sites, site_targets)
@@ -564,14 +578,15 @@ def reach(image, config):
             "indirectCalls": indirect_rows,
             "reachedRoutines": sorted(routine_starts), "counts": counts,
             "unresolved": unresolved[:limit], "interrupts": interrupts[:limit], "gaps": gaps[:limit],
-            "contested": sorted(contested)[:limit],
-            "truncated": any(len(x) > limit for x in (unresolved, interrupts, gaps, contested)),
+            "contested": sorted(contested)[:limit], "returnCheckGaps": check_gap_rows[:limit],
+            "truncated": any(len(x) > limit for x in (unresolved, interrupts, gaps, contested, check_gap_rows)),
             "instructionLimitReached": stopped,
             "controls": [{"site": at, "target": call_targets[at][0]} for at in controls],
             "instructionControls": [{"site": at, "instruction": _text(seen[at]), "routine": routine.get(at)}
                                     for at in instruction_controls],
             "negativeUsable": bool(controls or instruction_controls)
-                              and not (stopped or unresolved or gaps or contested or contradicted),
+                              and not (stopped or unresolved or gaps or contested or contradicted
+                                       or check_gap_rows),
             "assumptions": assumptions,
             "exclusions": ["computed call and jump targets no declaration gives (listed in unresolved)", "unrelocated far calls",
                            "code reached only from outside the starts", "runtime reachability"],
@@ -579,7 +594,7 @@ def reach(image, config):
                               "throughEveryRoute lists the routine starts every read route to the target passes, "
                               "and an unresolved transfer may add a route that passes none of them. "
                               "negativeUsable needs a control of either kind, a walk that did not stop at its instruction limit, "
-                              "and no unresolved transfer, gap, contested instruction or contradicted noReturn "
+                              "and no unresolved transfer, gap, returnCheckGaps row, contested instruction or contradicted noReturn "
                               "routine, and still rests on the listed assumptions, leaves and noReturn declarations. "
                               "A declared indirect call counts as resolved when it is declared exhaustive: its table "
                               "rows are read from the build's bytes and its targets list rests on its evidence alone, "
@@ -593,7 +608,10 @@ def reach(image, config):
                               "A stop narrows the question and claims nothing about the build: the walk reads no "
                               "further at a stop site, nor into a stop routine or past a call to it, so a target "
                               "reached only past a stop is not reached, and negativeUsable answers the narrowed "
-                              "question. The noReturn return check reads past the stops. "
-                              "When instructionLimitReached holds, the walk stopped before reading all it reaches: "
-                              "every list and count covers only the part read, which part depends on the walk order, "
-                              "and an unreached target may lie past the stop."}
+                              "question. The noReturn return check reads past the stops, with a walk of its own, and "
+                              "returnCheckGaps lists what that walk could not read that the query's walk did not "
+                              "record; any row keeps negativeUsable false, as a gap would. "
+                              "When instructionLimitReached holds, the walk, or the return check's walk, stopped "
+                              "before reading all it reaches: every list and count covers only the part read, which "
+                              "part depends on the walk order, an unreached target may lie past the stop, and an "
+                              "uncontradicted noReturn routine may return in code the check did not read."}

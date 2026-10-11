@@ -31,12 +31,16 @@ inherits the false fact.
    routine with the calls to it and whether the walk read each return site by another route, a site
    with its instruction and each successor the stop cut with whether the walk read it. A reached
    target row says whether it is a stop.
-3. A stop routine cannot also be a leaf or a `noReturn` routine, a start cannot be a stop, and one
-   offset cannot be a stop routine and a stop site. A call-site control at a stop site is refused,
-   since the walk does not follow the call.
+3. A stop routine cannot also be a leaf or a `noReturn` routine, a stop site cannot be a leaf, which
+   the walk never decodes, a start cannot be a stop, and one offset cannot be a stop routine and a
+   stop site. A call-site control at a stop site is refused, since the walk does not follow the
+   call.
 4. The `noReturn` return check is a check of the build and must not lose code to a query's cut.
-   When the query has stops, the check reads the reached declared routines and declared-call
-   targets with a walk of its own that has no stops, under the same instruction limit.
+   When the walk met a stop, the check reads the reached declared routines and declared-call
+   targets with a walk of its own that has no stops, under the same instruction limit. What that
+   walk cannot read (a gap, an unresolved transfer or a contested instruction the query's walk did
+   not record) is reported in `returnCheckGaps` and keeps `negativeUsable` false, as it would
+   without the stop.
 5. `inventory-check` takes no stops: its walk describes the build, not a question about it.
 
 ## Consequences

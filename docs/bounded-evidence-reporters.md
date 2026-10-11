@@ -1079,7 +1079,7 @@ for questions such as "can anything between program start and this point write t
 | `targets` | 1..256 file offsets in declared code, such as the starts of a variable's writers or the writes themselves |
 | `leaves` | optional, at most 256 `{ "routine", "reason" }` objects: routines the walk reaches but does not read, so they call nothing. `reason` is required free text, and the report repeats it. A start cannot be a leaf |
 | `noReturn` | optional, at most 256 `{ "routine", "reason" }`, `{ "call", "reason" }` or `{ "interrupt", "reason" }` objects ([ADR 0029](decisions/0029-declared-non-returning-routines-and-interrupts.md), [ADR 0035](decisions/0035-declared-non-returning-call-sites.md)): a resolved call to the `routine`, the call instruction at the `call` site and the interrupt instruction at the `interrupt` site do not continue at the next instruction. `reason` is required free text, and the report repeats it. A `call` site must decode as a call instruction, and an `interrupt` site as an unconditional interrupt instruction |
-| `stops` | optional, at most 256 `{ "routine", "reason" }` or `{ "site", "reason" }` objects ([ADR 0039](decisions/0039-query-scoped-stops-in-reach.md)): where this query's walk ends, for a reason of the query's own, such as asking what runs before a routine is called. A `routine` is reached and not read, and a call to it does not continue at the next instruction. A `site` must decode; the walk decodes its instruction and follows nothing after it. `reason` is required free text, and the report repeats it. A start cannot be a stop, a stop routine cannot also be a leaf or a `noReturn` routine, and one offset cannot be both a stop routine and a stop site |
+| `stops` | optional, at most 256 `{ "routine", "reason" }` or `{ "site", "reason" }` objects ([ADR 0039](decisions/0039-query-scoped-stops-in-reach.md)): where this query's walk ends, for a reason of the query's own, such as asking what runs before a routine is called. A `routine` is reached and not read, and a call to it does not continue at the next instruction. A `site` must decode; the walk decodes its instruction and follows nothing after it. `reason` is required free text, and the report repeats it. A start cannot be a stop, a stop routine cannot also be a leaf or a `noReturn` routine, a stop site cannot be a leaf, and one offset cannot be both a stop routine and a stop site |
 | `controls` | optional, at most 256 distinct call sites the walk must decode and resolve. An offset whose bytes do not decode as a call fails the report before the walk |
 | `instructionControls` | optional, at most 256 distinct sites the walk must decode as instruction starts, such as a store the walk is known to reach. A start is refused, since the walk decodes every start |
 | `indirectJumps` | the [declared tables](#evidenced-indirect-jump-tables) the walk follows |
@@ -1185,7 +1185,12 @@ names it.
 The `noReturn` return check reads past the stops. When the query has stops, the check reads the
 reached declared routines and the targets of declared calls with a walk of its own that has none,
 so code a stop hides from the query can still contradict a declaration. That walk has the same
-`instructionLimit`, and stopping at it sets `instructionLimitReached`.
+`instructionLimit`, and stopping at it sets `instructionLimitReached`. `returnCheckGaps` lists
+what that walk could not read and the query's walk did not record: its gap rows, which include its
+unresolved transfers, and its contested instructions, each as `{ "site", "reason" }`. A
+declaration the check could not read in full is not checked there, so any row keeps
+`negativeUsable` false, as a gap of the query's walk does. Without stops, or when the walk met
+none, the check reads the query's walk and `returnCheckGaps` is empty.
 
 `indirectCalls` repeats each declaration as the [declared call targets](#declared-computed-call-targets)
 section describes, with whether the walk `reached` its site, the `routine` the walk read the site in,
@@ -1214,8 +1219,8 @@ instruction control in `instructionControls` with its `site`, `instruction` text
 the walk read it in.
 
 `negativeUsable` holds when a control of either kind was given, the walk did not stop at its
-instruction limit, nothing is unresolved, no gap was recorded, no instruction is contested and no
-`noReturn` routine is contradicted. Even then a target that is not reached is unreached only on
+instruction limit, nothing is unresolved, no gap was recorded, `returnCheckGaps` is empty, no
+instruction is contested and no `noReturn` routine is contradicted. Even then a target that is not reached is unreached only on
 the walk's assumptions, which the report lists: each call and interrupt returns to the next
 instruction except where `noReturn` declares otherwise, each leaf calls nothing, each
 `noReturn` routine and interrupt never returns and each `noReturn` call never returns to its next

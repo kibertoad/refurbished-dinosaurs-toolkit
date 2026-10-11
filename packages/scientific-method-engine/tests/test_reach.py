@@ -577,6 +577,20 @@ class StopTests(unittest.TestCase):
         self.assertTrue(r["instructionLimitReached"])
         self.assertFalse(r["negativeUsable"])
 
+    def test_what_the_no_return_check_cannot_read_past_a_stop_keeps_the_negative_unusable(self):
+        # 0000 call R at 0004; ret. R is a nop, then jmp ax, which nothing resolves.
+        data = bytes.fromhex("e80100" "c3" "90" "ffe0")
+        no_return = [{"routine": 4, "reason": "synthetic: declared to end the program"}]
+        plain = run_report(data, config(data, targets=[3], controls=[0], noReturn=no_return), "reach")
+        self.assertEqual([row["site"] for row in plain["unresolved"]], [5])
+        self.assertEqual(plain["returnCheckGaps"], [])
+        self.assertFalse(plain["negativeUsable"])
+        r = run_report(data, config(data, targets=[3], controls=[0], noReturn=no_return,
+                                    stops=[{"site": 4, "reason": CUT}]), "reach")
+        self.assertEqual((r["unresolved"], r["gaps"], r["noReturn"][0]["contradicted"]), ([], [], False))
+        self.assertEqual([row["site"] for row in r["returnCheckGaps"]], [5])
+        self.assertFalse(r["negativeUsable"])
+
     def test_rejected_stops(self):
         site = {"site": 3, "reason": CUT}
         for extra, message in [({"stops": {}}, "stops must be a list"),
@@ -590,6 +604,8 @@ class StopTests(unittest.TestCase):
                                ({"stops": [{"site": 0, "reason": CUT}]}, "stop site 0 is a start"),
                                ({"stops": [{"routine": 7, "reason": CUT}], "leaves": [{"routine": 7, "reason": "x"}]},
                                 "stop routine 7 is a leaf"),
+                               ({"stops": [{"site": 7, "reason": CUT}], "leaves": [{"routine": 7, "reason": "x"}]},
+                                "stop site 7 is a leaf"),
                                ({"stops": [{"routine": 7, "reason": CUT}], "noReturn": [{"routine": 7, "reason": "x"}]},
                                 "stop routine 7 is declared noReturn"),
                                ({"stops": [{"routine": 7, "reason": CUT}, {"site": 7, "reason": CUT}]},

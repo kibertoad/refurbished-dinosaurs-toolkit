@@ -30,6 +30,7 @@ USAGE = ("Usage: scientific-method-engine <operand|operand-candidates|target|bou
          "stops cut this query's walk and claim nothing about the build: a stops routine is reached but not read\n"
          "and a call to it does not continue at the next instruction, a stops site is decoded and nothing after it\n"
          "is followed, and each is repeated with its reason and where it cut the walk, not checked or assumed;\n"
+         "the noReturn check reads past the stops, and returnCheckGaps lists what it could not read there;\n"
          "indirectCalls declares the targets of a computed call as a table read from the build or a list,\n"
          "and the walk calls each of them; one not declared exhaustive stays unresolved;\n"
          "controls are call sites the walk must reach and resolve, instructionControls sites it must decode,\n"
