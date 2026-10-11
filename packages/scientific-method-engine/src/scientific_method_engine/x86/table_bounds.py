@@ -39,6 +39,7 @@ CONDITIONS = frozenset({"INT_EQUAL", "INT_NOTEQUAL", "INT_LESS", "INT_LESSEQUAL"
                         "INT_CARRY", "INT_SCARRY", "INT_SBORROW", "BOOL_NEGATE", "BOOL_AND", "BOOL_OR", "BOOL_XOR"})
 # An expression with more nodes than this is not kept, and its value cannot narrow a register.
 EXPRESSION_NODES = 32
+DIVISIONS = ("INT_DIV", "INT_SDIV", "INT_REM", "INT_SREM")
 
 BOUND = "bound"
 NO_BOUND = "no bound"
@@ -54,6 +55,7 @@ LIMIT = "the instruction limit"
 NOT_REACHED = "the dispatch is not reached from the start"
 NO_TABLE = "the dispatch reads no table"
 INSIDE = "control flow inside one instruction"
+OVERLAP = "overlapping instructions; boundary unresolved"
 
 
 def register(name):
@@ -67,6 +69,11 @@ SS = register("SS")
 
 def bounded(r):
     return r.size <= ROWS
+
+
+def limited(r):
+    """Whether ``r`` is bounded by something other than its width: a byte that may hold any value is not."""
+    return bounded(r) and not r.is_top()
 
 
 def settle(r, why):
@@ -282,10 +289,11 @@ def combine(old, new, site, widen, mark=True):
 def derive(site, inputs, r, own=None):
     """The provenance of an operation's output ``r`` from its ``inputs``.
 
-    An output that is bounded while an input is not was bounded at ``site``: the inputs' causes go.
+    An output that is bounded below its width while an input is not (it is unbounded, or may hold any
+    value of its width) was bounded at ``site``: the inputs' causes go.
     """
-    if bounded(r) and any(not bounded(v.range) for v in inputs):
-        why = frozenset().union(*(frozenset(w for w in v.why if w[0] == BOUND) for v in inputs if bounded(v.range)))
+    if limited(r) and any(not limited(v.range) for v in inputs):
+        why = frozenset().union(*(frozenset(w for w in v.why if w[0] == BOUND) for v in inputs if limited(v.range)))
         why |= {(BOUND, site, None)}
     else:
         why = frozenset().union(*(v.why for v in inputs))
@@ -398,8 +406,10 @@ class Step:
         else:
             r = transfer(o.code, ranges, bits)
         if r is None:
-            constant = all(x.number is not None for x in ranges)
-            own = (FAULT if constant else UNMODELLED, site, o.code)
+            # A division by a constant zero faults whatever the dividend; any other operation without
+            # a range has no transfer function, even when its inputs are constants.
+            fault = o.code in DIVISIONS and ranges[1].number == 0
+            own = (FAULT if fault else UNMODELLED, site, o.code)
             r = Range.top(bits)
         self.assign(o.output, Value(r, expr=expression(o.code, bits, inputs, o.inputs), why=derive(site, inputs, r, own)))
 
@@ -515,7 +525,7 @@ def assume(flow, e, r, site):
             # Narrowing changes no value, so the comparisons kept on the register still hold.
             why = flow.provenance(e[1], e[2], current)
             if bounded(narrowed):
-                why = (why if bounded(current) else frozenset()) | {(BOUND, site, None)}
+                why = (why if limited(current) else frozenset()) | {(BOUND, site, None)}
             flow.ranges.write(e[1], e[2], narrowed)
             for b in range(e[1], e[1] + e[2]):
                 flow.why[b] = why
@@ -579,7 +589,8 @@ def routine_graph(image, start, site, through, limit):
         at = pending.pop()
         if at in graph:
             continue
-        if len(graph) >= limit:
+        # A site outside declared code is an unmapped edge, which the limit does not stop.
+        if len(graph) >= limit and image.region(at) is not None:
             stopped = True
             break
         ins = image.decode(at)
@@ -602,6 +613,15 @@ def routine_graph(image, start, site, through, limit):
             gaps.extend(step.gaps)
         graph[at] = (ins, ops, successors)
         pending.extend(s for s in reversed(successors) if s not in graph)
+    # Overlapping decodes leave the instruction boundary unverified, so each start of an overlap is a gap.
+    # The analysis still reads both, but cannot be proven over them.
+    active, overlapping = [], set()
+    for at, end in sorted((at, at + ins.size) for at, (ins, _, _) in graph.items()):
+        active = [(a, b) for a, b in active if b > at]
+        for a, _ in active:
+            overlapping.update((a, at))
+        active.append((at, end))
+    gaps.extend({"site": at, "reason": OVERLAP} for at in sorted(overlapping))
     return graph, gaps, stopped
 
 
@@ -636,7 +656,7 @@ def successors(flow, at, ins, ops, targets):
         return [(s, flow) for s in targets]
     step = Step(flow, at)
     index, control = step.execute(ops)
-    if control is not None and any(i > index and i not in cs_idiom(ops) for i in range(len(ops))):
+    if control is not None and set(range(index + 1, len(ops))) - cs_idiom(ops):
         # The p-code loops or branches inside the instruction (a repeated string operation): what it
         # writes is unknown.
         cause = frozenset({(UNMODELLED, at, INSIDE)})
@@ -684,7 +704,8 @@ def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
     row, its offset is bounded, and the walk followed every transfer and stayed within its limit.
     ``bounds`` lists the sites that bounded the offset. ``reasons`` lists, each with its site, the
     causes of an unbounded offset and why the walk is not proven; it is empty exactly when
-    ``proven`` holds. ``unread`` gives the transfers the walk could not follow, ``widened`` the loop
+    ``proven`` holds. ``unread`` gives the transfers the walk could not follow and the starts of
+    instructions that overlap another decoded one, ``widened`` the loop
     heads that widened, and ``instructions`` how many instructions the walk read.
     """
     if image.flat:
@@ -704,6 +725,45 @@ def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
             or any(operand.type == X86_OP_IMM for operand in ins.operands)):
         raise ValueError(f"dispatch site {site} must decode as a computed jump or call")
     graph, gaps, stopped = routine_graph(image, start, site, list(through), limit)
+    # A start that does not decode is a gap, and the walk reaches nothing.
+    states, widened = {}, set()
+    if start in graph:
+        states, widened, over = fixpoint(graph, start, passes)
+        stopped = stopped or over
+    result = {"start": start, "site": site, "reached": site in states, "proven": False, "table": None,
+              "bounds": [], "reasons": [], "unread": gaps, "widened": sorted(widened),
+              "instructions": len(graph), "instructionLimitReached": stopped}
+    found = []
+    if site in states:
+        flow = states[site].copy()
+        flow.drop_below_stack()
+        step = Step(flow, site)
+        step.execute(graph[site][1])
+        rows = {(address[0], id(address[1])) for address, _ in step.loads if address is not None}
+        if len(rows) == 1 and all(address is not None for address, _ in step.loads):
+            (name, offset, _), _ = step.loads[0]
+            width = max(address[2] + size for address, size in step.loads)
+            result["table"] = {"segment": LIFTER.register(False, *name) if name else None, "width": width,
+                               "offset": offset.range.report()}
+            if bounded(offset.range):
+                result["bounds"] = bound_sites(offset.why)
+            else:
+                found = reasons(offset.why) or [{"reason": NO_BOUND, "site": start}]
+        else:
+            found = [{"reason": NO_TABLE, "site": site}]
+    else:
+        found = [{"reason": NOT_REACHED, "site": site}]
+    found += [{"reason": UNREAD, "site": g["site"], "detail": g["reason"]} for g in gaps]
+    if stopped:
+        found.append({"reason": LIMIT, "site": start})
+    result["reasons"] = found
+    result["proven"] = not found
+    return result
+
+
+def fixpoint(graph, start, passes):
+    """The state before each site ``graph`` reaches from ``start``, the loop heads that widened, and
+    whether the evaluation cap stopped the walk."""
     order, heads = loop_heads(graph, start)
     # The latest state each edge carries; the routine's entry is an edge from None.
     predecessors = {at: [] for at in graph}
@@ -714,7 +774,7 @@ def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
                 predecessors[s].append(at)
     edges = {(None, start): Flow(start)}
     states, updates, widened = {start: Flow(start)}, {}, set()
-    queue, queued, evaluations = [(0, start)], {start}, 0
+    queue, queued, evaluations, stopped = [(0, start)], {start}, 0, False
     while queue:
         evaluations += 1
         if evaluations > EVALUATIONS:
@@ -747,32 +807,4 @@ def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
             if successor not in queued:
                 heapq.heappush(queue, (order[successor], successor))
                 queued.add(successor)
-    result = {"start": start, "site": site, "reached": site in states, "proven": False, "table": None,
-              "bounds": [], "reasons": [], "unread": gaps, "widened": sorted(widened),
-              "instructions": len(graph), "instructionLimitReached": stopped}
-    found = []
-    if site in states:
-        flow = states[site].copy()
-        flow.drop_below_stack()
-        step = Step(flow, site)
-        step.execute(graph[site][1])
-        rows = {(address[0], id(address[1])) for address, _ in step.loads if address is not None}
-        if len(rows) == 1 and all(address is not None for address, _ in step.loads):
-            (name, offset, _), _ = step.loads[0]
-            width = max(address[2] + size for address, size in step.loads)
-            result["table"] = {"segment": LIFTER.register(False, *name) if name else None, "width": width,
-                               "offset": offset.range.report()}
-            if bounded(offset.range):
-                result["bounds"] = bound_sites(offset.why)
-            else:
-                found = reasons(offset.why) or [{"reason": NO_BOUND, "site": start}]
-        else:
-            found = [{"reason": NO_TABLE, "site": site}]
-    else:
-        found = [{"reason": NOT_REACHED, "site": site}]
-    found += [{"reason": UNREAD, "site": g["site"], "detail": g["reason"]} for g in gaps]
-    if stopped:
-        found.append({"reason": LIMIT, "site": start})
-    result["reasons"] = found
-    result["proven"] = not found
-    return result
+    return states, widened, stopped

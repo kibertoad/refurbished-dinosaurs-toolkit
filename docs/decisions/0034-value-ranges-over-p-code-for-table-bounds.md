@@ -71,7 +71,9 @@ The engine has no analysis that joins values across paths. `x86/values.py`, `mac
    guard does not bound an unsigned table offset anyway. An edge that no value can take is not
    walked. A dispatch jump continues at the rows its caller gives, and a dispatch call at its
    return site. Paths that enter the routine's code other than at its start are not read; the
-   caller has to show that none exists.
+   caller has to show that none exists. Two walked instructions that overlap leave the instruction
+   boundary unverified, so both starts are reported as transfers the walk could not follow and the
+   range is not proven.
 
 6. **Memory and calls are unknown unless shown otherwise.** A value in memory is unknown, except
    a stack slot at a known offset from the routine's entry stack pointer that a store on every path
@@ -88,14 +90,15 @@ The engine has no analysis that joins values across paths. `x86/values.py`, `mac
    dispatch site, the bounding sites and the assumptions the derivation rests on (the table's
    segment and location stay declared). A range is bounded when it holds at most 256 values, the
    most rows a declared table may have. Each value carries the sites that bounded it, or the
-   causes that left it unbounded, so without a proof the site stays unresolved with its reasons,
-   each at a site: no bound (a register value from the routine's entry), a path that skips the
-   bound (at the merge, with the bounding sites), an operation without a transfer function, an
-   operation that faults (a constant division by zero), an unknown memory read, a call or
-   interrupt not walked, the widening limit, a transfer the walk could not follow, the instruction
-   limit, or an index that does not step by the table stride. A declared count larger than the
-   proven range is refused, because the extra rows cannot be read. A smaller one is followed, and the report lists the
-   rows it leaves out.
+   causes that left it unbounded. A byte that may hold any value bounds nothing, so after
+   `mov bl, [si]; xor bh, bh` the bounding site of BX is the `xor`. Without a proof the site stays
+   unresolved with its reasons, each at a site: no bound (a register value from the routine's
+   entry), a path that skips the bound (at the merge, with the bounding sites), an operation without
+   a transfer function, an operation that faults (a division by a constant zero), an unknown memory
+   read, a call or interrupt not walked, the widening limit, a transfer the walk could not follow,
+   the instruction limit, or an index that does not step by the table stride. A declared count
+   larger than the proven range is refused, because the extra rows cannot be read. A smaller one is
+   followed, and the report lists the rows it leaves out.
 
 8. **It applies wherever tables are read.** `reach`, `inventory-check` and the path commands that
    read `indirectJumps` take derived counts, and declared computed call targets take them once

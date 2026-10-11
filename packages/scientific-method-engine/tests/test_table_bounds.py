@@ -13,8 +13,8 @@ from unicorn import x86_const as U
 
 from scientific_method_engine.x86.image import Image
 from scientific_method_engine.x86.table_bounds import (CALL, FAULT, INSIDE, INTERRUPT, LIMIT, MEMORY, NO_BOUND,
-                                                       NO_TABLE, NOT_REACHED, SKIPPED, UNMODELLED, UNREAD, WIDENED,
-                                                       table_bound)
+                                                       NO_TABLE, NOT_REACHED, OVERLAP, SKIPPED, UNMODELLED, UNREAD,
+                                                       WIDENED, table_bound)
 
 SEGMENT, STACK, DATA = 0x1000, 0x2000, 0x3000
 
@@ -149,7 +149,8 @@ class PositiveControls(unittest.TestCase):
         # mov bl, [si]; xor bh, bh; shl bx, 1; jmp cs:[bx+0x40]
         code = "8a1c 30ff d1e3 | 2eff6740"
         result = bound(code)
-        self.assertEqual((result["proven"], table(result)), (True, (0x40, 0x23E, 2)))
+        # The clear of BH bounds BX; the byte load that may hold any value bounds nothing.
+        self.assertEqual((result["proven"], table(result), result["bounds"]), (True, (0x40, 0x23E, 2), [2]))
         check_oracle(self, code, result)
 
     def test_a_loop_bounded_by_its_compare_settles_with_enough_passes(self):
@@ -252,6 +253,15 @@ class Unproven(unittest.TestCase):
         result = bound("b80500 31d2 31c9 f7f1 89c3 d1e3 | ff5740 c3")
         self.assertIn({"reason": FAULT, "site": 7, "operation": "INT_DIV"}, result["reasons"])
         self.assertNotIn(UNMODELLED, [row["reason"] for row in result["reasons"]])
+        # mov ax, [si]; xor dx, dx; xor cx, cx; div cx: a zero divisor faults whatever the dividend.
+        result = bound("8b04 31d2 31c9 f7f1 89c3 d1e3 | ff5740 c3")
+        self.assertIn({"reason": FAULT, "site": 6, "operation": "INT_DIV"}, result["reasons"])
+
+    def test_constant_inputs_to_an_operation_without_a_transfer_function_do_not_fault(self):
+        # push bp; mov bp, sp; sub sp, 2; fld1; fistp word [bp-2]; mov bx, [bp-2]; shl bx, 1; call [bx+0x40]
+        result = bound("55 89e5 83ec02 d9e8 df5efe 8b5efe d1e3 | ff5740 c3")
+        self.assertIn({"reason": UNMODELLED, "site": 6, "operation": "FLOAT_INT2FLOAT"}, result["reasons"])
+        self.assertNotIn(FAULT, [row["reason"] for row in result["reasons"]])
 
     def test_a_repeated_string_operation_makes_what_it_writes_unknown(self):
         # mov cx, [si]; and cx, 3; rep movsb; mov bx, cx; shl bx, 1; call [bx+0x40]; ret
@@ -286,6 +296,26 @@ class Unproven(unittest.TestCase):
         result = bound(MASK_SHIFT, limit=2)
         self.assertEqual((result["proven"], result["instructionLimitReached"]), (False, True))
         self.assertIn((LIMIT, 0), reasons(result))
+
+    def test_an_edge_out_of_declared_code_is_not_the_instruction_limit(self):
+        # and bx, 3; call [bx+0x40], at the end of the region: its return site is unmapped.
+        data = bytes.fromhex("83e303ff5740")
+        code = Image(data, {"regions": [{"name": "code", "start": 0, "end": len(data), "segment": SEGMENT, "ip": 0,
+                                         "entries": [0], "evidence": "synthetic declared code extent"}], "entry": 0})
+        result = table_bound(code, 0, 3, limit=2)
+        self.assertEqual((result["instructionLimitReached"], reasons(result)), (False, [(UNREAD, 6)]))
+
+    def test_overlapping_instructions_are_not_proven(self):
+        # lea bx, [bx]; je 1 (into the lea, which reads there as pop ds); and bx, 3; call [bx+0x40]; ret
+        result = bound("8d1f 74fd 83e303 | ff5740 c3")
+        self.assertEqual(result["proven"], False)
+        self.assertEqual([(g["site"], g["reason"]) for g in result["unread"]], [(0, OVERLAP), (1, OVERLAP)])
+        self.assertEqual(reasons(result), [(UNREAD, 0), (UNREAD, 1)])
+
+    def test_a_start_that_does_not_decode(self):
+        # 0f ff, which pypcode and Capstone decode to different lengths; and bx, 3; call [bx+0x40]; ret
+        result = table_bound(image("0fff 83e303 | ff5740 c3"), 0, 5)
+        self.assertEqual((result["reached"], reasons(result)), (False, [(NOT_REACHED, 5), (UNREAD, 0)]))
 
     def test_a_dispatch_the_start_does_not_reach(self):
         # ret; call [bx+0x40]; ret
