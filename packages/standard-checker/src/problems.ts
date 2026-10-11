@@ -13,7 +13,7 @@ type UpTo<N extends number, Seen extends 0[] = [0]> =
  * Each count is the last rule the standard numbers in that section, so a label that names no rule
  * does not compile. Raise a count, or add a section, when the standard numbers more rules.
  */
-export type Rule = `IDENTIFIERS-${UpTo<7>}` | `STATUS-${UpTo<41>}` | `ENTRY-TYPES-${UpTo<19>}`;
+export type Rule = `IDENTIFIERS-${UpTo<7>}` | `STATUS-${UpTo<41>}` | `ENTRY-TYPES-${UpTo<22>}`;
 
 /**
  * Records a problem with file (or with the spec as a whole when file is null). A problem that breaks

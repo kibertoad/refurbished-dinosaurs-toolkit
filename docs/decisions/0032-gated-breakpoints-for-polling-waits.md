@@ -1,6 +1,7 @@
 # ADR 0032: gated breakpoints for waits on a polling guest
 
-Status: accepted. Adds `GatedBreakpoint` to `dinorefurb-dosbox-session`.
+Status: accepted. Adds `GatedBreakpoint` to `dinorefurb-dosbox-session`. Decisions 4 and 5 are
+amended by [ADR 0037](0037-gated-breakpoints-in-protected-mode.md).
 
 ## Context
 
