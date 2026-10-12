@@ -44,7 +44,7 @@ from typing import Any
 FEATURES = ["journal", "ops", "if_state_seq", "request_ids", "breakpoint_once", "quit", "write_expect", "run", "program_stops", "build", "screen_attrs"]
 # The fields of a control request's body; rust-dos refuses any other.
 CONTROL_FIELDS = {"count", "until", "until_ms", "timeout_ms", "command", "stop_at_entry", "queue", "wait"}
-BUILD = {"commit": "4ad33f6a2" + "0" * 31, "commit_short": "4ad33f6a2", "dirty": False}
+BUILD = {"commit": "81076c73d85c55abf8e6b0229291adf729f134c5", "commit_short": "81076c7", "dirty": False}
 SEGMENT = 0x05AA
 
 

@@ -56,11 +56,11 @@ RUST_DOS_RECORD_FORMAT = "dinorefurb-dosbox-session.rust-dos-record/1"
 RUST_DOS_API_VERSION = 1
 
 #: The supported upstream release for Windows x86-64 sessions.
-RUST_DOS_PINNED_TAG = "v1.7.0"
+RUST_DOS_PINNED_TAG = "v1.7.1"
 
-#: SHA-256 of ``rust-dos.exe`` in the release's ``rust-dos-v1.7.0-windows-x86_64.zip``.
+#: SHA-256 of ``rust-dos.exe`` in the release's ``rust-dos-v1.7.1-windows-x86_64.zip``.
 #: Pass this as ``RustDosSettings.emulator_sha256`` to require the released executable.
-RUST_DOS_PINNED_SHA256 = "ee2fa0aaaab5628e982ff6edc834c84a245bbb384d8639bcf634177e27177354"
+RUST_DOS_PINNED_SHA256 = "6baf1aba58c948bb6eb72f12c0009ddc0e07d3d1d9ab97d3f3fd9f1d3c44c7f9"
 
 #: The debug server features the session relies on. A server that lacks one is refused. ``build``
 #: puts the commit the emulator was built from in ``/api/version``, which the session record keeps.

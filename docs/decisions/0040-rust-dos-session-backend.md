@@ -31,9 +31,9 @@ what a session relies on. Its `main` (kibertoad/rust-dos, 0f21e03) now has:
 - strict-match save states, which are refused unless the machine is paused and quiet and its
   hardware and media match, and which reset the debugger on load.
 
-These features shipped in upstream v1.7.0. Later releases added a `queue` option to `run`, which
-takes the command line while the prompt is busy and runs it once the batch file has ended, and
-`build` in `/api/version` with the git commit the executable was built from. The package exports
+These features shipped in upstream v1.7.0, together with a `queue` option to `run`, which takes
+the command line while the prompt is busy and runs it once the batch file has ended, and `build`
+in `/api/version` with the git commit the executable was built from. The package exports
 the pinned release's tag and the Windows x86-64 ZIP executable's SHA-256; its README records the
 archive hash and source commit.
 
