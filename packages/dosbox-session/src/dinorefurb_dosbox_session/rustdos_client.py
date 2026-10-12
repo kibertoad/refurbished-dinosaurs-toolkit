@@ -202,6 +202,27 @@ class RustDosClient:
         """The text screen. The server refuses it (409) in a graphics mode."""
         return self.get("/api/screen/text", format="text")
 
+    def screen(self) -> dict[str, Any]:
+        """``/api/screen/text`` as JSON: the rows in ``lines``, and their colours in ``attrs``.
+
+        ``attrs`` has, for each row, the runs of cells that share an attribute, as
+        ``{"col", "len", "attr"}`` with the attribute in hex; ``col`` and ``len`` count characters
+        of the row's line. A highlighted menu item is usually a run of its own. ``blink`` says
+        whether attribute bit 7 blinks the character (else it selects a bright background) and
+        ``mono`` whether the adapter is an MDA or Hercules. The server refuses it (409) in a
+        graphics mode.
+        """
+        return self.get("/api/screen/text")
+
+    def stats(self) -> dict[str, Any]:
+        """``/api/stats``: the emulator's execution speed over about the last second.
+
+        Its ``frame`` object covers the last quarter second: ``emulated_speed`` is emulated
+        seconds per wall-clock second, near 1 while the guest runs at full speed, and ``fps`` the
+        frames the program draws a second.
+        """
+        return self.get("/api/stats")
+
     def screenshot(self) -> bytes:
         """The screen as a PNG."""
         return self.get("/api/screenshot")

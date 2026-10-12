@@ -56,14 +56,25 @@ RUST_DOS_RECORD_FORMAT = "dinorefurb-dosbox-session.rust-dos-record/1"
 RUST_DOS_API_VERSION = 1
 
 #: The supported upstream release for Windows x86-64 sessions.
-RUST_DOS_PINNED_TAG = "v1.7.0"
+RUST_DOS_PINNED_TAG = "v1.7.1"
 
-#: SHA-256 of ``rust-dos.exe`` in the release's ``rust-dos-v1.7.0-windows-x86_64.zip``.
+#: SHA-256 of ``rust-dos.exe`` in the release's ``rust-dos-v1.7.1-windows-x86_64.zip``.
 #: Pass this as ``RustDosSettings.emulator_sha256`` to require the released executable.
-RUST_DOS_PINNED_SHA256 = "ee2fa0aaaab5628e982ff6edc834c84a245bbb384d8639bcf634177e27177354"
+RUST_DOS_PINNED_SHA256 = "6baf1aba58c948bb6eb72f12c0009ddc0e07d3d1d9ab97d3f3fd9f1d3c44c7f9"
 
-#: The debug server features the session relies on. A server that lacks one is refused.
-RUST_DOS_FEATURES = ("journal", "ops", "if_state_seq", "request_ids", "write_expect", "run", "program_stops", "quit")
+#: The debug server features the session relies on. A server that lacks one is refused. ``build``
+#: puts the commit the emulator was built from in ``/api/version``, which the session record keeps.
+RUST_DOS_FEATURES = (
+    "journal",
+    "ops",
+    "if_state_seq",
+    "request_ids",
+    "write_expect",
+    "run",
+    "program_stops",
+    "quit",
+    "build",
+)
 
 #: The files a rust-dos session writes in its run directory, besides ``drive-c``, ``session.json``,
 #: ``events.jsonl`` and ``cleanup-diagnostic.txt``.
@@ -228,13 +239,6 @@ def _check_config(settings: RustDosSettings) -> None:
     command = " ".join((settings.target.command, *settings.target.arguments))
     if not settings.target.command or any(c in command for c in "\r\n\x00"):
         raise ConfigurationRefused(f"The target's command line {command!r} must be one line.")
-    if config.deterministic and (not command.isascii() or "%" in command):
-        # AUTOEXEC.BAT starts the target in this mode: it is written as ASCII, and a batch file
-        # replaces %...% with variables and parameters, so the target would get another command line.
-        raise ConfigurationRefused(
-            f"The target's command line {command!r} goes into AUTOEXEC.BAT in a deterministic run, so it must be "
-            "ASCII without %."
-        )
 
 
 def _program_name(command: str) -> str:
@@ -332,11 +336,9 @@ class RustDosSession(OwnedRun):
             self._launch(emulator)
             self._connect()
             self._mount_media()
-            if settings.emulator_config.deterministic:
-                self._start_from_autoexec()
-            else:
+            if not settings.emulator_config.deterministic:
                 self._wait_for_marker()
-                self._start_with_run()
+            self._start_with_run()
             self._write_record()
         except BaseException as error:
             self._end_log(f"The session did not start: {error}")
@@ -356,10 +358,6 @@ class RustDosSession(OwnedRun):
             if any(path.name.upper() == owned for path in self.drive_c.iterdir()):
                 raise RunDirectoryRefused(f"prepare_drive wrote {owned}, which the session writes.")
         lines = ["@echo off", f"echo {self.token}> C:\\{READINESS_MARKER}"]
-        if config.deterministic:
-            # The machine starts paused before this file runs, and rust-dos takes no run command
-            # until it has ended, so the file starts the target and a program_start stop catches it.
-            lines.append(self._command_line())
         (self.drive_c / AUTOEXEC).write_bytes(("\r\n".join(lines) + "\r\n").encode("ascii", errors="strict"))
         arguments = [
             str(emulator),
@@ -481,55 +479,40 @@ class RustDosSession(OwnedRun):
         self._write_record()
 
     def _start_with_run(self) -> None:
-        """Runs the target at the DOS prompt, stopped at its entry."""
-        deadline = time.monotonic() + self.settings.readiness_timeout
+        """Runs the target at the DOS prompt, stopped at its entry.
+
+        The run is queued (``"queue": true``): the prompt takes the command line once
+        ``AUTOEXEC.BAT`` has ended. In a normal run the marker is already written and the batch
+        file may still be ending. A deterministic machine starts paused before the batch file runs,
+        and the queued run resumes it, so the target starts at the same emulated moment every time.
+        """
+        timeout = self.settings.readiness_timeout
         command = self._command_line()
-        while True:
-            try:
-                reply = self.client.request("POST", "/api/control/run", body={"command": command, "stop_at_entry": True})
-                break
-            except ServerRefused as error:
-                # AUTOEXEC.BAT may still be ending after it wrote the marker.
-                if error.status != 409 or not isinstance(error.body, dict) or "busy" not in str(error.body.get("error")):
-                    raise
-                self._deadline_passed(deadline, "the DOS prompt took the target's command")
-                time.sleep(0.05)
+        if self.settings.emulator_config.deterministic:
+            status = self.client.status()
+            stop = status.get("stop")
+            if status.get("paused") is not True or not isinstance(stop, dict) or stop.get("reason") != "startup":
+                raise SessionError(f"The deterministic machine did not start paused: {status.get('stop')!r}.")
+        body = {"command": command, "queue": True, "stop_at_entry": True, "timeout_ms": int(timeout * 1000)}
+        try:
+            reply = self.client.request("POST", "/api/control/run", body=body, timeout=timeout + 10)
+        except ServerRefused as error:
+            if error.status == 504:
+                raise ReadinessNotObserved(f"The target did not reach its entry within {timeout} s.") from error
+            raise
         self._seen(reply)
         # The reply carries the journal's paused entry as ``stop``, with its own number.
         stop = reply.field("stop") if isinstance(reply.field("stop"), dict) else reply.body
         if not isinstance(stop, dict):
             raise SessionError(f"The run command's reply carries no stop: {reply.body!r}.")
-        if stop.get("reason") != "program_start" or not _started_target(stop, command):
+        if stop.get("reason") != "program_start" or not _started_target(stop, self.settings.target.command):
             raise SessionError(
                 f"The target did not stop at its entry: reason {stop.get('reason')!r}, program {stop.get('program')!r}."
             )
-        self.entry = self.stop = stop
-
-    def _start_from_autoexec(self) -> None:
-        """Lets the paused machine run AUTOEXEC.BAT to the target's entry, in deterministic mode."""
-        client = self.client
-        status = client.status()
-        stop = status.get("stop")
-        if status.get("paused") is not True or not isinstance(stop, dict) or stop.get("reason") != "startup":
-            raise SessionError(f"The deterministic machine did not start paused: {status.get('stop')!r}.")
-        client.break_on(program_start=True)
-        reply = client.request("POST", "/api/control/resume", body={})
-        self._seen(reply)
-        op = reply.field("op")
-        if not isinstance(op, int):
-            raise SessionError(f"The resume to the target's entry started no operation: {reply.body!r}.")
-        observation = self._observe(client, op, self.settings.readiness_timeout, 500)
-        if observation.pending:
-            raise ReadinessNotObserved(
-                f"The target did not reach its entry within {self.settings.readiness_timeout} s."
-            )
-        stop = observation.stop
-        if stop is None or stop.get("reason") != "program_start" or not _started_target(stop, self._command_line()):
-            raise SessionError(f"The target did not stop at its entry: {observation.detail!r}.")
-        if not self._marker_written():
-            raise ReadinessNotObserved(f"The target started before the guest wrote {READINESS_MARKER}.")
-        self.readiness = "observed"
-        client.break_on(program_start=False)
+        if self.readiness != "observed":
+            if not self._marker_written():
+                raise ReadinessNotObserved(f"The target started before the guest wrote {READINESS_MARKER}.")
+            self.readiness = "observed"
         self.entry = self.stop = stop
 
     def _new_client(self) -> RustDosClient:

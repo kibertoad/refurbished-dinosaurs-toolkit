@@ -427,13 +427,13 @@ so there is no source build, no client to import and no console to hide. The pac
 API with the standard library and imports nothing of rust-dos.
 
 The session needs a rust-dos with debug server API version 1 and the features `journal`, `ops`,
-`if_state_seq`, `request_ids`, `write_expect`, `run`, `program_stops` and `quit`
+`if_state_seq`, `request_ids`, `write_expect`, `run`, `program_stops`, `quit` and `build`
 (`RUST_DOS_FEATURES`). The supported release is
-[v1.7.0](https://github.com/dividebysandwich/rust-dos/releases/tag/v1.7.0)
-(`RUST_DOS_PINNED_TAG`), commit `5b7053fd618abcc0f7ea15784e6c881294cc0da3`.
-Download `rust-dos-v1.7.0-windows-x86_64.zip` and keep `SDL2.dll` beside `rust-dos.exe`.
-The archive's SHA-256 is `122aec9895bf45bbcc3086e5db294b1d432a4eef5b84044aa103a4dcd9238309`;
-the executable's is `ee2fa0aaaab5628e982ff6edc834c84a245bbb384d8639bcf634177e27177354`
+[v1.7.1](https://github.com/dividebysandwich/rust-dos/releases/tag/v1.7.1)
+(`RUST_DOS_PINNED_TAG`), commit `81076c73d85c55abf8e6b0229291adf729f134c5`.
+Download `rust-dos-v1.7.1-windows-x86_64.zip` and keep `SDL2.dll` beside `rust-dos.exe`.
+The archive's SHA-256 is `0fb50292b10aa60c66e4348b68c28f0b23341b746f754c2679c9fe9d5bd38231`;
+the executable's is `6baf1aba58c948bb6eb72f12c0009ddc0e07d3d1d9ab97d3f3fd9f1d3c44c7f9`
 (`RUST_DOS_PINNED_SHA256`). These hashes apply to that ZIP, not the Win7, MSI or libretro builds.
 Pass the executable pin explicitly; `emulator_sha256=None` still permits other builds that
 satisfy the API and feature checks, and the session records their actual hash.
@@ -469,9 +469,8 @@ Entering `RustDosSession` (or calling `start()`):
 1. Refuses a platform other than Windows, a missing emulator, an emulator whose SHA-256 differs
    from `emulator_sha256` when that is given (`EmulatorRefused`), options the session sets itself
    in `emulator_arguments` (`ConfigurationRefused`), a deterministic run without a numeric speed,
-   media on C: or two media on one letter, a target command line with a line break, a
-   deterministic target command line that is not ASCII or holds `%` (it goes into
-   `AUTOEXEC.BAT`, which would expand it), and a run directory that is not empty. With
+   media on C: or two media on one letter, a target command line with a line break, and a run
+   directory that is not empty. With
    `event_log` set, hashes the named modules.
 2. Takes the run lock, the same one `DosboxSession` takes, or refuses with `LockHeld`.
 3. Creates `drive-c` empty in the run directory and calls `prepare_drive` on it. A prepared drive
@@ -488,11 +487,14 @@ Entering `RustDosSession` (or calling `start()`):
    refused the same way.
 6. Mounts each medium read-only through the server (an `iso` as a CD-ROM drive, any CD image
    rust-dos reads; a `directory` as a hard disk) and fails unless the server reports it read-only.
-7. Waits for the readiness marker, then runs the target at the DOS prompt with `stop_at_entry`.
-   A deterministic machine starts paused before `AUTOEXEC.BAT` runs and takes no run command until
-   the batch file ends, so in that mode `AUTOEXEC.BAT` starts the target after the marker and a
-   `program_start` stop catches it. Either way the start fails unless the machine stops at the
-   entry of a program with the target's file name. `session.entry` holds that stop.
+7. Runs the target at the DOS prompt with `stop_at_entry` and `queue`, so the prompt takes the
+   command line once `AUTOEXEC.BAT` has ended, and waits up to `readiness_timeout` for its entry
+   (`ReadinessNotObserved` after that). In a normal run the session first waits for the readiness
+   marker. A deterministic machine starts paused before `AUTOEXEC.BAT` runs; the queued run
+   resumes it, so the target starts at the same emulated moment on every run, and the start fails
+   unless the marker was written by then. The command line reaches the prompt as given. Either way
+   the start fails unless the machine stops at the entry of a program with the target's file name.
+   `session.entry` holds that stop.
 
 Any failure cleans up as leaving does, then raises.
 
@@ -504,7 +506,8 @@ the run lock once it has. A process that outlives termination keeps the lock and
 
 `session.json` has the format `dinorefurb-dosbox-session.rust-dos-record/1` and holds `backend`
 (`rust-dos`), `emulator` (path, SHA-256 and the expected SHA-256 or `null`), `server` (the
-`/api/version` answer, with the instance ID that is new at every start), `endpoint`
+`/api/version` answer, with the instance ID that is new at every start and `build`, the git commit
+the executable was built from and whether its tree was dirty), `endpoint`
 (`127.0.0.1:<port>`), `arguments` (the launch command line), `emulator_log`, `run_lock`,
 `owner_process`, `emulator_process`, `host_sound`, `window` (`hidden` or `shown`),
 `deterministic` (the speed and start time, or `null`), `media` (each drive as the server reported
@@ -519,9 +522,14 @@ server copies it into each journal entry the request causes. A reply with a stat
 raises `ServerRefused` with the status, the body and, for a refused precondition, its name. A
 reply cut short or unreadable raises `ConnectionError`, like a dropped connection. The
 client offers reads (`status`, `registers`, `read_memory`, `disassemble`, `screen_text`,
-`screenshot`, `drives`, `log`), breakpoints and watchpoints (`set_breakpoint` with `once`,
+`screen`, `screenshot`, `stats`, `drives`, `log`), breakpoints and watchpoints (`set_breakpoint` with `once`,
 `break_on` for `program_start` and `program_exit`), the journal and operations. `request` sends any
 other call.
+
+`screen()` returns the text screen as JSON with each row's attribute runs in `attrs`
+(`{"col", "len", "attr"}`), which shows the highlighted item of a text-mode menu that the text
+alone does not. `stats()` returns `/api/stats`, whose `frame.emulated_speed` stays near 1 while the
+guest runs at full speed.
 
 Requests that resume or change the guest go through the session:
 
@@ -593,7 +601,7 @@ Gated breakpoints are offered for DOSBox-X sessions only, and neither backend of
 | `EmulatorRefused` | A rust-dos executable has another hash than `emulator_sha256`, or its debug server is not rust-dos, speaks another API version or lacks a feature the session relies on. |
 | `ServerRefused` | The rust-dos debug server answered a request with a status of 400 or above. `status`, `body` and `precondition` say why. |
 | `EmulatorExited` | The owned emulator exited while the session needed it. |
-| `ReadinessNotObserved` | The guest did not write its readiness marker in time. |
+| `ReadinessNotObserved` | The guest did not write its readiness marker in time, or a rust-dos target did not reach its entry in time. |
 | `CapabilityRefused` | An operation needs a capability the server did not report. Not sent. |
 | `OperationPending` | A continuation was asked for while another operation is pending. |
 | `GateRefused` | A gated breakpoint refused its addresses, a protected-mode guest without a resolver, a guest in another mode than the gate opened in, an address it cannot place, or a breakpoint it did not create at its addresses; or it stopped because a breakpoint request of its own failed, a resolver moved one of its addresses, or the session changed the guest after a failed continue request. Raised before a continuation, nothing was sent. |

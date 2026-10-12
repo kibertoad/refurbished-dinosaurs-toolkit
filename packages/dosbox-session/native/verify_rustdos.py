@@ -1,12 +1,13 @@
 """The owner-local native check for rust-dos sessions (ADR 0040).
 
 Runs a real rust-dos, so it never runs in CI. It generates a synthetic DOS program, starts it in an
-owned session, sets a breakpoint, continues to it and reads the registers there. At the breakpoint
+owned session with an argument on its command line, reads the text screen with its attributes,
+sets a breakpoint, continues to it and reads the registers there. At the breakpoint
 it makes a guarded write to a word the program loads next, reads it back, and steps over the load
 to check that the guest sees the new value. It then checks that the server refuses a write whose
 state precondition is stale, and runs the program to its exit. With ``--deterministic`` the
-session runs in rust-dos's deterministic mode, which starts the target from ``AUTOEXEC.BAT``. It
-prints a JSON result and exits 0 when every check passes, 1 otherwise.
+session runs in rust-dos's deterministic mode, where the queued run resumes the machine paused at
+startup. It also checks that the server reports the commit it was built from. It prints a JSON result and exits 0 when every check passes, 1 otherwise.
 
     python native/verify_rustdos.py --emulator <rust-dos.exe> --run-directory <new dir> [--deterministic]
 """
@@ -63,7 +64,7 @@ def main() -> int:
         emulator=arguments.emulator,
         emulator_sha256=arguments.emulator_sha256,
         run_directory=arguments.run_directory,
-        target=Target(PROGRAM),
+        target=Target(PROGRAM, ("/X",)),
         prepare_drive=lambda drive: (drive / PROGRAM).write_bytes(CODE),
         emulator_config=config,
         lock_path=arguments.lock,
@@ -73,6 +74,9 @@ def main() -> int:
         client = session.client
         assert session.entry is not None
         checks["entry"] = session.entry.get("cs_ip")
+        screen = client.screen()
+        attrs, lines = screen.get("attrs"), screen.get("lines")
+        checks["screen_attrs"] = isinstance(attrs, list) and isinstance(lines, list) and len(attrs) == len(lines)
         cs = str(session.entry["registers"]["cs"])
         client.set_breakpoint(f"{cs}:{BREAKPOINT_OFFSET:04X}")
         observation = session.observe(session.continue_(), timeout=arguments.timeout)
@@ -113,8 +117,12 @@ def main() -> int:
                 checks["exit"] = None if ended.stop is None else ended.stop.get("exit")
         record = session.record()
 
+    build = (record["server"] or {}).get("build")
+    checks["build_commit"] = build.get("commit") if isinstance(build, dict) else None
     passed = (
-        checks.get("observation") == "completed"
+        isinstance(checks.get("build_commit"), str)
+        and checks.get("screen_attrs") is True
+        and checks.get("observation") == "completed"
         and checks.get("stop_reason") == "breakpoint"
         and checks.get("ip") == hex(BREAKPOINT_OFFSET)
         and all(checks.get(name) == hex(value) for name, value in EXPECTED.items())

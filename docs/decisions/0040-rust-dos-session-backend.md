@@ -31,8 +31,11 @@ what a session relies on. Its `main` (kibertoad/rust-dos, 0f21e03) now has:
 - strict-match save states, which are refused unless the machine is paused and quiet and its
   hardware and media match, and which reset the debugger on load.
 
-These features shipped in upstream v1.7.0. The package now exports the release tag and the
-Windows x86-64 ZIP executable's SHA-256; its README records the archive hash and source commit.
+These features shipped in upstream v1.7.0, together with a `queue` option to `run`, which takes
+the command line while the prompt is busy and runs it once the batch file has ended, and `build`
+in `/api/version` with the git commit the executable was built from. The package exports
+the pinned release's tag and the Windows x86-64 ZIP executable's SHA-256; its README records the
+archive hash and source commit.
 
 ## Decision
 
@@ -46,16 +49,17 @@ Windows x86-64 ZIP executable's SHA-256; its README records the archive hash and
    so rust-dos's GPL-2.0 licence does not reach it, and the caller passes no client factory.
 3. A session refuses a server that does not report API version 1 and every feature it relies on
    (`journal`, `ops`, `if_state_seq`, `request_ids`, `write_expect`, `run`, `program_stops`,
-   `quit`). The caller names the executable and may give its SHA-256, which the session then
-   requires. The session record holds the executable's hash and the server's version answer.
-   The supported release is v1.7.0. Callers pass `RUST_DOS_PINNED_SHA256` to require its Windows
+   `quit`, `build`). The caller names the executable and may give its SHA-256, which the session
+   then requires. The session record holds the executable's hash and the server's version answer,
+   with the commit it was built from. The supported release is v1.7.1. Callers pass `RUST_DOS_PINNED_SHA256` to require its Windows
    x86-64 release executable; an omitted hash still allows another compatible build.
 4. The target starts stopped at its entry. Readiness is the marker that the session's own
-   `AUTOEXEC.BAT` writes on C:, as for DOSBox-X; an answering server is not readiness. In normal
-   mode the session then starts the target with `run` and `stop_at_entry`. A deterministic machine
-   starts paused before `AUTOEXEC.BAT` runs and takes no `run` until the batch file has ended, so
-   in that mode `AUTOEXEC.BAT` starts the target after writing the marker, and a `program_start`
-   stop catches it. Either way the session checks that the stopped program is the target.
+   `AUTOEXEC.BAT` writes on C:, as for DOSBox-X; an answering server is not readiness. The session
+   starts the target with `run`, `stop_at_entry` and `queue`, so the command line runs once the
+   batch file has ended. In normal mode it waits for the marker first. A deterministic machine
+   starts paused before `AUTOEXEC.BAT` runs, and the queued run resumes it, so the target starts
+   at the same emulated moment on every run; the marker must be there when it stops. Either way the
+   session checks that the stopped program is the target.
 5. A guarded write reads the field, refuses unless its bytes hash to the expected value, then
    writes with `expect` (the bytes read) and `If-State-Seq` (the state they were read in), so the
    server refuses it if the machine moved or changed in between. The bytes the server reports
@@ -68,7 +72,9 @@ Windows x86-64 ZIP executable's SHA-256; its README records the archive hash and
    means the server did not take it.
 7. Gated breakpoints (ADR 0032, ADR 0037) and save states stay with `DosboxSession` for now. Save
    states wait on ADR 0028 and on a decision about writable drive contents, which no rust-dos state
-   keeps.
+   keeps. A rust-dos state saved and loaded with `check_files` records the sizes and SHA-256 of the
+   writable drives' files and refuses a strict-match load when they changed, which that decision
+   can build on.
 8. CI tests run against a stand-in rust-dos server on the Windows runner. An owner-local native
    check (`native/verify_rustdos.py`) runs a synthetic program on a real rust-dos in normal and
    deterministic mode before a release that changes process, transport or drive handling.
