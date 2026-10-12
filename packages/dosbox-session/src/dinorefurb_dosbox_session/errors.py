@@ -46,7 +46,8 @@ class EmulatorExited(SessionError):
 
 
 class ReadinessNotObserved(SessionError):
-    """The guest did not write its readiness marker before the readiness wait ran out."""
+    """The guest did not write its readiness marker, or a rust-dos target did not reach its entry, before
+    the readiness wait ran out."""
 
 
 class CapabilityRefused(SessionError):

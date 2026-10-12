@@ -86,6 +86,7 @@ class StartAndStop(RustDosCase):
         self.assertEqual(data["backend"], "rust-dos")
         self.assertEqual(len(data["emulator"]["sha256"]), 64)
         self.assertEqual(data["server"]["api_version"], 1)
+        self.assertEqual(data["server"]["build"]["commit_short"], "4ad33f6a2")
         self.assertNotIn("req", data["server"])
         self.assertRegex(data["endpoint"], r"^127\.0\.0\.1:\d+$")
         self.assertEqual(data["host_sound"], "muted")
@@ -110,9 +111,17 @@ class StartAndStop(RustDosCase):
         self.assertEqual(standin(settings)["sdl"], {})
         self.assertEqual((data["host_sound"], data["window"]), ("kept", "shown"))
 
-    def test_the_prompt_still_busy_with_the_batch_file_is_waited_out(self) -> None:
-        with RustDosSession(self.settings("busy-once")) as session:
+    def test_the_target_is_queued_behind_a_batch_file_that_is_still_ending(self) -> None:
+        with RustDosSession(self.settings("busy")) as session:
             self.assertIsNotNone(session.entry)
+            entries = session.client.journal(0)["entries"]
+        run = next(e for e in entries if e["type"] == "resumed" and e["kind"] == "run")
+        self.assertEqual((run["command"], run["queued"]), ("PROBE.COM", True))
+
+    def test_a_target_that_does_not_reach_its_entry_in_time_is_not_ready(self) -> None:
+        with self.assertRaisesRegex(ReadinessNotObserved, "did not reach its entry"):
+            RustDosSession(self.settings("no-entry")).start()
+        self.assertFalse(self.lock_path.exists())
 
     def test_media_are_mounted_read_only_and_recorded(self) -> None:
         cd = self.root / "cd"
@@ -130,7 +139,7 @@ class StartAndStop(RustDosCase):
             RustDosSession(self.settings("mount-writable", config=config)).start()
         self.assertFalse(self.lock_path.exists())
 
-    def test_a_deterministic_session_starts_the_target_from_the_batch_file(self) -> None:
+    def test_a_deterministic_session_queues_the_target_behind_the_batch_file(self) -> None:
         settings = self.settings(config=RustDosConfig(cycles="10000", deterministic=True, start_time="1995-01-02 03:04:05"))
         with RustDosSession(settings) as session:
             assert session.entry is not None
@@ -138,8 +147,11 @@ class StartAndStop(RustDosCase):
             self.assertEqual(session.readiness, "observed")
             self.assertFalse(session.client.breakpoints()["program_start"])
             autoexec = (session.drive_c / "AUTOEXEC.BAT").read_text(encoding="ascii").splitlines()
+            entries = session.client.journal(0)["entries"]
             data = record(session)
-        self.assertEqual(autoexec[-1], "PROBE.COM")
+        self.assertEqual(len(autoexec), 2)
+        run = next(e for e in entries if e["type"] == "resumed" and e["kind"] == "run")
+        self.assertEqual((run["command"], run["queued"]), ("PROBE.COM", True))
         self.assertEqual(data["deterministic"], {"cycles": "10000", "start_time": "1995-01-02 03:04:05"})
         arguments = data["arguments"]
         self.assertIn("--deterministic", arguments)
@@ -196,16 +208,20 @@ class Refusals(RustDosCase):
         with self.assertRaisesRegex(ConfigurationRefused, "must be one line"):
             RustDosSession(self.settings(target=Target("PROBE.COM", ("a\r\nDEL *.*",)))).start()
 
-    def test_a_deterministic_command_line_the_batch_file_would_change_is_refused(self) -> None:
+    def test_a_command_line_with_arguments_reaches_the_prompt_as_given_and_its_program_is_the_target(self) -> None:
         from dinorefurb_dosbox_session import Target
 
-        config = RustDosConfig(cycles="10000", deterministic=True)
-        for argument in ("%PATH%", "café"):
-            with self.subTest(argument=argument):
+        for config, argument in (
+            (RustDosConfig(), "/x"),
+            (RustDosConfig(cycles="10000", deterministic=True), "%PATH%"),
+            (RustDosConfig(cycles="10000", deterministic=True), "café"),
+        ):
+            with self.subTest(deterministic=config.deterministic, argument=argument):
                 settings = self.settings(config=config, target=Target("PROBE.COM", (argument,)))
-                with self.assertRaisesRegex(ConfigurationRefused, "ASCII without %"):
-                    RustDosSession(settings).start()
-                self.assertFalse(self.lock_path.exists())
+                with RustDosSession(settings) as session:
+                    entries = session.client.journal(0)["entries"]
+                run = next(e for e in entries if e["type"] == "resumed" and e["kind"] == "run")
+                self.assertEqual(run["command"], f"PROBE.COM {argument}")
 
     def test_a_prepared_drive_with_its_own_batch_file_is_refused(self) -> None:
         def prepare(drive: Path) -> None:
@@ -341,6 +357,13 @@ class Operations(RustDosCase):
             session._process.wait(timeout=10)
             with self.assertRaises(EmulatorExited):
                 session.observe(operation, timeout=5)
+
+    def test_the_client_reads_the_screen_with_its_attributes_and_the_speed(self) -> None:
+        with RustDosSession(self.settings()) as session:
+            screen = session.client.screen()
+            stats = session.client.stats()
+        self.assertEqual(screen["attrs"][0], [{"col": 0, "len": 80, "attr": "07"}])
+        self.assertEqual(stats["frame"]["emulated_speed"], 1.0)
 
     def test_every_request_carries_an_id_from_its_clients_own_namespace(self) -> None:
         with RustDosSession(self.settings()) as session:

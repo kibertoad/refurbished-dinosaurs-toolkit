@@ -15,7 +15,8 @@ Modes, comma-separated:
 - api-2: reports API version 2.
 - no-ops: leaves `ops` out of its features.
 - wrong-program: reports another program at the target's entry.
-- busy-once: refuses the first run command as the busy prompt does.
+- busy: AUTOEXEC.BAT is still ending, so a run that is not queued is refused as the busy prompt does.
+- no-entry: a run times out (504) before the program reaches its entry.
 - mount-writable: mounts media writable whatever the request asks.
 - bump-on-read: a change to the machine follows every memory read.
 - lying-old: reports replacing other bytes than a write found.
@@ -40,7 +41,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-FEATURES = ["journal", "ops", "if_state_seq", "request_ids", "breakpoint_once", "quit", "write_expect", "run", "program_stops"]
+FEATURES = ["journal", "ops", "if_state_seq", "request_ids", "breakpoint_once", "quit", "write_expect", "run", "program_stops", "build", "screen_attrs"]
+# The fields of a control request's body; rust-dos refuses any other.
+CONTROL_FIELDS = {"count", "until", "until_ms", "timeout_ms", "command", "stop_at_entry", "queue", "wait"}
+BUILD = {"commit": "4ad33f6a2" + "0" * 31, "commit_short": "4ad33f6a2", "dirty": False}
 SEGMENT = 0x05AA
 
 
@@ -150,10 +154,6 @@ class Machine:
         if match is not None:
             (self.drive_c / match.group(2)).write_text(match.group(1) + "\r\n", encoding="ascii")
 
-    def autoexec_command(self) -> str | None:
-        lines = [line for line in (self.drive_c / "AUTOEXEC.BAT").read_text(encoding="ascii").splitlines() if line]
-        return lines[2] if len(lines) > 2 else None
-
     # Requests
 
     def handle(self, method: str, path: str, query: dict[str, str], body: Any, req: int, tag: str | None, if_state: int | None) -> tuple[int, Any]:
@@ -163,10 +163,14 @@ class Machine:
             if "no-version" in self.modes:
                 raise Refusal(404, {"error": "not found"})
             features = [f for f in FEATURES if not ("no-ops" in self.modes and f == "ops")]
-            return 200, {"name": "rust-dos", "version": "1.6.0", "api_version": 2 if "api-2" in self.modes else 1, "instance": "5eed", "features": features}
+            return 200, {"name": "rust-dos", "version": "1.7.1", "build": BUILD, "api_version": 2 if "api-2" in self.modes else 1, "instance": "5eed", "features": features}
         if path == "/api/status":
             quiescent = self.paused and not self.pending_ops()
             return 200, {"paused": self.paused, "stop": self.stop if self.paused else None, "quiescent": quiescent, "program": "" if self.program is None else self.program["name"], "icount": self.icount, "seq": len(self.journal), **self.meta()}
+        if path == "/api/screen/text":
+            return 200, {"mode": 3, "cols": 80, "rows": 25, "lines": ["C:\>"] + [""] * 24, "attrs": [[{"col": 0, "len": 80, "attr": "07"}]] * 25, "blink": True, "mono": False}
+        if path == "/api/stats":
+            return 200, {"mips": 10.0, "emulated_mips": 10.0, "fps": 60.0, "frame": {"fps": 70.0, "emulated_speed": 1.0, "cpu_use": 12.0}}
         if path == "/api/registers":
             return 200, self.registers_json()
         if path.startswith("/api/drive/") and method == "PUT":
@@ -237,14 +241,22 @@ class Machine:
         raise Refusal(404, {"error": f"no route {path}"})
 
     def control(self, action: str, body: dict[str, Any], req: int, tag: str | None) -> tuple[int, Any]:
+        unknown = sorted(set(body) - CONTROL_FIELDS)
+        if unknown:
+            raise Refusal(400, {"error": f"unknown field `{unknown[0]}`"})
         if action == "run":
             self.runs += 1
-            if "busy-once" in self.modes and self.runs == 1:
-                raise Refusal(409, {"error": "the DOS prompt is busy with a program, a batch file, PAUSE, CHOICE or EDIT"})
-            if self.deterministic:
+            # A deterministic machine starts paused before AUTOEXEC.BAT runs.
+            busy = "busy" in self.modes or (self.deterministic and self.program is None)
+            if busy and not body.get("queue"):
                 raise Refusal(409, {"error": "the DOS prompt is busy with a program, a batch file, PAUSE, CHOICE or EDIT"})
             self.start_op(req, "run")
-            self.append("resumed", req, tag, {"kind": "run"}, op=req)
+            self.paused = False
+            self.append("resumed", req, tag, {"kind": "run", "command": body["command"], "queued": busy}, op=req)
+            if self.deterministic and self.program is None:
+                self.write_marker()
+            if "no-entry" in self.modes:
+                return 504, {"error": "timed out waiting for the program", "op": req}
             program = self.load_program(body["command"])
             self.append("program_started", None, None, {"program": program}, op=req)
             stop = self.pause_now("program_start", req, tag, op=req, program=program)
@@ -254,13 +266,7 @@ class Machine:
             self.start_op(req, "resume")
             self.paused = False
             self.append("resumed", req, tag, {"kind": "resume"}, op=req)
-            command = self.autoexec_command() if self.deterministic and self.program is None else None
-            if self.deterministic and self.program is None:
-                self.write_marker()
-                if command is not None and self.break_on["program_start"]:
-                    program = self.load_program(command)
-                    self.pause_now("program_start", req, tag, op=req, program=program)
-            elif "until_ms" in body:
+            if "until_ms" in body:
                 self.icount += 1000
                 self.pause_now("time", req, tag, op=req)
             elif "until" in body or self.breakpoints:
