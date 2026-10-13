@@ -6,7 +6,13 @@ the registers there. At the breakpoint it makes a guarded write to a word the pr
 reads it back, and steps over the load to check that the guest sees the new value. It prints a
 JSON result and exits 0 when every check passes, 1 otherwise.
 
-    python native/verify_native.py --checkout <dosbox-x checkout> --emulator <dosbox-x.exe> --run-directory <new dir>
+With ``--checkpoints`` the emulator must speak Agent protocol 1.1. The session saves a checkpoint at
+the breakpoint, before the write, and restores it after the step: the guest must stop at the
+breakpoint with the word unwritten, and a step must load the old word. A second session then starts
+from that checkpoint in ``<run dir>-checkpoint`` and must stop at the breakpoint with the word
+unwritten, and a step there must load the old word too.
+
+    python native/verify_native.py --checkout <dosbox-x checkout> --emulator <dosbox-x.exe> --run-directory <new dir> [--checkpoints]
 
 The Agent client is imported from the checkout given here, as a restoration's own tooling would.
 The package itself never imports it.
@@ -15,6 +21,7 @@ The package itself never imports it.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import sys
@@ -27,6 +34,7 @@ from dinorefurb_dosbox_session import (
     Target,
     WritableField,
     WriteFailed,
+    read_dosbox_state,
     verify_checkout,
 )
 
@@ -55,6 +63,7 @@ def main() -> int:
     parser.add_argument("--run-directory", type=Path, required=True)
     parser.add_argument("--lock", type=Path, help="run lock path; by default the machine's")
     parser.add_argument("--timeout", type=float, default=30.0, help="seconds to observe the continuation")
+    parser.add_argument("--checkpoints", action="store_true", help="also check save states (Agent protocol 1.1)")
     arguments = parser.parse_args()
 
     checkout = verify_checkout(arguments.checkout)
@@ -70,6 +79,7 @@ def main() -> int:
         client_factory=lambda endpoint: AgentClient.from_config(endpoint.agent_config),
         prepare_drive=lambda drive: (drive / PROGRAM).write_bytes(CODE),
         lock_path=arguments.lock,
+        checkpoints=arguments.checkpoints,
     )
     with DosboxSession(settings) as session:
         client = session.client
@@ -88,6 +98,7 @@ def main() -> int:
                 checks[name] = hex(int(str(registers.general[name]), 16) & 0xFFFF)
             word = WritableField("probe word", MemoryAddress.segmented(cs, WORD_OFFSET), len(WORD_BEFORE))
             contract = FieldContract("native-probe/1", (word,))
+            state = session.save_state("at-breakpoint") if arguments.checkpoints else None
             # A failed write still prints the result: the record holds it and the step is skipped.
             try:
                 written = session.write(contract, word.name, WORD_AFTER, hashlib.sha256(WORD_BEFORE).hexdigest())
@@ -101,7 +112,31 @@ def main() -> int:
                 _, stepped = client.step(session.session_id)
                 checks["ip_after_load"] = hex(int(str(stepped.instruction_pointer), 16))
                 checks["ax_after_load"] = hex(int(str(stepped.general["eax"]), 16) & 0xFFFF)
+                if state is not None:
+                    loaded = session.load_state(state)
+                    checks["restore_stop"] = loaded.stop.get("kind")
+                    checks["restore_ip"] = hex(int(str(client.get_registers(session.session_id).instruction_pointer), 16))
+                    checks["restore_word"] = bytes(client.read_memory(session.session_id, word.address, word.length).data).hex()
+                    _, stepped = client.step(session.session_id)
+                    checks["restore_ax"] = hex(int(str(stepped.general["eax"]), 16) & 0xFFFF)
         record = session.record()
+
+    if arguments.checkpoints and "restore_ax" in checks:
+        later = dataclasses.replace(
+            settings,
+            run_directory=arguments.run_directory.with_name(arguments.run_directory.name + "-checkpoint"),
+            start_state=read_dosbox_state(arguments.run_directory, "at-breakpoint"),
+        )
+        with DosboxSession(later) as session:
+            client = session.client
+            registers = client.get_registers(session.session_id)
+            cs = registers.segments["cs"]
+            checks["start_ip"] = hex(int(str(registers.instruction_pointer), 16))
+            address = MemoryAddress.segmented(cs, WORD_OFFSET)
+            checks["start_word"] = bytes(client.read_memory(session.session_id, address, len(WORD_BEFORE)).data).hex()
+            _, stepped = client.step(session.session_id)
+            checks["start_ax"] = hex(int(str(stepped.general["eax"]), 16) & 0xFFFF)
+            checks["start_state"] = session.record()["start_state"]
 
     passed = (
         checks.get("observation") == "completed"
@@ -112,6 +147,18 @@ def main() -> int:
         and checks.get("readback") == WORD_AFTER.hex()
         and checks.get("ip_after_load") == hex(AFTER_LOAD_OFFSET)
         and checks.get("ax_after_load") == hex(int.from_bytes(WORD_AFTER, "little"))
+        and (
+            not arguments.checkpoints
+            or (
+                checks.get("restore_stop") == "restore"
+                and checks.get("restore_ip") == hex(BREAKPOINT_OFFSET)
+                and checks.get("restore_word") == WORD_BEFORE.hex()
+                and checks.get("restore_ax") == hex(int.from_bytes(WORD_BEFORE, "little"))
+                and checks.get("start_ip") == hex(BREAKPOINT_OFFSET)
+                and checks.get("start_word") == WORD_BEFORE.hex()
+                and checks.get("start_ax") == hex(int.from_bytes(WORD_BEFORE, "little"))
+            )
+        )
     )
     print(
         json.dumps(
@@ -122,6 +169,7 @@ def main() -> int:
                 "emulator_sha256": record["emulator"]["sha256"],
                 "capabilities": record["capabilities"],
                 "writes": record["writes"],
+                "states": record["states"],
                 "package_version": record["package_version"],
             },
             indent=2,

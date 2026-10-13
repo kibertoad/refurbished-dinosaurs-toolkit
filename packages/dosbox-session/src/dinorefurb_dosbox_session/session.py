@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import shutil
 import sys
 import time
 import traceback
@@ -24,15 +26,32 @@ from .client import (
     SessionStateLike,
 )
 from .config import READINESS_MARKER, EmulatorConfig, agent_env, dosbox_conf
+from .dosbox_states import (
+    AGENT_SERVER_CONFIG,
+    CHECKPOINTS_DIRECTORY,
+    REFUSED_REASONS,
+    DosboxLoadedState,
+    DosboxState,
+    mismatch_sentences,
+    rpc_error,
+    same_address,
+    valid_checkpoint_id,
+    valid_checkpoint_name,
+)
 from .errors import (
+    CapabilityRefused,
     CleanupFailed,
+    ConfigurationRefused,
     EmulatorExited,
     EmulatorLaunchFailed,
+    EmulatorRefused,
     OperationPending,
     PlatformRefused,
     ReadinessNotObserved,
     RunDirectoryRefused,
     SessionError,
+    StateFailed,
+    StateRefused,
 )
 from .events import EventLogWriter, EventSchema, OutcomeContract
 from .lock import RunLock, resolve_lock_path
@@ -95,6 +114,14 @@ class SessionSettings:
       ``--agent-config`` arguments.
     - ``lock_path``: the run lock; by default the path :func:`~dinorefurb_dosbox_session.lock.resolve_lock_path` gives.
     - ``event_log``: when given, the session keeps an event log, ``events.jsonl`` in the run directory.
+    - ``checkpoints``: turns on save states. The emulator gets a checkpoint store,
+      ``checkpoints/`` in the run directory, in its own config ``agent-server.env``, and the
+      session refuses to start unless the server reports ``checkpoints.save`` and
+      ``checkpoints.restore`` (Agent protocol 1.1, which the pinned revision does not speak).
+    - ``start_state``: a checkpoint of an earlier run (see :func:`read_dosbox_state`) to restore
+      once the target stopped at its entry, so the run goes on from where the checkpoint was saved.
+      It turns on ``checkpoints``. The checkpoint must have been saved for the same target by an
+      emulator with the same SHA-256.
     """
 
     checkout: Path
@@ -109,6 +136,8 @@ class SessionSettings:
     readiness_timeout: float = 30.0
     teardown_timeout: float = 10.0
     event_log: EventLogSettings | None = None
+    checkpoints: bool = False
+    start_state: DosboxState | None = None
 
 
 @dataclass(frozen=True)
@@ -235,6 +264,10 @@ class DosboxSession(OwnedRun):
     emulator with a hidden native console, waits for the guest's readiness marker, reads the
     server's capabilities and starts the target, stopped at its entry. Leaving stops the debugger
     session and the owned process, and releases the lock only when the process has exited.
+
+    With ``checkpoints`` the session saves and restores the stopped machine through the Agent's
+    checkpoints (:meth:`save_state`, :meth:`load_state`). With ``start_state`` it restores an
+    earlier run's checkpoint once the target stopped at its entry.
     """
 
     def __init__(self, settings: SessionSettings) -> None:
@@ -256,6 +289,12 @@ class DosboxSession(OwnedRun):
         self._clients: list[_GuardedClient] = []
         self._continuations = _Continuations()
         self._writes: list[dict[str, Any]] = []
+        self._states: dict[str, DosboxState] = {}
+        self._state_entries: list[dict[str, Any]] = []
+        #: The checkpoint the run started from and its restore, or ``None``.
+        self.start_state: Mapping[str, Any] | None = None
+        self.checkpoints = settings.checkpoints or settings.start_state is not None
+        self.checkpoint_directory = self.run_directory / CHECKPOINTS_DIRECTORY
         self._log: EventLogWriter | None = None
         self._clients_closed = False
         self._closed = False
@@ -282,6 +321,9 @@ class DosboxSession(OwnedRun):
         if not emulator.is_file():
             raise SessionError(f"The emulator {emulator} does not exist.")
         self.emulator_sha256 = file_sha256(emulator)
+        start_state = settings.start_state
+        if start_state is not None:
+            self._check_start_state(start_state)
         self._check_run_directory()
         conf = dosbox_conf(settings.emulator_config, self.drive_c, self.token)
         self._owner = processes.current()
@@ -295,6 +337,8 @@ class DosboxSession(OwnedRun):
             client = self._new_client()
             self.capabilities = client.read_capabilities()
             self._write_record()
+            if self.checkpoints:
+                client._require("checkpoints.save", "checkpoints.restore")
             self.state = client.start(settings.target.command, settings.target.arguments, self.drive_c)
             self._write_record()
             stop = self.state.stop_reason
@@ -303,6 +347,8 @@ class DosboxSession(OwnedRun):
                     f"The target did not stop at its entry: state {self.state.state}, "
                     f"stop reason {stop.kind if stop is not None else None}."
                 )
+            if start_state is not None:
+                self._start_from_state(start_state)
         except BaseException as error:
             self._end_log(f"The session did not start: {error}")
             self.close()
@@ -316,9 +362,17 @@ class DosboxSession(OwnedRun):
         if (self.drive_c / READINESS_MARKER).exists():
             raise RunDirectoryRefused(f"prepare_drive wrote {READINESS_MARKER}, which only the guest may write.")
         (self.run_directory / DOSBOX_CONF).write_text(conf, encoding="utf-8")
-        self.endpoint.agent_config.write_text(
-            agent_env(self.endpoint.pipe, emulator, self.drive_c, settings.emulator_config.limits), encoding="utf-8"
-        )
+        limits = settings.emulator_config.limits
+        self.endpoint.agent_config.write_text(agent_env(self.endpoint.pipe, emulator, self.drive_c, limits), encoding="utf-8")
+        server_config = self.endpoint.agent_config
+        if self.checkpoints:
+            self.checkpoint_directory.mkdir()
+            if settings.start_state is not None:
+                shutil.copy2(settings.start_state.path, self.checkpoint_directory / settings.start_state.path.name)
+            server_config = self.run_directory / AGENT_SERVER_CONFIG
+            server_config.write_text(
+                agent_env(self.endpoint.pipe, emulator, self.drive_c, limits, self.checkpoint_directory), encoding="utf-8"
+            )
         self._write_record()
         # The debugger needs a real console: redirecting it, -noconsole and CREATE_NO_WINDOW each
         # failed debugger entry at the pinned revision. A new console, created hidden, works.
@@ -330,7 +384,7 @@ class DosboxSession(OwnedRun):
             "-conf",
             str(self.run_directory / DOSBOX_CONF),
             "--agent-config",
-            str(self.endpoint.agent_config),
+            str(server_config),
         ]
         try:
             self._process = processes.launch_owned(arguments, self.run_directory)
@@ -348,7 +402,14 @@ class DosboxSession(OwnedRun):
         while True:
             code = self._process.poll()
             if code is not None:
-                raise EmulatorExited(f"The emulator exited with code {code} before the guest wrote its readiness marker.")
+                hint = (
+                    " A build without Agent protocol 1.1 exits on the checkpoint_dir setting that checkpoints add."
+                    if self.checkpoints
+                    else ""
+                )
+                raise EmulatorExited(
+                    f"The emulator exited with code {code} before the guest wrote its readiness marker.{hint}"
+                )
             try:
                 if marker.read_text(encoding="ascii", errors="replace").strip() == self.token:
                     break
@@ -475,6 +536,227 @@ class DosboxSession(OwnedRun):
                 self.state = result.session
                 return Observation("completed", operation.id, result.session)
 
+    # Save states
+
+    @property
+    def states(self) -> Mapping[str, DosboxState]:
+        """The checkpoints this session saved and verified, and the one it started from, by name.
+        Only these can be loaded."""
+        return dict(self._states)
+
+    def save_state(self, name: str) -> DosboxState:
+        """Saves the stopped machine as an Agent checkpoint in ``checkpoints/`` in the run directory.
+
+        The server saves only while the session is stopped with no operation, pause, step request
+        or trace under way: CPU, memory, devices, DOS state, the open DOS files and every file on
+        C:. The session checks that the reply names this session and a checkpoint of its target,
+        that the file is in the store, and hashes the file. A save does not change the guest, so
+        it is also made after the run failed or the event log ended.
+
+        :raises StateRefused: ``name`` is not a plain name or is taken, or the server refused the
+            save (the guest was not stopped, something was pending, or the machine has media a
+            checkpoint cannot hold). Nothing was saved.
+        :raises StateFailed: the save's reply was lost, the server failed to store it, or the reply
+            does not verify. The state is not recorded as saved.
+        :raises OperationPending: a continuation or pause is still pending; nothing was sent.
+        :raises CapabilityRefused: the session was started without ``checkpoints``.
+        """
+        attempt: dict[str, Any] = {"action": "save", "status": "refused", "name": name, "request_id": None}
+        if not valid_checkpoint_name(name):
+            raise self._state_refused(
+                attempt,
+                f"A state name is a letter or digit followed by up to 63 letters, digits, '.', '_' or '-', not ending "
+                f"in '.' and not a Windows device name, not {name!r}.",
+            )
+        if name in self._states:
+            raise self._state_refused(attempt, f"A state named {name} was already saved in this session.")
+        guarded = self._clients[0]
+        if self._continuations.pending or self._continuations.unconfirmed is not None:
+            raise OperationPending("An operation is still pending; observe it before saving a state.")
+        session_id = self.session_id
+        try:
+            result = guarded.save_checkpoint(session_id)
+        except CapabilityRefused:
+            raise
+        except Exception as error:
+            attempt["request_id"] = guarded.ids.last
+            answered = rpc_error(error)
+            if answered is not None and answered[0] in REFUSED_REASONS:
+                raise self._state_refused(attempt, f"The server refused to save state {name}: {error}") from error
+            raise self._state_failed(attempt, f"The save of state {name} failed: {error!r}") from error
+        attempt["request_id"] = guarded.ids.last
+        summary = result.get("checkpoint")
+        checkpoint_id = summary.get("checkpoint_id") if isinstance(summary, dict) else None
+        sha256 = summary.get("sha256") if isinstance(summary, dict) else None
+        target = summary.get("target") if isinstance(summary, dict) else None
+        command = target.get("command") if isinstance(target, dict) else None
+        path = self.checkpoint_directory / f"{checkpoint_id}.dxcp"
+        problem = None
+        if result.get("session_id") != session_id:
+            problem = f"the reply names session {result.get('session_id')!r}, not {session_id}"
+        elif not valid_checkpoint_id(checkpoint_id) or not isinstance(sha256, str):
+            problem = f"the reply's checkpoint {summary!r} has no valid ID and SHA-256"
+        elif not sha256.lower().startswith(checkpoint_id[3:]):  # type: ignore[index]
+            problem = f"checkpoint {checkpoint_id} does not name SHA-256 {sha256}"
+        elif not isinstance(command, str) or command.lower() != self.settings.target.command.lower():
+            problem = f"the checkpoint is of target {command!r}, not {self.settings.target.command}"
+        elif not isinstance(result.get("state_revision"), int):
+            problem = f"the reply has no state revision: {result!r}"
+        elif not path.is_file():
+            problem = f"{path} does not exist after the save"
+        if problem is not None:
+            raise self._state_failed(attempt, f"The save of state {name} did not verify: {problem}.")
+        state = DosboxState(
+            name=name,
+            checkpoint_id=checkpoint_id,  # type: ignore[arg-type]
+            sha256=sha256.lower(),  # type: ignore[union-attr]
+            path=path,
+            file_sha256=file_sha256(path),
+            summary=summary,  # type: ignore[arg-type]
+            state_revision=result["state_revision"],
+            writes=len(self._writes),
+            session=self.token,
+            emulator_sha256=self.emulator_sha256,
+            request_id=guarded.ids.last or "",
+        )
+        self._states[name] = state
+        self._state_entries.append(state.to_json())
+        self._write_record()
+        return state
+
+    def load_state(self, state: DosboxState | str) -> DosboxLoadedState:
+        """Restores a checkpoint this session saved or started from, given as the state or its name.
+
+        Before anything is sent, the checkpoint file must be as the save left it. The server checks
+        the file and compares the emulator build, configuration, media and target with the running
+        machine's before it changes anything, and refuses a mismatch. It then applies the whole
+        checkpoint, C: included, or puts the machine back as it was. A restore deletes every
+        breakpoint and makes earlier breakpoint and operation IDs stale; set the breakpoints you
+        need again. The session checks that the reply reports the checkpoint applied, the guest
+        stopped by the restore at the address it was saved at, and that the status agrees.
+
+        Like a guarded write, a load is refused while an operation is pending, after the run failed
+        and once the event log has its outcome.
+
+        :raises StateRefused: the state is not one this session saved or started from, its file
+            changed, or the server refused the restore or rolled it back. The machine is as it was
+            and the run goes on.
+        :raises StateFailed: the restore's reply was lost, the rollback failed, or the reply does
+            not verify. The run fails.
+        :raises OperationPending: an operation is still pending.
+        :raises RunFailed: the run failed earlier.
+        :raises RunEnded: the event log already ends with its outcome.
+        """
+        name = state.name if isinstance(state, DosboxState) else state
+        attempt: dict[str, Any] = {"action": "load", "status": "refused", "name": name, "request_id": None}
+        guarded = self._clients[0]
+        guarded._refuse_if_pending("loading a state")
+        saved = self._states.get(name) if isinstance(name, str) else None
+        if saved is None or (isinstance(state, DosboxState) and state.checkpoint_id != saved.checkpoint_id):
+            raise self._state_refused(attempt, f"{name!r} is not a state this session saved; only those are loaded.")
+        changes = saved.changes()
+        if changes:
+            raise self._state_refused(
+                attempt, f"The checkpoint of state {saved.name} changed since the save; nothing was loaded.", changes
+            )
+        session_id = self.session_id
+        self._continuations.changes += 1
+        try:
+            result = guarded.restore_checkpoint(session_id, saved.checkpoint_id, saved.sha256)
+        except CapabilityRefused:
+            raise
+        except Exception as error:
+            attempt["request_id"] = guarded.ids.last
+            answered = rpc_error(error)
+            if answered is not None:
+                reason, data = answered
+                if reason in REFUSED_REASONS or (reason == "CHECKPOINT_RESTORE_FAILED" and data.get("rolled_back") is True):
+                    raise self._state_refused(
+                        attempt,
+                        f"The server did not restore state {saved.name}; the machine is as it was: {error}",
+                        mismatch_sentences(data),
+                    ) from error
+            raise self._state_failed(attempt, f"The restore of state {saved.name} failed: {error!r}", True) from error
+        attempt["request_id"] = guarded.ids.last
+        stop = result.get("stop_reason")
+        checkpoint = result.get("checkpoint")
+        invalidated = result.get("invalidated")
+        warnings = result.get("warnings")
+        problem = None
+        if result.get("applied") is not True or result.get("state") != "stopped":
+            problem = f"the reply does not report the checkpoint applied with the guest stopped: {result!r}"
+        elif not isinstance(stop, dict) or stop.get("kind") != "restore":
+            problem = f"the guest is not stopped by the restore: {stop!r}"
+        elif not same_address(stop.get("address"), saved.stop_address):
+            problem = f"the guest stopped at {stop.get('address')!r}, not at {saved.stop_address!r} where it was saved"
+        elif not isinstance(checkpoint, dict) or (checkpoint.get("checkpoint_id"), checkpoint.get("sha256")) != (
+            saved.checkpoint_id,
+            saved.sha256,
+        ):
+            problem = f"the reply names checkpoint {checkpoint!r}, not {saved.checkpoint_id}"
+        elif not isinstance(invalidated, dict) or not isinstance(warnings, list):
+            problem = f"the reply lacks the invalidated handles or the warnings: {result!r}"
+        if problem is None:
+            status = guarded.status(session_id)
+            found = status.stop_reason
+            if status.state != "stopped" or found is None or found.kind != "restore":
+                problem = f"the status after the restore is {status.state} with stop {found!r}"
+            else:
+                self.state = status
+        if problem is not None:
+            raise self._state_failed(attempt, f"The restore of state {saved.name} did not verify: {problem}.", True)
+        self._continuations.clear()
+        loaded = DosboxLoadedState(
+            state=saved,
+            stop=stop,  # type: ignore[arg-type]
+            invalidated=invalidated,  # type: ignore[arg-type]
+            warnings=tuple(str(w) for w in warnings),  # type: ignore[union-attr]
+            request_id=guarded.ids.last or "",
+        )
+        self._state_entries.append(loaded.to_json())
+        self._write_record()
+        return loaded
+
+    def _check_start_state(self, state: DosboxState) -> None:
+        if not isinstance(state, DosboxState):
+            raise ConfigurationRefused("start_state must be a DosboxState, as read_dosbox_state returns it.")
+        if state.emulator_sha256 != self.emulator_sha256:
+            raise EmulatorRefused(
+                f"State {state.name} was saved by the emulator with SHA-256 {state.emulator_sha256}; "
+                f"{self.settings.emulator} has {self.emulator_sha256}."
+            )
+        if (state.target_command or "").lower() != self.settings.target.command.lower():
+            raise ConfigurationRefused(
+                f"State {state.name} was saved for target {state.target_command!r}, not {self.settings.target.command}."
+            )
+        changes = state.changes()
+        if changes:
+            raise StateRefused(f"The checkpoint of state {state.name} changed since the save; the run did not start.", changes)
+
+    def _start_from_state(self, state: DosboxState) -> None:
+        """Restores ``state``, copied into this run's store, with the target stopped at its entry."""
+        local = dataclasses.replace(state, path=self.checkpoint_directory / state.path.name)
+        self._states[state.name] = local
+        loaded = self.load_state(local)
+        self.start_state = {**state.identity(), "request_id": loaded.request_id, "restore_stop": dict(loaded.stop)}
+        self._write_record()
+
+    def _state_refused(
+        self, attempt: dict[str, Any], message: str, differences: tuple[str, ...] = ()
+    ) -> StateRefused:
+        attempt.update(failure=message, differences=list(differences))
+        self._state_entries.append(attempt)
+        self._write_record()
+        return StateRefused(message, differences)
+
+    def _state_failed(self, attempt: dict[str, Any], message: str, fails_run: bool = False) -> StateFailed:
+        attempt.update(status="failed", failure=message, differences=[])
+        if fails_run:
+            self._fail_run(message)
+        self._state_entries.append(attempt)
+        self._write_record()
+        return StateFailed(message)
+
     # Records
 
     def record(self) -> dict[str, Any]:
@@ -498,6 +780,9 @@ class DosboxSession(OwnedRun):
             "capabilities": None if self.capabilities is None else dict(self.capabilities),
             "debugger_session": None if self.state is None else self.state.id,
             "writes": list(self._writes),
+            "checkpoints": None if not self.checkpoints else str(self.checkpoint_directory),
+            "start_state": None if self.start_state is None else dict(self.start_state),
+            "states": list(self._state_entries),
             "run_failure": self._continuations.run_failure,
             "event_log": None if self._log is None else str(self._log.path),
         }

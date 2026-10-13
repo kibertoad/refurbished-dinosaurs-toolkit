@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -36,6 +37,8 @@ from .errors import (
     RunDirectoryRefused,
     ServerRefused,
     SessionError,
+    StateFailed,
+    StateRefused,
     WriteFailed,
     WriteHashMismatch,
     WriteReadbackMismatch,
@@ -44,6 +47,20 @@ from .events import EventLogWriter
 from .lock import RunLock, resolve_lock_path
 from .run import OwnedRun, RunState, package_version
 from .rustdos_client import MemoryRead, Reply, RustDosClient
+from .rustdos_states import (
+    DRIVE_COPY,
+    STATE_FILE,
+    STATES_DIRECTORY,
+    LoadedState,
+    SavedState,
+    StateAttempt,
+    changed_files,
+    hash_files,
+    stop_mismatch,
+    stop_summary,
+    strings,
+    valid_name,
+)
 from .session import EventLogSettings, Target
 from .writes import FieldContract, VerifiedWrite, WritableField, sha256
 from .writes import _normalize_sha256 as normalize_sha256
@@ -56,14 +73,16 @@ RUST_DOS_RECORD_FORMAT = "dinorefurb-dosbox-session.rust-dos-record/1"
 RUST_DOS_API_VERSION = 1
 
 #: The supported upstream release for Windows x86-64 sessions.
-RUST_DOS_PINNED_TAG = "v1.7.1"
+RUST_DOS_PINNED_TAG = "v1.7.2"
 
-#: SHA-256 of ``rust-dos.exe`` in the release's ``rust-dos-v1.7.1-windows-x86_64.zip``.
+#: SHA-256 of ``rust-dos.exe`` in the release's ``rust-dos-v1.7.2-windows-x86_64.zip``.
 #: Pass this as ``RustDosSettings.emulator_sha256`` to require the released executable.
-RUST_DOS_PINNED_SHA256 = "6baf1aba58c948bb6eb72f12c0009ddc0e07d3d1d9ab97d3f3fd9f1d3c44c7f9"
+RUST_DOS_PINNED_SHA256 = "310de9a912a4874cfceccb2aead71b8da39315aa059dbb5a108f86feb3f73ee4"
 
 #: The debug server features the session relies on. A server that lacks one is refused. ``build``
 #: puts the commit the emulator was built from in ``/api/version``, which the session record keeps.
+#: ``strict_match`` and ``check_files`` are the save state guarantees :meth:`RustDosSession.save_state`
+#: and :meth:`RustDosSession.load_state` ask for.
 RUST_DOS_FEATURES = (
     "journal",
     "ops",
@@ -74,6 +93,8 @@ RUST_DOS_FEATURES = (
     "program_stops",
     "quit",
     "build",
+    "strict_match",
+    "check_files",
 )
 
 #: The files a rust-dos session writes in its run directory, besides ``drive-c``, ``session.json``,
@@ -153,6 +174,12 @@ class RustDosSettings:
       session sets itself are refused.
     - ``lock_path``: the run lock; by default the path :func:`~dinorefurb_dosbox_session.lock.resolve_lock_path` gives.
     - ``event_log``: when given, the session keeps an event log, ``events.jsonl`` in the run directory.
+    - ``start_state``: a checkpoint of an earlier run (see :func:`read_saved_state`) to start from
+      in place of starting the target. C: is a copy of the one the checkpoint kept, and the session
+      loads the state with a strict match and ``check_files``, so the run goes on from the stop it
+      was saved at. The state must have been saved while the target ran, by an emulator with the
+      same SHA-256, and the media must be the ones mounted at the save. ``prepare_drive`` is not
+      taken with it.
     """
 
     emulator: Path
@@ -166,6 +193,7 @@ class RustDosSettings:
     readiness_timeout: float = 30.0
     teardown_timeout: float = 10.0
     event_log: EventLogSettings | None = None
+    start_state: SavedState | None = None
 
 
 @dataclass(frozen=True)
@@ -239,6 +267,20 @@ def _check_config(settings: RustDosSettings) -> None:
     command = " ".join((settings.target.command, *settings.target.arguments))
     if not settings.target.command or any(c in command for c in "\r\n\x00"):
         raise ConfigurationRefused(f"The target's command line {command!r} must be one line.")
+    state = settings.start_state
+    if state is not None:
+        if not isinstance(state, SavedState) or not state.checkpoint:
+            raise ConfigurationRefused(
+                "start_state must be a checkpoint: a state saved with strict_match and check_files, whose folder "
+                "holds a copy of C:."
+            )
+        if settings.prepare_drive is not None:
+            raise ConfigurationRefused("A run that starts from a state takes C: from it; prepare_drive is not taken.")
+        program = state.header.get("program")
+        if not isinstance(program, str) or not _started_target({"program": {"name": program}}, settings.target.command):
+            raise ConfigurationRefused(
+                f"State {state.name} was saved while {program!r} ran, not the target {settings.target.command}."
+            )
 
 
 def _program_name(command: str) -> str:
@@ -269,6 +311,10 @@ class RustDosSession(OwnedRun):
     server on a free local port, checks the server's API version and features, mounts the media
     read-only, waits for the marker and starts the target stopped at its entry. Leaving quits the
     emulator, ends it if it does not exit, and releases the lock only when it has exited.
+
+    With ``start_state`` it copies C: from the checkpoint in place of creating it, and in place of
+    starting the target it pauses the machine once the guest has written the marker (a
+    deterministic machine starts paused) and loads the state, as :meth:`load_state` does.
     """
 
     def __init__(self, settings: RustDosSettings) -> None:
@@ -282,8 +328,10 @@ class RustDosSession(OwnedRun):
         self.server: Mapping[str, Any] | None = None
         #: The debug server's address, ``127.0.0.1:<port>``.
         self.endpoint: str | None = None
-        #: The stop at the target's entry.
+        #: The stop at the target's entry, or ``None`` in a run that started from a state.
         self.entry: Mapping[str, Any] | None = None
+        #: The state the run started from and its load, or ``None`` when it started the target.
+        self.start_state: Mapping[str, Any] | None = None
         #: The last stop an observation or a request returned.
         self.stop: Mapping[str, Any] | None = None
         self.readiness: Literal["not observed", "observed"] = "not observed"
@@ -296,9 +344,13 @@ class RustDosSession(OwnedRun):
         self._clients: list[RustDosClient] = []
         self._continuations = _Operations()
         self._writes: list[dict[str, Any]] = []
+        self._states: dict[str, SavedState] = {}
+        self._state_entries: list[dict[str, Any]] = []
         self._log: EventLogWriter | None = None
         self._last_seq = 0
         self._closed = False
+        # What AUTOEXEC.BAT writes to the readiness marker; a checkpoint's C: has its own session's.
+        self._marker_text = self.token
 
     # Starting
 
@@ -326,6 +378,16 @@ class RustDosSession(OwnedRun):
                 f"The emulator {emulator} has SHA-256 {self.emulator_sha256}, not the expected {settings.emulator_sha256}."
             )
         _check_config(settings)
+        state = settings.start_state
+        if state is not None:
+            if state.emulator_sha256 != self.emulator_sha256:
+                raise EmulatorRefused(
+                    f"State {state.name} was saved by the emulator with SHA-256 {state.emulator_sha256}; {emulator} "
+                    f"has {self.emulator_sha256}."
+                )
+            changes = changed_files(state.files, hash_files(state.directory) if state.directory.is_dir() else {})
+            if changes:
+                raise StateRefused(f"The files of state {state.name} changed since the save; the run did not start.", changes)
         self._check_run_directory()
         self._owner = processes.current()
         create_log = self._prepare_log()
@@ -336,9 +398,12 @@ class RustDosSession(OwnedRun):
             self._launch(emulator)
             self._connect()
             self._mount_media()
-            if not settings.emulator_config.deterministic:
-                self._wait_for_marker()
-            self._start_with_run()
+            if state is not None:
+                self._start_from_state(state)
+            else:
+                if not settings.emulator_config.deterministic:
+                    self._wait_for_marker()
+                self._start_with_run()
             self._write_record()
         except BaseException as error:
             self._end_log(f"The session did not start: {error}")
@@ -351,14 +416,17 @@ class RustDosSession(OwnedRun):
     def _launch(self, emulator: Path) -> None:
         settings = self.settings
         config = settings.emulator_config
-        self.drive_c.mkdir()
-        if settings.prepare_drive is not None:
-            settings.prepare_drive(self.drive_c)
-        for owned in (AUTOEXEC, READINESS_MARKER):
-            if any(path.name.upper() == owned for path in self.drive_c.iterdir()):
-                raise RunDirectoryRefused(f"prepare_drive wrote {owned}, which the session writes.")
-        lines = ["@echo off", f"echo {self.token}> C:\\{READINESS_MARKER}"]
-        (self.drive_c / AUTOEXEC).write_bytes(("\r\n".join(lines) + "\r\n").encode("ascii", errors="strict"))
+        if settings.start_state is not None:
+            self._copy_drive(settings.start_state)
+        else:
+            self.drive_c.mkdir()
+            if settings.prepare_drive is not None:
+                settings.prepare_drive(self.drive_c)
+            for owned in (AUTOEXEC, READINESS_MARKER):
+                if any(path.name.upper() == owned for path in self.drive_c.iterdir()):
+                    raise RunDirectoryRefused(f"prepare_drive wrote {owned}, which the session writes.")
+            lines = ["@echo off", f"echo {self.token}> C:\\{READINESS_MARKER}"]
+            (self.drive_c / AUTOEXEC).write_bytes(("\r\n".join(lines) + "\r\n").encode("ascii", errors="strict"))
         arguments = [
             str(emulator),
             *settings.emulator_arguments,
@@ -393,6 +461,35 @@ class RustDosSession(OwnedRun):
         assert self._lock is not None
         self._lock.record("emulator", self._emulator_identity)
         self._write_record()
+
+    def _copy_drive(self, state: SavedState) -> None:
+        """Makes C: a copy of the one ``state`` kept.
+
+        In a normal run the guest's ``AUTOEXEC.BAT`` writes the readiness marker again as it boots,
+        so the marker is removed from the copy and the session waits for the same text. A
+        deterministic machine starts paused before it boots and is loaded there, so its copy keeps
+        the marker.
+        """
+        shutil.copytree(state.directory / DRIVE_COPY, self.drive_c)
+        marker = self.drive_c / READINESS_MARKER
+        try:
+            self._marker_text = marker.read_text(encoding="ascii", errors="replace").strip()
+        except FileNotFoundError:
+            raise StateRefused(f"The copy of C: in state {state.name} has no {READINESS_MARKER}.") from None
+        if not self.settings.emulator_config.deterministic:
+            marker.unlink()
+
+    def _start_from_state(self, state: SavedState) -> None:
+        """Pauses the machine and loads ``state`` with a strict match, in place of starting the target."""
+        if not self.settings.emulator_config.deterministic:
+            self._wait_for_marker()
+            self.client.request("POST", "/api/control/pause", body={})
+        status = self.client.status()
+        if status.get("paused") is not True or status.get("quiescent") is not True:
+            raise SessionError(f"The machine is not paused and quiet before state {state.name} is loaded: {status!r}.")
+        self._states[state.name] = state
+        loaded = self.load_state(state, timeout=max(self.settings.readiness_timeout, 120.0))
+        self.start_state = {**state.identity(), "request_id": loaded.request_id}
 
     def _deadline_passed(self, deadline: float, waiting_for: str) -> None:
         assert self._process is not None
@@ -444,7 +541,8 @@ class RustDosSession(OwnedRun):
                 f"{RUST_DOS_API_VERSION}."
             )
         features = version.get("features")
-        missing = [name for name in RUST_DOS_FEATURES if not isinstance(features, list) or name not in features]
+        needed = (*RUST_DOS_FEATURES, *(["load_folders"] if self.settings.start_state is not None else []))
+        missing = [name for name in needed if not isinstance(features, list) or name not in features]
         if missing:
             raise EmulatorRefused(f"The debug server does not offer {', '.join(missing)}, which the session relies on.")
 
@@ -468,7 +566,7 @@ class RustDosSession(OwnedRun):
             text = (self.drive_c / READINESS_MARKER).read_text(encoding="ascii", errors="replace")
         except (FileNotFoundError, PermissionError):
             return False
-        return text.strip() == self.token
+        return text.strip() == self._marker_text
 
     def _wait_for_marker(self) -> None:
         deadline = time.monotonic() + self.settings.readiness_timeout
@@ -715,6 +813,252 @@ class RustDosSession(OwnedRun):
             lambda contract, target, content: _guarded_write(self.client, contract, target, content, expected_sha256),
         )
 
+    # Save states
+
+    @property
+    def states(self) -> Mapping[str, SavedState]:
+        """The states this session saved and verified, and the state it started from, by name. Only
+        these can be loaded."""
+        return dict(self._states)
+
+    def save_state(
+        self, name: str, strict_match: bool = True, check_files: bool = False, timeout: float = 120.0
+    ) -> SavedState:
+        """Saves the whole machine as ``states/<name>/machine.state`` in the run directory.
+
+        With ``strict_match`` (the default) the save is made only while the machine is stopped
+        between two instructions with no operation or input under way, and only in the state the
+        session read just before it (``If-State-Seq``), so the state records the stop it was saved
+        at. A plain save is also made while the machine runs; it records that stop only when the
+        machine was stopped and quiet. With ``check_files`` the state also records the size and
+        SHA-256 of every file on the writable drives, and every load of it compares them.
+
+        A save with both ``strict_match`` and ``check_files`` is a checkpoint: the session also
+        copies C: into ``states/<name>/drive-c`` while the machine stays stopped, so a later run can
+        start from the state (``RustDosSettings.start_state``).
+
+        The session checks the server's reply against the request, hashes every file in the
+        state's folder and records the state in ``session.json``. A save does not change the
+        guest, so it is made after the run failed or the event log ended as well.
+
+        :raises StateRefused: ``name`` is not a plain name or is taken, a strict-match save was
+            asked for while the machine was not stopped and quiet, or the server refused the save.
+            Nothing was saved.
+        :raises StateFailed: the save was sent but its reply was lost or does not show the state
+            saved as asked. The state is not recorded as saved.
+        """
+        attempt = StateAttempt("save", "refused", name, strict_match, "")
+        if not valid_name(name):
+            raise self._state_refused(
+                attempt,
+                f"A state name is a letter or digit followed by up to 63 letters, digits, '.', '_' or '-', not ending "
+                f"in '.' and not a Windows device name, not {name!r}.",
+            )
+        directory = self.run_directory / STATES_DIRECTORY / name
+        if name in self._states or directory.exists():
+            raise self._state_refused(attempt, f"A state named {name} was already saved in this session.")
+        client = self.client
+        status = client.status()
+        stop = status.get("stop")
+        state_seq = status.get("state_seq")
+        quiet = (
+            status.get("paused") is True
+            and status.get("quiescent") is True
+            and isinstance(stop, dict)
+            and isinstance(state_seq, int)
+        )
+        if strict_match and not quiet:
+            raise self._state_refused(
+                attempt,
+                "A strict-match save is made only while the machine is stopped with nothing under way; it is "
+                + ("paused with an operation or input under way" if status.get("paused") is True else "running")
+                + ". Observe the continuation, or pause the machine and observe the pause, first; nothing was sent.",
+            )
+        saved_stop = stop_summary(stop) if quiet else None  # type: ignore[arg-type]
+        if_state = state_seq if quiet else None
+        directory.mkdir(parents=True)
+        path = directory / STATE_FILE
+        body = {"path": str(path), "strict_match": strict_match, "check_files": check_files}
+        try:
+            reply = client.request("POST", "/api/state/save", body=body, if_state_seq=if_state, timeout=timeout)
+        except ServerRefused as error:
+            attempt.request_id = error.reply.request_id
+            if error.status >= 500:
+                raise self._state_failed(attempt, f"The save of state {name} failed: {error}") from error
+            shutil.rmtree(directory, ignore_errors=True)
+            raise self._state_refused(
+                attempt, f"The server refused to save state {name}: {error}", status=error.status
+            ) from error
+        except OSError as error:
+            attempt.request_id = client.last_request_id
+            raise self._state_failed(attempt, f"The save of state {name} got no complete reply: {error}") from error
+        self._seen(reply)
+        attempt.request_id = reply.request_id
+        problem = _save_problem(reply, path, if_state, saved_stop, check_files)
+        if problem is None and strict_match and check_files:
+            try:
+                shutil.copytree(self.drive_c, directory / DRIVE_COPY)
+            except OSError as error:
+                problem = f"C: could not be copied beside the state: {error}"
+        files = hash_files(directory)
+        if problem is None and STATE_FILE not in files:
+            problem = f"{path} does not exist after the save"
+        if problem is not None:
+            raise self._state_failed(attempt, f"The save of state {name} did not verify: {problem}.")
+        state = SavedState(
+            name=name,
+            path=path,
+            strict_match=strict_match,
+            check_files=check_files,
+            files=files,
+            seq=reply.field("seq"),
+            stop=saved_stop,
+            header=reply.field("header"),
+            writes=len(self._writes),
+            request_id=reply.request_id,
+            session=self.token,
+            emulator_sha256=self.emulator_sha256,
+        )
+        self._states[name] = state
+        self._state_entries.append(state.to_json())
+        self._write_record()
+        return state
+
+    def load_state(self, state: SavedState | str, strict_match: bool = True, timeout: float = 120.0) -> LoadedState:
+        """Loads a state this session saved or started from, given as the :class:`SavedState` or its name.
+
+        Before anything is sent, the state's folder must hold exactly the files the save hashed.
+        A state saved with ``check_files`` is loaded with it, so the files on the writable drives
+        are compared too. A state another session saved records that run's C:, so it is loaded
+        with this run's C: in its place (rust-dos's ``folders``).
+
+        With ``strict_match`` (the default) rust-dos loads the state only while the machine is
+        stopped and quiet and only when its hardware settings and media match the running
+        machine's; it then clears every breakpoint, watchpoint, ``break_on`` stop and queued input
+        and leaves the machine paused at a stop with reason ``load``. Set the breakpoints you need
+        again before continuing. A plain load keeps them, loads a state that differs and lists
+        the differences in the result.
+
+        The session checks that the reply names the state, that a strict-match load found no
+        differences and reset the debugger, and that the machine stops where the state was saved:
+        the same ``CS:IP``, instruction count and emulated time, when the save recorded its stop.
+        Like a guarded write, a load is refused after the run failed or the event log ended, and
+        while a continuation is pending.
+
+        :raises StateRefused: the state is not one this session saved, its files changed, or the
+            server refused the load (the machine is as it was). The run goes on.
+        :raises StateFailed: the load was sent and did not verify, or its reply was lost. The run fails.
+        :raises OperationPending: a continuation is still pending.
+        :raises RunFailed: the run failed earlier.
+        :raises RunEnded: the event log already ends with its outcome.
+        """
+        name = state.name if isinstance(state, SavedState) else state
+        attempt = StateAttempt("load", "refused", name, strict_match, "")
+        self._refuse_if_busy("loading a state")
+        saved = self._states.get(name) if isinstance(name, str) else None
+        if saved is None or (isinstance(state, SavedState) and state != saved):
+            raise self._state_refused(attempt, f"{name!r} is not a state this session saved; only those are loaded.")
+        found = hash_files(saved.directory) if saved.directory.is_dir() else {}
+        changes = changed_files(saved.files, found)
+        if changes:
+            raise self._state_refused(
+                attempt, f"The files of state {saved.name} changed since the save; nothing was loaded.", changes
+            )
+        client = self.client
+        body: dict[str, Any] = {"path": str(saved.path), "strict_match": strict_match, "check_files": saved.check_files}
+        if saved.session != self.token:
+            body["folders"] = {"C": str(self.drive_c)}
+        try:
+            reply = client.request("POST", "/api/state/load", body=body, timeout=timeout)
+        except ServerRefused as error:
+            attempt.request_id = error.reply.request_id
+            refusal = error.body if isinstance(error.body, dict) else {}
+            # rust-dos makes these checks before it changes anything, and says so.
+            if error.status < 500 and (
+                refusal.get("unchanged") is True or error.precondition in ("paused", "quiescent", "state")
+            ):
+                raise self._state_refused(
+                    attempt,
+                    f"The server refused to load state {saved.name}; the machine is as it was: {error}",
+                    strings(refusal.get("differences")) or (),
+                    error.status,
+                ) from error
+            raise self._state_failed(attempt, f"The load of state {saved.name} failed: {error}", True) from error
+        except OSError as error:
+            attempt.request_id = client.last_request_id
+            raise self._state_failed(
+                attempt, f"The load of state {saved.name} got no complete reply: {error}", True
+            ) from error
+        self._seen(reply)
+        attempt.request_id = reply.request_id
+        differences = strings(reply.field("differences"))
+        unchecked = strings(reply.field("unchecked"))
+        reset = reply.field("debugger_reset")
+        header = reply.field("header")
+        problem = None
+        if reply.field("loaded") != str(saved.path):
+            problem = f"the reply names {reply.field('loaded')!r}, not {saved.path}"
+        elif differences is None or unchecked is None:
+            problem = f"the reply's differences or unchecked drives are not lists of sentences: {reply.body!r}"
+        elif strict_match and differences:
+            problem = f"a strict-match load reported differences: {list(differences)!r}"
+        elif unchecked:
+            problem = f"drives were left unchecked: {list(unchecked)!r}"
+        elif strict_match != isinstance(reset, dict):
+            problem = f"the reply's debugger reset {reset!r} does not fit a {'strict-match' if strict_match else 'plain'} load"
+        elif not isinstance(header, dict) or header.get("emulated_ns") != saved.header.get("emulated_ns"):
+            problem = f"the reply's header {header!r} is not the saved state's"
+        elif reply.field("folders") != body.get("folders"):
+            problem = f"the reply's folders {reply.field('folders')!r} are not the ones sent, {body.get('folders')!r}"
+        stop: Mapping[str, Any] | None = None
+        if problem is None:
+            status = client.status()
+            if status.get("paused") is True:
+                found_stop = status.get("stop")
+                if not isinstance(found_stop, dict) or found_stop.get("reason") != "load":
+                    problem = f"the machine is not stopped by the load: {found_stop!r}"
+                elif found_stop.get("request_id") != reply.request_id:
+                    problem = f"the stop after the load was made by request {found_stop.get('request_id')!r}"
+                else:
+                    stop = found_stop
+                    if saved.stop is not None:
+                        problem = stop_mismatch(saved.stop, found_stop)
+            elif strict_match:
+                problem = "the machine is not paused after a strict-match load"
+        if problem is not None:
+            raise self._state_failed(attempt, f"The load of state {saved.name} did not verify: {problem}.", True)
+        if stop is not None:
+            self.stop = stop
+        loaded = LoadedState(
+            state=saved,
+            strict_match=strict_match,
+            stop=stop,
+            debugger_reset=reset if isinstance(reset, dict) else None,
+            differences=differences or (),
+            request_id=reply.request_id,
+        )
+        self._state_entries.append(loaded.to_json())
+        self._write_record()
+        return loaded
+
+    def _state_refused(
+        self, attempt: StateAttempt, message: str, differences: tuple[str, ...] = (), status: int | None = None
+    ) -> StateRefused:
+        attempt.failure = message
+        attempt.differences = differences
+        self._state_entries.append(attempt.to_json())
+        self._write_record()
+        return StateRefused(message, differences, status)
+
+    def _state_failed(self, attempt: StateAttempt, message: str, fails_run: bool = False) -> StateFailed:
+        attempt.status = "failed"
+        attempt.failure = message
+        if fails_run:
+            self._fail_run(message)
+        self._state_entries.append(attempt.to_json())
+        self._write_record()
+        return StateFailed(message)
+
     # Records
 
     def record(self) -> dict[str, Any]:
@@ -750,6 +1094,8 @@ class RustDosSession(OwnedRun):
             if entry is None
             else {"cs_ip": entry.get("cs_ip"), "program": entry.get("program"), "seq": entry.get("seq")},
             "writes": list(self._writes),
+            "start_state": None if self.start_state is None else dict(self.start_state),
+            "states": list(self._state_entries),
             "run_failure": self._continuations.run_failure,
             "event_log": None if self._log is None else str(self._log.path),
         }
@@ -821,6 +1167,36 @@ def _bytes_field(reply: Reply, name: str) -> bytes | None:
         return bytes.fromhex(value)
     except ValueError:
         return None
+
+
+def _save_problem(
+    reply: Reply,
+    path: Path,
+    if_state: int | None,
+    stop: Mapping[str, Any] | None,
+    check_files: bool,
+) -> str | None:
+    """What a save's reply shows that differs from the save asked for, or ``None``."""
+    header = reply.field("header")
+    if reply.field("saved") != str(path):
+        return f"the reply names {reply.field('saved')!r}, not {path}"
+    if not isinstance(reply.field("seq"), int):
+        return f"the reply names no journal entry: {reply.body!r}"
+    if not isinstance(header, dict):
+        return f"the reply has no header: {reply.body!r}"
+    if if_state is not None and reply.field("state_seq") != if_state:
+        return f"the machine is in state {reply.field('state_seq')!r} after the save, not {if_state}"
+    if stop is not None and header.get("emulated_ns") != stop.get("emu_ns"):
+        return f"the state holds emulated time {header.get('emulated_ns')!r}; the machine stopped at {stop.get('emu_ns')!r}"
+    if check_files:
+        media = header.get("media")
+        if not isinstance(media, list):
+            return f"the header records no media: {header!r}"
+        for drive in media:
+            writable_folder = isinstance(drive, dict) and drive.get("read_only") is False and "folder" in drive
+            if writable_folder and not isinstance(drive.get("files_recorded"), int):
+                return f"drive {drive.get('drive')}: has no record of its files"
+    return None
 
 
 def _guarded_write(

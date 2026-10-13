@@ -119,6 +119,10 @@ class AgentClientLike(Protocol):
 
     def close(self) -> None: ...
 
+    def call(
+        self, method: str, params: Mapping[str, Any] | None = None, request_id: str | None = None
+    ) -> dict[str, Any]: ...
+
 
 @dataclass(frozen=True)
 class Endpoint:
@@ -170,10 +174,13 @@ class RequestIds:
     def __init__(self, session: str, client: int) -> None:
         self.prefix = f"{session}.c{client}"
         self._counter = itertools.count(1)
+        #: The ID :meth:`next` gave last, or ``None`` before the first.
+        self.last: str | None = None
 
     def next(self) -> str:
         """The next ID in this client's namespace."""
-        return f"{self.prefix}.{next(self._counter)}"
+        self.last = f"{self.prefix}.{next(self._counter)}"
+        return self.last
 
 
 class SessionClient:
@@ -283,6 +290,17 @@ class SessionClient:
         """Stops the CPU trace; needs ``trace.cpu``."""
         self._require(DEBUGGER, "trace.cpu")
         return self.raw.stop_trace(session_id, request_id=self.ids.next())
+
+    def save_checkpoint(self, session_id: str) -> dict[str, Any]:
+        """``checkpoint.save`` (protocol 1.1); needs ``checkpoints.save``. Returns the raw result."""
+        self._require(DEBUGGER, "checkpoints.save")
+        return self.raw.call("checkpoint.save", {"session_id": session_id}, request_id=self.ids.next())
+
+    def restore_checkpoint(self, session_id: str, checkpoint_id: str, expected_sha256: str) -> dict[str, Any]:
+        """``checkpoint.restore`` (protocol 1.1); needs ``checkpoints.restore``. Returns the raw result."""
+        self._require(DEBUGGER, "checkpoints.restore")
+        params = {"session_id": session_id, "checkpoint_id": checkpoint_id, "expected_sha256": expected_sha256}
+        return self.raw.call("checkpoint.restore", params, request_id=self.ids.next())
 
     def close(self) -> None:
         """Closes the caller's client."""

@@ -1,6 +1,8 @@
 # ADR 0026: a shared package for owned DOSBox-X debugger sessions
 
-Status: accepted. Plans the `dinorefurb-dosbox-session` package; no code ships with this record.
+Status: accepted. Plans the `dinorefurb-dosbox-session` package; no code ships with this record. For a
+rust-dos run started from a checkpoint, the empty C: is amended by
+[ADR 0041](0041-rust-dos-save-states.md): C: is a fresh copy of the one the checkpoint kept.
 
 ## Context
 
