@@ -44,6 +44,10 @@ The media are compared as if the state had been saved with it, a `check_files` l
 files there with the state's record, and the drive stays mounted from it. A drive the state hasn't
 as a folder drive is refused with 400 before anything changes. `/api/version` lists `load_folders`.
 The gap is kibertoad/rust-dos issue 101.
+Mounting C: through one fixed directory junction does not get around it on v1.7.1: rust-dos
+resolves the junction, so the state still records each run's own folder and a strict-match load
+in the next run is refused. The only path v1.7.1 would match is the earlier run's folder itself,
+which ADR 0026's private C: rules out. The upstream change is dividebysandwich/rust-dos PR 85.
 
 The pinned DOSBox-X (protocol 1.0) has no checkpoint method, as ADR 0028 records. The Agent's
 `feat/agent-checkpoints` branch adds protocol 1.1: `checkpoint.save`, `checkpoint.restore`,
