@@ -1,7 +1,8 @@
 # ADR 0040: rust-dos as a second session backend
 
 Status: accepted. Amends [ADR 0026](0026-dosbox-x-session-package.md), whose package ran DOSBox-X
-alone. Tracked in issue 446.
+alone. Tracked in issue 446. Decision 7 is amended by [ADR 0041](0041-rust-dos-save-states.md),
+which adds save states.
 
 ## Context
 

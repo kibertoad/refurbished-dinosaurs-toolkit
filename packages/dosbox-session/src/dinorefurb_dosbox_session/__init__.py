@@ -7,7 +7,8 @@ only after the guest runs a wake address, and an event log checked against the
 caller's event schemas and versioned outcome contract. It never imports the DOSBox-X
 Agent client: the caller imports it from its own checkout and passes a :data:`ClientFactory`.
 :class:`RustDosSession` runs rust-dos instead, through its HTTP debug server, with the same run
-lock, drives, guarded writes and event log. Windows only.
+lock, drives, guarded writes and event log, and saves and loads the machine's state, with rust-dos's
+strict match by default. Windows only.
 
 The supported imports are below. Everything else is internal.
 """
@@ -53,6 +54,8 @@ from .errors import (
     RunFailed,
     ServerRefused,
     SessionError,
+    StateFailed,
+    StateRefused,
     WriteFailed,
     WriteHashMismatch,
     WriteOutsideContract,
@@ -98,6 +101,7 @@ from .rustdos import (
     RustDosSettings,
 )
 from .rustdos_client import MemoryRead, Reply, RustDosClient
+from .rustdos_states import DRIVE_COPY, STATE_FILE, STATES_DIRECTORY, LoadedState, SavedState, read_saved_state
 from .session import DosboxSession, EventLogSettings, Observation, SessionSettings, Target
 from .writes import FieldContract, VerifiedWrite, WritableField
 
@@ -114,6 +118,7 @@ __all__ = [
     "ConfigurationRefused",
     "DEFAULT_LOCK_PATH",
     "DEFAULT_MAX_LOG_BYTES",
+    "DRIVE_COPY",
     "DosboxSession",
     "EMULATOR_LOG",
     "EMULATOR_OUTPUT",
@@ -143,6 +148,7 @@ __all__ = [
     "LogOversized",
     "LogRejected",
     "LogTruncated",
+    "LoadedState",
     "LoggedEvent",
     "Media",
     "MemoryRead",
@@ -180,10 +186,15 @@ __all__ = [
     "RustDosOperation",
     "RustDosSession",
     "RustDosSettings",
+    "STATES_DIRECTORY",
+    "STATE_FILE",
+    "SavedState",
     "ServerRefused",
     "SessionClient",
     "SessionError",
     "SessionSettings",
+    "StateFailed",
+    "StateRefused",
     "Target",
     "VerifiedWrite",
     "WritableField",
@@ -194,6 +205,7 @@ __all__ = [
     "capability_value",
     "hash_modules",
     "read_event_log",
+    "read_saved_state",
     "read_lock",
     "remove_stale_lock",
     "require",

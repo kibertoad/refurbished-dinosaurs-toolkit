@@ -124,6 +124,32 @@ class WriteReadbackMismatch(WriteFailed):
         self.found = found
 
 
+class StateRefused(SessionError):
+    """A save state was not saved or loaded, and the guest is as it was.
+
+    It is raised for a name that is not a plain file name or is already taken, a state this session
+    did not save, a state whose files changed since the save, and a save or load the rust-dos
+    server refused before changing anything: a strict-match request while the machine was not
+    stopped and quiet, a state that does not match the running machine, or a file it could not
+    read. :attr:`differences` lists what the server or the session found different, and
+    :attr:`status` is the server's HTTP status, or ``None`` when nothing was sent.
+    """
+
+    def __init__(self, message: str, differences: tuple[str, ...] = (), status: int | None = None) -> None:
+        super().__init__(message)
+        self.differences = differences
+        self.status = status
+
+
+class StateFailed(SessionError):
+    """A save or load of a save state was sent, and its outcome could not be verified.
+
+    For a load the machine may hold the loaded state, the state it had, or neither, so the run
+    fails. For a save the guest is unchanged and the run goes on, but the state is not recorded as
+    saved and cannot be loaded.
+    """
+
+
 class RunFailed(SessionError):
     """The run failed earlier, so an operation that would change or resume the guest was refused.
 
@@ -234,6 +260,7 @@ class ServerRefused(SessionError):
     :attr:`status` is the HTTP status, :attr:`body` the reply's body (the parsed JSON object, with
     ``error``, when the server sent one), :attr:`precondition` the precondition the server found
     unmet (``state``, ``paused`` or ``quiescent``), or ``None``, and :attr:`reply` the whole reply.
+    The session's save state calls raise :class:`StateRefused` or :class:`StateFailed` instead.
     """
 
     def __init__(self, method: str, path: str, reply: Any) -> None:

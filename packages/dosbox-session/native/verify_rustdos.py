@@ -5,7 +5,14 @@ owned session with an argument on its command line, reads the text screen with i
 sets a breakpoint, continues to it and reads the registers there. At the breakpoint
 it makes a guarded write to a word the program loads next, reads it back, and steps over the load
 to check that the guest sees the new value. It then checks that the server refuses a write whose
-state precondition is stale, and runs the program to its exit. With ``--deterministic`` the
+state precondition is stale, and runs the program to its exit. A strict-match save state taken at
+the breakpoint, with the files on C: recorded, is then loaded twice: once with a drive mounted
+since the save, which the server refuses, and once after unmounting it, which puts the machine
+back at the breakpoint with the word unwritten, so a step loads the original word and the program
+exits again. The save state is a checkpoint, so when the server offers ``load_folders`` a second
+session starts from it in ``<run dir>-checkpoint``, with C: copied from the checkpoint: it must stop
+at the breakpoint with the word unwritten, and the program must load the word and exit. A server
+without ``load_folders`` gets ``"checkpoint_start": "not run"``. With ``--deterministic`` the
 session runs in rust-dos's deterministic mode, where the queued run resumes the machine paused at
 startup. It also checks that the server reports the commit it was built from. It prints a JSON result and exits 0 when every check passes, 1 otherwise.
 
@@ -15,6 +22,7 @@ startup. It also checks that the server reports the commit it was built from. It
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import hashlib
 import json
 import sys
@@ -26,9 +34,11 @@ from dinorefurb_dosbox_session import (
     RustDosSession,
     RustDosSettings,
     ServerRefused,
+    StateRefused,
     Target,
     WritableField,
     WriteFailed,
+    read_saved_state,
 )
 
 PROGRAM = "PROBE.COM"
@@ -87,6 +97,8 @@ def main() -> int:
             checks["ip"] = hex(int(registers["ip"], 16))
             for name in EXPECTED:
                 checks[name] = hex(int(registers[name], 16))
+            state = session.save_state("at-breakpoint", check_files=True)
+            checks["state_stop"] = None if state.stop is None else state.stop.get("cs_ip")
             word = WritableField("probe word", f"{cs}:{WORD_OFFSET:04X}", len(WORD_BEFORE))
             contract = FieldContract("native-probe/1", (word,))
             stale = client.read_memory(word.address, word.length).state_seq - 1
@@ -115,7 +127,62 @@ def main() -> int:
                 client.break_on(program_exit=True)
                 ended = session.observe(session.continue_(), timeout=arguments.timeout)
                 checks["exit"] = None if ended.stop is None else ended.stop.get("exit")
+                extra = arguments.run_directory / "extra-d"
+                extra.mkdir()
+                client.request("PUT", "/api/drive/D", body={"path": str(extra.resolve()), "read_only": True})
+                try:
+                    session.load_state(state)
+                    checks["mismatched_load"] = "loaded"
+                except StateRefused as error:
+                    checks["mismatched_load"] = f"refused {error.status}: {list(error.differences)}"
+                client.request("DELETE", "/api/drive/D")
+                loaded = session.load_state(state)
+                assert loaded.stop is not None and loaded.debugger_reset is not None
+                checks["loaded_stop"] = loaded.stop.get("cs_ip")
+                checks["loaded_reset_break_on"] = loaded.debugger_reset.get("break_on")
+                checks["loaded_word"] = client.read_memory(word.address, word.length).data.hex()
+                reloaded = session.observe(session.step(), timeout=arguments.timeout)
+                assert reloaded.stop is not None
+                checks["ax_after_reload"] = hex(int(reloaded.stop["registers"]["ax"], 16))
+                client.break_on(program_exit=True)
+                ended = session.observe(session.continue_(), timeout=arguments.timeout)
+                checks["exit_after_reload"] = None if ended.stop is None else ended.stop.get("exit")
         record = session.record()
+
+    features = (record["server"] or {}).get("features") or []
+    checkpoint_record = None
+    if "load_folders" not in features:
+        checks["checkpoint_start"] = "not run"
+    elif "state_stop" in checks:
+        start = dataclasses.replace(
+            settings,
+            run_directory=arguments.run_directory.with_name(arguments.run_directory.name + "-checkpoint"),
+            prepare_drive=None,
+            start_state=read_saved_state(arguments.run_directory, "at-breakpoint"),
+        )
+        with RustDosSession(start) as session:
+            client = session.client
+            assert session.stop is not None
+            checks["checkpoint_start"] = "started"
+            checks["checkpoint_stop"] = session.stop.get("cs_ip")
+            checks["checkpoint_c"] = client.drives()["drives"]["C"].get("path") == str(session.drive_c)
+            cs = str(session.stop["registers"]["cs"])
+            checks["checkpoint_word"] = client.read_memory(f"{cs}:{WORD_OFFSET:04X}", len(WORD_BEFORE)).data.hex()
+            stepped = session.observe(session.step(), timeout=arguments.timeout)
+            assert stepped.stop is not None
+            checks["checkpoint_ax"] = hex(int(stepped.stop["registers"]["ax"], 16))
+            client.break_on(program_exit=True)
+            ended = session.observe(session.continue_(), timeout=arguments.timeout)
+            checks["checkpoint_exit"] = None if ended.stop is None else ended.stop.get("exit")
+            checkpoint_record = session.record()
+    checkpoint_passed = checks.get("checkpoint_start") == "not run" or (
+        checks.get("checkpoint_stop") == checks.get("state_stop")
+        and checks.get("checkpoint_c") is True
+        and checks.get("checkpoint_word") == WORD_BEFORE.hex()
+        and checks.get("checkpoint_ax") == hex(int.from_bytes(WORD_BEFORE, "little"))
+        and isinstance(checks.get("checkpoint_exit"), dict)
+        and checks["checkpoint_exit"].get("code") == 0  # type: ignore[union-attr]
+    )
 
     build = (record["server"] or {}).get("build")
     checks["build_commit"] = build.get("commit") if isinstance(build, dict) else None
@@ -133,6 +200,16 @@ def main() -> int:
         and checks.get("ax_after_load") == hex(int.from_bytes(WORD_AFTER, "little"))
         and isinstance(checks.get("exit"), dict)
         and checks["exit"].get("code") == 0  # type: ignore[union-attr]
+        and checks.get("state_stop") == checks.get("entry", "").split(":")[0] + f":{BREAKPOINT_OFFSET:04X}"  # type: ignore[union-attr]
+        and str(checks.get("mismatched_load", "")).startswith("refused 409")
+        and "drive D" in str(checks.get("mismatched_load"))
+        and checks.get("loaded_stop") == checks.get("state_stop")
+        and checks.get("loaded_reset_break_on") == ["program_exit"]
+        and checks.get("loaded_word") == WORD_BEFORE.hex()
+        and checks.get("ax_after_reload") == hex(int.from_bytes(WORD_BEFORE, "little"))
+        and isinstance(checks.get("exit_after_reload"), dict)
+        and checks["exit_after_reload"].get("code") == 0  # type: ignore[union-attr]
+        and checkpoint_passed
     )
     print(
         json.dumps(
@@ -143,6 +220,8 @@ def main() -> int:
                 "server": record["server"],
                 "deterministic": record["deterministic"],
                 "writes": record["writes"],
+                "states": record["states"],
+                "start_state": None if checkpoint_record is None else checkpoint_record["start_state"],
                 "package_version": record["package_version"],
             },
             indent=2,

@@ -159,8 +159,12 @@ Owns emulator debugger sessions for a restoration's research tooling, on DOSBox-
   package speaks with the standard library. It takes the same run lock, C: and event log, refuses
   a server without API version 1 and the features it relies on, starts the target stopped at its
   entry, tracks operations through the server's journal, and makes guarded writes that the server
-  refuses if the machine changed since the field was read (`If-State-Seq`). Gated breakpoints stay
-  with DOSBox-X. Known incompatibilities are investigated and fixed through upstream PRs;
+  refuses if the machine changed since the field was read (`If-State-Seq`). It saves and loads the
+  whole machine, with rust-dos's strict match by default, hashes each state's files and checks
+  that a load stops where the state was saved. A checkpoint keeps a copy of C:, and a later run
+  starts from it on a fresh copy
+  ([ADR 0041](decisions/0041-rust-dos-save-states.md)). Gated breakpoints stay with DOSBox-X,
+  which has no save states. Known incompatibilities are investigated and fixed through upstream PRs;
   DOSBox-X is a temporary fallback until the fix is released and verified.
 - Windows only.
 

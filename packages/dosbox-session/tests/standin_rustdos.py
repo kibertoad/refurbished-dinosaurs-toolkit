@@ -13,7 +13,7 @@ Modes, comma-separated:
 - silent: never prints its address.
 - never-ready: never writes the readiness marker.
 - api-2: reports API version 2.
-- no-ops: leaves `ops` out of its features.
+- no-<feature>, such as no-ops, no-strict-match or no-load-folders: leaves the feature out.
 - wrong-program: reports another program at the target's entry.
 - busy: AUTOEXEC.BAT is still ending, so a run that is not queued is refused as the busy prompt does.
 - no-entry: a run times out (504) before the program reaches its entry.
@@ -24,12 +24,21 @@ Modes, comma-separated:
 - drop-resume-reply: takes the first resume and closes the connection without answering.
 - cut-resume-reply: takes the first resume and closes the connection halfway through its answer.
 - ignore-quit: answers quit and keeps running.
+- drop-save-reply: saves a state and closes the connection without answering.
+- drop-load-reply: loads a state and closes the connection without answering.
+- wrong-load-stop: a load leaves the machine one instruction past where the state was saved.
+- unchecked-load: a load reply lists a drive it left unchecked.
+
+A state file is JSON holding the machine's memory, registers, program, instruction count, drives,
+speed and, for a check_files save, the SHA-256 of each file on C:. A load's `folders` takes a
+folder drive of the state as mounted from another folder, as rust-dos does.
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import re
@@ -41,7 +50,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-FEATURES = ["journal", "ops", "if_state_seq", "request_ids", "breakpoint_once", "quit", "write_expect", "run", "program_stops", "build", "screen_attrs"]
+FEATURES = ["journal", "ops", "if_state_seq", "request_ids", "breakpoint_once", "quit", "write_expect", "run", "program_stops", "build", "screen_attrs", "strict_match", "check_files", "load_folders"]
 # The fields of a control request's body; rust-dos refuses any other.
 CONTROL_FIELDS = {"count", "until", "until_ms", "timeout_ms", "command", "stop_at_entry", "queue", "wait"}
 BUILD = {"commit": "81076c73d85c55abf8e6b0229291adf729f134c5", "commit_short": "81076c7", "dirty": False}
@@ -68,6 +77,7 @@ class Machine:
         self.break_on = {"program_start": False, "program_exit": False}
         self.drives: dict[str, Any] = {"C": {"path": str(drive_c), "read_only": False, "type": "hdd", "image": False}}
         self.registers = {"cs": SEGMENT, "ip": 0, "ax": 0, "bx": 0}
+        self.cycles = "auto"
         self.paused = deterministic
         self.stop: dict[str, Any] | None = None
         self.state_seq = 0
@@ -98,7 +108,8 @@ class Machine:
     def pause_now(self, reason: str, cause: int | None, tag: str | None, op: int | None = None, **extra: Any) -> dict[str, Any]:
         self.paused = True
         cs_ip = f"{self.registers['cs']:04X}:{self.registers['ip']:04X}"
-        entry = self.append("paused", cause, tag, {"reason": reason, "cs_ip": cs_ip, "registers": self.registers_json(), **extra}, op=op)
+        fields = {"reason": reason, "cs_ip": cs_ip, "icount": self.icount, "emu_ns": self.icount * 1000, "registers": self.registers_json(), **extra}
+        entry = self.append("paused", cause, tag, fields, op=op)
         self.stop = entry
         self.stop_seq = entry["seq"]
         if op is not None:
@@ -162,7 +173,7 @@ class Machine:
         if path == "/api/version":
             if "no-version" in self.modes:
                 raise Refusal(404, {"error": "not found"})
-            features = [f for f in FEATURES if not ("no-ops" in self.modes and f == "ops")]
+            features = [f for f in FEATURES if f"no-{f.replace('_', '-')}" not in self.modes]
             return 200, {"name": "rust-dos", "version": "1.7.1", "build": BUILD, "api_version": 2 if "api-2" in self.modes else 1, "instance": "5eed", "features": features}
         if path == "/api/status":
             quiescent = self.paused and not self.pending_ops()
@@ -179,8 +190,20 @@ class Machine:
             self.drives[letter] = {"path": body["path"], "type": body.get("type", "hdd"), "read_only": read_only, "image": body.get("type") == "cdrom"}
             self.append("drive_mounted", req, tag, {"drive": letter})
             return 200, {"drives": self.drives}
+        if path.startswith("/api/drive/") and method == "DELETE":
+            del self.drives[path.rsplit("/", 1)[1]]
+            self.append("drive_unmounted", req, tag, {})
+            return 200, {"drives": self.drives}
         if path == "/api/drive":
             return 200, {"drives": self.drives}
+        if path == "/api/speed" and method == "POST":
+            self.cycles = str(body["cycles"])
+            self.append("speed_set", req, tag, {"cycles": self.cycles})
+            return 200, {"cycles": self.cycles, **self.meta()}
+        if path == "/api/state/save":
+            return self.save_state(body, req, tag)
+        if path == "/api/state/load":
+            return self.load_state(body, req, tag)
         if path == "/api/memory" and method == "GET":
             start, length = self.address(query["addr"]), int(query.get("len", "256"))
             data = bytes(self.memory[start : start + length])
@@ -239,6 +262,130 @@ class Machine:
         if path.startswith("/api/control/"):
             return self.control(path.rsplit("/", 1)[1], body or {}, req, tag)
         raise Refusal(404, {"error": f"no route {path}"})
+
+    # Save states
+
+    def files(self) -> dict[str, str]:
+        found = sorted(p for p in self.drive_c.rglob("*") if p.is_file())
+        return {p.relative_to(self.drive_c).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in found}
+
+    def media(self, files: dict[str, str] | None) -> list[dict[str, Any]]:
+        media = []
+        for letter, drive in sorted(self.drives.items()):
+            entry = {"drive": letter, "kind": drive["type"], "read_only": drive["read_only"], "folder": drive["path"]}
+            if files is not None and not drive["read_only"]:
+                entry["files_recorded"] = len(files)
+            media.append(entry)
+        return media
+
+    def quiet_or_refuse(self, what: str) -> None:
+        if not self.paused or self.pending_ops():
+            reason = "the machine runs; pause it first (POST /api/control/pause)" if not self.paused else "a step is pending"
+            body = {"error": f"can't do a strict-match {what}: {reason}", "precondition": "quiescent", "paused": self.paused}
+            raise Refusal(409, {**body, "pending_ops": self.pending_ops(), "input_queued": 0, "settings_window": False, **self.meta()})
+
+    def save_state(self, body: dict[str, Any], req: int, tag: str | None) -> tuple[int, Any]:
+        if body.get("strict_match"):
+            self.quiet_or_refuse("save")
+        files = self.files() if body.get("check_files") else None
+        header: dict[str, Any] = {
+            "version": "1.7.1",
+            "emulated_ns": self.icount * 1000,
+            "media": self.media(files),
+            "memsize": 16,
+            "machine": "" if self.cycles == "auto" else f"[emulator]\ncycles={self.cycles}\n",
+            "program": "" if self.program is None else self.program["name"],
+        }
+        state = {
+            "header": header,
+            "memory": base64.b64encode(bytes(self.memory)).decode(),
+            "registers": self.registers,
+            "program": self.program,
+            "icount": self.icount,
+            "drives": self.drives,
+            "cycles": self.cycles,
+            "files": files,
+        }
+        Path(body["path"]).write_text(json.dumps(state), encoding="utf-8")
+        fields = {"path": body["path"], "strict_match": bool(body.get("strict_match"))}
+        entry = self.append("state_saved", req, tag, fields, changes=False)
+        if "drop-save-reply" in self.modes:
+            return -1, None
+        return 200, {"saved": body["path"], "format": 1, "emulator": "1.7.1", "header": header, "seq": entry["seq"], **self.meta()}
+
+    def load_differences(self, state: dict[str, Any], check_files: bool) -> list[str]:
+        differences = []
+        for letter in sorted(set(state["drives"]) | set(self.drives)):
+            theirs, ours = state["drives"].get(letter), self.drives.get(letter)
+            if theirs is None:
+                differences.append(f"drive {letter}: is mounted here ({ours['type']} {ours['path']}); the state hasn't it")
+            elif ours is None:
+                differences.append(f"drive {letter}: the state has it ({theirs['type']} {theirs['path']}); it isn't mounted here")
+            elif (theirs["path"], theirs["read_only"]) != (ours["path"], ours["read_only"]):
+                differences.append(f"drive {letter}: the state has {theirs['path']}, this machine has {ours['path']}")
+        if state["cycles"] != self.cycles:
+            differences.append(f"emulator.cycles: the state has {state['cycles']}, this machine has {self.cycles}")
+        if check_files and state["files"] is not None:
+            found = self.files()
+            for name in sorted(set(state["files"]) | set(found)):
+                if name not in state["files"]:
+                    differences.append(f"drive C: file {name}: new since the save")
+                elif state["files"][name] != found.get(name):
+                    differences.append(f"drive C: file {name}: its contents differ from when it was saved")
+        return differences
+
+    def load_state(self, body: dict[str, Any], req: int, tag: str | None) -> tuple[int, Any]:
+        strict = bool(body.get("strict_match"))
+        if self.deterministic and not self.paused:
+            raise Refusal(409, {"error": "the machine runs", "precondition": "paused", "paused": False, **self.meta()})
+        if strict:
+            self.quiet_or_refuse("load")
+        path = Path(body["path"])
+        if not path.is_file():
+            raise Refusal(400, {"error": f"no save state at {path}", "loaded": False, "unchanged": True, **self.meta()})
+        state = json.loads(path.read_text(encoding="utf-8"))
+        folders = body.get("folders") or {}
+        for letter, folder in folders.items():
+            drive = state["drives"].get(letter.upper())
+            if drive is None or drive["read_only"] or drive["image"]:
+                raise Refusal(400, {"error": f"drive {letter.upper()}: isn't a folder drive in the state", "loaded": False, "unchanged": True, **self.meta()})
+            if not Path(folder).is_absolute():
+                raise Refusal(400, {"error": f"folders: {folder} isn't an absolute path"})
+            state["drives"][letter.upper()] = {**drive, "path": folder}
+        differences = self.load_differences(state, bool(body.get("check_files")))
+        unchecked = []
+        if (body.get("check_files") and state["files"] is None) or "unchecked-load" in self.modes:
+            unchecked.append("drive C: wasn't checked: the state doesn't record what is on it")
+        if strict and differences:
+            refusal = {"error": f"{path} doesn't match this machine; nothing was loaded", "loaded": False, "unchanged": True}
+            raise Refusal(409, {**refusal, "differences": differences, **self.meta()})
+        self.memory[:] = base64.b64decode(state["memory"])
+        self.registers = dict(state["registers"])
+        self.program = state["program"]
+        self.icount = state["icount"] + (1 if "wrong-load-stop" in self.modes else 0)
+        self.drives = state["drives"]
+        self.cycles = state["cycles"]
+        self.append("state_loaded", req, tag, {"path": str(path), "strict_match": strict, "differences": differences})
+        reply: dict[str, Any] = {"loaded": str(path), "format": 1, "emulator": "1.7.1", "header": state["header"]}
+        if folders:
+            reply["folders"] = {letter.upper(): folder for letter, folder in folders.items()}
+        if strict:
+            break_on = [name for name, on in self.break_on.items() if on]
+            reset = {"breakpoints": len(self.breakpoints), "watchpoints": 0, "break_on": break_on, "run_to": False, "step": False}
+            reset.update({"pause_waits": 0, "run": False, "input": 0, "held_keys": 0, "until_ms": False})
+            self.breakpoints = []
+            self.break_on = {"program_start": False, "program_exit": False}
+            self.append("debugger_reset", req, tag, {"cleared": reset, "cancelled": []})
+            reply["debugger_reset"] = reset
+        elif differences:
+            reply["differences"] = differences
+        if unchecked:
+            reply["unchecked"] = unchecked
+        if self.paused:
+            self.pause_now("load", req, tag)
+        if "drop-load-reply" in self.modes:
+            return -1, None
+        return 200, {**reply, "seq": len(self.journal), **self.meta()}
 
     def control(self, action: str, body: dict[str, Any], req: int, tag: str | None) -> tuple[int, Any]:
         unknown = sorted(set(body) - CONTROL_FIELDS)

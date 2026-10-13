@@ -22,7 +22,7 @@ restoration's research notes; verify the released fix before returning to rust-d
 
 The package owns the parts that decide whether a recorded run can be trusted and that carry no
 game knowledge: the emulator process, the machine-wide run lock, the guest drives, muted host
-audio, the session record, request IDs, operation observation, guarded writes, gated breakpoints and the event log.
+audio, the session record, request IDs, operation observation, guarded writes, save states, gated breakpoints and the event log.
 What a run means (executable fingerprints, address maps, state layouts and which fields may be
 written, input, screens, event kinds and what an outcome must say) stays in the restoration. A restored
 game never depends on this package.
@@ -416,8 +416,10 @@ gate = GatedBreakpoint(session, CodeAddress(0x0028, 0x00012345), (CodeAddress(0x
   mode (such as a BIOS handler the extender reflects an interrupt to) cannot arm a protected-mode
   boundary. Pick wakes in the boundary's mode.
 
-The pinned DOSBox-X has no breakpoint conditions, run-until, hit counts or batch reads, so the
-package offers none of them. To read several fields at one stop, read one range that covers them.
+The pinned DOSBox-X has no breakpoint conditions, run-until, hit counts, batch reads or save and
+restore through its structured debugger, so the package offers none of them for DOSBox-X sessions.
+To read several fields at one stop, read one range that covers them. Save states need a rust-dos
+session ([below](#save-states)).
 
 ## rust-dos sessions
 
@@ -427,8 +429,8 @@ so there is no source build, no client to import and no console to hide. The pac
 API with the standard library and imports nothing of rust-dos.
 
 The session needs a rust-dos with debug server API version 1 and the features `journal`, `ops`,
-`if_state_seq`, `request_ids`, `write_expect`, `run`, `program_stops`, `quit` and `build`
-(`RUST_DOS_FEATURES`). The supported release is
+`if_state_seq`, `request_ids`, `write_expect`, `run`, `program_stops`, `quit`, `build`,
+`strict_match` and `check_files` (`RUST_DOS_FEATURES`). The supported release is
 [v1.7.1](https://github.com/dividebysandwich/rust-dos/releases/tag/v1.7.1)
 (`RUST_DOS_PINNED_TAG`), commit `81076c73d85c55abf8e6b0229291adf729f134c5`.
 Download `rust-dos-v1.7.1-windows-x86_64.zip` and keep `SDL2.dll` beside `rust-dos.exe`.
@@ -512,7 +514,9 @@ the executable was built from and whether its tree was dirty), `endpoint`
 `owner_process`, `emulator_process`, `host_sound`, `window` (`hidden` or `shown`),
 `deterministic` (the speed and start time, or `null`), `media` (each drive as the server reported
 it), `readiness`, `request_id_prefixes`, `entry` (the entry stop's `CS:IP`, program and journal
-number), `writes`, `run_failure` and `event_log`.
+number, or `null` in a run started from a checkpoint), `writes`, `start_state` (the checkpoint the
+run started from, or `null`), `states` (each save and load, [below](#save-states)), `run_failure` and
+`event_log`.
 
 ### Calls, operations and observation
 
@@ -550,9 +554,9 @@ Requests that resume or change the guest go through the session:
   operation is the pending one; if it is not and the machine is paused and quiet, the server did
   not take it; otherwise the session raises `OperationPending` and sends nothing.
 
-Continuations, steps, input and writes raise `RunFailed` after the run failed and `RunEnded` once
-the event log has its outcome, as for DOSBox-X. The event log calls (`log_event`, `finish_log`,
-`fail_log`, `read_event_log`) are the ones described above.
+Continuations, steps, input, writes and state loads raise `RunFailed` after the run failed and
+`RunEnded` once the event log has its outcome, as for DOSBox-X. The event log calls (`log_event`,
+`finish_log`, `fail_log`, `read_event_log`) are the ones described above.
 
 ### Guarded writes in a rust-dos session
 
@@ -586,7 +590,129 @@ at the same emulated time. rust-dos takes input and changes to the machine only 
 paused in this mode. `cycles` must be a number, because rust-dos replaces `auto` or `max` with a
 speed of its own choosing.
 
-Gated breakpoints are offered for DOSBox-X sessions only, and neither backend offers save states yet.
+Gated breakpoints are offered for DOSBox-X sessions only.
+
+### Save states
+
+`session.save_state(name)` saves the whole machine, and `session.load_state(state)` puts it back.
+A checkpoint (a strict-match save with `check_files`) also starts later runs
+([below](#starting-a-run-from-a-checkpoint)). The design is
+[ADR 0041](../../docs/decisions/0041-rust-dos-save-states.md).
+
+```python
+from dinorefurb_dosbox_session import StateRefused
+
+state = session.save_state("menu", check_files=True)  # stopped at a breakpoint, nothing pending
+for key in ("up", "down", "enter"):
+    loaded = session.load_state(state)  # back at the breakpoint; breakpoints and input cleared
+    session.client.set_breakpoint(f"{cs}:0480")
+    session.send_input("key", {"key": key})
+    observation = session.observe(session.continue_(), timeout=10)
+    ...
+```
+
+Both take `strict_match`, which is `True` by default and is rust-dos's strict match:
+
+- A strict-match save is made only while the machine is stopped between two instructions with no
+  operation or input under way. The session reads the status first and refuses without sending
+  anything otherwise; the save carries `If-State-Seq`, so it is made in the state the session
+  read. The state records the stop it was saved at.
+- A strict-match load is made only while the machine is stopped and quiet, and only when the
+  state's hardware settings, media and deterministic start time match the running machine's.
+  rust-dos then clears every breakpoint, watchpoint, `break_on` stop, run-to target and queued
+  input, cancels the operations under way, and leaves the machine paused at a stop with reason
+  `load`. Set the breakpoints you need again before continuing.
+- A plain save (`strict_match=False`) is also made while the machine runs; it records the stop only
+  when the machine was stopped and quiet. A plain load keeps the breakpoints, loads a state that
+  differs from the running machine, and lists what differs in `differences`.
+
+`check_files=True` on the save makes the state record the size and SHA-256 of every file on the
+writable drives (C:). Every load of that state compares them, and a strict-match load is refused
+when one changed. A state never holds the files themselves, so a load does not put back what the
+guest wrote after the save.
+
+A save writes `states/<name>/machine.state` in the run directory, outside every guest drive, and
+returns a `SavedState`. A checkpoint also copies C: into `states/<name>/drive-c` while the machine
+stays stopped; `SavedState.checkpoint` says whether a state is one. A name is a letter or digit followed by up to 63 letters, digits, `.`, `_`
+or `-`, not ending in `.` and not a Windows device name, and is used once per session.
+`session.states` holds the saved states by name. The save is checked before it is recorded: the
+reply must name the file, a journal entry and a header, the machine must still be in the state the
+session read, the header's emulated time must be the stop's, and a `check_files` save must have
+recorded every writable folder drive. Then every file in the state's folder is hashed. A save does
+not change the guest, so it is also made after the run failed or the event log ended.
+
+A load takes a `SavedState` or its name and returns a `LoadedState`. Before sending anything, it
+refuses a state this session did not save or start from, and a state whose folder no longer holds
+exactly the files the save hashed. A state saved with `check_files` is loaded with it. The load is checked:
+the reply must name the file and the state's emulated time, a strict-match load must report a
+debugger reset and no differences, and the machine must be stopped by the load request at the
+`CS:IP`, instruction count and emulated time the state was saved at. A load changes the guest, so
+like a guarded write it raises `OperationPending` while a continuation is pending, `RunFailed`
+after the run failed and `RunEnded` once the event log has its outcome.
+
+| Outcome | Raised | The run |
+|---|---|---|
+| The session or the server refused it before changing anything: a name, a state that is not this session's or whose files changed, a strict-match request while the machine was not stopped and quiet, a state that does not match (`differences`), a missing file | `StateRefused` | goes on |
+| A load's reply was lost, the server failed, or the reply does not verify | `StateFailed` | fails, as after a failed write |
+| A save's reply was lost or does not verify | `StateFailed` | goes on; the state is not recorded and its name stays taken |
+
+`states` in `session.json` lists every save and load in order, with `action` (`save` or `load`),
+`status` (`saved`, `loaded`, `refused` or `failed`), the name and `strict_match`. A saved state
+adds its path, `check_files`, the files' hashes, the journal entry of the save, the stop, the
+header and `writes`: the number of guarded writes recorded before the save, which are the writes
+a load of it holds. A load adds the stop it left, the debugger reset and the differences; a refusal
+or failure adds why and the differences the server listed.
+
+A saved state also records `session` and `emulator_sha256`, the session and emulator that saved
+it.
+
+#### Starting a run from a checkpoint
+
+A later run starts from a checkpoint in place of starting the target:
+
+```python
+from dinorefurb_dosbox_session import read_saved_state
+
+state = read_saved_state(Path("runs/first"), "menu")  # from the run's session.json
+settings = RustDosSettings(
+    emulator=emulator,
+    run_directory=Path("runs/second"),
+    target=Target("GAME.EXE"),
+    emulator_config=config,  # the media mounted at the save
+    start_state=state,
+)
+with RustDosSession(settings) as session:
+    session.stop  # the stop with reason "load", where the state was saved
+```
+
+`read_saved_state(run_directory, name)` reads a state from a run's `session.json` and refuses it
+(`StateRefused`) when the record or the state is missing or its folder no longer holds exactly the
+hashed files. The session then refuses, before launching anything, a state that is not a
+checkpoint (`ConfigurationRefused`), one saved while another program than the target ran
+(`ConfigurationRefused`), one saved by an emulator with another SHA-256 (`EmulatorRefused`), one
+whose files changed (`StateRefused`) and `prepare_drive` given with it (`ConfigurationRefused`).
+It also refuses a server without the `load_folders` feature (`EmulatorRefused`); the pinned
+v1.7.1 does not offer it, and starting from a checkpoint waits on the rust-dos release that does.
+
+C: is a copy of the checkpoint's `drive-c` in the new run directory, so the run never writes the
+earlier run's folders. In a normal run the session removes the readiness marker from the copy, the
+copied `AUTOEXEC.BAT` writes the same text again as the guest boots, and the session pauses the
+machine there. A deterministic machine starts paused before it boots and is loaded there; its
+`readiness` stays `not observed`. The session then loads the state with a strict match,
+`check_files` and rust-dos's `folders`, which takes the state's C: as mounted from the new copy, so
+the load is refused unless the media and every file on C: are as they were at the save. A refused
+load raises `StateRefused` and a load that does not verify raises `StateFailed`; either ends the
+start, and the session cleans up as for any failed start.
+
+In such a run `session.entry` is `None` and `session.stop` is the load's stop. `session.json` has
+`start_state`: the saving `session`, `name`, `path`, `files`, `emulator_sha256`, the saved `stop`,
+`emulated_ns` and the load's `request_id`; the load is also the first entry of `states`. The run
+can load its start state again, with its own C: in place of the first run's, and its own
+checkpoints start further runs.
+
+In deterministic mode, rust-dos documents that a run from a strict-match load of a state saved
+with a strict match at an `until_ms` stop reaches the next stop as the run that saved it did. The
+native procedure checks the load's stop, memory and a run to the program's exit in that mode.
 
 ## Errors
 
@@ -609,8 +735,10 @@ Gated breakpoints are offered for DOSBox-X sessions only, and neither backend of
 | `WriteHashMismatch` | The field's bytes do not hash to the expected value. Nothing was written; the run fails. |
 | `WriteReadbackMismatch` | The field does not hold the written bytes afterwards. The run fails. |
 | `WriteFailed` | A write was refused for another reason, such as a guest that is not stopped. The run fails. The three errors above derive from it. |
-| `RunFailed` | A write, continuation or step was asked for after the run failed. Not sent. |
-| `RunEnded` | A write, continuation or step was asked for after the event log got its outcome. Not sent. |
+| `StateRefused` | A save state was not saved or loaded and the guest is as it was. `differences` and `status` say why. The run goes on; a run starting from a checkpoint does not start. |
+| `StateFailed` | A save or load was sent and did not verify, or its reply was lost. A failed load fails the run. |
+| `RunFailed` | A write, load, continuation or step was asked for after the run failed. Not sent. |
+| `RunEnded` | A write, load, continuation or step was asked for after the event log got its outcome. Not sent. |
 | `ModuleRefused` | A module the event log names is not imported, or has no file to hash. Nothing was started. |
 | `LogEntryRefused` | The event log refused an event or outcome, or has already ended. A refusal ends the log as failed and fails the run. |
 | `LogRejected` | Reading an event log refused it; its subclasses are in the table above. |
@@ -670,8 +798,17 @@ breakpoint, reads the registers, checks that the server refuses a write whose `I
 stale, makes a guarded write, steps over the load and runs the program to its exit. It passes when
 the breakpoint stop is observed, `AX` and `BX` hold the values the program set, the stale write is
 refused with 409 and `precondition: state`, the guarded write verifies, `AX` holds the new word
-after the step and the program exits with code 0. It prints the checks, the emulator's hash, the
-server's version answer and the recorded writes.
+after the step and the program exits with code 0. It also saves a strict-match state with
+`check_files` at the breakpoint, before the write. After the exit it mounts a drive, and the load
+must be refused with the drive named among the differences; after unmounting it the load must stop
+at the breakpoint with `program_exit` among the cleared stops, the word must hold its old bytes, a
+step must load the old word into `AX`, and the program must exit with code 0 again. When the
+server offers `load_folders`, a second session then starts from that checkpoint in
+`<run directory>-checkpoint`: it must stop at the breakpoint with C: mounted from its own run
+directory and the word unwritten, a step must load the old word, and the program must exit with
+code 0. On a server without `load_folders` (v1.7.1) `checkpoint_start` is `not run`. It prints the
+checks, the emulator's hash, the server's version answer, the recorded writes, the recorded states
+and the second run's `start_state`.
 
 ## Tests
 
