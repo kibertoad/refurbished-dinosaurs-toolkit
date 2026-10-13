@@ -201,7 +201,8 @@ writes and event log, and a deterministic mode. It targets upstream v1.7.1, with
 x86-64 release executable pinned by SHA-256 in the package. It saves and loads the machine's
 state, strict-match by default, and starts later runs from a checkpoint with a fresh copy of C:
 ([ADR 0041](decisions/0041-rust-dos-save-states.md)); the checkpoint start needs rust-dos's
-`load_folders`, an upstream change not yet released. Prefer it for new sessions;
+`load_folders`, an upstream change not yet released. DOSBox-X sessions save and restore
+checkpoints through Agent protocol 1.1, which no released DOSBox-X has yet. Prefer it for new sessions;
 investigate incompatibilities and open upstream fix PRs, using DOSBox-X as a temporary fallback
 until a verified fix is released.
 

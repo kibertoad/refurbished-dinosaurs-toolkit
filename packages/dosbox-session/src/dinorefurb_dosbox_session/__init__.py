@@ -101,14 +101,17 @@ from .rustdos import (
     RustDosSettings,
 )
 from .rustdos_client import MemoryRead, Reply, RustDosClient
+from .dosbox_states import AGENT_SERVER_CONFIG, CHECKPOINTS_DIRECTORY, DosboxLoadedState, DosboxState, read_dosbox_state
 from .rustdos_states import DRIVE_COPY, STATE_FILE, STATES_DIRECTORY, LoadedState, SavedState, read_saved_state
 from .session import DosboxSession, EventLogSettings, Observation, SessionSettings, Target
 from .writes import FieldContract, VerifiedWrite, WritableField
 
 __all__ = [
+    "AGENT_SERVER_CONFIG",
     "AUTOEXEC",
     "AgentClientLike",
     "AgentLimits",
+    "CHECKPOINTS_DIRECTORY",
     "CapabilityRefused",
     "CheckoutIdentity",
     "CheckoutRefused",
@@ -119,6 +122,8 @@ __all__ = [
     "DEFAULT_LOCK_PATH",
     "DEFAULT_MAX_LOG_BYTES",
     "DRIVE_COPY",
+    "DosboxLoadedState",
+    "DosboxState",
     "DosboxSession",
     "EMULATOR_LOG",
     "EMULATOR_OUTPUT",
@@ -204,6 +209,7 @@ __all__ = [
     "WriteReadbackMismatch",
     "capability_value",
     "hash_modules",
+    "read_dosbox_state",
     "read_event_log",
     "read_saved_state",
     "read_lock",

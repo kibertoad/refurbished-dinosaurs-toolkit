@@ -1,8 +1,9 @@
-# ADR 0041: save states in rust-dos sessions
+# ADR 0041: save states in rust-dos and DOSBox-X sessions
 
 Status: accepted. Amends decision 7 of [ADR 0040](0040-rust-dos-session-backend.md), which left save
-states out of `RustDosSession`, and, for rust-dos runs started from a checkpoint, the empty C: of
-[ADR 0026](0026-dosbox-x-session-package.md).
+states out of `RustDosSession`, and, for runs started from a checkpoint, the empty C: of
+[ADR 0026](0026-dosbox-x-session-package.md). For DOSBox-X it follows ADR 0028 (PR 421), whose
+conditions the Agent's protocol 1.1 checkpoints meet.
 
 ## Context
 
@@ -42,6 +43,28 @@ the saving run's C: held. rust-dos v1.7.1 cannot load a state onto it. The upstr
 The media are compared as if the state had been saved with it, a `check_files` load compares the
 files there with the state's record, and the drive stays mounted from it. A drive the state hasn't
 as a folder drive is refused with 400 before anything changes. `/api/version` lists `load_folders`.
+The gap is kibertoad/rust-dos issue 101.
+
+The pinned DOSBox-X (protocol 1.0) has no checkpoint method, as ADR 0028 records. The Agent's
+`feat/agent-checkpoints` branch adds protocol 1.1: `checkpoint.save`, `checkpoint.restore`,
+`checkpoint.list` and `checkpoint.delete`, offered only when the Agent config names a
+`checkpoint_dir` outside C:. Read in its source and run against a build of it:
+
+- Save and restore run only while the session is stopped with no operation, pause, request or
+  trace under way.
+- A checkpoint is one file holding the save-state components, every file on the controlled C: and
+  the open DOS files, sealed with SHA-256; its ID comes from that hash.
+- A restore checks the file, then compares the emulator build, configuration, machine, media and
+  target with the running machine's, and refuses a mismatch (`CHECKPOINT_INCOMPATIBLE`, each field
+  listed) without a prompt and before changing anything. It keeps a rollback copy, rewrites C:,
+  applies the components and reopens the files; any failure puts the rollback copy back
+  (`rolled_back: true`), and only a failed rollback fails the session.
+- A restore keeps the running process's C: mount, so a checkpoint from another process never
+  mounts that process's folder.
+- After a restore every breakpoint is deleted, earlier breakpoint and operation IDs are stale, and
+  the stop has kind `restore` at the saved address.
+- The pinned Python client refuses an unknown config key such as `checkpoint_dir`, and an emulator
+  without protocol 1.1 exits on it. The pinned client's generic `call` sends the checkpoint methods.
 
 ## Decision
 
@@ -96,18 +119,35 @@ as a folder drive is refused with 400 before anything changes. `/api/version` li
    `session.json` names the state in `start_state`: the saving session, the name, path, files,
    emulator hash, saved stop and the load request. The run may load its start state again, and
    its own checkpoints start further runs.
-9. `DosboxSession` offers no save states: the pinned DOSBox-X's structured debugger has no save or
-   restore method (issue 420; ADR 0028 in PR 421).
+9. `DosboxSession` gets save states through Agent checkpoints, behind `checkpoints=True`. The
+   emulator gets the store `checkpoints/` in its own config file, `agent-server.env`, and the
+   client keeps reading `agent.env` without it, so the pinned client and checkout stay as ADR 0026
+   pins them. The session refuses to start unless the server reports `checkpoints.save` and
+   `checkpoints.restore`. `save_state` and `load_state` follow decisions 2 to 6: a save is sent only
+   with nothing pending, checked against the reply and the stored file, and hashed; a load is
+   refused for a state the session did not save or start from or whose file changed, sent with
+   the checkpoint's SHA-256, and checked to stop at the saved address with kind `restore`. A
+   refusal, an incompatible checkpoint or a rolled-back restore raises `StateRefused` and the run
+   goes on; a lost reply, a failed rollback or a reply that does not verify raises `StateFailed`
+   and fails the run. `start_state` copies a checkpoint of an earlier run into the new store,
+   starts the target and restores the checkpoint at its entry, after refusing a checkpoint from
+   another emulator hash or target. The checkpoint carries C:, so ADR 0028's conditions hold:
+   all-or-nothing restore, identity checked without a prompt, C: travelling with the state, and
+   the debugger reset. Until a DOSBox-X revision with protocol 1.1 is pinned, this runs only
+   against a build of that branch.
 10. Until a rust-dos release offers `load_folders`, the pinned release stays v1.7.1 and a run
     started from a checkpoint is refused there with `EmulatorRefused`. In-session save states work
     on v1.7.1. Once the upstream change is released, the pin moves to that release.
 11. CI tests run against the stand-in rust-dos, which saves and loads its own state files and takes
-    `folders`. The native procedure saves a strict-match state with `check_files` at a breakpoint,
+    `folders`, and against the stand-in DOSBox-X client, which saves and restores JSON checkpoints
+    and scripts incompatible, rolled-back, failed and lost restores. The native procedure saves a strict-match state with `check_files` at a breakpoint,
     has a load refused after mounting a drive, loads it after unmounting the drive, and checks that
     the machine is back at the breakpoint with the guarded write undone and runs to its exit
     again. On a server with `load_folders` it then starts a second run from the checkpoint and
     checks that it stops at the breakpoint with the word unwritten and runs to its exit. Both
-    modes, normal and deterministic, are run.
+    modes, normal and deterministic, are run. The DOSBox-X native procedure with `--checkpoints`
+    saves a checkpoint at the breakpoint, restores it after a guarded write and a step, and starts
+    a second session from it; both must be back at the breakpoint with the word unwritten.
 
 ## Consequences
 

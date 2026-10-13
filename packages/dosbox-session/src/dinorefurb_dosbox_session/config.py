@@ -115,8 +115,15 @@ def dosbox_conf(config: EmulatorConfig, drive_c: Path, marker_token: str) -> str
     return "\n".join(lines) + "\n"
 
 
-def agent_env(endpoint: str, emulator: Path, drive_c: Path, limits: AgentLimits) -> str:
-    """The Agent config text for the debugger server and the upstream client."""
+def agent_env(
+    endpoint: str, emulator: Path, drive_c: Path, limits: AgentLimits, checkpoint_dir: Path | None = None
+) -> str:
+    """The Agent config text for the debugger server and the upstream client.
+
+    With ``checkpoint_dir`` the text also names the checkpoint store, which only a server that
+    speaks protocol 1.1 reads; the pinned client refuses the key, so it gets the text without it.
+    """
+    store = "" if checkpoint_dir is None else f"checkpoint_dir={checkpoint_dir}\n"
     return (
         "transport=named_pipe\n"
         f"endpoint={endpoint}\n"
@@ -127,4 +134,5 @@ def agent_env(endpoint: str, emulator: Path, drive_c: Path, limits: AgentLimits)
         f"max_message_bytes={limits.max_message_bytes}\n"
         f"max_memory_read_bytes={limits.max_memory_read_bytes}\n"
         f"max_trace_events={limits.max_trace_events}\n"
+        f"{store}"
     )

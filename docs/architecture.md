@@ -163,8 +163,9 @@ Owns emulator debugger sessions for a restoration's research tooling, on DOSBox-
   whole machine, with rust-dos's strict match by default, hashes each state's files and checks
   that a load stops where the state was saved. A checkpoint keeps a copy of C:, and a later run
   starts from it on a fresh copy
-  ([ADR 0041](decisions/0041-rust-dos-save-states.md)). Gated breakpoints stay with DOSBox-X,
-  which has no save states. Known incompatibilities are investigated and fixed through upstream PRs;
+  ([ADR 0041](decisions/0041-rust-dos-save-states.md)). Gated breakpoints stay with DOSBox-X.
+  A DOSBox-X build with Agent protocol 1.1 also saves and restores checkpoints, C: included, and
+  starts later runs from them (same ADR). Known incompatibilities are investigated and fixed through upstream PRs;
   DOSBox-X is a temporary fallback until the fix is released and verified.
 - Windows only.
 

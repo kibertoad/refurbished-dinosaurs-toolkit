@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -12,6 +15,27 @@ DEFAULT_CAPABILITIES = {
     "trace": {"cpu": False},
     "breakpoints": {"memory_change": False},
 }
+
+#: The capabilities of a protocol 1.1 server with a checkpoint store.
+CHECKPOINT_CAPABILITIES = {
+    **DEFAULT_CAPABILITIES,
+    "protocol_version": "1.1",
+    "checkpoints": {"save": True, "restore": True, "list": True, "delete": True, "format_version": 1},
+}
+
+#: Where the stand-in guest is stopped at its entry.
+ENTRY = {"space": "segmented", "segment": "0x0812", "offset": "0x00000100"}
+
+
+class RpcError(Exception):
+    """A JSON-RPC error as the upstream client raises it: ``code``, ``message`` and ``data``."""
+
+    def __init__(self, code: int, reason: str, **data: Any) -> None:
+        super().__init__(f"{reason}: {data}")
+        self.code = code
+        self.message = reason
+        self.data = {"reason": reason, **data}
+        self.reason = reason
 
 
 def state(kind: str | None, name: str = "stopped", session_id: str = "ses-1") -> SimpleNamespace:
@@ -29,6 +53,12 @@ class StandinServer:
     A wait on a stop operation ends the session at once.
 
     ``memory`` maps an address object to the bytes there; an address it lacks reads as zeros.
+
+    Checkpoints (protocol 1.1) keep ``memory`` (with string addresses), the stop address and every
+    file on C: in a JSON file in the store that ``agent-server.env`` names. ``checkpoint_mode``
+    scripts a restore: ``"rolled-back"`` or ``"rollback-failed"`` fail it, ``"wrong-stop"``
+    reports another stop address, ``"lost-reply"`` applies it and raises a transport error.
+    ``identity`` stands for the build and configuration a restore compares.
     ``write_effect`` decides what a write does: ``"store"`` the bytes, ``"drop"`` them (as ROM
     would), or ``"store, then read back changed"``, where the write reports the new bytes but every
     later read returns them with the first byte inverted, or ``"store, report other replaced bytes"``,
@@ -56,6 +86,10 @@ class StandinServer:
         self.changed_after_write: set[Any] = set()
         self.fail_write: BaseException | None = None
         self.written: list[dict[str, Any]] = []
+        self.stop_kind: str | None = None
+        self.stop_address: dict[str, str] = dict(ENTRY)
+        self.checkpoint_mode = "apply"
+        self.identity = "standin-1"
 
     def factory(self, endpoint: Any) -> StandinClient:
         self.endpoints.append(endpoint)
@@ -63,6 +97,112 @@ class StandinServer:
 
     def methods(self) -> list[str]:
         return [method for method, _ in self.calls]
+
+    # Checkpoints
+
+    def _run_directory(self) -> Path:
+        return Path(self.endpoints[-1].agent_config).parent
+
+    def _store(self) -> Path:
+        config = self._run_directory() / "agent-server.env"
+        if not config.is_file():
+            raise RpcError(-32010, "CAPABILITY_UNAVAILABLE")
+        line = next(line for line in config.read_text(encoding="utf-8").splitlines() if line.startswith("checkpoint_dir="))
+        return Path(line.split("=", 1)[1])
+
+    def _drive(self) -> Path:
+        return self._run_directory() / "drive-c"
+
+    def _summary(self, checkpoint_id: str, sha256: str, content: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "checkpoint_id": checkpoint_id,
+            "sha256": sha256,
+            "byte_count": 1,
+            "created_at_ms": 1,
+            "target": {"command": content["target"]},
+            "stop": {"address": content["stop"], "cpu_mode": "real"},
+            "component_count": 1,
+            "drive_entry_count": len(content["files"]),
+            "open_file_count": 0,
+            "identity": {"target.command": content["target"].lower(), "emulator.build": content["identity"]},
+        }
+
+    def save_checkpoint(self, params: dict[str, Any]) -> dict[str, Any]:
+        store = self._store()
+        if self.status_state != "stopped":
+            raise RpcError(-32004, "TARGET_RUNNING", session_id="ses-1", state=self.status_state)
+        if self.checkpoint_mode == "unsupported":
+            raise RpcError(-32024, "CHECKPOINT_UNSUPPORTED", session_id="ses-1", state="stopped")
+        drive = self._drive()
+        files = {
+            path.relative_to(drive).as_posix(): base64.b64encode(path.read_bytes()).decode()
+            for path in sorted(drive.rglob("*"))
+            if path.is_file()
+        }
+        content = {
+            "memory": {str(k): v.hex() for k, v in self.memory.items()},
+            "files": files,
+            "target": self.started_with["command"],
+            "stop": self.stop_address,
+            "identity": self.identity,
+            "saved": len(self.calls),
+        }
+        data = json.dumps(content, sort_keys=True).encode()
+        sha256 = hashlib.sha256(data).hexdigest()
+        checkpoint_id = f"cp-{sha256[:32]}"
+        (store / f"{checkpoint_id}.dxcp").write_bytes(data)
+        return {"session_id": params["session_id"], "state_revision": 2, "checkpoint": self._summary(checkpoint_id, sha256, content)}
+
+    def restore_checkpoint(self, params: dict[str, Any]) -> dict[str, Any]:
+        checkpoint_id = params["checkpoint_id"]
+        path = self._store() / f"{checkpoint_id}.dxcp"
+        base = {"session_id": "ses-1", "state": self.status_state, "checkpoint_id": checkpoint_id, "applied": False}
+        if self.status_state != "stopped":
+            raise RpcError(-32004, "TARGET_RUNNING", **base)
+        if not path.is_file():
+            raise RpcError(-32018, "CHECKPOINT_NOT_FOUND", **base)
+        data = path.read_bytes()
+        sha256 = hashlib.sha256(data).hexdigest()
+        if sha256 != params.get("expected_sha256", sha256) or not checkpoint_id.endswith(sha256[:32]):
+            raise RpcError(-32020, "CHECKPOINT_CORRUPT", **base)
+        content = json.loads(data)
+        mismatches = []
+        if content["target"].lower() != self.started_with["command"].lower():
+            mismatches.append({"field": "target.command", "saved": content["target"].lower(), "current": self.started_with["command"].lower()})
+        if content["identity"] != self.identity:
+            mismatches.append({"field": "emulator.build", "saved": content["identity"], "current": self.identity})
+        if mismatches:
+            raise RpcError(-32019, "CHECKPOINT_INCOMPATIBLE", mismatches=mismatches, configuration_mismatches=[], **base)
+        if self.checkpoint_mode == "rolled-back":
+            raise RpcError(-32021, "CHECKPOINT_RESTORE_FAILED", rolled_back=True, outcome="rolled_back", stage="components", **base)
+        if self.checkpoint_mode == "rollback-failed":
+            self.status_state = "failed"
+            raise RpcError(-32021, "CHECKPOINT_RESTORE_FAILED", rolled_back=False, outcome="rollback_failed", stage="drive", **base)
+        self.memory = {k: bytes.fromhex(v) for k, v in content["memory"].items()}
+        drive = self._drive()
+        for existing in sorted(drive.rglob("*"), reverse=True):
+            if existing.is_file() and existing.relative_to(drive).as_posix() not in content["files"]:
+                existing.unlink()
+        for name, encoded in content["files"].items():
+            (drive / name).parent.mkdir(parents=True, exist_ok=True)
+            (drive / name).write_bytes(base64.b64decode(encoded))
+        self.stop_address = dict(content["stop"])
+        self.stop_kind = "restore"
+        if self.checkpoint_mode == "lost-reply":
+            raise ConnectionResetError("the pipe closed")
+        stop = dict(content["stop"])
+        if self.checkpoint_mode == "wrong-stop":
+            stop["offset"] = "0x00000101"
+        return {
+            "session_id": "ses-1",
+            "state": "stopped",
+            "state_revision": 3,
+            "applied": True,
+            "stop_reason": {"kind": "restore", "address": stop},
+            "invalidated": {"breakpoint_ids": ["bp-1"], "operation_ids": []},
+            "warnings": [],
+            "checkpoint": self._summary(checkpoint_id, sha256, content),
+        }
 
 
 class StandinClient:
@@ -87,7 +227,7 @@ class StandinClient:
 
     def status(self, session_id, request_id=None):
         self._call("status", request_id)
-        return state(None, self.server.status_state)
+        return state(self.server.stop_kind, self.server.status_state)
 
     def stop(self, session_id, graceful_timeout_ms=0, request_id=None):
         self._call("stop", request_id)
@@ -190,6 +330,14 @@ class StandinClient:
     def stop_trace(self, session_id, request_id=None):
         self._call("stop_trace", request_id)
         return 0
+
+    def call(self, method, params=None, request_id=None):
+        self._call(method, request_id)
+        if method == "checkpoint.save":
+            return self.server.save_checkpoint(dict(params or {}))
+        if method == "checkpoint.restore":
+            return self.server.restore_checkpoint(dict(params or {}))
+        raise RpcError(-32601, "METHOD_NOT_FOUND")
 
     def close(self) -> None:
         self.server.closed += 1

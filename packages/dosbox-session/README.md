@@ -160,6 +160,9 @@ fails. Exit code 0 means it removed the lock or found none; 2 is a usage error.
 | `capabilities` | What the server reported. |
 | `debugger_session` | The debugger session's ID. |
 | `writes` | Each guarded write in order: the contract's name, the field, its address (as the address object's `repr`) and length, the expected hash, the hash of the data the write carried (`null` when it was not bytes), `verified` or `failed`, and the failure, which says how far a failed write got. |
+| `checkpoints` | The checkpoint store's path, or `null` when save states are off. |
+| `start_state` | The checkpoint the run started from and its restore, or `null` ([below](#dosbox-x-save-states)). |
+| `states` | Each save and restore in order, including refusals and failures. |
 | `run_failure` | Why the run failed, or `null`. |
 | `event_log` | The event log's path, or `null` when the session keeps none. |
 
@@ -416,10 +419,68 @@ gate = GatedBreakpoint(session, CodeAddress(0x0028, 0x00012345), (CodeAddress(0x
   mode (such as a BIOS handler the extender reflects an interrupt to) cannot arm a protected-mode
   boundary. Pick wakes in the boundary's mode.
 
-The pinned DOSBox-X has no breakpoint conditions, run-until, hit counts, batch reads or save and
-restore through its structured debugger, so the package offers none of them for DOSBox-X sessions.
-To read several fields at one stop, read one range that covers them. Save states need a rust-dos
-session ([below](#save-states)).
+The pinned DOSBox-X has no breakpoint conditions, run-until, hit counts or batch reads through its
+structured debugger, so the package offers none of them for DOSBox-X sessions. To read several
+fields at one stop, read one range that covers them.
+
+### DOSBox-X save states
+
+A DOSBox-X build whose structured debugger speaks Agent protocol 1.1 saves and restores the stopped
+machine as a checkpoint: CPU, memory, devices, DOS state, the open DOS files and every file on C:.
+The pinned revision speaks protocol 1.0 and has no checkpoints; protocol 1.1 is on the
+`feat/agent-checkpoints` branch of the Agent, not yet released. The client stays the pinned one:
+the session sends the checkpoint calls through its generic `call`. The design is
+[ADR 0041](../../docs/decisions/0041-rust-dos-save-states.md).
+
+```python
+settings = SessionSettings(..., checkpoints=True)
+with DosboxSession(settings) as session:
+    ...  # stopped at a breakpoint
+    state = session.save_state("menu")
+    for key in keys:
+        session.load_state(state)  # back at the breakpoint; breakpoints deleted
+        ...
+```
+
+`checkpoints=True` gives the emulator a store, `checkpoints/` in the run directory, through its
+own config file `agent-server.env`; `agent.env`, which the client reads, stays as it was, since the
+pinned client refuses the `checkpoint_dir` key. The session then refuses to start unless the server
+reports `checkpoints.save` and `checkpoints.restore` (`CapabilityRefused`). A build without
+protocol 1.1 exits on the unknown key before the guest is ready, which raises `EmulatorExited`.
+
+`save_state(name)` is sent only while no continuation or pause is pending (`OperationPending`
+otherwise). The server saves only while the session is stopped with nothing under way, and refuses
+media a checkpoint cannot hold. The session checks that the reply names this session, a checkpoint
+ID that matches its SHA-256 and the session's target, and that the file is in the store, then
+hashes the file. A name follows the rules of rust-dos state names. A save does not change the
+guest, so it is also made after the run failed or the event log ended.
+
+`load_state(state)` takes a `DosboxState` or its name, refuses a state this session did not save or
+start from and a checkpoint file that changed, and sends the restore with the checkpoint's SHA-256.
+The server compares the emulator build, configuration, media and target with the running machine's
+before changing anything, then applies the whole checkpoint, C: included, or puts the machine back.
+A restore deletes every breakpoint and makes earlier breakpoint and operation IDs stale; set the
+breakpoints you need again. The session checks that the reply reports the checkpoint applied and
+the guest stopped by the restore at the address the checkpoint was saved at, and that the status
+agrees. Like a guarded write, a load is refused while an operation is pending, after the run
+failed and once the event log has its outcome.
+
+| Outcome | Raised | The run |
+|---|---|---|
+| A name, a state that is not this session's, a changed checkpoint file, or a refusal the server made before changing anything: not stopped, something pending, unsupported media, a checkpoint from another build, configuration, media set or target (`differences` lists each field), or a restore it rolled back | `StateRefused` | goes on |
+| A restore's reply was lost, its rollback failed, or the reply does not verify | `StateFailed` | fails, as after a failed write |
+| A save's reply was lost, the server failed to store it, or the reply does not verify | `StateFailed` | goes on; the state is not recorded |
+
+A later run starts from a checkpoint: `read_dosbox_state(run_directory, name)` reads it from a
+finished run's `session.json` and checks that the file is as saved, and
+`SessionSettings(..., start_state=state)` turns checkpoints on, copies the file into the new run's
+store, starts the target as usual and restores the checkpoint once it is stopped at its entry. The
+session refuses before launching a checkpoint saved by an emulator with another SHA-256
+(`EmulatorRefused`), for another target (`ConfigurationRefused`) or whose file changed
+(`StateRefused`); a checkpoint the server finds incompatible ends the start with `StateRefused`.
+The restore rewrites the new run's C: to the checkpoint's contents and never mounts the earlier
+run's folder. `session.json` records `start_state`: the saving session, the name, checkpoint ID,
+SHA-256, file, emulator hash, the saved stop and the restore's request and stop.
 
 ## rust-dos sessions
 
@@ -735,7 +796,7 @@ native procedure checks the load's stop, memory and a run to the program's exit 
 | `WriteHashMismatch` | The field's bytes do not hash to the expected value. Nothing was written; the run fails. |
 | `WriteReadbackMismatch` | The field does not hold the written bytes afterwards. The run fails. |
 | `WriteFailed` | A write was refused for another reason, such as a guest that is not stopped. The run fails. The three errors above derive from it. |
-| `StateRefused` | A save state was not saved or loaded and the guest is as it was. `differences` and `status` say why. The run goes on; a run starting from a checkpoint does not start. |
+| `StateRefused` | A save state or checkpoint was not saved or loaded and the guest is as it was. `differences` and `status` say why. The run goes on; a run starting from a checkpoint does not start. |
 | `StateFailed` | A save or load was sent and did not verify, or its reply was lost. A failed load fails the run. |
 | `RunFailed` | A write, load, continuation or step was asked for after the run failed. Not sent. |
 | `RunEnded` | A write, load, continuation or step was asked for after the event log got its outcome. Not sent. |
@@ -780,7 +841,15 @@ At the breakpoint it makes a guarded write to a word the program loads next, und
 that one field, reads the word back and steps over the load. It passes when the breakpoint stop is
 observed, `AX` and `BX` hold the values the program set, the write verifies, the readback holds
 the new bytes and `AX` holds the new word after the step. It prints the checks, the checkout
-revision, the emulator hash, the reported capabilities and the recorded writes.
+revision, the emulator hash, the reported capabilities, the recorded writes and the recorded
+states.
+
+For save states, run it again with `--checkpoints` against a build of the Agent's
+`feat/agent-checkpoints` branch, keeping `--checkout` at the pinned revision for the client. It
+saves a checkpoint at the breakpoint before the write, restores it after the step, and checks that
+the guest is back at the breakpoint with the word unwritten and that a step loads the old word. A
+second session then starts from the checkpoint in `<run directory>-checkpoint` and must stop at the
+breakpoint with the word unwritten, and a step there must load the old word.
 
 ### rust-dos
 
