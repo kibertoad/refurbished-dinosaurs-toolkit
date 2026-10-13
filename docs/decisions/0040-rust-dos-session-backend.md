@@ -52,8 +52,8 @@ archive hash and source commit.
    (`journal`, `ops`, `if_state_seq`, `request_ids`, `write_expect`, `run`, `program_stops`,
    `quit`, `build`). The caller names the executable and may give its SHA-256, which the session
    then requires. The session record holds the executable's hash and the server's version answer,
-   with the commit it was built from. The supported release is v1.7.1. Callers pass `RUST_DOS_PINNED_SHA256` to require its Windows
-   x86-64 release executable; an omitted hash still allows another compatible build.
+   with the commit it was built from. The supported release is v1.7.2. Callers pass `RUST_DOS_PINNED_SHA256` to require its
+   Windows x86-64 release executable; an omitted hash still allows another compatible build.
 4. The target starts stopped at its entry. Readiness is the marker that the session's own
    `AUTOEXEC.BAT` writes on C:, as for DOSBox-X; an answering server is not readiness. The session
    starts the target with `run`, `stop_at_entry` and `queue`, so the command line runs once the

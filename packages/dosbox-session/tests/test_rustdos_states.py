@@ -246,8 +246,9 @@ class Failures(RustDosCase):
         self.assertEqual((data["states"][1]["action"], data["states"][1]["status"]), ("load", "failed"))
         self.assertIn("lost", data["run_failure"])
 
-    def test_a_load_that_stops_elsewhere_or_leaves_a_drive_unchecked_fails_the_run(self) -> None:
-        for mode, message in (("wrong-load-stop", "icount"), ("unchecked-load", "unchecked")):
+    def test_a_load_that_stops_elsewhere_leaves_a_drive_unchecked_or_takes_another_folder_fails_the_run(self) -> None:
+        cases = (("wrong-load-stop", "icount"), ("unchecked-load", "unchecked"), ("wrong-folders", "folders"))
+        for mode, message in cases:
             with self.subTest(mode=mode), RustDosSession(self.settings(mode)) as session:
                 state = session.save_state("elsewhere")
                 with self.assertRaisesRegex(StateFailed, message):

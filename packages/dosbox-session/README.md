@@ -492,11 +492,11 @@ API with the standard library and imports nothing of rust-dos.
 The session needs a rust-dos with debug server API version 1 and the features `journal`, `ops`,
 `if_state_seq`, `request_ids`, `write_expect`, `run`, `program_stops`, `quit`, `build`,
 `strict_match` and `check_files` (`RUST_DOS_FEATURES`). The supported release is
-[v1.7.1](https://github.com/dividebysandwich/rust-dos/releases/tag/v1.7.1)
-(`RUST_DOS_PINNED_TAG`), commit `81076c73d85c55abf8e6b0229291adf729f134c5`.
-Download `rust-dos-v1.7.1-windows-x86_64.zip` and keep `SDL2.dll` beside `rust-dos.exe`.
-The archive's SHA-256 is `0fb50292b10aa60c66e4348b68c28f0b23341b746f754c2679c9fe9d5bd38231`;
-the executable's is `6baf1aba58c948bb6eb72f12c0009ddc0e07d3d1d9ab97d3f3fd9f1d3c44c7f9`
+[v1.7.2](https://github.com/dividebysandwich/rust-dos/releases/tag/v1.7.2)
+(`RUST_DOS_PINNED_TAG`), commit `746cc86dcf24157c48dc05c289f6bc0bb350d469`.
+Download `rust-dos-v1.7.2-windows-x86_64.zip` and keep `SDL2.dll` beside `rust-dos.exe`.
+The archive's SHA-256 is `2ca58dabaf1c392485418c180ff2728c5e8a76a970bf150890bab3b978f88da8`;
+the executable's is `310de9a912a4874cfceccb2aead71b8da39315aa059dbb5a108f86feb3f73ee4`
 (`RUST_DOS_PINNED_SHA256`). These hashes apply to that ZIP, not the Win7, MSI or libretro builds.
 Pass the executable pin explicitly; `emulator_sha256=None` still permits other builds that
 satisfy the API and feature checks, and the session records their actual hash.
@@ -752,8 +752,9 @@ hashed files. The session then refuses, before launching anything, a state that 
 checkpoint (`ConfigurationRefused`), one saved while another program than the target ran
 (`ConfigurationRefused`), one saved by an emulator with another SHA-256 (`EmulatorRefused`), one
 whose files changed (`StateRefused`) and `prepare_drive` given with it (`ConfigurationRefused`).
-It also refuses a server without the `load_folders` feature (`EmulatorRefused`); the pinned
-v1.7.1 does not offer it, and starting from a checkpoint waits on the rust-dos release that does.
+It also refuses a server without the `load_folders` feature (`EmulatorRefused`), which rust-dos
+offers from v1.7.2. The load names the new run's C: in `folders`, and its reply must name the same
+folder (`StateFailed` otherwise).
 
 C: is a copy of the checkpoint's `drive-c` in the new run directory, so the run never writes the
 earlier run's folders. In a normal run the session removes the readiness marker from the copy, the
@@ -871,11 +872,11 @@ after the step and the program exits with code 0. It also saves a strict-match s
 `check_files` at the breakpoint, before the write. After the exit it mounts a drive, and the load
 must be refused with the drive named among the differences; after unmounting it the load must stop
 at the breakpoint with `program_exit` among the cleared stops, the word must hold its old bytes, a
-step must load the old word into `AX`, and the program must exit with code 0 again. When the
-server offers `load_folders`, a second session then starts from that checkpoint in
+step must load the old word into `AX`, and the program must exit with code 0 again. A second
+session then starts from that checkpoint in
 `<run directory>-checkpoint`: it must stop at the breakpoint with C: mounted from its own run
 directory and the word unwritten, a step must load the old word, and the program must exit with
-code 0. On a server without `load_folders` (v1.7.1) `checkpoint_start` is `not run`. It prints the
+code 0. A server without `load_folders` fails the check. It prints the
 checks, the emulator's hash, the server's version answer, the recorded writes, the recorded states
 and the second run's `start_state`.
 

@@ -13,7 +13,7 @@ asked for that with DOSBox-X; the pinned DOSBox-X cannot save or restore through
 debugger, and its own save states report through dialogs, restore part of a state when one
 component fails and remount the saving session's C: (open PR 421, ADR 0028).
 
-rust-dos v1.7.1, the pinned release, saves and loads the whole machine through its debug server
+rust-dos v1.7.2, the pinned release, saves and loads the whole machine through its debug server
 (`POST /api/state/save` and `/api/state/load`). Read in its source and run against the pinned
 executable:
 
@@ -37,17 +37,16 @@ executable:
 - `/api/version` lists `strict_match` and `check_files` as features.
 
 A run that starts from a state needs a fresh C: for that run, as ADR 0026 requires, holding what
-the saving run's C: held. rust-dos v1.7.1 cannot load a state onto it. The upstream change
-`dividebysandwich/rust-dos` branch `state-load-folders` adds `folders` to a load:
+the saving run's C: held. A state records each folder drive by its absolute host path, so before
+v1.7.2 a strict-match load in another run was refused and a plain load mounted the earlier run's
+C:. A directory junction does not get around that: rust-dos resolves it, so the state still
+records each run's own folder. v1.7.2 (dividebysandwich/rust-dos PR 85) adds `folders` to a load:
 `{"folders": {"C": "<absolute path>"}}` takes the state's folder drive C: as mounted from that path.
 The media are compared as if the state had been saved with it, a `check_files` load compares the
-files there with the state's record, and the drive stays mounted from it. A drive the state hasn't
-as a folder drive is refused with 400 before anything changes. `/api/version` lists `load_folders`.
-The gap is kibertoad/rust-dos issue 101.
-Mounting C: through one fixed directory junction does not get around it on v1.7.1: rust-dos
-resolves the junction, so the state still records each run's own folder and a strict-match load
-in the next run is refused. The only path v1.7.1 would match is the earlier run's folder itself,
-which ADR 0026's private C: rules out. The upstream change is dividebysandwich/rust-dos PR 85.
+files there with the state's record, and the drive stays mounted from it. The reply and the
+journal's `state_loaded` entry name the folders taken, as the request gave them. A drive the state
+hasn't as a folder drive, a path that is not an existing folder and a save with `folders` are
+refused with 400 before anything changes. `/api/version` lists `load_folders`.
 
 The pinned DOSBox-X (protocol 1.0) has no checkpoint method, as ADR 0028 records. The Agent's
 `feat/agent-checkpoints` branch adds protocol 1.1: `checkpoint.save`, `checkpoint.restore`,
@@ -114,7 +113,8 @@ The pinned DOSBox-X (protocol 1.0) has no checkpoint method, as ADR 0028 records
    program than the target ran, one saved by an emulator with another SHA-256, one whose files
    changed, and `prepare_drive` given with it. C: is a copy of the checkpoint's copy, made in the
    new run directory, so ADR 0026's private writable C: still holds: the run never writes the
-   saving run's folders. The server must offer `load_folders`. In a normal run the readiness
+   saving run's folders. The server must offer `load_folders`, and the load's reply must name the
+   new C: as the folder taken. In a normal run the readiness
    marker is removed from the copy, the guest's `AUTOEXEC.BAT` writes it again as it boots (the
    same text, so the files still match), and the session pauses the machine once it is there. A
    deterministic machine starts paused before it boots and is loaded there. The session then loads
@@ -139,15 +139,15 @@ The pinned DOSBox-X (protocol 1.0) has no checkpoint method, as ADR 0028 records
    all-or-nothing restore, identity checked without a prompt, C: travelling with the state, and
    the debugger reset. Until a DOSBox-X revision with protocol 1.1 is pinned, this runs only
    against a build of that branch.
-10. Until a rust-dos release offers `load_folders`, the pinned release stays v1.7.1 and a run
-    started from a checkpoint is refused there with `EmulatorRefused`. In-session save states work
-    on v1.7.1. Once the upstream change is released, the pin moves to that release.
+10. The pinned release is v1.7.2, the first to offer `load_folders`. A run started from a
+    checkpoint is refused with `EmulatorRefused` on a server without it. In-session save states
+    need only `strict_match` and `check_files`, which v1.7.0 and later offer.
 11. CI tests run against the stand-in rust-dos, which saves and loads its own state files and takes
     `folders`, and against the stand-in DOSBox-X client, which saves and restores JSON checkpoints
     and scripts incompatible, rolled-back, failed and lost restores. The native procedure saves a strict-match state with `check_files` at a breakpoint,
     has a load refused after mounting a drive, loads it after unmounting the drive, and checks that
     the machine is back at the breakpoint with the guarded write undone and runs to its exit
-    again. On a server with `load_folders` it then starts a second run from the checkpoint and
+    again. It then starts a second run from the checkpoint and
     checks that it stops at the breakpoint with the word unwritten and runs to its exit. Both
     modes, normal and deterministic, are run. The DOSBox-X native procedure with `--checkpoints`
     saves a checkpoint at the breakpoint, restores it after a guarded write and a step, and starts

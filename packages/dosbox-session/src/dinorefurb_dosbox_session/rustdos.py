@@ -73,11 +73,11 @@ RUST_DOS_RECORD_FORMAT = "dinorefurb-dosbox-session.rust-dos-record/1"
 RUST_DOS_API_VERSION = 1
 
 #: The supported upstream release for Windows x86-64 sessions.
-RUST_DOS_PINNED_TAG = "v1.7.1"
+RUST_DOS_PINNED_TAG = "v1.7.2"
 
-#: SHA-256 of ``rust-dos.exe`` in the release's ``rust-dos-v1.7.1-windows-x86_64.zip``.
+#: SHA-256 of ``rust-dos.exe`` in the release's ``rust-dos-v1.7.2-windows-x86_64.zip``.
 #: Pass this as ``RustDosSettings.emulator_sha256`` to require the released executable.
-RUST_DOS_PINNED_SHA256 = "6baf1aba58c948bb6eb72f12c0009ddc0e07d3d1d9ab97d3f3fd9f1d3c44c7f9"
+RUST_DOS_PINNED_SHA256 = "310de9a912a4874cfceccb2aead71b8da39315aa059dbb5a108f86feb3f73ee4"
 
 #: The debug server features the session relies on. A server that lacks one is refused. ``build``
 #: puts the commit the emulator was built from in ``/api/version``, which the session record keeps.
@@ -1008,6 +1008,8 @@ class RustDosSession(OwnedRun):
             problem = f"the reply's debugger reset {reset!r} does not fit a {'strict-match' if strict_match else 'plain'} load"
         elif not isinstance(header, dict) or header.get("emulated_ns") != saved.header.get("emulated_ns"):
             problem = f"the reply's header {header!r} is not the saved state's"
+        elif reply.field("folders") != body.get("folders"):
+            problem = f"the reply's folders {reply.field('folders')!r} are not the ones sent, {body.get('folders')!r}"
         stop: Mapping[str, Any] | None = None
         if problem is None:
             status = client.status()

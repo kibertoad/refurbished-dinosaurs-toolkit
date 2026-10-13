@@ -9,10 +9,11 @@ state precondition is stale, and runs the program to its exit. A strict-match sa
 the breakpoint, with the files on C: recorded, is then loaded twice: once with a drive mounted
 since the save, which the server refuses, and once after unmounting it, which puts the machine
 back at the breakpoint with the word unwritten, so a step loads the original word and the program
-exits again. The save state is a checkpoint, so when the server offers ``load_folders`` a second
-session starts from it in ``<run dir>-checkpoint``, with C: copied from the checkpoint: it must stop
-at the breakpoint with the word unwritten, and the program must load the word and exit. A server
-without ``load_folders`` gets ``"checkpoint_start": "not run"``. With ``--deterministic`` the
+exits again. The save state is a checkpoint, so a second session starts from it in
+``<run dir>-checkpoint``, with C: copied from the checkpoint: it must stop at the breakpoint with
+the word unwritten, and the program must load the word and exit. A server without
+``load_folders`` (rust-dos before v1.7.2) fails the check with
+``"checkpoint_start": "refused: no load_folders"``. With ``--deterministic`` the
 session runs in rust-dos's deterministic mode, where the queued run resumes the machine paused at
 startup. It also checks that the server reports the commit it was built from. It prints a JSON result and exits 0 when every check passes, 1 otherwise.
 
@@ -152,7 +153,7 @@ def main() -> int:
     features = (record["server"] or {}).get("features") or []
     checkpoint_record = None
     if "load_folders" not in features:
-        checks["checkpoint_start"] = "not run"
+        checks["checkpoint_start"] = "refused: no load_folders"
     elif "state_stop" in checks:
         start = dataclasses.replace(
             settings,
@@ -175,8 +176,9 @@ def main() -> int:
             ended = session.observe(session.continue_(), timeout=arguments.timeout)
             checks["checkpoint_exit"] = None if ended.stop is None else ended.stop.get("exit")
             checkpoint_record = session.record()
-    checkpoint_passed = checks.get("checkpoint_start") == "not run" or (
-        checks.get("checkpoint_stop") == checks.get("state_stop")
+    checkpoint_passed = (
+        checks.get("checkpoint_start") == "started"
+        and checks.get("checkpoint_stop") == checks.get("state_stop")
         and checks.get("checkpoint_c") is True
         and checks.get("checkpoint_word") == WORD_BEFORE.hex()
         and checks.get("checkpoint_ax") == hex(int.from_bytes(WORD_BEFORE, "little"))
