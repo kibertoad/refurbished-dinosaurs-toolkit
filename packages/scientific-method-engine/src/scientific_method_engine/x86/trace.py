@@ -10,8 +10,8 @@ from .values import const, unknown, sources, op, join, unformed, TermLimit
 from .result_flow import validate_contracts, result_contracts
 from .loops import LoopTracker
 from .memory_scopes import validate_scopes, capture_scopes, retain_scopes, scope_history
-from .pcode_backend import interrupt_vector
-from .dispatch import CALL_NOT_EXHAUSTIVE, INTERRUPTS, declared_call_ends
+from .pcode_backend import interrupt_vector, INTERRUPTS
+from .dispatch import CALL_NOT_EXHAUSTIVE, declared_call_ends
 from .relational import checkpoint_anchors, memory_probes, probe_memory
 
 # What stops one path and leaves the others: the model cannot follow it, or a value it built
@@ -195,8 +195,9 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
     they never come back. A call whose site is in ``no_return_call_sites`` has no return site either,
     whatever its target: the query declared that this one call never comes back. A call whose site
     is in ``indirect_calls`` (``indirect_call_declarations``) continues at each declared target and
-    at its return site, unless the declaration is exhaustive and every target is in
-    ``no_return_calls``, or the site is in ``no_return_call_sites``.
+    at its return site, unless the declaration ends the branch under ``declared_call_ends`` (exhaustive,
+    with no ``outside`` destination, and every target in ``no_return_calls``, which holds for a call
+    declared with no targets), or the site is in ``no_return_call_sites``.
     """
     m, following = base_mnemonic(ins), at + ins.size
     if unsupported_transfer(image, ins):

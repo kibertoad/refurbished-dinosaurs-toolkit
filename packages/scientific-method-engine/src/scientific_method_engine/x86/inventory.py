@@ -4,7 +4,7 @@ from bisect import bisect_right
 from pathlib import Path
 from .image import integer
 from .trace import LIMIT_REASON, CONTESTED_REASON, OVERLAP_REASON, walk, holding_instruction
-from .dispatch import indirect_call_declarations, call_ends, indirect_call_assumptions
+from .dispatch import indirect_call_declarations, call_ends, never_runs, indirect_call_assumptions
 
 MAX_INVENTORY = 16 * 1024 * 1024
 MAX_ROWS = 200000
@@ -425,6 +425,11 @@ def inventory_check(image, config):
     def site_classification(at):
         return "entry-path instruction" if at in seen else CONTESTED_REASON if at in contested else "declared site"
     listed = {site for site, *_ in ends}
+    # A call declared never to run has no target, so no call row holds it, yet it ends the branch as an
+    # exhaustive call whose every target is noReturn does; it is listed as one with no routines.
+    never = [at for at, declaration in indirect_calls.items() if never_runs(declaration)]
+    ends += [(at, image.decode(at).size, "call", [], site_classification(at)) for at in never]
+    listed |= set(never)
     ends += [(at, row["following"] - at, "call site",
               site_targets[at][0] if len(site_targets[at]) == 1 else site_targets[at] or None, site_classification(at))
              for at, row in no_return_sites.items() if at not in listed]
@@ -553,7 +558,9 @@ def inventory_check(image, config):
             "partialSearch": partial, "gaps": calls["gaps"],
             "exclusions": ["computed call targets no indirectCalls declaration gives (listed in unresolved when the "
                            "walk reaches them)", "unrelocated far calls",
-                           "undeclared mappings", "prefix-started raw candidates off the entry path", "jump targets"],
+                           "undeclared mappings", "prefix-started raw candidates off the entry path", "jump targets"]
+                          + (["the code a declared outside destination names, and anything it calls"]
+                             if any("outside" in declaration for declaration in indirect_calls.values()) else []),
             "interpretation": "Each distinct resolved direct call target in the searched regions, placed in the inventory's "
                               "notation and compared with its rows. A target only raw byte candidates or contested "
                               "instructions call is not shown to be code. The counts are lower bounds on the targets "

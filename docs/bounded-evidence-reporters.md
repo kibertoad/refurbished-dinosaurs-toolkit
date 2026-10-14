@@ -1303,7 +1303,8 @@ written by an analysis segment, which no target can match. `unresolved`, `covera
 A declared target's row carries the provenance `{ "encoding": "declared indirect call", "evidence" }`,
 and `indirectCalls` repeats each declaration with whether the entry-path walk `reached` its site. A
 declaration that is not exhaustive also leaves its site in `unresolved`. A declared call counts a
-row in `rowsPastNoReturn` only when it is exhaustive and every target it declares is `noReturn`.
+row in `rowsPastNoReturn` only when it is exhaustive, has no `outside` destination and every target it
+declares is `noReturn`. A call declared never to run counts too, as a `call` with empty `routines`.
 
 The counts are lower bounds on what the inventory lacks. Computed calls with no exhaustive
 declaration, far calls with no
@@ -1365,7 +1366,7 @@ also holds the byte after it:
 | `start`, `size`, `name` | the row |
 | `kind`, `site`, `siteAddress`, `siteClassification` | `call` (a call to a declared routine), `call site` (a declared call site that no routine declaration lists) or `interrupt`, the site, its place, and `entry-path instruction`, `reached only through a rejected overlapping start` (contested), `raw byte candidate` or, for a declared call or interrupt site the walk did not reach, `declared site` |
 | `routine` | for a `call`, the declared routine it resolves to; for a `call site`, the one routine it resolves to |
-| `routines` | in place of `routine`, for a declared computed call: every target it declares, all of them `noReturn`, and for a `call site` with several targets, every one of them. The call is listed once |
+| `routines` | in place of `routine`, for a declared computed call: every target it declares, all of them `noReturn` (none for a call declared never to run), and for a `call site` with several targets, every one of them. The call is listed once |
 | `following`, `followingAddress` | the byte after the call or interrupt |
 | `followingRead` | whether the walk established an instruction at `following` by another route, such as a branch around an error exit. Without one, nothing the walk read shows the bytes after the call to be code |
 | `bytesAfter` | the bytes of the row's body range from `following` to the range's end |

@@ -1,7 +1,7 @@
 """Explicit, source-derived indirect jump tables and call targets for CFG discovery, and explicitly conditional path continuations."""
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM
 from .image import integer
-from .pcode_backend import interrupt_vector
+from .pcode_backend import interrupt_vector, INTERRUPTS
 
 CALL_NOT_EXHAUSTIVE = "indirect call targets are not declared exhaustive"
 
@@ -174,7 +174,21 @@ def indirect_call_declarations(value, image):
     return result
 
 
-INTERRUPTS = ("int", "int1", "int3", "into")
+def declared_interrupt(image, at, label, conditional_reason):
+    """``(ins, vector)`` for the unconditional interrupt instruction at ``at``, which a declaration names as ``label``.
+
+    ``at`` must lie in declared code and decode as an interrupt, whatever prefix capstone names in the
+    mnemonic; a conditional interrupt (INTO) is refused with ``conditional_reason``.
+    """
+    if image.region(at) is None:
+        raise ValueError(f"{label} {at} is outside declared code")
+    ins = image.decode(at)
+    if ins is None or ins.mnemonic.split()[-1] not in INTERRUPTS:
+        raise ValueError(f"{label} {at} is not an interrupt instruction")
+    vector, conditional = interrupt_vector(image.flat, ins, at)
+    if conditional:
+        raise ValueError(f"{label} {at} is conditional {conditional_reason}")
+    return ins, vector
 
 
 def outside_destination(value, image, site, far):
@@ -200,12 +214,7 @@ def outside_destination(value, image, site, far):
             raise ValueError(f"indirect call {site} outside description must be nonempty text")
         return {"description": given}
     at = integer(given, 0, len(image.data) - 1, "outside interrupt")
-    ins = image.decode(at) if image.region(at) is not None else None
-    if ins is None or ins.mnemonic not in INTERRUPTS:
-        raise ValueError(f"indirect call {site} outside interrupt {at} is not an interrupt instruction in declared code")
-    vector, conditional = interrupt_vector(image.flat, ins, at)
-    if conditional:
-        raise ValueError(f"indirect call {site} outside interrupt {at} is conditional, so it may return nothing")
+    ins, vector = declared_interrupt(image, at, f"indirect call {site} outside interrupt", "and may return nothing")
     return {"interrupt": at, "vector": vector, "instruction": (ins.mnemonic + " " + ins.op_str).strip()}
 
 

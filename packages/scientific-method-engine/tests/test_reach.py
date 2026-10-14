@@ -676,6 +676,7 @@ COMPUTED = _code(0x160, {
     0x0D: "ff1e0002",      # call far [0200]
     0x11: "c3",            # ret
     0x12: "cd2f",          # int 2Fh, which nothing reaches
+    0x14: "ce",            # into, which nothing reaches
     0x40: "0001100120013001",
     0x48: "10010000",
     0x100: "c3",
@@ -880,6 +881,11 @@ class DeclaredOutsideAndNeverRunCallTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"instruction control 17 is not reached \(it follows the indirect "
                                                 r"call at 13, declared never to run\)"):
             computed(indirectCalls=[NEVER_RUNS], instructionControls=[0x11])
+        # A noReturn declaration for the same call is named beside it.
+        with self.assertRaisesRegex(ValueError, r"\(it follows the noReturn call at 13 and the indirect call at 13, "
+                                                r"declared never to run\)"):
+            computed(indirectCalls=[NEVER_RUNS], instructionControls=[0x11],
+                     noReturn=[{"call": 0x0D, "reason": "synthetic: gated off"}])
 
     def test_an_outside_call_leaves_nothing_unresolved_and_continues_at_its_return_site(self):
         r = computed(indirectCalls=[NEAR_TABLE, SAVED_VECTOR], controls=[0x120], instructionControls=[0x11])
@@ -941,6 +947,7 @@ class DeclaredOutsideAndNeverRunCallTests(unittest.TestCase):
                 ({**SAVED_VECTOR, "outside": {"vector": 256}}, "outside vector must be an integer in 0..255"),
                 ({**SAVED_VECTOR, "outside": {"description": " "}}, "outside description must be nonempty text"),
                 ({**SAVED_VECTOR, "outside": {"interrupt": 0x11}}, "outside interrupt 17 is not an interrupt"),
+                ({**SAVED_VECTOR, "outside": {"interrupt": 0x14}}, "outside interrupt 20 is conditional"),
                 ({**SAVED_VECTOR, "site": 0x08, "outside": {"vector": 8}},
                  "outside vector names a far pointer, which a near call cannot use"),
                 ({**SAVED_VECTOR, "site": 0x08, "outside": {"interrupt": 0x12}}, "a near call cannot use")]:

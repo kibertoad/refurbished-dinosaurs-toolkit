@@ -73,6 +73,8 @@ Not taken:
 - A run-time library's gated hook call can be declared once instead of keeping every negative
   unusable.
 - `inventory-check` takes the same declarations: an outside or never-run call adds no call target
-  and leaves nothing unresolved.
+  and leaves nothing unresolved. A never-run call ends the walk there as in `reach`, so a row whose
+  body continues past it is listed in `rowsPastNoReturn`, and an outside destination is named in
+  `exclusions`.
 - The prepared config is unchanged. The field passes through the reader, so this needs no
   protocol increment.

@@ -558,9 +558,18 @@ class InventoryCheckTests(unittest.TestCase):
         self.assertIn("each declared outside destination is where its call can leave the declared code, for the "
                       "evidence it gives; the code there is not read, and it returns to the call's next instruction",
                       r["assumptions"])
+        self.assertIn("the code a declared outside destination names, and anything it calls", r["exclusions"])
         never = {"site": 0, "exhaustive": True, "targets": [], "evidence": "synthetic: the call is gated off"}
         ended = self.check(inventory, data=data, indirectCalls=[never])
-        self.assertEqual((ended["unresolved"], ended["targets"], ended["rowsPastNoReturn"]), ([], [], []))
+        self.assertNotIn("the code a declared outside destination names, and anything it calls", ended["exclusions"])
+        self.assertEqual((ended["unresolved"], ended["targets"]), ([], []))
+        # The call ends the branch, so the row's ret at 0005 is past it and unread.
+        self.assertEqual([(row["start"], row["kind"], row["site"], row["routines"], row["following"],
+                           row["followingRead"], row["siteClassification"]) for row in ended["rowsPastNoReturn"]],
+                         [("1000:0000", "call", 0, [], 5, False, "entry-path instruction")])
+        self.assertEqual((ended["counts"]["rowsPastNoReturn"], ended["counts"]["rowsPastNoReturnUnreadAfter"]), (1, 1))
+        # The outside call returns, so the same row is not past anything.
+        self.assertEqual(r["rowsPastNoReturn"], [])
         self.assertEqual(ended["assumptions"][0], "each reached call returns to its next instruction, except an "
                                                   "indirect call declared never to run")
 

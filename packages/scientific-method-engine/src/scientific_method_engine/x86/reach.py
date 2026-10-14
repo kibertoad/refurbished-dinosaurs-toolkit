@@ -4,7 +4,8 @@ from .image import integer
 from .trace import (walk, cfg_step, base_mnemonic, unsupported_transfer, holding_instruction, INTERRUPTS, RETURNS,
                     LIMIT_REASON, OVERLAP_REASON, UNDECODED_REASON)
 from .pcode_backend import interrupt_vector
-from .dispatch import indirect_call_declarations, call_ends, never_runs, indirect_call_assumptions
+from .dispatch import (indirect_call_declarations, call_ends, never_runs, indirect_call_assumptions,
+                       declared_interrupt)
 
 # The virtual root of the dominator computation; no file offset is negative.
 ROOT = -1
@@ -115,12 +116,7 @@ def no_return_declarations(value, image):
             found[at] = {"reason": entry["reason"], "following": at + ins.size}
             continue
         if kind == "interrupt":
-            ins = image.decode(at)
-            if ins is None or base_mnemonic(ins) not in INTERRUPTS:
-                raise ValueError(f"noReturn interrupt {at} is not an interrupt instruction")
-            vector, conditional = interrupt_vector(image.flat, ins, at)
-            if conditional:
-                raise ValueError(f"noReturn interrupt {at} is conditional and continues when it does not interrupt")
+            ins, vector = declared_interrupt(image, at, "noReturn interrupt", "and continues when it does not interrupt")
             found[at] = {"reason": entry["reason"], "vector": vector, "following": at + ins.size}
             continue
         found[at] = entry["reason"]
@@ -135,12 +131,12 @@ def no_return_inputs(value, image, indirect_calls):
     return routines, interrupts, calls, declared
 
 
-def call_assumption(routines, calls, indirect_calls=None):
+def call_assumption(routines, calls, indirect_calls):
     """The assumption that reached calls return, with the exceptions the ``noReturn`` declarations make and
     the indirect calls declared never to run (``never_runs``)."""
     exceptions = ((["a call to a noReturn routine"] if routines else []) + (["a noReturn call"] if calls else [])
                   + (["an indirect call declared never to run"]
-                     if any(never_runs(d) for d in (indirect_calls or {}).values()) else []))
+                     if any(never_runs(d) for d in indirect_calls.values()) else []))
     return "each reached call returns to its next instruction" + (", except " + " and ".join(exceptions)
                                                                    if exceptions else "")
 
@@ -527,10 +523,14 @@ def reach(image, config):
             cut_by[row["following"]] = f"{cut_by[row['following']]} and {cause}" if row["following"] in cut_by else cause
     cut_by |= {row["following"]: f"the noReturn interrupt at {at}"
                for at, row in no_return_interrupts.items() if at in seen}
-    # A declared call that never runs has no targets, so call_targets does not hold it.
-    for at, declaration in indirect_calls.items():
-        if at in seen and never_runs(declaration):
-            cut_by.setdefault(at + seen[at].size, f"the indirect call at {at}, declared never to run")
+    # A declared call that never runs has no targets, so call_targets does not hold it. Its site can be a
+    # noReturn call too, and the message then names both declarations.
+    never_following = {at: at + image.decode(at).size for at, declaration in indirect_calls.items()
+                       if never_runs(declaration)}
+    for at, following in never_following.items():
+        if at in seen:
+            cause = f"the indirect call at {at}, declared never to run"
+            cut_by[following] = f"{cut_by[following]} and {cause}" if following in cut_by else cause
     # A site past a stop site may be reached by no other route; the first stop names the cut.
     for at, found in sorted(stop_successors.items()):
         for successor in found:
@@ -616,8 +616,8 @@ def reach(image, config):
                      for site, declaration in indirect_calls.items()]
     # A call that never runs ends its branch, so a reviewer can check whether what follows it is read another way.
     for row in indirect_rows:
-        if never_runs(row):
-            following = row["site"] + image.decode(row["site"]).size
+        if row["site"] in never_following:
+            following = never_following[row["site"]]
             row |= {"following": following, "followingRead": following in seen}
     outside = outside_transfers(indirect_calls, seen)
     counts = {"routines": len(routine_starts), "instructions": len(seen), "unresolved": len(unresolved),
