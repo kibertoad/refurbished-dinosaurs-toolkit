@@ -11,12 +11,12 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from scientific_method_engine.x86.derived_counts import (BEFORE, MAPPING, NO_OFFSET, SOURCE, STRIDE, TARGET,
-                                                         UNSETTLED)
+from scientific_method_engine.x86.derived_counts import (BEFORE, DEPENDS, MAPPING, NO_OFFSET, SOURCE, STRIDE,
+                                                         TARGET, UNSETTLED)
 from scientific_method_engine.x86.dispatch import CALL_NOT_DERIVED, ENTERED, JUMP_NOT_DERIVED
 from scientific_method_engine.x86.image import Image
 from scientific_method_engine.x86.reports import run_report
-from scientific_method_engine.x86.table_bounds import CALL, MEMORY, NO_BOUND, SKIPPED, WIDENED
+from scientific_method_engine.x86.table_bounds import CALL, LIMIT, MEMORY, NO_BOUND, SKIPPED, WIDENED
 
 TABLE, SIZE = 0x40, 0x60
 
@@ -106,6 +106,16 @@ class PositiveControls(unittest.TestCase):
         found = derivation(data, jump(8))
         self.assertTrue(found["derivation"]["proven"], found["derivation"]["reasons"])
         self.assertEqual([row["target"] for row in found["rows"]], [0x20, 0x22, 0x28, 0x2A, 0x2C])
+
+    def test_two_derived_tables_on_the_branches_of_one_routine_are_both_proven(self):
+        # mov bx, [bp+6]; and bx, 3; shl bx, 1; test ax, ax; jz 0011; jmp cs:[bx+0040]; nop;
+        # 0011: jmp cs:[bx+0050]. Each analysis reads the other dispatch before its rows are derived.
+        data = code({0x00: "8b5e06 83e303 d1e3 85c0 7405 2eff6740 90 2eff6750", 0x50: "2000 2200 2400 2600"})
+        image = Image(data, config(data, indirectJumps=[jump(0x0C), jump(0x11, start=0x50)]))
+        for site in (0x0C, 0x11):
+            record = image.indirect_jumps[site]["derivation"]
+            self.assertTrue(record["proven"], record["reasons"])
+            self.assertEqual(record["count"], 4)
 
     def test_the_rows_match_the_offsets_unicorn_reads(self):
         from test_table_bounds import observed
@@ -201,7 +211,34 @@ class UnprovenCases(unittest.TestCase):
         finally:
             derived_counts.ROUNDS = rounds
         self.assertEqual((found["rows"], found["derivation"]["proven"]), ([], False))
+        self.assertEqual((found["derivation"]["count"], found["derivation"]["rowIndexes"]), (None, None))
         self.assertIn((UNSETTLED, 8), reasons(found))
+
+    def test_a_table_whose_analysis_reads_rows_that_do_not_settle_is_not_proven(self):
+        from scientific_method_engine.x86 import derived_counts
+        # Row 1 of the jump at 0008 sends it back with bx 8, so its rows grow in the second round. Its
+        # row 2 leads to the jump at 0035, whose own rows settle in the first round.
+        data = code({0x00: "8b5e06 83e303 d1e3 2eff6740", 0x22: "bb0800 ebe1", 0x30: "83e303 d1e3 2eff6750",
+                     0x50: "2000 2000 2000 2000"}, rows=(0x20, 0x22, 0x30, 0x2A, 0x2C))
+        declarations = [jump(8), jump(0x35, start=0x50)]
+        settled = Image(data, config(data, indirectJumps=declarations)).indirect_jumps
+        self.assertEqual([settled[site]["derivation"]["proven"] for site in (8, 0x35)], [True, True])
+        rounds = derived_counts.ROUNDS
+        derived_counts.ROUNDS = 2
+        try:
+            found = Image(data, config(data, indirectJumps=declarations)).indirect_jumps
+        finally:
+            derived_counts.ROUNDS = rounds
+        self.assertIn((UNSETTLED, 8), reasons(found[8]))
+        self.assertEqual((found[0x35]["rows"], found[0x35]["derivation"]["proven"]), ([], False))
+        self.assertIn((DEPENDS, 8), reasons(found[0x35]))
+
+    def test_the_instruction_limit_of_the_bound(self):
+        found = derivation(MASK_SHIFT, jump(8, bound={"routine": 0, "instructionLimit": 2}))
+        self.assertFalse(found["derivation"]["proven"])
+        self.assertTrue(found["derivation"]["instructionLimitReached"])
+        self.assertIn((LIMIT, 0), reasons(found))
+        self.assertEqual(found["rows"], [])
 
     def test_a_routine_that_does_not_reach_the_dispatch(self):
         # The routine at 0030 returns at once.

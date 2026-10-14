@@ -23,7 +23,8 @@ MAPPING = "a table offset the dispatch site's code segment does not place"
 SOURCE = "rows that leave the source bytes"
 TARGET = "a row whose target is not admitted"
 UNSETTLED = "rows that did not settle"
-# Rounds of deriving every declared jump table again with the rows the last round gave.
+DEPENDS = "a dispatch the analysis continued through whose rows are not proven"
+# Rounds of deriving every declared jump table again with the rows the earlier rounds gave.
 ROUNDS = 64
 
 
@@ -55,18 +56,20 @@ def code_offset(image, site, at):
     return offset if 0 <= offset <= 0xFFFF else None
 
 
-def derive(image, site, layout, width, bound, through, make_row):
+def derive(image, site, layout, width, bound, through, make_row, continuing=None):
     """The rows the dispatch at ``site`` can read, from the analysis over ``bound``'s routine.
 
     ``layout`` is the table's ``(start, count, stride, fieldOffset)`` with ``count`` None when it is
     not declared, ``width`` the bytes a row's target takes, ``through`` the targets a dispatch jump
-    continues at during the analysis, and ``make_row(index)`` gives a row dict or a reason string.
+    continues at during the analysis, ``continuing`` the targets other declared jumps continue at
+    in place of their declarations (``table_bounds.analyse``), and ``make_row(operand, index)``
+    gives the row whose target field is at ``operand``, as a row dict or a reason string.
     Returns the derivation record, the rows it admits (None unless proven) and the successors the
     analysis read from each site.
     """
     start, _, stride, field = layout
     result, graph, offset = analyse(image, bound["routine"], site, through, bound["passes"],
-                                    bound["instructionLimit"])
+                                    bound["instructionLimit"], continuing)
     table = result["table"] or {}
     record = {"routine": bound["routine"], "proven": False, "segment": table.get("segment"),
               "offset": table.get("offset"), "tableOffset": bound["tableOffset"], "rowIndexes": None, "count": None,

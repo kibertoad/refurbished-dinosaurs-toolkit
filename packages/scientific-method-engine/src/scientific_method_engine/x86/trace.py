@@ -903,7 +903,8 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
         if s.at in entered:
             # The walk from the path's entry enters the routine the count was derived over other than
             # at its start, so the derived rows do not hold on its paths.
-            global_gaps.append({k: v for k, v in entered[s.at].items()})
+            # A copy, since the continuation gaps are marked with their route below.
+            global_gaps.append(dict(entered[s.at]))
             return
         for target, rows in groups.items():
             if target not in seen:

@@ -538,7 +538,7 @@ def inventory_check(image, config):
         assumptions.append("each declared indirect call can call the targets its declaration gives, for the evidence "
                            "it gives, and only those when it is declared exhaustive")
     assumptions += derived_assumptions(image, indirect_calls)
-    indirect_rows =[declaration | {"reached": site in seen} for site, declaration in indirect_calls.items()]
+    indirect_rows = [declaration | {"reached": site in seen} for site, declaration in indirect_calls.items()]
     return {"inventory": {"path": config["inventory"], "rows": len(rows)},
             "targets": missing[:limit], "unresolved": unresolved[:limit],
             "rowsOutsideDeclaredCode": outside_code[:limit],

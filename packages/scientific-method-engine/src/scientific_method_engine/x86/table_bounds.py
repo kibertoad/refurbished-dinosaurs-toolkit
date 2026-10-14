@@ -581,8 +581,12 @@ def refine(flow, e, outcome, site):
     return flow
 
 
-def routine_graph(image, start, site, through, limit):
-    """The sites the analysis reads from ``start``, each with its successors, and the gaps it cannot follow."""
+def routine_graph(image, start, site, through, limit, continuing=None):
+    """The sites the analysis reads from ``start``, each with its successors, and the gaps it cannot follow.
+
+    A declared jump in ``continuing`` continues at the targets it maps the jump to, in place of its declaration.
+    """
+    continuing = continuing or {}
     graph, gaps, pending = {}, [], [start]
     stopped = False
     while pending:
@@ -609,6 +613,8 @@ def routine_graph(image, start, site, through, limit):
         successors = step.successors
         if at == site:
             successors = list(through) if base_mnemonic(ins) in ("jmp", "ljmp") else [at + ins.size]
+        elif at in continuing and at in image.indirect_jumps:
+            successors = list(continuing[at])
         else:
             gaps.extend(step.gaps)
         graph[at] = (ins, ops, successors)
@@ -696,11 +702,13 @@ def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
     return analyse(image, start, site, through, passes, limit)[0]
 
 
-def analyse(image, start, site, through=(), passes=PASSES, limit=10000):
+def analyse(image, start, site, through=(), passes=PASSES, limit=10000, continuing=None):
     """The offsets the dispatch at ``site`` can read its table at, over every path from ``start``.
 
     ``site`` decodes as a computed jump or call. A jump's successors are ``through``, the row
-    targets the caller gives; a call continues at its return site. ``passes`` is how many times a
+    targets the caller gives; a call continues at its return site. ``continuing`` maps other
+    declared jumps to the targets they continue at in place of their declarations, for a caller
+    that is still deriving their rows. ``passes`` is how many times a
     loop head's state is updated before it widens, and ``limit`` caps the instructions read.
 
     The result gives ``table``: the segment register the row is read through, the bytes read per
@@ -724,7 +732,8 @@ def analyse(image, start, site, through=(), passes=PASSES, limit=10000):
             raise ValueError(f"{label} {at} is outside declared code")
     integer(passes, 1, 64, "widening passes")
     integer(limit, 1, 10000, "instruction limit")
-    for at in through:
+    continuing = continuing or {}
+    for at in [*through, *(target for targets in continuing.values() for target in targets)]:
         integer(at, 0, len(image.data) - 1, "dispatch row target")
         if image.region(at) is None:
             raise ValueError(f"dispatch row target {at} is outside declared code")
@@ -732,7 +741,7 @@ def analyse(image, start, site, through=(), passes=PASSES, limit=10000):
     if (ins is None or base_mnemonic(ins) not in ("jmp", "ljmp", "call", "lcall") or not ins.operands
             or any(operand.type == X86_OP_IMM for operand in ins.operands)):
         raise ValueError(f"dispatch site {site} must decode as a computed jump or call")
-    graph, gaps, stopped = routine_graph(image, start, site, list(through), limit)
+    graph, gaps, stopped = routine_graph(image, start, site, list(through), limit, continuing)
     # A start that does not decode is a gap, and the walk reaches nothing.
     states, widened = {}, set()
     if start in graph:

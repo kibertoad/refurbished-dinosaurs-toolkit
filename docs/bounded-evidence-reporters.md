@@ -1531,8 +1531,12 @@ is unknown except a stack slot a store on every path wrote, and a call or interr
 register and slot unknown. When it proves the range of the offset the dispatch reads its row at,
 the rows that range steps through are the table's rows: the range's first value lies on a row and
 its stride is a multiple of the table's `stride`. A dispatch jump's analysis continues at its own
-rows, and those rows can widen its range, so every derived table is derived again with the rows the
-last round gave until no rows change. Rows that still change after 64 rounds are not proven.
+rows and at the rows of every other derived jump it reads, and those rows can widen its range, so
+the derived jump tables are derived in rounds. Each round continues every derived jump at all the
+rows the earlier rounds gave it, starting from none, until a round adds no row. Rows that still
+grow after 64 rounds are not proven, and neither are the rows of a table whose analysis continued
+through a derived jump whose rows are not proven. A table that also declares `count` is checked
+once those rows are final.
 
 Each such declaration carries `derivation`:
 
@@ -1544,7 +1548,7 @@ Each such declaration carries `derivation`:
 | `tableOffset` | the offset of the first row's target field in that segment, from `bound` or the CS mapping |
 | `rowIndexes`, `count` | `{ first, last, step }`, the rows the range admits, and `last + 1`, the count a declaration would need to hold them; null when not proven |
 | `bounds` | the sites that bounded the offset, such as the `and` of a mask or the branch after a guard |
-| `reasons` | each with its `site`, why the rows are not proven: no bound, a path that skips the bound (with `boundSites`), an unknown memory read, an operation without a transfer function, an operation that faults, a call or interrupt not walked, the widening limit, a transfer the analysis could not follow, the instruction limit, the dispatch not reached from the start, a dispatch that reads no table or another width than the table's rows hold, an offset before the table's first row, an index that does not step by the table stride, a table read through a segment other than CS whose offset is not declared, a table offset the dispatch site's code segment does not place, rows that leave the source bytes, a row whose target is not admitted (with `row` and `detail`), or rows that did not settle |
+| `reasons` | each with its `site`, why the rows are not proven: no bound, a path that skips the bound (with `boundSites`), an unknown memory read, an operation without a transfer function, an operation that faults, a call or interrupt not walked, the widening limit, a transfer the analysis could not follow, the instruction limit, the dispatch not reached from the start, a dispatch that reads no table or another width than the table's rows hold, an offset before the table's first row, an index that does not step by the table stride, a table read through a segment other than CS whose offset is not declared, a table offset the dispatch site's code segment does not place, rows that leave the source bytes, a row whose target is not admitted (with `row` and `detail`), rows that did not settle, or a dispatch the analysis continued through whose rows are not proven (at that dispatch's site) |
 | `unread`, `widened`, `instructions`, `instructionLimitReached` | the transfers the analysis could not follow, the loop heads that widened, and how many instructions it read and whether it stopped at its limit |
 | `assumptions` | what the rows rest on: the routine is entered only at its start, each call and interrupt it steps over returns to its next instruction, and the table lies at `tableOffset` in the segment the dispatch reads |
 | `declaredCount`, `rowsLeftOut` | for a table that also declares `count`: that count, and the row indexes the code admits at or past it |

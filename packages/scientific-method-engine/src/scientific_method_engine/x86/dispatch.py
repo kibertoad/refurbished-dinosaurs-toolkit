@@ -83,12 +83,12 @@ def read_indirect_jumps(image):
 
     A table without ``count`` takes its rows from the code (``derived_counts.derive``), and one with
     both ``count`` and ``bound`` is checked against the code. A jump's rows feed its own analysis and
-    every analysis whose routine holds the jump, so each round derives every such table again with
-    the rows the round before gave, until no rows change. A table's own analysis continues through
-    every row an earlier round gave it, so those only grow. The successors each proven analysis read
-    are kept in ``image.derived_reads`` for ``entry_gaps``.
+    every analysis whose routine holds the jump, so the tables without ``count`` are derived in
+    rounds (``_derive_jumps``), and the tables with both are checked once those rows are final. The
+    successors each proven analysis of a table without ``count`` read are kept in
+    ``image.derived_reads`` for ``entry_gaps``.
     """
-    from .derived_counts import ROUNDS, UNSETTLED, derive
+    from .derived_counts import derive
     declarations = image.config.get("indirectJumps", [])
     if not isinstance(declarations, list) or len(declarations) > 256:
         raise ValueError("indirectJumps must contain at most 256 declarations")
@@ -126,42 +126,62 @@ def read_indirect_jumps(image):
             pending[site] = (layout, bound)
             result[site]["derivation"] = None
     image.indirect_jumps, image.derived_reads = result, {}
-    # Every row each table without a count has been given, which its own analysis continues through.
-    through = {site: {} for site, (layout, _) in pending.items() if layout[1] is None}
-    changed = set()
-    for _ in range(ROUNDS if pending else 0):
-        changed = set()
-        for site, (layout, bound) in pending.items():
-            declaration = result[site]
-            followed = declaration["rows"] if layout[1] is not None else list(through[site].values())
-            record, found, graph = derive(image, site, layout, 2, bound, [row["target"] for row in followed],
-                                          _jump_row(image, site))
-            previous, declaration["derivation"] = declaration["derivation"], record
-            if layout[1] is not None:
-                continue
-            found = found or []
-            if (previous is None or previous["proven"] != record["proven"] or declaration["rows"] != found
-                    or any(row["index"] not in through[site] for row in found)):
-                changed.add(site)
-            through[site] |= {row["index"]: row for row in found}
-            declaration["rows"] = found
-            if record["proven"]:
-                image.derived_reads[site] = (bound["routine"], graph)
-            else:
-                image.derived_reads.pop(site, None)
-        if not changed:
-            break
-    for site in sorted(changed):
-        # The rows still changed in the last round, so the table's count is not proven.
-        derivation = result[site]["derivation"]
-        derivation["proven"] = False
-        derivation["reasons"].append({"reason": UNSETTLED, "site": site, "rounds": ROUNDS})
-        result[site]["rows"] = []
-        image.derived_reads.pop(site, None)
-    for site, (layout, _) in pending.items():
+    _derive_jumps(image, result, {site: entry for site, entry in pending.items() if entry[0][1] is None})
+    # A declared count's rows feed no derivation, so it is checked once against the final rows of the others.
+    for site, (layout, bound) in pending.items():
         if layout[1] is not None:
-            _check_count(site, layout, result[site]["derivation"], "indirect table")
+            declaration = result[site]
+            declaration["derivation"] = derive(image, site, layout, 2, bound,
+                                               [row["target"] for row in declaration["rows"]],
+                                               _jump_row(image, site))[0]
+            _check_count(site, layout, declaration["derivation"], "indirect table")
     return result
+
+
+def _derive_jumps(image, result, derived):
+    """Give each jump table in ``derived`` (site to ``(layout, bound)``) its rows from the code.
+
+    Each round derives every such table with each of them continuing at every row any earlier round
+    gave it, starting from none, so the rows only grow. In a round that adds none, every analysis
+    ran with the final rows. A table whose rows still grew in the last round is not proven, nor is
+    one whose analysis continued through a table that is not proven.
+    """
+    from .derived_counts import DEPENDS, ROUNDS, UNSETTLED, derive
+    given = {site: {} for site in derived}
+    records, graphs, grew = {}, {}, set()
+    for _ in range(ROUNDS if derived else 0):
+        grew = set()
+        for site, (layout, bound) in derived.items():
+            targets = {at: [row["target"] for row in rows.values()] for at, rows in given.items()}
+            through = targets.pop(site)
+            record, found, graph = derive(image, site, layout, 2, bound, through, _jump_row(image, site), targets)
+            records[site], graphs[site] = (record, found or []), graph
+            if any(row["index"] not in given[site] for row in found or []):
+                grew.add(site)
+                given[site] |= {row["index"]: row for row in found}
+        if not grew:
+            break
+    unproven = grew | {site for site, (record, _) in records.items() if not record["proven"]}
+    while True:
+        depending = {site for site in derived if site not in unproven and unproven & graphs[site].keys()}
+        if not depending:
+            break
+        unproven |= depending
+    for site, (layout, bound) in derived.items():
+        record, found = records[site]
+        declaration = result[site]
+        declaration["derivation"] = record
+        if site not in unproven:
+            declaration["rows"] = found
+            image.derived_reads[site] = (bound["routine"], graphs[site])
+            continue
+        declaration["rows"] = []
+        if site in grew:
+            record["reasons"].append({"reason": UNSETTLED, "site": site, "rounds": ROUNDS})
+        if record["proven"]:
+            record["reasons"] += [{"reason": DEPENDS, "site": at} for at in sorted(unproven & graphs[site].keys())
+                                  if at != site]
+        record |= {"proven": False, "rowIndexes": None, "count": None}
 
 
 def _call_row(image, site, far):

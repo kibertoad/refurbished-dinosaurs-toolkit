@@ -110,8 +110,10 @@ The engine has no analysis that joins values across paths. `x86/values.py`, `mac
    analysis read too, is a gap at the dispatch. A table read through a segment other than CS
    declares the offset its first row lies at in that segment, since the analysis knows no segment
    value. A dispatch jump's rows feed its own analysis and every analysis whose routine holds it,
-   so the derivations run in rounds, each with the rows the last one gave, until no rows change;
-   rows that still change after a fixed number of rounds are not proven.
+   so the derivations run in rounds, each continuing every derived jump at all the rows the
+   earlier rounds gave it, until no rows are added; rows that still grow after a fixed number of
+   rounds are not proven, and neither are those of a table whose analysis continued through a
+   derived jump whose rows are not proven.
 
 ## Consequences
 
