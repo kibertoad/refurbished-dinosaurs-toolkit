@@ -134,7 +134,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `bounds` | the instruction extent reached from one entry, with its interrupt and port instructions | [function bounds](#function-bounds-and-site-ownership), [hardware boundaries](#hardware-boundaries) |
 | `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
 | `callees` | the bounded call graph below an entry, with recursion and shared callees, optionally compared with Ghidra's edges | [function bounds](#function-bounds-and-site-ownership) |
-| `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved; follows the declared targets of computed calls; ends the walk at the query's stop routines and stop sites; with `decodedRanges`, the ranges of every instruction the walk decoded | [reachability](#reachability-from-starts-to-targets), [declared call targets](#declared-computed-call-targets) |
+| `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, and every reached transfer left unresolved; follows the declared targets of computed calls; ends the walk at the query's stop routines and stop sites; with `decodedRanges`, the ranges of every instruction the walk decoded; with `spans`, the transfers that land inside each span | [reachability](#reachability-from-starts-to-targets), [declared call targets](#declared-computed-call-targets) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
 | `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (the resident span of each FBOV descriptor, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own, an optional comparison with a candidate body, and every FBOV descriptor with its load-image span (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
@@ -1087,6 +1087,7 @@ for questions such as "can anything between program start and this point write t
 | `instructionLimit` | instructions the walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000) |
 | `limit` | rows kept in each of `unresolved`, `interrupts`, `gaps` and `contested` (1..10000, default 1000) |
 | `decodedRanges` | optional boolean, default false: also report `decodedRanges`, the instructions the walk decoded ([ADR 0038](decisions/0038-decoded-ranges-of-a-reach-walk.md)) |
+| `spans` | optional, at most 256 distinct `{ "first", "last" }` objects ([ADR 0044](decisions/0044-transfers-into-a-span.md)): file offsets in one declared region, `first` before `last` and at most 4096 bytes apart, such as the instruction that writes a value and the instruction that reads it. The report then gives `spans` |
 
 The walk is the entry-path walk `incoming` and `uses` read, started from `starts` alone. It
 follows every resolved call into its callee and on at its return site, every resolved jump and
@@ -1152,6 +1153,34 @@ instruction starts there, and an instruction control at it fails the report when
 result `limit` does not cut the ranges,
 which the instruction limit bounds, and a stopped walk's ranges cover the part read. Without the
 option the field is absent.
+
+With `spans`, `spans` gives one row per span, in the order given, for questions such as "does
+anything reach this interrupt with a value other than the one the instruction before it set"
+([ADR 0044](decisions/0044-transfers-into-a-span.md)). A transfer enters a span when its target
+lies after `first` and at or before `last`, and its source instruction starts outside
+`first..last-1`: a transfer to `first` runs the instruction there, and one from inside the span
+runs after it did. A transfer from `last` back into the span enters it. A row has:
+
+| Field | Meaning |
+|---|---|
+| `first`, `last` | the span as given |
+| `fallsThrough` | whether the walk decoded an instruction at `first` and at each site after it up to `last`, each before `last` continuing at the next one. A call continues at its return site and an interrupt at the next instruction, as the walk assumes |
+| `break` | when `fallsThrough` is false, `{ "site", "reason" }`: the site where no decoded instruction starts, the instruction that runs past `last`, or the instruction that does not continue at the next one |
+| `entries` | the transfers of instructions the walk decoded that enter the span, as `{ "source", "target", "kind", "instruction", "routine" }`. `kind` is `jump` (a jump or branch), `call` (a resolved or declared call target), `table` (a declared table row), `return` (a call's return site), `interrupt` (the instruction after an interrupt) or `fall`. A stop site's transfers are listed, though the walk does not follow them |
+| `candidates` | the transfers found by decoding every other byte of declared code that starts a call, jump, branch or loop (`70`..`7F`, `E0`..`E3`, `E8`..`EB`, `9A`, `0F`), each contested instruction, and each declared indirect jump or call site the walk did not decode, as `{ "source", "target", "instruction", "position" }`. `position` says where the source lies: `inside a decoded instruction` (with `insideInstruction`, its start), `start of a contested instruction`, `start of an unresolved overlapping instruction`, or `outside the decoded instructions` |
+| `counts` | the full length of `entries` and `candidates` |
+| `negativeUsable` | the report's `negativeUsable`, a span that falls through, and no entry |
+
+Targets resolve as the walk resolves them: a relative transfer through the region mapping, a
+direct far transfer through its relocation or fixup, and a declared table or call through its
+declaration. A candidate runs only if a route the walk did not read reaches its source, so
+candidates do not change a span's `negativeUsable`: code the walk did not read is outside the
+question, as the report's `exclusions` say. A candidate inside a decoded instruction needs a
+transfer into that instruction's bytes, which on a read route is a gap or a contested instruction.
+A leaf is not decoded, so its transfers into a span appear only among the candidates, and a span
+negative rests on the leaves as the report's does. A candidate that starts with a prefix is found
+at the byte after the prefix, with the same target, except under an operand-size override, whose transfers the walk does not model. The result `limit` cuts `entries` and
+`candidates` and sets `truncated`. Without the option the field is absent.
 
 `noReturn` repeats each declaration with its reason. A routine row gives whether the walk reached
 it (`reached`) and decoded it (`read`; a routine that is also a leaf is not read), and its

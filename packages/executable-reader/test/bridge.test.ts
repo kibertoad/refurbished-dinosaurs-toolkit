@@ -936,6 +936,44 @@ test("reach stops a walk at a far call to a stop routine that returns through th
   assert.throws(() => run(["reach", path]), /stop site 64 is a start/);
 });
 
+test("reach lists a relocated far call that enters a span through the real MZ prepared bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  // 64 calls 83 far through its relocation, past the mov at 80 into the far return the mov runs into.
+  data[65] = 0x13;
+  writeFileSync(join(dir, "source.bin"), data);
+  const path = join(dir, "config.json");
+  const cfg = {
+    ...config,
+    xxh3: sourceXxh3(data),
+    regions: [{ ...config.regions[0]!, entries: [64, 80] }],
+    starts: [64, 80],
+    targets: [83],
+    controls: [64],
+    spans: [{ first: 80, last: 83 }],
+  };
+  writeFileSync(path, JSON.stringify(cfg));
+  const r = run(["reach", path]);
+  assert.equal(r.negativeUsable, true);
+  assert.deepEqual(r.spans, [
+    {
+      first: 80,
+      last: 83,
+      fallsThrough: true,
+      entries: [{ source: 64, target: 83, kind: "call", instruction: "lcall 0, 0x13", routine: 64 }],
+      candidates: [],
+      counts: { entries: 1, candidates: 0 },
+      negativeUsable: false,
+    },
+  ]);
+  // With the call landing on the first site, the span runs from it and nothing enters it.
+  data[65] = 0x10;
+  writeFileSync(join(dir, "source.bin"), data);
+  writeFileSync(path, JSON.stringify({ ...cfg, xxh3: sourceXxh3(data), targets: [80] }));
+  const first = run(["reach", path]);
+  assert.deepEqual(first.spans[0].entries, []);
+  assert.equal(first.spans[0].negativeUsable, true);
+});
+
 test("reach follows declared near and far computed call tables through the real MZ prepared bridge", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "bounded-report-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
