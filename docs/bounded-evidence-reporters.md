@@ -1159,15 +1159,16 @@ anything reach this interrupt with a value other than the one the instruction be
 ([ADR 0044](decisions/0044-transfers-into-a-span.md)). A transfer enters a span when its target
 lies after `first` and at or before `last`, and its source instruction starts outside
 `first..last-1`: a transfer to `first` runs the instruction there, and one from inside the span
-runs after it did. A transfer from `last` back into the span enters it. A row has:
+runs after it did. A transfer from `last` back into the span enters it, and so does a start after
+`first`, which the walk enters with no transfer. A row has:
 
 | Field | Meaning |
 |---|---|
 | `first`, `last` | the span as given |
-| `fallsThrough` | whether the walk decoded an instruction at `first` and at each site after it up to `last`, each before `last` continuing at the next one. A call continues at its return site and an interrupt at the next instruction, as the walk assumes |
-| `break` | when `fallsThrough` is false, `{ "site", "reason" }`: the site where no decoded instruction starts, the instruction that runs past `last`, or the instruction that does not continue at the next one |
-| `entries` | the transfers of instructions the walk decoded that enter the span, as `{ "source", "target", "kind", "instruction", "routine" }`. `kind` is `jump` (a jump or branch), `call` (a resolved or declared call target), `table` (a declared table row), `return` (a call's return site), `interrupt` (the instruction after an interrupt) or `fall`. A stop site's transfers are listed, though the walk does not follow them |
-| `candidates` | the transfers found by decoding every other byte of declared code that starts a call, jump, branch or loop (`70`..`7F`, `E0`..`E3`, `E8`..`EB`, `9A`, `0F`), each contested instruction, and each declared indirect jump or call site the walk did not decode, as `{ "source", "target", "instruction", "position" }`. `position` says where the source lies: `inside a decoded instruction` (with `insideInstruction`, its start), `start of a contested instruction`, `start of an unresolved overlapping instruction`, or `outside the decoded instructions` |
+| `fallsThrough` | whether the walk decoded an instruction at `first` and at each site after it up to `last`, each before `last` continuing at the next one. A call continues at its return site and an interrupt at the next instruction, as the walk assumes. A stop site before `last` breaks the run, since the walk follows nothing there |
+| `break` | when `fallsThrough` is false, `{ "site", "reason" }`: the site where no decoded instruction starts, the instruction that runs past `last`, the instruction that does not continue at the next one, or a stop site |
+| `entries` | the transfers of instructions the walk decoded that enter the span, as `{ "source", "target", "kind", "instruction", "routine" }`. `kind` is `jump` (a jump or branch), `call` (a resolved or declared call target), `table` (a declared table row), `return` (a call's return site), `interrupt` (the instruction after an interrupt), `fall`, or `start` (a start after `first`, with `source` and `instruction` null). A stop site's transfers are listed, though the walk does not follow them |
+| `candidates` | the successors of the instructions found by decoding every other byte of declared code that starts a call, jump, branch or loop (`70`..`7F`, `E0`..`E3`, `E8`..`EB`, `9A`, `0F`), each contested instruction, and each declared indirect jump or call site the walk did not decode, as `{ "source", "target", "instruction", "position" }`. `position` says where the source lies: `inside a decoded instruction` (with `insideInstruction`, its start), `start of a contested instruction`, `start of an unresolved overlapping instruction`, or `outside the decoded instructions` |
 | `counts` | the full length of `entries` and `candidates` |
 | `negativeUsable` | the report's `negativeUsable`, a span that falls through, and no entry |
 
@@ -1179,8 +1180,9 @@ question, as the report's `exclusions` say. A candidate inside a decoded instruc
 transfer into that instruction's bytes, which on a read route is a gap or a contested instruction.
 A leaf is not decoded, so its transfers into a span appear only among the candidates, and a span
 negative rests on the leaves as the report's does. A candidate that starts with a prefix is found
-at the byte after the prefix, with the same target, except under an operand-size override, whose transfers the walk does not model. The result `limit` cuts `entries` and
-`candidates` and sets `truncated`. Without the option the field is absent.
+at the byte after the prefix, with the same target, except under an operand-size override, whose
+transfers the walk does not model. The result `limit` cuts `entries` and `candidates` and sets
+`truncated`. Without the option the field is absent.
 
 `noReturn` repeats each declaration with its reason. A routine row gives whether the walk reached
 it (`reached`) and decoded it (`read`; a routine that is also a leaf is not read), and its

@@ -915,6 +915,67 @@ class SpanTests(unittest.TestCase):
         self.assertEqual([(row["source"], row["target"], row["kind"]) for row in span["entries"]], [(3, 2, "jump")])
         self.assertFalse(span["negativeUsable"])
 
+    def test_a_start_inside_the_span_enters_it(self):
+        # 0000 mov ah, 3Dh; 0002 int 21h; 0004 ret. The walk also starts at 0002, past the writer.
+        data = bytes.fromhex("b43dcd21c3")
+        r = spans(data, entries=(0, 2), targets=[2], instructionControls=[4], spans=[{"first": 0, "last": 2}])
+        self.assertTrue(r["negativeUsable"])
+        span = r["spans"][0]
+        self.assertEqual(span["entries"], [{"source": None, "target": 2, "kind": "start", "instruction": None,
+                                            "routine": 2}])
+        self.assertFalse(span["negativeUsable"])
+        # A start at the first site runs the span from its first instruction.
+        span = spans(data, entries=(0, 2), targets=[2], instructionControls=[4],
+                     spans=[{"first": 2, "last": 4}])["spans"][0]
+        self.assertEqual(span["entries"], [])
+
+    def test_a_candidate_call_returns_into_the_span(self):
+        # 0000 mov al, 0E8h holds a call at 0001 whose target lies outside the image and whose return site is 0004;
+        # 0002 mov ah, 3Dh; 0004 int 21h; 0006 ret.
+        data = bytes.fromhex("b0e8b43dcd21c3")
+        span = spans(data, entries=(0,), targets=[4], instructionControls=[4],
+                     spans=[{"first": 2, "last": 4}])["spans"][0]
+        self.assertEqual(span["entries"], [])
+        self.assertEqual([(row["source"], row["target"], row["position"], row["insideInstruction"])
+                          for row in span["candidates"]], [(1, 4, "inside a decoded instruction", 0)])
+
+    def test_a_stop_site_inside_the_span_breaks_its_run(self):
+        # 0000 mov ah, 3Dh; 0002 jz 0005; 0004 nop, a stop site; 0005 int 21h; 0007 ret. The jz from inside the
+        # span reaches 0005, but the walk follows nothing at 0004, as it follows no call to a stop routine.
+        data = bytes.fromhex("b43d7401 90cd21c3".replace(" ", ""))
+        r = spans(data, entries=(0,), targets=[5], instructionControls=[5], stops=[{"site": 4, "reason": CUT}],
+                  spans=[{"first": 0, "last": 5}])
+        self.assertTrue(r["negativeUsable"])
+        span = r["spans"][0]
+        self.assertEqual(span["entries"], [])
+        self.assertEqual((span["fallsThrough"], span["break"]),
+                         (False, {"site": 4, "reason": "a stop site, whose successors the walk does not follow"}))
+        self.assertFalse(span["negativeUsable"])
+        # A stop site at the last site ends nothing the span needs.
+        span = spans(data, entries=(0,), targets=[4], instructionControls=[4], stops=[{"site": 4, "reason": CUT}],
+                     spans=[{"first": 0, "last": 4}])["spans"][0]
+        self.assertTrue(span["fallsThrough"])
+
+    def test_the_scan_decodes_only_the_short_transfers_that_can_enter_a_span(self):
+        # Region A (segment 1000, IP 0000): 0000 jmp short to IP FF82, which wraps into region B; 0002 jz 0004,
+        # which can enter no span; 0004 call 0007. Region B (IP FF00) holds at 0090 mov ah, 3Dh; 0092 int 21h;
+        # 0094 ret. The jmp at 0000 lands at 0092 although its source lies far from it.
+        a = bytes.fromhex("eb807400e80000") + bytes(9)
+        b = bytes(0x80) + bytes.fromhex("b43dcd21c3") + bytes(0xB)
+        data = a + b
+        regions = [{"name": "a", "start": 0, "end": len(a), "ip": 0, "segment": 0x1000, "resident": True,
+                    "entries": [], "evidence": "synthetic declared code extent"},
+                   {"name": "b", "start": len(a), "end": len(data), "ip": 0xFF00, "segment": 0x1000, "resident": True,
+                    "entries": [0x90], "evidence": "synthetic declared code extent"}]
+        query = {"regions": regions, "starts": [0x90], "targets": [0x92], "instructionControls": [0x92],
+                 "spans": [{"first": 0x90, "last": 0x92}]}
+        span = run_report(data, query, "reach")["spans"][0]
+        self.assertEqual(span["candidates"], [{"source": 0, "target": 0x92, "instruction": "jmp 0xffffff82",
+                                               "position": "outside the decoded instructions"}])
+        from scientific_method_engine.x86.image import Image
+        from scientific_method_engine.x86.reach import _scan_sources
+        self.assertEqual(_scan_sources(Image(data, query), {}, {0x91, 0x92}), {0, 4})
+
     def test_calls_and_table_rows_enter_a_span(self):
         r = reach(indirectJumps=[TABLE], instructionControls=[0x28],
                   spans=[{"first": 0x20, "last": 0x24}, {"first": 0x24, "last": 0x28}])

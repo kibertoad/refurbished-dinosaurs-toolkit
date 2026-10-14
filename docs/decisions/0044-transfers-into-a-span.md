@@ -27,17 +27,24 @@ whether its source starts an instruction of the path or lies inside one.
 2. `entries` lists the transfers of the instructions the walk decoded, of every kind the walk
    follows, including a stop site's, which the walk decodes and does not follow. They come from the
    walk's own successors, so an entry to a target the walk could not keep (an unresolved overlap)
-   is still listed.
-3. `candidates` lists the transfers found by decoding every other byte of declared code whose first
-   byte can start a call, jump, branch or loop, each contested instruction, and each declared
-   indirect jump or call site the walk did not decode. Targets come from the walk's own resolution
-   (region mapping, relocations and fixups, declarations), so a candidate means what an entry
-   means. Each gives the `position` of its source: inside a decoded instruction (with its start),
+   is still listed. A start after `first` is an entry with no source, since the walk begins there
+   with whatever value the caller of the start set.
+3. `candidates` lists the successors of the instructions found by decoding every other byte of
+   declared code whose first byte can start a call, jump, branch or loop, of each contested
+   instruction, and of each declared indirect jump or call site the walk did not decode, so a
+   call's return site and a contested instruction's next one count. Targets come from the walk's
+   own resolution (region mapping, relocations and fixups, declarations), so a candidate means what
+   an entry means. Each gives the `position` of its source: inside a decoded instruction (with its start),
    the start of a contested or unresolved overlapping instruction, or outside the decoded
    instructions.
 4. `fallsThrough` says whether the walk decoded a run of instructions from `first` to `last`, each
    continuing at the next; `break` names where it does not. Without it, "the last writer before the
-   request" does not describe the code.
+   request" does not describe the code. A stop site before `last` breaks the run. The walk follows
+   nothing at a stop site, and a call to a stop routine already breaks the run by having no return
+   site, so a stop site doing the same keeps both kinds of stop on the walk's terms. Reading the
+   code past a stop site would claim a continuation the stop cut from the question
+   ([ADR 0039](0039-query-scoped-stops-in-reach.md)), and a span negative would rest on it. A stop
+   site at `last` ends nothing the span needs.
 5. A span's `negativeUsable` needs the report's `negativeUsable`, a span that falls through, and no
    entry. Candidates do not change it. A candidate runs only if a route the walk did not read
    reaches its source, and `reach` already excludes code reached only from outside the starts;
@@ -52,10 +59,15 @@ decision leaves to the caller.
 
 ## Consequences
 
-- A census drops its byte-offset script and checks each span's entries and `fallsThrough`. The
-  candidates come sorted by where their source lies, so the ones inside decoded instructions can be
-  set aside on the stated rule, and the ones outside them point at code the walk did not read.
-- The candidate scan decodes each byte of declared code whose value can start a transfer. It runs
-  only when `spans` is given.
+- A census drops its byte-offset script and checks each span's entries and `fallsThrough`. Each
+  candidate says where its source lies, so the ones inside decoded instructions can be set aside on
+  the stated rule, and the ones outside them point at code the walk did not read.
+- The candidate scan runs only when `spans` is given. It decodes each byte of declared code whose
+  value can start a near or far transfer (`E8`, `E9`, `EA`, `9A`, `0F`), since their targets can lie
+  anywhere in the image. A two-byte rel8 transfer (`70`..`7F`, `E0`..`E3`, `EB`) is decoded only when
+  its next site or its encoded target, placed through the region mapping as the walk places it,
+  lies in a span, so the scan of a large image decodes the few short transfers near a span and the
+  candidates stay exactly those a full decode finds. A target that wraps past the end of the IP
+  range or reaches a span through another region's mapping is placed the same way, so it is kept.
 - The prepared config is unchanged. The field passes through the reader, so this needs no protocol
   increment.
