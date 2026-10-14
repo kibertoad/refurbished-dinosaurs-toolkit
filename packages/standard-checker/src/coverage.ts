@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Measures how much of each analysed file of code the spec cites, against its function inventory,
-// as the work protocol's Measuring progress section describes
+// Measures how much of each analysed file of code the spec cites and has read completely, against
+// its function inventory, and how much of the file the inventory maps, as the work protocol's
+// Measuring progress section describes
 // (https://dinorefurb.com/work-protocol/#measuring-progress).
 //
 // Usage:
@@ -22,8 +23,11 @@
 // is the function's body in bytes. A row with a reason in out_of_scope is out of scope. When the
 // body is not one range from start, ranges lists its half-open ranges as start..end in the same
 // notation, separated by spaces; size is their total, and one of them holds start. In an NE file
-// each range, and a body without ranges, ends in the segment it starts in. The
-// .provenance.tsv and .regions.tsv files the protocol puts beside an inventory are not read.
+// each range, and a body without ranges, ends in the segment it starts in.
+//
+// Every file of code a manifest lists, by its format or the unpacked format of a packed file, that
+// has no inventory is listed as without one. Those files are not measured, and no figure here
+// covers them.
 //
 // An entry cites a function when one of its locations names the same build and file and its
 // address or offset, or the half-open range it gives, overlaps the function's body: its ranges, or
@@ -40,8 +44,27 @@
 //
 // A row without ranges is measured as if its body were contiguous, so for a function whose body is
 // not, a location in a gap after its start can count as citing it, and a location in a part placed
-// elsewhere does not. A cited function has been looked at, not read completely, which only the
-// citing entry's status says.
+// elsewhere does not.
+//
+// A cited function has been looked at, not read completely. A function is read completely when the
+// locations of the static findings that entries list in complete_reading cover every byte of its
+// body, together if several entries list them. Only findings that the standard accepts there count:
+// static findings the entry lists in evidence and that list its first build, of an entry that is
+// neither superseded nor disputed and whose procedure has no # may run: comment, and that are not
+// superseded themselves. The count is unavailable when loading the spec had problems, since an entry
+// that could not be read may hold a complete reading, and for a file where a location of such a
+// finding does not parse. Otherwise it is a count, and 0 when no complete reading covers a function.
+//
+// Beside each inventory, <file>.provenance.tsv gives one name and value per line, separated by a
+// tab, and must give the xxh3 the manifest gives for the file (for a packed file, its unpacked
+// form). An inventory whose provenance gives another xxh3 lists another file, and is not measured.
+// <file>.regions.tsv holds the denominator audit's totals, with the columns kind, start, size,
+// instructions, instructions_outside, data, data_outside, undefined and undefined_outside: a region
+// row for each executable region, an outside row for each stretch of a body in no region, and an
+// entry row for each start where no instruction starts. Its rows must agree with the inventory: the
+// bytes of the regions it puts in bodies, and the bytes of its outside rows, must be those of the
+// inventory's bodies inside and outside the regions. When they do, the mapping figures are given;
+// a missing side file is no problem, and gives none.
 //
 // The spec is read as the documentation check reads it. Problems with the spec itself are left to
 // that check, and a location that does not parse cites nothing here; a warning gives how many
@@ -52,24 +75,26 @@
 // could be read would leave the other functions out of both the cited and the uncited count, so a
 // file whose rows are all invalid would read as a file of no functions.
 //
-// It exits with 0, with 1 when an inventory is invalid or --require-complete finds an uncited
-// function or no inventory, and with 2 when the options are invalid.
+// It exits with 0, with 1 when an inventory or a side file is invalid or --require-complete finds
+// an uncited function or no inventory, and with 2 when the options are invalid.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type InventoryRow, codeLocations, readInventories } from "./inventory.ts";
+import { completeReadings } from "./complete-reading.ts";
+import { type InventoryRow, codeLocations, filesWithoutInventory, readInventories } from "./inventory.ts";
 import { loadSpec } from "./load/spec.ts";
 import { parseOptions } from "./options.ts";
+import { type Mapping, readProvenance, readRegions } from "./side-files.ts";
 
 /**
- * An inventory that gets no figures: one that could not be read at all, or one with a row that
- * could not be read.
+ * An inventory that gets no figures: one that could not be read at all, one with a row that could
+ * not be read, or one whose provenance names another file.
  */
 interface UnmeasuredInventory {
   /** The inventory's path, relative to the root. */
   path: string;
-  /** Why it is not measured: the file-level problem, or how many of its rows are invalid. */
+  /** Why it is not measured: the file-level problem, how many of its rows are invalid, or the xxh3 that differs. */
   reason: string;
 }
 
@@ -77,7 +102,12 @@ interface UnmeasuredInventory {
 interface InventoryFunction extends InventoryRow {
   /** The IDs of the entries that cite it. */
   citedBy: string[];
+  /** True when complete readings cover its whole body. */
+  read: boolean;
 }
+
+/** The complete-reading figures of an inventory, or why there are none. */
+type CompleteReadingReport = { functions: number; bytes: number } | { unavailable: string };
 
 /** What one inventory measured. */
 interface InventoryReport {
@@ -97,6 +127,12 @@ interface InventoryReport {
   sharedBytes: number;
   /** In-scope functions that no entry cites, by start. */
   uncited: Array<{ start: string; size: number; name: string }>;
+  /** In-scope functions read completely, and their bytes, each counted once. */
+  completeReading: CompleteReadingReport;
+  /** What the provenance file gives, or null when there is none or it could not be read. */
+  provenance: Record<string, string> | null;
+  /** The figures of the regions file, or why there are none. */
+  mapping: Mapping | { unavailable: string };
 }
 
 const OPTIONS = ["--json", "--list", "--require-complete"];
@@ -143,7 +179,8 @@ function citing(index: RangeIndex | undefined, start: bigint, end: bigint): stri
 
 /**
  * Reads every inventory under root/coverage and measures it against the spec's locations. Returns
- * the measured functions of each inventory, and the problems found in the inventories.
+ * the measured functions of each inventory, the files of code without an inventory, and the
+ * problems found in the inventories and their side files.
  */
 function measure(root: string) {
   const config = parseOptions(["--root", root]);
@@ -171,26 +208,62 @@ function measure(root: string) {
   }
   const indexed = new Map([...cited].map(([key, ranges]) => [key, indexRanges(ranges)]));
 
+  const readings = completeReadings(entries, buildFiles);
+
   const read = readInventories(config.repoDir, spec);
+  const problems = [...read.problems];
   // An inventory with a row that could not be read is not measured: figures over the other rows
   // would count that row's function as neither cited nor uncited, and with every row invalid they
-  // would read as a file of no functions.
+  // would read as a file of no functions. One whose provenance names another file is not measured
+  // either, since its functions are another file's.
   const unmeasured: UnmeasuredInventory[] = [
     ...read.unread,
     ...read.inventories
       .filter((inv) => inv.invalidRows)
       .map((inv) => ({ path: inv.path, reason: `${inv.invalidRows} of ${inv.rows} rows are invalid` })),
-  ].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  const inventories = read.inventories
-    .filter((inv) => !inv.invalidRows)
-    .map((inv) => ({
+  ];
+  const inventories = [];
+  for (const inv of read.inventories) {
+    if (inv.invalidRows) continue;
+    const provenance = readProvenance(config.repoDir, inv);
+    problems.push(...provenance.problems);
+    if (provenance.mismatch) {
+      unmeasured.push({ path: inv.path, reason: provenance.mismatch });
+      continue;
+    }
+    const regions = readRegions(config.repoDir, inv);
+    problems.push(...regions.problems);
+    const unparsed = readings.unparsed(inv.build, inv.file);
+    const readingUnavailable = specProblems
+      ? `standard-checker reports ${specProblems} problems loading the spec, and an entry it could not read may hold a complete reading`
+      : unparsed
+        ? `${unparsed} locations in this file of findings in complete_reading do not parse`
+        : "";
+    inventories.push({
       ...inv,
+      provenance: provenance.provenance,
+      mapping: regions.mapping ?? { unavailable: regions.reason },
+      readingUnavailable,
       functions: inv.functions.map((f): InventoryFunction => {
         const index = indexed.get(`${inv.build}\0${inv.file}\0${f.space}`);
-        return { ...f, citedBy: [...new Set(f.body.flatMap((r) => citing(index, r.start, r.end)))].sort() };
+        return {
+          ...f,
+          citedBy: [...new Set(f.body.flatMap((r) => citing(index, r.start, r.end)))].sort(),
+          read:
+            !readingUnavailable && f.body.every((r) => readings.covers(inv.build, inv.file, f.space, r.start, r.end)),
+        };
       }),
-    }));
-  return { inventories, unmeasured, problems: read.problems, specProblems, unreadLocations };
+    });
+  }
+  unmeasured.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return {
+    inventories,
+    unmeasured,
+    withoutInventory: filesWithoutInventory(config.repoDir, buildFiles),
+    problems,
+    specProblems,
+    unreadLocations,
+  };
 }
 
 /**
@@ -231,9 +304,13 @@ function summarize(inv: {
   build: string;
   file: string;
   functions: InventoryFunction[];
+  provenance: Record<string, string> | null;
+  mapping: Mapping | { unavailable: string };
+  readingUnavailable: string;
 }): InventoryReport {
   const inScope = inv.functions.filter((f) => !f.outOfScope);
   const citedFns = inScope.filter((f) => f.citedBy.length);
+  const readFns = inScope.filter((f) => f.read);
   const counts = byteCounts(inScope);
   return {
     path: inv.path,
@@ -246,10 +323,40 @@ function summarize(inv: {
     citedBytes: counts.cited,
     sharedBytes: counts.shared,
     uncited: inScope.filter((f) => !f.citedBy.length).map((f) => ({ start: f.start, size: f.size, name: f.name })),
+    completeReading: inv.readingUnavailable
+      ? { unavailable: inv.readingUnavailable }
+      : { functions: readFns.length, bytes: byteCounts(readFns).union },
+    provenance: inv.provenance,
+    mapping: inv.mapping,
   };
 }
 
 const share = (part: number, whole: number) => (whole ? ` (${((part * 100) / whole).toFixed(1)}%)` : "");
+
+/** The text lines of an inventory's complete reading, provenance and mapping. */
+function sideLines(r: InventoryReport): string[] {
+  const inScope = r.functions - r.outOfScope;
+  const reading =
+    "unavailable" in r.completeReading
+      ? `unavailable, ${r.completeReading.unavailable}`
+      : `${r.completeReading.functions} of ${inScope} functions${share(r.completeReading.functions, inScope)}, ` +
+        `${r.completeReading.bytes} of ${r.bytes} bytes${share(r.completeReading.bytes, r.bytes)}`;
+  const provenance = r.provenance
+    ? Object.entries(r.provenance)
+        .filter(([name]) => name !== "xxh3" && !name.endsWith("sha256"))
+        .map(([name, value]) => `${name} ${value}`)
+        .concat("xxh3 as the manifest gives it")
+        .join("; ")
+    : "none";
+  const m = r.mapping;
+  const mapping =
+    "unavailable" in m
+      ? `unavailable, ${m.unavailable}`
+      : `${m.bodyBytes} of ${m.regionBytes} bytes in ${m.regions} executable regions lie in function bodies${share(m.bodyBytes, m.regionBytes)}; ` +
+        `outside them ${m.outsideBodies.instructions} bytes are instructions, ${m.outsideBodies.data} data and ${m.outsideBodies.undefined} undefined; ` +
+        `${m.bodyBytesOutsideRegions} body bytes lie outside the regions; ${m.startsWithoutInstruction} starts are not at an instruction`;
+  return [`  complete reading: ${reading}`, `  provenance: ${provenance}`, `  mapping: ${mapping}`];
+}
 
 function main(argv: string[]) {
   if (argv.includes("--help") || argv.includes("-h")) {
@@ -278,7 +385,7 @@ function main(argv: string[]) {
     console.error(`No spec/ directory in ${root}.`);
     return 1;
   }
-  const { inventories, unmeasured, problems, specProblems, unreadLocations } = measure(root);
+  const { inventories, unmeasured, withoutInventory, problems, specProblems, unreadLocations } = measure(root);
   const reports = inventories.map(summarize);
   const incomplete = reports.filter((r) => r.uncited.length);
   // With no inventory there is nothing complete, so --require-complete does not pass vacuously. An
@@ -306,11 +413,13 @@ function main(argv: string[]) {
                     name: f.name,
                     outOfScope: f.outOfScope,
                     citedBy: f.citedBy,
+                    ...(inventories[k].readingUnavailable ? {} : { read: f.read }),
                   })),
                 }
               : r,
           ),
           unmeasured,
+          withoutInventory,
           problems,
           unread,
         },
@@ -321,6 +430,7 @@ function main(argv: string[]) {
   else {
     if (noInventories) console.log("No function inventories in coverage/.");
     for (const u of unmeasured) console.log(`${u.path}: not measured, ${u.reason}`);
+    for (const w of withoutInventory) console.log(`${w.build}: ${w.file} has no inventory and is not measured`);
     reports.forEach((r, k) => {
       console.log(
         `${r.path}: ${r.cited} of ${r.functions - r.outOfScope} functions cited${share(r.cited, r.functions - r.outOfScope)}, ` +
@@ -328,16 +438,24 @@ function main(argv: string[]) {
           (r.sharedBytes ? `; ${r.sharedBytes} bytes listed by more than one in-scope function` : ""),
       );
       for (const f of r.uncited) console.log(`  uncited: ${f.start} (${f.size} bytes${f.name ? `, ${f.name}` : ""})`);
+      for (const line of sideLines(r)) console.log(line);
       if (flags.has("--list"))
         for (const f of inventories[k].functions)
           console.log(
-            `  ${f.start}\t${f.size}\t${f.outOfScope ? `out of scope: ${f.outOfScope}` : f.citedBy.join(", ") || "None"}`,
+            `  ${f.start}\t${f.size}\t${f.outOfScope ? `out of scope: ${f.outOfScope}` : f.citedBy.join(", ") || "None"}` +
+              (f.read ? "\tread completely" : ""),
           );
     });
     for (const p of problems) console.error(p);
     for (const u of unread) console.error(`Warning: ${u}.`);
     if (reports.length)
-      console.log("A cited function has been looked at, not read completely; the citing entry's status says how far.");
+      console.log(
+        "A cited function has been looked at, not read completely; only the findings in an entry's complete_reading that cover its whole body count it as read.",
+      );
+    if (withoutInventory.length)
+      console.log(
+        `${withoutInventory.length} files of code in the manifests have no inventory; the figures cover only the files with one.`,
+      );
   }
   const requireComplete = flags.has("--require-complete");
   if (requireComplete && !flags.has("--json")) {

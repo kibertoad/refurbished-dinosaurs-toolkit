@@ -38,6 +38,8 @@ export interface Inventory {
   file: string;
   /** The format addresses in the file are given in: the unpacked format of a packed file. */
   format: Yaml;
+  /** The xxh3 the manifest gives for the file the inventory lists: that of the unpacked form of a packed file. */
+  xxh3: string;
   /** The rows that could be read. */
   functions: InventoryRow[];
   /** How many rows the inventory has below its header, read or not. */
@@ -67,6 +69,18 @@ export function linear(value: string, format: Yaml): bigint | null {
   if (!seg) return BigInt(value);
   const [segment, offset] = [BigInt(`0x${seg[1]}`), BigInt(`0x${seg[2]}`)];
   return format === "NE" ? (segment << 16n) + offset : segment * 16n + offset;
+}
+
+/**
+ * Where a start or range end that an inventory or its regions file writes lies: an address in the
+ * format's notation, or for a format whose overlay code is located by offset, an offset into the
+ * file, written as 0x and at least two upper-case hex digits. Null when it is neither.
+ */
+export function placeOf(value: string, format: Yaml): { space: Space; at: bigint } | null {
+  const address = linear(value, format);
+  if (address !== null) return { space: "address", at: address };
+  if (locationRule(format)?.offset && /^0x[0-9A-F]{2,}$/.test(value)) return { space: "offset", at: BigInt(value) };
+  return null;
 }
 
 /** The half-open range a location's address or offset gives, with its space, or null. */
@@ -111,6 +125,41 @@ export function codeLocations(meta: Meta, buildFiles: Map<string, Meta[]>): Code
     found.push({ loc, range: range && range.start < range.end ? range : null });
   }
   return found;
+}
+
+/**
+ * The path, relative to the root, of the inventory of a file a build's manifest lists: its CD: or
+ * CD2: prefix written as a directory @CD or @CD2.
+ */
+export function inventoryPath(build: string, file: string): string {
+  const disc = /^(CD\d*):(.+)$/.exec(file);
+  return `coverage/${build}/${disc ? `@${disc[1]}/${disc[2]}` : file}.tsv`;
+}
+
+/** A file of code that a build's manifest lists and that has no inventory. */
+export interface FileWithoutInventory {
+  build: string;
+  /** The path as the manifest writes it. */
+  file: string;
+  /** The format its addresses are given in: the unpacked format of a packed file. */
+  format: Yaml;
+}
+
+/**
+ * The files of code that each build's manifest lists and that have no inventory, by build and then in
+ * manifest order: those whose format, or for a packed file whose unpacked format, has an address
+ * notation.
+ */
+export function filesWithoutInventory(repoDir: string, buildFiles: Map<string, Meta[]>): FileWithoutInventory[] {
+  const missing: FileWithoutInventory[] = [];
+  for (const build of [...buildFiles.keys()].sort())
+    for (const f of buildFiles.get(build)!) {
+      if (typeof f.path !== "string") continue;
+      const format: Yaml = f.unpacked?.format ?? f.format;
+      if (!locationRule(format)?.address) continue;
+      if (!existsSync(join(repoDir, inventoryPath(build, f.path)))) missing.push({ build, file: f.path, format });
+    }
+  return missing;
 }
 
 /** The build ID and manifest path an inventory's path stands for, or null when it has the wrong shape. */
@@ -202,15 +251,8 @@ export function readInventories(
         bad(`${at}: size ${cell("size")} is not a positive number of bytes`);
         return;
       }
-      // A place in the file: an address in the format's notation, or an offset into overlay code.
-      const placeOf = (value: string): { space: Space; at: bigint } | null => {
-        const address = linear(value, format);
-        if (address !== null) return { space: "address", at: address };
-        if (rule.offset && /^0x[0-9A-F]{2,}$/.test(value)) return { space: "offset", at: BigInt(value) };
-        return null;
-      };
       const inCode = (offset: bigint, end = offset + 1n) => ranges.some((r) => r.start <= offset && end <= r.end);
-      const place = placeOf(start);
+      const place = placeOf(start, format);
       if (!place) {
         bad(`${at}: start ${start} is not an address in the notation for a ${format} file`);
         return;
@@ -236,7 +278,7 @@ export function readInventories(
         body = [];
         for (const item of written.split(/ +/)) {
           const ends = item.split("..");
-          const [from, to] = ends.length === 2 ? ends.map(placeOf) : [null, null];
+          const [from, to] = ends.length === 2 ? ends.map((end) => placeOf(end, format)) : [null, null];
           if (!from || !to || from.space !== place.space || to.space !== place.space || to.at <= from.at) {
             bad(`${at}: range ${item} is not a half-open range start..end in the notation of its start`);
             return;
@@ -290,6 +332,7 @@ export function readInventories(
       build,
       file,
       format,
+      xxh3: String(bf.unpacked?.xxh3 ?? bf.xxh3),
       functions,
       rows: lines.length,
       // Every row is either read into functions or rejected with a problem.

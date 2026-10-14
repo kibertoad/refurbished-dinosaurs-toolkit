@@ -137,12 +137,15 @@ prints a warning naming its path, with its output.
 
 ## Coverage
 
-`standard-coverage` measures how much of each analysed file of code the spec cites, against the
-function inventories in `coverage/`, as the work protocol's
+`standard-coverage` measures how much of each analysed file of code the spec cites and has read
+completely, against the function inventories in `coverage/`, and how much of each file the
+inventory maps, as the work protocol's
 [Measuring progress](https://dinorefurb.com/work-protocol/#measuring-progress) section describes.
+It keeps citation coverage, complete reading and mapping coverage apart, and gives no figure that
+adds files together.
 
 ```sh
-pnpm exec standard-coverage                       # per-file shares and the uncited functions
+pnpm exec standard-coverage                       # per-file figures and the uncited functions
 pnpm exec standard-coverage --list                # also every function with the entries citing it
 pnpm exec standard-coverage --json                # the same figures as JSON
 pnpm exec standard-coverage --require-complete    # fail while an in-scope function is uncited
@@ -155,8 +158,17 @@ or for MZ overlay code an offset inside a row of the build's Code ranges. When t
 range from `start`, `ranges` lists its half-open ranges as `start..end` in the same notation,
 separated by spaces: `0x00401000..0x00401010 0x00401200..0x00401210`. `size` is then their total,
 one of them holds `start`, and they do not overlap. In an `NE` file each range, and a body without
-`ranges`, ends in the segment it starts in. The `.provenance.tsv` and `.regions.tsv` files
-the work protocol puts beside an inventory are not read.
+`ranges`, ends in the segment it starts in.
+
+Every file a manifest lists whose format, or for a packed file whose unpacked format, holds code
+and that has no inventory is printed as `<build>: <file> has no inventory and is not measured`,
+followed at the end by how many there are, and `--json` lists each under `withoutInventory` with
+`build`, `file` and `format`. No figure covers those files, so an empty `unmeasured` says only that
+every inventory present was read. Whether a file without an inventory is outside the work's scope is
+for the report that uses the figures to say: the manifest lists every file the game uses, including
+those of builds nobody has analysed. `--require-complete` measures the inventories that exist and
+does not fail on a file without one. Members of an archive are not listed, since the checker does
+not read a manifest's `members` yet.
 
 An entry cites a function when one of its `locations` names the same build and file and its
 address, offset or half-open range overlaps the function's body: its `ranges`, or `size` bytes from
@@ -175,6 +187,44 @@ function whose whole body lies in a cited one's is still uncited; the function f
 `sharedBytes` in `--json`, and the text line ends with
 `; <n> bytes listed by more than one in-scope function` when there are any.
 
+A cited function has been looked at, not read completely. A function counts as read completely
+when the locations of the static findings that entries list in `complete_reading` cover every byte
+of its body, together when several entries list them; a finding located only by the function's start
+covers one byte. Only the complete readings the standard accepts count (STATUS-4): static findings
+the entry lists in `evidence` and that list its first build, of an entry that is neither superseded
+nor disputed and whose procedure has no `# may run:` comment, and that are not superseded
+themselves. An entry's status counts for nothing here. The text prints
+`  complete reading: <n> of <m> functions, <b> of <B> bytes` under each inventory, `--json` gives
+`completeReading` as `functions` and `bytes`, and `--list` marks each function read completely,
+with `read` in `--json`. The count is 0 when no complete reading covers a function. It is
+`unavailable, <reason>`, and `completeReading` is `{ "unavailable": "<reason>" }` with no `read` in
+the list, when loading the spec had problems, since an entry that could not be read may hold a
+complete reading, and for a file where a location of a counted finding does not parse.
+[ADR 0043](../../docs/decisions/0043-complete-reading-and-side-files-in-standard-coverage.md) gives
+the reasons.
+
+The `.provenance.tsv` and `.regions.tsv` files the work protocol puts beside an inventory are read
+when they exist; a missing one is no problem. The provenance file holds one name and value per
+line, separated by a tab, each name once, and must give `xxh3`. An inventory whose provenance gives
+another `xxh3` than the manifest gives for the file, or for a packed file its unpacked form, lists
+another file and is not measured: it goes under `unmeasured` with the two hashes as the reason.
+Otherwise `provenance` in `--json` holds the names and values, and the text prints them without the
+hashes.
+
+The regions file has the columns `kind`, `start`, `size`, `instructions`, `instructions_outside`,
+`data`, `data_outside`, `undefined` and `undefined_outside`, as `ExportFunctionInventory` writes it
+([Exporting a function inventory](../../docs/ghidra-workflow.md#exporting-a-function-inventory)).
+Each row's three totals add up to its size and each outside count is at most its total; `region` rows
+do not overlap, `outside` rows lie in no region and have outside counts of 0, and an `entry` row is
+one byte, not an instruction, at a start the inventory lists. The file must agree with the
+inventory: the region bytes it puts in bodies must be the bytes of the inventory's bodies inside
+the regions, and its `outside` rows must hold the rest, so a regions file from another export of
+the analysis fails. When it agrees, `mapping` in `--json` gives `regions`, `regionBytes`,
+`bodyBytes`, `outsideBodies` (`instructions`, `data` and `undefined`), `bodyBytesOutsideRegions` and
+`startsWithoutInstruction`, and the text prints them in one `  mapping:` line. Without the file, or
+when it has a problem, `mapping` is `{ "unavailable": "<reason>" }`. The citation figures do not
+depend on either file.
+
 An inventory that cannot be read, or that has a row that cannot be read, gets no figures. It is
 printed as `<path>: not measured, <reason>` (for a bad row, `2 of 40 rows are invalid`), each
 problem is printed after the figures, and `--json` lists it under `unmeasured` with `path` and
@@ -182,7 +232,8 @@ problem is printed after the figures, and `--json` lists it under `unmeasured` w
 other functions out of both counts, and an inventory whose rows are all invalid would read as a
 file with no functions.
 
-It exits with 0, with 1 when an inventory is invalid or `--require-complete` finds an uncited
+It exits with 0, with 1 when an inventory, a provenance file or a regions file is invalid, when a
+provenance file names another file, or when `--require-complete` finds an uncited
 function or no inventory at all, and with 2 when the options are invalid. Problems with the spec
 itself are left to `standard-checker`; a warning gives how many there were while loading it and how
 many locations in files of code did not parse, since those cite nothing.

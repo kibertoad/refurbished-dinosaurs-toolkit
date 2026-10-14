@@ -178,9 +178,13 @@ test("--json gives the figures, and --list adds the entries that cite each funct
         citedBytes: 32,
         sharedBytes: 0,
         uncited: [{ start: "0x00401100", size: 16, name: "" }],
+        completeReading: { functions: 0, bytes: 0 },
+        provenance: null,
+        mapping: { unavailable: "no regions file" },
       },
     ],
     unmeasured: [],
+    withoutInventory: [],
     problems: [],
     unread: [],
   });
@@ -192,9 +196,10 @@ test("--json gives the figures, and --list adds the entries that cite each funct
       name: "kill_handler",
       outOfScope: "",
       citedBy: ["FND-SCORE-001", "FND-SCORE-002"],
+      read: false,
     },
-    { start: "0x00401100", size: 16, name: "", outOfScope: "", citedBy: [] },
-    { start: "0x00401200", size: 8, name: "", outOfScope: "library code", citedBy: [] },
+    { start: "0x00401100", size: 16, name: "", outOfScope: "", citedBy: [], read: false },
+    { start: "0x00401200", size: 8, name: "", outOfScope: "library code", citedBy: [], read: false },
   ]);
   const listed = run(root, "--list");
   assert.match(listed.output, /^  0x00401000\t32\tFND-SCORE-001, FND-SCORE-002$/m);
@@ -459,26 +464,336 @@ test("a ranges column that does not describe the body is a problem", (t) => {
   assert.doesNotMatch(output, /line 7/);
 });
 
-test("the provenance and regions files beside an inventory are not read as inventories", (t) => {
+const PROVENANCE = "coverage/BLD-EXAMPLE-1.0/GAME.EXE.provenance.tsv";
+const REGIONS = "coverage/BLD-EXAMPLE-1.0/GAME.EXE.regions.tsv";
+const REGION_HEADER =
+  "kind\tstart\tsize\tinstructions\tinstructions_outside\tdata\tdata_outside\tundefined\tundefined_outside\n";
+// Two functions of 48 bytes in all, in a region of 512 bytes whose other 464 are 260 bytes of
+// instructions, 150 of data and 54 undefined; the second function starts inside data.
+const TWO_FUNCTIONS = "start\tsize\n0x00401000\t32\n0x00401100\t16\n";
+const REGION_ROWS =
+  REGION_HEADER + "region\t0x00401000\t512\t300\t260\t150\t150\t62\t54\nentry\t0x00401100\t1\t0\t0\t1\t0\t0\t0\n";
+
+test("the provenance file is reported when it gives the manifest's xxh3", (t) => {
   const root = copy(t);
-  finding(root, "FND-SCORE-001", at("0x00401000"));
-  inventory(root, "start\tsize\n0x00401000\t32\n");
-  inventory(root, "xxh3\t0123456789abcdef\n", "coverage/BLD-EXAMPLE-1.0/GAME.EXE.provenance.tsv");
-  inventory(root, "0x00401000\t4096\n", "coverage/BLD-EXAMPLE-1.0/GAME.EXE.regions.tsv");
+  inventory(root, TWO_FUNCTIONS);
+  inventory(root, "xxh3\t0123456789abcdef0123456789abcdef\ntool\tGhidra\nsnapshot\tgame-1\nsha256\tabc\n", PROVENANCE);
   const { status, output } = run(root);
   assert.equal(status, 0, output);
-  assert.match(output, /^coverage\/BLD-EXAMPLE-1\.0\/GAME\.EXE\.tsv: 1 of 1 functions cited/m);
-  assert.doesNotMatch(output, /provenance|regions/);
+  assert.match(output, /^ {2}provenance: tool Ghidra; snapshot game-1; xxh3 as the manifest gives it$/m);
+  assert.deepEqual(JSON.parse(run(root, "--json").stdout).inventories[0].provenance, {
+    xxh3: "0123456789abcdef0123456789abcdef",
+    tool: "Ghidra",
+    snapshot: "game-1",
+    sha256: "abc",
+  });
+});
+
+test("an inventory whose provenance gives another xxh3 is not measured", (t) => {
+  const root = copy(t);
+  inventory(root, TWO_FUNCTIONS);
+  inventory(root, "xxh3\t" + "1".repeat(32) + "\n", PROVENANCE);
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  const reason = `its provenance gives xxh3 ${"1".repeat(32)}, and the manifest of BLD-EXAMPLE-1.0 gives 0123456789abcdef0123456789abcdef for GAME.EXE`;
+  assert.ok(output.includes(`coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv: not measured, ${reason}`), output);
+  assert.doesNotMatch(output, /functions cited/);
+  const json = JSON.parse(run(root, "--json").stdout);
+  assert.deepEqual(json.unmeasured, [{ path: "coverage/BLD-EXAMPLE-1.0/GAME.EXE.tsv", reason }]);
+  assert.deepEqual(json.inventories, []);
+});
+
+test("a provenance file without xxh3, or with a line that is not a name and a value, is a problem", (t) => {
+  const root = copy(t);
+  inventory(root, TWO_FUNCTIONS);
+  inventory(root, "tool\tGhidra\n", PROVENANCE);
+  let { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(output.includes(`${PROVENANCE}: gives no xxh3`), output);
+  assert.match(output, /^ {2}provenance: none$/m);
+  inventory(root, "xxh3\t0123456789abcdef0123456789abcdef\ntool Ghidra\ntool\tGhidra\ntool\tGhidra\n", PROVENANCE);
+  ({ status, output } = run(root));
+  assert.equal(status, 1, output);
+  assert.ok(output.includes(`${PROVENANCE}: line 2: is not a name and a value separated by a tab`), output);
+  assert.ok(output.includes(`${PROVENANCE}: line 4: tool is given twice`), output);
+});
+
+test("a regions file that agrees with the inventory gives the mapping figures", (t) => {
+  const root = copy(t);
+  // The third function lies outside the region, and an outside row holds it.
+  inventory(root, TWO_FUNCTIONS + "0x00402000\t16\n");
+  inventory(root, REGION_ROWS + "outside\t0x00402000\t16\t16\t0\t0\t0\t0\t0\n", REGIONS);
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.match(
+    output,
+    /^ {2}mapping: 48 of 512 bytes in 1 executable regions lie in function bodies \(9\.4%\); outside them 260 bytes are instructions, 150 data and 54 undefined; 16 body bytes lie outside the regions; 1 starts are not at an instruction$/m,
+  );
+  assert.deepEqual(JSON.parse(run(root, "--json").stdout).inventories[0].mapping, {
+    regions: 1,
+    regionBytes: 512,
+    bodyBytes: 48,
+    outsideBodies: { instructions: 260, data: 150, undefined: 54 },
+    bodyBytesOutsideRegions: 16,
+    startsWithoutInstruction: 1,
+  });
+});
+
+test("a regions file written for other functions gives no mapping figures and fails", (t) => {
+  const root = copy(t);
+  // A function the analysis found after the regions file was written: 16 more body bytes in the region.
+  inventory(root, TWO_FUNCTIONS + "0x00401180\t16\n");
+  inventory(root, REGION_ROWS, REGIONS);
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  const reason =
+    "the regions file places 48 body bytes in the regions and 0 outside them, and the inventory's bodies have 64 and 0, so it was not written for this inventory";
+  assert.ok(output.includes(`${REGIONS}: ${reason}`), output);
+  assert.ok(output.includes(`  mapping: unavailable, ${reason}`), output);
+  // The citation figures do not depend on the regions file, and are still given.
+  assert.match(output, /GAME\.EXE\.tsv: 0 of 3 functions cited/);
+  // A body the regions file leaves out of every region and outside row fails the same way.
+  inventory(root, TWO_FUNCTIONS + "0x00402000\t16\n");
+  assert.match(
+    run(root).output,
+    /places 48 body bytes in the regions and 0 outside them, and the inventory's bodies have 48 and 16/,
+  );
+});
+
+test("invalid rows of a regions file are problems", (t) => {
+  const root = copy(t);
+  inventory(root, TWO_FUNCTIONS);
+  inventory(
+    root,
+    REGION_HEADER +
+      [
+        "region\t0x00401000\t512\t300\t260\t150\t150\t60\t54",
+        "region\t0x00401000\t512\t300\t400\t150\t150\t62\t54",
+        "segment\t0x00401000\t512\t300\t260\t150\t150\t62\t54",
+        "region\t1000:0000\t512\t300\t260\t150\t150\t62\t54",
+        "entry\t0x00401010\t1\t0\t0\t1\t0\t0\t0",
+        "outside\t0x00402000\t16\t16\t16\t0\t0\t0\t0",
+        "region\t0x00401000\t-1\t300\t260\t150\t150\t62\t54",
+        "",
+      ].join("\n"),
+    REGIONS,
+  );
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  for (const line of [
+    "line 2: instructions, data and undefined add up to 510, not the size 512",
+    "line 3: a count outside the bodies is larger than its total",
+    "line 4: kind segment is not region, outside or entry",
+    "line 5: start 1000:0000 is not written as the inventory writes a start for a PE file",
+    "line 6: start 0x00401010 is the start of no function in the inventory",
+    "line 7: an outside row lies in a body, so its outside counts are 0",
+    "line 8: size and the counts are numbers of bytes",
+  ])
+    assert.ok(output.includes(`${REGIONS}: ${line}`), `${line}\n${output}`);
+  assert.ok(output.includes("  mapping: unavailable, the regions file has problems"), output);
+  inventory(root, "start\tsize\n0x00401000\t4096\n", REGIONS);
+  assert.ok(
+    run(root).output.includes(
+      `${REGIONS}: the columns are kind, start, size, instructions, instructions_outside, data, data_outside, undefined, undefined_outside`,
+    ),
+  );
+  inventory(root, REGION_ROWS + "region\t0x00401100\t16\t16\t0\t0\t0\t0\t0\n", REGIONS);
+  assert.ok(run(root).output.includes(`${REGIONS}: regions overlap`));
 });
 
 test("the provenance and regions files are not read when their inventory is missing", (t) => {
   const root = copy(t);
-  inventory(root, "xxh3\t0123456789abcdef\n", "coverage/BLD-EXAMPLE-1.0/GAME.EXE.provenance.tsv");
-  inventory(root, "0x00401000\t4096\n", "coverage/BLD-EXAMPLE-1.0/GAME.EXE.regions.tsv");
+  inventory(root, "xxh3\t0123456789abcdef\n", PROVENANCE);
+  inventory(root, "0x00401000\t4096\n", REGIONS);
   const { status, output } = run(root);
   assert.equal(status, 0, output);
   assert.match(output, /No function inventories in coverage\//);
+  assert.match(output, /^BLD-EXAMPLE-1\.0: GAME\.EXE has no inventory and is not measured$/m);
   assert.doesNotMatch(output, /provenance|regions/);
+});
+
+// Adds files to the manifest of BLD-EXAMPLE-1.0, each given as its YAML lines after "- ".
+function addFiles(root: string, ...items: string[][]) {
+  const manifest = join(root, "spec", "builds", "BLD-EXAMPLE-1.0.files.yaml");
+  writeFileSync(
+    manifest,
+    readFileSync(manifest, "utf8") +
+      items.map((lines) => lines.map((l, k) => (k ? "    " : "  - ") + l).join("\n") + "\n").join(""),
+  );
+}
+
+const fileItem = (path: string, format: string, extra: string[] = []) => [
+  `path: ${path}`,
+  `format: ${format}`,
+  "size: 1024",
+  `xxh3: ${"a".repeat(32)}`,
+  ...extra,
+];
+
+test("files of code the manifest lists without an inventory are listed, and data files are not", (t) => {
+  const root = copy(t);
+  addFiles(
+    root,
+    fileItem("SOUND.DLL", "PE"),
+    fileItem("CD:SETUP.EXE", "PE"),
+    fileItem("CD:MOVIE.DLL", "PE"),
+    fileItem("PACKED.EXE", "data", [
+      "packer: example",
+      "unpacked:",
+      "  format: MZ",
+      "  size: 2048",
+      `  xxh3: ${"b".repeat(32)}`,
+      "  tool: example 1.0",
+    ]),
+    fileItem("CD:MUSIC.BIN", "data"),
+  );
+  inventory(root, TWO_FUNCTIONS);
+  inventory(root, "start\tsize\n", "coverage/BLD-EXAMPLE-1.0/@CD/SETUP.EXE.tsv");
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  for (const file of ["SOUND.DLL", "CD:MOVIE.DLL", "PACKED.EXE"])
+    assert.ok(output.includes(`BLD-EXAMPLE-1.0: ${file} has no inventory and is not measured`), `${file}\n${output}`);
+  assert.doesNotMatch(output, /(GAME\.EXE|CD:SETUP\.EXE|SCORES\.BIN|MUSIC\.BIN) has no inventory/);
+  assert.match(
+    output,
+    /^3 files of code in the manifests have no inventory; the figures cover only the files with one\.$/m,
+  );
+  assert.doesNotMatch(output, /Warning/);
+  const json = JSON.parse(run(root, "--json").stdout);
+  assert.deepEqual(json.withoutInventory, [
+    { build: "BLD-EXAMPLE-1.0", file: "SOUND.DLL", format: "PE" },
+    { build: "BLD-EXAMPLE-1.0", file: "CD:MOVIE.DLL", format: "PE" },
+    { build: "BLD-EXAMPLE-1.0", file: "PACKED.EXE", format: "MZ" },
+  ]);
+  assert.deepEqual(json.unmeasured, []);
+  // A file without an inventory does not fail --require-complete, which measures the inventories.
+  finding(root, "FND-SCORE-001", at("0x00401000..0x00401200"));
+  assert.equal(run(root, "--require-complete").status, 0);
+});
+
+// Rewrites RULE-SCORE-001's evidence and complete_reading, and its status when given. With id, a
+// copy of it under that ID instead.
+function claim(root: string, evidence: string[], reading: string[], { status = "", id = "" } = {}) {
+  const file = join(root, "spec", "rules", "RULE-SCORE-001.md");
+  let text = readFileSync(file, "utf8").replace(
+    "evidence: [SRC-MANUAL]",
+    `evidence: [${["SRC-MANUAL", ...evidence].join(", ")}]\ncomplete_reading: [${reading.join(", ")}]`,
+  );
+  if (status) text = text.replace("status: sourced", `status: ${status}`);
+  if (id) text = text.replace("id: RULE-SCORE-001", `id: ${id}`);
+  writeFileSync(id ? join(root, "spec", "rules", `${id}.md`) : file, text);
+}
+
+test("a citing entry without a complete reading reads nothing, and the count is 0", (t) => {
+  const root = copy(t);
+  finding(root, "FND-SCORE-001", at("0x00401000..0x00401020"));
+  claim(root, ["FND-SCORE-001"], [], { status: "established" });
+  inventory(root, TWO_FUNCTIONS);
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.match(output, /: 1 of 2 functions cited/);
+  assert.match(output, /^ {2}complete reading: 0 of 2 functions \(0\.0%\), 0 of 48 bytes \(0\.0%\)$/m);
+  assert.match(
+    output,
+    /^A cited function has been looked at, not read completely; only the findings in an entry's complete_reading/m,
+  );
+});
+
+test("a function is read completely when complete readings cover its whole body", (t) => {
+  const root = copy(t);
+  // FND-SCORE-001 covers the first function; FND-SCORE-002 gives only the second's start.
+  finding(root, "FND-SCORE-001", at("0x00401000..0x00401020"));
+  finding(root, "FND-SCORE-002", at("0x00401100"));
+  claim(root, ["FND-SCORE-001", "FND-SCORE-002"], ["FND-SCORE-001", "FND-SCORE-002"]);
+  inventory(root, TWO_FUNCTIONS);
+  const { status, output } = run(root, "--list");
+  assert.equal(status, 0, output);
+  assert.match(output, /^ {2}complete reading: 1 of 2 functions \(50\.0%\), 32 of 48 bytes \(66\.7%\)$/m);
+  assert.match(output, /^ {2}0x00401000\t32\tFND-SCORE-001\tread completely$/m);
+  assert.match(output, /^ {2}0x00401100\t16\tFND-SCORE-002$/m);
+  const json = JSON.parse(run(root, "--json", "--list").stdout).inventories[0];
+  assert.deepEqual(json.completeReading, { functions: 1, bytes: 32 });
+  assert.deepEqual(
+    json.list.map((f: { start: string; read: boolean }) => [f.start, f.read]),
+    [
+      ["0x00401000", true],
+      ["0x00401100", false],
+    ],
+  );
+});
+
+test("the complete readings of two entries together read a function whose body neither covers alone", (t) => {
+  const root = copy(t);
+  finding(root, "FND-SCORE-001", at("0x00401000..0x00401010"));
+  finding(root, "FND-SCORE-002", at("0x00401200..0x00401210"));
+  claim(root, ["FND-SCORE-002"], ["FND-SCORE-002"], { id: "RULE-SCORE-002" });
+  claim(root, ["FND-SCORE-001"], ["FND-SCORE-001"]);
+  inventory(root, "start\tsize\tranges\n0x00401000\t32\t0x00401000..0x00401010 0x00401200..0x00401210\n");
+  assert.match(run(root).output, /complete reading: 1 of 1 functions \(100\.0%\), 32 of 32 bytes/);
+  // Without the second entry the gap at 0x00401200 is unread.
+  rmSync(join(root, "spec", "rules", "RULE-SCORE-002.md"));
+  assert.match(run(root).output, /complete reading: 0 of 1 functions/);
+});
+
+test("complete readings the standard does not accept read nothing", (t) => {
+  const root = copy(t);
+  inventory(root, TWO_FUNCTIONS);
+  const covering = at("0x00401000..0x00401020");
+  // A disputed entry.
+  finding(root, "FND-SCORE-001", covering);
+  claim(root, ["FND-SCORE-001"], ["FND-SCORE-001"], { status: "disputed" });
+  assert.match(run(root).output, /complete reading: 0 of 2 functions/);
+  // A finding the entry does not list in evidence.
+  copyFixtureRule(root);
+  claim(root, [], ["FND-SCORE-001"]);
+  assert.match(run(root).output, /complete reading: 0 of 2 functions/);
+  // A superseded finding.
+  copyFixtureRule(root);
+  finding(root, "FND-SCORE-001", covering, { status: "superseded" });
+  claim(root, ["FND-SCORE-001"], ["FND-SCORE-001"]);
+  assert.match(run(root).output, /complete reading: 0 of 2 functions/);
+  // A rule another rule may interrupt.
+  copyFixtureRule(root);
+  finding(root, "FND-SCORE-001", covering);
+  claim(root, ["FND-SCORE-001"], ["FND-SCORE-001"]);
+  assert.match(run(root).output, /complete reading: 1 of 2 functions/);
+  const rule = join(root, "spec", "rules", "RULE-SCORE-001.md");
+  writeFileSync(
+    rule,
+    readFileSync(rule, "utf8").replace("## Procedure\n", "## Procedure\n\n# may run: RULE-SCORE-009\n"),
+  );
+  assert.match(run(root).output, /complete reading: 0 of 2 functions/);
+});
+
+// Puts the fixture's RULE-SCORE-001 back.
+function copyFixtureRule(root: string) {
+  cpSync(join(fixture, "spec", "rules", "RULE-SCORE-001.md"), join(root, "spec", "rules", "RULE-SCORE-001.md"));
+}
+
+test("the complete-reading count is unavailable when evidence for it cannot be read", (t) => {
+  const root = copy(t);
+  inventory(root, TWO_FUNCTIONS);
+  // A location of a finding in a complete reading that does not parse: unavailable for its file.
+  finding(root, "FND-SCORE-001", at("0x00401000..0x00401020").concat(at("0x401100")));
+  claim(root, ["FND-SCORE-001"], ["FND-SCORE-001"]);
+  let { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.match(
+    output,
+    /^ {2}complete reading: unavailable, 1 locations in this file of findings in complete_reading do not parse$/m,
+  );
+  let json = JSON.parse(run(root, "--json", "--list").stdout).inventories[0];
+  assert.deepEqual(json.completeReading, {
+    unavailable: "1 locations in this file of findings in complete_reading do not parse",
+  });
+  assert.ok(json.list.every((f: object) => !("read" in f)));
+  // A problem loading the spec: an entry it could not read may hold a complete reading.
+  finding(root, "FND-SCORE-001", at("0x00401000..0x00401020"));
+  writeFileSync(join(root, "spec", "findings", "FND-SCORE-009.md"), "---\nid: FND-SCORE-008\n---\n");
+  ({ status, output } = run(root));
+  assert.match(output, /complete reading: unavailable, standard-checker reports \d+ problems loading the spec/);
+  json = JSON.parse(run(root, "--json").stdout).inventories[0];
+  assert.ok("unavailable" in json.completeReading);
 });
 
 test("an offset range of overlay code must lie inside a row of the build's Code ranges", (t) => {
