@@ -4,7 +4,7 @@ from .image import integer
 from .trace import (walk, cfg_step, base_mnemonic, unsupported_transfer, holding_instruction, INTERRUPTS, RETURNS,
                     LIMIT_REASON, OVERLAP_REASON, UNDECODED_REASON)
 from .pcode_backend import interrupt_vector
-from .dispatch import indirect_call_declarations, call_ends
+from .dispatch import indirect_call_declarations, call_ends, derived_assumptions
 
 # The virtual root of the dominator computation; no file offset is negative.
 ROOT = -1
@@ -599,6 +599,7 @@ def reach(image, config):
         assumptions.append("each declared indirect call can call the targets its declaration gives, for the evidence "
                            "it gives, and only those when it is declared exhaustive")
     assumptions += no_return_assumptions(no_return_routines, no_return_interrupts, no_return_sites)
+    assumptions += derived_assumptions(image, indirect_calls)
     stopped = stopped or check_stopped
     # Every range is kept whatever the result limit, so a caller can place any site in the walk; the
     # instruction limit bounds their number.
@@ -625,7 +626,8 @@ def reach(image, config):
                               "negativeUsable needs a control of either kind, a walk that did not stop at its instruction limit, "
                               "and no unresolved transfer, gap, returnCheckGaps row, contested instruction or contradicted noReturn "
                               "routine, and still rests on the listed assumptions, leaves and noReturn declarations. "
-                              "A declared indirect call counts as resolved when it is declared exhaustive: its table "
+                              "A declared indirect call counts as resolved when it is declared exhaustive and, for a "
+                              "table without count, the code proves its count: its table "
                               "rows are read from the build's bytes and its targets list rests on its evidence alone, "
                               "and neither proves an instruction boundary or that the call runs. "
                               "A noReturn routine is contradicted when a return instruction, or a leaf entered "
