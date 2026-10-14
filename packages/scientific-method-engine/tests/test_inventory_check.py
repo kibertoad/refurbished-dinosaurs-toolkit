@@ -545,6 +545,34 @@ class InventoryCheckTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, r"Positive control \[0\] missed or not verified"):
             self.check(inventory, data=data, indirectCalls=[table], controls=[[0]])
 
+    def test_an_outside_or_never_run_declaration_leaves_the_computed_call_resolved_with_no_call_target(self):
+        # 0000 calls through the word at 0010; 0005 returns.
+        data = bytes.fromhex("2eff971000" "c3" "90909090909090909090" "14001800" "c3" "909090" "c3")
+        inventory = "start\tsize\n1000:0000\t6\n"
+        outside = {"site": 0, "exhaustive": True, "evidence": "synthetic: bx always selects code built on the stack",
+                   "outside": {"description": "code built on the stack"}}
+        r = self.check(inventory, data=data, indirectCalls=[outside])
+        self.assertEqual((r["unresolved"], r["targets"]), ([], []))
+        self.assertEqual([(d["site"], d["outside"], d["targets"]) for d in r["indirectCalls"]],
+                         [(0, {"description": "code built on the stack"}, [])])
+        self.assertIn("each declared outside destination is where its call can leave the declared code, for the "
+                      "evidence it gives; the code there is not read, and it returns to the call's next instruction",
+                      r["assumptions"])
+        self.assertIn("the code a declared outside destination names, and anything it calls", r["exclusions"])
+        never = {"site": 0, "exhaustive": True, "targets": [], "evidence": "synthetic: the call is gated off"}
+        ended = self.check(inventory, data=data, indirectCalls=[never])
+        self.assertNotIn("the code a declared outside destination names, and anything it calls", ended["exclusions"])
+        self.assertEqual((ended["unresolved"], ended["targets"]), ([], []))
+        # The call ends the branch, so the row's ret at 0005 is past it and unread.
+        self.assertEqual([(row["start"], row["kind"], row["site"], row["routines"], row["following"],
+                           row["followingRead"], row["siteClassification"]) for row in ended["rowsPastNoReturn"]],
+                         [("1000:0000", "call", 0, [], 5, False, "entry-path instruction")])
+        self.assertEqual((ended["counts"]["rowsPastNoReturn"], ended["counts"]["rowsPastNoReturnUnreadAfter"]), (1, 1))
+        # The outside call returns, so the same row is not past anything.
+        self.assertEqual(r["rowsPastNoReturn"], [])
+        self.assertEqual(ended["assumptions"][0], "each reached call returns to its next instruction, except an "
+                                                  "indirect call declared never to run")
+
     def test_a_missed_control_and_a_malformed_inventory_are_refused(self):
         with self.assertRaisesRegex(ValueError, "Positive control 12 missed"):
             self.check("start\tsize\n1000:0000\t6\n", data=RAW, controls=[12])

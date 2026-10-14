@@ -313,6 +313,30 @@ states it in `preservedMemoryScopes`; cite that hypothesis wherever the report i
 
 ## Standard checker upgrades
 
+### `standard-coverage` reads the side files and complete readings
+
+From standard-checker 6.0.0, `standard-coverage` reads the `.provenance.tsv` and `.regions.tsv`
+files beside each inventory, which it skipped before. A repository that passed fails when:
+
+- a provenance file gives another `xxh3` than the manifest gives for the file (for a packed file,
+  its unpacked form). The inventory is then listed under `unmeasured` instead of `inventories`.
+  Export the inventory again from an analysis of the manifest's file, or correct the manifest;
+- a provenance file has a line that is not a name and a value separated by a tab, gives a name
+  twice, or gives no `xxh3`;
+- a regions file has the wrong columns or an invalid row, or does not agree with its inventory,
+  as when the inventory was exported again without it or edited by hand. Export the three files
+  together again.
+
+A missing side file is no problem. `--json` gives each inventory `completeReading`, `provenance`
+and `mapping`, with `read` on each function under `--list`, and a top-level `withoutInventory`
+array of the manifest's files of code that have no inventory. The text output prints a
+`complete reading`, a `provenance` and a `mapping` line under each inventory, a
+`<build>: <file> has no inventory and is not measured` line for each such file, and in place of
+the line that said a citing entry's status says how far a function was read, one saying that only
+the findings in `complete_reading` count. A script that matches the text output matches those
+lines, and one that totals coverage across files reads `withoutInventory` first, since no figure
+covers those files.
+
 ### `standard-coverage` gives no figures for an inventory it could not read in full
 
 An inventory with a row that did not parse was measured over its other rows, so its figures left
@@ -637,8 +661,9 @@ needs two changes in the restoration:
   address space. Remove the execute permission of such a block, or import the overlay from the
   file, and export again.
 
-A tool that compares the side files of two exports compares `.regions.tsv` as well. The
-`standard-coverage` check does not read it.
+A tool that compares the side files of two exports compares `.regions.tsv` as well.
+`standard-coverage` reads it from standard-checker 6.0.0, as "`standard-coverage` reads the side
+files and complete readings" describes.
 
 ### Engine 14.0.0: `ExportFunctionInventory` writes the Standard's notation and a provenance file
 

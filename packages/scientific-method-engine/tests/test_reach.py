@@ -667,6 +667,7 @@ def _code(size, parts):
 # 0000 masks its argument to 0..3, doubles it and calls through the four words at 0040, which name
 # 0100, 0110, 0120 and 0130. It then calls through the far pointer at 0200. Only 0120 calls 0140, which
 # stores a word. 0130 never returns. The far pointer pair at 0048 names 0110 once its segment word is relocated.
+# The interrupt at 0012 stands for one whose returned far pointer the program stores and later calls.
 COMPUTED = _code(0x160, {
     0x00: "8b5e06",        # mov bx, [bp+6]
     0x03: "83e303",        # and bx, 3
@@ -674,6 +675,8 @@ COMPUTED = _code(0x160, {
     0x08: "2eff974000",    # call word ptr cs:[bx+0040]
     0x0D: "ff1e0002",      # call far [0200]
     0x11: "c3",            # ret
+    0x12: "cd2f",          # int 2Fh, which nothing reaches
+    0x14: "ce",            # into, which nothing reaches
     0x40: "0001100120013001",
     0x48: "10010000",
     0x100: "c3",
@@ -825,19 +828,19 @@ class DeclaredIndirectCallTests(unittest.TestCase):
     def test_rejected_declarations(self):
         table = NEAR_TABLE["table"]
         for declaration, message in [
-                ({}, "site, evidence, exhaustive and exactly one of table and targets"),
-                ({**NEAR_TABLE, "targets": [0x100]}, "exactly one of table and targets"),
-                ({**FAR_TARGETS, "unknown": 1}, "exactly one of table and targets"),
+                ({}, "site, evidence, exhaustive, at most one of table and targets, and outside when it has neither"),
+                ({**NEAR_TABLE, "targets": [0x100]}, "at most one of table and targets"),
+                ({**FAR_TARGETS, "unknown": 1}, "at most one of table and targets"),
+                ({"site": 0x0D, "exhaustive": True, "evidence": "synthetic"}, "outside when it has neither"),
                 ({**FAR_TARGETS, "evidence": " "}, "needs evidence"),
                 ({**FAR_TARGETS, "exhaustive": 1}, "explicit exhaustive"),
                 ({**FAR_TARGETS, "site": 0x120}, "site 288 must decode as an unprefixed computed near word call"),
                 ({**FAR_TARGETS, "site": 0x00}, "site 0 must decode"),
-                ({**FAR_TARGETS, "targets": []}, "1..256 distinct file offsets"),
-                ({**FAR_TARGETS, "targets": [0x110, 0x110]}, "1..256 distinct file offsets"),
+                ({**FAR_TARGETS, "targets": [0x110, 0x110]}, "0..256 distinct file offsets"),
                 ({**FAR_TARGETS, "targets": [0x1000]}, "indirect call target must be an integer"),
                 ({**NEAR_TABLE, "table": {**table, "evidence": ""}}, "layout/count evidence"),
                 ({**NEAR_TABLE, "table": {**table, "width": 4}}, "near call table holds 2-byte targets"),
-                ({**FAR_TARGETS, "targets": list(range(0x100, 0x100 + 257))}, "1..256 distinct file offsets"),
+                ({**FAR_TARGETS, "targets": list(range(0x100, 0x100 + 257))}, "0..256 distinct file offsets"),
                 ({**NEAR_TABLE, "table": {**table, "count": 0}}, "table count"),
                 ({**NEAR_TABLE, "table": {**table, "count": 257}}, "table count must be an integer in 1..256"),
                 ({**NEAR_TABLE, "table": {**table, "start": 0x15E, "count": 2}}, "leaves source bounds"),
@@ -850,6 +853,106 @@ class DeclaredIndirectCallTests(unittest.TestCase):
             computed(indirectCalls={})
         with self.assertRaisesRegex(ValueError, "indirectCalls must be a list of at most 256 declarations"):
             computed(indirectCalls=[FAR_TARGETS] * 257)
+
+
+NEVER_RUNS = {"site": 0x0D, "exhaustive": True, "targets": [],
+              "evidence": "synthetic: the count that gates the call is 0 at load and its only writer is unreferenced"}
+SAVED_VECTOR = {"site": 0x0D, "exhaustive": True, "outside": {"vector": 8},
+                "evidence": "synthetic: 0200 holds vector 8 as the program read it before hooking the timer"}
+
+
+class DeclaredOutsideAndNeverRunCallTests(unittest.TestCase):
+    def test_a_call_declared_with_no_targets_never_runs_and_ends_its_branch(self):
+        r = computed(indirectCalls=[NEAR_TABLE, NEVER_RUNS], controls=[0x120], targets=[0x11])
+        self.assertEqual(r["targets"][0]["status"], "not reached")
+        self.assertEqual((r["unresolved"], r["gaps"]), ([], []))
+        self.assertTrue(r["negativeUsable"])
+        row = r["indirectCalls"][1]
+        self.assertEqual({k: row[k] for k in ("site", "targets", "reached", "unreadTargets", "following",
+                                              "followingRead")},
+                         {"site": 0x0D, "targets": [], "reached": True, "unreadTargets": [], "following": 0x11,
+                          "followingRead": False})
+        self.assertNotIn("following", r["indirectCalls"][0])
+        self.assertEqual(r["outsideTransfers"], [])
+        self.assertIn("each indirect call declared exhaustive with no targets never runs, for the evidence it gives",
+                      r["assumptions"])
+        self.assertEqual(r["assumptions"][0], "each reached call returns to its next instruction, except an indirect "
+                                              "call declared never to run")
+        with self.assertRaisesRegex(ValueError, r"instruction control 17 is not reached \(it follows the indirect "
+                                                r"call at 13, declared never to run\)"):
+            computed(indirectCalls=[NEVER_RUNS], instructionControls=[0x11])
+        # A noReturn declaration for the same call is named beside it.
+        with self.assertRaisesRegex(ValueError, r"\(it follows the noReturn call at 13 and the indirect call at 13, "
+                                                r"declared never to run\)"):
+            computed(indirectCalls=[NEVER_RUNS], instructionControls=[0x11],
+                     noReturn=[{"call": 0x0D, "reason": "synthetic: gated off"}])
+
+    def test_an_outside_call_leaves_nothing_unresolved_and_continues_at_its_return_site(self):
+        r = computed(indirectCalls=[NEAR_TABLE, SAVED_VECTOR], controls=[0x120], instructionControls=[0x11])
+        self.assertEqual((r["unresolved"], r["gaps"]), ([], []))
+        self.assertTrue(r["negativeUsable"])
+        far = r["indirectCalls"][1]
+        self.assertEqual((far["outside"], far["targets"], far["reached"]), ({"vector": 8}, [], True))
+        self.assertNotIn("following", far)
+        self.assertEqual(r["outsideTransfers"], [{"vector": 8, "sites": [0x0D], "reached": [0x0D]}])
+        self.assertIn("each declared outside destination is where its call can leave the declared code, for the "
+                      "evidence it gives; the code there is not read, and it returns to the call's next instruction",
+                      r["assumptions"])
+        self.assertIn("the code a declared outside destination names, and anything it calls", r["exclusions"])
+        self.assertEqual(r["assumptions"][0], "each reached call returns to its next instruction")
+        # Without outside declarations the report adds neither the assumption nor the exclusion.
+        plain = computed(indirectCalls=[NEAR_TABLE], controls=[0x120])
+        self.assertNotIn("the code a declared outside destination names, and anything it calls", plain["exclusions"])
+
+    def test_an_outside_call_not_declared_exhaustive_stays_unresolved(self):
+        r = computed(indirectCalls=[{**SAVED_VECTOR, "exhaustive": False}], instructionControls=[0x11])
+        self.assertEqual([(u["site"], u["reason"]) for u in r["unresolved"]],
+                         [(0x08, "computed transfer remains unresolved"),
+                          (0x0D, "indirect call targets are not declared exhaustive")])
+        self.assertFalse(r["negativeUsable"])
+
+    def test_an_outside_destination_keeps_a_call_to_no_return_targets_returning(self):
+        no_return = [{"routine": 0x130, "reason": "synthetic: spins forever"}]
+        r = computed(indirectCalls=[{**FAR_TARGETS, "targets": [0x130], "outside": {"vector": 8}}],
+                     noReturn=no_return, targets=[0x11], instructionControls=[0x11])
+        self.assertTrue(r["targets"][0]["reached"])
+        self.assertEqual(r["noReturn"][0]["callSites"], [])
+        self.assertEqual(r["indirectCalls"][0]["targets"], [0x130])
+        # A noReturn declaration for the call itself still ends it.
+        ended = computed(indirectCalls=[SAVED_VECTOR], targets=[0x11],
+                         noReturn=[{"call": 0x0D, "reason": "synthetic: the saved handler never comes back"}])
+        self.assertEqual(ended["targets"][0]["status"], "not reached")
+
+    def test_outside_transfers_group_the_sites_that_name_one_destination(self):
+        built = {"description": "code the routine builds on the stack"}
+        r = computed(indirectCalls=[{**NEAR_TABLE, "outside": built, "table": NEAR_TABLE["table"]},
+                                    {**SAVED_VECTOR, "outside": dict(built)}], controls=[0x120])
+        self.assertEqual(r["outsideTransfers"], [{**built, "sites": [0x08, 0x0D], "reached": [0x08, 0x0D]}])
+        self.assertEqual(r["indirectCalls"][0]["targets"], [0x100, 0x110, 0x120, 0x130])
+        returned = computed(indirectCalls=[{**SAVED_VECTOR, "outside": {"interrupt": 0x12}}], controls=[])
+        self.assertEqual(returned["indirectCalls"][0]["outside"], {"interrupt": 0x12, "vector": 0x2F,
+                                                                   "instruction": "int 0x2f"})
+        self.assertEqual(returned["outsideTransfers"], [{"interrupt": 0x12, "vector": 0x2F, "instruction": "int 0x2f",
+                                                         "sites": [0x0D], "reached": [0x0D],
+                                                         "interruptReached": False}])
+
+    def test_rejected_outside_and_never_run_declarations(self):
+        for declaration, message in [
+                ({**NEVER_RUNS, "exhaustive": False}, "declares no targets, which states that the call never runs"),
+                ({**NEVER_RUNS, "outside": {"vector": 8}}, "needs exhaustive true and no outside"),
+                ({**SAVED_VECTOR, "outside": {}}, "outside needs exactly one of vector, interrupt and description"),
+                ({**SAVED_VECTOR, "outside": {"vector": 8, "description": "x"}}, "exactly one of vector"),
+                ({**SAVED_VECTOR, "outside": {"segment": 8}}, "exactly one of vector"),
+                ({**SAVED_VECTOR, "outside": "vector 8"}, "exactly one of vector"),
+                ({**SAVED_VECTOR, "outside": {"vector": 256}}, "outside vector must be an integer in 0..255"),
+                ({**SAVED_VECTOR, "outside": {"description": " "}}, "outside description must be nonempty text"),
+                ({**SAVED_VECTOR, "outside": {"interrupt": 0x11}}, "outside interrupt 17 is not an interrupt"),
+                ({**SAVED_VECTOR, "outside": {"interrupt": 0x14}}, "outside interrupt 20 is conditional"),
+                ({**SAVED_VECTOR, "site": 0x08, "outside": {"vector": 8}},
+                 "outside vector names a far pointer, which a near call cannot use"),
+                ({**SAVED_VECTOR, "site": 0x08, "outside": {"interrupt": 0x12}}, "a near call cannot use")]:
+            with self.subTest(declaration=declaration), self.assertRaisesRegex(ValueError, message):
+                computed(indirectCalls=[declaration])
 
 
 # The start pushes 0 and calls R at 0010, which calls T at 0020 only when bit 2 of its argument is

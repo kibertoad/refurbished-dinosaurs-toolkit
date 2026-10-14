@@ -10,7 +10,7 @@ from .values import const, unknown, sources, op, join, unformed, TermLimit
 from .result_flow import validate_contracts, result_contracts
 from .loops import LoopTracker
 from .memory_scopes import validate_scopes, capture_scopes, retain_scopes, scope_history
-from .pcode_backend import interrupt_vector
+from .pcode_backend import interrupt_vector, INTERRUPTS
 from .dispatch import ENTERED, JUMP_NOT_DERIVED, declared_call_ends, open_reason
 from .relational import checkpoint_anchors, memory_probes, probe_memory
 
@@ -92,7 +92,6 @@ OVERLAP_REASON = "overlapping entry-path instructions; boundary unresolved"
 # The gap reason walk() records at a site it reaches but cannot decode.
 UNDECODED_REASON = "undecoded or unmapped edge"
 RETURNS = {"ret": "near return", "retf": "far return", "iret": "interrupt return", "iretd": "interrupt return"}
-INTERRUPTS = ("int", "int1", "int3", "into")
 PORTS = ("in", "out", "insb", "insw", "insd", "outsb", "outsw", "outsd")
 PORT_INPUTS = ("in", "insb", "insw", "insd")
 
@@ -196,8 +195,9 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
     they never come back. A call whose site is in ``no_return_call_sites`` has no return site either,
     whatever its target: the query declared that this one call never comes back. A call whose site
     is in ``indirect_calls`` (``indirect_call_declarations``) continues at each declared target and
-    at its return site, unless the declaration is exhaustive and every target is in
-    ``no_return_calls``, or the site is in ``no_return_call_sites``.
+    at its return site, unless the declaration ends the branch under ``declared_call_ends`` (exhaustive,
+    with no ``outside`` destination, and every target in ``no_return_calls``, which holds for a call
+    declared with no targets), or the site is in ``no_return_call_sites``.
     """
     m, following = base_mnemonic(ins), at + ins.size
     if unsupported_transfer(image, ins):

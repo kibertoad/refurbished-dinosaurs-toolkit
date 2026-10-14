@@ -991,6 +991,10 @@ def port_access(state, ins, direction, port, value, size):
     return result
 
 
+# The interrupt mnemonics, as capstone names them without a prefix.
+INTERRUPTS = ("int", "int1", "int3", "into")
+
+
 def interrupt_vector(flat, ins, site):
     """The vector p-code's ``swi`` operation names, and whether the interrupt is conditional (INTO)."""
     ops, _ = LIFTER.ops(flat, bytes(ins.bytes), site)
@@ -1018,7 +1022,7 @@ for names, handler in ((("mov", "movzx", "movsx", "xchg"), move), (("nop",), nop
                        (("shl", "sal", "shr", "sar"), shift), (("rol", "ror", "rcl", "rcr"), rotate),
                        (("mul", "imul"), multiply), (("div", "idiv"), divide),
                        (("cbw", "cwde", "cwd", "cdq"), conversion), (("cld", "std", "cli", "sti"), flag_write),
-                       (("in", "out"), run_plain), (("int", "int1", "int3", "into"), interrupt)):
+                       (("in", "out"), run_plain), (INTERRUPTS, interrupt)):
     for name in names:
         HANDLERS[name] = handler
 

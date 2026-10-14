@@ -38,6 +38,8 @@ export interface Inventory {
   file: string;
   /** The format addresses in the file are given in: the unpacked format of a packed file. */
   format: Yaml;
+  /** The xxh3 the manifest gives for the file the inventory lists: that of the unpacked form of a packed file. */
+  xxh3: string;
   /** The rows that could be read. */
   functions: InventoryRow[];
   /** How many rows the inventory has below its header, read or not. */
@@ -67,6 +69,46 @@ export function linear(value: string, format: Yaml): bigint | null {
   if (!seg) return BigInt(value);
   const [segment, offset] = [BigInt(`0x${seg[1]}`), BigInt(`0x${seg[2]}`)];
   return format === "NE" ? (segment << 16n) + offset : segment * 16n + offset;
+}
+
+/**
+ * Where a start or range end that an inventory or its regions file writes lies: an address in the
+ * format's notation, or for a format whose overlay code is located by offset, an offset into the
+ * file, written as 0x and at least two upper-case hex digits. Null when it is neither.
+ */
+export function placeOf(value: string, format: Yaml): { space: Space; at: bigint } | null {
+  const address = linear(value, format);
+  if (address !== null) return { space: "address", at: address };
+  if (locationRule(format)?.offset && /^0x[0-9A-F]{2,}$/.test(value)) return { space: "offset", at: BigInt(value) };
+  return null;
+}
+
+/**
+ * Half-open ranges merged into ranges that neither overlap nor touch, sorted by space, then start.
+ * Ranges in different spaces are kept apart; ranges without a space are all in one.
+ */
+export function mergeRanges<T extends { space?: Space; start: bigint; end: bigint }>(ranges: T[]): T[] {
+  const sorted = [...ranges].sort((a, b) => {
+    const [x, y] = [a.space ?? "", b.space ?? ""];
+    if (x !== y) return x < y ? -1 : 1;
+    return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
+  });
+  const merged: T[] = [];
+  for (const r of sorted) {
+    const last = merged.at(-1);
+    if (last && last.space === r.space && r.start <= last.end) {
+      if (r.end > last.end) last.end = r.end;
+    } else merged.push({ ...r });
+  }
+  return merged;
+}
+
+/** The lines of a file under repoDir, without a byte order mark and trailing empty lines. */
+export function readLines(repoDir: string, path: string): string[] {
+  const text = readFileSync(join(repoDir, path), "utf8")
+    .replace(/^﻿/, "")
+    .replace(/(?:\r?\n)+$/, "");
+  return text ? text.split(/\r?\n/) : [];
 }
 
 /** The half-open range a location's address or offset gives, with its space, or null. */
@@ -111,6 +153,42 @@ export function codeLocations(meta: Meta, buildFiles: Map<string, Meta[]>): Code
     found.push({ loc, range: range && range.start < range.end ? range : null });
   }
   return found;
+}
+
+/**
+ * The path, relative to the root, of the inventory of a file a build's manifest lists: its CD: or
+ * CD2: prefix written as a directory @CD or @CD2.
+ */
+export function inventoryPath(build: string, file: string): string {
+  const disc = /^(CD\d*):(.+)$/.exec(file);
+  return `coverage/${build}/${disc ? `@${disc[1]}/${disc[2]}` : file}.tsv`;
+}
+
+/** A file of code that a build's manifest lists and that has no inventory. */
+export interface FileWithoutInventory {
+  build: string;
+  /** The path as the manifest writes it. */
+  file: string;
+  /** The format its addresses are given in: the unpacked format of a packed file. */
+  format: Yaml;
+}
+
+/**
+ * The files of code that each build's manifest lists and that have no inventory, by build and then in
+ * manifest order: those whose format, or for a packed file whose unpacked format, has an address
+ * notation. found holds the inventory paths readInventories() found, read or not, so a path is
+ * matched with the same case on every file system.
+ */
+export function filesWithoutInventory(buildFiles: Map<string, Meta[]>, found: Set<string>): FileWithoutInventory[] {
+  const missing: FileWithoutInventory[] = [];
+  for (const build of [...buildFiles.keys()].sort())
+    for (const f of buildFiles.get(build)!) {
+      if (typeof f.path !== "string") continue;
+      const format: Yaml = f.unpacked?.format ?? f.format;
+      if (!locationRule(format)?.address) continue;
+      if (!found.has(inventoryPath(build, f.path))) missing.push({ build, file: f.path, format });
+    }
+  return missing;
 }
 
 /** The build ID and manifest path an inventory's path stands for, or null when it has the wrong shape. */
@@ -171,11 +249,8 @@ export function readInventories(
       reject(`${file} is a ${format} file, which holds no code to inventory`);
       continue;
     }
-    const lines = readFileSync(join(repoDir, path), "utf8")
-      .replace(/^﻿/, "")
-      .replace(/(?:\r?\n)+$/, "")
-      .split(/\r?\n/);
-    const columns = lines.shift()!.split("\t");
+    const lines = readLines(repoDir, path);
+    const columns = (lines.shift() ?? "").split("\t");
     if (
       columns[0] !== "start" ||
       columns[1] !== "size" ||
@@ -202,15 +277,8 @@ export function readInventories(
         bad(`${at}: size ${cell("size")} is not a positive number of bytes`);
         return;
       }
-      // A place in the file: an address in the format's notation, or an offset into overlay code.
-      const placeOf = (value: string): { space: Space; at: bigint } | null => {
-        const address = linear(value, format);
-        if (address !== null) return { space: "address", at: address };
-        if (rule.offset && /^0x[0-9A-F]{2,}$/.test(value)) return { space: "offset", at: BigInt(value) };
-        return null;
-      };
       const inCode = (offset: bigint, end = offset + 1n) => ranges.some((r) => r.start <= offset && end <= r.end);
-      const place = placeOf(start);
+      const place = placeOf(start, format);
       if (!place) {
         bad(`${at}: start ${start} is not an address in the notation for a ${format} file`);
         return;
@@ -236,7 +304,7 @@ export function readInventories(
         body = [];
         for (const item of written.split(/ +/)) {
           const ends = item.split("..");
-          const [from, to] = ends.length === 2 ? ends.map(placeOf) : [null, null];
+          const [from, to] = ends.length === 2 ? ends.map((end) => placeOf(end, format)) : [null, null];
           if (!from || !to || from.space !== place.space || to.space !== place.space || to.at <= from.at) {
             bad(`${at}: range ${item} is not a half-open range start..end in the notation of its start`);
             return;
@@ -290,6 +358,7 @@ export function readInventories(
       build,
       file,
       format,
+      xxh3: String(bf.unpacked?.xxh3 ?? bf.xxh3),
       functions,
       rows: lines.length,
       // Every row is either read into functions or rejected with a problem.
