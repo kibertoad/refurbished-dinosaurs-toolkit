@@ -101,8 +101,19 @@ The engine has no analysis that joins values across paths. `x86/values.py`, `mac
    followed, and the report lists the rows it leaves out.
 
 8. **It applies wherever tables are read.** `reach`, `inventory-check` and the path commands that
-   read `indirectJumps` take derived counts, and declared computed call targets take them once
-   that declaration lands.
+   read `indirectJumps` take derived counts, and so do declared computed call targets
+   (`indirectCalls`). A table asks for one with `bound`, which names the routine the analysis
+   starts at; the walk from a routine's start is the only one whose entry state is known, so the
+   declaration says which routine that is. The routine is entered only at its start, and that is an
+   assumption each command checks against the edges its own walk reads: an edge or a start that
+   enters a site the analysis read, other than the routine's start and other than by an edge the
+   analysis read too, is a gap at the dispatch. A table read through a segment other than CS
+   declares the offset its first row lies at in that segment, since the analysis knows no segment
+   value. A dispatch jump's rows feed its own analysis and every analysis whose routine holds it,
+   so the derivations run in rounds, each continuing every derived jump at all the rows the
+   earlier rounds gave it, until no rows are added; rows that still grow after a fixed number of
+   rounds are not proven, and neither are those of a table whose analysis continued through a
+   derived jump whose rows are not proven.
 
 ## Consequences
 

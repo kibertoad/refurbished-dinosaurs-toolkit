@@ -27,7 +27,7 @@ scientific-method <command> <config.json>
 The config is JSON with at least `source` (a path relative to the config file), its `xxh3` (the
 XXH3-128 hash the spec's build entry gives, as 32 lower-case hex digits; a `sha256` is refused),
 and `sourceKind`: `mz` for DOS executables, `pe32` for 32-bit Windows executables (parsed by the engine),
-`pe32+` for 64-bit Windows executables (read only by `imports`), or `synthetic-raw` for test data. The config file is UTF-8, with or without one leading byte order mark
+`pe32+` for 64-bit Windows executables and `ne` for 16-bit Windows executables (both read only by `imports`), or `synthetic-raw` for test data. The config file is UTF-8, with or without one leading byte order mark
 (which Windows PowerShell 5.1 writes for `-Encoding utf8`); a file starting with a UTF-16 or UTF-32 byte order mark or with
 more than one UTF-8 mark, or bytes that are not UTF-8, are refused with the cause named. The report is printed as JSON. On failure the command prints
 `Evidence report: <reason>` to stderr and exits with 1.
@@ -62,6 +62,17 @@ it; `directoryEnd` gives that descriptor's nonzero fields, and `pastEnd` lists e
 descriptor, up to an all-zero one, that a loader reading on would meet, with its DLL name and
 nonzero fields.
 
+`imports` with `sourceKind: "ne"` lists the import at each site an NE file's relocation records
+cover, with its segment, offset, source type, record, module and ordinal or name. It walks the
+chain of every record whose additive flag is clear, from the record's offset through the word at
+each site to `FFFF`, and lists internal references and operating-system fixups apart. A chain that
+reaches `chainCap` sites (4096 by default) without `FFFF` is listed in `cutShort`; a site outside
+the segment's data, a site that overlaps one already reached and a link onto another record's
+offset are listed in `errors`, and `complete` is false for either. `expectedCounts` rejects the
+report when a segment's record or site count differs. `exporters` (hash-checked copies of the
+exporting modules) and `outsideTables` put names to ordinals, each name with the table it came
+from. It needs at least one positive control: a site with the import other evidence shows.
+
 `unpack` decodes an LZEXE 0.90 or 0.91, an EXEPACK or a PKLITE 1.00 to 2.01 executable (an `mz` source) and writes its unpacked form to
 the config's `output`, a path relative to the config file. It prints the `size`, `xxh3`, `format`
 and `tool` a build's `unpacked` item gives, and never runs the decompressor in the file. The
@@ -95,6 +106,7 @@ import { readMz, incomingCalls } from "@scientific-method/executable-reader/lega
 import { pointerInventory } from "@scientific-method/executable-reader/pointer-inventory";
 import { tableContents } from "@scientific-method/executable-reader/table-contents";
 import { importReport } from "@scientific-method/executable-reader/pe-imports";
+import { neImportReport } from "@scientific-method/executable-reader/ne-imports";
 import { unpack, UNPACK_LAYOUT } from "@scientific-method/executable-reader/unpack";
 import { bodyLayout, fileLayout } from "@scientific-method/executable-reader/body-layout";
 ```
@@ -129,6 +141,10 @@ import { bodyLayout, fileLayout } from "@scientific-method/executable-reader/bod
 | `ImportConfig`, `ImportControl`, `ImportSlot`, `SlotImport`, `NamesFrom` | `pe-imports` | Types of the `imports` query, its controls and its slot rows. |
 | `DirectoryEnd`, `PastEnd`, `DescriptorField`, `DESCRIPTOR_FIELDS` | `pe-imports` | The descriptor that ends the import directory, the descriptors after it, and the descriptor field names. |
 | `IgnoredRawData` | `pe-imports` | A `rawIgnored` row: a section whose PointerToRawData is 0 and whose SizeOfRawData is not. |
+| `neImportReport(bytes, config, readExporter?)` | `ne-imports` | The `imports` report over an already hash-checked NE buffer. `readExporter` reads and hash-checks each file `config.exporters` names. |
+| `DEFAULT_CHAIN_CAP`, `MAX_CHAIN_CAP` | `ne-imports` | The chain cap without `chainCap` (4096 sites) and the largest one a query may give (32768). |
+| `NeImportConfig`, `NeImportControl`, `NeExpectedCounts`, `NeExporter`, `NeExporterReader`, `NeOutsideTable` | `ne-imports` | Types of the NE `imports` query, its controls, expected counts and names tables. |
+| `NeImportSite`, `NeInternalSite`, `NeOsFixupSite`, `NeOrdinalName`, `NeSourceType`, `NeChainError`, `NeCutShort` | `ne-imports` | Types of the NE report's site rows, ordinal names, errors and cut-short chains. |
 | `bodyLayout(bytes, config)` | `body-layout` | The `bodies` report over an already hash-checked buffer. |
 | `fileLayout(image)` | `body-layout` | The regions an `MzImage`'s tables declare, with the runs between them, covering the whole file. |
 | `MAX_BODY_FUNCTIONS`, `MAX_BODY_RANGES` | `body-layout` | The most functions one query takes (10000) and the most ranges in one body or candidate (4096). |
