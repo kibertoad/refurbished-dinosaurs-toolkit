@@ -15,6 +15,13 @@ LEAF_OVERLAP = "leaf start inside a reached instruction; the leaf is not decoded
 STOP_OVERLAP = ("stop routine start inside a reached instruction; the routine is not decoded, so its boundary is "
                 "unchecked")
 CHECK_CONTESTED = "contested instruction in the noReturn return check's walk"
+# The most bytes from a span's first site to its last (ADR 0044).
+SPAN_BYTES = 4096
+# First bytes of the transfers whose target the encoding gives: Jcc rel8, LOOP*/JCXZ, CALL, JMP and JMP rel8,
+# CALL ptr16:16 and JMP ptr16:16, and 0F, which starts Jcc rel16 and rel32.
+SCANNED_OPCODES = frozenset([*range(0x70, 0x80), *range(0xE0, 0xE4), 0xE8, 0xE9, 0xEA, 0xEB, 0x9A, 0x0F])
+# The scanned opcodes of two-byte transfers with a signed 8-bit displacement: Jcc rel8, LOOP*/JCXZ and JMP rel8.
+SHORT_OPCODES = frozenset([*range(0x70, 0x80), *range(0xE0, 0xE4), 0xEB])
 
 
 def _text(ins):
@@ -85,6 +92,146 @@ def _stops(value, image, starts, leaves, no_return_routines):
         raise ValueError(f"stop {both[0]} is given as a routine and as a site; a stop routine is not decoded and a "
                          "stop site is, so give one of them")
     return routines, sites
+
+
+def _spans(value, image):
+    """The query's spans as ``(first, last)`` pairs (ADR 0044)."""
+    if not isinstance(value, list) or len(value) > 256:
+        raise ValueError("spans must be a list of at most 256 objects")
+    spans = []
+    for span in value:
+        if not isinstance(span, dict) or set(span) != {"first", "last"}:
+            raise ValueError("Each span needs exactly first and last")
+        first = integer(span["first"], 0, len(image.data) - 1, "span first")
+        last = integer(span["last"], 0, len(image.data) - 1, "span last")
+        region = image.region(first)
+        if region is None:
+            raise ValueError(f"span first {first} is outside declared code")
+        if not first < last < region["end"]:
+            raise ValueError(f"span last {last} must lie after first {first} in the region that holds it")
+        if last - first > SPAN_BYTES:
+            raise ValueError(f"span {first}..{last} is longer than {SPAN_BYTES} bytes")
+        if (first, last) in spans:
+            raise ValueError(f"Duplicate span {first}..{last}")
+        spans.append((first, last))
+    return spans
+
+
+def _transfer(ins):
+    """Whether ``ins`` is a call, jump, branch or loop, whose targets ``cfg_step`` gives as edges."""
+    m = base_mnemonic(ins)
+    return m in CALLS or m in ("jmp", "ljmp") or m.startswith(("j", "loop"))
+
+
+def _short_lands(image, region, at, landing):
+    """Whether the two-byte rel8 transfer whose opcode is at ``at`` can have a successor in ``landing``.
+
+    It continues at ``at + 2`` (except JMP rel8) and at its encoded target, which ``near_target`` places
+    from the IP after it plus the signed displacement, as ``cfg_step`` does once the instruction is
+    decoded. A site whose second byte lies past the region is kept, so the decoder decides it.
+    """
+    if at + 2 > region["end"]:
+        return True
+    if image.data[at] != 0xEB and at + 2 in landing:
+        return True
+    displacement = image.data[at + 1] - (0x100 if image.data[at + 1] & 0x80 else 0)
+    ip = region["ip"] + at + 2 - region["start"] + displacement
+    return image.offset(region["segment"], ip & image.mask) in landing
+
+
+def _scan_sources(image, seen, landing):
+    """The sites outside ``seen`` that may hold a transfer into ``landing``: each byte of declared code that
+    starts one of the ``SCANNED_OPCODES``, and each declared indirect jump table site.
+
+    A rel8 site (``SHORT_OPCODES``) is kept only when ``_short_lands`` places a successor in ``landing``,
+    so the scan decodes only the short transfers that can enter a span. The rest are decoded whatever
+    their target, which a near or far transfer can place anywhere in the image.
+    """
+    found = set(image.indirect_jumps)
+    for r in image.regions:
+        found.update(at for at in range(r["start"], r["end"]) if image.data[at] in SCANNED_OPCODES
+                     and (image.data[at] not in SHORT_OPCODES or _short_lands(image, r, at, landing)))
+    return {at for at in found if at not in seen}
+
+
+def falls_through(first, last, seen, steps, stop_sites=frozenset()):
+    """``(True, None)`` when the walk decoded an instruction at ``first`` and one at each site after it up to
+    ``last``, each before ``last`` continuing at the next; otherwise ``(False, row)``, where ``row`` says
+    where the run breaks. A stop site before ``last`` breaks the run, since the walk follows nothing
+    there, as a call to a stop routine does by having no return site."""
+    at = first
+    while True:
+        if at not in seen:
+            return False, {"site": at, "reason": "no instruction the walk decoded starts here"}
+        if at == last:
+            return True, None
+        if at in stop_sites:
+            return False, {"site": at, "reason": "a stop site, whose successors the walk does not follow"}
+        following = at + seen[at].size
+        if following > last:
+            return False, {"site": at, "reason": "the instruction runs past last"}
+        if following not in steps[at].successors:
+            return False, {"site": at, "reason": "the instruction does not continue at the next instruction"}
+        at = following
+
+
+def span_rows(image, spans, starts, seen, steps, contested, overlapping, routine, options, limit, usable,
+              stop_sites=frozenset()):
+    """The ``spans`` report rows: for each span, the transfers that land after its first site and at or before its
+    last from a source outside ``[first, last)``.
+
+    ``entries`` are the transfers of the instructions the walk decoded (``seen``, with their ``steps``),
+    of every kind ``successor_kinds`` names, and each of ``starts`` after a span's first site, which the
+    walk enters with no transfer, as a ``start`` row with no source. ``candidates`` are the successors
+    of the instructions decoded from every other byte of declared code that starts a call, jump, branch
+    or loop, of each contested instruction and of each declared indirect jump or call site the walk did
+    not decode, each with the ``position`` of its source. ``usable`` is the report's ``negativeUsable``;
+    a span's holds when that does, the span falls through and no entry lands in it. A stop site in
+    ``stop_sites`` before a span's last site breaks its fall-through, as ``falls_through`` says.
+    """
+    landing = {at for first, last in spans for at in range(first + 1, last + 1)}
+    entries, candidates = {}, {}
+    for at in starts:
+        if at in landing:
+            entries.setdefault(at, []).append({"source": None, "target": at, "kind": "start", "instruction": None,
+                                               "routine": at})
+    for at, ins in seen.items():
+        for target, kind in dict.fromkeys(successor_kinds(at, ins, steps[at])):
+            if target in landing:
+                entries.setdefault(target, []).append({"source": at, "target": target, "kind": kind,
+                                                       "instruction": _text(ins), "routine": routine.get(at)})
+    sources = (_scan_sources(image, seen, landing) | set(contested)
+               | {at for at in options["indirect_calls"] if at not in seen})
+    for at in sorted(sources):
+        ins = contested[at] if at in contested else image.decode(at)
+        # A contested instruction is listed whatever it is: the walk reached it, so its next instruction counts too.
+        if ins is None or (at not in contested and not _transfer(ins)):
+            continue
+        step = cfg_step(image, at, ins, follow_interrupts=True, **options)
+        landed = [target for target in dict.fromkeys(step.successors) if target in landing]
+        if not landed:
+            continue
+        holder = holding_instruction(seen, at)
+        position = ({"position": "inside a decoded instruction", "insideInstruction": holder} if holder is not None
+                    else {"position": "start of a contested instruction"} if at in contested
+                    else {"position": "start of an unresolved overlapping instruction"} if at in overlapping
+                    else {"position": "outside the decoded instructions"})
+        for target in landed:
+            candidates.setdefault(target, []).append({"source": at, "target": target, "instruction": _text(ins),
+                                                      **position})
+    rows = []
+    for first, last in spans:
+        def inside(found):
+            return sorted((row for target in range(first + 1, last + 1) for row in found.get(target, [])
+                           if row["source"] is None or not first <= row["source"] < last),
+                          key=lambda row: (row["source"] is not None, row["source"] or 0, row["target"]))
+        entered, found = inside(entries), inside(candidates)
+        through, broken = falls_through(first, last, seen, steps, stop_sites)
+        rows.append({"first": first, "last": last, "fallsThrough": through, **({"break": broken} if broken else {}),
+                     "entries": entered[:limit], "candidates": found[:limit],
+                     "counts": {"entries": len(entered), "candidates": len(found)},
+                     "negativeUsable": usable and through and not entered})
+    return rows
 
 
 def no_return_declarations(value, image):
@@ -478,7 +625,8 @@ def reach(image, config):
     the routines on every route to it within the read graph, and the starts it is reached from. With
     ``startRoutes`` each reached target also gives, for each of those starts, the fewest calls from it
     and the routines on every route from it. With ``decodedRanges`` the report
-    also gives every instruction the walk decoded, as ``decoded_ranges`` groups them.
+    also gives every instruction the walk decoded, as ``decoded_ranges`` groups them. With ``spans``
+    it gives, for each span, the transfers that land inside it, as ``span_rows`` reports them.
     """
     from .reports import entries
     starts = _sites(config.get("starts"), "starts", image)
@@ -512,6 +660,7 @@ def reach(image, config):
     with_ranges = config.get("decodedRanges", False)
     if not isinstance(with_ranges, bool):
         raise ValueError("decodedRanges must be a boolean")
+    spans = _spans(config.get("spans", []), image)
     with_start_routes = config.get("startRoutes", False)
     if not isinstance(with_start_routes, bool):
         raise ValueError("startRoutes must be a boolean")
@@ -531,9 +680,9 @@ def reach(image, config):
                                             stops=unread, ends=frozenset(stop_sites), **options)
 
     # Each reached call site with its resolved or declared targets.
-    graph, unresolved, interrupts, call_targets, stop_successors = {}, [], [], {}, {}
+    graph, unresolved, interrupts, call_targets, stop_successors, steps = {}, [], [], {}, {}, {}
     for at, ins in sorted(seen.items()):
-        step = cfg_step(image, at, ins, follow_interrupts=True, **options)
+        step = steps[at] = cfg_step(image, at, ins, follow_interrupts=True, **options)
         if at in stop_sites:
             # Nothing at a stop site is followed, so its transfer is neither resolved nor unresolved.
             graph[at], stop_successors[at] = [], step.successors
@@ -762,19 +911,24 @@ def reach(image, config):
     # Every range is kept whatever the result limit, so a caller can place any site in the walk; the
     # instruction limit bounds their number.
     ranges = {"decodedRanges": decoded_ranges(seen, routine)} if with_ranges else {}
+    usable = bool(controls or instruction_controls) and not (stopped or unresolved or gaps or contested or contradicted
+                                                             or check_gap_rows)
+    span_report = ({"spans": span_rows(image, spans, starts, seen, steps, contested, overlapping, routine, options,
+                                       limit, usable, frozenset(stop_sites))} if spans else {})
+    span_cut = any(sum(row["counts"].values()) > len(row["entries"]) + len(row["candidates"])
+                   for row in span_report.get("spans", []))
     return {"starts": starts, "targets": rows, "leaves": leaf_rows, "stops": stop_rows, "noReturn": no_return,
             "indirectCalls": indirect_rows, "outsideTransfers": outside,
-            "reachedRoutines": sorted(routine_starts), **ranges, "counts": counts,
+            "reachedRoutines": sorted(routine_starts), **ranges, **span_report, "counts": counts,
             "unresolved": unresolved[:limit], "interrupts": interrupts[:limit], "gaps": gaps[:limit],
             "contested": sorted(contested)[:limit], "returnCheckGaps": check_gap_rows[:limit],
-            "truncated": any(len(x) > limit for x in (unresolved, interrupts, gaps, contested, check_gap_rows)),
+            "truncated": span_cut or any(len(x) > limit for x in (unresolved, interrupts, gaps, contested,
+                                                                  check_gap_rows)),
             "instructionLimitReached": stopped,
             "controls": [{"site": at, "target": call_targets[at][0]} for at in controls],
             "instructionControls": [{"site": at, "instruction": _text(seen[at]), "routine": routine.get(at)}
                                     for at in instruction_controls],
-            "negativeUsable": bool(controls or instruction_controls)
-                              and not (stopped or unresolved or gaps or contested or contradicted
-                                       or check_gap_rows),
+            "negativeUsable": usable,
             "assumptions": assumptions,
             "exclusions": ["computed call and jump targets no declaration gives (listed in unresolved)", "unrelocated far calls",
                            "code reached only from outside the starts", "runtime reachability"]
@@ -818,6 +972,14 @@ def reach(image, config):
                               "one can lie inside a decoded instruction. A site inside a range lies in a decoded "
                               "instruction, which may start before it; a target at the site shows whether one starts "
                               "there. "
+                              "spans, when asked for, list for each span the transfers that land after its first site "
+                              "and at or before its last from a source outside first..last-1: entries are those of "
+                              "instructions the walk decoded, with each start inside the span as a start entry with no "
+                              "source, and candidates those found by decoding the other bytes "
+                              "of declared code, which run only if an unread route reaches their source. A span's "
+                              "negativeUsable needs the report's, a span that falls through from first to last, and no "
+                              "entry; candidates do not change it, since code the walk did not read is outside the "
+                              "question, and a leaf's transfers show only among them. "
                               "When instructionLimitReached holds, the walk, or the return check's walk, stopped "
                               "before reading all it reaches: every list and count covers only the part read, which "
                               "part depends on the walk order, an unreached target may lie past the stop, and an "
