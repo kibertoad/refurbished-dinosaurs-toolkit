@@ -1122,6 +1122,197 @@ class ArgumentBranchTests(unittest.TestCase):
                                         "reach")["argumentBranches"]), 256)
 
 
+# A value writer before the request that reads it. 0000 sets AH for the interrupt at 0002. 0005 sets AH
+# too and jumps to the interrupt, past the writer at 0000. 0009 stores a word whose immediate, read from
+# 000D, is a jump to 0002; 0010 is never reached and also jumps to 0002.
+WRITER = bytes.fromhex(
+    "b43d"          # 0000 mov ah, 3Dh
+    "cd21"          # 0002 int 21h
+    "c3"            # 0004 ret
+    "b43e"          # 0005 mov ah, 3Eh
+    "ebf9"          # 0007 jmp 0002
+    "c7060200ebf3"  # 0009 mov word [0002], 0F3EBh; from 000D: jmp 0002
+    "c3"            # 000F ret
+    "ebf0"          # 0010 jmp 0002, unreached
+)
+WRITER_STARTS = (0, 5, 9)
+
+
+def spans(data=WRITER, entries=WRITER_STARTS, **extra):
+    return run_report(data, config(data, entries, **({"starts": list(entries), "targets": [2],
+                                                      "instructionControls": [2]} | extra)), "reach")
+
+
+class SpanTests(unittest.TestCase):
+    def test_a_span_lists_path_entries_and_candidates_by_where_their_source_lies(self):
+        r = spans(spans=[{"first": 0, "last": 2}])
+        self.assertTrue(r["negativeUsable"])
+        span = r["spans"][0]
+        self.assertEqual(span["entries"], [{"source": 7, "target": 2, "kind": "jump", "instruction": "jmp 2", "routine": 5}])
+        self.assertEqual(span["candidates"], [
+            {"source": 0xD, "target": 2, "instruction": "jmp 2", "position": "inside a decoded instruction",
+             "insideInstruction": 9},
+            {"source": 0x10, "target": 2, "instruction": "jmp 2", "position": "outside the decoded instructions"}])
+        self.assertEqual(span["counts"], {"entries": 1, "candidates": 2})
+        self.assertTrue(span["fallsThrough"])
+        self.assertNotIn("break", span)
+        self.assertFalse(span["negativeUsable"])
+        self.assertNotIn("spans", spans())
+
+    def test_a_candidate_that_lands_outside_the_span_is_not_listed(self):
+        # From 000D, EB F7 jumps to 0006, past the span 0000..0002; 0010 is padding.
+        data = WRITER[:0xD] + bytes.fromhex("ebf7c39090")
+        span = spans(data, spans=[{"first": 0, "last": 2}])["spans"][0]
+        self.assertEqual([row["source"] for row in span["entries"]], [7])
+        self.assertEqual(span["candidates"], [])
+
+    def test_a_span_no_transfer_enters_is_a_usable_negative(self):
+        # 0000 mov ax, 0FEEBh holds EB FE at 0001, a jump to 0001 from inside the span; 0003 int 21h; 0005 ret.
+        data = bytes.fromhex("b8ebfecd21c3")
+        span = spans(data, entries=(0,), targets=[3], instructionControls=[3],
+                     spans=[{"first": 0, "last": 3}])["spans"][0]
+        self.assertEqual((span["entries"], span["candidates"], span["fallsThrough"]), ([], [], True))
+        self.assertTrue(span["negativeUsable"])
+        # Without a control the report's negative is not usable, and neither is the span's.
+        span = spans(data, entries=(0,), targets=[3], instructionControls=[], spans=[{"first": 0, "last": 3}])
+        self.assertFalse(span["spans"][0]["negativeUsable"])
+
+    def test_a_transfer_from_the_last_site_back_into_the_span_enters_it(self):
+        # 0000 mov ah, 3Dh; 0002 nop; 0003 loop 0002; 0005 ret.
+        data = bytes.fromhex("b43d90e2fdc3")
+        span = spans(data, entries=(0,), targets=[3], instructionControls=[3],
+                     spans=[{"first": 0, "last": 3}])["spans"][0]
+        self.assertEqual([(row["source"], row["target"], row["kind"]) for row in span["entries"]], [(3, 2, "jump")])
+        self.assertFalse(span["negativeUsable"])
+
+    def test_a_start_inside_the_span_enters_it(self):
+        # 0000 mov ah, 3Dh; 0002 int 21h; 0004 ret. The walk also starts at 0002, past the writer.
+        data = bytes.fromhex("b43dcd21c3")
+        r = spans(data, entries=(0, 2), targets=[2], instructionControls=[4], spans=[{"first": 0, "last": 2}])
+        self.assertTrue(r["negativeUsable"])
+        span = r["spans"][0]
+        self.assertEqual(span["entries"], [{"source": None, "target": 2, "kind": "start", "instruction": None,
+                                            "routine": 2}])
+        self.assertFalse(span["negativeUsable"])
+        # A start at the first site runs the span from its first instruction.
+        span = spans(data, entries=(0, 2), targets=[2], instructionControls=[4],
+                     spans=[{"first": 2, "last": 4}])["spans"][0]
+        self.assertEqual(span["entries"], [])
+
+    def test_a_candidate_call_returns_into_the_span(self):
+        # 0000 mov al, 0E8h holds a call at 0001 whose target lies outside the image and whose return site is 0004;
+        # 0002 mov ah, 3Dh; 0004 int 21h; 0006 ret.
+        data = bytes.fromhex("b0e8b43dcd21c3")
+        span = spans(data, entries=(0,), targets=[4], instructionControls=[4],
+                     spans=[{"first": 2, "last": 4}])["spans"][0]
+        self.assertEqual(span["entries"], [])
+        self.assertEqual([(row["source"], row["target"], row["position"], row["insideInstruction"])
+                          for row in span["candidates"]], [(1, 4, "inside a decoded instruction", 0)])
+
+    def test_a_stop_site_inside_the_span_breaks_its_run(self):
+        # 0000 mov ah, 3Dh; 0002 jz 0005; 0004 nop, a stop site; 0005 int 21h; 0007 ret. The jz from inside the
+        # span reaches 0005, but the walk follows nothing at 0004, as it follows no call to a stop routine.
+        data = bytes.fromhex("b43d7401 90cd21c3".replace(" ", ""))
+        r = spans(data, entries=(0,), targets=[5], instructionControls=[5], stops=[{"site": 4, "reason": CUT}],
+                  spans=[{"first": 0, "last": 5}])
+        self.assertTrue(r["negativeUsable"])
+        span = r["spans"][0]
+        self.assertEqual(span["entries"], [])
+        self.assertEqual((span["fallsThrough"], span["break"]),
+                         (False, {"site": 4, "reason": "a stop site, whose successors the walk does not follow"}))
+        self.assertFalse(span["negativeUsable"])
+        # A stop site at the last site ends nothing the span needs.
+        span = spans(data, entries=(0,), targets=[4], instructionControls=[4], stops=[{"site": 4, "reason": CUT}],
+                     spans=[{"first": 0, "last": 4}])["spans"][0]
+        self.assertTrue(span["fallsThrough"])
+
+    def test_the_scan_decodes_only_the_short_transfers_that_can_enter_a_span(self):
+        # Region A (segment 1000, IP 0000): 0000 jmp short to IP FF82, which wraps into region B; 0002 jz 0004,
+        # which can enter no span; 0004 call 0007. Region B (IP FF00) holds at 0090 mov ah, 3Dh; 0092 int 21h;
+        # 0094 ret. The jmp at 0000 lands at 0092 although its source lies far from it.
+        a = bytes.fromhex("eb807400e80000") + bytes(9)
+        b = bytes(0x80) + bytes.fromhex("b43dcd21c3") + bytes(0xB)
+        data = a + b
+        regions = [{"name": "a", "start": 0, "end": len(a), "ip": 0, "segment": 0x1000, "resident": True,
+                    "entries": [], "evidence": "synthetic declared code extent"},
+                   {"name": "b", "start": len(a), "end": len(data), "ip": 0xFF00, "segment": 0x1000, "resident": True,
+                    "entries": [0x90], "evidence": "synthetic declared code extent"}]
+        query = {"regions": regions, "starts": [0x90], "targets": [0x92], "instructionControls": [0x92],
+                 "spans": [{"first": 0x90, "last": 0x92}]}
+        span = run_report(data, query, "reach")["spans"][0]
+        self.assertEqual(span["candidates"], [{"source": 0, "target": 0x92, "instruction": "jmp 0xffffff82",
+                                               "position": "outside the decoded instructions"}])
+        from scientific_method_engine.x86.image import Image
+        from scientific_method_engine.x86.reach import _scan_sources
+        self.assertEqual(_scan_sources(Image(data, query), {}, {0x91, 0x92}), {0, 4})
+
+    def test_calls_and_table_rows_enter_a_span(self):
+        r = reach(indirectJumps=[TABLE], instructionControls=[0x28],
+                  spans=[{"first": 0x20, "last": 0x24}, {"first": 0x24, "last": 0x28}])
+        table, called = r["spans"]
+        self.assertEqual([(row["source"], row["target"], row["kind"]) for row in table["entries"]],
+                         [(0x12, 0x24, "table")])
+        self.assertEqual([(row["source"], row["target"], row["kind"]) for row in called["entries"]],
+                         [(0x18, 0x28, "call"), (0x20, 0x28, "call")])
+        # The ret at 0024 ends the run before 0028.
+        self.assertEqual((called["fallsThrough"], called["break"]),
+                         (False, {"site": 0x24, "reason": "the instruction does not continue at the next instruction"}))
+
+    def test_a_declared_table_the_walk_did_not_reach_gives_candidates(self):
+        r = reach(entries=(0x18,), starts=[0x18], indirectJumps=[TABLE], instructionControls=[0x28],
+                  spans=[{"first": 0x20, "last": 0x24}])
+        span = r["spans"][0]
+        self.assertEqual(span["entries"], [])
+        self.assertEqual(span["candidates"], [{"source": 0x12, "target": 0x24, "instruction": "jmp word ptr cs:[bx + 0x30]",
+                                               "position": "outside the decoded instructions"}])
+        # The walk never decoded 0020, so the span does not fall through, and its negative is not usable.
+        self.assertEqual(span["break"], {"site": 0x20, "reason": "no instruction the walk decoded starts here"})
+        self.assertFalse(span["negativeUsable"])
+
+    def test_a_run_that_jumps_away_or_misses_the_last_site_does_not_fall_through(self):
+        # 0000 mov ah, 3Dh; 0002 jmp 0005; 0004 nop, unreached; 0005 int 21h; 0007 ret.
+        data = bytes.fromhex("b43deb0190cd21c3")
+        r = spans(data, entries=(0,), targets=[5], instructionControls=[5],
+                  spans=[{"first": 0, "last": 5}, {"first": 0, "last": 3}, {"first": 4, "last": 5}])
+        jumped, past, undecoded = r["spans"]
+        self.assertEqual(jumped["break"], {"site": 2, "reason": "the instruction does not continue at the next instruction"})
+        # The jump at 0002 starts inside the span, so it does not enter it.
+        self.assertEqual(jumped["entries"], [])
+        self.assertFalse(jumped["negativeUsable"])
+        self.assertEqual(past["break"], {"site": 2, "reason": "the instruction runs past last"})
+        self.assertEqual(undecoded["break"], {"site": 4, "reason": "no instruction the walk decoded starts here"})
+        # 0002 jmp 0005 enters 0004..0005 from outside it.
+        self.assertEqual([row["source"] for row in undecoded["entries"]], [2])
+
+    def test_the_result_limit_cuts_the_span_lists_and_counts_stay_whole(self):
+        r = spans(spans=[{"first": 0, "last": 2}], limit=1)
+        span = r["spans"][0]
+        self.assertEqual((len(span["entries"]), len(span["candidates"])), (1, 1))
+        self.assertEqual(span["counts"], {"entries": 1, "candidates": 2})
+        self.assertTrue(r["truncated"])
+        self.assertFalse(spans(spans=[{"first": 0, "last": 2}])["truncated"])
+
+    def test_rejected_spans(self):
+        for value, message in [({}, "spans must be a list"),
+                               ([{"first": 0, "last": 2}] * 257, "at most 256"),
+                               ([{"first": 0}], "exactly first and last"),
+                               ([{"first": 0, "last": 2, "site": 2}], "exactly first and last"),
+                               ([{"first": 0x100, "last": 0x101}], "span first must be an integer"),
+                               ([{"first": 2, "last": 2}], "span last 2 must lie after first 2"),
+                               ([{"first": 0, "last": 2}, {"first": 0, "last": 2}], "Duplicate span 0..2")]:
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, message):
+                spans(spans=value)
+        # A span stays in one region: 0000..0009 and 0009..0012 are two.
+        cfg = config(WRITER, WRITER_STARTS, starts=[0], targets=[2], spans=[{"first": 5, "last": 9}])
+        cfg["regions"] = [cfg["regions"][0] | {"end": 9, "entries": [0, 5]},
+                          cfg["regions"][0] | {"name": "second", "start": 9, "ip": 9, "segment": 0x2000, "entries": [9]}]
+        with self.assertRaisesRegex(ValueError, "span last 9 must lie after first 5 in the region that holds it"):
+            run_report(WRITER, cfg, "reach")
+        data = bytes(4100) + bytes.fromhex("c3")
+        with self.assertRaisesRegex(ValueError, "longer than 4096 bytes"):
+            spans(data, entries=(0,), targets=[0], instructionControls=[], spans=[{"first": 0, "last": 4097}])
+
+
 # Three starts. A at 0000 calls H at 0010, which calls T at 001B and U at 001C. B at 0008 calls G at
 # 0017, which calls T. C at 000C makes a computed call through BX.
 STARTS = bytes.fromhex(

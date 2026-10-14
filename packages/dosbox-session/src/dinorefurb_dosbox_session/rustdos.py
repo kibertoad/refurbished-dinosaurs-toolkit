@@ -101,6 +101,9 @@ RUST_DOS_FEATURES = (
 #: ``events.jsonl`` and ``cleanup-diagnostic.txt``.
 EMULATOR_LOG = "rust-dos.log"
 EMULATOR_OUTPUT = "rust-dos.out"
+#: The configuration file the session writes and passes with ``--config``. It holds the sound
+#: cards of :class:`RustDosConfig` and nothing else.
+EMULATOR_CONFIG = "rust-dos.conf"
 
 #: The batch file rust-dos runs from C: at startup. The session writes it.
 AUTOEXEC = "AUTOEXEC.BAT"
@@ -111,6 +114,23 @@ _SESSION_RECORD = "session.json"
 _EVENT_LOG = "events.jsonl"
 _CLEANUP_DIAGNOSTIC = "cleanup-diagnostic.txt"
 _LISTENING = re.compile(r"Debug server listening on http://(127\.0\.0\.1:\d+)/")
+# What rust-dos prints for a line of the configuration file it did not take, or for a clash
+# between the sound cards it found once it read [sound]: each names the file. An AWE32 ROM it could
+# not load is a warning of its own, which names the setting.
+_CONFIG_WARNING = re.compile(
+    rf"^\[CONFIG\] Warning: (?:.*{re.escape(EMULATOR_CONFIG)}: |awe32rom: ).*$", re.MULTILINE
+)
+
+# The values rust-dos v1.7.2 takes in [sound]; it warns about any other and keeps its default.
+_SB_MODELS = ("sb16", "sb16vibra", "awe32", "sbpro2", "sb2")
+_SB16_MODELS = ("sb16", "sb16vibra", "awe32")
+_SB_BASES = tuple(range(0x210, 0x281, 0x10))
+_SB_IRQS = (2, 3, 5, 7, 9, 10, 11, 12, 15)
+_SB_DMAS = (0, 1, 3)
+_SB_HDMAS = (5, 6, 7)
+_GUS_BASES = (0x210, 0x220, 0x240, 0x250, 0x260)
+_GUS_IRQS = (2, 3, 5, 7, 11, 12, 15)
+_GUS_DMAS = (1, 3, 5, 6, 7)
 
 #: Command-line options the session sets itself, so ``emulator_arguments`` may not carry them.
 _OWNED_OPTIONS = (
@@ -136,6 +156,60 @@ OperationState = Literal["pending", "stopped", "done", "failed", "superseded", "
 
 
 @dataclass(frozen=True)
+class SoundBlaster:
+    """The emulated Sound Blaster: rust-dos's ``sbtype``, ``sbbase``, ``irq``, ``dma`` and ``hdma``.
+
+    - ``model``: ``sb16``, ``sb16vibra``, ``awe32``, ``sbpro2`` or ``sb2``.
+    - ``base``: the base I/O port, 0x210 to 0x280 in steps of 0x10.
+    - ``irq``: 2, 3, 5, 7, 9, 10, 11, 12 or 15.
+    - ``dma``: the 8-bit DMA channel, 0, 1 or 3.
+    - ``hdma``: the 16-bit DMA channel, 5, 6 or 7. Only an ``sb16``, ``sb16vibra`` or ``awe32`` has
+      one; ``None`` gives it 5, and the other models refuse a value.
+    - ``rom``: the AWE32's 1 MB sample ROM (``awe32.raw``), passed to rust-dos as ``awe32rom``. An
+      ``awe32`` needs it: without it rust-dos would load whichever ``awe32.raw`` it finds on the
+      host, or none. The other models refuse it.
+
+    The defaults are rust-dos's: an SB16 at 0x220, IRQ 7, DMA 1 and HDMA 5. rust-dos sets the
+    guest's ``BLASTER`` variable from these values.
+    """
+
+    model: str = "sb16"
+    base: int = 0x220
+    irq: int = 7
+    dma: int = 1
+    hdma: int | None = None
+    rom: Path | None = None
+
+    def settings(self) -> dict[str, Any]:
+        """The values rust-dos is given, with ``base`` in hexadecimal as ``BLASTER`` writes it, and
+        the ROM's absolute path, or ``None``."""
+        hdma = None if self.model not in _SB16_MODELS else 5 if self.hdma is None else self.hdma
+        rom = None if self.rom is None else str(Path(self.rom).resolve())
+        return {"model": self.model, "base": f"{self.base:X}", "irq": self.irq, "dma": self.dma, "hdma": hdma, "rom": rom}
+
+
+@dataclass(frozen=True)
+class Ultrasound:
+    """The emulated Gravis Ultrasound: rust-dos's ``gusbase``, ``gusirq`` and ``gusdma``.
+
+    - ``base``: the base I/O port, 0x210, 0x220, 0x240, 0x250 or 0x260.
+    - ``irq``: 2, 3, 5, 7, 11, 12 or 15.
+    - ``dma``: 1, 3, 5, 6 or 7.
+
+    The defaults are rust-dos's: 0x240, IRQ 5 and DMA 3. rust-dos sets the guest's ``ULTRASND``
+    variable from these values.
+    """
+
+    base: int = 0x240
+    irq: int = 5
+    dma: int = 3
+
+    def settings(self) -> dict[str, Any]:
+        """The values rust-dos is given, with ``base`` in hexadecimal."""
+        return {"base": f"{self.base:X}", "irq": self.irq, "dma": self.dma}
+
+
+@dataclass(frozen=True)
 class RustDosConfig:
     """What the caller chooses about the emulator.
 
@@ -150,6 +224,15 @@ class RustDosConfig:
       output, which mutes the host and keeps the emulated sound devices.
     - ``show_window``: shows the emulator's window. By default SDL's dummy video driver runs it
       without one.
+    - ``sound_blaster``: the emulated Sound Blaster, or ``None`` for none (``sbtype=none``).
+    - ``ultrasound``: the emulated Gravis Ultrasound, or ``None`` for none (``gus=false``). Its
+      base port may not be the Sound Blaster's, and it may not share the Sound Blaster's IRQ or a
+      DMA channel with it: rust-dos would leave the Ultrasound out, or warn that the two work only
+      while a program uses one of them.
+
+    The defaults of both cards are rust-dos's, so a run that sets neither gets the cards it always
+    had. Host audio is muted or kept by ``keep_host_sound`` alone; these settings place the
+    emulated cards.
     """
 
     media: tuple[Media, ...] = ()
@@ -158,6 +241,8 @@ class RustDosConfig:
     start_time: str | None = None
     keep_host_sound: bool = False
     show_window: bool = False
+    sound_blaster: SoundBlaster | None = SoundBlaster()
+    ultrasound: Ultrasound | None = Ultrasound()
 
 
 @dataclass(frozen=True)
@@ -254,6 +339,7 @@ def _check_config(settings: RustDosSettings) -> None:
             "A deterministic run needs a fixed speed: cycles must be a number. rust-dos would replace "
             f"{config.cycles or 'auto'} with a speed of its own choosing."
         )
+    _check_sound(config)
     letters = []
     for media in config.media:
         letter = media.drive.upper()
@@ -281,6 +367,96 @@ def _check_config(settings: RustDosSettings) -> None:
             raise ConfigurationRefused(
                 f"State {state.name} was saved while {program!r} ran, not the target {settings.target.command}."
             )
+
+
+def _check_value(card: str, name: str, value: object, allowed: tuple[int, ...], hexadecimal: bool = False) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value not in allowed:
+        shown = ", ".join(f"0x{v:X}" if hexadecimal else str(v) for v in allowed)
+        given = f"0x{value:X}" if hexadecimal and isinstance(value, int) and not isinstance(value, bool) else repr(value)
+        raise ConfigurationRefused(f"The {card}'s {name} {given} is not one rust-dos takes ({shown}).")
+
+
+def _check_sound(config: RustDosConfig) -> None:
+    """Refuses sound cards rust-dos would not set up as given: it warns and keeps its default."""
+    sb = config.sound_blaster
+    if sb is not None:
+        if sb.model not in _SB_MODELS:
+            raise ConfigurationRefused(
+                f"The Sound Blaster's model {sb.model!r} is not one rust-dos takes ({', '.join(_SB_MODELS)})."
+            )
+        _check_value("Sound Blaster", "base", sb.base, _SB_BASES, hexadecimal=True)
+        _check_value("Sound Blaster", "irq", sb.irq, _SB_IRQS)
+        _check_value("Sound Blaster", "dma", sb.dma, _SB_DMAS)
+        if sb.hdma is not None:
+            if sb.model not in _SB16_MODELS:
+                raise ConfigurationRefused(
+                    f"The Sound Blaster model {sb.model} has no 16-bit DMA channel; hdma is only taken with "
+                    f"{', '.join(_SB16_MODELS)}."
+                )
+            _check_value("Sound Blaster", "hdma", sb.hdma, _SB_HDMAS)
+        if sb.model == "awe32":
+            if sb.rom is None:
+                raise ConfigurationRefused(
+                    "An awe32 needs rom, its sample ROM (awe32.raw): without it rust-dos would load whichever "
+                    "awe32.raw it finds on the host, or none."
+                )
+            rom = Path(sb.rom).resolve()
+            if any(c in str(rom) for c in "\r\n\x00") or not rom.is_file():
+                raise ConfigurationRefused(f"The AWE32 ROM {rom} is not a file.")
+        elif sb.rom is not None:
+            raise ConfigurationRefused(f"The Sound Blaster model {sb.model} has no sample ROM; rom is only taken with awe32.")
+    gus = config.ultrasound
+    if gus is not None:
+        _check_value("Ultrasound", "base", gus.base, _GUS_BASES, hexadecimal=True)
+        _check_value("Ultrasound", "irq", gus.irq, _GUS_IRQS)
+        _check_value("Ultrasound", "dma", gus.dma, _GUS_DMAS)
+    if sb is None or gus is None:
+        return
+    if gus.base == sb.base:
+        raise ConfigurationRefused(
+            f"The Ultrasound and the Sound Blaster share base port 0x{sb.base:X}; rust-dos would leave the Ultrasound out."
+        )
+    if gus.irq == sb.irq:
+        raise ConfigurationRefused(
+            f"The Ultrasound and the Sound Blaster share IRQ {sb.irq}. Move one, or set ultrasound=None for no Ultrasound."
+        )
+    # settings() gives the 16-bit channel of the models that have one and None for the others.
+    if gus.dma in (sb.dma, sb.settings()["hdma"]):
+        raise ConfigurationRefused(
+            f"The Ultrasound and the Sound Blaster share DMA {gus.dma}. Move one, or set ultrasound=None for no Ultrasound."
+        )
+
+
+def _config_text(config: RustDosConfig) -> str:
+    """The configuration file the session passes rust-dos: the ``[sound]`` cards and nothing else."""
+    lines = ["[sound]"]
+    sb = config.sound_blaster
+    if sb is None:
+        lines.append("sbtype=none")
+    else:
+        values = sb.settings()
+        lines += [f"sbtype={values['model']}", f"sbbase={values['base']}", f"irq={values['irq']}", f"dma={values['dma']}"]
+        if values["hdma"] is not None:
+            lines.append(f"hdma={values['hdma']}")
+        if values["rom"] is not None:
+            lines.append(f"awe32rom={values['rom']}")
+    gus = config.ultrasound
+    if gus is None:
+        lines.append("gus=false")
+    else:
+        values = gus.settings()
+        lines += ["gus=true", f"gusbase={values['base']}", f"gusirq={values['irq']}", f"gusdma={values['dma']}"]
+    return "\n".join(lines) + "\n"
+
+
+def _sound_values(config: RustDosConfig) -> dict[str, Any]:
+    """The cards as ``session.json`` records them: each card's values, with an AWE32's ROM as its
+    path and SHA-256, or ``None`` for a card left out."""
+    sound_blaster = None if config.sound_blaster is None else config.sound_blaster.settings()
+    if sound_blaster is not None and sound_blaster["rom"] is not None:
+        sound_blaster["rom"] = {"path": sound_blaster["rom"], "sha256": file_sha256(Path(sound_blaster["rom"]))}
+    ultrasound = None if config.ultrasound is None else config.ultrasound.settings()
+    return {"sound_blaster": sound_blaster, "ultrasound": ultrasound}
 
 
 def _program_name(command: str) -> str:
@@ -351,6 +527,8 @@ class RustDosSession(OwnedRun):
         self._closed = False
         # What AUTOEXEC.BAT writes to the readiness marker; a checkpoint's C: has its own session's.
         self._marker_text = self.token
+        # The sound cards as session.json records them, once the configuration has been checked.
+        self._sound: dict[str, Any] | None = None
 
     # Starting
 
@@ -378,8 +556,16 @@ class RustDosSession(OwnedRun):
                 f"The emulator {emulator} has SHA-256 {self.emulator_sha256}, not the expected {settings.emulator_sha256}."
             )
         _check_config(settings)
+        self._sound = _sound_values(settings.emulator_config)
         state = settings.start_state
         if state is not None:
+            if state.sound is not None:
+                for card in ("sound_blaster", "ultrasound"):
+                    if state.sound.get(card) != self._sound[card]:
+                        raise ConfigurationRefused(
+                            f"State {state.name} was saved with {card} {state.sound.get(card)!r}; this run has "
+                            f"{self._sound[card]!r}. A run that starts from a state needs the cards the saving run had."
+                        )
             if state.emulator_sha256 != self.emulator_sha256:
                 raise EmulatorRefused(
                     f"State {state.name} was saved by the emulator with SHA-256 {state.emulator_sha256}; {emulator} "
@@ -427,10 +613,13 @@ class RustDosSession(OwnedRun):
                     raise RunDirectoryRefused(f"prepare_drive wrote {owned}, which the session writes.")
             lines = ["@echo off", f"echo {self.token}> C:\\{READINESS_MARKER}"]
             (self.drive_c / AUTOEXEC).write_bytes(("\r\n".join(lines) + "\r\n").encode("ascii", errors="strict"))
+        config_file = self.run_directory / EMULATOR_CONFIG
+        config_file.write_text(_config_text(config), encoding="utf-8")
         arguments = [
             str(emulator),
             *settings.emulator_arguments,
-            "--no-config",
+            "--config",
+            str(config_file),
             "-d",
             str(self.drive_c),
             "--debug-server",
@@ -505,13 +694,21 @@ class RustDosSession(OwnedRun):
         output = self.run_directory / EMULATOR_OUTPUT
         while True:
             try:
-                found = _LISTENING.search(output.read_text(encoding="utf-8", errors="replace"))
+                printed = output.read_text(encoding="utf-8", errors="replace")
             except FileNotFoundError:
-                found = None
+                printed = ""
+            found = _LISTENING.search(printed)
             if found is not None:
                 break
             self._deadline_passed(deadline, "the debug server printed its address")
             time.sleep(0.05)
+        # rust-dos reads its configuration file before it starts the server, so its warnings
+        # about the file are printed by now.
+        warnings = _CONFIG_WARNING.findall(printed)
+        if warnings:
+            raise EmulatorRefused(
+                f"rust-dos did not take {EMULATOR_CONFIG} as the session wrote it: {'; '.join(w.strip() for w in warnings)}"
+            )
         self.endpoint = found.group(1)
         client = self._new_client()
         while True:
@@ -918,6 +1115,7 @@ class RustDosSession(OwnedRun):
             request_id=reply.request_id,
             session=self.token,
             emulator_sha256=self.emulator_sha256,
+            sound=self._sound,
         )
         self._states[name] = state
         self._state_entries.append(state.to_json())
@@ -1084,6 +1282,9 @@ class RustDosSession(OwnedRun):
             "emulator_process": None if self._emulator_identity is None else self._emulator_identity.to_json(),
             "host_sound": "kept" if config.keep_host_sound else "muted",
             "window": "shown" if config.show_window else "hidden",
+            "sound": None
+            if self._sound is None
+            else {"config_file": str(self.run_directory / EMULATOR_CONFIG), **self._sound},
             "deterministic": None
             if not config.deterministic
             else {"cycles": config.cycles, "start_time": config.start_time},

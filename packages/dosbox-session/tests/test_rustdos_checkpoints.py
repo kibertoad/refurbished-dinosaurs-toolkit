@@ -13,8 +13,10 @@ from dinorefurb_dosbox_session import (
     RustDosSession,
     RustDosSettings,
     SavedState,
+    SoundBlaster,
     StateRefused,
     Target,
+    Ultrasound,
     read_saved_state,
 )
 
@@ -133,6 +135,16 @@ class Checkpoints(RustDosCase):
                 self.from_state(dataclasses.replace(state, emulator_sha256="0" * 64)),
                 EmulatorRefused,
                 "was saved by the emulator",
+            ),
+            (
+                self.from_state(state, RustDosConfig(sound_blaster=SoundBlaster(base=0x240), ultrasound=Ultrasound(base=0x260))),
+                ConfigurationRefused,
+                "saved with sound_blaster .*'base': '220'.* this run has .*'base': '240'",
+            ),
+            (
+                self.from_state(state, RustDosConfig(ultrasound=None)),
+                ConfigurationRefused,
+                "saved with ultrasound .*'base': '240'.* this run has None",
             ),
         ]
         for settings, error, message in cases:

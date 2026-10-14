@@ -2,7 +2,8 @@
 
 Status: accepted. Adds the `reach` command to the bounded evidence reporters.
 [ADR 0033](0033-declared-computed-call-targets.md) extends it with declared computed call targets, and
-[ADR 0038](0038-decoded-ranges-of-a-reach-walk.md) with the ranges the walk decoded.
+[ADR 0038](0038-decoded-ranges-of-a-reach-walk.md) with the ranges the walk decoded, and
+[ADR 0044](0044-transfers-into-a-span.md) with the transfers that land inside a span.
 
 ## Context
 
