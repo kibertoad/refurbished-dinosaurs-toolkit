@@ -1,6 +1,7 @@
 """Explicit, source-derived indirect jump tables and call targets for CFG discovery, and explicitly conditional path continuations."""
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM
 from .image import integer
+from .pcode_backend import interrupt_vector, INTERRUPTS
 
 CALL_NOT_EXHAUSTIVE = "indirect call targets are not declared exhaustive"
 JUMP_NOT_EXHAUSTIVE = "indirect jump table is not declared exhaustive"
@@ -214,7 +215,12 @@ def indirect_call_declarations(value, image):
 
     Each declaration names a ``site`` that decodes as an unprefixed segmented16 computed call (a near
     call through a word register or memory operand, or a far call through memory), its ``evidence``,
-    an explicit boolean ``exhaustive``, and exactly one of ``table`` and ``targets``. A table's rows are
+    an explicit boolean ``exhaustive``, at most one of ``table`` and ``targets``, and ``outside`` when
+    it has neither (ADR 0042). ``outside`` states that the call can leave the declared code, for one
+    stated destination: a saved interrupt ``vector``, the far pointer an ``interrupt`` site returned,
+    or a ``description`` of other code outside the image; it is returned normalized by
+    ``outside_destination``. An exhaustive declaration may give an empty ``targets`` list, which states
+    that the call never runs. A table's rows are
     read from the source bytes as ``indirectJumps`` reads them: words placed through the call site's
     region mapping for a near call, and for a far call ``offset, segment`` word pairs whose segment
     word has a declared relocation, admitted as ``Image.far_pointer_target`` admits the pointer a
@@ -235,9 +241,11 @@ def indirect_call_declarations(value, image):
     result = {}
     image.derived_call_reads = {}
     for claim in value:
-        keys = set(claim) if isinstance(claim, dict) else None
-        if keys not in ({"site", "evidence", "exhaustive", "table"}, {"site", "evidence", "exhaustive", "targets"}):
-            raise ValueError("Each indirect call needs site, evidence, exhaustive and exactly one of table and targets")
+        keys = set(claim) - {"outside"} if isinstance(claim, dict) else None
+        base = {"site", "evidence", "exhaustive"}
+        if keys not in (base | {"table"}, base | {"targets"}) and not (keys == base and "outside" in claim):
+            raise ValueError("Each indirect call needs site, evidence, exhaustive, at most one of table and targets, "
+                             "and outside when it has neither")
         site = integer(claim["site"], 0, len(image.data) - 1, "indirect call site")
         if site in result:
             raise ValueError("Duplicate indirect call site")
@@ -254,7 +262,12 @@ def indirect_call_declarations(value, image):
                              "or a far call through memory")
         declaration = {"site": site, "instruction": (ins.mnemonic + " " + ins.op_str).strip(),
                        "evidence": claim["evidence"], "exhaustive": claim["exhaustive"]}
-        if "table" in claim:
+        if "outside" in claim:
+            declaration["outside"] = outside_destination(claim["outside"], image, site, far)
+        if "table" not in claim and "targets" not in claim:
+            # An outside destination alone: the call names no target in declared code.
+            targets = []
+        elif "table" in claim:
             table, width = claim["table"], 4 if far else 2
             if not isinstance(table, dict) or not isinstance(table.get("evidence"), str) or not table["evidence"].strip():
                 raise ValueError("An indirect call table needs layout/count evidence")
@@ -279,9 +292,15 @@ def indirect_call_declarations(value, image):
             targets = [row["target"] for row in rows]
         else:
             targets = claim["targets"]
-            if (not isinstance(targets, list) or not 1 <= len(targets) <= 256
+            if (not isinstance(targets, list) or len(targets) > 256
                     or len(set(map(repr, targets))) != len(targets)):
-                raise ValueError("indirect call targets must be a list of 1..256 distinct file offsets")
+                raise ValueError("indirect call targets must be a list of 0..256 distinct file offsets")
+            # No targets says the call never runs, which only an exhaustive declaration without an outside
+            # destination can state; anything else would be an undeclared call with extra words.
+            if not targets and (not claim["exhaustive"] or "outside" in claim):
+                raise ValueError(f"indirect call {site} declares no targets, which states that the call never runs; "
+                                 "that needs exhaustive true and no outside (give outside alone for a call that "
+                                 "leaves the declared code)")
             for at in targets:
                 integer(at, 0, len(image.data) - 1, "indirect call target")
                 region = image.region(at)
@@ -296,6 +315,50 @@ def indirect_call_declarations(value, image):
                                          f"site {site}'s segment")
         result[site] = declaration | {"targets": list(dict.fromkeys(targets))}
     return result
+
+
+def declared_interrupt(image, at, label, conditional_reason):
+    """``(ins, vector)`` for the unconditional interrupt instruction at ``at``, which a declaration names as ``label``.
+
+    ``at`` must lie in declared code and decode as an interrupt, whatever prefix capstone names in the
+    mnemonic; a conditional interrupt (INTO) is refused with ``conditional_reason``.
+    """
+    if image.region(at) is None:
+        raise ValueError(f"{label} {at} is outside declared code")
+    ins = image.decode(at)
+    if ins is None or ins.mnemonic.split()[-1] not in INTERRUPTS:
+        raise ValueError(f"{label} {at} is not an interrupt instruction")
+    vector, conditional = interrupt_vector(image.flat, ins, at)
+    if conditional:
+        raise ValueError(f"{label} {at} is conditional {conditional_reason}")
+    return ins, vector
+
+
+def outside_destination(value, image, site, far):
+    """The normalized ``outside`` destination of the declared indirect call at ``site``.
+
+    ``value`` names exactly one of ``vector`` (0..255: the call enters the handler that held that
+    interrupt vector before the program replaced it), ``interrupt`` (a file offset in declared code
+    that decodes as an unconditional interrupt instruction: the call goes through the far pointer
+    that interrupt returned, and the result adds the interrupt's ``vector`` and ``instruction``) or
+    ``description`` (nonempty free text naming other code outside the image, such as code built on
+    the stack or a table a loaded driver fills). A saved vector and an interrupt's returned pointer
+    are far pointers, so those two need a far call.
+    """
+    if not isinstance(value, dict) or len(value) != 1 or set(value) - {"vector", "interrupt", "description"}:
+        raise ValueError(f"indirect call {site} outside needs exactly one of vector, interrupt and description")
+    kind, given = next(iter(value.items()))
+    if kind != "description" and not far:
+        raise ValueError(f"indirect call {site} outside {kind} names a far pointer, which a near call cannot use")
+    if kind == "vector":
+        return {"vector": integer(given, 0, 255, "outside vector")}
+    if kind == "description":
+        if not isinstance(given, str) or not given.strip():
+            raise ValueError(f"indirect call {site} outside description must be nonempty text")
+        return {"description": given}
+    at = integer(given, 0, len(image.data) - 1, "outside interrupt")
+    ins, vector = declared_interrupt(image, at, f"indirect call {site} outside interrupt", "and may return nothing")
+    return {"interrupt": at, "vector": vector, "instruction": (ins.mnemonic + " " + ins.op_str).strip()}
 
 
 def open_reason(declaration, call):
@@ -321,11 +384,37 @@ def derived_assumptions(image, indirect_calls):
     return []
 
 
+def never_runs(declaration):
+    """Whether a declared indirect call states that it never runs: exhaustive, with an empty ``targets`` list
+    and no outside. A table whose count was not proven also has no targets, but it is unresolved, not empty."""
+    return (declaration["exhaustive"] and "table" not in declaration and not declaration["targets"]
+            and "outside" not in declaration)
+
+
 def declared_call_ends(declaration, no_return_calls):
-    """Whether a declared indirect call ends its branch: nothing leaves it unresolved (``open_reason``) and
-    every target is in ``no_return_calls``."""
-    return open_reason(declaration, True) is None and all(target in no_return_calls
-                                                          for target in declaration["targets"])
+    """Whether a declared indirect call ends its branch: nothing leaves it unresolved (``open_reason``), it
+    has no ``outside`` destination (which the walk does not read, so it is assumed to return), and every
+    target is in ``no_return_calls``.
+
+    A declaration that ``never_runs`` ends its branch, since the next instruction is reached through the
+    call only once it has run.
+    """
+    return (open_reason(declaration, True) is None and "outside" not in declaration
+            and all(target in no_return_calls for target in declaration["targets"]))
+
+
+def indirect_call_assumptions(indirect_calls):
+    """The assumptions the ``indirectCalls`` declarations add to a report."""
+    if not indirect_calls:
+        return []
+    found = ["each declared indirect call can call the targets its declaration gives, for the evidence it gives, "
+             "and only those when it is declared exhaustive"]
+    if any("outside" in declaration for declaration in indirect_calls.values()):
+        found.append("each declared outside destination is where its call can leave the declared code, for the "
+                     "evidence it gives; the code there is not read, and it returns to the call's next instruction")
+    if any(never_runs(declaration) for declaration in indirect_calls.values()):
+        found.append("each indirect call declared exhaustive with no targets never runs, for the evidence it gives")
+    return found
 
 
 def call_ends(site, target, indirect_calls, no_return_calls):

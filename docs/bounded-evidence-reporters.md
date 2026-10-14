@@ -1096,8 +1096,9 @@ branch, the rows of a declared indirect jump table, the declared targets of a co
 every interrupt to the next instruction. A call to a `noReturn` routine continues only into the
 routine, a `noReturn` call site continues only into its targets (or nowhere, when its target is
 unresolved), and a `noReturn` interrupt ends its branch. A declared computed call continues at its
-return site unless it is declared exhaustive and every target it declares is a `noReturn` routine,
-or its site is a `noReturn` call. Far calls resolve as `target` describes: through an MZ relocation, or through an FBOV fixup and
+return site unless it is declared exhaustive with no `outside` destination and every target it
+declares is a `noReturn` routine (which holds for a call declared never to run), or its site is a
+`noReturn` call. Far calls resolve as `target` describes: through an MZ relocation, or through an FBOV fixup and
 the trampoline it names to the overlay entry. A near transfer resolves through the mapping of the
 region that holds it. Instruction boundaries are checked as in the entry-path walk, so an
 instruction reached only through a rejected overlapping start is `contested`.
@@ -1270,7 +1271,9 @@ and `unreadTargets`: for a reached site, the declared targets that are not leave
 walk established no instruction, because the target overlaps another reached instruction, is
 contested or does not decode. Each such target is also a gap or a contested instruction, unless
 the walk stopped at its instruction limit before reading it. A stop routine is not listed, nor is
-any target of a call at a stop site.
+any target of a call at a stop site. A call declared never to run also has `following` and
+`followingRead`. `outsideTransfers` groups the declared `outside` destinations, as the
+[declared call targets](#declared-computed-call-targets) section describes.
 
 `instructionLimitReached` holds when the walk stopped at `instructionLimit` with code left to read.
 The stop is also an `instruction limit` row in `gaps`, but the result `limit` can cut that row, and
@@ -1357,7 +1360,8 @@ written by an analysis segment, which no target can match. `unresolved`, `covera
 A declared target's row carries the provenance `{ "encoding": "declared indirect call", "evidence" }`,
 and `indirectCalls` repeats each declaration with whether the entry-path walk `reached` its site. A
 declaration that is not exhaustive also leaves its site in `unresolved`. A declared call counts a
-row in `rowsPastNoReturn` only when it is exhaustive and every target it declares is `noReturn`.
+row in `rowsPastNoReturn` only when it is exhaustive, has no `outside` destination and every target it
+declares is `noReturn`. A call declared never to run counts too, as a `call` with empty `routines`.
 
 The counts are lower bounds on what the inventory lacks. Computed calls with no exhaustive
 declaration, far calls with no
@@ -1419,7 +1423,7 @@ also holds the byte after it:
 | `start`, `size`, `name` | the row |
 | `kind`, `site`, `siteAddress`, `siteClassification` | `call` (a call to a declared routine), `call site` (a declared call site that no routine declaration lists) or `interrupt`, the site, its place, and `entry-path instruction`, `reached only through a rejected overlapping start` (contested), `raw byte candidate` or, for a declared call or interrupt site the walk did not reach, `declared site` |
 | `routine` | for a `call`, the declared routine it resolves to; for a `call site`, the one routine it resolves to |
-| `routines` | in place of `routine`, for a declared computed call: every target it declares, all of them `noReturn`, and for a `call site` with several targets, every one of them. The call is listed once |
+| `routines` | in place of `routine`, for a declared computed call: every target it declares, all of them `noReturn` (none for a call declared never to run), and for a `call site` with several targets, every one of them. The call is listed once |
 | `following`, `followingAddress` | the byte after the call or interrupt |
 | `followingRead` | whether the walk established an instruction at `following` by another route, such as a branch around an error exit. Without one, nothing the walk read shows the bytes after the call to be code |
 | `bytesAfter` | the bytes of the row's body range from `following` to the range's end |
@@ -1528,7 +1532,9 @@ A true exhaustive flag is not independently validated behavior or native reachab
 ## Declared computed call targets
 
 `reach` and `inventory-check` accept `indirectCalls` for segmented16 computed calls
-([ADR 0033](decisions/0033-declared-computed-call-targets.md)); other commands refuse the field.
+([ADR 0033](decisions/0033-declared-computed-call-targets.md),
+[ADR 0042](decisions/0042-computed-calls-that-leave-the-image-or-never-run.md)); other commands
+refuse the field.
 Each of at most 256 declarations names:
 
 | Field | Meaning |
@@ -1537,16 +1543,37 @@ Each of at most 256 declarations names:
 | `evidence` | required free text connecting the call's operand to the targets: the producers of the index or pointer and every gate on them |
 | `exhaustive` | required boolean. `true` asserts that the call can reach no other target; the engine does not infer it |
 | `table` | `{ start, count, stride, fieldOffset, width, evidence, bound }`, as for [indirect jump tables](#evidenced-indirect-jump-tables): `count` 1..256, `fieldOffset` defaults to 0, and `evidence` justifies the layout and count. An exhaustive declaration can leave out `count` and give `bound`, and its rows then come from the code ([table counts derived from the code](#table-counts-derived-from-the-code)). A near call's rows are little-endian words placed through the call site's region mapping (`width` 2, the default). A far call's rows are `offset, segment` word pairs (`width` 4): the segment word needs a declared relocation, and the pointer is admitted as a [traced far pointer](#indirect-far-transfers-through-a-traced-pointer) is, through one region's exact mapping or a source FBOV trampoline |
-| `targets` | in place of `table`: 1..256 distinct file offsets in declared code, for targets that no table in the build holds, such as a far pointer stored from instruction immediates on every path into the call. A near call's target must be a byte that some IP in the call site's segment places, since a near call keeps CS |
+| `targets` | in place of `table`: 0..256 distinct file offsets in declared code, for targets that no table in the build holds, such as a far pointer stored from instruction immediates on every path into the call. A near call's target must be a byte that some IP in the call site's segment places, since a near call keeps CS. An empty list states that the call never runs, and needs `exhaustive` true and no `outside` |
+| `outside` | optional: where the call can leave the declared code, as exactly one of `{ "vector": n }` (0..255, the handler that held interrupt vector n before the program replaced it), `{ "interrupt": site }` (the far pointer that the interrupt instruction at that file offset returned, such as a driver entry point the program stored), and `{ "description": text }` (other code outside the image, such as code built on the stack or a table a loaded driver fills). A `vector` or `interrupt` names a far pointer, so it needs a far call. A declaration may give `outside` alone or beside a `table` or a nonempty `targets` list |
 
-A declaration has exactly one of `table` and `targets`. Every target must lie in declared code. The
-walk enters each declared target as a call and continues at the call's return site, unless the
-declaration is exhaustive, its count is proven when it has none, and every target is a `noReturn`
-routine. A declaration that is not exhaustive leaves the site in `unresolved` with the reason
-`indirect call targets are not declared exhaustive`, and a table whose count the code does not prove
-leaves it there with `indirect call table count is not proven by the code`, calls nothing and
-continues at its return site; either keeps `negativeUsable` false. Any other exhaustive declaration
-leaves nothing unresolved.
+A declaration has at most one of `table` and `targets`, and `outside` when it has neither. Every
+target must lie in declared code. The walk enters each declared target as a call and continues at
+the call's return site, unless the declaration is exhaustive, its count is proven when it has none,
+it has no `outside`, and every target is a `noReturn` routine. A declaration that is not exhaustive
+leaves the site in `unresolved` with the reason `indirect call targets are not declared exhaustive`,
+and a table whose count the code does not prove leaves it there with `indirect call table count is
+not proven by the code`, calls nothing and continues at its return site; either keeps
+`negativeUsable` false. Any other exhaustive declaration leaves nothing unresolved.
+
+An `outside` destination is not read. The walk assumes the code there returns to the call's next
+instruction, as it assumes of every call, and claims nothing about what it does or calls back
+into; `exclusions` names that code. An `interrupt` destination must decode as an unconditional
+interrupt instruction in declared code, and the report repeats it with its `vector` and
+`instruction` text. `reach` groups the declared sites by destination in `outsideTransfers`: each
+destination once, with the declared `sites` that name it, the `reached` ones among them and, for an
+`interrupt`, whether the walk reached that interrupt (`interruptReached`), so a reader sees which
+transfers share one cause.
+
+An exhaustive declaration with an empty `targets` list states that the call never runs, for
+example because the count that gates it is zero at load and nothing that raises it is reached. The
+walk does not continue past it, since the next instruction is reached through the call only once it
+has run. `reach` adds `following` and `followingRead` to its row, saying whether the walk read the
+next instruction by another route, and a control past it names the declaration. The declaration
+rests on its evidence alone: the walk does not check that the call is gated off.
+
+`assumptions` lists each kind of declaration a report uses: the declared targets, the outside
+destinations, and the calls that never run, which also become an exception to the assumption that
+every reached call returns.
 
 Table rows are read from the build's bytes, and a `targets` list rests on its evidence alone; the
 report repeats each declaration with its `instruction` text, a table's `rows` (`index`,

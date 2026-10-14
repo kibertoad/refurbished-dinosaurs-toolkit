@@ -4,7 +4,7 @@ from bisect import bisect_right
 from pathlib import Path
 from .image import integer
 from .trace import LIMIT_REASON, CONTESTED_REASON, OVERLAP_REASON, walk, holding_instruction
-from .dispatch import indirect_call_declarations, call_ends, derived_assumptions
+from .dispatch import indirect_call_declarations, call_ends, never_runs, indirect_call_assumptions, derived_assumptions
 
 MAX_INVENTORY = 16 * 1024 * 1024
 MAX_ROWS = 200000
@@ -425,6 +425,11 @@ def inventory_check(image, config):
     def site_classification(at):
         return "entry-path instruction" if at in seen else CONTESTED_REASON if at in contested else "declared site"
     listed = {site for site, *_ in ends}
+    # A call declared never to run has no target, so no call row holds it, yet it ends the branch as an
+    # exhaustive call whose every target is noReturn does; it is listed as one with no routines.
+    never = [at for at, declaration in indirect_calls.items() if never_runs(declaration)]
+    ends += [(at, image.decode(at).size, "call", [], site_classification(at)) for at in never]
+    listed |= set(never)
     ends += [(at, row["following"] - at, "call site",
               site_targets[at][0] if len(site_targets[at]) == 1 else site_targets[at] or None, site_classification(at))
              for at, row in no_return_sites.items() if at not in listed]
@@ -528,15 +533,13 @@ def inventory_check(image, config):
     if target_stopped:
         summary += (" The walk that checks the targets of the noReturn calls stopped at its instruction limit, so it "
                     "can miss returns.")
-    assumptions = [call_assumption(no_return_routines, no_return_sites)]
+    assumptions = [call_assumption(no_return_routines, no_return_sites, indirect_calls)]
     if checked:
         assumptions.append("each interrupt the noReturn check reads returns to its next instruction"
                            + (", except at a noReturn interrupt site" if no_return_interrupts else "")
                            + "; interrupt handlers are not read")
     assumptions += no_return_assumptions(no_return_routines, no_return_interrupts, no_return_sites)
-    if indirect_calls:
-        assumptions.append("each declared indirect call can call the targets its declaration gives, for the evidence "
-                           "it gives, and only those when it is declared exhaustive")
+    assumptions += indirect_call_assumptions(indirect_calls)
     assumptions += derived_assumptions(image, indirect_calls)
     indirect_rows = [declaration | {"reached": site in seen} for site, declaration in indirect_calls.items()]
     return {"inventory": {"path": config["inventory"], "rows": len(rows)},
@@ -556,7 +559,9 @@ def inventory_check(image, config):
             "partialSearch": partial, "gaps": calls["gaps"],
             "exclusions": ["computed call targets no indirectCalls declaration gives (listed in unresolved when the "
                            "walk reaches them)", "unrelocated far calls",
-                           "undeclared mappings", "prefix-started raw candidates off the entry path", "jump targets"],
+                           "undeclared mappings", "prefix-started raw candidates off the entry path", "jump targets"]
+                          + (["the code a declared outside destination names, and anything it calls"]
+                             if any("outside" in declaration for declaration in indirect_calls.values()) else []),
             "interpretation": "Each distinct resolved direct call target in the searched regions, placed in the inventory's "
                               "notation and compared with its rows. A target only raw byte candidates or contested "
                               "instructions call is not shown to be code. The counts are lower bounds on the targets "
