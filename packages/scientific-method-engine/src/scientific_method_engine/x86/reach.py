@@ -1,8 +1,10 @@
 """Transitive reachability from established starts to target sites over the entry-path CFG."""
+import re
 from collections import deque
 from .image import integer
+from .machine import State
 from .trace import (walk, cfg_step, base_mnemonic, unsupported_transfer, holding_instruction, INTERRUPTS, RETURNS,
-                    LIMIT_REASON, OVERLAP_REASON, UNDECODED_REASON)
+                    LIMIT_REASON, OVERLAP_REASON, UNDECODED_REASON, ENTRY_ARRIVAL, budget_input, trace)
 from .pcode_backend import interrupt_vector
 from .dispatch import indirect_call_declarations, call_ends
 
@@ -14,6 +16,12 @@ LEAF_OVERLAP = "leaf start inside a reached instruction; the leaf is not decoded
 STOP_OVERLAP = ("stop routine start inside a reached instruction; the routine is not decoded, so its boundary is "
                 "unchecked")
 CHECK_CONTESTED = "contested instruction in the noReturn return check's walk"
+# The stack bytes above a routine's return frame that argumentBranches looks for in a branch condition.
+ARGUMENT_WINDOW = 256
+# The most chain links argumentBranches traces in one report.
+ARGUMENT_LINKS = 256
+ARGUMENT_BUDGETS = ("maxPaths", "maxSteps", "totalSteps", "visitLimit")
+FLAGS_UNKNOWN = "flag producer unresolved"
 
 
 def _text(ins):
@@ -312,6 +320,126 @@ def _dominators(order, predecessors):
     return idom
 
 
+def argument_budget(value):
+    """The trace budget ``argumentBranches`` asks for, or None when the option is off.
+
+    ``true`` takes the trace defaults; an object may set ``maxPaths``, ``maxSteps``, ``totalSteps``,
+    ``visitLimit`` and ``maxDepth``, each in the range ``trace`` accepts.
+    """
+    if value is False:
+        return None
+    if value is True:
+        return {}
+    if not isinstance(value, dict) or set(value) - set(ARGUMENT_BUDGETS) - {"maxDepth"}:
+        raise ValueError("argumentBranches must be a boolean or an object with only "
+                         + ", ".join(ARGUMENT_BUDGETS) + " and maxDepth")
+    for name in ARGUMENT_BUDGETS:
+        if name in value:
+            budget_input(value, name)
+    if "maxDepth" in value:
+        integer(value["maxDepth"], 1, 32, "maxDepth")
+    return dict(value)
+
+
+def _strings(value):
+    """Every string inside a report row's nested dicts, lists and tuples, where a term names its unknowns."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _strings(item)
+
+
+def _unformed(value):
+    """Whether a branch row holds a condition whose flag producer the trace could not name."""
+    if isinstance(value, dict):
+        return value.get("reason") == FLAGS_UNKNOWN or any(_unformed(v) for v in value.values())
+    return False
+
+
+def argument_links(rows, image):
+    """Each distinct chain link of the reached ``rows`` as ``(routine, callSite, enteredBy, returnFrameBytes)``.
+
+    ``routine`` holds ``callSite``: it is the routine the chain entered by the call before it, or the
+    start. ``enteredBy`` is that earlier call site, None for a start, and ``returnFrameBytes`` the
+    return frame it pushed (four for a far call), None for a start.
+    """
+    links = {}
+    for row in rows:
+        hops = row.get("chain", [])
+        for before, hop in zip(hops, hops[1:]):
+            entered_by = before.get("callSite")
+            frame = None
+            if entered_by is not None:
+                frame = 4 if base_mnemonic(image.decode(entered_by)) == "lcall" else image.bits // 8
+            links.setdefault((before["routine"], hop["callSite"], frame), entered_by)
+    return [(routine, site, entered_by, frame) for (routine, site, frame), entered_by in sorted(
+        links.items(), key=lambda item: (item[0][0], item[0][1], item[0][2] or 0))]
+
+
+def argument_branches(image, routine, site, entered_by, frame, budget):
+    """The branches on traced paths from ``routine``'s entry to its call at ``site`` whose condition reads its stack arguments.
+
+    One bounded ``trace`` runs from the routine's entry, with each path stopping at its first arrival
+    at the site. A branch is listed when a term of its condition names a stack byte the routine
+    received above its return frame (``returnFrameBytes``, or the near frame of the image for a
+    start): ``entryOffsets`` as received, ``possiblyRewrittenOffsets`` where a write on the path
+    may have stored the byte before the read. The trace follows calls into
+    their callees, so a branch inside a callee that tests a value the routine received is listed too.
+    """
+    report = trace(image, {"entry": routine, **budget, **({"returnBytes": frame} if frame else {})},
+                   continue_declared_jumps=False, track_loops=False, arrive=site, established_entry=False)
+    probe = State(routine, image, {})
+    segment, base, origin = probe.location(probe.segment("ss"), probe.reg(probe.sp))
+    # An unread byte's term is named memory:<entry or the order of the event that may have stored it>:<key>.
+    pattern = re.compile(r"memory:(entry|\d+):" + re.escape(f"({segment!r}, {base!r}, ") + r"(\d+)\)")
+    first = frame or image.bits // 8
+    branches, unformed, stops, arrivals = {}, {}, {}, 0
+    for path in report["paths"]:
+        arrival = path.get("arrival") if path["stop"] == ENTRY_ARRIVAL else None
+        if arrival is None or arrival["frameEntry"] != routine:
+            if not path["returned"]:
+                reason = (f"reached the call site inside a call to {arrival['frameEntry']}" if arrival is not None
+                          else path["stop"])
+                stops.setdefault((path["stopSite"], reason), None)
+            continue
+        arrivals += 1
+        for guard in path["guards"]:
+            received, rewritten = set(), set()
+            for text in _strings(guard):
+                for match in pattern.finditer(text):
+                    offset = (int(match.group(2)) - origin) % (1 << image.bits)
+                    if first <= offset < first + ARGUMENT_WINDOW:
+                        (received if match.group(1) == "entry" else rewritten).add(offset)
+            direction = "taken" if guard["taken"] else "notTaken"
+            if received or rewritten:
+                row = branches.setdefault(guard["site"], {"site": guard["site"], "predicate": guard["predicate"],
+                                                          "flagProducers": set(), "directions": set(),
+                                                          "entryOffsets": set(), "possiblyRewrittenOffsets": set()})
+                if guard.get("flagProducer") is not None:
+                    row["flagProducers"].add(guard["flagProducer"])
+                row["directions"].add(direction)
+                row["entryOffsets"] |= received
+                row["possiblyRewrittenOffsets"] |= rewritten
+            elif _unformed(guard):
+                row = unformed.setdefault(guard["site"], {"site": guard["site"], "predicate": guard["predicate"],
+                                                          "directions": set()})
+                row["directions"].add(direction)
+    gaps = [{"site": g["site"], "reason": g["reason"]} for g in report["gaps"]]
+    stop_rows = [{"site": at, "reason": reason} for at, reason in stops]
+    return {"routine": routine, "callSite": site, "enteredBy": entered_by, "returnFrameBytes": frame,
+            "arrivals": arrivals,
+            "branches": [{k: sorted(v) if isinstance(v, set) else v for k, v in row.items()}
+                         for _, row in sorted(branches.items())],
+            "unformedConditions": [{k: sorted(v) if isinstance(v, set) else v for k, v in row.items()}
+                                   for _, row in sorted(unformed.items())],
+            "stops": stop_rows, "gaps": gaps, "complete": not stop_rows and not gaps,
+            "pathsRead": len(report["paths"]), "stepsUsed": report["stepsUsed"]}
+
+
 def reach(image, config):
     """Which target sites the starts reach over resolved calls and jumps, by which chain, and what the walk could not read.
 
@@ -327,7 +455,9 @@ def reach(image, config):
     nothing about the build, so it is neither checked nor listed among the assumptions.
     Each reached target gets one chain with the fewest calls, the assumptions its route rests on,
     and the routines on every route to it within the read graph. With ``decodedRanges`` the report
-    also gives every instruction the walk decoded, as ``decoded_ranges`` groups them.
+    also gives every instruction the walk decoded, as ``decoded_ranges`` groups them. With
+    ``argumentBranches`` it gives, for each distinct chain link, ``argument_branches``: the branches
+    before the link's call that test the routine's own stack arguments (ADR 0045).
     """
     from .reports import entries
     starts = _sites(config.get("starts"), "starts", image)
@@ -361,6 +491,7 @@ def reach(image, config):
     with_ranges = config.get("decodedRanges", False)
     if not isinstance(with_ranges, bool):
         raise ValueError("decodedRanges must be a boolean")
+    branch_budget = argument_budget(config.get("argumentBranches", False))
     instruction_limit = config.get("instructionLimit", 10000)
     no_return_routines, no_return_interrupts, no_return_sites, declared = no_return_inputs(
         config.get("noReturn", []), image, indirect_calls)
@@ -602,10 +733,16 @@ def reach(image, config):
     stopped = stopped or check_stopped
     # Every range is kept whatever the result limit, so a caller can place any site in the walk; the
     # instruction limit bounds their number.
-    ranges = {"decodedRanges": decoded_ranges(seen, routine)} if with_ranges else {}
+    optional = {"decodedRanges": decoded_ranges(seen, routine)} if with_ranges else {}
+    if branch_budget is not None:
+        links = argument_links(rows, image)
+        if len(links) > ARGUMENT_LINKS:
+            raise ValueError(f"argumentBranches traces at most {ARGUMENT_LINKS} chain links and the chains hold "
+                             f"{len(links)}; give fewer targets")
+        optional["argumentBranches"] = [argument_branches(image, *link, branch_budget) for link in links]
     return {"starts": starts, "targets": rows, "leaves": leaf_rows, "stops": stop_rows, "noReturn": no_return,
             "indirectCalls": indirect_rows,
-            "reachedRoutines": sorted(routine_starts), **ranges, "counts": counts,
+            "reachedRoutines": sorted(routine_starts), **optional, "counts": counts,
             "unresolved": unresolved[:limit], "interrupts": interrupts[:limit], "gaps": gaps[:limit],
             "contested": sorted(contested)[:limit], "returnCheckGaps": check_gap_rows[:limit],
             "truncated": any(len(x) > limit for x in (unresolved, interrupts, gaps, contested, check_gap_rows)),
@@ -645,6 +782,11 @@ def reach(image, config):
                               "one can lie inside a decoded instruction. A site inside a range lies in a decoded "
                               "instruction, which may start before it; a target at the site shows whether one starts "
                               "there. "
+                              "argumentBranches, when asked for, comes from one bounded p-code trace per chain link, "
+                              "from the link's routine to its call site; it lists the branches on the paths that "
+                              "arrived whose condition reads a stack byte the routine received, covers only the "
+                              "paths read when complete is false, and does not say whether the caller's values "
+                              "take a branch. "
                               "When instructionLimitReached holds, the walk, or the return check's walk, stopped "
                               "before reading all it reaches: every list and count covers only the part read, which "
                               "part depends on the walk order, an unreached target may lie past the stop, and an "
