@@ -937,8 +937,32 @@ class ReachedFromTests(unittest.TestCase):
         r = run_report(data, config(data, entries=(0, 2), starts=[0, 2], targets=[0, 2, 6], startRoutes=True),
                        "reach")
         self.assertEqual([row["reachedFrom"] for row in r["targets"]], [[0, 2], [0, 2], [0, 2]])
+        # B's routes enter A by a jump, so A is no routine start on them, as in a walk from B alone. The
+        # row's own throughEveryRoute counts every start as a routine start.
         self.assertEqual(r["targets"][2]["startRoutes"], [{"start": 0, "calls": 0, "throughEveryRoute": [0]},
-                                                          {"start": 2, "calls": 0, "throughEveryRoute": [2, 0]}])
+                                                          {"start": 2, "calls": 0, "throughEveryRoute": [2]}])
+        alone = run_report(data, config(data, entries=(0, 2), starts=[2], targets=[6]), "reach")
+        self.assertEqual(alone["targets"][0]["throughEveryRoute"], [2])
+
+    def test_a_start_dropped_by_an_unresolved_overlap_is_no_negative(self):
+        # B's mov at 0008 holds A's jmp at 0009, and neither boundary is proven, so the shared walk keeps
+        # neither. A walk from A alone reaches T at 0010; the shared one lists only C, and the gap keeps
+        # A's absence from answering anything.
+        data = bytes.fromhex(
+            "9090909090909090"  # 0000 padding
+            "b8eb05"            # 0008 B: mov ax, 05EBh
+            "eb03"              # 000B C: jmp 0010 (0009, inside B's mov, is A: jmp 0010)
+            "909090"            # 000D padding
+            "c3"                # 0010 T: ret
+        )
+        r = run_report(data, config(data, entries=(8, 9, 0x0B), starts=[8, 9, 0x0B], targets=[0x10],
+                                    instructionControls=[0x10]), "reach")
+        self.assertEqual(r["targets"][0]["reachedFrom"], [0x0B])
+        self.assertEqual(r["contested"], [])
+        self.assertEqual({g["site"] for g in r["gaps"]}, {8, 9})
+        self.assertFalse(r["negativeUsable"])
+        alone = run_report(data, config(data, entries=(8, 9, 0x0B), starts=[9], targets=[0x10]), "reach")
+        self.assertEqual(alone["targets"][0]["reachedFrom"], [9])
 
     def test_a_single_start_lists_itself_with_the_report_route(self):
         target = reach(indirectJumps=[TABLE], startRoutes=True)["targets"][0]

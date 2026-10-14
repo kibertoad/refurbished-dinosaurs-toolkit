@@ -1125,14 +1125,17 @@ Each `targets` row gives `reached`. A reached target has:
 | `route` | what the chain rests on: `assumedReturns` (calls whose return site it continued at), `declaredTableJumps` (the table rows it took), `declaredCalls` (the declared computed calls it took, as `{ "site", "target" }`) and `interruptsContinued` |
 | `throughEveryRoute` | the routine starts, outermost first, that every route the walk read to the target passes. A routine that only runs and returns before the target is not on such a route |
 | `reachedFrom` | the starts, in `starts` order, from which a route the walk read reaches the target |
-| `startRoutes` | with `startRoutes: true`, one `{ "start", "calls", "throughEveryRoute" }` row per `reachedFrom` start: the fewest calls on a read route from that start, and the routine starts every read route from it passes |
+| `startRoutes` | with `startRoutes: true`, one `{ "start", "calls", "throughEveryRoute" }` row per `reachedFrom` start: the fewest calls on a read route from that start, and the routine starts every read route from it passes. The routine starts are that start and the routines entered by a call, as a walk from that start alone counts them, so another start that the routes enter only by a jump is not listed; the row's own `throughEveryRoute` counts every start |
 | `leaf` | whether the target is the start of a leaf |
 | `stop` | whether the target is a stop routine or a stop site |
 
 `reachedFrom` and `startRoutes` read the same routes as the rest of the row: every route the walk
-read from any start, so a route from one start can pass through code the walk read from another,
-and when no instruction is contested and the walk did not stop at its instruction limit, a start's
-routes are the ones a walk from that start alone would read. `chain` names one start, and
+read from any start, so a route from one start can pass through code the walk read from another.
+When no instruction is contested, no gap is an unresolved overlap and the walk did not stop at its
+instruction limit, a start's routes are the ones a walk from that start alone would read. An
+instruction read from one start that overlaps one read from another, with neither boundary proven,
+is dropped from both, so a start can be missing from `reachedFrom` although a walk from it alone
+reaches the target. `chain` names one start, and
 `throughEveryRoute` is empty when the routes from different starts share no routine; `reachedFrom`
 says which starts reach the target, and `startRoutes` what each start's routes pass. A target at a
 start lists that start, with no call and an empty `throughEveryRoute`. `reachedFrom` comes from one

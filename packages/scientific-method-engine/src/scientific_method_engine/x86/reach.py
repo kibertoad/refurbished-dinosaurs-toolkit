@@ -403,12 +403,14 @@ def reaching_starts(graph, starts, reached, targets):
             for target in targets}
 
 
-def start_routes(graph, starts, from_starts, routine_starts):
+def start_routes(graph, starts, from_starts, called):
     """For each target in ``from_starts``, a row per start that ``reaching_starts`` gives it, in ``starts`` order.
 
     A row gives the ``start``, the fewest ``calls`` on a route from it and the routine starts every
-    route from it passes (``throughEveryRoute``), over the routes ``graph`` holds. Each start that
-    reaches a target costs one walk over its part of ``graph``.
+    route from it passes (``throughEveryRoute``), over the routes ``graph`` holds. A row's routine
+    starts are its own start and the call targets in ``called``, as a walk from that start alone
+    counts them, so another start that the routes enter only by a jump is not listed. Each start
+    that reaches a target costs one walk over its part of ``graph``.
     """
     found = {target: [] for target in from_starts}
     # Every route to a target runs through sites that lead to one, so the rest of the graph changes neither
@@ -424,15 +426,19 @@ def start_routes(graph, starts, from_starts, routine_starts):
                 leading.add(at)
                 stack.append(at)
     graph = {at: [row for row in graph.get(at, []) if row[0] in leading] for at in leading}
+    targets_of = {}
+    for target, found_starts in from_starts.items():
+        for start in found_starts:
+            targets_of.setdefault(start, []).append(target)
     for start in starts:
-        if not any(start in found_starts for found_starts in from_starts.values()):
+        if start not in targets_of:
             continue
         distance, _, _ = fewest_calls(graph, [start])
         idom = route_dominators(graph, [start], distance)
-        for target, found_starts in from_starts.items():
-            if start in found_starts:
-                found[target].append({"start": start, "calls": distance[target],
-                                      "throughEveryRoute": through_every_route(idom, routine_starts, target)})
+        routine_starts = called | {start}
+        for target in targets_of[start]:
+            found[target].append({"start": start, "calls": distance[target],
+                                  "throughEveryRoute": through_every_route(idom, routine_starts, target)})
     return found
 
 
@@ -535,14 +541,9 @@ def reach(image, config):
 
     # Dominators over everything reached, from a virtual root that leads to every start.
     idom = route_dominators(graph, starts, distance)
-    routine_starts = set(starts) | {target for found in call_targets.values() for target in found if target in distance}
+    called = {target for found in call_targets.values() for target in found if target in distance}
+    routine_starts = set(starts) | called
     from_starts = reaching_starts(graph, starts, distance, [target for target in targets if target in distance])
-    # With one start, its routes are all the routes, so the dominators above serve.
-    routes_by_start = {} if not with_start_routes else (
-        start_routes(graph, starts, from_starts, routine_starts) if len(starts) > 1
-        else {target: [{"start": starts[0], "calls": distance[target],
-                        "throughEveryRoute": through_every_route(idom, routine_starts, target)}]
-              for target in from_starts})
 
     def chain(target):
         hops, assumed_returns, tables, declared_calls, continued = [], [], [], [], []
@@ -586,8 +587,6 @@ def reach(image, config):
                     "stop": target in stop_routines or target in stop_sites, **chain(target),
                     "throughEveryRoute": through_every_route(idom, routine_starts, target),
                     "reachedFrom": from_starts[target]}
-            if with_start_routes:
-                row["startRoutes"] = routes_by_start[target]
         else:
             row |= {"reached": False, **unreached(target)}
         rows.append(row)
@@ -651,6 +650,16 @@ def reach(image, config):
                                 + (" (the walk stopped at its instruction limit)" if stopped else ""))
     if failures:
         raise ValueError("Positive controls failed: " + "; ".join(failures))
+    # Computed only once the controls pass, since each start costs a walk of its own.
+    if with_start_routes:
+        reached_rows = [row for row in rows if row["reached"]]
+        # With one start, its routes are all the routes, so the row's own fields serve.
+        by_start = (start_routes(graph, starts, from_starts, called) if len(starts) > 1
+                    else {row["target"]: [{"start": starts[0], "calls": row["calls"],
+                                           "throughEveryRoute": list(row["throughEveryRoute"])}]
+                          for row in reached_rows})
+        for row in reached_rows:
+            row["startRoutes"] = by_start[row["target"]]
     # Every call to each routine, and the calls to a noReturn routine that the declaration ended.
     call_sites, ended_sites = {}, {}
     for site, found in sorted(call_targets.items()):
