@@ -4,12 +4,17 @@ It takes the options a session passes to rust-dos, serves a small part of the de
 API on a free local port, and prints the address line rust-dos prints. Its machine holds memory,
 breakpoints, a journal and operations, and runs the program it is asked to start only as far as
 the tests need: it stops at entry, at a breakpoint, after a step, at an emulated time or on pause.
-It writes `standin.json` beside C: with its arguments and the SDL variables it was given.
+It writes `standin.json` beside C: with its arguments, the SDL variables it was given and the text
+of the `--config` file.
 
 Modes, comma-separated:
 
 - ready: answers as rust-dos does.
 - exit-early: exits with code 3 before printing its address.
+- config-warning: prints a warning about a line of the configuration file, as rust-dos does for a
+  value it does not take.
+- awe32rom-warning: prints the warning rust-dos prints for an AWE32 ROM it cannot load, which
+  names the setting and not the file.
 - silent: never prints its address.
 - never-ready: never writes the readiness marker.
 - api-2: reports API version 2.
@@ -518,7 +523,7 @@ def serve(machine: Machine) -> ThreadingHTTPServer:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--standin-mode", default="ready")
-    parser.add_argument("--no-config", action="store_true")
+    parser.add_argument("--config", required=True)
     parser.add_argument("-d", dest="drive_c", required=True)
     parser.add_argument("--debug-server", required=True)
     parser.add_argument("--log", required=True)
@@ -529,13 +534,25 @@ def main() -> int:
     modes = set(arguments.standin_mode.split(","))
     drive_c = Path(arguments.drive_c)
     (drive_c.parent / "standin.json").write_text(
-        json.dumps({"argv": sys.argv[1:], "extra": extra, "sdl": {k: v for k, v in os.environ.items() if k.startswith("SDL_")}}),
+        json.dumps(
+            {
+                "argv": sys.argv[1:],
+                "extra": extra,
+                "sdl": {k: v for k, v in os.environ.items() if k.startswith("SDL_")},
+                "config": Path(arguments.config).read_text(encoding="utf-8"),
+            }
+        ),
         encoding="utf-8",
     )
     Path(arguments.log).write_text("stand-in log\n", encoding="utf-8")
     if "exit-early" in modes:
         time.sleep(0.2)
         return 3
+    if "config-warning" in modes:
+        print(f"[CONFIG] Warning: {arguments.config}: line 3: invalid sbbase '2A0' (210 to 280, hex)", file=sys.stderr, flush=True)
+        print(f"[CONFIG] Warning: {arguments.config}: [sound]: the Ultrasound and the Sound Blaster share IRQ 5", file=sys.stderr, flush=True)
+    if "awe32rom-warning" in modes:
+        print("[CONFIG] Warning: awe32rom: 16 bytes, not the 1 MB of an AWE32 ROM", file=sys.stderr, flush=True)
     machine = Machine(modes, drive_c, arguments.deterministic)
     server = serve(machine)
     if "silent" not in modes:

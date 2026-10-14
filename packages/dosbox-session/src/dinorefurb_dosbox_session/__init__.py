@@ -87,6 +87,7 @@ from .lock import (
 from .processes import ProcessIdentity
 from .rustdos import (
     AUTOEXEC,
+    EMULATOR_CONFIG,
     EMULATOR_LOG,
     EMULATOR_OUTPUT,
     RUST_DOS_API_VERSION,
@@ -99,6 +100,8 @@ from .rustdos import (
     RustDosOperation,
     RustDosSession,
     RustDosSettings,
+    SoundBlaster,
+    Ultrasound,
 )
 from .rustdos_client import MemoryRead, Reply, RustDosClient
 from .dosbox_states import AGENT_SERVER_CONFIG, CHECKPOINTS_DIRECTORY, DosboxLoadedState, DosboxState, read_dosbox_state
@@ -125,6 +128,7 @@ __all__ = [
     "DosboxLoadedState",
     "DosboxState",
     "DosboxSession",
+    "EMULATOR_CONFIG",
     "EMULATOR_LOG",
     "EMULATOR_OUTPUT",
     "EmulatorConfig",
@@ -198,9 +202,11 @@ __all__ = [
     "SessionClient",
     "SessionError",
     "SessionSettings",
+    "SoundBlaster",
     "StateFailed",
     "StateRefused",
     "Target",
+    "Ultrasound",
     "VerifiedWrite",
     "WritableField",
     "WriteFailed",

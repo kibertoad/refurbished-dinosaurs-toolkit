@@ -532,22 +532,25 @@ Entering `RustDosSession` (or calling `start()`):
 1. Refuses a platform other than Windows, a missing emulator, an emulator whose SHA-256 differs
    from `emulator_sha256` when that is given (`EmulatorRefused`), options the session sets itself
    in `emulator_arguments` (`ConfigurationRefused`), a deterministic run without a numeric speed,
-   media on C: or two media on one letter, a target command line with a line break, and a run
-   directory that is not empty. With
+   sound cards rust-dos would not set up as given ([below](#sound-cards)), media on C: or two
+   media on one letter, a target command line with a line break, and a run directory that is not
+   empty. With
    `event_log` set, hashes the named modules.
 2. Takes the run lock, the same one `DosboxSession` takes, or refuses with `LockHeld`.
 3. Creates `drive-c` empty in the run directory and calls `prepare_drive` on it. A prepared drive
    that holds `AUTOEXEC.BAT` or the readiness marker is refused. The session writes
    `AUTOEXEC.BAT`, which writes the readiness marker `C:\DRREADY.TXT`.
-4. Launches rust-dos in a job object that ends it with its owner, with `--no-config`, `-d` on
+4. Writes `rust-dos.conf` in the run directory with the sound cards and nothing else, and launches
+   rust-dos in a job object that ends it with its owner, with `--config` on that file, `-d` on
    `drive-c`, `--debug-server 127.0.0.1:0`, `--log` on `rust-dos.log` in the run directory, and
    `--cycles`, `--deterministic` and `--start-time` from `RustDosConfig`. SDL's dummy video driver
    hides the window and its dummy audio driver mutes the host, unless `show_window` or
    `keep_host_sound` is set; the emulated sound devices stay. The emulator's output goes to
    `rust-dos.out`, where the session reads the port the server took.
-5. Checks `/api/version`: the name `rust-dos`, API version 1 and every feature above, or refuses
-   with `EmulatorRefused`. A server that refuses `/api/version` with a status below 500 is
-   refused the same way.
+5. Fails with `EmulatorRefused` if rust-dos printed a warning about `rust-dos.conf`, which it does
+   for a setting it did not take as written, or about an AWE32 ROM it could not load. Checks `/api/version`: the name `rust-dos`, API
+   version 1 and every feature above, or refuses with `EmulatorRefused`. A server that refuses
+   `/api/version` with a status below 500 is refused the same way.
 6. Mounts each medium read-only through the server (an `iso` as a CD-ROM drive, any CD image
    rust-dos reads; a `directory` as a hard disk) and fails unless the server reports it read-only.
 7. Runs the target at the DOS prompt with `stop_at_entry` and `queue`, so the prompt takes the
@@ -572,7 +575,9 @@ the run lock once it has. A process that outlives termination keeps the lock and
 `/api/version` answer, with the instance ID that is new at every start and `build`, the git commit
 the executable was built from and whether its tree was dirty), `endpoint`
 (`127.0.0.1:<port>`), `arguments` (the launch command line), `emulator_log`, `run_lock`,
-`owner_process`, `emulator_process`, `host_sound`, `window` (`hidden` or `shown`),
+`owner_process`, `emulator_process`, `host_sound`, `window` (`hidden` or `shown`), `sound` (the
+configuration file and the values passed for `sound_blaster` and `ultrasound`, each `null` when
+the card is left out, with ports in hexadecimal and an AWE32's `rom` as its path and SHA-256),
 `deterministic` (the speed and start time, or `null`), `media` (each drive as the server reported
 it), `readiness`, `request_id_prefixes`, `entry` (the entry stop's `CS:IP`, program and journal
 number, or `null` in a run started from a checkpoint), `writes`, `start_state` (the checkpoint the
@@ -652,6 +657,56 @@ paused in this mode. `cycles` must be a number, because rust-dos replaces `auto`
 speed of its own choosing.
 
 Gated breakpoints are offered for DOSBox-X sessions only.
+
+### Sound cards
+
+A rust-dos machine has a Sound Blaster and a Gravis Ultrasound. Many DOS programs read their card's
+resources from a file their own setup program wrote, or have them built in, and stop when the card
+is elsewhere. `RustDosConfig` places both cards, so a run can match the configuration of the
+release it is compared with ([ADR 0046](../../docs/decisions/0046-rust-dos-sound-cards.md)):
+
+```python
+from dinorefurb_dosbox_session import RustDosConfig, SoundBlaster
+
+config = RustDosConfig(sound_blaster=SoundBlaster("sb16", base=0x220, irq=5, dma=1, hdma=5), ultrasound=None)
+```
+
+| `SoundBlaster` field | rust-dos setting | Values | Default |
+|---|---|---|---|
+| `model` | `sbtype` | `sb16`, `sb16vibra`, `awe32`, `sbpro2`, `sb2` | `sb16` |
+| `base` | `sbbase` | 0x210 to 0x280 in steps of 0x10 | 0x220 |
+| `irq` | `irq` | 2, 3, 5, 7, 9, 10, 11, 12, 15 | 7 |
+| `dma` | `dma` | 0, 1, 3 | 1 |
+| `hdma` | `hdma` | 5, 6, 7; only for `sb16`, `sb16vibra` and `awe32` | 5 for those models |
+| `rom` | `awe32rom` | the AWE32's sample ROM file (`awe32.raw`); required for `awe32`, refused for the others | none |
+
+| `Ultrasound` field | rust-dos setting | Values | Default |
+|---|---|---|---|
+| `base` | `gusbase` | 0x210, 0x220, 0x240, 0x250, 0x260 | 0x240 |
+| `irq` | `gusirq` | 2, 3, 5, 7, 11, 12, 15 | 5 |
+| `dma` | `gusdma` | 1, 3, 5, 6, 7 | 3 |
+
+`sound_blaster=None` gives no Sound Blaster (`sbtype=none`) and `ultrasound=None` no Ultrasound
+(`gus=false`). The defaults are rust-dos's, so a run that sets neither gets the cards rust-dos
+always gives. rust-dos sets `BLASTER` and `ULTRASND` in the guest's environment from these values.
+
+The session refuses (`ConfigurationRefused`) a value outside these lists, an `hdma` for a model
+without a 16-bit channel, and an Ultrasound on the Sound Blaster's base port, IRQ or one of its
+DMA channels: rust-dos would leave the Ultrasound out, or let the two share a line that works only
+while a program uses one of them. A Sound Blaster on IRQ 5 therefore needs the Ultrasound moved
+or `ultrasound=None`. Host audio stays muted unless `keep_host_sound` is set; these settings only
+place the emulated cards.
+
+An `awe32` needs `rom`. Without an `awe32rom` setting rust-dos loads the first `awe32.raw` it finds
+in its own directory or the working directory, or plays without one, so the same configuration
+would sound different from host to host. The session passes the file's absolute path, records it
+with its SHA-256, and fails the start with `EmulatorRefused` when rust-dos reports that it could
+not load the ROM.
+
+A run that starts from a checkpoint needs the cards the saving run had, since a strict-match load
+compares them. The session compares them with the saving run's `sound` record before it launches
+anything, the ROM's path and SHA-256 included, and refuses a difference with
+`ConfigurationRefused`. A checkpoint whose record has no `sound` is left to rust-dos's comparison.
 
 ### Save states
 
@@ -751,7 +806,9 @@ with RustDosSession(settings) as session:
 hashed files. The session then refuses, before launching anything, a state that is not a
 checkpoint (`ConfigurationRefused`), one saved while another program than the target ran
 (`ConfigurationRefused`), one saved by an emulator with another SHA-256 (`EmulatorRefused`), one
-whose files changed (`StateRefused`) and `prepare_drive` given with it (`ConfigurationRefused`).
+whose files changed (`StateRefused`), one saved with other sound cards
+([above](#sound-cards), `ConfigurationRefused`) and `prepare_drive` given with it
+(`ConfigurationRefused`). `SavedState.sound` holds the saving run's cards.
 It also refuses a server without the `load_folders` feature (`EmulatorRefused`), which rust-dos
 offers from v1.7.2. The load names the new run's C: in `folders`, and its reply must name the same
 folder (`StateFailed` otherwise).
@@ -863,8 +920,10 @@ python native/verify_rustdos.py --emulator <rust-dos.exe> --run-directory <new d
 python native/verify_rustdos.py --emulator <rust-dos.exe> --run-directory <another new directory> --deterministic
 ```
 
-The script starts the same synthetic `.COM` program in an owned rust-dos session, continues to a
-breakpoint, reads the registers, checks that the server refuses a write whose `If-State-Seq` is
+The script starts the same synthetic `.COM` program in an owned rust-dos session with a Sound
+Blaster at 240h, IRQ 5, DMA 3 and HDMA 7 and an Ultrasound at 260h, IRQ 11 and DMA 1, and requires
+the program's environment to hold `BLASTER=A240 I5 D3 H7 P330 T6` and `ULTRASND=260,1,1,11,11`.
+It continues to a breakpoint, reads the registers, checks that the server refuses a write whose `If-State-Seq` is
 stale, makes a guarded write, steps over the load and runs the program to its exit. It passes when
 the breakpoint stop is observed, `AX` and `BX` hold the values the program set, the stale write is
 refused with 409 and `precondition: state`, the guarded write verifies, `AX` holds the new word

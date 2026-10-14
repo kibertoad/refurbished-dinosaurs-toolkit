@@ -1,7 +1,9 @@
 """The owner-local native check for rust-dos sessions (ADR 0040).
 
 Runs a real rust-dos, so it never runs in CI. It generates a synthetic DOS program, starts it in an
-owned session with an argument on its command line, reads the text screen with its attributes,
+owned session with an argument on its command line and a Sound Blaster and Ultrasound away from
+rust-dos's defaults, reads ``BLASTER`` and ``ULTRASND`` from the program's environment, which must
+name those cards, reads the text screen with its attributes,
 sets a breakpoint, continues to it and reads the registers there. At the breakpoint
 it makes a guarded write to a word the program loads next, reads it back, and steps over the load
 to check that the guest sees the new value. It then checks that the server refuses a write whose
@@ -31,12 +33,15 @@ from pathlib import Path
 
 from dinorefurb_dosbox_session import (
     FieldContract,
+    RustDosClient,
     RustDosConfig,
     RustDosSession,
     RustDosSettings,
     ServerRefused,
+    SoundBlaster,
     StateRefused,
     Target,
+    Ultrasound,
     WritableField,
     WriteFailed,
     read_saved_state,
@@ -58,6 +63,22 @@ WORD_OFFSET = 0x110
 WORD_BEFORE = bytes.fromhex("CDAB")
 WORD_AFTER = bytes.fromhex("2143")
 EXPECTED = {"ax": 0x1234, "bx": 0x5678}
+# Sound cards away from rust-dos's defaults, so the guest's variables show that rust-dos took them.
+SOUND_BLASTER = SoundBlaster(base=0x240, irq=5, dma=3, hdma=7)
+ULTRASOUND = Ultrasound(base=0x260, irq=11, dma=1)
+EXPECTED_BLASTER = "A240 I5 D3 H7 P330 T6"
+EXPECTED_ULTRASND = "260,1,1,11,11"
+
+
+def guest_environment(client: RustDosClient, psp: str) -> dict[str, str]:
+    """The environment of the program whose PSP is at segment ``psp``, as DOS gave it."""
+    segment = int.from_bytes(client.read_memory(f"{psp}:002C", 2).data, "little")
+    block = client.read_memory(f"{segment:04X}:0000", 1024).data
+    variables: dict[str, str] = {}
+    for entry in block.split(b"\x00\x00", 1)[0].split(b"\x00"):
+        name, _, value = entry.decode("ascii", errors="replace").partition("=")
+        variables[name.upper()] = value
+    return variables
 
 
 def main() -> int:
@@ -70,7 +91,9 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=30.0, help="seconds to observe each operation")
     arguments = parser.parse_args()
 
-    config = RustDosConfig(cycles="10000", deterministic=True) if arguments.deterministic else RustDosConfig()
+    config = RustDosConfig(sound_blaster=SOUND_BLASTER, ultrasound=ULTRASOUND)
+    if arguments.deterministic:
+        config = dataclasses.replace(config, cycles="10000", deterministic=True)
     settings = RustDosSettings(
         emulator=arguments.emulator,
         emulator_sha256=arguments.emulator_sha256,
@@ -85,6 +108,9 @@ def main() -> int:
         client = session.client
         assert session.entry is not None
         checks["entry"] = session.entry.get("cs_ip")
+        environment = guest_environment(client, str(session.entry["registers"]["cs"]))
+        checks["blaster"] = environment.get("BLASTER")
+        checks["ultrasnd"] = environment.get("ULTRASND")
         screen = client.screen()
         attrs, lines = screen.get("attrs"), screen.get("lines")
         checks["screen_attrs"] = isinstance(attrs, list) and isinstance(lines, list) and len(attrs) == len(lines)
@@ -190,6 +216,8 @@ def main() -> int:
     checks["build_commit"] = build.get("commit") if isinstance(build, dict) else None
     passed = (
         isinstance(checks.get("build_commit"), str)
+        and checks.get("blaster") == EXPECTED_BLASTER
+        and checks.get("ultrasnd") == EXPECTED_ULTRASND
         and checks.get("screen_attrs") is True
         and checks.get("observation") == "completed"
         and checks.get("stop_reason") == "breakpoint"
@@ -221,6 +249,7 @@ def main() -> int:
                 "emulator_sha256": record["emulator"]["sha256"],
                 "server": record["server"],
                 "deterministic": record["deterministic"],
+                "sound": record["sound"],
                 "writes": record["writes"],
                 "states": record["states"],
                 "start_state": None if checkpoint_record is None else checkpoint_record["start_state"],
