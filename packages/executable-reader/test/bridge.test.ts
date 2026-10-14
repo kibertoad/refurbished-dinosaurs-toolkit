@@ -922,6 +922,53 @@ test("reach keeps the return site of a far call to a noReturn routine unread thr
   assert.throws(() => run(["reach", path]), /noReturn interrupt 80 is not an interrupt instruction/);
 });
 
+test("reach declares a far call that leaves the image or never runs through the real MZ prepared bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  const path = join(dir, "config.json");
+  // 71 calls far through the pointer at 0100, which holds a saved interrupt vector; 75 is the return site.
+  data.set([0x90, 0xff, 0x1e, 0x00, 0x01, 0xc3], 70);
+  writeFileSync(join(dir, "source.bin"), data);
+  const base = {
+    ...config,
+    xxh3: sourceXxh3(data),
+    regions: [{ ...config.regions[0]!, entries: [64, 70] }],
+    starts: [70],
+    targets: [75],
+  };
+  const evidence = "synthetic: 0100 holds vector 8 as the program read it before hooking it";
+  writeFileSync(path, JSON.stringify(base));
+  assert.deepEqual(
+    run(["reach", path]).unresolved.map((u: Report) => [u.site, u.kind]),
+    [[71, "call"]],
+  );
+  writeFileSync(
+    path,
+    JSON.stringify({
+      ...base,
+      instructionControls: [75],
+      indirectCalls: [{ site: 71, exhaustive: true, evidence, outside: { vector: 8 } }],
+    }),
+  );
+  const outside = run(["reach", path]);
+  assert.deepEqual(outside.unresolved, []);
+  assert.equal(outside.targets[0].reached, true);
+  assert.deepEqual(outside.outsideTransfers, [{ vector: 8, sites: [71], reached: [71] }]);
+  assert.equal(outside.negativeUsable, true);
+  // Declared with no targets, the call never runs and the walk reads nothing past it.
+  writeFileSync(
+    path,
+    JSON.stringify({
+      ...base,
+      instructionControls: [71],
+      indirectCalls: [{ site: 71, exhaustive: true, evidence: "synthetic: gated off", targets: [] }],
+    }),
+  );
+  const never = run(["reach", path]);
+  assert.equal(never.targets[0].reached, false);
+  assert.equal(never.indirectCalls[0].followingRead, false);
+  assert.equal(never.negativeUsable, true);
+});
+
 test("reach stops a walk at a far call to a stop routine that returns through the real MZ prepared bridge", (t) => {
   const { dir, config } = fixture(t);
   const path = join(dir, "config.json");
