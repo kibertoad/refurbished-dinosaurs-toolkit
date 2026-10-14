@@ -32,7 +32,7 @@ how far a function was read, which the protocol rules out.
 2. A function is read completely when the code locations of the counted findings cover every byte
    of its body. Counted findings are those `completeReading()` accepts (static, in the entry's
    `evidence`, listing its first build) of an entry that is neither superseded nor disputed and
-   has no `# may run:` comment, and that are not superseded. A location that gives only the
+   whose procedure has no `# may run:` comment, and that are not superseded. A location that gives only the
    function's start covers one byte. This is the one reading of "read all of it" that the spec's
    own data can check; a looser join, such as any overlap or the citing entry's status, would count
    a function read on evidence that names part of it.
@@ -42,8 +42,10 @@ how far a function was read, which the protocol rules out.
    protocol's "zero against that baseline".
 4. A provenance file must give the manifest's `xxh3` for the file (its unpacked form when packed).
    An inventory whose provenance names another file is not measured. A regions file must agree with
-   its inventory: the bytes it puts in bodies inside the regions and in its `outside` rows must be
-   those of the inventory's bodies. A file that agrees gives the mapping figures; a missing one gives
+   its inventory row by row: the bytes each region row puts in bodies must be those of the
+   inventory's bodies in that region, and each `outside` row must lie in the inventory's bodies, so
+   equal totals from rows in the wrong places do not pass. An `entry` row is the one byte at a
+   function start, which can lie in an instruction that starts before it. A file that agrees gives the mapping figures; a missing one gives
    none and is no problem, since inventories made without the export script exist.
 
 ## Consequences

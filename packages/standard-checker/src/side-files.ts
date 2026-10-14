@@ -4,9 +4,9 @@
 // audit. standard-coverage checks the first against the manifest and the second against the
 // inventory, and reports the mapping coverage the second gives.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { type Inventory, type Space, placeOf } from "./inventory.ts";
+import { type Inventory, type Space, mergeRanges, placeOf, readLines } from "./inventory.ts";
 
 /** A half-open range in one space of a file. */
 interface Span {
@@ -37,8 +37,9 @@ export function readProvenance(repoDir: string, inv: Inventory): ProvenanceReadi
   const path = sidePath(inv.path, "provenance");
   if (!existsSync(join(repoDir, path))) return { provenance: null, problems: [] };
   const problems: string[] = [];
-  const values: Record<string, string> = {};
-  lines(repoDir, path).forEach((line, k) => {
+  // Without a prototype, so a name such as __proto__ is stored like any other.
+  const values: Record<string, string> = Object.create(null);
+  readLines(repoDir, path).forEach((line, k) => {
     const cells = line.split("\t");
     if (cells.length !== 2 || !cells[0]) {
       problems.push(`${path}: line ${k + 1}: is not a name and a value separated by a tab`);
@@ -87,31 +88,24 @@ const REGION_COLUMNS = [
   "undefined_outside",
 ];
 
-/** The ranges merged into sorted ranges that neither overlap nor touch, per space. */
-function merge(spans: Span[]): Span[] {
-  const sorted = [...spans].sort((a, b) =>
-    a.space !== b.space ? (a.space < b.space ? -1 : 1) : a.start < b.start ? -1 : a.start > b.start ? 1 : 0,
-  );
-  const merged: Span[] = [];
-  for (const s of sorted) {
-    const last = merged.at(-1);
-    if (last && last.space === s.space && s.start <= last.end) {
-      if (s.end > last.end) last.end = s.end;
-    } else merged.push({ ...s });
-  }
-  return merged;
-}
-
-/** The bytes two lists of merged ranges have in common. */
+/** The bytes two lists of merged ranges, sorted by space and then start, have in common. */
 function common(a: Span[], b: Span[]): bigint {
   let total = 0n;
-  for (const x of a)
-    for (const y of b) {
-      if (x.space !== y.space) continue;
-      const start = x.start > y.start ? x.start : y.start;
-      const end = x.end < y.end ? x.end : y.end;
-      if (end > start) total += end - start;
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    const [x, y] = [a[i], b[j]];
+    if (x.space !== y.space) {
+      if (x.space < y.space) i++;
+      else j++;
+      continue;
     }
+    const start = x.start > y.start ? x.start : y.start;
+    const end = x.end < y.end ? x.end : y.end;
+    if (end > start) total += end - start;
+    if (x.end < y.end) i++;
+    else j++;
+  }
   return total;
 }
 
@@ -130,7 +124,7 @@ export function readRegions(
   const path = sidePath(inv.path, "regions");
   if (!existsSync(join(repoDir, path))) return { mapping: null, reason: "no regions file", problems: [] };
   const problems: string[] = [];
-  const all = lines(repoDir, path);
+  const all = readLines(repoDir, path);
   const header = all.shift() ?? "";
   if (header !== REGION_COLUMNS.join("\t")) {
     problems.push(`${path}: the columns are ${REGION_COLUMNS.join(", ")}`);
@@ -138,6 +132,8 @@ export function readRegions(
   }
   const regions: Span[] = [];
   const outside: Span[] = [];
+  // The region and outside rows, with the bytes each puts in function bodies.
+  const placed: Array<{ kind: string; start: string; span: Span; inBodies: bigint }> = [];
   const starts = new Set(inv.functions.map((f) => `${f.space}:${f.at}`));
   const mapping: Mapping = {
     regions: 0,
@@ -168,6 +164,7 @@ export function readRegions(
     const span = { space: place.space, start: place.at, end: place.at + BigInt(size) };
     if (kind === "region") {
       regions.push(span);
+      placed.push({ kind, start, span, inBodies: BigInt(size - instructionsOut - dataOut - undefinedOut) });
       mapping.regions++;
       mapping.regionBytes += size;
       mapping.bodyBytes += size - instructionsOut - dataOut - undefinedOut;
@@ -178,20 +175,24 @@ export function readRegions(
       return bad(`an ${kind} row lies in a body, so its outside counts are 0`);
     else if (kind === "outside") {
       outside.push(span);
+      placed.push({ kind, start, span, inBodies: BigInt(size) });
       mapping.bodyBytesOutsideRegions += size;
-    } else if (size !== 1 || instructions)
-      return bad("an entry row counts the one byte at a start where no instruction starts");
+    } else if (size !== 1)
+      // The byte can lie in an instruction that starts before it, so any of its counts can be 1.
+      return bad("an entry row counts the one byte at a function start");
     else if (!starts.has(`${place.space}:${place.at}`))
       return bad(`start ${start} is the start of no function in the inventory`);
     else mapping.startsWithoutInstruction++;
   });
-  const merged = merge(regions);
+  const merged = mergeRanges(regions);
+  const mergedOutside = mergeRanges(outside);
   if (!problems.length && length(merged) !== length(regions)) problems.push(`${path}: regions overlap`);
-  if (!problems.length && common(merge(outside), merged)) problems.push(`${path}: an outside row overlaps a region`);
+  if (!problems.length && length(mergedOutside) !== length(outside)) problems.push(`${path}: outside rows overlap`);
+  if (!problems.length && common(mergedOutside, merged)) problems.push(`${path}: an outside row overlaps a region`);
   if (problems.length) return { mapping: null, reason: "the regions file has problems", problems };
   // Every body byte lies in a region or in an outside row, so the counts agree with the inventory only
   // when the file was written for the same functions.
-  const bodies = merge(inv.functions.flatMap((f) => f.body.map((r) => ({ space: f.space, ...r }))));
+  const bodies = mergeRanges(inv.functions.flatMap((f) => f.body.map((r) => ({ space: f.space, ...r }))));
   const inside = common(bodies, merged);
   const beyond = length(bodies) - inside;
   if (inside !== BigInt(mapping.bodyBytes) || beyond !== BigInt(mapping.bodyBytesOutsideRegions)) {
@@ -200,13 +201,15 @@ export function readRegions(
       `and the inventory's bodies have ${inside} and ${beyond}, so it was not written for this inventory`;
     return { mapping: null, reason, problems: [`${path}: ${reason}`] };
   }
+  // Equal totals can still hide a row that puts bytes in bodies where the inventory has none, offset
+  // by another row, so each row is compared as well.
+  for (const row of placed) {
+    const there = common(bodies, [row.span]);
+    if (there === row.inBodies) continue;
+    const reason =
+      `its ${row.kind} row at ${row.start} puts ${row.inBodies} bytes in function bodies, ` +
+      `and the inventory's bodies have ${there} there, so it was not written for this inventory`;
+    return { mapping: null, reason, problems: [`${path}: ${reason}`] };
+  }
   return { mapping, reason: "", problems: [] };
-}
-
-/** The lines of a file, without a byte order mark and trailing empty lines. */
-function lines(repoDir: string, path: string): string[] {
-  const text = readFileSync(join(repoDir, path), "utf8")
-    .replace(/^﻿/, "")
-    .replace(/(?:\r?\n)+$/, "");
-  return text ? text.split(/\r?\n/) : [];
 }

@@ -259,7 +259,10 @@ function measure(root: string) {
   return {
     inventories,
     unmeasured,
-    withoutInventory: filesWithoutInventory(config.repoDir, buildFiles),
+    withoutInventory: filesWithoutInventory(
+      buildFiles,
+      new Set([...read.inventories, ...read.unread].map((inv) => inv.path)),
+    ),
     problems,
     specProblems,
     unreadLocations,

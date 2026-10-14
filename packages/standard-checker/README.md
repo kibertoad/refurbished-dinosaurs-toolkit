@@ -215,11 +215,12 @@ The regions file has the columns `kind`, `start`, `size`, `instructions`, `instr
 `data`, `data_outside`, `undefined` and `undefined_outside`, as `ExportFunctionInventory` writes it
 ([Exporting a function inventory](../../docs/ghidra-workflow.md#exporting-a-function-inventory)).
 Each row's three totals add up to its size and each outside count is at most its total; `region` rows
-do not overlap, `outside` rows lie in no region and have outside counts of 0, and an `entry` row is
-one byte, not an instruction, at a start the inventory lists. The file must agree with the
-inventory: the region bytes it puts in bodies must be the bytes of the inventory's bodies inside
-the regions, and its `outside` rows must hold the rest, so a regions file from another export of
-the analysis fails. When it agrees, `mapping` in `--json` gives `regions`, `regionBytes`,
+do not overlap, `outside` rows overlap neither a region nor each other and have outside counts of 0,
+and an `entry` row is the one byte at a start the inventory lists, which can lie in an instruction
+that starts before it. The file must agree with the inventory, row by row: the bytes each region
+row puts in bodies must be the bytes of the inventory's bodies in that region, and its `outside`
+rows must hold the rest of the bodies, so a regions file from another export of the analysis
+fails. When it agrees, `mapping` in `--json` gives `regions`, `regionBytes`,
 `bodyBytes`, `outsideBodies` (`instructions`, `data` and `undefined`), `bodyBytesOutsideRegions` and
 `startsWithoutInstruction`, and the text prints them in one `  mapping:` line. Without the file, or
 when it has a problem, `mapping` is `{ "unavailable": "<reason>" }`. The citation figures do not

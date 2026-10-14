@@ -83,6 +83,34 @@ export function placeOf(value: string, format: Yaml): { space: Space; at: bigint
   return null;
 }
 
+/**
+ * Half-open ranges merged into ranges that neither overlap nor touch, sorted by space, then start.
+ * Ranges in different spaces are kept apart; ranges without a space are all in one.
+ */
+export function mergeRanges<T extends { space?: Space; start: bigint; end: bigint }>(ranges: T[]): T[] {
+  const sorted = [...ranges].sort((a, b) => {
+    const [x, y] = [a.space ?? "", b.space ?? ""];
+    if (x !== y) return x < y ? -1 : 1;
+    return a.start < b.start ? -1 : a.start > b.start ? 1 : 0;
+  });
+  const merged: T[] = [];
+  for (const r of sorted) {
+    const last = merged.at(-1);
+    if (last && last.space === r.space && r.start <= last.end) {
+      if (r.end > last.end) last.end = r.end;
+    } else merged.push({ ...r });
+  }
+  return merged;
+}
+
+/** The lines of a file under repoDir, without a byte order mark and trailing empty lines. */
+export function readLines(repoDir: string, path: string): string[] {
+  const text = readFileSync(join(repoDir, path), "utf8")
+    .replace(/^﻿/, "")
+    .replace(/(?:\r?\n)+$/, "");
+  return text ? text.split(/\r?\n/) : [];
+}
+
 /** The half-open range a location's address or offset gives, with its space, or null. */
 export function locationRange(loc: Meta, format: Yaml): { space: Space; start: bigint; end: bigint } | null {
   if ("address" in loc) {
@@ -148,16 +176,17 @@ export interface FileWithoutInventory {
 /**
  * The files of code that each build's manifest lists and that have no inventory, by build and then in
  * manifest order: those whose format, or for a packed file whose unpacked format, has an address
- * notation.
+ * notation. found holds the inventory paths readInventories() found, read or not, so a path is
+ * matched with the same case on every file system.
  */
-export function filesWithoutInventory(repoDir: string, buildFiles: Map<string, Meta[]>): FileWithoutInventory[] {
+export function filesWithoutInventory(buildFiles: Map<string, Meta[]>, found: Set<string>): FileWithoutInventory[] {
   const missing: FileWithoutInventory[] = [];
   for (const build of [...buildFiles.keys()].sort())
     for (const f of buildFiles.get(build)!) {
       if (typeof f.path !== "string") continue;
       const format: Yaml = f.unpacked?.format ?? f.format;
       if (!locationRule(format)?.address) continue;
-      if (!existsSync(join(repoDir, inventoryPath(build, f.path)))) missing.push({ build, file: f.path, format });
+      if (!found.has(inventoryPath(build, f.path))) missing.push({ build, file: f.path, format });
     }
   return missing;
 }
@@ -220,11 +249,8 @@ export function readInventories(
       reject(`${file} is a ${format} file, which holds no code to inventory`);
       continue;
     }
-    const lines = readFileSync(join(repoDir, path), "utf8")
-      .replace(/^﻿/, "")
-      .replace(/(?:\r?\n)+$/, "")
-      .split(/\r?\n/);
-    const columns = lines.shift()!.split("\t");
+    const lines = readLines(repoDir, path);
+    const columns = (lines.shift() ?? "").split("\t");
     if (
       columns[0] !== "start" ||
       columns[1] !== "size" ||

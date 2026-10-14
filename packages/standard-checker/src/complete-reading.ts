@@ -5,26 +5,11 @@
 // that the locations of those findings cover every byte of the function's body (ADR 0043).
 
 import type { Entry, Meta } from "./types.ts";
-import { completeReading } from "./evidence.ts";
-import { codeLocations } from "./inventory.ts";
-
-type Range = { start: bigint; end: bigint };
+import { completeReading, mayBeInterrupted } from "./evidence.ts";
+import { codeLocations, mergeRanges } from "./inventory.ts";
 
 /** The statuses of an entry whose complete reading is not counted. */
 const UNCOUNTED_STATUSES = ["superseded", "disputed"];
-
-/** Ranges merged into sorted ranges that neither overlap nor touch. */
-function mergeRanges(ranges: Range[]): Range[] {
-  const sorted = [...ranges].sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
-  const merged: Range[] = [];
-  for (const r of sorted) {
-    const last = merged.at(-1);
-    if (last && r.start <= last.end) {
-      if (r.end > last.end) last.end = r.end;
-    } else merged.push({ start: r.start, end: r.end });
-  }
-  return merged;
-}
 
 /** The ranges complete readings locate, and the locations of their findings that do not parse. */
 export interface CompleteReadings {
@@ -42,11 +27,11 @@ export interface CompleteReadings {
 export function completeReadings(entries: Map<string, Entry>, buildFiles: Map<string, Meta[]>): CompleteReadings {
   const findings = new Set<string>();
   for (const e of entries.values()) {
-    if (UNCOUNTED_STATUSES.includes(e.meta.status) || /# may run: RULE-/.test(e.body)) continue;
+    if (UNCOUNTED_STATUSES.includes(e.meta.status) || mayBeInterrupted(e)) continue;
     for (const id of completeReading(entries, e)) if (entries.get(id)!.meta.status !== "superseded") findings.add(id);
   }
   // Build, file and space -> the ranges located there, and build and file -> unparsed locations.
-  const located = new Map<string, Range[]>();
+  const located = new Map<string, Array<{ start: bigint; end: bigint }>>();
   const unparsed = new Map<string, number>();
   for (const id of findings)
     for (const { loc, range } of codeLocations(entries.get(id)!.meta, buildFiles)) {

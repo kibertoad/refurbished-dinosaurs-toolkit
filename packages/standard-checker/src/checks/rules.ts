@@ -4,7 +4,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Context } from "../context.ts";
-import { mayBeInterrupted, onlyEmulatedRuns, whyMissing } from "../evidence.ts";
+import { mayBeInterrupted, onlyEmulatedRuns, procedureCode, whyMissing } from "../evidence.ts";
 import { asList, idsIn, kindOf } from "../ids.ts";
 import { readCsv } from "../markdown.ts";
 import { KINDS, LIST_LIMIT } from "../standard.ts";
@@ -119,8 +119,7 @@ export function checkRules(ctx: Context, { enumNames }: FormatNames) {
 
   for (const [id, e] of entries) {
     if (e.kind !== "RULE") continue;
-    const proc = e.sections.find((s) => s.title === "Procedure")?.text ?? "";
-    e.code = [...proc.matchAll(/```text\n([\s\S]*?)```/g)].map((m) => m[1]).join("\n");
+    e.code = procedureCode(e);
     const owners = e.meta.status === "superseded" ? historical : defined;
     for (const m of e.code.matchAll(
       /^\s*(?:define\s+([a-z_][a-z0-9_]*)\s*\(|table\s+([a-z_][a-z0-9_]*)\s*:|clock\s+([a-z_][a-z0-9_]*)\s*:)/gm,

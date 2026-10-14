@@ -601,6 +601,40 @@ test("invalid rows of a regions file are problems", (t) => {
   assert.ok(run(root).output.includes(`${REGIONS}: regions overlap`));
 });
 
+test("an entry row may lie in an instruction that starts before it", (t) => {
+  const root = copy(t);
+  inventory(root, TWO_FUNCTIONS);
+  const entry = "entry\t0x00401100\t1\t0\t0\t1\t";
+  inventory(root, REGION_ROWS.replace(entry, "entry\t0x00401100\t1\t1\t0\t0\t"), REGIONS);
+  const { status, output } = run(root);
+  assert.equal(status, 0, output);
+  assert.match(output, /1 starts are not at an instruction$/m);
+  inventory(root, REGION_ROWS.replace(entry, "entry\t0x00401100\t2\t0\t0\t2\t"), REGIONS);
+  assert.ok(run(root).output.includes(`${REGIONS}: line 3: an entry row counts the one byte at a function start`));
+});
+
+test("each region and outside row of a regions file must agree with the inventory", (t) => {
+  const root = copy(t);
+  inventory(root, TWO_FUNCTIONS + "0x00402000\t16\n");
+  // The totals agree, but the outside row lies where the inventory has no body.
+  inventory(root, REGION_ROWS + "outside\t0x00403000\t16\t16\t0\t0\t0\t0\t0\n", REGIONS);
+  const { status, output } = run(root);
+  assert.equal(status, 1, output);
+  assert.ok(
+    output.includes(
+      `${REGIONS}: its outside row at 0x00403000 puts 16 bytes in function bodies, and the inventory's bodies have 0 there, so it was not written for this inventory`,
+    ),
+    output,
+  );
+  // Two outside rows that hold the same bytes.
+  inventory(
+    root,
+    REGION_ROWS + "outside\t0x00402000\t8\t8\t0\t0\t0\t0\t0\noutside\t0x00402000\t8\t8\t0\t0\t0\t0\t0\n",
+    REGIONS,
+  );
+  assert.ok(run(root).output.includes(`${REGIONS}: outside rows overlap`));
+});
+
 test("the provenance and regions files are not read when their inventory is missing", (t) => {
   const root = copy(t);
   inventory(root, "xxh3\t0123456789abcdef\n", PROVENANCE);
@@ -758,10 +792,11 @@ test("complete readings the standard does not accept read nothing", (t) => {
   claim(root, ["FND-SCORE-001"], ["FND-SCORE-001"]);
   assert.match(run(root).output, /complete reading: 1 of 2 functions/);
   const rule = join(root, "spec", "rules", "RULE-SCORE-001.md");
-  writeFileSync(
-    rule,
-    readFileSync(rule, "utf8").replace("## Procedure\n", "## Procedure\n\n# may run: RULE-SCORE-009\n"),
-  );
+  const text = readFileSync(rule, "utf8");
+  // Only the procedure's text blocks say so, as the checker reads them; the same words elsewhere do not.
+  writeFileSync(rule, text.replace("## Procedure\n", "## Procedure\n\n# may run: RULE-SCORE-009\n"));
+  assert.match(run(root).output, /complete reading: 1 of 2 functions/);
+  writeFileSync(rule, text.replace("```text\n", "```text\n# may run: RULE-SCORE-009\n"));
   assert.match(run(root).output, /complete reading: 0 of 2 functions/);
 });
 

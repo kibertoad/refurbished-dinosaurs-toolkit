@@ -108,8 +108,17 @@ export function onlyEmulatedRuns(entries: Map<string, Entry>, e: Entry) {
     );
   return runs.length > 0 && runs.every((x) => x.kind === "EXP" && x.meta.starting_state === "emulated-call");
 }
-/** True for a rule whose procedure says another rule may run in the middle of it (`# may run:`). */
-export const mayBeInterrupted = (e: Entry) => e.kind === "RULE" && /# may run: RULE-/.test(e.code ?? "");
+/** The text of the ```text blocks of an entry's Procedure section, joined by newlines. */
+export function procedureCode(e: Entry): string {
+  const proc = e.sections.find((s) => s.title === "Procedure")?.text ?? "";
+  return [...proc.matchAll(/```text\n([\s\S]*?)```/g)].map((m) => m[1]).join("\n");
+}
+
+/**
+ * True for a rule whose procedure says another rule may run in the middle of it (`# may run:`).
+ * The procedure is read from the entry's sections when the rule checks have not set Entry.code.
+ */
+export const mayBeInterrupted = (e: Entry) => e.kind === "RULE" && /# may run: RULE-/.test(e.code ?? procedureCode(e));
 
 /** Reports a status that the facts of its evidence do not reach. label names what has the status. */
 export function checkStatusCitations(
