@@ -1,0 +1,11 @@
+---
+"@scientific-method/standard-checker": major
+---
+
+`standard-coverage` reports what the work protocol's Measuring progress section asks for beyond citations, and keeps each figure apart.
+
+- Each file of code a build's manifest lists (by its format, or the unpacked format of a packed file) that has no inventory is printed as `<build>: <file> has no inventory and is not measured`, with a closing count, and listed in `--json` under a new `withoutInventory` array of `build`, `file` and `format`. It does not change the exit code, and `--require-complete` still measures the inventories that exist.
+- Each inventory gets a complete-reading count: the in-scope functions whose whole body the locations of the static findings in entries' `complete_reading` cover, together when several entries list them, with their bytes. Only complete readings the standard accepts count, of entries that are not superseded or disputed and whose procedure has no `# may run:` comment, and superseded findings do not. The count is 0 when nothing qualifies, and `unavailable` with the reason when loading the spec had problems or a location of a counted finding in the file does not parse. `--json` gives `completeReading` as `{ functions, bytes }` or `{ unavailable }`, and `--list` marks each function read completely (`read` in `--json`). The closing line no longer says that a citing entry's status tells how far a function was read.
+- The `.provenance.tsv` and `.regions.tsv` files beside an inventory are read when present. A provenance file must hold tab-separated names and values, each name once, including `xxh3`; an inventory whose `xxh3` is not the manifest's is listed under `unmeasured`. A regions file must have the export's columns and valid rows and must agree with the inventory's bodies row by row; then `mapping` gives the regions, their bytes, the body bytes inside them, the bytes outside the bodies by instructions, data and undefined, the body bytes outside the regions and the starts not at an instruction. Any problem in either file fails the run with exit code 1.
+
+A repository whose side files come from another export than its inventory, or whose provenance hash differs from the manifest, fails until the three files are exported together. The migration guide's "`standard-coverage` reads the side files and complete readings" has the details.

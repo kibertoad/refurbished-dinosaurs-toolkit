@@ -285,6 +285,10 @@ MZ loader marks the whole load image executable, so its region holds the program
 as well, which its `data` and `undefined` counts show. Which of those bytes are code is for the
 spec's Code ranges and the reader's `bodies` command to say.
 
+`standard-coverage` checks the provenance file's `xxh3` against the manifest and the regions file
+against the inventory, and reports the mapping figures the regions file gives, so commit the three
+files of one export together.
+
 The export fails and writes nothing when the program is NE (Ghidra places NE segments at paragraphs
 of its own choosing, and the script does not convert them to the Standard's NE segments), when the
 Standard has no notation for its address space, or when any function or executable region cannot be
