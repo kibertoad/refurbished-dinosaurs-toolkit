@@ -4,10 +4,11 @@ import {
   checkControls,
   expandIterated,
   isCount,
+  MAX_SEGMENTS,
   ordinalNameTables,
   pascal,
-  readNamesTable,
   readNeHeader,
+  SEGMENT_DATA,
 } from "./ne-format.ts";
 import type { NeExporter, NeExporterReader, NeImportControl, NeOrdinalName, NeOutsideTable } from "./ne-format.ts";
 
@@ -115,9 +116,6 @@ export const DEFAULT_CHAIN_CAP = 4096;
 /** The largest `chainCap` a query may give: a 64 KiB segment holds no more two-byte sites. */
 export const MAX_CHAIN_CAP = 32768;
 
-const MAX_SEGMENTS = 254,
-  SEGMENT_DATA = 0x10000;
-
 // Segment flags and relocation record fields, as the Windows NE loader reads them.
 const ITERATED = 0x0008,
   RELOCATIONS = 0x0100,
@@ -171,7 +169,10 @@ export function neImportReport(bytes: Buffer, config: NeImportConfig, readExport
   const header = readNeHeader(bytes, label);
   const { span, word, byte } = bounded(bytes, label);
   if (header.segmentCount > MAX_SEGMENTS) throw new Error(`NE source has more than ${MAX_SEGMENTS} segments`);
-  const resident = readNamesTable(bytes, header.residentNames, bytes.length, "NE source resident names table");
+  // Only the module's name, the resident names table's first entry, is reported; its exports are not read.
+  const moduleName = byte(header.residentNames)
+    ? pascal(bytes, header.residentNames, "NE source resident names table")
+    : null;
   const modules = Array.from({ length: header.moduleCount }, (_, i) => {
     const nameOffset = word(header.moduleTable + i * 2);
     return {
@@ -253,8 +254,11 @@ export function neImportReport(bytes: Buffer, config: NeImportConfig, readExport
       };
     });
     const ownOffsets = new Map<number, number[]>();
-    decoded.forEach((r, k) => ownOffsets.set(r.offset, [...(ownOffsets.get(r.offset) ?? []), k]));
-    let siteCount = 0;
+    decoded.forEach((r, k) => {
+      const records = ownOffsets.get(r.offset);
+      if (records) records.push(k);
+      else ownOffsets.set(r.offset, [k]);
+    });
     const counted = { imports: 0, internal: 0, osFixups: 0 };
     decoded.forEach((r, k) => {
       const kind = TARGET_KINDS[r.flags & 3]!,
@@ -352,7 +356,6 @@ export function neImportReport(bytes: Buffer, config: NeImportConfig, readExport
         const storedWord = data.readUInt16LE(site);
         describeSite(site, storedWord);
         sites++;
-        siteCount++;
         if (!chains) {
           recordRow.outcome = "own site";
           break;
@@ -373,7 +376,7 @@ export function neImportReport(bytes: Buffer, config: NeImportConfig, readExport
     });
     Object.assign(row, {
       records: count,
-      sites: siteCount,
+      sites: counted.imports + counted.internal + counted.osFixups,
       importSites: counted.imports,
       internalSites: counted.internal,
       osFixupSites: counted.osFixups,
@@ -425,8 +428,9 @@ export function neImportReport(bytes: Buffer, config: NeImportConfig, readExport
   const nameConflicts = [...ordinalNames.entries()]
     .filter(([, names]) => new Set(names.map((n) => n.name)).size > 1)
     .map(([key, names]) => {
-      const [module, ordinal] = key.split("#");
-      return { module: module!, ordinal: Number(ordinal), names };
+      // A module name may itself hold "#"; the ordinal follows the last one.
+      const at = key.lastIndexOf("#");
+      return { module: key.slice(0, at), ordinal: Number(key.slice(at + 1)), names };
     });
   const selfLoading = (header.flags & SELF_LOADING) !== 0;
   return {
@@ -435,7 +439,7 @@ export function neImportReport(bytes: Buffer, config: NeImportConfig, readExport
     targetOs: header.targetOs,
     moduleFlags: header.flags,
     selfLoading,
-    moduleName: resident[0]?.name ?? null,
+    moduleName,
     sectorShift: header.shift,
     modules,
     chainCap: cap,

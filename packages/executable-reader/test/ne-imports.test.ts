@@ -45,6 +45,8 @@ interface NeSpec {
   segments?: SegmentSpec[];
   resident?: Array<[string, number]>;
   nonResident?: Array<[string, number]>;
+  /** The first entry of the non-resident names table, read as Latin-1. */
+  description?: string;
 }
 
 const pascal = (s: string) => Buffer.concat([Buffer.from([s.length]), Buffer.from(s, "latin1")]);
@@ -78,7 +80,9 @@ function buildNe(spec: NeSpec = {}) {
   }
   const importedNames = Buffer.concat(imported);
   const resident = namesTable([[spec.module ?? "SYNTH", 0], ...(spec.resident ?? [])]);
-  const nonResident = spec.nonResident ? namesTable([["synthetic module", 0], ...spec.nonResident]) : null;
+  const nonResident = spec.nonResident
+    ? namesTable([[spec.description ?? "synthetic module", 0], ...spec.nonResident])
+    : null;
   const moduleTable = Buffer.alloc(modules.length * 2);
   modules.forEach((m, i) => moduleTable.writeUInt16LE(offsets.get(m)!, i * 2));
   const segmentTableAt = 0x40,
@@ -359,6 +363,23 @@ test("an iterated segment is expanded before its records are read", () => {
   );
 });
 
+test("iteration records of no bytes add nothing, however often they repeat", () => {
+  // 4096 records each repeat zero bytes 65535 times before the six-byte unit.
+  const unit = Buffer.from([0x9a, 0xff, 0xff, 0x00, 0x00, 0x90]);
+  const empty = Buffer.alloc(4096 * 4);
+  for (let at = 0; at < empty.length; at += 4) empty.writeUInt16LE(0xffff, at);
+  const stored = Buffer.concat([empty, Buffer.from([1, 0, 6, 0]), unit]);
+  const { bytes } = buildNe({
+    segments: [{ data: unit, stored, flags: 0x0008, records: [kernel128] }],
+  });
+  const r = report(bytes);
+  assert.equal(r.segments[0]!.dataLength, 6);
+  assert.deepEqual(
+    r.imports.map((i) => i.offset),
+    [1],
+  );
+});
+
 test("a positive control that names the wrong ordinal, or a site that holds no import, rejects the report", () => {
   const { bytes } = buildNe({ segments: [{ data: twoCalls(), records: [kernel128] }] });
   assert.throws(
@@ -377,7 +398,7 @@ test("a positive control that names the wrong ordinal, or a site that holds no i
   );
 });
 
-function exporterFixture(t: TestContext) {
+function exporterFixture(t: TestContext, description?: string) {
   const dir = mkdtempSync(join(tmpdir(), "ne-imports-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const { bytes } = buildNe({
@@ -395,6 +416,7 @@ function exporterFixture(t: TestContext) {
     modules: [],
     resident: [["RESIDENTFN", 5]],
     nonResident: [["NAMEDFN", 128]],
+    ...(description === undefined ? {} : { description }),
   }).bytes;
   writeFileSync(join(dir, "source.bin"), bytes);
   writeFileSync(join(dir, "kernel.exe"), kernel);
@@ -444,6 +466,16 @@ test("an exporting module's names tables and an outside table name ordinals, and
     { name: "NamedFn", from: "outside table", table: "kernel.spec", version: "9.0" },
   ]);
   assert.deepEqual(outside.nameConflicts, []);
+});
+
+test("an exporting module's description may hold bytes outside printable ASCII", (t) => {
+  // The non-resident table's first entry describes the module and is never used as a name.
+  const { runWith, kernelHash } = exporterFixture(t, "Kernel \xa9 1992");
+  const r = runWith({ exporters: [{ file: "kernel.exe", xxh3: kernelHash, version: "3.10" }] });
+  assert.deepEqual(
+    r.imports[0].names.map((n: { name: string }) => n.name),
+    ["NAMEDFN"],
+  );
 });
 
 test("an exporting module is hash-checked and must be a module the file imports from", (t) => {

@@ -73,6 +73,15 @@ export function sourceXxh3(bytes: Uint8Array): string {
   return xxh3.xxh128(bytes).toString(16).padStart(32, "0");
 }
 
+// Reads a file of at most 256 MiB and checks that its XXH3-128 hash is `xxh3`; errors begin with `what`.
+function readHashed(path: string, xxh3: string, what: string) {
+  const stat = statSync(path);
+  if (!stat.isFile() || stat.size > 256 * 1024 * 1024) throw new Error(`${what} exceeds 256 MiB`);
+  const bytes = readFileSync(path);
+  if (sourceXxh3(bytes) !== xxh3) throw new Error(`${what} xxh3 differs from the supplied baseline`);
+  return bytes;
+}
+
 // The hash-guarded source read every command shares; no format table is interpreted here.
 function readVerifiedSource(config: ReportConfig, base: string) {
   if (!config || typeof config.source !== "string") throw new Error("Source path required");
@@ -82,10 +91,7 @@ function readVerifiedSource(config: ReportConfig, base: string) {
   if (typeof config.xxh3 !== "string" || !/^[0-9a-f]{32}$/.test(config.xxh3))
     throw new Error("xxh3 must be the source's XXH3-128 hash as 32 lower-case hex digits");
   const source = resolve(base, config.source),
-    stat = statSync(source);
-  if (!stat.isFile() || stat.size > 256 * 1024 * 1024) throw new Error("Source exceeds 256 MiB");
-  const bytes = readFileSync(source);
-  if (sourceXxh3(bytes) !== config.xxh3) throw new Error("Source xxh3 differs from the supplied baseline");
+    bytes = readHashed(source, config.xxh3, "Source");
   // Overlay exports and format-table counts are derived from MZ/FBOV source tables only; a supplied copy would read as loader output.
   if (config.overlayExports !== undefined) throw new Error("overlayExports is source-derived and cannot be supplied");
   if (config.formatTables !== undefined)
@@ -182,14 +188,8 @@ export function prepare(config: ReportConfig, base: string): PreparedConfig {
 function readExporter(exporter: NeExporter, base: string) {
   if (typeof exporter.xxh3 !== "string" || !/^[0-9a-f]{32}$/.test(exporter.xxh3))
     throw new Error(`Exporting module ${exporter.file} needs its XXH3-128 hash as 32 lower-case hex digits`);
-  const path = resolve(base, exporter.file),
-    stat = statSync(path);
-  if (!stat.isFile() || stat.size > 256 * 1024 * 1024)
-    throw new Error(`Exporting module ${exporter.file} exceeds 256 MiB`);
-  const bytes = readFileSync(path);
-  if (sourceXxh3(bytes) !== exporter.xxh3)
-    throw new Error(`Exporting module ${exporter.file} xxh3 differs from the supplied baseline`);
-  return { path, bytes };
+  const path = resolve(base, exporter.file);
+  return { path, bytes: readHashed(path, exporter.xxh3, `Exporting module ${exporter.file}`) };
 }
 
 /** The reader's package name and version, as the `unpack` report gives it for a build's `unpacked.tool`. */

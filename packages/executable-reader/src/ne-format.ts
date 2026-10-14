@@ -50,9 +50,12 @@ export interface NeImportControl {
 }
 
 const MAX_CONTROLS = 256,
-  MAX_SEGMENTS = 254,
-  MAX_NAMES = 65536,
-  SEGMENT_DATA = 0x10000;
+  MAX_NAMES = 65536;
+
+/** The most segments an NE file may have: an internal reference names its segment in one byte, and `FF` marks a movable entry. */
+export const MAX_SEGMENTS = 254;
+/** The most bytes one segment's data holds, and the length a zero length or minimum allocation stands for. */
+export const SEGMENT_DATA = 0x10000;
 
 /** Bounds-checked byte, word and dword reads of `bytes`, whose errors name `label`. */
 export function bounded(bytes: Buffer, label: string) {
@@ -106,17 +109,22 @@ export function readNeHeader(bytes: Buffer, label: string) {
 
 /**
  * The entries of a resident or non-resident names table: a name and its ordinal each, up to a zero
- * length byte or `end`.
+ * length byte or `end`. With `freeFirst`, the first entry (a non-resident table's description) may
+ * hold any bytes and is read as Latin-1; every other name must be printable ASCII.
  */
-export function readNamesTable(bytes: Buffer, start: number, end: number, label: string) {
-  const { byte, word } = bounded(bytes, label);
+export function readNamesTable(bytes: Buffer, start: number, end: number, label: string, freeFirst = false) {
+  const { byte, word, span } = bounded(bytes, label);
   const entries: Array<{ name: string; ordinal: number }> = [];
   for (let at = start; ;) {
     if (at >= end) throw new Error(`${label} runs past its end without a zero length byte`);
     const length = byte(at);
     if (!length) return entries;
     if (entries.length >= MAX_NAMES) throw new Error(`${label} exceeds ${MAX_NAMES} entries`);
-    entries.push({ name: pascal(bytes, at, label), ordinal: word(at + 1 + length) });
+    if (at + length + 3 > end) throw new Error(`${label} has an entry at ${at} that runs past its end`);
+    span(at + 1, length + 2);
+    const name =
+      freeFirst && !entries.length ? bytes.toString("latin1", at + 1, at + 1 + length) : pascal(bytes, at, label);
+    entries.push({ name, ordinal: word(at + 1 + length) });
     at += length + 3;
   }
 }
@@ -131,6 +139,7 @@ export function exporterNames(bytes: Buffer, label: string) {
         header.nonResidentNames,
         header.nonResidentNames + header.nonResidentSize,
         `${label} non-resident names table`,
+        true,
       )
     : [];
   if (!resident.length) throw new Error(`${label} has no module name in its resident names table`);
@@ -161,7 +170,8 @@ export function expandIterated(data: Buffer, segment: number): Buffer {
     if (at + 4 + length > data.length) throw new Error(`Iterated data of segment ${segment} ends inside a record`);
     size += count * length;
     if (size > SEGMENT_DATA) throw new Error(`Iterated data of segment ${segment} expands past 64 KiB`);
-    for (let i = 0; i < count; i++) parts.push(data.subarray(at + 4, at + 4 + length));
+    // A record of no bytes adds nothing however often it repeats.
+    if (length) for (let i = 0; i < count; i++) parts.push(data.subarray(at + 4, at + 4 + length));
     at += 4 + length;
   }
   return Buffer.concat(parts, size);
@@ -171,7 +181,7 @@ export function expandIterated(data: Buffer, segment: number): Buffer {
  * The names that `exporters` and `outsideTables` put to ordinals of the modules in `modules`,
  * keyed by upper-case module name and ordinal as `MODULE#ordinal`. Throws for a table or exporting
  * module of a module the file does not import from, two exporting modules of one module, an
- * exporting module that names one ordinal twice, and a malformed entry.
+ * exporting module that gives one ordinal two different names, and a malformed entry.
  */
 export function ordinalNameTables(
   modules: Array<{ name: string }>,
@@ -183,7 +193,9 @@ export function ordinalNameTables(
   const ordinalNames = new Map<string, NeOrdinalName[]>();
   const addName = (module: string, ordinal: number, name: NeOrdinalName) => {
     const key = `${module.toUpperCase()}#${ordinal}`;
-    ordinalNames.set(key, [...(ordinalNames.get(key) ?? []), name]);
+    const names = ordinalNames.get(key);
+    if (names) names.push(name);
+    else ordinalNames.set(key, [name]);
   };
   const importedModule = (module: string, what: string) => {
     if (!modules.some((m) => m.name.toUpperCase() === module.toUpperCase()))

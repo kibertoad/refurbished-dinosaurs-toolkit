@@ -1987,10 +1987,10 @@ and the names of its ordinals from its resident and non-resident names tables. `
 lists tables that name ordinals of one module, each `{ table, version, module, names }`, where
 `names` maps decimal ordinals to names, such as the `.spec` files of a Windows reimplementation.
 An exporting module or table of a module the file does not import from, two exporting modules of
-one module, and an exporting module that names one ordinal twice fail the report. Each import
-site's `names` gives every name a table puts to its ordinal, with the table it came from, and is
-empty when none does, so the ordinal stays an ordinal. `nameConflicts` lists ordinals that tables
-name differently. The arguments a call passes can confirm a name, but they never supply one.
+one module, and an exporting module that gives one ordinal two different names fail the report.
+Each import site's `names` gives every name a table puts to its ordinal, with the table it came
+from, and is empty when none does, so the ordinal stays an ordinal. `nameConflicts` lists ordinals
+that tables name differently. The arguments a call passes can confirm a name, but they never supply one.
 
 `controls` is required: 1..256 positive controls, each a site whose import other evidence shows,
 such as a run of the original under a debugger, as `{ segment, offset, module, ordinal }` or
