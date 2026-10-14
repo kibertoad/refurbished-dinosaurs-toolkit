@@ -4,7 +4,7 @@ from bisect import bisect_right
 from pathlib import Path
 from .image import integer
 from .trace import LIMIT_REASON, CONTESTED_REASON, OVERLAP_REASON, walk, holding_instruction
-from .dispatch import indirect_call_declarations, call_ends, never_runs, indirect_call_assumptions
+from .dispatch import indirect_call_declarations, call_ends, never_runs, indirect_call_assumptions, derived_assumptions
 
 MAX_INVENTORY = 16 * 1024 * 1024
 MAX_ROWS = 200000
@@ -540,6 +540,7 @@ def inventory_check(image, config):
                            + "; interrupt handlers are not read")
     assumptions += no_return_assumptions(no_return_routines, no_return_interrupts, no_return_sites)
     assumptions += indirect_call_assumptions(indirect_calls)
+    assumptions += derived_assumptions(image, indirect_calls)
     indirect_rows = [declaration | {"reached": site in seen} for site, declaration in indirect_calls.items()]
     return {"inventory": {"path": config["inventory"], "rows": len(rows)},
             "targets": missing[:limit], "unresolved": unresolved[:limit],

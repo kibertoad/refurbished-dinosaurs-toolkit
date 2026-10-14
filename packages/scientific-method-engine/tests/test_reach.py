@@ -955,5 +955,128 @@ class DeclaredOutsideAndNeverRunCallTests(unittest.TestCase):
                 computed(indirectCalls=[declaration])
 
 
+# Three starts. A at 0000 calls H at 0010, which calls T at 001B and U at 001C. B at 0008 calls G at
+# 0017, which calls T. C at 000C makes a computed call through BX.
+STARTS = bytes.fromhex(
+    "e80d00"        # 0000 A: call 0010
+    "c3"            # 0003 ret
+    "90909090"      # 0004 padding
+    "e80c00"        # 0008 B: call 0017
+    "c3"            # 000B ret
+    "ffd3"          # 000C C: call bx
+    "c3"            # 000E ret
+    "90"            # 000F padding
+    "e80800"        # 0010 H: call 001B
+    "e80600"        # 0013 call 001C
+    "c3"            # 0016 ret
+    "e80100"        # 0017 G: call 001B
+    "c3"            # 001A ret
+    "c3"            # 001B T: ret
+    "c3"            # 001C U: ret
+)
+
+
+def from_starts(data=STARTS, **extra):
+    return run_report(data, config(data, entries=(0, 8, 0x0C), **{"starts": [0, 8, 0x0C], "targets": [0x1B, 0x1C, 8],
+                                                                   "controls": [0, 8], **extra}), "reach")
+
+
+RESOLVED = STARTS.replace(bytes.fromhex("ffd3c3"), bytes.fromhex("c39090"))
+
+
+class ReachedFromTests(unittest.TestCase):
+    def test_each_reached_target_lists_the_starts_that_reach_it(self):
+        r = from_starts(RESOLVED)
+        t, u, b = r["targets"]
+        # The routes from A and from B share no routine, so no routine is on every route to T.
+        self.assertEqual(t["throughEveryRoute"], [])
+        self.assertEqual(t["reachedFrom"], [0, 8])
+        self.assertEqual(u["reachedFrom"], [0])
+        self.assertEqual(b["reachedFrom"], [8])
+        # C reaches nothing, the report is complete, and so C reaching none of the targets is a usable negative.
+        self.assertTrue(r["negativeUsable"])
+        self.assertNotIn("startRoutes", t)
+
+    def test_start_routes_give_each_start_its_own_calls_and_routines_on_every_route(self):
+        t, u, b = from_starts(RESOLVED, startRoutes=True)["targets"]
+        self.assertEqual(t["startRoutes"], [{"start": 0, "calls": 2, "throughEveryRoute": [0, 0x10]},
+                                            {"start": 8, "calls": 2, "throughEveryRoute": [8, 0x17]}])
+        self.assertEqual(u["startRoutes"], [{"start": 0, "calls": 2, "throughEveryRoute": [0, 0x10]}])
+        # A target at a start is reached from that start with no call, and is not on its own list.
+        self.assertEqual(b["startRoutes"], [{"start": 8, "calls": 0, "throughEveryRoute": []}])
+
+    def test_a_start_left_out_behind_an_unresolved_transfer_is_no_negative(self):
+        # C's computed call may reach T. It is unresolved, so C's absence from reachedFrom answers nothing.
+        r = from_starts(startRoutes=True)
+        self.assertEqual([(row["site"], row["routine"]) for row in r["unresolved"]], [(0x0C, 0x0C)])
+        self.assertEqual(r["targets"][0]["reachedFrom"], [0, 8])
+        self.assertEqual([row["start"] for row in r["targets"][0]["startRoutes"]], [0, 8])
+        self.assertFalse(r["negativeUsable"])
+
+    def test_a_start_whose_route_passes_another_start_lists_both(self):
+        # A calls B's entry instead of H, so T is reached from A through B and G, and U from no start.
+        data = RESOLVED.replace(bytes.fromhex("e80d00"), bytes.fromhex("e80500"), 1)
+        t, u, b = from_starts(data, controls=[0], startRoutes=True)["targets"]
+        self.assertEqual(t["reachedFrom"], [0, 8])
+        self.assertEqual(t["startRoutes"], [{"start": 0, "calls": 3, "throughEveryRoute": [0, 8, 0x17]},
+                                            {"start": 8, "calls": 2, "throughEveryRoute": [8, 0x17]}])
+        self.assertEqual(t["throughEveryRoute"], [8, 0x17])
+        self.assertEqual(t["chain"], [{"routine": 8}, {"callSite": 8, "routine": 0x17},
+                                      {"callSite": 0x17, "routine": 0x1B}])
+        self.assertEqual((u["reached"], u["status"]), (False, "not reached"))
+        self.assertEqual(b["reachedFrom"], [0, 8])
+        self.assertEqual(b["startRoutes"], [{"start": 0, "calls": 1, "throughEveryRoute": [0]},
+                                            {"start": 8, "calls": 0, "throughEveryRoute": []}])
+
+    def test_starts_in_one_loop_reach_each_other(self):
+        # A and B lie on one cycle, so each reaches the other, and both reach the return at 0006.
+        data = bytes.fromhex(
+            "eb02"      # 0000 A: jmp 0004
+            "ebfc"      # 0002 B: jmp 0000
+            "7401"      # 0004 jz 0007
+            "c3"        # 0006 ret
+            "ebf9"      # 0007 jmp 0002
+        )
+        r = run_report(data, config(data, entries=(0, 2), starts=[0, 2], targets=[0, 2, 6], startRoutes=True),
+                       "reach")
+        self.assertEqual([row["reachedFrom"] for row in r["targets"]], [[0, 2], [0, 2], [0, 2]])
+        # B's routes enter A by a jump, so A is no routine start on them, as in a walk from B alone. The
+        # row's own throughEveryRoute counts every start as a routine start.
+        self.assertEqual(r["targets"][2]["startRoutes"], [{"start": 0, "calls": 0, "throughEveryRoute": [0]},
+                                                          {"start": 2, "calls": 0, "throughEveryRoute": [2]}])
+        alone = run_report(data, config(data, entries=(0, 2), starts=[2], targets=[6]), "reach")
+        self.assertEqual(alone["targets"][0]["throughEveryRoute"], [2])
+
+    def test_a_start_dropped_by_an_unresolved_overlap_is_no_negative(self):
+        # B's mov at 0008 holds A's jmp at 0009, and neither boundary is proven, so the shared walk keeps
+        # neither. A walk from A alone reaches T at 0010; the shared one lists only C, and the gap keeps
+        # A's absence from answering anything.
+        data = bytes.fromhex(
+            "9090909090909090"  # 0000 padding
+            "b8eb05"            # 0008 B: mov ax, 05EBh
+            "eb03"              # 000B C: jmp 0010 (0009, inside B's mov, is A: jmp 0010)
+            "909090"            # 000D padding
+            "c3"                # 0010 T: ret
+        )
+        r = run_report(data, config(data, entries=(8, 9, 0x0B), starts=[8, 9, 0x0B], targets=[0x10],
+                                    instructionControls=[0x10]), "reach")
+        self.assertEqual(r["targets"][0]["reachedFrom"], [0x0B])
+        self.assertEqual(r["contested"], [])
+        self.assertEqual({g["site"] for g in r["gaps"]}, {8, 9})
+        self.assertFalse(r["negativeUsable"])
+        alone = run_report(data, config(data, entries=(8, 9, 0x0B), starts=[9], targets=[0x10]), "reach")
+        self.assertEqual(alone["targets"][0]["reachedFrom"], [9])
+
+    def test_a_single_start_lists_itself_with_the_report_route(self):
+        target = reach(indirectJumps=[TABLE], startRoutes=True)["targets"][0]
+        self.assertEqual(target["reachedFrom"], [0])
+        self.assertEqual(target["startRoutes"], [{"start": 0, "calls": target["calls"],
+                                                  "throughEveryRoute": target["throughEveryRoute"]}])
+
+    def test_start_routes_must_be_a_boolean(self):
+        with self.assertRaisesRegex(ValueError, "startRoutes must be a boolean"):
+            reach(indirectJumps=[TABLE], startRoutes="yes")
+
+
 if __name__ == "__main__":
     unittest.main()

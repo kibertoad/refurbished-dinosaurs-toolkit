@@ -813,12 +813,25 @@ test("reach follows a resident far call and an overlay fixup call through the FB
   const path = join(dir, "config.json");
   writeFileSync(
     path,
-    JSON.stringify({ ...config, starts: [80, 532], targets: [528], controls: [80, 532], decodedRanges: true }),
+    JSON.stringify({
+      ...config,
+      starts: [80, 532],
+      targets: [528],
+      controls: [80, 532],
+      decodedRanges: true,
+      startRoutes: true,
+    }),
   );
   const r = run(["reach", path]);
   const target = r.targets[0];
   assert.equal(target.reached, true);
   assert.deepEqual(target.chain, [{ routine: 80 }, { callSite: 80, routine: 528 }]);
+  // The chain names one start; both reach the overlay entry, each through its own call.
+  assert.deepEqual(target.reachedFrom, [80, 532]);
+  assert.deepEqual(target.startRoutes, [
+    { start: 80, calls: 1, throughEveryRoute: [80] },
+    { start: 532, calls: 1, throughEveryRoute: [532] },
+  ]);
   assert.deepEqual(r.controls, [
     { site: 80, target: 528 },
     { site: 532, target: 528 },
@@ -1046,6 +1059,48 @@ test("reach follows declared near and far computed call tables through the real 
   ]);
   assert.deepEqual(r.unresolved, []);
   assert.equal(r.negativeUsable, true);
+});
+
+test("reach follows a jump table whose count the engine derives from the code", (t) => {
+  const { dir, data, config } = fixture(t);
+  data.writeUInt16LE(0, 6);
+  // mov bx, [bp+6]; and bx, 3; shl bx, 1; jmp cs:[bx+0020], then returns at 0010..0016 and their words at 0020.
+  data.set([0x8b, 0x5e, 0x06, 0x83, 0xe3, 0x03, 0xd1, 0xe3, 0x2e, 0xff, 0x67, 0x20], 64);
+  data.set([0xc3, 0x90, 0xc3, 0x90, 0xc3, 0x90, 0xc3], 80);
+  data.set([0x10, 0x00, 0x12, 0x00, 0x14, 0x00, 0x16, 0x00], 96);
+  writeFileSync(join(dir, "source.bin"), data);
+  const table = (routine: number) => [
+    {
+      site: 72,
+      exhaustive: true,
+      evidence: "synthetic: bx is the argument masked to 0..3 and doubled",
+      table: { start: 96, stride: 2, evidence: "synthetic word table", bound: { routine } },
+    },
+  ];
+  const query = {
+    ...config,
+    xxh3: sourceXxh3(data),
+    regions: [{ ...config.regions[0]!, end: 104 }],
+    starts: [64],
+    targets: [84],
+    instructionControls: [72],
+  };
+  const path = join(dir, "config.json");
+  writeFileSync(path, JSON.stringify({ ...query, indirectJumps: table(64) }));
+  const r = run(["reach", path]);
+  assert.deepEqual(r.targets[0].route.declaredTableJumps, [{ site: 72, target: 84 }]);
+  const derivation = r.indirectJumpDeclarations[0].derivation;
+  assert.deepEqual([derivation.proven, derivation.count, derivation.bounds], [true, 4, [67]]);
+  assert.deepEqual([r.unresolved, r.gaps, r.negativeUsable], [[], [], true]);
+  // From the dispatch itself nothing bounds bx, so the jump stays unresolved with the reason.
+  writeFileSync(path, JSON.stringify({ ...query, indirectJumps: table(72) }));
+  const unproven = run(["reach", path]);
+  assert.deepEqual(
+    unproven.unresolved.map((u: Report) => [u.site, u.reason]),
+    [[72, "indirect jump table count is not proven by the code"]],
+  );
+  assert.equal(unproven.targets[0].reached, false);
+  assert.equal(unproven.negativeUsable, false);
 });
 
 test("inventory-check places an overlay entry two FBOV trampoline calls reach by its file offset", (t) => {

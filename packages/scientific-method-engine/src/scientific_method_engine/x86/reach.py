@@ -5,7 +5,7 @@ from .trace import (walk, cfg_step, base_mnemonic, unsupported_transfer, holding
                     LIMIT_REASON, OVERLAP_REASON, UNDECODED_REASON)
 from .pcode_backend import interrupt_vector
 from .dispatch import (indirect_call_declarations, call_ends, never_runs, indirect_call_assumptions,
-                       declared_interrupt)
+                       declared_interrupt, derived_assumptions)
 
 # The virtual root of the dominator computation; no file offset is negative.
 ROOT = -1
@@ -329,6 +329,136 @@ def _dominators(order, predecessors):
     return idom
 
 
+def route_dominators(graph, starts, reached):
+    """Immediate dominators of every site in ``reached`` over ``graph``, from a virtual ROOT that leads to every start.
+
+    ``graph`` maps a site to its ``successor_kinds`` rows and ``reached`` holds the sites ``graph``
+    reaches from ``starts``.
+    """
+    successors = {ROOT: list(starts)} | {at: [s for s, _ in graph.get(at, [])] for at in reached}
+    order, visited, stack = [], {ROOT}, [(ROOT, iter(successors[ROOT]))]
+    while stack:
+        node, children = stack[-1]
+        child = next(children, None)
+        if child is None:
+            order.append(node)
+            stack.pop()
+        elif child not in visited:
+            visited.add(child)
+            stack.append((child, iter(successors[child])))
+    order.reverse()
+    predecessors = {node: [] for node in order}
+    for node in order:
+        for child in successors[node]:
+            predecessors[child].append(node)
+    return _dominators(order, predecessors)
+
+
+def through_every_route(idom, routine_starts, target):
+    """The routine starts, outermost first, that dominate ``target`` under ``idom``, the target itself excluded."""
+    cut, at = [], idom[target]
+    while at != ROOT:
+        if at in routine_starts:
+            cut.append(at)
+        at = idom[at]
+    return cut[::-1]
+
+
+def reaching_starts(graph, starts, reached, targets):
+    """Each of ``targets`` mapped to the ``starts``, in their order, from which ``graph`` reaches it.
+
+    ``reached`` holds every site ``graph`` reaches from ``starts``, and each target is one of them.
+    The sets come from one pass over the strongly connected components, so the cost does not grow
+    with the number of starts the way a walk from each start would.
+    """
+    def successors(at):
+        return [s for s, _ in graph.get(at, [])]
+    # Tarjan's components, without recursion; a component is completed only after every component it leads to.
+    index, low, on_stack, stack, components = {}, {}, set(), [], []
+    for root in reached:
+        if root in index:
+            continue
+        index[root] = low[root] = len(index)
+        stack.append(root)
+        on_stack.add(root)
+        work = [(root, iter(successors(root)))]
+        while work:
+            node, children = work[-1]
+            child = next(children, None)
+            if child is not None:
+                if child not in index:
+                    index[child] = low[child] = len(index)
+                    stack.append(child)
+                    on_stack.add(child)
+                    work.append((child, iter(successors(child))))
+                elif child in on_stack:
+                    low[node] = min(low[node], index[child])
+                continue
+            work.pop()
+            if work:
+                low[work[-1][0]] = min(low[work[-1][0]], low[node])
+            if low[node] == index[node]:
+                component = []
+                while True:
+                    at = stack.pop()
+                    on_stack.discard(at)
+                    component.append(at)
+                    if at == node:
+                        break
+                components.append(component)
+    component_of = {at: i for i, component in enumerate(components) for at in component}
+    # One bit per start; a component passes its bits on to the components it leads to, which come earlier.
+    masks = [0] * len(components)
+    for bit, start in enumerate(starts):
+        masks[component_of[start]] |= 1 << bit
+    for i in range(len(components) - 1, -1, -1):
+        for at in components[i]:
+            for successor in successors(at):
+                if component_of[successor] != i:
+                    masks[component_of[successor]] |= masks[i]
+    return {target: [start for bit, start in enumerate(starts) if masks[component_of[target]] >> bit & 1]
+            for target in targets}
+
+
+def start_routes(graph, starts, from_starts, called):
+    """For each target in ``from_starts``, a row per start that ``reaching_starts`` gives it, in ``starts`` order.
+
+    A row gives the ``start``, the fewest ``calls`` on a route from it and the routine starts every
+    route from it passes (``throughEveryRoute``), over the routes ``graph`` holds. A row's routine
+    starts are its own start and the call targets in ``called``, as a walk from that start alone
+    counts them, so another start that the routes enter only by a jump is not listed. Each start
+    that reaches a target costs one walk over its part of ``graph``.
+    """
+    found = {target: [] for target in from_starts}
+    # Every route to a target runs through sites that lead to one, so the rest of the graph changes neither
+    # the fewest calls nor what every route passes.
+    predecessors = {}
+    for at, rows in graph.items():
+        for successor, _ in rows:
+            predecessors.setdefault(successor, []).append(at)
+    leading, stack = set(from_starts), list(from_starts)
+    while stack:
+        for at in predecessors.get(stack.pop(), []):
+            if at not in leading:
+                leading.add(at)
+                stack.append(at)
+    graph = {at: [row for row in graph.get(at, []) if row[0] in leading] for at in leading}
+    targets_of = {}
+    for target, found_starts in from_starts.items():
+        for start in found_starts:
+            targets_of.setdefault(start, []).append(target)
+    for start in starts:
+        if start not in targets_of:
+            continue
+        distance, _, _ = fewest_calls(graph, [start])
+        idom = route_dominators(graph, [start], distance)
+        routine_starts = called | {start}
+        for target in targets_of[start]:
+            found[target].append({"start": start, "calls": distance[target],
+                                  "throughEveryRoute": through_every_route(idom, routine_starts, target)})
+    return found
+
+
 def reach(image, config):
     """Which target sites the starts reach over resolved calls and jumps, by which chain, and what the walk could not read.
 
@@ -345,7 +475,9 @@ def reach(image, config):
     ``stops`` site is decoded and nothing after it is followed. A stop narrows the query and claims
     nothing about the build, so it is neither checked nor listed among the assumptions.
     Each reached target gets one chain with the fewest calls, the assumptions its route rests on,
-    and the routines on every route to it within the read graph. With ``decodedRanges`` the report
+    the routines on every route to it within the read graph, and the starts it is reached from. With
+    ``startRoutes`` each reached target also gives, for each of those starts, the fewest calls from it
+    and the routines on every route from it. With ``decodedRanges`` the report
     also gives every instruction the walk decoded, as ``decoded_ranges`` groups them.
     """
     from .reports import entries
@@ -380,6 +512,9 @@ def reach(image, config):
     with_ranges = config.get("decodedRanges", False)
     if not isinstance(with_ranges, bool):
         raise ValueError("decodedRanges must be a boolean")
+    with_start_routes = config.get("startRoutes", False)
+    if not isinstance(with_start_routes, bool):
+        raise ValueError("startRoutes must be a boolean")
     instruction_limit = config.get("instructionLimit", 10000)
     no_return_routines, no_return_interrupts, no_return_sites, declared = no_return_inputs(
         config.get("noReturn", []), image, indirect_calls)
@@ -424,24 +559,10 @@ def reach(image, config):
     distance, parent, routine = fewest_calls(graph, starts)
 
     # Dominators over everything reached, from a virtual root that leads to every start.
-    successors = {ROOT: list(starts)} | {at: [s for s, _ in graph.get(at, [])] for at in distance}
-    order, visited, stack = [], {ROOT}, [(ROOT, iter(successors[ROOT]))]
-    while stack:
-        node, children = stack[-1]
-        child = next(children, None)
-        if child is None:
-            order.append(node)
-            stack.pop()
-        elif child not in visited:
-            visited.add(child)
-            stack.append((child, iter(successors[child])))
-    order.reverse()
-    predecessors = {node: [] for node in order}
-    for node in order:
-        for child in successors[node]:
-            predecessors[child].append(node)
-    idom = _dominators(order, predecessors)
-    routine_starts = set(starts) | {target for found in call_targets.values() for target in found if target in distance}
+    idom = route_dominators(graph, starts, distance)
+    called = {target for found in call_targets.values() for target in found if target in distance}
+    routine_starts = set(starts) | called
+    from_starts = reaching_starts(graph, starts, distance, [target for target in targets if target in distance])
 
     def chain(target):
         hops, assumed_returns, tables, declared_calls, continued = [], [], [], [], []
@@ -481,14 +602,10 @@ def reach(image, config):
     for target in targets:
         row = {"target": target}
         if target in distance:
-            cut, at = [], idom[target]
-            while at != ROOT:
-                if at in routine_starts:
-                    cut.append(at)
-                at = idom[at]
             row |= {"reached": True, "routine": routine[target], "leaf": target in leaves,
                     "stop": target in stop_routines or target in stop_sites, **chain(target),
-                    "throughEveryRoute": cut[::-1]}
+                    "throughEveryRoute": through_every_route(idom, routine_starts, target),
+                    "reachedFrom": from_starts[target]}
         else:
             row |= {"reached": False, **unreached(target)}
         rows.append(row)
@@ -560,6 +677,16 @@ def reach(image, config):
                                 + (" (the walk stopped at its instruction limit)" if stopped else ""))
     if failures:
         raise ValueError("Positive controls failed: " + "; ".join(failures))
+    # Computed only once the controls pass, since each start costs a walk of its own.
+    if with_start_routes:
+        reached_rows = [row for row in rows if row["reached"]]
+        # With one start, its routes are all the routes, so the row's own fields serve.
+        by_start = (start_routes(graph, starts, from_starts, called) if len(starts) > 1
+                    else {row["target"]: [{"start": starts[0], "calls": row["calls"],
+                                           "throughEveryRoute": list(row["throughEveryRoute"])}]
+                          for row in reached_rows})
+        for row in reached_rows:
+            row["startRoutes"] = by_start[row["target"]]
     # Every call to each routine, and the calls to a noReturn routine that the declaration ended.
     call_sites, ended_sites = {}, {}
     for site, found in sorted(call_targets.items()):
@@ -630,6 +757,7 @@ def reach(image, config):
                    "each declared indirect jump table holds the routes its declaration gives"]
     assumptions += indirect_call_assumptions(indirect_calls)
     assumptions += no_return_assumptions(no_return_routines, no_return_interrupts, no_return_sites)
+    assumptions += derived_assumptions(image, indirect_calls)
     stopped = stopped or check_stopped
     # Every range is kept whatever the result limit, so a caller can place any site in the walk; the
     # instruction limit bounds their number.
@@ -654,10 +782,16 @@ def reach(image, config):
             "interpretation": "Routes over the decoded entry-path CFG from the starts. A chain has the fewest calls; "
                               "throughEveryRoute lists the routine starts every read route to the target passes, "
                               "and an unresolved transfer may add a route that passes none of them. "
+                              "reachedFrom lists each start some read route reaches the target from, and startRoutes, "
+                              "when asked for, gives each of them the fewest calls from it and the routine starts every "
+                              "read route from it passes; a start reachedFrom does not list reaches the target by no "
+                              "read route, which answers for that start only when negativeUsable holds, on the same "
+                              "assumptions. "
                               "negativeUsable needs a control of either kind, a walk that did not stop at its instruction limit, "
                               "and no unresolved transfer, gap, returnCheckGaps row, contested instruction or contradicted noReturn "
                               "routine, and still rests on the listed assumptions, leaves and noReturn declarations. "
-                              "A declared indirect call counts as resolved when it is declared exhaustive: its table "
+                              "A declared indirect call counts as resolved when it is declared exhaustive and, for a "
+                              "table without count, the code proves its count: its table "
                               "rows are read from the build's bytes and its targets list rests on its evidence alone, "
                               "and neither proves an instruction boundary or that the call runs. "
                               "A declared outside destination is where the call can leave the declared code, on its "
