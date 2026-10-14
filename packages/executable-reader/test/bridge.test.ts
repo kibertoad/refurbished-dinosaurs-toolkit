@@ -873,6 +873,58 @@ test("reach follows a resident far call and an overlay fixup call through the FB
   assert.deepEqual(leafReport.leaves, [{ routine: 528, reason: leaf, reached: true, callSites: [532] }]);
 });
 
+test("reach lists a chain link's branches on the routine's stack argument through the real MZ prepared bridge", (t) => {
+  const { dir, data, config } = fixture(t);
+  // 64 calls 80 far through its relocation. 80 tests [bp+6], the first byte above its far return frame,
+  // and calls 96 at 89 only when the tested bit is clear.
+  data.set([0x55, 0x8b, 0xec, 0xf6, 0x46, 0x06, 0x04, 0x74, 0x03, 0xe8, 0x04, 0x00, 0x5d, 0xcb, 0x90, 0x90], 80);
+  data.set([0xc7, 0x06, 0x00, 0x01, 0x01, 0x00, 0xcb], 96);
+  writeFileSync(join(dir, "source.bin"), data);
+  const path = join(dir, "config.json");
+  const regions = [{ ...config.regions[0]!, end: 103 }];
+  writeFileSync(
+    path,
+    JSON.stringify({
+      ...config,
+      xxh3: sourceXxh3(data),
+      regions,
+      starts: [64],
+      // 89 is also a target, so the chain to it ends in a target link from 80's entry.
+      targets: [96, 89],
+      controls: [89],
+      argumentBranches: true,
+    }),
+  );
+  const r = run(["reach", path]);
+  assert.deepEqual(r.targets[0].chain, [{ routine: 64 }, { callSite: 64, routine: 80 }, { callSite: 89, routine: 96 }]);
+  const branches = [
+    {
+      site: 87,
+      predicate: "je",
+      flagProducers: [83],
+      directions: ["notTaken"],
+      entryOffsets: [4],
+      possiblyRewrittenOffsets: [],
+    },
+  ];
+  const links = r.argumentBranches.map((l: Record<string, unknown>) => [
+    l.routine,
+    l.callSite,
+    l.target,
+    l.enteredBy,
+    l.returnFrameBytes,
+  ]);
+  assert.deepEqual(links, [
+    [64, 64, null, null, null],
+    [80, 89, null, 64, 4],
+    [80, null, 89, 64, 4],
+  ]);
+  for (const link of r.argumentBranches.slice(1)) {
+    assert.deepEqual(link.branches, branches);
+    assert.equal(link.complete, true);
+  }
+});
+
 test("reach keeps the return site of a far call to a noReturn routine unread through the real MZ prepared bridge", (t) => {
   const { dir, config } = fixture(t);
   const path = join(dir, "config.json");

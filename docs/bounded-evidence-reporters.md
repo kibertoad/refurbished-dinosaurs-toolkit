@@ -134,7 +134,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `bounds` | the instruction extent reached from one entry, with its interrupt and port instructions | [function bounds](#function-bounds-and-site-ownership), [hardware boundaries](#hardware-boundaries) |
 | `owner` | which entries' bounded traversals reach a site | [function bounds](#function-bounds-and-site-ownership) |
 | `callees` | the bounded call graph below an entry, with recursion and shared callees, optionally compared with Ghidra's edges | [function bounds](#function-bounds-and-site-ownership) |
-| `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, the starts each target is reached from, and every reached transfer left unresolved; follows the declared targets of computed calls; ends the walk at the query's stop routines and stop sites; with `decodedRanges`, the ranges of every instruction the walk decoded; with `spans`, the transfers that land inside each span | [reachability](#reachability-from-starts-to-targets), [declared call targets](#declared-computed-call-targets) |
+| `reach` | which target sites a set of starts reaches over resolved calls and jumps, with one fewest-call chain per target, the routines on every read route, the starts each target is reached from, and every reached transfer left unresolved; follows the declared targets of computed calls; ends the walk at the query's stop routines and stop sites; with `decodedRanges`, the ranges of every instruction the walk decoded; with `spans`, the transfers that land inside each span; with `argumentBranches`, the branches before each chain link's call, and before each target, that test the routine's own stack arguments | [reachability](#reachability-from-starts-to-targets), [declared call targets](#declared-computed-call-targets) |
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
 | `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (the resident span of each FBOV descriptor, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own, an optional comparison with a candidate body, and every FBOV descriptor with its load-image span (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
@@ -1087,6 +1087,7 @@ for questions such as "can anything between program start and this point write t
 | `instructionLimit` | instructions the walk decodes (1 to 100,000 or the declared code size, whichever is larger; default 10000) |
 | `limit` | rows kept in each of `unresolved`, `interrupts`, `gaps` and `contested` (1..10000, default 1000) |
 | `decodedRanges` | optional boolean, default false: also report `decodedRanges`, the instructions the walk decoded ([ADR 0038](decisions/0038-decoded-ranges-of-a-reach-walk.md)) |
+| `argumentBranches` | optional, default false: `true`, or an object with any of `maxPaths`, `maxSteps`, `totalSteps`, `visitLimit` and `maxDepth` in the ranges `trace` takes, which bound each link's trace. Also report `argumentBranches`, the branches before each chain link's call and before each target that test the routine's own stack arguments ([ADR 0045](decisions/0045-argument-branches-of-reach-chain-links.md)). The chains may hold at most 256 distinct links |
 | `spans` | optional, at most 256 distinct `{ "first", "last" }` objects ([ADR 0044](decisions/0044-transfers-into-a-span.md)): file offsets in one declared region, `first` before `last` and at most 4096 bytes apart, such as the instruction that writes a value and the instruction that reads it. The report then gives `spans` |
 | `startRoutes` | optional boolean, default false: also give each reached target `startRoutes`, the route from each start it is reached from |
 
@@ -1178,6 +1179,49 @@ instruction starts there, and an instruction control at it fails the report when
 result `limit` does not cut the ranges,
 which the instruction limit bounds, and a stopped walk's ranges cover the part read. Without the
 option the field is absent.
+
+With `argumentBranches`, `argumentBranches` gives one row for each distinct link of the reached
+targets' chains. A call link is a `callSite` with the `routine` that holds it, which is the routine
+the chain entered by the call before it, or the start. A target link is the last part of a chain: the
+`target` with the routine that holds it, given unless the target is that routine's entry. The row
+tells a reader which of the routine's stack arguments decide whether the call or the target runs,
+so the reader can check what the previous link's caller passes there. Call links come first, then
+target links, each by routine and site. The report runs one bounded `trace` per link from the
+routine's entry, and each path stops at its first arrival at the link's site. The trace forms values
+with p-code as `trace` does and follows calls into their callees. It does not take the walk's leaves, stops, `noReturn` or
+`indirectCalls` declarations: an interrupt, an unresolved call or jump, and a declared table jump
+stop its path. A row gives:
+
+| Field | Meaning |
+|---|---|
+| `routine`, `callSite`, `target` | the link: a call link sets `callSite` and a target link sets `target`, and the other is null |
+| `enteredBy` | the call site of the chain's previous link, or null when the routine is the start |
+| `returnFrameBytes` | the return frame that call pushed: 4 for a far call, or for a near call right after a decoded `push cs` in the real-mode model, otherwise the image's near frame (2 in the real-mode model, 4 in the PE32 model); null for a start |
+| `branches` | each branch on a path that arrived whose condition reads a stack byte the routine received, as `{ "site", "predicate", "flagProducers", "directions", "entryOffsets", "possiblyRewrittenOffsets" }` |
+| `unformedConditions` | each undecided branch on a path that arrived whose condition the trace could not form from its operands, as `{ "site", "predicate", "directions" }`: one on flags no comparable producer left, such as the flags the routine was entered with, or one on a carry its producer left unknown, such as after a `mul`, an `adc` or a shift by an unknown count. Its condition may read an argument the report cannot see |
+| `arrivals` | the paths that arrived at the link's site in the routine's own frame |
+| `stops` | each `{ "site", "reason" }` where a path stopped before arriving or returning, including an arrival inside a call to another routine or a recursive call to the routine itself |
+| `gaps` | the trace's budget gaps, such as `path limit` |
+| `complete` | true when every path arrived or returned and no gap was recorded |
+| `pathsRead`, `stepsUsed` | what the trace read |
+
+A stack byte counts as an argument when it lies above the return frame (`returnFrameBytes`, or the
+image's near frame for a start), up to 256 bytes above it, and the condition reads it through SS, as
+a BP- or SP-relative operand does. `entryOffsets` counts from the routine's entry SP, so
+after `push bp; mov bp, sp` in the real-mode model `[bp+N]` is offset N-2. For a start, the report does not
+know how the routine is entered, and the two bytes above a near frame may be a far return segment.
+A branch is listed whether the argument reaches the condition directly, through a register, or as a
+value passed to a callee that tests it; in the last case `site` and `flagProducers` lie in the
+callee. `entryOffsets` are bytes read as the routine received them. `possiblyRewrittenOffsets` are
+bytes a write on the path may have stored before the read, such as a store through a pointer the
+trace could not place. `directions` lists `taken` and `notTaken` as the arriving paths took them, so
+a branch with one direction is one the link's site lies past on every path read. In the real-mode model, a
+condition that reads an argument through another segment register than SS is not listed. In the
+PE32 model CS, DS, ES and SS share base 0, so a read through any of them is listed.
+
+The list covers the paths the trace read. When `complete` is false, a path that stopped may pass
+another such branch, and an empty list says nothing about it. The report does not say whether the
+previous caller's values take a listed branch.
 
 With `spans`, `spans` gives one row per span, in the order given, for questions such as "does
 anything reach this interrupt with a value other than the one the instruction before it set"

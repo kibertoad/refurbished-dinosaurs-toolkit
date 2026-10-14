@@ -955,6 +955,173 @@ class DeclaredOutsideAndNeverRunCallTests(unittest.TestCase):
                 computed(indirectCalls=[declaration])
 
 
+# The start pushes 0 and calls R at 0010, which calls T at 0020 only when bit 2 of its argument is
+# clear. Every variant below keeps the start, and the target T, at 0020 or 0030.
+CALLER = "6a00e80b0083c402c3" + "90" * 7  # 0000 push 0; 0002 call 0010; 0005 add sp, 2; 0008 ret
+STORE = "c70600010100c3"  # mov word [0100], 1; ret
+GATED = bytes.fromhex(CALLER + "55" "8bec" "f6460404" "7403" "e80400" "5d" "c3" "9090" + STORE)
+# 0010 push bp; 0011 mov bp, sp; 0013 test byte [bp+4], 4; 0017 jz 001C; 0019 call 0020; 001C pop bp; 001D ret
+
+
+def gated(data=GATED, target=0x20, **extra):
+    return run_report(data, config(data, targets=[target], **extra), "reach")
+
+
+class ArgumentBranchTests(unittest.TestCase):
+    def test_a_call_behind_a_test_of_the_routines_argument_lists_the_branch(self):
+        r = gated(argumentBranches=True, controls=[0x19])
+        self.assertEqual([h.get("callSite") for h in r["targets"][0]["chain"]], [None, 0x2, 0x19])
+        start, link = r["argumentBranches"]
+        # The start's own link reads no argument and every path to its call was read.
+        self.assertEqual((start["routine"], start["callSite"], start["enteredBy"], start["returnFrameBytes"]),
+                         (0x0, 0x2, None, None))
+        self.assertEqual((start["branches"], start["complete"], start["arrivals"]), ([], True, 1))
+        self.assertEqual((link["routine"], link["callSite"], link["enteredBy"], link["returnFrameBytes"]),
+                         (0x10, 0x19, 0x2, 2))
+        # [bp+4] after push bp is the byte two above the entry SP, the first byte past the near return frame.
+        self.assertEqual(link["branches"], [{"site": 0x17, "predicate": "je", "flagProducers": [0x13],
+                                             "directions": ["notTaken"], "entryOffsets": [2],
+                                             "possiblyRewrittenOffsets": []}])
+        self.assertEqual((link["unformedConditions"], link["stops"], link["gaps"]), ([], [], []))
+        self.assertTrue(link["complete"])
+        self.assertEqual((link["arrivals"], link["pathsRead"]), (1, 2))
+        self.assertNotIn("argumentBranches", gated())
+        self.assertNotIn("argumentBranches", gated(argumentBranches=False))
+
+    def test_an_argument_tested_through_a_register_or_as_a_word_is_listed(self):
+        # 0013 mov al, [bp+4]; 0016 test al, 4; 0018 jz 001D; 001A call 0020; 001D pop bp; 001E ret
+        data = bytes.fromhex(CALLER + "55" "8bec" "8a4604" "a804" "7403" "e80300" "5d" "c3" "90" + STORE)
+        link = gated(data, argumentBranches=True)["argumentBranches"][1]
+        self.assertEqual([(b["site"], b["entryOffsets"]) for b in link["branches"]], [(0x18, [2])])
+        # The start pushes two words; 0013 cmp word [bp+6], 0; 0017 jne 001C reads the second.
+        data = bytes.fromhex("6a006a00e8090083c404c3" + "90" * 5
+                             + "55" "8bec" "837e0600" "7503" "e80400" "5d" "c3" "9090" + STORE)
+        link = gated(data, argumentBranches=True)["argumentBranches"][1]
+        self.assertEqual([(b["site"], b["predicate"], b["directions"], b["entryOffsets"]) for b in link["branches"]],
+                         [(0x17, "jne", ["notTaken"], [4, 5])])
+
+    def test_an_argument_passed_on_to_a_callee_that_tests_it_is_listed(self):
+        # 0013 push word [bp+4]; 0016 call 0038; 0019 pop cx; 001A jz 001F; 001C call 0030; 001F pop bp; 0020 ret
+        # 0038 H: push bp; mov bp, sp; test byte [bp+4], 4; pop bp; ret. The flags H leaves decide the jz.
+        data = bytes.fromhex(CALLER + "55" "8bec" "ff7604" "e81f00" "59" "7403" "e81100" "5d" "c3" + "90" * 15
+                             + STORE + "90" + "55" "8bec" "f6460404" "5d" "c3")
+        link = gated(data, target=0x30, argumentBranches=True)["argumentBranches"][1]
+        self.assertEqual(link["callSite"], 0x1C)
+        self.assertEqual([(b["site"], b["flagProducers"], b["entryOffsets"]) for b in link["branches"]],
+                         [(0x1A, [0x3B], [2])])
+        self.assertTrue(link["complete"])
+
+    def test_a_byte_a_write_may_have_stored_is_listed_apart(self):
+        # 0013 mov [si], al may store any byte of the stack before 0015 test byte [bp+4], 4; 0019 jz 001E.
+        data = bytes.fromhex(CALLER + "55" "8bec" "8804" "f6460404" "7403" "e80200" "5d" "c3" + STORE)
+        link = gated(data, argumentBranches=True)["argumentBranches"][1]
+        self.assertEqual([(b["site"], b["entryOffsets"], b["possiblyRewrittenOffsets"]) for b in link["branches"]],
+                         [(0x19, [], [2])])
+
+    def test_a_branch_on_flags_the_trace_cannot_name_is_listed_as_unformed(self):
+        # R begins 0010 jz 0015 on the flags it was entered with; 0012 call 0020; 0015 ret.
+        data = bytes.fromhex(CALLER + "7403" "e80b00" "c3" + "90" * 10 + STORE)
+        link = gated(data, argumentBranches=True)["argumentBranches"][1]
+        self.assertEqual(link["branches"], [])
+        self.assertEqual(link["unformedConditions"], [{"site": 0x10, "predicate": "je", "directions": ["notTaken"]}])
+        self.assertTrue(link["complete"])
+
+    def test_a_branch_on_a_carry_named_only_by_its_producer_is_listed_as_unformed(self):
+        # 0013 mov ax, 1; 0016 mul word [bp+4]; 0019 jc 001E; 001B call 0020. MUL leaves CF unknown,
+        # named by its site, so the condition names no argument byte though the product reads one.
+        data = bytes.fromhex(CALLER + "55" "8bec" "b80100" "f76604" "7203" "e80200" "5d" "c3" + STORE)
+        link = gated(data, argumentBranches=True)["argumentBranches"][1]
+        self.assertEqual(link["branches"], [])
+        self.assertEqual(link["unformedConditions"], [{"site": 0x19, "predicate": "jb", "directions": ["notTaken"]}])
+        # A carry formed from its operands is listed when it reads the argument: 0013 shr byte [bp+4], 1; 0016 jc.
+        data = bytes.fromhex(CALLER + "55" "8bec" "d06e04" "7203" "e80500" "5d" "c3" "909090" + STORE)
+        link = gated(data, argumentBranches=True)["argumentBranches"][1]
+        self.assertEqual([(b["site"], b["entryOffsets"]) for b in link["branches"]], [(0x16, [2])])
+        self.assertEqual(link["unformedConditions"], [])
+
+    def test_a_path_the_trace_could_not_read_leaves_the_link_incomplete(self):
+        # R starts 0010 int 21h, which reach continues past and the trace does not model.
+        data = bytes.fromhex(CALLER + "cd21" "e80b00" "c3" + "90" * 10 + STORE)
+        r = gated(data, argumentBranches=True)
+        self.assertTrue(r["targets"][0]["reached"])
+        link = r["argumentBranches"][1]
+        self.assertEqual((link["arrivals"], link["branches"], link["complete"]), (0, [], False))
+        self.assertEqual([s["site"] for s in link["stops"]], [0x10])
+        self.assertIn("interrupt", link["stops"][0]["reason"])
+
+    def test_the_trace_budget_is_the_querys_and_its_limits_leave_the_link_incomplete(self):
+        link = gated(argumentBranches={"maxPaths": 1})["argumentBranches"][1]
+        self.assertEqual(link["gaps"], [{"site": 0x17, "reason": "path limit"}])
+        self.assertFalse(link["complete"])
+        link = gated(argumentBranches={"maxSteps": 2})["argumentBranches"][1]
+        self.assertEqual((link["arrivals"], link["complete"]), (0, False))
+        self.assertTrue(all(s["reason"].startswith("step limit") for s in link["stops"]))
+
+    def test_a_routine_reached_by_a_far_call_has_a_four_byte_return_frame(self):
+        # The start calls R far through a relocated segment word; R tests [bp+6], past the far frame.
+        data = bytes.fromhex("6a00" "9a10000000" "83c402" "c3" + "90" * 5
+                             + "55" "8bec" "f6460604" "7403" "e80400" "5d" "cb" "9090" + STORE)
+        relocations = [{"site": 0x5, "segment": 0x1000, "evidence": "synthetic relocation of the segment word"}]
+        r = gated(data, argumentBranches=True, relocations=relocations)
+        link = r["argumentBranches"][1]
+        self.assertEqual((link["enteredBy"], link["returnFrameBytes"]), (0x2, 4))
+        self.assertEqual([(b["site"], b["entryOffsets"]) for b in link["branches"]], [(0x17, [4])])
+
+    def test_a_routine_reached_by_push_cs_and_a_near_call_has_a_four_byte_return_frame(self):
+        # 0000 push 0; 0002 push cs; 0003 call 0010; R returns with retf over the far frame.
+        data = bytes.fromhex("6a00" "0e" "e80a00" "83c402" "c3" + "90" * 6
+                             + "55" "8bec" "f6460604" "7403" "e80400" "5d" "cb" "9090" + STORE)
+        link = gated(data, argumentBranches=True)["argumentBranches"][1]
+        self.assertEqual((link["enteredBy"], link["returnFrameBytes"]), (0x3, 4))
+        self.assertEqual([(b["site"], b["entryOffsets"]) for b in link["branches"]], [(0x17, [4])])
+        # The path that skips the call returns through retf over the same frame, so it is no stop.
+        self.assertEqual((link["stops"], link["complete"]), ([], True))
+
+    def test_a_target_behind_a_test_of_its_routines_argument_lists_the_branch(self):
+        # 0010 push bp; mov bp, sp; 0013 test byte [bp+4], 4; 0017 jz 001F; 0019 mov word [0100], 1; 001F pop bp; ret
+        data = bytes.fromhex(CALLER + "55" "8bec" "f6460404" "7406" "c70600010100" "5d" "c3")
+        start, last = gated(data, target=0x19, argumentBranches=True)["argumentBranches"]
+        self.assertEqual((start["routine"], start["callSite"], start["target"]), (0x0, 0x2, None))
+        self.assertEqual((last["routine"], last["callSite"], last["target"], last["enteredBy"],
+                          last["returnFrameBytes"]), (0x10, None, 0x19, 0x2, 2))
+        self.assertEqual(last["branches"], [{"site": 0x17, "predicate": "je", "flagProducers": [0x13],
+                                             "directions": ["notTaken"], "entryOffsets": [2],
+                                             "possiblyRewrittenOffsets": []}])
+        self.assertEqual((last["arrivals"], last["complete"]), (1, True))
+        # A target in the start routine is traced from the start: 0005 add sp, 2 lies past the call.
+        rows = gated(target=0x5, argumentBranches=True)["argumentBranches"]
+        self.assertEqual([(r["routine"], r["callSite"], r["target"], r["enteredBy"]) for r in rows],
+                         [(0x0, None, 0x5, None)])
+
+    def test_an_arrival_inside_a_recursive_call_of_the_routine_is_a_stop(self):
+        # R: 0010 push bp; mov bp, sp; 0013 test byte [bp+4], 4; 0017 jnz 001F; 0019 push 4; 001B call 0010;
+        # 001E pop cx; 001F call 0030; 0022 pop bp; ret. When the bit is clear, R calls itself with it set,
+        # and the nested R arrives at 001F first.
+        data = bytes.fromhex(CALLER + "55" "8bec" "f6460404" "7506" "6a04" "e8f2ff" "59" "e80e00" "5d" "c3"
+                             + "90" * 12 + STORE)
+        link = gated(data, target=0x30, argumentBranches=True)["argumentBranches"][1]
+        self.assertEqual((link["routine"], link["callSite"]), (0x10, 0x1F))
+        self.assertEqual(link["arrivals"], 1)
+        self.assertEqual(link["stops"], [{"site": 0x1F, "reason": "reached the site inside a recursive call to 16"}])
+        # Only the arrival in R's own frame gives the branch a direction.
+        self.assertEqual([(b["site"], b["directions"]) for b in link["branches"]], [(0x17, ["taken"])])
+        self.assertFalse(link["complete"])
+
+    def test_rejected_argument_branch_inputs(self):
+        for value, message in [("yes", "argumentBranches must be a boolean or an object"),
+                               ({"paths": 1}, "argumentBranches must be a boolean or an object"),
+                               ({"maxPaths": 0}, "maxPaths"), ({"maxSteps": 10001}, "maxSteps"),
+                               ({"maxDepth": 33}, "maxDepth")]:
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, message):
+                gated(argumentBranches=value)
+        # 258 routines each call the next; the chain to the last holds 257 links.
+        data = bytes.fromhex("e80100c3" * 257 + "c3")
+        with self.assertRaisesRegex(ValueError, "argumentBranches traces at most 256 chain links and the chains hold 257"):
+            run_report(data, config(data, targets=[257 * 4], argumentBranches=True), "reach")
+        self.assertEqual(len(run_report(data, config(data, targets=[256 * 4], argumentBranches=True),
+                                        "reach")["argumentBranches"]), 256)
+
+
 # A value writer before the request that reads it. 0000 sets AH for the interrupt at 0002. 0005 sets AH
 # too and jumps to the interrupt, past the writer at 0000. 0009 stores a word whose immediate, read from
 # 000D, is a jump to 0002; 0010 is never reached and also jumps to 0002.

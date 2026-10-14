@@ -647,7 +647,8 @@ def entry_frame(image, config, entry):
     return frame
 
 
-def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=None, call_stacks=False, argument_window=0):
+def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=None, call_stacks=False, argument_window=0,
+          established_entry=True):
     """Trace bounded paths, preserving declared-table continuations as separate conditional evidence.
 
     Ordinary paths run first. A path stopped at a declared indirect jump is then
@@ -665,9 +666,14 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
     A positive ``argument_window`` gives each traced call event an ``argumentSlots`` entry: the
     first ``argument_window`` bytes above its return frame as ``State.argument_slots`` saw them
     when the call ran. ``argument_frames`` reads and removes it.
+    ``reach`` passes established_entry=False to trace from a routine its walk entered by a resolved
+    call, which need not be a declared region entry; the entry must still lie in declared code.
     """
     entry = integer(config.get("entry"), 0, len(image.data) - 1, "entry")
-    if not any(entry in r["entries"] for r in image.regions):
+    if not established_entry:
+        if image.region(entry) is None:
+            raise ValueError("Trace entry must lie in declared code")
+    elif not any(entry in r["entries"] for r in image.regions):
         raise ValueError("Trace entry must be an established region entry")
     max_steps = budget_input(config, "maxSteps")
     max_paths = budget_input(config, "maxPaths")
@@ -821,7 +827,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                 "instructionPath": s.path, "guards": s.guards, "events": s.events,
                 "registers": snapshot(s), "conditionalModels": s.conditional}
         if reason == ENTRY_ARRIVAL:
-            arrival = path["arrival"] = {"frameEntry": s.frames[-1]["entry"]}
+            arrival = path["arrival"] = {"frameEntry": s.frames[-1]["entry"], "depth": len(s.frames) - 1}
             for key, name in (("sp", s.sp), ("bp", s.bp)):
                 # Finishing a path only observes it, so a register past the term limit is an offset
                 # not known, with the limit as the reason.

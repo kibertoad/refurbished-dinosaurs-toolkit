@@ -33,6 +33,9 @@ for code, names in enumerate((("jo",), ("jno",), ("jb", "jc", "jnae"), ("jae", "
     for name in names:
         CONDITION_CODES[name] = code
 
+# The reason of an undecided branch whose flags no comparable producer left (Pypcode.condition).
+FLAG_PRODUCER_UNRESOLVED = "flag producer unresolved"
+
 
 def linear(term):
     """A term as a constant plus integer multiples of non-linear subterms."""
@@ -450,7 +453,7 @@ class Pypcode:
         if carry_only:
             info = {"predicate": mnemonic, "flag": "CF", "carry": state.carry.report()}
         elif state.flags is None:
-            info = {"predicate": mnemonic, "reason": "flag producer unresolved",
+            info = {"predicate": mnemonic, "reason": FLAG_PRODUCER_UNRESOLVED,
                     "flagProducer": state.unknown_flag_site, "flagGeneration": state.flag_epoch}
         else:
             a, b, operation, site = state.flags
