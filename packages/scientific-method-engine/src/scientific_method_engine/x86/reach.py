@@ -4,7 +4,7 @@ from .image import integer
 from .trace import (walk, cfg_step, base_mnemonic, unsupported_transfer, holding_instruction, INTERRUPTS, RETURNS,
                     LIMIT_REASON, OVERLAP_REASON, UNDECODED_REASON)
 from .pcode_backend import interrupt_vector
-from .dispatch import indirect_call_declarations, call_ends
+from .dispatch import indirect_call_declarations, call_ends, never_runs, indirect_call_assumptions
 
 # The virtual root of the dominator computation; no file offset is negative.
 ROOT = -1
@@ -135,9 +135,12 @@ def no_return_inputs(value, image, indirect_calls):
     return routines, interrupts, calls, declared
 
 
-def call_assumption(routines, calls):
-    """The assumption that reached calls return, with the exceptions the ``noReturn`` declarations make."""
-    exceptions = (["a call to a noReturn routine"] if routines else []) + (["a noReturn call"] if calls else [])
+def call_assumption(routines, calls, indirect_calls=None):
+    """The assumption that reached calls return, with the exceptions the ``noReturn`` declarations make and
+    the indirect calls declared never to run (``never_runs``)."""
+    exceptions = ((["a call to a noReturn routine"] if routines else []) + (["a noReturn call"] if calls else [])
+                  + (["an indirect call declared never to run"]
+                     if any(never_runs(d) for d in (indirect_calls or {}).values()) else []))
     return "each reached call returns to its next instruction" + (", except " + " and ".join(exceptions)
                                                                    if exceptions else "")
 
@@ -238,6 +241,24 @@ def no_return_rows(routines, interrupts, returns, call_sites, seen, reached, rea
                    for at, row in interrupts.items()]
 
 
+def outside_transfers(indirect_calls, seen):
+    """The declared ``outside`` destinations, each once with the declared call ``sites`` that name it and the
+    ``reached`` ones among them; an ``interrupt`` destination also says whether the walk reached that interrupt."""
+    groups = {}
+    for site, declaration in indirect_calls.items():
+        if "outside" in declaration:
+            destination = declaration["outside"]
+            group = groups.setdefault(repr(sorted(destination.items())), dict(destination, sites=[], reached=[]))
+            group["sites"].append(site)
+            if site in seen:
+                group["reached"].append(site)
+    rows = list(groups.values())
+    for row in rows:
+        if "interrupt" in row:
+            row["interruptReached"] = row["interrupt"] in seen
+    return rows
+
+
 def fewest_calls(graph, starts):
     """``(distance, parent, routine)`` for every site ``graph`` reaches from ``starts`` by the route with the fewest calls.
 
@@ -321,7 +342,9 @@ def reach(image, config):
     interrupt to the next instruction. A ``leaves`` routine is reached but never decoded. A call to a
     ``noReturn`` routine, a ``noReturn`` call site and a ``noReturn`` interrupt site do not continue
     at the next instruction, nor does a declared indirect call that is exhaustive and whose targets
-    are all ``noReturn``. A ``stops`` routine is reached but never decoded, and a call to it does not
+    are all ``noReturn``, which holds for one declared exhaustive with no targets (it never runs). A
+    declared ``outside`` destination is not read: the call continues at its return site, and
+    ``outsideTransfers`` groups the declared sites by destination. A ``stops`` routine is reached but never decoded, and a call to it does not
     continue at the next instruction, under the same rule as a call to a ``noReturn`` routine; a
     ``stops`` site is decoded and nothing after it is followed. A stop narrows the query and claims
     nothing about the build, so it is neither checked nor listed among the assumptions.
@@ -504,6 +527,10 @@ def reach(image, config):
             cut_by[row["following"]] = f"{cut_by[row['following']]} and {cause}" if row["following"] in cut_by else cause
     cut_by |= {row["following"]: f"the noReturn interrupt at {at}"
                for at, row in no_return_interrupts.items() if at in seen}
+    # A declared call that never runs has no targets, so call_targets does not hold it.
+    for at, declaration in indirect_calls.items():
+        if at in seen and never_runs(declaration):
+            cut_by.setdefault(at + seen[at].size, f"the indirect call at {at}, declared never to run")
     # A site past a stop site may be reached by no other route; the first stop names the cut.
     for at, found in sorted(stop_successors.items()):
         for successor in found:
@@ -587,24 +614,28 @@ def reach(image, config):
                                                       if site in seen and site not in stop_sites
                                                       and t not in seen and t not in unread]}
                      for site, declaration in indirect_calls.items()]
+    # A call that never runs ends its branch, so a reviewer can check whether what follows it is read another way.
+    for row in indirect_rows:
+        if never_runs(row):
+            following = row["site"] + image.decode(row["site"]).size
+            row |= {"following": following, "followingRead": following in seen}
+    outside = outside_transfers(indirect_calls, seen)
     counts = {"routines": len(routine_starts), "instructions": len(seen), "unresolved": len(unresolved),
               "interrupts": len(interrupts), "gaps": len(gaps), "contested": len(contested)}
-    assumptions = [call_assumption(no_return_routines, no_return_sites),
+    assumptions = [call_assumption(no_return_routines, no_return_sites, indirect_calls),
                    "each reached interrupt returns to its next instruction"
                    + (", except at a noReturn interrupt site" if no_return_interrupts else "")
                    + "; interrupt handlers are not read",
                    "each leaf calls nothing, for the reason it gives",
                    "each declared indirect jump table holds the routes its declaration gives"]
-    if indirect_calls:
-        assumptions.append("each declared indirect call can call the targets its declaration gives, for the evidence "
-                           "it gives, and only those when it is declared exhaustive")
+    assumptions += indirect_call_assumptions(indirect_calls)
     assumptions += no_return_assumptions(no_return_routines, no_return_interrupts, no_return_sites)
     stopped = stopped or check_stopped
     # Every range is kept whatever the result limit, so a caller can place any site in the walk; the
     # instruction limit bounds their number.
     ranges = {"decodedRanges": decoded_ranges(seen, routine)} if with_ranges else {}
     return {"starts": starts, "targets": rows, "leaves": leaf_rows, "stops": stop_rows, "noReturn": no_return,
-            "indirectCalls": indirect_rows,
+            "indirectCalls": indirect_rows, "outsideTransfers": outside,
             "reachedRoutines": sorted(routine_starts), **ranges, "counts": counts,
             "unresolved": unresolved[:limit], "interrupts": interrupts[:limit], "gaps": gaps[:limit],
             "contested": sorted(contested)[:limit], "returnCheckGaps": check_gap_rows[:limit],
@@ -618,7 +649,8 @@ def reach(image, config):
                                        or check_gap_rows),
             "assumptions": assumptions,
             "exclusions": ["computed call and jump targets no declaration gives (listed in unresolved)", "unrelocated far calls",
-                           "code reached only from outside the starts", "runtime reachability"],
+                           "code reached only from outside the starts", "runtime reachability"]
+                          + (["the code a declared outside destination names, and anything it calls"] if outside else []),
             "interpretation": "Routes over the decoded entry-path CFG from the starts. A chain has the fewest calls; "
                               "throughEveryRoute lists the routine starts every read route to the target passes, "
                               "and an unresolved transfer may add a route that passes none of them. "
@@ -628,6 +660,13 @@ def reach(image, config):
                               "A declared indirect call counts as resolved when it is declared exhaustive: its table "
                               "rows are read from the build's bytes and its targets list rests on its evidence alone, "
                               "and neither proves an instruction boundary or that the call runs. "
+                              "A declared outside destination is where the call can leave the declared code, on its "
+                              "evidence alone: the walk reads nothing there, assumes the code returns to the call's "
+                              "next instruction, and claims nothing about what it does or calls; outsideTransfers "
+                              "groups the declared sites by destination. "
+                              "An indirect call declared exhaustive with no targets never runs, on its evidence alone: "
+                              "the walk reads nothing past it, and followingRead says whether it read the next "
+                              "instruction by another route. "
                               "A noReturn routine is contradicted when a return instruction, or a leaf entered "
                               "other than by a call, lies on its own read paths; an empty returnSites means only "
                               "that the walk read none. "

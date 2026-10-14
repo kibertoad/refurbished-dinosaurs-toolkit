@@ -11,7 +11,7 @@ from .result_flow import validate_contracts, result_contracts
 from .loops import LoopTracker
 from .memory_scopes import validate_scopes, capture_scopes, retain_scopes, scope_history
 from .pcode_backend import interrupt_vector
-from .dispatch import CALL_NOT_EXHAUSTIVE, declared_call_ends
+from .dispatch import CALL_NOT_EXHAUSTIVE, INTERRUPTS, declared_call_ends
 from .relational import checkpoint_anchors, memory_probes, probe_memory
 
 # What stops one path and leaves the others: the model cannot follow it, or a value it built
@@ -92,7 +92,6 @@ OVERLAP_REASON = "overlapping entry-path instructions; boundary unresolved"
 # The gap reason walk() records at a site it reaches but cannot decode.
 UNDECODED_REASON = "undecoded or unmapped edge"
 RETURNS = {"ret": "near return", "retf": "far return", "iret": "interrupt return", "iretd": "interrupt return"}
-INTERRUPTS = ("int", "int1", "int3", "into")
 PORTS = ("in", "out", "insb", "insw", "insd", "outsb", "outsw", "outsd")
 PORT_INPUTS = ("in", "insb", "insw", "insd")
 

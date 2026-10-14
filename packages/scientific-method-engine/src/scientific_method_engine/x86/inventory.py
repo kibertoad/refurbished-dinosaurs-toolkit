@@ -4,7 +4,7 @@ from bisect import bisect_right
 from pathlib import Path
 from .image import integer
 from .trace import LIMIT_REASON, CONTESTED_REASON, OVERLAP_REASON, walk, holding_instruction
-from .dispatch import indirect_call_declarations, call_ends
+from .dispatch import indirect_call_declarations, call_ends, indirect_call_assumptions
 
 MAX_INVENTORY = 16 * 1024 * 1024
 MAX_ROWS = 200000
@@ -528,15 +528,13 @@ def inventory_check(image, config):
     if target_stopped:
         summary += (" The walk that checks the targets of the noReturn calls stopped at its instruction limit, so it "
                     "can miss returns.")
-    assumptions = [call_assumption(no_return_routines, no_return_sites)]
+    assumptions = [call_assumption(no_return_routines, no_return_sites, indirect_calls)]
     if checked:
         assumptions.append("each interrupt the noReturn check reads returns to its next instruction"
                            + (", except at a noReturn interrupt site" if no_return_interrupts else "")
                            + "; interrupt handlers are not read")
     assumptions += no_return_assumptions(no_return_routines, no_return_interrupts, no_return_sites)
-    if indirect_calls:
-        assumptions.append("each declared indirect call can call the targets its declaration gives, for the evidence "
-                           "it gives, and only those when it is declared exhaustive")
+    assumptions += indirect_call_assumptions(indirect_calls)
     indirect_rows = [declaration | {"reached": site in seen} for site, declaration in indirect_calls.items()]
     return {"inventory": {"path": config["inventory"], "rows": len(rows)},
             "targets": missing[:limit], "unresolved": unresolved[:limit],
