@@ -138,7 +138,7 @@ and PE32 inputs only, `python -m scientific_method_engine <command> <config.json
 | `pointers` | relocated offset/segment word pairs that name a target (reader only, no engine) | [pointer-pair inventory](#relocated-pointer-pair-inventory) |
 | `table` | what each entry of one pointer table holds, read from the bytes and compared with an analyzer listing (reader only, no engine) | [pointer-table contents](#pointer-table-contents) |
 | `bodies` | where each byte of an analyzer's function bodies lies in an MZ/FBOV file (the resident span of each FBOV descriptor, descriptor table, overlay stub, overlay code, fixup table, padding or undeclared bytes), with the entry placed on its own, an optional comparison with a candidate body, and every FBOV descriptor with its load-image span (reader only, no engine) | [function bodies by file region](#function-bodies-by-file-region) |
-| `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables and checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots) |
+| `imports` | the import each PE32 or PE32+ import address table slot holds, read from the import tables, or the import at each site an NE file's relocation records cover, read from its relocation chains; checked against positive controls (reader only, no engine) | [PE import slots](#pe-import-slots), [NE import sites](#ne-import-sites) |
 | `unpack` | writes the unpacked form of an LZEXE 0.90 or 0.91, an EXEPACK or a PKLITE 1.00 to 2.01 executable and gives the `size`, `xxh3`, `format` and `tool` of a build's `unpacked` item (reader only, no engine) | [unpacking packed executables](#unpacking-packed-executables) |
 
 The engine also has `scientific-method-engine ghidra-scripts`, which prints the directory of the
@@ -1924,6 +1924,85 @@ The import directory holds only what the loader resolves when it loads the file.
 imports and functions found through `GetProcAddress` are named in `exclusions`;
 `delayImportDirectory` gives the delay-load directory when the file has one, unread. The report
 never shows that the code calls nothing else, and it does not read which code calls through a slot.
+
+## NE import sites
+
+`scientific-method imports <config.json>` with `sourceKind: "ne"` says which import the loader
+puts at each place in a 16-bit Windows (NE) file's segments that an import's relocation record
+covers, as STATUS-44 of the documentation standard describes. It runs in the reader without the
+engine, and `imports` is the only command that reads NE. Regions are not used.
+
+An NE file has no import slots. A far call to an imported function is stored as `9A` with a
+placeholder operand, and a record in the relocation table after the segment's data names the
+target. The report reads the segment table and, for every segment whose flags set the relocation
+bit (`0x0100`) and that has data in the file, that table. A segment whose flags mark it iterated
+(`0x0008`) is expanded first, because the offsets in its records and links refer to the expanded
+data. A segment with no data in the file has no table, and its row says so.
+
+Each record gives a source type (`3` far pointer, `2` segment, `5` offset), its flags (the target
+kind in the low two bits, the additive bit `0x04`), the offset of a site and the target. For an
+imported ordinal or name the target is an index into the module reference table, counted from 1,
+whose entry is the offset of the module's name in the imported-names table, and an ordinal or the
+offset of the function's name in the same table. A record whose additive flag is clear covers a
+chain: the word at each site holds the offset of the next site in the segment, up to a word that
+holds `FFFF`. Internal references chain the same way. An additive record and an operating-system
+fixup cover their own site alone, and an additive site's `storedWord` is the word the loader adds
+to the target's offset.
+
+- `imports` lists every import site as `{ segment, offset, sourceType, record, additive, moduleIndex,
+  module, import, names }`, with `import` either `{ ordinal }` or `{ name }`. A far pointer site
+  also has `farCallByte`, true when the byte before it is `9A`. That is a raw call-byte candidate:
+  the report decodes no instruction, so whether the site is a call's operand stays a candidate, as
+  STATUS-24 says.
+- `internalReferences` lists the sites of internal references apart, with their target (`{ segment,
+  offset }` or `{ movableEntry }`), and `osFixups` the sites of operating-system fixups with their
+  `fixupType`.
+- `records` lists every record with its fields, the number of sites it reached and its `outcome`:
+  `ended at FFFF`, `own site`, `cut short` or `error`.
+- `segments` gives each segment's file offset and length, flags, whether it is iterated, the length
+  of its data, and its `records` and `sites` counts, which count records and sites of every kind,
+  with `importSites`, `internalSites` and `osFixupSites` beside them.
+
+`chainCap` is the most sites one chain may reach: 4096 unless the query gives 1..32768. A chain
+whose site at the cap holds a word other than `FFFF` stops there and is listed in `cutShort` as
+`{ segment, record, lastSite, nextLink }`, and its remaining sites are unknown. Every site, a
+record's own offset as much as a link, needs all the bytes its source type writes (four for a far
+pointer, two for a segment or offset) inside the segment's data. A site that does not fit, that
+overlaps a site already reached (a chain that loops back reaches one), or a link onto the offset
+another record gives is listed in `errors` as `{ segment, record, site, linkedFrom, reason }`, and
+that site and the ones past it are unknown. A record of any other source type, with flag bits
+other than the target kind and the additive bit, or whose module index, imported name or internal
+target lies outside the file's tables is an error with `site: null`, and none of its sites is
+known. `complete` is false whenever `errors` or `cutShort` is not empty. A malformed header,
+segment table, relocation table, names table or iterated record fails the report.
+
+`expectedCounts` takes the counts a build is known to have, as `[{ segment, records, sites }]`,
+and a segment whose counts differ rejects the report (STATUS-26). Without it, `countsChecked` says
+that nothing checked the reported counts.
+
+An ordinal is a number until a table names it. `exporters` lists copies of exporting modules from
+the period, each `{ file, xxh3, version }`, where `file` is relative to the config file and its
+XXH3-128 hash must equal `xxh3`; the report reads the module's name from its resident names table
+and the names of its ordinals from its resident and non-resident names tables. `outsideTables`
+lists tables that name ordinals of one module, each `{ table, version, module, names }`, where
+`names` maps decimal ordinals to names, such as the `.spec` files of a Windows reimplementation.
+An exporting module or table of a module the file does not import from, two exporting modules of
+one module, and an exporting module that gives one ordinal two different names fail the report.
+Each import site's `names` gives every name a table puts to its ordinal, with the table it came
+from, and is empty when none does, so the ordinal stays an ordinal. `nameConflicts` lists ordinals
+that tables name differently. The arguments a call passes can confirm a name, but they never supply one.
+
+`controls` is required: 1..256 positive controls, each a site whose import other evidence shows,
+such as a run of the original under a debugger, as `{ segment, offset, module, ordinal }` or
+`{ segment, offset, module, name }`. `segment` counts from 1, `module` is compared without regard to
+case, and `ordinal` or `name` must be what the record gives. A control at a site that holds any
+other import, at an internal reference or fixup, or at a place the report did not reach rejects the
+report.
+
+Functions the program finds through `GetProcAddress` and modules it loads with `LoadLibrary` are
+not in the relocation tables, and `exclusions` names them. When the module's flags mark it
+self-loading (`0x0800`), `selfLoading` is true and `exclusions` adds the relocations its own loader
+applies.
 
 ## Unpacking packed executables
 

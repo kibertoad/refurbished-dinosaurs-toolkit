@@ -12,6 +12,8 @@ import { tableContents } from "./table-contents.ts";
 import type { TableConfig } from "./table-contents.ts";
 import { importReport } from "./pe-imports.ts";
 import type { ImportConfig } from "./pe-imports.ts";
+import { neImportReport } from "./ne-imports.ts";
+import type { NeExporter, NeImportConfig } from "./ne-imports.ts";
 import { unpack } from "./unpack.ts";
 import { bodyLayout } from "./body-layout.ts";
 import type { BodyConfig } from "./body-layout.ts";
@@ -71,6 +73,15 @@ export function sourceXxh3(bytes: Uint8Array): string {
   return xxh3.xxh128(bytes).toString(16).padStart(32, "0");
 }
 
+// Reads a file of at most 256 MiB and checks that its XXH3-128 hash is `xxh3`; errors begin with `what`.
+function readHashed(path: string, xxh3: string, what: string) {
+  const stat = statSync(path);
+  if (!stat.isFile() || stat.size > 256 * 1024 * 1024) throw new Error(`${what} exceeds 256 MiB`);
+  const bytes = readFileSync(path);
+  if (sourceXxh3(bytes) !== xxh3) throw new Error(`${what} xxh3 differs from the supplied baseline`);
+  return bytes;
+}
+
 // The hash-guarded source read every command shares; no format table is interpreted here.
 function readVerifiedSource(config: ReportConfig, base: string) {
   if (!config || typeof config.source !== "string") throw new Error("Source path required");
@@ -80,10 +91,7 @@ function readVerifiedSource(config: ReportConfig, base: string) {
   if (typeof config.xxh3 !== "string" || !/^[0-9a-f]{32}$/.test(config.xxh3))
     throw new Error("xxh3 must be the source's XXH3-128 hash as 32 lower-case hex digits");
   const source = resolve(base, config.source),
-    stat = statSync(source);
-  if (!stat.isFile() || stat.size > 256 * 1024 * 1024) throw new Error("Source exceeds 256 MiB");
-  const bytes = readFileSync(source);
-  if (sourceXxh3(bytes) !== config.xxh3) throw new Error("Source xxh3 differs from the supplied baseline");
+    bytes = readHashed(source, config.xxh3, "Source");
   // Overlay exports and format-table counts are derived from MZ/FBOV source tables only; a supplied copy would read as loader output.
   if (config.overlayExports !== undefined) throw new Error("overlayExports is source-derived and cannot be supplied");
   if (config.formatTables !== undefined)
@@ -108,7 +116,7 @@ export function prepare(config: ReportConfig, base: string): PreparedConfig {
   if (config.sourceKind === "pe32") return { ...config, source };
   if (config.sourceKind !== "mz")
     throw new Error(
-      "sourceKind must be mz, pe32 or synthetic-raw; pe32+ is read only by imports, and other loaders are unsupported",
+      "sourceKind must be mz, pe32 or synthetic-raw; pe32+ and ne are read only by imports, and other loaders are unsupported",
     );
   const image = readMz(bytes, config.loadSegment);
   const formatTables = {
@@ -174,6 +182,14 @@ export function prepare(config: ReportConfig, base: string): PreparedConfig {
     })),
   );
   return { ...config, source, relocations, formatTables, overlayExports };
+}
+
+// An exporting module the NE import report reads names from, hash-checked as the source is.
+function readExporter(exporter: NeExporter, base: string) {
+  if (typeof exporter.xxh3 !== "string" || !/^[0-9a-f]{32}$/.test(exporter.xxh3))
+    throw new Error(`Exporting module ${exporter.file} needs its XXH3-128 hash as 32 lower-case hex digits`);
+  const path = resolve(base, exporter.file);
+  return { path, bytes: readHashed(path, exporter.xxh3, `Exporting module ${exporter.file}`) };
 }
 
 /** The reader's package name and version, as the `unpack` report gives it for a build's `unpacked.tool`. */
@@ -269,8 +285,12 @@ export function run(args: string[]): Report {
   const supplied = JSON.parse(readConfigText(file)) as ReportConfig,
     base = dirname(resolve(file));
   if (command === "imports") {
-    // The import report reads the PE import tables itself; the engine has no part in it.
+    // The import report reads the PE or NE import tables itself; the engine has no part in it.
     const { source, bytes } = readVerifiedSource(supplied, base);
+    if (supplied.sourceKind === "ne")
+      return neImportReport(bytes, { ...supplied, source } as NeImportConfig, (exporter) =>
+        readExporter(exporter, base),
+      );
     return importReport(bytes, { ...supplied, source } as ImportConfig);
   }
   if (command === "pointers") {
