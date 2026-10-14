@@ -11,7 +11,7 @@ from .result_flow import validate_contracts, result_contracts
 from .loops import LoopTracker
 from .memory_scopes import validate_scopes, capture_scopes, retain_scopes, scope_history
 from .pcode_backend import interrupt_vector
-from .dispatch import CALL_NOT_EXHAUSTIVE, declared_call_ends
+from .dispatch import ENTERED, JUMP_NOT_DERIVED, declared_call_ends, open_reason
 from .relational import checkpoint_anchors, memory_probes, probe_memory
 
 # What stops one path and leaves the others: the model cannot follow it, or a value it built
@@ -208,10 +208,10 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
         edges = [{"site": at, "target": target, "kind": "jmp",
                   "provenance": {"encoding": "declared indirect jump table", **declaration}} for target in targets]
         gaps = []
-        if not declaration["exhaustive"]:
-            gaps.append({"site": at, "reason": "indirect jump table is not declared exhaustive"})
-            edges.append({"site": at, "target": None, "kind": "jmp",
-                          "provenance": {"reason": "indirect jump table is not declared exhaustive"}})
+        reason = open_reason(declaration, False)
+        if reason is not None:
+            gaps.append({"site": at, "reason": reason})
+            edges.append({"site": at, "target": None, "kind": "jmp", "provenance": {"reason": reason}})
         return Step(targets, False, None, gaps, edges, supplied=True)
     declaration = (indirect_calls or {}).get(at)
     if declaration is not None:
@@ -220,9 +220,10 @@ def cfg_step(image, at, ins, follow_flat_ports=False, step_over_calls=False, fol
                   "provenance": {"encoding": "declared indirect call", "evidence": declaration["evidence"]}}
                  for target in targets]
         gaps = []
-        if not declaration["exhaustive"]:
-            gaps.append({"site": at, "reason": CALL_NOT_EXHAUSTIVE})
-            edges.append({"site": at, "target": None, "kind": m, "provenance": {"reason": CALL_NOT_EXHAUSTIVE}})
+        reason = open_reason(declaration, True)
+        if reason is not None:
+            gaps.append({"site": at, "reason": reason})
+            edges.append({"site": at, "target": None, "kind": m, "provenance": {"reason": reason}})
         if declared_call_ends(declaration, no_return_calls) or at in no_return_call_sites:
             return Step(targets, False, None, gaps, edges, supplied=True)
         return_site = following if following not in targets else None
@@ -273,7 +274,10 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
     decoded and its boundary checked, and the walk follows none of its successors.
     ``no_return_calls`` and ``no_return_interrupts`` end the branch at a call to one of those routines and at one of those
     interrupt sites, ``no_return_call_sites`` at a call at one of those sites, and ``indirect_calls``
-    continues a declared indirect call at its declared targets, as ``cfg_step`` describes.
+    continues a declared indirect call at its declared targets, as ``cfg_step`` describes. A
+    declared table whose count was derived from the code, and that the walk reads, gets a gap
+    (``derived_counts.entry_gaps``) when an edge the walk read enters the routine the count was
+    derived over other than at its start.
     """
     instruction_limit(image, limit)
     pending, seen, gaps, edges = list(entries), {}, [], []
@@ -310,6 +314,9 @@ def walk(image, entries, limit=10000, follow_flat_ports=False, follow_interrupts
             supplied_edges.update((at, target) for target in step.successors)
         if step.return_site is not None:
             returns.add((at, step.return_site))
+    # A table count derived from the code holds only for paths that enter its routine at the start.
+    from .derived_counts import entry_gaps
+    gaps.extend(entry_gaps(image, entries, successors, indirect_calls))
     # An entry into another instruction is not a verified boundary. Retain both
     # interpretations as gaps rather than choosing whichever was visited first.
     active, conflicts, pairs = [], set(), []
@@ -846,6 +853,10 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
         # at the jump, so the operand read below never enters the stopped ordinary path.
         nonlocal created, boundary_budget
         declaration = image.indirect_jumps[s.at]
+        if open_reason(declaration, False) == JUMP_NOT_DERIVED:
+            # The code did not prove the table's count, so it has no rows to continue at.
+            global_gaps.append({"site": s.at, "reason": JUMP_NOT_DERIVED})
+            return
         ins = image.decode(s.at)
         try:
             value = s.get(ins, ins.operands[0], image)
@@ -893,8 +904,14 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
             # A truncated walk never saw the instructions that could contest a target start.
             if any(g["reason"] == LIMIT_REASON for g in walk_gaps):
                 seen = {}
-            boundary_cache[root_entry] = seen
-        seen = boundary_cache[root_entry]
+            boundary_cache[root_entry] = seen, {g["site"]: g for g in walk_gaps if g["reason"] == ENTERED}
+        seen, entered = boundary_cache[root_entry]
+        if s.at in entered:
+            # The walk from the path's entry enters the routine the count was derived over other than
+            # at its start, so the derived rows do not hold on its paths.
+            # A copy, since the continuation gaps are marked with their route below.
+            global_gaps.append(dict(entered[s.at]))
+            return
         for target, rows in groups.items():
             if target not in seen:
                 global_gaps.append({"site": s.at, "target": target,

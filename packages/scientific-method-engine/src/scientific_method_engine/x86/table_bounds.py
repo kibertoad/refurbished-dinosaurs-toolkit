@@ -581,8 +581,12 @@ def refine(flow, e, outcome, site):
     return flow
 
 
-def routine_graph(image, start, site, through, limit):
-    """The sites the analysis reads from ``start``, each with its successors, and the gaps it cannot follow."""
+def routine_graph(image, start, site, through, limit, continuing=None):
+    """The sites the analysis reads from ``start``, each with its successors, and the gaps it cannot follow.
+
+    A declared jump in ``continuing`` continues at the targets it maps the jump to, in place of its declaration.
+    """
+    continuing = continuing or {}
     graph, gaps, pending = {}, [], [start]
     stopped = False
     while pending:
@@ -609,6 +613,8 @@ def routine_graph(image, start, site, through, limit):
         successors = step.successors
         if at == site:
             successors = list(through) if base_mnemonic(ins) in ("jmp", "ljmp") else [at + ins.size]
+        elif at in continuing and at in image.indirect_jumps:
+            successors = list(continuing[at])
         else:
             gaps.extend(step.gaps)
         graph[at] = (ins, ops, successors)
@@ -692,10 +698,17 @@ def reasons(why):
 
 
 def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
+    """The offsets the dispatch at ``site`` can read its table at, as ``analyse`` gives them, without its graph."""
+    return analyse(image, start, site, through, passes, limit)[0]
+
+
+def analyse(image, start, site, through=(), passes=PASSES, limit=10000, continuing=None):
     """The offsets the dispatch at ``site`` can read its table at, over every path from ``start``.
 
     ``site`` decodes as a computed jump or call. A jump's successors are ``through``, the row
-    targets the caller gives; a call continues at its return site. ``passes`` is how many times a
+    targets the caller gives; a call continues at its return site. ``continuing`` maps other
+    declared jumps to the targets they continue at in place of their declarations, for a caller
+    that is still deriving their rows. ``passes`` is how many times a
     loop head's state is updated before it widens, and ``limit`` caps the instructions read.
 
     The result gives ``table``: the segment register the row is read through, the bytes read per
@@ -707,6 +720,9 @@ def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
     ``proven`` holds. ``unread`` gives the transfers the walk could not follow and the starts of
     instructions that overlap another decoded one, ``widened`` the loop
     heads that widened, and ``instructions`` how many instructions the walk read.
+
+    Returns the result, the successors the walk read from each site it read, and the offset's
+    ``Range`` (None when ``table`` is None).
     """
     if image.flat:
         raise ValueError("table bounds currently require segmented16")
@@ -716,7 +732,8 @@ def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
             raise ValueError(f"{label} {at} is outside declared code")
     integer(passes, 1, 64, "widening passes")
     integer(limit, 1, 10000, "instruction limit")
-    for at in through:
+    continuing = continuing or {}
+    for at in [*through, *(target for targets in continuing.values() for target in targets)]:
         integer(at, 0, len(image.data) - 1, "dispatch row target")
         if image.region(at) is None:
             raise ValueError(f"dispatch row target {at} is outside declared code")
@@ -724,7 +741,7 @@ def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
     if (ins is None or base_mnemonic(ins) not in ("jmp", "ljmp", "call", "lcall") or not ins.operands
             or any(operand.type == X86_OP_IMM for operand in ins.operands)):
         raise ValueError(f"dispatch site {site} must decode as a computed jump or call")
-    graph, gaps, stopped = routine_graph(image, start, site, list(through), limit)
+    graph, gaps, stopped = routine_graph(image, start, site, list(through), limit, continuing)
     # A start that does not decode is a gap, and the walk reaches nothing.
     states, widened = {}, set()
     if start in graph:
@@ -733,7 +750,7 @@ def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
     result = {"start": start, "site": site, "reached": site in states, "proven": False, "table": None,
               "bounds": [], "reasons": [], "unread": gaps, "widened": sorted(widened),
               "instructions": len(graph), "instructionLimitReached": stopped}
-    found = []
+    found, offset_range = [], None
     if site in states:
         flow = states[site].copy()
         flow.drop_below_stack()
@@ -742,6 +759,7 @@ def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
         rows = {(address[0], id(address[1])) for address, _ in step.loads if address is not None}
         if len(rows) == 1 and all(address is not None for address, _ in step.loads):
             (name, offset, _), _ = step.loads[0]
+            offset_range = offset.range
             width = max(address[2] + size for address, size in step.loads)
             result["table"] = {"segment": LIFTER.register(False, *name) if name else None, "width": width,
                                "offset": offset.range.report()}
@@ -758,7 +776,7 @@ def table_bound(image, start, site, through=(), passes=PASSES, limit=10000):
         found.append({"reason": LIMIT, "site": start})
     result["reasons"] = found
     result["proven"] = not found
-    return result
+    return result, {at: list(targets) for at, (_, _, targets) in graph.items()}, offset_range
 
 
 def fixpoint(graph, start, passes):

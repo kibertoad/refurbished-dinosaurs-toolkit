@@ -15,7 +15,8 @@ from .image import Image, instruction_limit, integer, scan_limit
 from .trace import (trace, walk, cfg_step, call_target, unsupported_transfer, uncovered, holding_instruction, base_mnemonic, OVERLAP_REASON, CONTESTED_REASON, LIMIT_REASON,
                     RETURNS, INTERRUPTS, PORTS, PORT_INPUTS, port_width, budget_input, modeled_interrupt_sites)
 from .pcode_backend import interrupt_vector
-from .dispatch import CALL_NOT_EXHAUSTIVE
+from .dispatch import open_reason
+from .derived_counts import entry_gaps
 
 
 def entries(image):
@@ -97,7 +98,7 @@ def direct_calls(image, config, no_return_calls=frozenset(), no_return_interrupt
     scans every byte of the regions ``searchRegions`` names (all regions by default) for E8 and 9A
     call starts, and adds each reached call the scan cannot see (one that starts with a prefix). A
     reached declared indirect call gives one row for each declared target, and one unresolved row more
-    when it is not declared exhaustive; those rows are not in ``scanned``. Returns a dict with the walk's
+    when it is not declared exhaustive or its table count was not proven (``open_reason``); those rows are not in ``scanned``. Returns a dict with the walk's
     ``seen``, ``gaps`` (with a ``raw scan limit`` gap where ``scanLimit`` stopped a region),
     ``edges``, ``undecoded`` and ``contested``; ``rows``, every call row in the order it was read,
     each with its ``target`` (None when unresolved); ``scanned``, those rows by site, leaving out
@@ -156,9 +157,10 @@ def direct_calls(image, config, no_return_calls=frozenset(), no_return_interrupt
             provenance = {"encoding": "declared indirect call", "evidence": declaration["evidence"]}
             rows.extend({"site": at, "target": target, "encoding": ins.mnemonic, "classification": classify(at),
                          "provenance": provenance, "region": region["name"]} for target in declaration["targets"])
-            if not declaration["exhaustive"]:
+            reason = open_reason(declaration, True)
+            if reason is not None:
                 rows.append({"site": at, "target": None, "encoding": ins.mnemonic, "classification": classify(at),
-                             "provenance": {"reason": CALL_NOT_EXHAUSTIVE}, "region": region["name"]})
+                             "provenance": {"reason": reason}, "region": region["name"]})
             continue
         resolved, provenance = call_target(image, at, ins)
         row = {"site": at, "target": resolved, "encoding": ins.mnemonic,
@@ -1066,7 +1068,9 @@ def body(image, entry, limit=10000):
     following instruction as the fall-through, or None at a transfer outside the frame model, where it stopped
     with a gap and decided nothing. targets lists the jump or branch targets the instruction names (None for
     one it could not resolve), including targets that leave the body. Reports that need where the body goes
-    from an instruction read flow instead of restating these rules.
+    from an instruction read flow instead of restating these rules. A declared table whose count was
+    derived from the code gets a gap when an edge the body reads enters the routine the count was
+    derived over other than at its start (``derived_counts.entry_gaps``).
     """
     instruction_limit(image, limit)
     established = set(entries(image))
@@ -1122,10 +1126,11 @@ def body(image, entry, limit=10000):
                                       "mapping": "declared indirect jump table"})
                     else:
                         pending.append(target)
-                if not declaration["exhaustive"]:
+                reason = open_reason(declaration, False)
+                if reason is not None:
                     # Undeclared routes remain a way out of the body, as for any unresolved computed jump.
-                    exits.append({"site": at, "kind": "unresolved jump", "reason": "indirect jump table is not declared exhaustive"})
-                    gaps.append({"site": at, "reason": "indirect jump table is not declared exhaustive"})
+                    exits.append({"site": at, "kind": "unresolved jump", "reason": reason})
+                    gaps.append({"site": at, "reason": reason})
                 continue
             target, provenance = call_target(image, at, ins)
             step["targets"] = [target]
@@ -1156,6 +1161,10 @@ def body(image, entry, limit=10000):
                 pending.append(target)
         step["readsOn"] = True
         pending.append(following)
+    # A table count derived from the code holds only for paths that enter its routine at the start.
+    read = {at: [t for t in step["targets"] if t is not None] + ([at + seen[at].size] if step["readsOn"] else [])
+            for at, step in flow.items()}
+    gaps.extend(entry_gaps(image, [entry], read))
     intervals = sorted((at, at + ins.size) for at, ins in seen.items())
     runs, overlaps = [], []
     for start, end in intervals:
