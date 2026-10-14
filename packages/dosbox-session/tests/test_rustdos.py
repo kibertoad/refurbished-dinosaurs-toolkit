@@ -30,6 +30,8 @@ from dinorefurb_dosbox_session import (
     RustDosSession,
     ServerRefused,
     SessionError,
+    SoundBlaster,
+    Ultrasound,
     WritableField,
     WriteFailed,
     WriteHashMismatch,
@@ -96,13 +98,68 @@ class StartAndStop(RustDosCase):
         self.assertEqual(data["entry"]["seq"], next(e["seq"] for e in entries if e["type"] == "paused"))
         self.assertEqual(data["emulator_process"], emulator.to_json())
         arguments = data["arguments"]
-        for option in ("--no-config", "--debug-server", "--log"):
+        for option in ("--config", "--debug-server", "--log"):
             self.assertIn(option, arguments)
+        self.assertNotIn("--no-config", arguments)
+        config_file = settings.run_directory.resolve() / "rust-dos.conf"
+        self.assertEqual(arguments[arguments.index("--config") + 1], str(config_file))
+        self.assertEqual(
+            data["sound"],
+            {
+                "config_file": str(config_file),
+                "sound_blaster": {"model": "sb16", "base": "220", "irq": 7, "dma": 1, "hdma": 5},
+                "ultrasound": {"base": "240", "irq": 5, "dma": 3},
+            },
+        )
         self.assertEqual(arguments[arguments.index("--debug-server") + 1], "127.0.0.1:0")
         self.assertEqual(arguments[arguments.index("-d") + 1], str(settings.run_directory.resolve() / "drive-c"))
         launched = standin(settings)
         self.assertEqual(launched["sdl"], {"SDL_AUDIODRIVER": "dummy", "SDL_VIDEODRIVER": "dummy"})
+        self.assertEqual(
+            launched["config"],
+            "[sound]\nsbtype=sb16\nsbbase=220\nirq=7\ndma=1\nhdma=5\ngus=true\ngusbase=240\ngusirq=5\ngusdma=3\n",
+        )
         self.assertTrue((settings.run_directory / "rust-dos.log").exists())
+
+    def test_the_sound_cards_are_passed_in_the_config_file_and_recorded(self) -> None:
+        cases = [
+            (
+                RustDosConfig(sound_blaster=SoundBlaster(irq=5), ultrasound=None),
+                "[sound]\nsbtype=sb16\nsbbase=220\nirq=5\ndma=1\nhdma=5\ngus=false\n",
+                {"model": "sb16", "base": "220", "irq": 5, "dma": 1, "hdma": 5},
+                None,
+            ),
+            (
+                RustDosConfig(
+                    sound_blaster=SoundBlaster("sbpro2", base=0x240, irq=10, dma=3),
+                    ultrasound=Ultrasound(base=0x260, irq=11, dma=1),
+                ),
+                "[sound]\nsbtype=sbpro2\nsbbase=240\nirq=10\ndma=3\ngus=true\ngusbase=260\ngusirq=11\ngusdma=1\n",
+                {"model": "sbpro2", "base": "240", "irq": 10, "dma": 3, "hdma": None},
+                {"base": "260", "irq": 11, "dma": 1},
+            ),
+            (
+                RustDosConfig(sound_blaster=SoundBlaster("awe32", hdma=7)),
+                "[sound]\nsbtype=awe32\nsbbase=220\nirq=7\ndma=1\nhdma=7\ngus=true\ngusbase=240\ngusirq=5\ngusdma=3\n",
+                {"model": "awe32", "base": "220", "irq": 7, "dma": 1, "hdma": 7},
+                {"base": "240", "irq": 5, "dma": 3},
+            ),
+            (RustDosConfig(sound_blaster=None, ultrasound=None), "[sound]\nsbtype=none\ngus=false\n", None, None),
+        ]
+        for config, text, sound_blaster, ultrasound in cases:
+            with self.subTest(text=text):
+                settings = self.settings(config=config)
+                with RustDosSession(settings) as session:
+                    data = record(session)
+                self.assertEqual(standin(settings)["config"], text)
+                self.assertEqual((settings.run_directory / "rust-dos.conf").read_text(encoding="ascii"), text)
+                self.assertEqual(data["sound"]["sound_blaster"], sound_blaster)
+                self.assertEqual(data["sound"]["ultrasound"], ultrasound)
+
+    def test_a_config_file_rust_dos_warns_about_fails_the_start(self) -> None:
+        with self.assertRaisesRegex(EmulatorRefused, r"did not take rust-dos\.conf .*line 3: invalid sbbase.*share IRQ 5"):
+            RustDosSession(self.settings("config-warning")).start()
+        self.assertFalse(self.lock_path.exists())
 
     def test_a_window_and_host_sound_are_kept_only_when_asked_for(self) -> None:
         settings = self.settings(config=RustDosConfig(keep_host_sound=True, show_window=True))
@@ -194,6 +251,23 @@ class Refusals(RustDosCase):
             ({"config": RustDosConfig(start_time="1995-04-11 12:34:56")}, "only taken with deterministic"),
             ({"config": RustDosConfig(media=(Media("C", self.root, "directory"),))}, "from D to Z"),
             ({"config": RustDosConfig(media=(Media("D", self.root, "directory"), Media("d", self.root, "iso")))}, "share"),
+            ({"emulator_arguments": ("--config", "other.conf")}, "sets --config itself"),
+            ({"emulator_arguments": ("--no-config",)}, "sets --no-config itself"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster("sb1"))}, "model 'sb1' is not one rust-dos takes"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster(base=0x225))}, r"base 549 .*0x210, 0x220"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster(base=0x290))}, "base 656"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster(irq=4))}, r"irq 4 .*\(2, 3, 5, 7, 9"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster(irq=True))}, "irq True"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster(dma=2))}, r"dma 2 .*\(0, 1, 3\)"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster(hdma=4))}, r"hdma 4 .*\(5, 6, 7\)"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster("sb2", hdma=5))}, "sb2 has no 16-bit DMA channel"),
+            ({"config": RustDosConfig(ultrasound=Ultrasound(base=0x230))}, "Ultrasound's base 560"),
+            ({"config": RustDosConfig(ultrasound=Ultrasound(irq=9))}, "Ultrasound's irq 9"),
+            ({"config": RustDosConfig(ultrasound=Ultrasound(dma=0))}, "Ultrasound's dma 0"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster(irq=5))}, "share IRQ 5"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster(base=0x240))}, "share base port 0x240"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster(dma=3))}, "share DMA 3"),
+            ({"config": RustDosConfig(ultrasound=Ultrasound(dma=5))}, "share DMA 5"),
         ]
         for changes, message in cases:
             with self.subTest(message=message):
