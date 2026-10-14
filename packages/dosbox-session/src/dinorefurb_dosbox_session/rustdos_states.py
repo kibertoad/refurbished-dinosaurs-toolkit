@@ -100,6 +100,9 @@ class SavedState:
     - ``request_id``: the ID of the save request.
     - ``session``: the ID of the session that saved it.
     - ``emulator_sha256``: the SHA-256 of the rust-dos executable that saved it.
+    - ``sound``: the sound cards of the session that saved it (``sound_blaster`` and
+      ``ultrasound``, as ``session.json`` records them), or ``None`` when its record has none. A
+      run that starts from the state is refused before launch when its cards differ.
 
     A state saved with ``strict_match`` and ``check_files`` is a checkpoint: its folder also holds
     ``drive-c``, a copy of C: at the save, and a later run can start from it.
@@ -117,6 +120,7 @@ class SavedState:
     request_id: str
     session: str
     emulator_sha256: str | None
+    sound: Mapping[str, Any] | None = None
 
     @property
     def directory(self) -> Path:
@@ -166,6 +170,13 @@ class SavedState:
         }
 
 
+def _recorded_sound(sound: object) -> dict[str, Any] | None:
+    """The cards of a ``sound`` record, or ``None`` for a record without one."""
+    if not isinstance(sound, dict):
+        return None
+    return {"sound_blaster": sound.get("sound_blaster"), "ultrasound": sound.get("ultrasound")}
+
+
 def read_saved_state(run_directory: Path, name: str) -> SavedState:
     """The state ``name`` that the rust-dos session of ``run_directory`` saved, from its
     ``session.json``, once its folder is checked to hold exactly the files the save hashed.
@@ -210,6 +221,7 @@ def read_saved_state(run_directory: Path, name: str) -> SavedState:
             request_id=entry["request_id"],
             session=entry["session"],
             emulator_sha256=entry["emulator_sha256"],
+            sound=_recorded_sound(record.get("sound")),
         )
     except (KeyError, TypeError, ValueError) as error:
         raise StateRefused(f"The record of state {name} in {run_directory} cannot be read: {error!r}.") from error

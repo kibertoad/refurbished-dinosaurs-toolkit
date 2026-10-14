@@ -13,6 +13,8 @@ Modes, comma-separated:
 - exit-early: exits with code 3 before printing its address.
 - config-warning: prints a warning about a line of the configuration file, as rust-dos does for a
   value it does not take.
+- awe32rom-warning: prints the warning rust-dos prints for an AWE32 ROM it cannot load, which
+  names the setting and not the file.
 - silent: never prints its address.
 - never-ready: never writes the readiness marker.
 - api-2: reports API version 2.
@@ -549,6 +551,8 @@ def main() -> int:
     if "config-warning" in modes:
         print(f"[CONFIG] Warning: {arguments.config}: line 3: invalid sbbase '2A0' (210 to 280, hex)", file=sys.stderr, flush=True)
         print(f"[CONFIG] Warning: {arguments.config}: [sound]: the Ultrasound and the Sound Blaster share IRQ 5", file=sys.stderr, flush=True)
+    if "awe32rom-warning" in modes:
+        print("[CONFIG] Warning: awe32rom: 16 bytes, not the 1 MB of an AWE32 ROM", file=sys.stderr, flush=True)
     machine = Machine(modes, drive_c, arguments.deterministic)
     server = serve(machine)
     if "silent" not in modes:

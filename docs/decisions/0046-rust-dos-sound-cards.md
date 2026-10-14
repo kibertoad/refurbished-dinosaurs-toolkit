@@ -44,7 +44,15 @@ command-line option for them. Read in its source and run against the pinned exec
    `EmulatorRefused`, so a later rust-dos with other rules cannot run on settings it replaced.
 5. `session.json` records `sound`: the file and the values passed for each card, or `null` for a
    card left out.
-6. The native check sets both cards away from their defaults and requires `BLASTER` and `ULTRASND`
+6. An `awe32` takes its sample ROM as `rom`, passed as `awe32rom` and recorded with its SHA-256,
+   and is refused without one. Without `awe32rom`, rust-dos loads the first `awe32.raw` it finds in
+   its own directory or the working directory, or plays without one, so the same configuration
+   would differ between hosts. rust-dos's warning for a ROM it could not load names the setting,
+   not the file, and fails the start as well.
+7. A run that starts from a checkpoint is refused before launch when its cards, the ROM included,
+   differ from the `sound` record of the run that saved it, in place of failing on rust-dos's
+   strict-match comparison after the boot.
+8. The native check sets both cards away from their defaults and requires `BLASTER` and `ULTRASND`
    in the target's environment to name them.
 
 ## Consequences

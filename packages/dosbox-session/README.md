@@ -548,7 +548,7 @@ Entering `RustDosSession` (or calling `start()`):
    `keep_host_sound` is set; the emulated sound devices stay. The emulator's output goes to
    `rust-dos.out`, where the session reads the port the server took.
 5. Fails with `EmulatorRefused` if rust-dos printed a warning about `rust-dos.conf`, which it does
-   for a setting it did not take as written. Checks `/api/version`: the name `rust-dos`, API
+   for a setting it did not take as written, or about an AWE32 ROM it could not load. Checks `/api/version`: the name `rust-dos`, API
    version 1 and every feature above, or refuses with `EmulatorRefused`. A server that refuses
    `/api/version` with a status below 500 is refused the same way.
 6. Mounts each medium read-only through the server (an `iso` as a CD-ROM drive, any CD image
@@ -577,7 +577,7 @@ the executable was built from and whether its tree was dirty), `endpoint`
 (`127.0.0.1:<port>`), `arguments` (the launch command line), `emulator_log`, `run_lock`,
 `owner_process`, `emulator_process`, `host_sound`, `window` (`hidden` or `shown`), `sound` (the
 configuration file and the values passed for `sound_blaster` and `ultrasound`, each `null` when
-the card is left out, with ports in hexadecimal),
+the card is left out, with ports in hexadecimal and an AWE32's `rom` as its path and SHA-256),
 `deterministic` (the speed and start time, or `null`), `media` (each drive as the server reported
 it), `readiness`, `request_id_prefixes`, `entry` (the entry stop's `CS:IP`, program and journal
 number, or `null` in a run started from a checkpoint), `writes`, `start_state` (the checkpoint the
@@ -678,6 +678,7 @@ config = RustDosConfig(sound_blaster=SoundBlaster("sb16", base=0x220, irq=5, dma
 | `irq` | `irq` | 2, 3, 5, 7, 9, 10, 11, 12, 15 | 7 |
 | `dma` | `dma` | 0, 1, 3 | 1 |
 | `hdma` | `hdma` | 5, 6, 7; only for `sb16`, `sb16vibra` and `awe32` | 5 for those models |
+| `rom` | `awe32rom` | the AWE32's sample ROM file (`awe32.raw`); required for `awe32`, refused for the others | none |
 
 | `Ultrasound` field | rust-dos setting | Values | Default |
 |---|---|---|---|
@@ -694,8 +695,18 @@ without a 16-bit channel, and an Ultrasound on the Sound Blaster's base port, IR
 DMA channels: rust-dos would leave the Ultrasound out, or let the two share a line that works only
 while a program uses one of them. A Sound Blaster on IRQ 5 therefore needs the Ultrasound moved
 or `ultrasound=None`. Host audio stays muted unless `keep_host_sound` is set; these settings only
-place the emulated cards. A run that starts from a checkpoint needs the cards the saving run had,
-since a strict-match load compares them.
+place the emulated cards.
+
+An `awe32` needs `rom`. Without an `awe32rom` setting rust-dos loads the first `awe32.raw` it finds
+in its own directory or the working directory, or plays without one, so the same configuration
+would sound different from host to host. The session passes the file's absolute path, records it
+with its SHA-256, and fails the start with `EmulatorRefused` when rust-dos reports that it could
+not load the ROM.
+
+A run that starts from a checkpoint needs the cards the saving run had, since a strict-match load
+compares them. The session compares them with the saving run's `sound` record before it launches
+anything, the ROM's path and SHA-256 included, and refuses a difference with
+`ConfigurationRefused`. A checkpoint whose record has no `sound` is left to rust-dos's comparison.
 
 ### Save states
 
@@ -795,7 +806,9 @@ with RustDosSession(settings) as session:
 hashed files. The session then refuses, before launching anything, a state that is not a
 checkpoint (`ConfigurationRefused`), one saved while another program than the target ran
 (`ConfigurationRefused`), one saved by an emulator with another SHA-256 (`EmulatorRefused`), one
-whose files changed (`StateRefused`) and `prepare_drive` given with it (`ConfigurationRefused`).
+whose files changed (`StateRefused`), one saved with other sound cards
+([above](#sound-cards), `ConfigurationRefused`) and `prepare_drive` given with it
+(`ConfigurationRefused`). `SavedState.sound` holds the saving run's cards.
 It also refuses a server without the `load_folders` feature (`EmulatorRefused`), which rust-dos
 offers from v1.7.2. The load names the new run's C: in `folders`, and its reply must name the same
 folder (`StateFailed` otherwise).

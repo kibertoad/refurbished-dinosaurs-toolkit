@@ -107,7 +107,7 @@ class StartAndStop(RustDosCase):
             data["sound"],
             {
                 "config_file": str(config_file),
-                "sound_blaster": {"model": "sb16", "base": "220", "irq": 7, "dma": 1, "hdma": 5},
+                "sound_blaster": {"model": "sb16", "base": "220", "irq": 7, "dma": 1, "hdma": 5, "rom": None},
                 "ultrasound": {"base": "240", "irq": 5, "dma": 3},
             },
         )
@@ -122,11 +122,15 @@ class StartAndStop(RustDosCase):
         self.assertTrue((settings.run_directory / "rust-dos.log").exists())
 
     def test_the_sound_cards_are_passed_in_the_config_file_and_recorded(self) -> None:
+        # A synthetic stand-in for the AWE32's ROM: the session passes and hashes it without reading it.
+        rom = self.root / "awe32.raw"
+        rom.write_bytes(b"\x00\x01" * 8)
+        rom_sha256 = hashlib.sha256(rom.read_bytes()).hexdigest()
         cases = [
             (
                 RustDosConfig(sound_blaster=SoundBlaster(irq=5), ultrasound=None),
                 "[sound]\nsbtype=sb16\nsbbase=220\nirq=5\ndma=1\nhdma=5\ngus=false\n",
-                {"model": "sb16", "base": "220", "irq": 5, "dma": 1, "hdma": 5},
+                {"model": "sb16", "base": "220", "irq": 5, "dma": 1, "hdma": 5, "rom": None},
                 None,
             ),
             (
@@ -135,13 +139,21 @@ class StartAndStop(RustDosCase):
                     ultrasound=Ultrasound(base=0x260, irq=11, dma=1),
                 ),
                 "[sound]\nsbtype=sbpro2\nsbbase=240\nirq=10\ndma=3\ngus=true\ngusbase=260\ngusirq=11\ngusdma=1\n",
-                {"model": "sbpro2", "base": "240", "irq": 10, "dma": 3, "hdma": None},
+                {"model": "sbpro2", "base": "240", "irq": 10, "dma": 3, "hdma": None, "rom": None},
                 {"base": "260", "irq": 11, "dma": 1},
             ),
             (
-                RustDosConfig(sound_blaster=SoundBlaster("awe32", hdma=7)),
-                "[sound]\nsbtype=awe32\nsbbase=220\nirq=7\ndma=1\nhdma=7\ngus=true\ngusbase=240\ngusirq=5\ngusdma=3\n",
-                {"model": "awe32", "base": "220", "irq": 7, "dma": 1, "hdma": 7},
+                RustDosConfig(sound_blaster=SoundBlaster("awe32", hdma=7, rom=rom)),
+                f"[sound]\nsbtype=awe32\nsbbase=220\nirq=7\ndma=1\nhdma=7\nawe32rom={rom.resolve()}\n"
+                "gus=true\ngusbase=240\ngusirq=5\ngusdma=3\n",
+                {
+                    "model": "awe32",
+                    "base": "220",
+                    "irq": 7,
+                    "dma": 1,
+                    "hdma": 7,
+                    "rom": {"path": str(rom.resolve()), "sha256": rom_sha256},
+                },
                 {"base": "240", "irq": 5, "dma": 3},
             ),
             (RustDosConfig(sound_blaster=None, ultrasound=None), "[sound]\nsbtype=none\ngus=false\n", None, None),
@@ -152,13 +164,21 @@ class StartAndStop(RustDosCase):
                 with RustDosSession(settings) as session:
                     data = record(session)
                 self.assertEqual(standin(settings)["config"], text)
-                self.assertEqual((settings.run_directory / "rust-dos.conf").read_text(encoding="ascii"), text)
+                self.assertEqual((settings.run_directory / "rust-dos.conf").read_text(encoding="utf-8"), text)
                 self.assertEqual(data["sound"]["sound_blaster"], sound_blaster)
                 self.assertEqual(data["sound"]["ultrasound"], ultrasound)
 
     def test_a_config_file_rust_dos_warns_about_fails_the_start(self) -> None:
         with self.assertRaisesRegex(EmulatorRefused, r"did not take rust-dos\.conf .*line 3: invalid sbbase.*share IRQ 5"):
             RustDosSession(self.settings("config-warning")).start()
+        self.assertFalse(self.lock_path.exists())
+
+    def test_an_awe32_rom_rust_dos_could_not_load_fails_the_start(self) -> None:
+        rom = self.root / "awe32.raw"
+        rom.write_bytes(b"\x00" * 16)
+        settings = self.settings("awe32rom-warning", config=RustDosConfig(sound_blaster=SoundBlaster("awe32", rom=rom)))
+        with self.assertRaisesRegex(EmulatorRefused, r"did not take rust-dos\.conf .*awe32rom: 16 bytes"):
+            RustDosSession(settings).start()
         self.assertFalse(self.lock_path.exists())
 
     def test_a_window_and_host_sound_are_kept_only_when_asked_for(self) -> None:
@@ -254,20 +274,23 @@ class Refusals(RustDosCase):
             ({"emulator_arguments": ("--config", "other.conf")}, "sets --config itself"),
             ({"emulator_arguments": ("--no-config",)}, "sets --no-config itself"),
             ({"config": RustDosConfig(sound_blaster=SoundBlaster("sb1"))}, "model 'sb1' is not one rust-dos takes"),
-            ({"config": RustDosConfig(sound_blaster=SoundBlaster(base=0x225))}, r"base 549 .*0x210, 0x220"),
-            ({"config": RustDosConfig(sound_blaster=SoundBlaster(base=0x290))}, "base 656"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster(base=0x225))}, r"base 0x225 .*0x210, 0x220"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster(base=0x290))}, "base 0x290"),
             ({"config": RustDosConfig(sound_blaster=SoundBlaster(irq=4))}, r"irq 4 .*\(2, 3, 5, 7, 9"),
             ({"config": RustDosConfig(sound_blaster=SoundBlaster(irq=True))}, "irq True"),
             ({"config": RustDosConfig(sound_blaster=SoundBlaster(dma=2))}, r"dma 2 .*\(0, 1, 3\)"),
             ({"config": RustDosConfig(sound_blaster=SoundBlaster(hdma=4))}, r"hdma 4 .*\(5, 6, 7\)"),
             ({"config": RustDosConfig(sound_blaster=SoundBlaster("sb2", hdma=5))}, "sb2 has no 16-bit DMA channel"),
-            ({"config": RustDosConfig(ultrasound=Ultrasound(base=0x230))}, "Ultrasound's base 560"),
+            ({"config": RustDosConfig(ultrasound=Ultrasound(base=0x230))}, "Ultrasound's base 0x230"),
             ({"config": RustDosConfig(ultrasound=Ultrasound(irq=9))}, "Ultrasound's irq 9"),
             ({"config": RustDosConfig(ultrasound=Ultrasound(dma=0))}, "Ultrasound's dma 0"),
             ({"config": RustDosConfig(sound_blaster=SoundBlaster(irq=5))}, "share IRQ 5"),
             ({"config": RustDosConfig(sound_blaster=SoundBlaster(base=0x240))}, "share base port 0x240"),
             ({"config": RustDosConfig(sound_blaster=SoundBlaster(dma=3))}, "share DMA 3"),
             ({"config": RustDosConfig(ultrasound=Ultrasound(dma=5))}, "share DMA 5"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster("awe32"))}, "An awe32 needs rom"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster("awe32", rom=self.root / "none.raw"))}, r"none\.raw is not a file"),
+            ({"config": RustDosConfig(sound_blaster=SoundBlaster(rom=self.root))}, "sb16 has no sample ROM"),
         ]
         for changes, message in cases:
             with self.subTest(message=message):
