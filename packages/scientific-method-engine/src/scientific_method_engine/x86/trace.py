@@ -820,7 +820,7 @@ def trace(image, config, continue_declared_jumps=True, track_loops=True, arrive=
                 "instructionPath": s.path, "guards": s.guards, "events": s.events,
                 "registers": snapshot(s), "conditionalModels": s.conditional}
         if reason == ENTRY_ARRIVAL:
-            arrival = path["arrival"] = {"frameEntry": s.frames[-1]["entry"]}
+            arrival = path["arrival"] = {"frameEntry": s.frames[-1]["entry"], "depth": len(s.frames) - 1}
             for key, name in (("sp", s.sp), ("bp", s.bp)):
                 # Finishing a path only observes it, so a register past the term limit is an offset
                 # not known, with the limit as the reason.

@@ -876,16 +876,15 @@ test("reach lists a chain link's branches on the routine's stack argument throug
       xxh3: sourceXxh3(data),
       regions,
       starts: [64],
-      targets: [96],
+      // 89 is also a target, so the chain to it ends in a target link from 80's entry.
+      targets: [96, 89],
       controls: [89],
       argumentBranches: true,
     }),
   );
   const r = run(["reach", path]);
   assert.deepEqual(r.targets[0].chain, [{ routine: 64 }, { callSite: 64, routine: 80 }, { callSite: 89, routine: 96 }]);
-  const link = r.argumentBranches[1];
-  assert.deepEqual([link.routine, link.callSite, link.enteredBy, link.returnFrameBytes], [80, 89, 64, 4]);
-  assert.deepEqual(link.branches, [
+  const branches = [
     {
       site: 87,
       predicate: "je",
@@ -894,8 +893,23 @@ test("reach lists a chain link's branches on the routine's stack argument throug
       entryOffsets: [4],
       possiblyRewrittenOffsets: [],
     },
+  ];
+  const links = r.argumentBranches.map((l: Record<string, unknown>) => [
+    l.routine,
+    l.callSite,
+    l.target,
+    l.enteredBy,
+    l.returnFrameBytes,
   ]);
-  assert.equal(link.complete, true);
+  assert.deepEqual(links, [
+    [64, 64, null, null, null],
+    [80, 89, null, 64, 4],
+    [80, null, 89, 64, 4],
+  ]);
+  for (const link of r.argumentBranches.slice(1)) {
+    assert.deepEqual(link.branches, branches);
+    assert.equal(link.complete, true);
+  }
 });
 
 test("reach keeps the return site of a far call to a noReturn routine unread through the real MZ prepared bridge", (t) => {
