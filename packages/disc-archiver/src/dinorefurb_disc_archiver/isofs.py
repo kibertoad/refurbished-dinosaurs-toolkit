@@ -506,7 +506,8 @@ def walk(track: Track, destination: Path | None = None, primary: bool = False) -
         stream.close()
         # pycdlib caches the time.struct_time of every date it parses. One that lives until the
         # interpreter exits makes a CPython 3.12 from before September 2024 print "Exception
-        # ignored in tp_clear" while shutting down (python/cpython#122527), so none is left there.
+        # ignored in tp_clear" while shutting down (python/cpython#122527), so the cache is emptied
+        # here, once pycdlib has read everything it will read.
         pycdlib_dates.string_to_timestruct.cache_clear()
     return sorted(entries, key=lambda e: e.path)
 
