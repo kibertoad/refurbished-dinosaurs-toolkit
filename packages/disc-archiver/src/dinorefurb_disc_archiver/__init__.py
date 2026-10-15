@@ -11,7 +11,7 @@ from .disc import Disc, DiscError, Track
 from .formats import FORMATS, Format, FormatUnavailable, Output, write_format
 from .notice import NOTICE, NOTICE_FILENAME
 from .pipeline import derive, fingerprint, open_source
-from .profile import BUILTIN_PROFILES, Profile, load_profile, recommended_formats
+from .profile import BUILTIN_PROFILES, REFERENCE_FORMATS, Profile, load_profile, recommended_formats, resolve_formats
 
 __all__ = [
     "BUILTIN_PROFILES",
@@ -24,6 +24,7 @@ __all__ = [
     "NOTICE_FILENAME",
     "Output",
     "Profile",
+    "REFERENCE_FORMATS",
     "Track",
     "derive",
     "fingerprint",
@@ -32,5 +33,6 @@ __all__ = [
     "read_cue",
     "read_iso",
     "recommended_formats",
+    "resolve_formats",
     "write_format",
 ]

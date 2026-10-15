@@ -5,15 +5,19 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from synthetic import SyntheticDisc, iso_image
 
+from dinorefurb_disc_archiver import tools
 from dinorefurb_disc_archiver.cli import EXIT_FAILED, EXIT_MISMATCH, EXIT_OK, EXIT_USAGE, main
 from dinorefurb_disc_archiver.notice import NOTICE, NOTICE_FILENAME
-from dinorefurb_disc_archiver.pipeline import MANIFEST_NAME
+from dinorefurb_disc_archiver.pipeline import MANIFEST_NAME, archive
+from dinorefurb_disc_archiver.profile import BUILTIN_PROFILES
 
 
 def run(*args: str) -> tuple[int, str, str]:
@@ -93,11 +97,70 @@ class CliTests(unittest.TestCase):
         code, _, err = run("convert", "--input", str(self.sheet), "--output", str(self.out), "--name", "a/b", "--accept-personal-use")
         self.assertEqual(code, EXIT_FAILED)
         self.assertIn("cannot be used as a file name", err)
-        code, _, err = run(
-            "convert", "--input", str(self.sheet), "--output", str(self.out), "--format", "recommended", "--format", "iso",
-            "--accept-personal-use",
+
+    def test_the_recommendation_combines_with_other_formats(self) -> None:
+        code, out, _ = run(
+            "convert", "--input", str(self.sheet), "--output", str(self.out), "--profile", str(self.profile()),
+            "--format", "iso", "--format", "recommended", "--format", "bincue", "--accept-personal-use",
         )
+        self.assertEqual(code, EXIT_OK, out)
+        manifest = json.loads((self.out / MANIFEST_NAME).read_text())
+        self.assertEqual([o["format"] for o in manifest["outputs"]], ["bincue", "iso"])
+
+    def test_the_reference_preset_writes_the_split_sheet_and_the_files(self) -> None:
+        code, out, _ = run("convert", "--input", str(self.sheet), "--output", str(self.out), "--format", "reference", "--accept-personal-use")
+        self.assertEqual(code, EXIT_OK, out)
+        manifest = json.loads((self.out / MANIFEST_NAME).read_text())
+        self.assertEqual([o["format"] for o in manifest["outputs"]], ["bincue-split", "files"])
+
+    def test_formats_given_as_a_generator_are_all_written(self) -> None:
+        manifest = archive(
+            output=self.out, profile=BUILTIN_PROFILES["any"], log=lambda _: None, image=self.sheet, formats=(f for f in ["iso", "files"])
+        )
+        self.assertEqual([o["format"] for o in manifest["outputs"]], ["iso", "files"])  # type: ignore[union-attr, index]
+
+    def test_a_reference_copy_of_an_iso_names_the_format_it_cannot_make(self) -> None:
+        iso = self.dir / "plain.iso"
+        iso.write_bytes(iso_image())
+        code, out, _ = run("convert", "--input", str(iso), "--output", str(self.out), "--format", "reference", "--accept-personal-use")
+        self.assertEqual(code, EXIT_OK, out)
+        manifest = json.loads((self.out / MANIFEST_NAME).read_text())
+        self.assertEqual([o["format"] for o in manifest["outputs"]], ["files"])
+        self.assertEqual([u["format"] for u in manifest["unavailable"]], ["bincue-split"])
+        self.assertIn("bincue-split: not written", out)
+
+    def test_a_reference_rip_with_another_backend_is_a_usage_error(self) -> None:
+        for backend in ("cdrdao", "data-copy"):
+            code, _, err = run(
+                "rip", "--drive", "E:", "--backend", backend, "--format", "reference", "--output", str(self.out), "--accept-personal-use"
+            )
+            self.assertEqual(code, EXIT_USAGE)
+            self.assertIn(f"not with the {backend} backend", err)
+            self.assertNotIn("PERSONAL ARCHIVAL COPY", err)
+        self.assertFalse(self.out.exists())
+
+    def test_a_reference_rip_with_an_unknown_backend_names_the_backends(self) -> None:
+        code, _, err = run(
+            "rip", "--drive", "E:", "--backend", "redumpr", "--format", "reference", "--output", str(self.out), "--accept-personal-use"
+        )
+        self.assertEqual(code, EXIT_USAGE)
+        self.assertIn("unknown backend 'redumpr'", err)
+        self.assertFalse(self.out.exists())
+
+    def test_a_reference_rip_without_redumper_stops_instead_of_falling_back(self) -> None:
+        home = self.dir / "home"
+        hidden = {"DISC_ARCHIVER_HOME": str(home), "PATH": ""}
+        hidden.update({tool.variable: str(self.dir / "none") for tool in tools.TOOLS.values()})
+        with mock.patch.dict(os.environ, hidden):
+            code, _, err = run(
+                "rip", "--drive", "E:", "--format", "reference", "--no-download", "--output", str(self.out), "--accept-personal-use"
+            )
         self.assertEqual(code, EXIT_FAILED)
+        self.assertIn("downloading it was declined", err)
+        self.assertIn("A reference copy is made only with redumper", err)
+        self.assertNotIn("choose another backend", err)
+        self.assertNotIn("falling back", err)
+        self.assertFalse((self.out / "archival").exists())
 
     def test_a_second_run_replaces_its_own_folders_and_leaves_others_alone(self) -> None:
         args = ["convert", "--input", str(self.sheet), "--output", str(self.out), "--format", "iso", "--accept-personal-use"]

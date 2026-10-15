@@ -32,6 +32,14 @@ class ChoiceTests(unittest.TestCase):
         self.assertFalse(choices["iso"].selected)
         self.assertIn("(recommended)", choices["bincue"].label)
 
+    def test_the_reference_preset_ticks_only_its_formats(self) -> None:
+        profile = parse_profile({"profile": 1, "title": "x", "recommendedFormats": ["bincue"]})
+        choices = {c.id: c for c in gui.format_choices(profile, {}, preset="reference")}
+        self.assertEqual({i for i, c in choices.items() if c.selected}, {"bincue-split", "files"})
+        self.assertIn("(recommended)", choices["bincue"].label)
+        unread = {c.id: c for c in gui.format_choices(profile, {}, raw=False, preset="reference")}
+        self.assertEqual({i for i, c in unread.items() if c.selected}, {"files"})
+
     def test_a_data_track_copy_rules_out_raw_formats(self) -> None:
         choices = {c.id: c for c in gui.format_choices(BUILTIN_PROFILES["mixed-mode"], {}, raw=False)}
         self.assertEqual(choices["bincue"].reason, "needs redumper or cdrdao")
@@ -91,6 +99,27 @@ class WindowTests(unittest.TestCase):
                 self.assertIsNone(jobs[1]["formats"])
             finally:
                 window.close()
+
+    def test_a_reference_copy_stays_chosen_until_another_backend_or_the_recommendation(self) -> None:
+        root = tkinter.Tk()
+        try:
+            window = gui.ArchiverWindow(root)
+            window.source_kind.set("image")
+            window.use_reference()
+            self.assertEqual(window.selected_formats(), ["bincue-split", "files"])
+            window.profile_name.set(BUILTIN_PROFILES["mixed-mode"].title)
+            window._profile_changed()
+            window.source_kind.set("drive")
+            self.assertEqual(window.selected_formats(), ["bincue-split", "files"])
+            self.assertEqual(window.backend_labels[window.backend.get()], "redumper")
+            window.backend.set(next(label for label, i in window.backend_labels.items() if i == "cdrdao"))
+            window.backend_chosen()
+            self.assertEqual(window.selected_formats(), ["bincue"])
+            window.use_reference()
+            window.use_recommended()
+            self.assertEqual(window.selected_formats(), ["bincue"])
+        finally:
+            window.close()
 
     def test_a_redump_dat_is_passed_on_only_when_one_is_given(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

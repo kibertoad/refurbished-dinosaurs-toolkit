@@ -20,6 +20,18 @@ from .tools import Log
 PVD_OFFSET = 16 * COOKED_SECTOR
 READ_SECTORS = 32
 READ_ATTEMPTS = 5
+REDUMPER_HOME = "https://github.com/superg/redumper"
+
+
+class RedumperUnavailable(DiscError):
+    """The ``redumper`` backend was chosen and redumper is neither installed nor downloadable.
+
+    ``reason`` says why, without the advice the message adds, so a caller can give its own.
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"{reason}. Install it from {REDUMPER_HOME}, or choose another backend")
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -79,7 +91,7 @@ def choose_backend(identifier: str, log: Log, allow_download: bool = True, get: 
             except DiscError as error:
                 reason = f"redumper could not be downloaded: {error}"
         if reason and identifier == "redumper":
-            raise DiscError(f"{reason}. Install it from https://github.com/superg/redumper, or choose another backend")
+            raise RedumperUnavailable(reason)
         if reason:
             log(f"{reason}; falling back")
     chosen = backend_by_id(identifier)

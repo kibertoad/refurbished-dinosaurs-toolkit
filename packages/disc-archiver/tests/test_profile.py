@@ -8,7 +8,16 @@ import unittest
 from pathlib import Path
 
 from dinorefurb_disc_archiver.disc import DiscError
-from dinorefurb_disc_archiver.profile import BUILTIN_PROFILES, Check, check_profile, load_profile, parse_profile, recommended_formats
+from dinorefurb_disc_archiver.formats import FORMAT_IDS
+from dinorefurb_disc_archiver.profile import (
+    BUILTIN_PROFILES,
+    Check,
+    check_profile,
+    load_profile,
+    parse_profile,
+    recommended_formats,
+    resolve_formats,
+)
 
 SCHEMA = Path(__file__).parents[3] / "schemas" / "disc-profile.schema.json"
 FINGERPRINT = {"layout": "mixed-mode", "volumeIdentifier": "GAME_CD", "audio": [{}, {}]}
@@ -71,6 +80,16 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(recommended_formats(BUILTIN_PROFILES["mixed-mode"], raw=False), ("iso",))
         profile = parse_profile({"profile": 1, "title": "x", "recommendedFormats": ["bincue", "files"]})
         self.assertEqual(recommended_formats(profile, raw=False), ("files",))
+
+    def test_presets_resolve_among_other_formats(self) -> None:
+        profile = parse_profile({"profile": 1, "title": "x", "recommendedFormats": ["bincue", "files"]})
+        self.assertEqual(resolve_formats(["iso", "recommended", "bincue"], profile), ("iso", "bincue", "files"))
+        self.assertEqual(resolve_formats(["reference"], profile), ("bincue-split", "files"))
+        self.assertEqual(resolve_formats(["reference", "recommended"], profile), ("bincue-split", "files", "bincue"))
+        self.assertEqual(resolve_formats(["recommended"], BUILTIN_PROFILES["any"], "data-only"), ("iso",))
+        self.assertEqual(resolve_formats(["recommended", "chd"], BUILTIN_PROFILES["mixed-mode"], raw=False), ("iso", "chd"))
+        self.assertEqual(resolve_formats(["all"], profile), FORMAT_IDS)
+        self.assertEqual(resolve_formats(["all", "recommended"], profile), FORMAT_IDS)
 
     def test_loading(self) -> None:
         self.assertIs(load_profile("data-only"), BUILTIN_PROFILES["data-only"])
