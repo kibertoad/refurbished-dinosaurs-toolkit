@@ -450,9 +450,14 @@ class Disc:
         return [t for t in self.tracks if t.is_audio]
 
     @property
+    def track_kinds(self) -> list[str]:
+        """Each track's kind in track order: ``audio`` or ``data``."""
+        return ["audio" if t.is_audio else "data" for t in self.tracks]
+
+    @property
     def layout(self) -> str:
         """``data-only``, ``mixed-mode`` (a data track followed by audio), ``audio`` or ``other``."""
-        kinds = ["audio" if t.is_audio else "data" for t in self.tracks]
+        kinds = self.track_kinds
         if all(k == "data" for k in kinds) and len(kinds) == 1:
             return "data-only"
         if kinds[0] == "data" and all(k == "audio" for k in kinds[1:]):

@@ -545,12 +545,17 @@ class RedumperDiscAnalysisTests(unittest.TestCase):
             [
                 {
                     "file": "Synth Disc (Track 1).bin",
+                    "invalidSyncSectors": {"count": 0, "ranges": []},
+                    "invalidModeSectors": {"count": 0, "ranges": []},
+                    "generatedSectors": {"count": 0, "ranges": []},
                     "msfErrors": {"count": 613, "ranges": [{"first": 40950, "last": 41426}, {"first": 42589, "last": 42724}]},
+                    "nonCompliantEccErrors": {"count": 0, "ranges": []},
                     "eccErrors": {
                         "count": 4,
                         "ranges": [{"first": 40949, "last": 40949}, {"first": 41426, "last": 41426}, {"first": 42588, "last": 42588}, {"first": 42724, "last": 42724}],
                     },
                     "edcErrors": {"count": 0, "ranges": []},
+                    "xaSubheaderMismatches": 0,
                     "redumpInfoErrors": 4,
                 }
             ],
@@ -584,6 +589,40 @@ class RedumperDiscAnalysisTests(unittest.TestCase):
     def test_one_offset_lists_no_shifts(self) -> None:
         found = self.analysis(redumper_log(extra_lines=tuple(redumper_analysis_steps(offsets=((-1, -1, 1000, 0),), write_offset=0))))
         self.assertEqual((found["offsetShifts"], found["writeOffset"]), ([], 0))
+
+    def test_a_one_sector_false_sync_frame_is_no_offset_shift(self) -> None:
+        offsets = ((-1, -1, 40951, -572), (50000, 1234, 1, 9999))
+        found = self.analysis(redumper_log(extra_lines=tuple(redumper_analysis_steps(offsets=offsets))))
+        self.assertEqual(found["offsetShifts"], [])
+
+    def test_an_image_name_with_brackets_keeps_its_info_blocks(self) -> None:
+        file = "Game [Rev 1] (Track 1).bin"
+        found = self.analysis(redumper_log(extra_lines=tuple(redumper_analysis_steps(file=file))))
+        self.assertEqual([(t["file"], t["msfErrors"]["count"]) for t in found["dataTracks"]], [(file, 613)])
+        self.assertEqual(found["protectionSchemes"], [{"system": "SecuROM", "file": file, "scheme": "unknown"}])
+
+    def test_every_sector_count_of_the_info_step_is_kept(self) -> None:
+        # Lines in the order systems/s_cdrom.ixx logs them; "ECC errors (non-compliant)" must not
+        # be read as "ECC errors".
+        extra = "\n".join(
+            [
+                "  invalid sync sectors: 2 (LBA: 10-11)",
+                "  invalid mode sectors: 1 (LBA: 12)",
+                "  generated sectors (0x55): 3 (LBA: 20-22)",
+                "  MSF errors: 613 (LBA: 40950-41426, 42589-42724)",
+                "  ECC errors (non-compliant): 5 (LBA: 30-34)",
+            ]
+        )
+        text = redumper_log(extra_lines=tuple(redumper_analysis_steps(securom=None)))
+        text = text.replace("  MSF errors: 613 (LBA: 40950-41426, 42589-42724)", extra)
+        text = text.replace("  ECC errors: 4 (LBA: 40949, 41426, 42588, 42724)", "  CD-XA subheader mismatches: 6")
+        track = self.analysis(text)["dataTracks"][0]
+        self.assertEqual(track["invalidSyncSectors"], {"count": 2, "ranges": [{"first": 10, "last": 11}]})
+        self.assertEqual(track["invalidModeSectors"], {"count": 1, "ranges": [{"first": 12, "last": 12}]})
+        self.assertEqual(track["generatedSectors"], {"count": 3, "ranges": [{"first": 20, "last": 22}]})
+        self.assertEqual(track["nonCompliantEccErrors"], {"count": 5, "ranges": [{"first": 30, "last": 34}]})
+        self.assertEqual(track["eccErrors"], {"count": 0, "ranges": []})
+        self.assertEqual(track["xaSubheaderMismatches"], 6)
 
     def test_an_info_step_without_errors_or_securom(self) -> None:
         text = redumper_log(extra_lines=tuple(redumper_analysis_steps(securom=None)))

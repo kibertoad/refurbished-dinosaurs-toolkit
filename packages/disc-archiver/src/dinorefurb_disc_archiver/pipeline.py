@@ -690,18 +690,13 @@ def derive(
     return manifest
 
 
-def _track_kinds(disc: Disc) -> list[str]:
-    """Each track's kind for ``redump.compare``: ``audio`` or ``data``."""
-    return ["audio" if t.is_audio else "data" for t in disc.tracks]
-
-
 def _redump(dat: redump.Dat, root: Path, outputs: list[dict], unavailable: list[dict], disc: Disc) -> dict[str, object]:  # type: ignore[type-arg]
     split = next((o for o in outputs if o["format"] == "bincue-split"), None)
     if split is None:
         reason = next((u["reason"] for u in unavailable if u["format"] == "bincue-split"), "it was not written")
         return redump.not_compared(dat, f"bincue-split, the layout Redump lists, could not be written: {reason}")
     sheet, *tracks = split["files"]
-    return redump.compare(dat, sheet, (root / sheet["path"]).read_bytes(), tracks, _track_kinds(disc))
+    return redump.compare(dat, sheet, (root / sheet["path"]).read_bytes(), tracks, disc.track_kinds)
 
 
 def redump_check(dat: redump.Dat, sheet: Path, disc: Disc) -> dict[str, object]:
@@ -722,7 +717,7 @@ def redump_check(dat: redump.Dat, sheet: Path, disc: Disc) -> dict[str, object]:
             f"included), and {sheet.name} has another layout; convert the copy to bincue-split first"
         )
     return redump.compare(
-        dat, file_hashes(sheet, sheet.parent), sheet.read_bytes(), [file_hashes(s, s.parent) for s in sources], _track_kinds(disc)
+        dat, file_hashes(sheet, sheet.parent), sheet.read_bytes(), [file_hashes(s, s.parent) for s in sources], disc.track_kinds
     )
 
 

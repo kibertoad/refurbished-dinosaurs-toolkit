@@ -302,6 +302,29 @@ class RedumpTests(unittest.TestCase):
         self.assertEqual(report["status"], "mismatched")
         self.assertEqual([c["game"] for c in report["candidates"]], ["Game Y", "Game Z", "Game A", "Game B", "Game C"])
 
+    def test_the_pressing_hint_names_a_game_ranked_below_the_listed_candidates(self) -> None:
+        # Five same-size revisions fill the list; the game with only the audio sizes ranks below them.
+        games = {f"Game {letter}": self.other_pressing(f"Game {letter}", data_size=None) for letter in "ABCDE"}
+        games["Game Z"] = self.other_pressing("Game Z")
+        _, _, manifest = self.convert(self.write_dat(dat_xml(games)), "--name", "Synth Game")
+        report = manifest["redump"]
+        self.assertEqual([c["game"] for c in report["candidates"]], ["Game A", "Game B", "Game C", "Game D", "Game E"])
+        self.assertIn("every audio track has the size of its counterpart in 'Game Z', and the data track's size differs", report["differences"][-1])
+
+    def test_the_pressing_hint_speaks_of_every_data_track(self) -> None:
+        pair = {"path": "t.bin", "datName": "t.bin", "hashMatches": False}
+        candidate = {
+            "game": "Two Data",
+            "trackCount": 3,
+            "trackCountMatches": True,
+            "tracks": [{**pair, "sizeMatches": False}, {**pair, "sizeMatches": False}, {**pair, "sizeMatches": True}],
+        }
+        dat = redump.Dat(file="redump.dat", games=())
+        hint = redump._unlisted_pressing([candidate], ["data", "data", "audio"], dat)
+        assert hint is not None
+        self.assertIn("and the data tracks' sizes differ", hint)
+        self.assertIn("other builds of the data tracks", hint)
+
     def test_no_track_of_the_same_size_lists_no_candidates(self) -> None:
         other = self.dir / "other.bin"
         other.write_bytes(b"\x01" * 2352)

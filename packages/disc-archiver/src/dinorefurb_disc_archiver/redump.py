@@ -258,9 +258,16 @@ def candidates(dat: Dat, tracks: list[dict[str, object]]) -> list[dict[str, obje
     ``path``, the paired file's ``datName`` (None when the game has fewer files), ``sizeMatches``
     and ``hashMatches``.
     """
+    return _ranked_candidates(dat, tracks)[:MAXIMUM_CANDIDATES]
+
+
+def _ranked_candidates(dat: Dat, tracks: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Every candidate of :func:`candidates`, ranked, without the cap."""
     found: list[tuple[tuple[int, int, str], dict[str, object]]] = []
     for game in dat.games:
         roms = [r for r in game.roms if not r.is_cue]
+        if not any(rom.size == entry["size"] for rom, entry in zip(roms, tracks)):
+            continue
         pairs = []
         for position, entry in enumerate(tracks):
             rom = roms[position] if position < len(roms) else None
@@ -273,18 +280,18 @@ def candidates(dat: Dat, tracks: list[dict[str, object]]) -> list[dict[str, obje
                 }
             )
         sizes = sum(bool(p["sizeMatches"]) for p in pairs)
-        if not sizes:
-            continue
         hashes = sum(bool(p["hashMatches"]) for p in pairs)
         candidate = {"game": game.name, "trackCount": len(roms), "trackCountMatches": len(roms) == len(tracks), "tracks": pairs}
         found.append(((-sizes, -hashes, game.name), candidate))
     found.sort(key=lambda item: item[0])
-    return [candidate for _, candidate in found[:MAXIMUM_CANDIDATES]]
+    return [candidate for _, candidate in found]
 
 
 def _unlisted_pressing(candidates_: list[dict[str, object]], kinds: list[str] | None, dat: Dat) -> str | None:
     """The hint for candidates whose audio tracks all have the copy's sizes while the data tracks
-    do not, or None when no candidate shows that or the track kinds are not known."""
+    do not, or None when no candidate shows that or the track kinds are not known. ``candidates_``
+    is every candidate, not only the ones the report lists, so that same-size revisions filling
+    the report's list do not hide such a game."""
     if kinds is None:
         return None
     games = []
@@ -299,10 +306,13 @@ def _unlisted_pressing(candidates_: list[dict[str, object]], kinds: list[str] | 
     if not games:
         return None
     named = ", ".join(games)
+    several = sum(kind != "audio" for kind in kinds) > 1
+    data = "the data tracks' sizes differ" if several else "the data track's size differs"
+    build = "other builds of the data tracks" if several else "another build of the data track"
     return (
-        f"every audio track has the size of its counterpart in {named}, and the data track's size differs. A misread does "
-        f"not change a track's size, so this is what a pressing {dat.file} does not list looks like, with another "
-        f"build of the data track, rather than a bad dump. The DAT cannot prove it: compare the disc's ring codes, "
+        f"every audio track has the size of its counterpart in {named}, and {data}. A misread does "
+        f"not change a track's size, so this is what a pressing {dat.file} does not list looks like, with "
+        f"{build}, rather than a bad dump. The DAT cannot prove it: compare the disc's ring codes, "
         f"version and barcode with the Redump page of {named}, and dump it again, on another drive if you can"
     )
 
@@ -331,9 +341,9 @@ def compare(
     report = _compare(dat, sheet, sheet_bytes, tracks)
     report["candidates"] = []
     if report["status"] in ("notListed", "mismatched"):
-        nearest = candidates(dat, tracks)
-        report["candidates"] = nearest
-        if hint := _unlisted_pressing(nearest, kinds, dat):
+        ranked = _ranked_candidates(dat, tracks)
+        report["candidates"] = ranked[:MAXIMUM_CANDIDATES]
+        if hint := _unlisted_pressing(ranked, kinds, dat):
             report["differences"].append(hint)  # type: ignore[attr-defined]
     return report
 
