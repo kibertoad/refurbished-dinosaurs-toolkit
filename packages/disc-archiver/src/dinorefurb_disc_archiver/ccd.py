@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .disc import MSF_OFFSET, RAW_SECTOR, Disc, DiscError, Track, bcd, msf
+from .disc import MSF_OFFSET, RAW_SECTOR, Disc, DiscError, Track, bcd, msf, session_gap
 
 SUBCHANNEL_BYTES = 96
 _CRC_TABLE: list[int] = []
@@ -43,6 +43,13 @@ def control(track: Track) -> int:
     return value
 
 
+def flags(mode: str, ctl: int) -> tuple[str, ...]:
+    """The cue FLAGS a Q control nibble gives a track of ``mode``; a data track has none."""
+    if mode != "AUDIO":
+        return ()
+    return tuple(name for bit, name in ((0x8, "4CH"), (0x2, "DCP"), (0x1, "PRE")) if ctl & bit)
+
+
 def _bcd_msf(frames: int) -> list[int]:
     return [bcd(part) for part in msf(frames)]
 
@@ -70,11 +77,16 @@ def _mode(track: Track) -> int:
     return 0 if track.is_audio else (2 if track.mode == "MODE2" else 1)
 
 
-def _entry(number: int, point: int, ctrl: int, frames: tuple[int, int, int]) -> list[str]:
+def opens_later_session(disc: Disc, track: Track) -> bool:
+    """Whether ``track`` is the first track of a session after the first."""
+    return track.session > 1 and disc.tracks[track.number - 2].session != track.session
+
+
+def _entry(number: int, session: int, point: int, ctrl: int, frames: tuple[int, int, int]) -> list[str]:
     pmin, psec, pframe = frames
     return [
         f"[Entry {number}]",
-        "Session=1",
+        f"Session={session}",
         f"Point=0x{point:02x}",
         "ADR=0x01",
         f"Control=0x{ctrl:02x}",
@@ -92,29 +104,39 @@ def _entry(number: int, point: int, ctrl: int, frames: tuple[int, int, int]) -> 
 
 
 def render_ccd(disc: Disc) -> str:
-    """The ``.ccd`` text for a single-session disc."""
-    first, last = disc.tracks[0], disc.tracks[-1]
-    disc_type = 0x20 if any(t.mode == "MODE2" for t in disc.tracks) else 0x00
+    """The ``.ccd`` text: each session's A0, A1 and A2 entries and its tracks, with disc addresses.
+
+    Track and index addresses count the gap between sessions, as DiscImageCreator writes them.
+    No mode 5 (B0, C0) entries are written.
+    """
+    sessions = disc.sessions
     lines = [
         "[CloneCD]",
         "Version=3",
         "[Disc]",
-        f"TocEntries={3 + len(disc.tracks)}",
-        "Sessions=1",
+        f"TocEntries={sum(3 + len(s.tracks) for s in sessions)}",
+        f"Sessions={len(sessions)}",
         "DataTracksScrambled=0",
         "CDTextLength=0",
     ]
     if disc.catalog:
         lines.append(f"CATALOG={disc.catalog}")
-    lines += ["[Session 1]", f"PreGapMode={_mode(first)}", "PreGapSubC=0"]
-    lines += _entry(0, 0xA0, control(first), (first.number, disc_type, 0))
-    lines += _entry(1, 0xA1, control(last), (last.number, 0, 0))
-    lines += _entry(2, 0xA2, control(last), msf(disc.total_sectors + MSF_OFFSET))
-    for i, track in enumerate(disc.tracks, start=3):
-        lines += _entry(i, track.number, control(track), msf(track.index1 + MSF_OFFSET))
+    for session in sessions:
+        lines += [f"[Session {session.number}]", f"PreGapMode={_mode(session.tracks[0])}", "PreGapSubC=0"]
+    entry = 0
+    for session in sessions:
+        first, last = session.tracks[0], session.tracks[-1]
+        disc_type = 0x20 if any(t.mode == "MODE2" for t in session.tracks) else 0x00
+        lines += _entry(entry, session.number, 0xA0, control(first), (first.number, disc_type, 0))
+        lines += _entry(entry + 1, session.number, 0xA1, control(last), (last.number, 0, 0))
+        lines += _entry(entry + 2, session.number, 0xA2, control(last), msf(session.lead_out + MSF_OFFSET))
+        entry += 3
+        for track in session.tracks:
+            lines += _entry(entry, session.number, track.number, control(track), msf(track.index1 + MSF_OFFSET))
+            entry += 1
     for track in disc.tracks:
         lines += [f"[TRACK {track.number}]", f"MODE={_mode(track)}"]
-        if track.pregap:
+        if track.pregap and track.pregap_writable:
             lines.append(f"INDEX 0={track.start}")
         lines.append(f"INDEX 1={track.index1}")
         for index, offset in sorted(track.extra_indexes.items()):
@@ -123,17 +145,24 @@ def render_ccd(disc: Disc) -> str:
 
 
 def write_ccd(disc: Disc, directory: Path, name: str) -> list[Path]:
-    """Write ``name.ccd``, ``name.img`` and ``name.sub`` and return their paths."""
+    """Write ``name.ccd``, ``name.img`` and ``name.sub`` and return their paths.
+
+    The image holds each track's sectors back to back; the lead-out and lead-in between sessions
+    hold none and are left out, as CloneCD and DiscImageCreator leave them out.
+    """
     ccd, img, sub = (directory / f"{name}{ext}" for ext in (".ccd", ".img", ".sub"))
     with img.open("wb") as image, sub.open("wb") as channel:
         for track in disc.tracks:
+            # A data pregap no source stored is left out of the image. Only the first track of a
+            # later session may have one, and the table of contents then places INDEX 01 after it.
+            first = -track.pregap if track.pregap_writable else 0
             image_written = 0
-            for chunk in track.iter_raw(-track.pregap, track.length):
+            for chunk in track.iter_raw(first, track.length):
                 image.write(chunk)
                 image_written += len(chunk) // RAW_SECTOR
-            if image_written != track.end - track.start:
+            if image_written != track.length - first:
                 raise DiscError(f"track {track.number} produced {image_written} sectors")
-            for block in range(track.start, track.end, 4096):
+            for block in range(track.index1 + first, track.end, 4096):
                 stop = min(block + 4096, track.end)
                 channel.write(b"".join(subchannel(track, lba) for lba in range(block, stop)))
     ccd.write_text(render_ccd(disc), encoding="ascii", newline="\r\n")
@@ -149,14 +178,7 @@ def _sector(path: Path, number: int, key: str, value: str) -> int:
     return int(value)
 
 
-def read_ccd(path: Path) -> Disc:
-    """Read a CloneCD image back from the ``[TRACK]`` sections of its ``.ccd`` and its ``.img``."""
-    img = path.with_suffix(".img")
-    if not img.is_file():
-        raise DiscError(f"{img.name} does not exist next to {path.name}")
-    size = img.stat().st_size
-    if size % RAW_SECTOR:
-        raise DiscError(f"{img.name} is not a whole number of 2,352-byte sectors")
+def _sections(path: Path) -> dict[str, dict[str, str]]:
     sections: dict[str, dict[str, str]] = {}
     current: dict[str, str] | None = None
     for raw in path.read_text(encoding="ascii", errors="replace").splitlines()[:100_000]:
@@ -168,21 +190,65 @@ def read_ccd(path: Path) -> Disc:
         elif current is not None and "=" in line:
             key, value = line.split("=", 1)
             current[key.strip().upper()] = value.strip()
+    return sections
+
+
+def _toc(path: Path, sections: dict[str, dict[str, str]]) -> tuple[dict[int, tuple[int, int]], dict[int, int]]:
+    """The table of contents' tracks as ``{point: (session, LBA of INDEX 01)}`` and each session's
+    lead-out LBA, from the ``[Entry]`` sections."""
+    tracks: dict[int, tuple[int, int]] = {}
+    lead_outs: dict[int, int] = {}
+    for name, entry in sections.items():
+        if not re.fullmatch(r"ENTRY \d+", name):
+            continue
+        try:
+            # Only mode 1 entries give tracks and lead-outs; a mode 5 entry's point means otherwise.
+            if int(entry.get("ADR", "1"), 0) != 1:
+                continue
+            point = int(entry["POINT"], 0)
+            session = int(entry["SESSION"])
+            if "PLBA" in entry:
+                lba = int(entry["PLBA"])
+            else:
+                lba = (int(entry["PMIN"]) * 60 + int(entry["PSEC"])) * 75 + int(entry["PFRAME"]) - MSF_OFFSET
+        except (KeyError, ValueError):
+            raise DiscError(f"{path.name}: [{name.title()}] does not give its mode, session, point and address") from None
+        if 1 <= point <= 99:
+            tracks[point] = (session, lba)
+        elif point == 0xA2:
+            lead_outs[session] = lba
+    return tracks, lead_outs
+
+
+def read_ccd(path: Path) -> Disc:
+    """Read a CloneCD image back from its ``.ccd`` and its ``.img``.
+
+    A one-session image is read from its ``[TRACK]`` sections, whose index addresses are sectors
+    of the image. On an image of several sessions, which ``[Entry]`` sections give, each track's
+    session and INDEX 01 come from its entry, each session ends at its A2 lead-out entry, and the
+    ``[TRACK]`` sections give the pregaps and later indexes. The image holds each session's tracks
+    from the first track's INDEX 00 to the session's lead-out, back to back. A later session must
+    start :func:`disc.session_gap` sectors past the lead-out before it; a first track without
+    INDEX 0 that starts later has a pregap the image does not hold.
+    """
+    img = path.with_suffix(".img")
+    if not img.is_file():
+        raise DiscError(f"{img.name} does not exist next to {path.name}")
+    size = img.stat().st_size
+    if size % RAW_SECTOR:
+        raise DiscError(f"{img.name} is not a whole number of 2,352-byte sectors")
+    sections = _sections(path)
     numbers = sorted(int(n.split()[1]) for n in sections if re.fullmatch(r"TRACK \d+", n))
     if not numbers:
         raise DiscError(f"{path.name} lists no tracks")
     sectors = size // RAW_SECTOR
-    tracks: list[Track] = []
-    starts = []
+    parsed = []
     for number in numbers:
         section = sections[f"TRACK {number}"]
         if "INDEX 1" not in section:
             raise DiscError(f"{path.name}: track {number} has no INDEX 1")
         index1 = _sector(path, number, "INDEX 1", section["INDEX 1"])
-        start = _sector(path, number, "INDEX 0", section["INDEX 0"]) if "INDEX 0" in section else index1
-        starts.append((start, index1, section))
-    for i, (number, (start, index1, section)) in enumerate(zip(numbers, starts, strict=True)):
-        end = starts[i + 1][0] if i + 1 < len(starts) else sectors
+        index0 = _sector(path, number, "INDEX 0", section["INDEX 0"]) if "INDEX 0" in section else None
         mode = {"0": "AUDIO", "1": "MODE1", "2": "MODE2"}.get(section.get("MODE", ""))
         if mode is None:
             raise DiscError(f"{path.name}: track {number} has mode {section.get('MODE')!r}")
@@ -191,12 +257,84 @@ def read_ccd(path: Path) -> Disc:
             for key, value in section.items()
             if re.fullmatch(r"INDEX \d+", key) and int(key.split()[1]) > 1
         }
-        pregap = index1 - start
+        parsed.append((number, mode, index0, index1, extra))
+    catalog = sections.get("DISC", {}).get("CATALOG")
+    toc, lead_outs = _toc(path, sections)
+    if len({session for session, _ in toc.values()}) <= 1:
+        return _one_session(path, img, sectors, parsed, catalog)
+    return _sessions(path, img, sectors, parsed, catalog, toc, lead_outs)
+
+
+def _one_session(
+    path: Path, img: Path, sectors: int, parsed: list[tuple[int, str, int | None, int, dict[int, int]]], catalog: str | None
+) -> Disc:
+    tracks: list[Track] = []
+    starts = [(index1 if index0 is None else index0) for _, _, index0, index1, _ in parsed]
+    for i, (number, mode, _, index1, extra) in enumerate(parsed):
+        start = starts[i]
+        end = starts[i + 1] if i + 1 < len(starts) else sectors
         tracks.append(
             Track(
-                number, mode, "raw", pregap, True, end - index1, img,
+                number, mode, "raw", index1 - start, True, end - index1, img,
                 start * RAW_SECTOR, (end - start) * RAW_SECTOR, extra,
             )
         )
-    catalog = sections.get("DISC", {}).get("CATALOG")
     return Disc(tracks, catalog=catalog, origin=path)
+
+
+def _sessions(
+    path: Path,
+    img: Path,
+    sectors: int,
+    parsed: list[tuple[int, str, int | None, int, dict[int, int]]],
+    catalog: str | None,
+    toc: dict[int, tuple[int, int]],
+    lead_outs: dict[int, int],
+) -> Disc:
+    layout = []
+    for number, mode, index0, index1, extra in parsed:
+        if number not in toc:
+            raise DiscError(f"{path.name}: track {number} has no entry in the table of contents")
+        session, disc_index1 = toc[number]
+        if session not in lead_outs:
+            raise DiscError(f"{path.name}: session {session} has no lead-out (A2) entry")
+        layout.append([number, mode, session, disc_index1, 0 if index0 is None else index1 - index0, index0 is not None, extra])
+    for i, entry in enumerate(layout):
+        number, _, session, disc_index1, pregap, has_index0, _ = entry
+        if i == 0 or layout[i - 1][2] == session:
+            continue
+        previous = layout[i - 1][2]
+        expected = lead_outs[previous] + session_gap(previous)
+        start = disc_index1 - pregap
+        if not has_index0 and start > expected:
+            # DiscImageCreator writes no INDEX 0 for a later session's first track and leaves its
+            # pregap out of the image.
+            entry[4], entry[5] = disc_index1 - expected, False
+        elif start != expected:
+            raise DiscError(
+                f"{path.name}: session {session} starts at LBA {start}, and the archiver lays a session out "
+                f"{session_gap(previous)} sectors past the previous session's lead-out at LBA {lead_outs[previous]}, "
+                f"the standard lead-out and lead-in, so at LBA {expected}"
+            )
+    tracks: list[Track] = []
+    offset = 0
+    for i, (number, mode, session, disc_index1, pregap, stored, extra) in enumerate(layout):
+        following = layout[i + 1] if i + 1 < len(layout) else None
+        end = following[3] - following[4] if following and following[2] == session else lead_outs[session]
+        if end <= disc_index1:
+            raise DiscError(f"{path.name}: track {number} has no sectors before the next track or its session's lead-out")
+        held = end - disc_index1 + (pregap if stored else 0)
+        tracks.append(
+            Track(
+                number, mode, "raw", pregap, stored, end - disc_index1, img,
+                offset * RAW_SECTOR, held * RAW_SECTOR, extra, session=session,
+            )
+        )
+        offset += held
+    if offset != sectors:
+        raise DiscError(f"{img.name} holds {sectors} sectors, and the table of contents lays out {offset}")
+    disc = Disc(tracks, catalog=catalog, origin=path)
+    for track in disc.tracks:
+        if track.index1 != toc[track.number][1]:
+            raise DiscError(f"{path.name}: track {track.number} is at LBA {toc[track.number][1]}, out of the order of its session")
+    return disc

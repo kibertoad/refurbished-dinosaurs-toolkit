@@ -13,6 +13,7 @@ from unittest import mock
 import wave
 from pathlib import Path
 
+import xxhash
 from synthetic import FILES, SyntheticCdExtra, SyntheticDisc, form2_sector, iso_image, mode1_sector, mode2_raw
 
 from dinorefurb_disc_archiver import ccd, formats, isofs, pipeline
@@ -77,6 +78,79 @@ class RawFormatTests(FormatTestCase):
         output = self.write("bincue-split")
         for name in ("Synth (Track 1).bin", "Synth (Track 2).bin", "Synth (Track 3).bin", "Synth.cue"):
             self.assertEqual((output.directory / name).read_bytes(), (self.dir / "source" / name).read_bytes(), name)
+
+    def test_a_redumper_sheet_with_cd_text_isrc_and_flags_is_written_back_byte_for_byte(self) -> None:
+        # The line order of redumper's printCUE (cd/toc.ixx): CATALOG, the disc's CD-Text, then
+        # per track TRACK, its CD-Text, ISRC, FLAGS (4CH DCP PRE) and the indexes.
+        sheet = (
+            "CATALOG 0000000000000\n"
+            'TITLE "Synthetic Disc"\n'
+            'PERFORMER "Nobody"\n'
+            'FILE "Synth (Track 1).bin" BINARY\n'
+            "  TRACK 01 MODE1/2352\n"
+            "    INDEX 01 00:00:00\n"
+            'FILE "Synth (Track 2).bin" BINARY\n'
+            "  TRACK 02 AUDIO\n"
+            '    TITLE "First Song"\n'
+            '    PERFORMER "Nobody"\n'
+            "    ISRC USXXX0000001\n"
+            "    FLAGS DCP PRE\n"
+            "    INDEX 00 00:00:00\n"
+            "    INDEX 01 00:02:00\n"
+            'FILE "Synth (Track 3).bin" BINARY\n'
+            "  TRACK 03 AUDIO\n"
+            "    ISRC USXXX0000002\n"
+            "    FLAGS 4CH DCP\n"
+            "    INDEX 00 00:00:00\n"
+            "    INDEX 01 00:02:00\n"
+        )
+        # redumper ends every line with CRLF, as the sheet written back does on every platform.
+        source = self.dir / "source" / "Synth.cue"
+        source.write_bytes(sheet.replace("\n", "\r\n").encode())
+        output = self.write("bincue-split", read_cue(source))
+        self.assertEqual(output.entry.read_bytes(), source.read_bytes())
+        # Flags given in another order are written in redumper's.
+        source.write_text(sheet.replace("FLAGS DCP PRE", "FLAGS PRE DCP"))
+        shutil.rmtree(output.directory)
+        self.assertEqual(self.write("bincue-split", read_cue(source)).entry.read_text(), sheet)
+        # CloneCD holds no CD-Text, and its notes say so.
+        self.assertIn("CD-Text the cue sheet gave is not carried", " ".join(self.write("ccd", read_cue(source)).notes))
+
+    def test_cd_text_with_a_double_quote_in_an_unquoted_word_is_written_back(self) -> None:
+        source = self.dir / "source" / "Synth.cue"
+        sheet = source.read_text().replace("  TRACK 02 AUDIO\n", '  TRACK 02 AUDIO\n    TITLE 12"Single" Mix\n', 1)
+        source.write_text(sheet)
+        disc = read_cue(source)
+        self.assertEqual(disc.tracks[1].cd_text, (("TITLE", '12"Single" Mix'),))
+        output = self.write("bincue-split", disc)
+        self.assertEqual(read_cue(output.entry).tracks[1].cd_text, disc.tracks[1].cd_text)
+
+    def test_cd_text_that_is_not_utf8_is_written_back_byte_for_byte(self) -> None:
+        # redumper writes the disc's CD-Text bytes, which are often ISO 8859-1.
+        source = self.dir / "source" / "Synth.cue"
+        title = b'    TITLE "Caf\xe9"'
+        sheet = source.read_bytes().replace(b"  TRACK 02 AUDIO", b"  TRACK 02 AUDIO\n" + title, 1)
+        source.write_bytes(sheet)
+        output = self.write("bincue-split", read_cue(source))
+        self.assertIn(title, output.entry.read_bytes())
+
+    def test_cue_sheets_end_every_line_with_crlf_on_every_platform(self) -> None:
+        # Redump's cue sheets, which its DATs hash, use CRLF; a sheet written on Linux must have
+        # the same bytes as one written on Windows.
+        expected = b"".join(
+            line.encode() + b"\r\n"
+            for line in [
+                'FILE "Synth (Track 1).bin" BINARY', "  TRACK 01 MODE1/2352", "    INDEX 01 00:00:00",
+                'FILE "Synth (Track 2).bin" BINARY', "  TRACK 02 AUDIO", "    INDEX 00 00:00:00", "    INDEX 01 00:02:00",
+                'FILE "Synth (Track 3).bin" BINARY', "  TRACK 03 AUDIO", "    INDEX 00 00:00:00", "    INDEX 01 00:02:00",
+            ]
+        )
+        self.assertEqual(self.write("bincue-split").entry.read_bytes(), expected)
+        for identifier in ("bincue", "iso-wav"):
+            data = self.write(identifier).entry.read_bytes()
+            self.assertTrue(data.endswith(b"\r\n"), identifier)
+            self.assertNotIn(b"\n", data.replace(b"\r\n", b""), identifier)
+            self.assertNotIn(b"\r", data.replace(b"\r\n", b""), identifier)
 
     def test_one_file_bincue_matches_a_hand_built_single_bin(self) -> None:
         output = self.write("bincue")
@@ -289,9 +363,11 @@ class PastTheVolumeTests(FormatTestCase):
                 "track": 1,
                 "sectors": self.volume + self.REPEATED + self.BLANK,
                 "sha256": hashlib.sha256(self.synthetic.iso + repeated_user).hexdigest(),
+                "xxh3": xxhash.xxh3_128_hexdigest(self.synthetic.iso + repeated_user),
                 "emptyForm2Sectors": [],
                 "nonDataSectors": [[first, first + self.BLANK]],
                 "nonDataSha256": hashlib.sha256(bytes(self.BLANK * RAW_SECTOR)).hexdigest(),
+                "nonDataXxh3": xxhash.xxh3_128_hexdigest(bytes(self.BLANK * RAW_SECTOR)),
             },
         )
         self.assertEqual(found["volumeIdentifier"], "SYNTH_DISC")
@@ -435,9 +511,11 @@ class EmptyForm2Tests(FormatTestCase):
                 "track": 1,
                 "sectors": v + self.TAIL,
                 "sha256": hashlib.sha256(self.synthetic.iso + bytes(self.TAIL * 2048)).hexdigest(),
+                "xxh3": xxhash.xxh3_128_hexdigest(self.synthetic.iso + bytes(self.TAIL * 2048)),
                 "emptyForm2Sectors": [[self.PAD, self.PAD + 1], [v, v + self.TAIL]],
                 "nonDataSectors": [],
                 "nonDataSha256": None,
+                "nonDataXxh3": None,
             },
         )
         # The same user data as a MODE1 image of the disc, which holds zero blocks there.
@@ -613,11 +691,24 @@ class VolumeAddressTests(FormatTestCase):
         volume = isofs.locate(read_iso(path).first_data_track())
         self.assertEqual((volume.base, volume.end), (0, len(image) // 2048))
 
+    def test_a_cd_extra_volume_is_read_at_the_lba_its_sessions_give(self) -> None:
+        extra = SyntheticCdExtra()
+        for cooked in (False, True):
+            with self.subTest(cooked=cooked):
+                disc = self.source(extra, cooked)
+                track = disc.first_data_track()
+                self.assertEqual((track.session, track.index1), (2, extra.start))
+                self.assertEqual(isofs.locate(track).base, extra.start)
+                self.assertEqual(fingerprint(disc)["data"]["sha256"], hashlib.sha256(extra.iso).hexdigest())  # type: ignore[index]
+                self.assertFilesRead(disc, extra)
+                shutil.rmtree(self.dir / "files")
+                shutil.rmtree(self.dir / "out")
+
     def test_a_cd_extra_volume_is_read_at_the_track_address_its_sector_headers_give(self) -> None:
-        extra = SyntheticCdExtra(padding=self.PADDING)
+        extra = SyntheticCdExtra(padding=self.PADDING, sessions=False)
         disc = self.source(extra)
         track = disc.first_data_track()
-        # The sheet leaves out the gap between the sessions; the sector headers do not.
+        # The sheet gives no sessions and leaves out the gap between them; the sector headers do not.
         self.assertEqual(track.index1, extra.sheet_start)
         self.assertEqual(isofs.locate(track).base, extra.start)
         self.assertEqual(
@@ -626,9 +717,11 @@ class VolumeAddressTests(FormatTestCase):
                 "track": extra.number,
                 "sectors": extra.volume + self.PADDING,
                 "sha256": hashlib.sha256(extra.iso).hexdigest(),
+                "xxh3": xxhash.xxh3_128_hexdigest(extra.iso),
                 "emptyForm2Sectors": [],
                 "nonDataSectors": [[extra.volume, extra.volume + self.PADDING]],
                 "nonDataSha256": hashlib.sha256(bytes(self.PADDING * RAW_SECTOR)).hexdigest(),
+                "nonDataXxh3": xxhash.xxh3_128_hexdigest(bytes(self.PADDING * RAW_SECTOR)),
             },
         )
         self.assertFilesRead(disc, extra)
@@ -645,7 +738,7 @@ class VolumeAddressTests(FormatTestCase):
         self.assertIn(f"counts its addresses from LBA {SyntheticCdExtra().start}", " ".join(output.notes))
 
     def test_a_cd_extra_volume_is_read_at_the_track_address_the_sheet_gives(self) -> None:
-        extra = SyntheticCdExtra(session_gap=0)
+        extra = SyntheticCdExtra(session_gap=0, sessions=False)
         for cooked in (False, True):
             with self.subTest(cooked=cooked):
                 disc = self.source(extra, cooked)
@@ -670,11 +763,11 @@ class VolumeAddressTests(FormatTestCase):
         self.assertFalse((self.dir / "files" / "Synth").exists())
         self.assertIsNone(isofs.volume_sectors(disc.first_data_track()))
         # Nothing past the volume is admitted when the volume cannot be located.
-        with self.assertRaisesRegex(DiscError, f"sector {extra.sheet_start + extra.volume} has no data sync pattern"):
+        with self.assertRaisesRegex(DiscError, f"sector {extra.start + extra.volume} has no data sync pattern"):
             fingerprint(disc)
 
     def test_a_cooked_cd_extra_track_whose_sheet_leaves_out_the_session_gap_is_unsupported(self) -> None:
-        extra = SyntheticCdExtra()
+        extra = SyntheticCdExtra(sessions=False)
         disc = self.source(extra, cooked=True)
         manifest = derive(disc, self.dir / "out", "Extra", ["files", "iso"], BUILTIN_PROFILES["any"], silent_log, {})
         self.assertEqual([o["format"] for o in manifest["outputs"]], ["iso"])  # type: ignore[union-attr, index]
@@ -686,7 +779,7 @@ class VolumeAddressTests(FormatTestCase):
             derive(disc, self.dir / "out2", "Extra", ["iso"], self.PATHS, silent_log, {})
 
     def test_a_root_directory_found_from_two_bases_is_unsupported(self) -> None:
-        extra = SyntheticCdExtra(session_gap=0, audio_lengths=[20], padding=200)
+        extra = SyntheticCdExtra(session_gap=0, audio_lengths=[20], padding=200, sessions=False)
         root = int.from_bytes(extra.iso[16 * 2048 + 158 : 16 * 2048 + 162], "little")
         data = bytearray(extra.data_raw)
         # The root directory's sector again at the track sector its address names when counted

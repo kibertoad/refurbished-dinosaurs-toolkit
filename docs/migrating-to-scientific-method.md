@@ -508,6 +508,32 @@ region's `start`, `end`, `segment` and `ip`.
 
 ## Disc archiver upgrades
 
+### Disc archiver 3.0.0: track starts count the gap between sessions
+
+The archiver reads sessions: `REM SESSION` lines in cue sheets, the `[Entry]` sessions of a
+CloneCD image, and what `chdman extractcd` gives. On a disc of more than one session, such as a
+CD-Extra disc, each track's `start` in `rip-manifest.json` is now its LBA on the disc. A later
+session's first track starts past the previous session's lead-out (6,750 sectors after the first
+session, 2,250 after a later one) and its own 4,500-sector lead-in. Earlier versions laid every
+track out back to back, so a CD-Extra disc's data track had a `start` 11,250 lower. The manifest's
+`disc` also gains `sessions` and a `session` on each track.
+
+A restoration that recorded track starts of a disc with several sessions runs `disc-archiver check`
+on its dump again and records the new values. The `bincue-split`, `bincue` and `ccd` copies of such
+a disc now carry the sessions, so their file hashes differ from earlier runs; the content hashes
+(`data.sha256` and each audio `sha256`) do not change.
+
+A cue sheet whose `REM SESSION` lines are out of order or leave a session without tracks, or whose
+`REM LEAD-OUT` or `REM LEAD-IN` gives other than the standard sizes, or whose later session's data
+track has sector headers that place it elsewhere than the standard sizes do, is now refused; earlier
+versions skipped every `REM` line. Discs of one session keep every manifest value, and their
+manifests gain the two new fields.
+
+Cue sheets are written in redumper's line order and keep CD-Text (`TITLE`, `PERFORMER`,
+`SONGWRITER`): `ISRC` now comes before `FLAGS`, and flags are written as `4CH DCP PRE`. A sheet
+whose source has CD-Text, a track with both `ISRC` and `FLAGS`, or flags in another order is
+written differently from earlier versions, so its file hashes differ; the content hashes do not.
+
 ### Disc archiver 2.0.0: empty form 2 sectors are zero blocks of the data hash
 
 An empty CD-ROM XA form 2 sector on a MODE2 data track (subheader copies equal with the form 2 bit

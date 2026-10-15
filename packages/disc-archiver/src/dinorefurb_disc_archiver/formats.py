@@ -9,8 +9,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import ccd, isofs, tools
-from .cue import CueFile, render_cue
+from . import ccd, isofs, mds, nrg, tools
+from .cue import CueFile, render_cue, write_cue
 from .disc import COOKED_SECTOR, RAW_SECTOR, Disc, DiscError, NotDataSector, Track, block_data, describe_ranges
 from .tools import Log
 
@@ -54,6 +54,19 @@ FORMATS: tuple[Format, ...] = (
     ),
     Format("chd", "CHD", "MAME's compressed disc image, made by chdman from the one-file BIN/CUE.", ("chdman",), True),
     Format(
+        "mds",
+        "Alcohol 120% (.mds/.mdf)",
+        "Every raw sector in .mdf with a version 1 .mds descriptor, without subchannel. The descriptor holds no "
+        "catalog number, ISRC codes or indexes after INDEX 01.",
+        complete=True,
+    ),
+    Format(
+        "nrg",
+        "Nero (.nrg)",
+        "Every raw sector in one version 2 disc-at-once .nrg file, with the catalog number, ISRC codes and indexes.",
+        complete=True,
+    ),
+    Format(
         "iso-flac",
         "ISO + FLAC audio",
         "The data track as an ISO file and each audio track as lossless FLAC, with a cue sheet.",
@@ -72,6 +85,13 @@ FORMATS: tuple[Format, ...] = (
     ),
     Format("iso", "ISO", "The data track's 2,048-byte sectors only. Audio tracks are left out."),
     Format("files", "Extracted files", "The data track's files copied out, with their dates."),
+    Format(
+        "game-dir",
+        "GAME_DIR layout",
+        "The layout the documentation standard gives a build: the data track's files under CD/ by their "
+        "primary ISO 9660 names, with their dates, and each audio track as CD/trackNN.cdda, its raw "
+        "2,352-byte sectors from INDEX 01.",
+    ),
 )
 FORMAT_IDS = tuple(f.id for f in FORMATS)
 
@@ -90,11 +110,14 @@ class Output:
 
     format: str
     directory: Path
-    # The file a reader opens: a cue sheet, an ISO, a .ccd, a .chd, or the extracted tree.
+    # The file a reader opens: a cue sheet, an ISO, a .ccd, a .chd, a .mds, a .nrg, or the extracted tree.
     entry: Path
     files: list[Path] = field(default_factory=list)
     # What the format left out or generated, and anything else a reader of the copy should know.
     notes: list[str] = field(default_factory=list)
+    # For game-dir: each file as a build entry lists it, with ``path``, ``format`` for an audio
+    # track, ``size`` and ``xxh3``.
+    listing: list[dict[str, object]] = field(default_factory=list)
 
 
 def track_file_name(name: str, disc: Disc, track: Track, extension: str) -> str:
@@ -121,9 +144,11 @@ def _need_raw(disc: Disc, fmt: str) -> None:
         )
 
 
-def _virtual_pregap_notes(disc: Disc) -> list[str]:
+def _virtual_pregap_notes(disc: Disc, data_note: str = "the cue sheet gives it as PREGAP") -> list[str]:
     return [
         f"Track {t.number}'s {t.pregap}-sector pregap was not stored in the source and is written as silence."
+        if t.is_audio
+        else f"Track {t.number}'s {t.pregap}-sector pregap was not stored in the source, so it is not stored here either; {data_note}."
         for t in disc.tracks
         if t.pregap and not t.pregap_stored
     ]
@@ -139,37 +164,121 @@ def write_bincue_split(disc: Disc, directory: Path, name: str) -> Output:
     files, cue_files = [], []
     for track in disc.tracks:
         filename = f"{name}.bin" if len(disc.tracks) == 1 else track_file_name(name, disc, track, ".bin")
-        _write(directory / filename, track.iter_raw(-track.pregap, track.length))
+        stored = track.pregap_writable
+        _write(directory / filename, track.iter_raw(-track.pregap if stored else 0, track.length))
         files.append(directory / filename)
-        cue_files.append(CueFile(filename, "BINARY", [(track, 0, True, _cue_type(track))]))
+        cue_files.append(CueFile(filename, "BINARY", [(track, 0, stored, _cue_type(track))]))
     sheet = directory / f"{name}.cue"
-    sheet.write_text(render_cue(disc, cue_files), encoding="utf-8")
+    write_cue(sheet, render_cue(disc, cue_files))
     return Output("bincue-split", directory, sheet, [sheet, *files], _virtual_pregap_notes(disc))
 
 
 def write_bincue(disc: Disc, directory: Path, name: str) -> Output:
-    """Every track in one .bin with one cue sheet."""
+    """Every track in one .bin with one cue sheet. The gaps between sessions hold no sectors and
+    are not stored: the sheet's ``REM SESSION`` lines place them."""
     _need_raw(disc, "BIN/CUE")
     image = directory / f"{name}.bin"
-    _write(image, (chunk for t in disc.tracks for chunk in t.iter_raw(-t.pregap, t.length)))
+    entries, position = [], 0
+    for track in disc.tracks:
+        stored = track.pregap_writable
+        entries.append((track, position, stored, _cue_type(track)))
+        position += track.length + (track.pregap if stored else 0)
+    _write(image, (chunk for t, _, stored, _ in entries for chunk in t.iter_raw(-t.pregap if stored else 0, t.length)))
     sheet = directory / f"{name}.cue"
-    cue_file = CueFile(image.name, "BINARY", [(t, t.start, True, _cue_type(t)) for t in disc.tracks])
-    sheet.write_text(render_cue(disc, [cue_file]), encoding="utf-8")
+    write_cue(sheet, render_cue(disc, [CueFile(image.name, "BINARY", entries)]))
     return Output("bincue", directory, sheet, [sheet, image], _virtual_pregap_notes(disc))
 
 
 def write_ccd(disc: Disc, directory: Path, name: str) -> Output:
     """A CloneCD image with a subchannel generated from the table of contents."""
     _need_raw(disc, "CloneCD")
+    for track in disc.tracks:
+        if track.pregap and not track.pregap_writable and not ccd.opens_later_session(disc, track):
+            raise FormatUnavailable(
+                f"CloneCD stores every sector from each track's INDEX 00, and track {track.number}'s {track.pregap}-sector "
+                "data pregap was not stored in the source. BIN/CUE gives it as a cue PREGAP."
+            )
     files = ccd.write_ccd(disc, directory, name)
     notes = [
         "The .sub subchannel is generated from the table of contents (P marks pregaps, Q carries "
         "positions); it was not read from the disc.",
-        *_virtual_pregap_notes(disc),
+        *_virtual_pregap_notes(disc, "the table of contents places the track's INDEX 01 after it"),
     ]
+    if len(disc.sessions) > 1:
+        notes.append(
+            "The table of contents has each session's A0, A1 and A2 entries and its tracks, with the gap between "
+            "sessions; it has no mode 5 (B0, C0) entries, which the source did not give."
+        )
     if any(t.isrc for t in disc.tracks):
         notes.append("The tracks' ISRC codes are not carried into the CloneCD files.")
+    if _has_cd_text(disc):
+        notes.append("The CD-Text the cue sheet gave is not carried into the CloneCD files.")
     return Output("ccd", directory, files[0], files, notes)
+
+
+def _has_cd_text(disc: Disc) -> bool:
+    return bool(disc.cd_text) or any(t.cd_text for t in disc.tracks)
+
+
+def _need_one_session_and_pregaps(disc: Disc, fmt: str) -> None:
+    """Refuse what the MDS and NRG writers cannot lay out: a second session, and a data pregap no
+    source stored, which they would have to write sectors for."""
+    sessions = disc.sessions
+    if len(sessions) > 1:
+        raise FormatUnavailable(
+            f"the archiver writes {fmt} images of one session, and the disc has {len(sessions)}. "
+            "BIN/CUE and CloneCD keep the sessions."
+        )
+    for track in disc.tracks:
+        if track.pregap and not track.pregap_writable:
+            raise FormatUnavailable(
+                f"{fmt} stores every sector from each track's INDEX 00, and track {track.number}'s "
+                f"{track.pregap}-sector data pregap was not stored in the source. BIN/CUE gives it as a cue PREGAP."
+            )
+
+
+def write_mds(disc: Disc, directory: Path, name: str) -> Output:
+    """An Alcohol 120% image: a version 1 ``.mds`` descriptor and a ``.mdf`` of raw sectors."""
+    _need_raw(disc, "Alcohol 120% MDS/MDF")
+    _need_one_session_and_pregaps(disc, "Alcohol 120% MDS/MDF")
+    files = mds.write_mds(disc, directory, name)
+    notes = _virtual_pregap_notes(disc)
+    losses = mds_losses(disc)
+    if losses:
+        notes.append(f"Not carried into the .mds, which has no place for them: {', '.join(losses)}.")
+    if _has_cd_text(disc):
+        notes.append("The CD-Text the cue sheet gave is not carried into the .mds.")
+    return Output("mds", directory, files[0], files, notes)
+
+
+def mds_losses(disc: Disc) -> list[str]:
+    """What the disc holds that an MDS descriptor cannot."""
+    losses = []
+    if disc.catalog:
+        losses.append("the disc's catalog number")
+    if any(t.isrc for t in disc.tracks):
+        losses.append("the tracks' ISRC codes")
+    if any(t.extra_indexes for t in disc.tracks):
+        losses.append("the tracks' indexes after INDEX 01")
+    return losses
+
+
+def write_nrg(disc: Disc, directory: Path, name: str) -> Output:
+    """A Nero version 2 disc-at-once image of raw sectors."""
+    _need_raw(disc, "Nero NRG")
+    _need_one_session_and_pregaps(disc, "Nero NRG")
+    problem = nrg.check_writable(disc)
+    if problem:
+        raise FormatUnavailable(problem)
+    image = nrg.write_nrg(disc, directory, name)
+    notes = [
+        "Track 1's 150-sector pregap before LBA 0, which the NRG layout stores and the archiver does not read from "
+        "any source, is written as zero bytes.",
+        *_virtual_pregap_notes(disc),
+    ]
+    if _has_cd_text(disc):
+        notes.append("The CD-Text the cue sheet gave is not carried into the NRG.")
+    return Output("nrg", directory, image, [image], notes)
 
 
 def _first_non_data_past_volume(track: Track, volume: isofs.Volume | None) -> NotDataSector | None:
@@ -302,7 +411,7 @@ def write_iso_audio(disc: Disc, directory: Path, name: str, codec: str, log: Log
         if not _pregap_is_silent(track):
             notes.append(f"Track {track.number}'s pregap holds sound, which this format leaves out.")
     sheet = directory / f"{name}.cue"
-    sheet.write_text(render_cue(disc, cue_files), encoding="utf-8")
+    write_cue(sheet, render_cue(disc, cue_files))
     notes.append("Each audio track starts at its INDEX 01; its pregap is written as a cue PREGAP.")
     if codec == "ogg":
         notes.append("Ogg Vorbis is lossy: the audio is close to, not the same as, the disc's.")
@@ -323,7 +432,10 @@ def write_chd(disc: Disc, directory: Path, name: str, log: Log) -> Output:
         tools.run([chdman, "createcd", "-i", source.entry, "-o", target, "-f"], log)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    return Output("chd", directory, target, [target], _virtual_pregap_notes(disc))
+    notes = _virtual_pregap_notes(disc)
+    if _has_cd_text(disc):
+        notes.append("The CD-Text the cue sheet gave is not carried into the CHD; chdman does not store it.")
+    return Output("chd", directory, target, [target], notes)
 
 
 def write_files(disc: Disc, directory: Path, name: str) -> Output:
@@ -343,6 +455,65 @@ def write_files(disc: Disc, directory: Path, name: str) -> Output:
     return Output("files", directory, tree, [], notes)
 
 
+def cdda_name(track: Track) -> str:
+    """The file name the documentation standard gives an audio track in a build's directory,
+    ``track02.cdda``, with the track number from the table of contents."""
+    return f"track{track.number:02d}.cdda"
+
+
+def write_game_dir(disc: Disc, directory: Path) -> Output:
+    """The documentation standard's layout of a build's files from one disc, under ``directory/CD``.
+
+    Each file of the first data track's primary ISO 9660 volume is written to ``CD/<path>``,
+    named as a build entry names a file read from its CD (ENTRY-TYPES-11): the primary names, not
+    Joliet, without their version suffix, so ``SETUP.EXE;1`` becomes ``CD/SETUP.EXE``, and with
+    the date the volume records. Each audio track is written to ``CD/trackNN.cdda``: its raw
+    2,352-byte sectors from INDEX 01 to the next track's INDEX 00, or to the lead-out for the last
+    track, with no header. That is the range the manifest's audio hashes cover and the toolkit's
+    ``CueBinSheet.TrackExtent`` gives. The pregap is left out.
+
+    The output's ``listing`` gives each file as a build entry lists it: ``CD:<path>`` or
+    ``CD:trackNN`` with ``format: cdda``, its size and its XXH3-128.
+    """
+    if not disc.data_tracks:
+        raise FormatUnavailable("this disc has no data track, so it has no files for the GAME_DIR layout")
+    track = disc.first_data_track()
+    cd = directory / "CD"
+    try:
+        entries = isofs.walk(track, cd, primary=True)
+    except isofs.UnsupportedFileSystem as error:
+        # derive removes the format's folder with any file written before the error.
+        raise FormatUnavailable(str(error)) from None
+    # The first component of each path: a root file, or a root directory holding files.
+    taken = {e.path.split("/", 1)[0].casefold() for e in entries}
+    clash = [cdda_name(t) for t in disc.audio_tracks if cdda_name(t).casefold() in taken]
+    if clash:
+        raise FormatUnavailable(
+            f"the disc's file system holds a file or directory named {clash[0]} at its root, the name the layout gives an audio track"
+        )
+    listing: list[dict[str, object]] = [{"path": f"CD:{e.path}", "size": e.size, "xxh3": e.xxh3} for e in entries]
+    for audio in disc.audio_tracks:
+        name = cdda_name(audio)
+        with (cd / name).open("wb") as handle:
+            writer = isofs.HashingWriter(handle)
+            for chunk in audio.iter_raw(0, audio.length):
+                writer.write(chunk)
+        listing.append({"path": f"CD:{name.removesuffix('.cdda')}", "format": "cdda", "size": writer.size, "xxh3": writer.xxh3.hexdigest()})
+    notes = [
+        f"{len(entries)} files from track {track.number}'s primary ISO 9660 volume, named as a build entry names them.",
+        "Copy CD into GAME_DIR/<build ID>/, or rename it CD2 and so on for a later disc of the game.",
+    ]
+    if disc.audio_tracks:
+        notes.append(
+            "Each audio track is CD/trackNN.cdda: its raw 2,352-byte sectors from INDEX 01 to the next track's "
+            "INDEX 00, or to the lead-out, with no header. Pregaps are left out."
+        )
+    others = [t.number for t in disc.data_tracks[1:]]
+    if others:
+        notes.append(f"Data tracks {others} are left out; the files are those of track {track.number}.")
+    return Output("game-dir", directory, cd, [], notes, listing)
+
+
 def write_format(identifier: str, disc: Disc, directory: Path, name: str, log: Log) -> Output:
     """Write one format into ``directory``, which is created."""
     for program in format_by_id(identifier).needs:
@@ -359,8 +530,14 @@ def write_format(identifier: str, disc: Disc, directory: Path, name: str, log: L
         return write_ccd(disc, directory, name)
     if identifier == "chd":
         return write_chd(disc, directory, name, log)
+    if identifier == "mds":
+        return write_mds(disc, directory, name)
+    if identifier == "nrg":
+        return write_nrg(disc, directory, name)
     if identifier.startswith("iso-"):
         return write_iso_audio(disc, directory, name, identifier[4:], log)
     if identifier == "iso":
         return write_iso(disc, directory, name)
+    if identifier == "game-dir":
+        return write_game_dir(disc, directory)
     return write_files(disc, directory, name)

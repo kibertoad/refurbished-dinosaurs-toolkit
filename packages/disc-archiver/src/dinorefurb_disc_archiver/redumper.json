@@ -1,19 +1,18 @@
 {
-  "comment": "The redumper release the archiver downloads when redumper is not installed. Update tag and the per-platform SHA-256 values together. A null sha256 is checked against the digest GitHub publishes for the asset instead.",
-  "tag": "b756",
+  "comment": "The redumper release the archiver downloads when redumper is not installed. Update tag and every platform's SHA-256 together; a download is used only when its SHA-256 matches, and the pin does not load while a platform has none.",
+  "tag": "b761",
   "asset": "redumper-{tag}-{platform}.zip",
   "downloadUrl": "https://github.com/superg/redumper/releases/download/{tag}/{asset}",
-  "releaseApiUrl": "https://api.github.com/repos/superg/redumper/releases/tags/{tag}",
   "source": "https://github.com/superg/redumper/tree/{tag}",
   "licenseUrl": "https://raw.githubusercontent.com/superg/redumper/{tag}/LICENSE",
   "sha256": {
-    "windows-x64": null,
-    "windows-x86": null,
-    "windows-arm64": null,
-    "linux-x64": null,
-    "linux-x86": null,
-    "linux-arm64": null,
-    "macos-x64": null,
-    "macos-arm64": null
+    "windows-x64": "6a482668b44f55ac3329dd0e36891e2da3f62a2ce4226c9e65f05e32b383eb40",
+    "windows-x86": "b0b956484dd7f704bdeac835090b6b066f7b38a0cd3173a6ac63d59a9448eb74",
+    "windows-arm64": "1259597927461f97a167ddb55085bd5ccb2c0578a4b4f8995cda0739abaad8ef",
+    "linux-x64": "f1ec4c4daee319536fe8edd0a1b56cf7e0b6cf7d1b2f1c6bfe6ac5e22731f7aa",
+    "linux-x86": "d9f4385d73cb64e9eadcdab7e385ef81ec77839c3e2573e7cb972beb4a38a712",
+    "linux-arm64": "437fa4748c435973d29721ccdfddb4183f373c92d47c47a6492499e696221977",
+    "macos-x64": "73dfb9db21519582ecd7578eb9e080a822db159281c316e53b1993cda15bd86b",
+    "macos-arm64": "29dc951aa19278eeb79bbbbb338757b6942204d62586a065c2d3d2ec8711ab78"
   }
 }

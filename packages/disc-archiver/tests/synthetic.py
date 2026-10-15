@@ -80,6 +80,23 @@ def audio(track: int, sectors: int, salt: str = "") -> bytes:
     return b"".join(block[i % 7 :] + block[: i % 7] for i in range(sectors))
 
 
+def noise(track: int, sectors: int, salt: str = "") -> bytes:
+    """Deterministic sample bytes in which no run of a sector or more repeats, as real audio."""
+    return b"".join(hashlib.shake_256(f"{salt}{track}:{i}".encode()).digest(2352) for i in range(sectors))
+
+
+# What a stand-in drive returns for samples outside the audio it was asked for.
+OUTSIDE = bytes([0x5A, 0xA5, 0x5A, 0xA5])
+
+
+def shift_samples(data: bytes, shift: int, outside: bytes = OUTSIDE) -> bytes:
+    """``data``'s 4-byte samples moved ``shift`` samples later (earlier when negative), with
+    ``outside`` in the samples left uncovered at the start (or end)."""
+    if shift >= 0:
+        return (outside * shift + data)[: len(data)]
+    return data[-shift * 4 :] + outside * min(-shift, len(data) // 4)
+
+
 @dataclass
 class SyntheticDisc:
     """A data track followed by audio tracks, each audio track with a pregap."""
@@ -88,6 +105,11 @@ class SyntheticDisc:
     audio_lengths: list[int] = field(default_factory=lambda: [80, 120])
     pregap: int = 150
     loud_pregap: bool = False
+    # Audio from noise() instead of audio(), whose sectors repeat every seven.
+    unique_audio: bool = False
+    # Samples the audio area (the audio tracks with their pregaps) is moved by in write_single,
+    # as an uncorrected rip from a drive with this read offset holds it.
+    audio_shift: int = 0
 
     @property
     def data_raw(self) -> bytes:
@@ -97,7 +119,7 @@ class SyntheticDisc:
 
     def track_audio(self, index: int) -> bytes:
         """Samples of audio track ``index`` (0 for the first audio track) from INDEX 01."""
-        return audio(index + 2, self.audio_lengths[index])
+        return (noise if self.unique_audio else audio)(index + 2, self.audio_lengths[index])
 
     def track_pregap(self, index: int) -> bytes:
         """The stored pregap of audio track ``index``."""
@@ -117,7 +139,8 @@ class SyntheticDisc:
             lines += [f'FILE "{names[i + 1]}" BINARY', f"  TRACK {i + 2:02d} AUDIO", "    INDEX 00 00:00:00"]
             lines.append(f"    INDEX 01 {_time(self.pregap)}")
         sheet = directory / f"{name}.cue"
-        sheet.write_text("\n".join(lines) + "\n")
+        # Redump's cue sheets end every line with CRLF.
+        sheet.write_bytes("".join(line + "\r\n" for line in lines).encode())
         return sheet
 
     def write_single(self, directory: Path, name: str = "Synth") -> Path:
@@ -130,9 +153,12 @@ class SyntheticDisc:
             lines += [f"  TRACK {i + 2:02d} AUDIO", f"    INDEX 00 {_time(position)}", f"    INDEX 01 {_time(position + self.pregap)}"]
             blob += [self.track_pregap(i), self.track_audio(i)]
             position += self.pregap + self.audio_lengths[i]
-        (directory / f"{name}.bin").write_bytes(b"".join(blob))
+        image = b"".join(blob)
+        if self.audio_shift:
+            image = image[: len(blob[0])] + shift_samples(image[len(blob[0]) :], self.audio_shift)
+        (directory / f"{name}.bin").write_bytes(image)
         sheet = directory / f"{name}.cue"
-        sheet.write_text("\n".join(lines) + "\n")
+        sheet.write_bytes("".join(line + "\r\n" for line in lines).encode())
         return sheet
 
 
@@ -208,8 +234,9 @@ def relocated(iso: bytes, base: int) -> bytes:
 class SyntheticCdExtra:
     """Audio tracks in a first session and a data track in a second, as a CD-Extra disc holds them.
 
-    The sheet lays the tracks out back to back, as cue sheets do, so the data track's INDEX 01 is
-    at :attr:`sheet_start` there and ``session_gap`` sectors later on the disc, at :attr:`start`.
+    The sheet gives the sessions with REM SESSION lines when ``sessions``, as redumper writes them.
+    Without them it lays the tracks out back to back, so the data track's INDEX 01 is at
+    :attr:`sheet_start` there and ``session_gap`` sectors later on the disc, at :attr:`start`.
     The data sectors' headers carry the disc addresses. The volume is mastered with addresses
     counted from LBA ``start + shift`` when ``absolute``, as a second session's volume is, and
     from the track's first sector otherwise. ``padding`` sectors of zeros follow the volume.
@@ -222,10 +249,11 @@ class SyntheticCdExtra:
     shift: int = 0
     padding: int = 0
     pregap: int = 150
+    sessions: bool = True
 
     @property
     def sheet_start(self) -> int:
-        """The data track's INDEX 01 LBA as the sheet lays the tracks out."""
+        """The data track's INDEX 01 LBA as a sheet without sessions lays the tracks out."""
         return sum(self.audio_lengths) + self.pregap
 
     @property
@@ -258,12 +286,16 @@ class SyntheticCdExtra:
 
     def _audio_lines(self, directory: Path, name: str) -> list[str]:
         directory.mkdir(parents=True, exist_ok=True)
-        lines = ["REM SESSION 01"]
+        lines = ["REM SESSION 01"] if self.sessions else []
         for i, length in enumerate(self.audio_lengths):
             file = f"{name} (Track {i + 1}).bin"
-            (directory / file).write_bytes(audio(i + 1, length, "cd-extra"))
+            (directory / file).write_bytes(self.track_audio(i))
             lines += [f'FILE "{file}" BINARY', f"  TRACK {i + 1:02d} AUDIO", "    INDEX 01 00:00:00"]
-        return lines + ["REM SESSION 02"]
+        return lines + (["REM SESSION 02"] if self.sessions else [])
+
+    def track_audio(self, index: int) -> bytes:
+        """The samples of audio track ``index`` (0 for track 1)."""
+        return audio(index + 1, self.audio_lengths[index], "cd-extra")
 
     def write_split(self, directory: Path, name: str = "Extra") -> Path:
         """Redump layout, one file per track with the data track's pregap stored; returns the sheet."""
@@ -273,7 +305,8 @@ class SyntheticCdExtra:
         lines += [f'FILE "{file}" BINARY', f"  TRACK {self.number:02d} MODE1/2352", "    INDEX 00 00:00:00"]
         lines.append(f"    INDEX 01 {_time(self.pregap)}")
         sheet = directory / f"{name}.cue"
-        sheet.write_text("\n".join(lines) + "\n")
+        # Redump's cue sheets end every line with CRLF.
+        sheet.write_bytes("".join(line + "\r\n" for line in lines).encode())
         return sheet
 
     def write_cooked(self, directory: Path, name: str = "Extra") -> Path:
