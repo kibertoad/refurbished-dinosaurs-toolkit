@@ -22,6 +22,9 @@ from dinorefurb_disc_archiver.disc import DiscError
 
 KEY = redumper.platform_key()
 PIN = redumper.load_pin()
+# The shipped pin carries every platform's hash. The download tests serve stand-in zips, so they
+# run against the same release with no hashes pinned, which checks each zip against GitHub's digest.
+UNPINNED = redumper.Pin(**{**PIN.__dict__, "sha256": dict.fromkeys(PIN.sha256)})
 PROGRAM = "redumper.exe" if KEY.startswith("windows") else "redumper"
 
 
@@ -84,6 +87,12 @@ class RedumperDownloadTestCase(unittest.TestCase):
 
 @unittest.skipUnless(redumper.can_download(), f"redumper publishes no build for {KEY}")
 class DownloadTests(RedumperDownloadTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        unpinned = mock.patch.object(redumper, "load_pin", return_value=UNPINNED)
+        unpinned.start()
+        self.addCleanup(unpinned.stop)
+
     def test_a_download_checked_against_githubs_digest_is_installed_and_found(self) -> None:
         github = FakeGitHub(release_zip())
         bin_dir = redumper.download(self.log, github)
@@ -195,6 +204,11 @@ class PinTests(unittest.TestCase):
         )
         self.assertEqual(PIN.asset_name("windows-x64"), f"redumper-{PIN.tag}-windows-x64.zip")
         self.assertTrue(PIN.url(PIN.download_url, "linux-x64").startswith("https://github.com/superg/redumper/releases/download/"))
+
+    def test_the_shipped_pin_holds_a_sha256_for_every_platform(self) -> None:
+        for key, digest in PIN.sha256.items():
+            with self.subTest(key):
+                self.assertRegex(digest or "", r"^[0-9a-f]{64}$")
 
     def test_platform_names(self) -> None:
         for system, machine, key in (("win32", "AMD64", "windows-x64"), ("linux", "aarch64", "linux-arm64"), ("darwin", "arm64", "macos-arm64")):
