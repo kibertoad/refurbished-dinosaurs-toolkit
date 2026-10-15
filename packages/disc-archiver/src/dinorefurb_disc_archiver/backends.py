@@ -127,11 +127,28 @@ def _redumper(drive: str, directory: Path, name: str, log: Log, extra: Sequence[
     # With no mode, redumper runs its whole disc sequence: dump, protection, refine, split, hash
     # and info. Split writes the Redump cue sheet and one .bin per track.
     # redumper runs in ``directory``, so a relative image path would point below it again.
-    command = [program, f"--drive={drive}", f"--image-path={directory.absolute()}", f"--image-name={name}", *extra]
+    command = [
+        program, f"--drive={drive}", f"--image-path={directory.absolute()}", f"--image-name={name}",
+        *redumper_detect_arguments(extra), *extra,
+    ]
+    redumper_log = directory / f"{name}.log"
+    # redumper appends to a log it finds, so only what this run added is judged: a run that fails
+    # before reading the drive must not be reported with an earlier run's totals.
+    earlier = _read_text(redumper_log)
+
+    def this_run() -> str:
+        text = _read_text(redumper_log)
+        return text[len(earlier) :] if text.startswith(earlier) else text
+
     try:
         tools.run(command, log, cwd=directory)
     except DiscError as error:
+        # A misread sector order makes every sector look damaged, so split fails on it too.
+        if misread := redumper_misread_layout(this_run()):
+            raise DiscError(misread) from None
         raise DiscError(f"{error}. {_access_hint()}") from None
+    if misread := redumper_misread_layout(this_run()):
+        raise DiscError(misread)
     sheet = directory / f"{name}.cue"
     if not sheet.is_file():
         raise DiscError(f"redumper finished without writing {sheet.name}; its log is {name}.log")
@@ -159,10 +176,214 @@ def redumper_read_offset(log_text: str, extra: Sequence[str] = ()) -> tuple[bool
         return None, None
     last = matches[-1]
     run = log_text[matches[-2].end() if len(matches) > 1 else 0 : last.start()]
-    overridden = any(a == "--drive-read-offset" or a.startswith("--drive-read-offset=") for a in extra)
-    if _REDUMPER_OFFSET_UNKNOWN in run and not overridden:
+    if _REDUMPER_OFFSET_UNKNOWN in run and not _flag_given(extra, "--drive-read-offset"):
         return False, None
     return True, int(last.group(1))
+
+
+# redumper b761 starts each run's part of the log with "=== <date> <time> ====..." (``logger.ixx``),
+# and appends to a log it finds, so a log can hold several runs.
+_REDUMPER_RUN_START = re.compile(r"^=== \d{4}-\d{2}-\d{2} [\d:]+ =+\s*$", re.MULTILINE)
+_REDUMPER_INQUIRY = re.compile(r"^\s*inquiry: (.+?) - (.+?) \(revision level: (.*?), vendor specific: ", re.MULTILINE)
+_REDUMPER_CONFIGURATION_FIELDS = re.compile(
+    r"^\s*configuration: (\S+) \(read offset: ([+-]?\d+), C2 shift: (\d+), pre-gap start: ([+-]?\d+), "
+    r"read method: (\w+), sector order: (\w+)\)",
+    re.MULTILINE,
+)
+# ``drive::detect`` (``drive/detect.ixx``), which ``--auto-detect`` runs first in the disc sequence.
+_REDUMPER_DETECTED_ORDER = re.compile(r"^GENERIC: auto-detected sector order: (\w+)", re.MULTILINE)
+# ``drive_get_config`` (``drive.ixx``) keeps the generic configuration after either warning: the
+# second one means the database lists the model but not its firmware revision.
+_REDUMPER_NOT_IN_DATABASE = ("warning: drive not found in the database", "warning: unsupported drive firmware")
+# The dump's totals (``cd_dump.ixx``): samples for SCSI and C2 errors, sectors for subchannel Q.
+_REDUMPER_MEDIA_ERRORS = re.compile(
+    r"^media errors:\s*\n\s*SCSI: (\d+) samples\s*\n\s*C2: (\d+) samples\s*\n\s*Q: (\d+)\s*$", re.MULTILINE
+)
+# ``TOC::print`` (``cd/toc.ixx``): a "session N" line per session of a multisession disc, and an
+# index line per index, "LBA: [start .. last]" for one with sectors and "LBA: start" for the
+# lead-out.
+_REDUMPER_DISC_TOC = re.compile(r"^disc TOC:\s*\n((?:[ \t]+.*\n?)+)", re.MULTILINE)
+_REDUMPER_TOC_SESSION = re.compile(r"^\s*session \d+\s*$")
+_REDUMPER_TOC_INDEX = re.compile(r"^\s*index (\d+) \{ LBA: (?:\[\s*(-?\d+) \.\.\s*(-?\d+)\]|(-?\d+))")
+_REDUMPER_ARGUMENTS = re.compile(r"^arguments: (.*)$", re.MULTILINE)
+# redumper takes an option's value after "=" or as the next argument (``options.ixx``).
+_REDUMPER_LBA_LIMIT = re.compile(r"--lba-(start|end)(?:=|\s+)(-?\d+)")
+
+SECTOR_ORDERS = ("DATA_C2_SUB", "DATA_SUB_C2", "DATA_SUB", "DATA_C2")
+"""The sector orders redumper b761 accepts for ``--drive-sector-order``, generic default first."""
+
+# A dump read in the drive's own sector order has a valid subchannel Q in nearly every sector:
+# a pressed disc rarely fails more than a few percent, even when scratched. A drive whose data,
+# C2 and subchannel blocks redumper reads in the wrong order fails Q in every sector, since the
+# bytes it checks are not subchannel at all. Anything above this share is taken as that misread.
+MISREAD_Q_SHARE = 0.9
+
+
+def _flag_given(extra: Sequence[str], flag: str) -> bool:
+    return any(a == flag or a.startswith(f"{flag}=") for a in extra)
+
+
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
+
+
+def redumper_detect_arguments(extra: Sequence[str]) -> list[str]:
+    """The arguments that let redumper detect the sector order of a drive its database lacks.
+
+    ``--auto-detect`` adds ``drive::detect`` before the dump: for a drive whose configuration has
+    type ``GENERIC`` and read method ``BE`` it reads one sector in each order and keeps the first
+    whose subchannel Q is valid. That covers every drive the database lacks and the database's own
+    ``GENERIC`` entries, whose listed order detection confirms or replaces; it leaves other drive
+    types alone. None when ``extra`` already gives ``--drive-sector-order`` or ``--auto-detect``,
+    since the person's own choice stands.
+    """
+    if _flag_given(extra, "--drive-sector-order") or _flag_given(extra, "--auto-detect"):
+        return []
+    return ["--auto-detect"]
+
+
+def redumper_last_run(log_text: str) -> str:
+    """The part of a redumper log written by its last run that read a drive.
+
+    A run that only processed files (``split`` or ``protection``) logs no drive configuration and
+    is skipped. A log without run headers is taken as one run. Empty when no run read a drive.
+    """
+    starts = [m.start() for m in _REDUMPER_RUN_START.finditer(log_text)] or [0]
+    runs = [log_text[a:b] for a, b in zip(starts, [*starts[1:], len(log_text)])]
+    return next((run for run in reversed(runs) if _REDUMPER_CONFIGURATION_FIELDS.search(run)), "")
+
+
+def redumper_drive(log_text: str, extra: Sequence[str] = ()) -> dict[str, object] | None:
+    """The drive configuration redumper's last run read with, from its log.
+
+    The keys are the manifest's ``source.driveConfiguration``: ``vendor``, ``product`` and
+    ``revision`` from the drive's inquiry (``revision`` None when the drive reports none),
+    ``inRedumperDatabase``, the ``configuration:`` line's ``type``, ``readOffset``, ``c2Shift``,
+    ``pregapStart`` and ``readMethod``, the ``sectorOrder`` read with and ``sectorOrderSource``:
+
+    - ``override``: ``extra`` gave ``--drive-sector-order``;
+    - ``auto-detected``: ``drive::detect`` chose it, replacing the order the configuration line
+      shows, which is logged before detection;
+    - ``database``: redumper's entry for the drive;
+    - ``default``: the generic default for a drive the database lacks (or lists without its
+      firmware revision), when detection did not run or found no order.
+
+    None when the log has no configuration line.
+    """
+    run = redumper_last_run(log_text)
+    configuration = _REDUMPER_CONFIGURATION_FIELDS.search(run)
+    if configuration is None:
+        return None
+    kind, offset, c2_shift, pregap, method, order = configuration.groups()
+    inquiry = _REDUMPER_INQUIRY.search(run)
+    in_database = not any(warning in run for warning in _REDUMPER_NOT_IN_DATABASE)
+    detected = _REDUMPER_DETECTED_ORDER.search(run)
+    if _flag_given(extra, "--drive-sector-order"):
+        source = "override"
+    elif detected is not None:
+        source, order = "auto-detected", detected.group(1)
+    else:
+        source = "database" if in_database else "default"
+    revision = inquiry.group(3) if inquiry else None
+    return {
+        "vendor": inquiry.group(1) if inquiry else None,
+        "product": inquiry.group(2) if inquiry else None,
+        "revision": None if revision in (None, "<empty>") else revision,
+        "inRedumperDatabase": in_database,
+        "type": kind,
+        "readOffset": int(offset),
+        "c2Shift": int(c2_shift),
+        "pregapStart": int(pregap),
+        "readMethod": method,
+        "sectorOrder": order,
+        "sectorOrderSource": source,
+    }
+
+
+def redumper_media_errors(log_text: str) -> dict[str, int] | None:
+    """The error totals of the last run's dump: ``scsiSamples``, ``c2Samples`` and ``qSectors``.
+
+    None when that run logged no dump totals (it failed before, or did not dump).
+    """
+    matches = list(_REDUMPER_MEDIA_ERRORS.finditer(redumper_last_run(log_text)))
+    if not matches:
+        return None
+    scsi, c2, q = (int(v) for v in matches[-1].groups())
+    return {"scsiSamples": scsi, "c2Samples": c2, "qSectors": q}
+
+
+def _redumper_toc_sessions(toc: str) -> list[tuple[int | None, int]]:
+    """Each session of a ``disc TOC:`` listing: its first index 01 and the LBA after its last sector."""
+    firsts: list[int | None] = []
+    ends: list[int] = []
+    opened = True
+    for line in toc.splitlines():
+        if _REDUMPER_TOC_SESSION.match(line):
+            opened = True
+            continue
+        index = _REDUMPER_TOC_INDEX.match(line)
+        if index is None:
+            continue
+        number, first, last, single = index.groups()
+        start = int(first if first is not None else single)
+        end = int(last) + 1 if last is not None else start
+        if opened:
+            firsts.append(None)
+            ends.append(end)
+            opened = False
+        if firsts[-1] is None and number == "01":
+            firsts[-1] = start
+        ends[-1] = max(ends[-1], end)
+    return list(zip(firsts, ends))
+
+
+def redumper_dumped_sectors(log_text: str) -> int | None:
+    """The sectors the last run dumped, from its ``disc TOC:`` listing and ``arguments:`` line.
+
+    The dump runs from the drive's pre-gap start to the lead-out of the last session, unless the
+    run's arguments limit it with ``--lba-start`` or ``--lba-end``. The gap between two sessions,
+    from one session's lead-out to the pre-gap of the next one's first track, is not counted:
+    redumper skips it or fails to read it, and counts no Q error there. None without a listing.
+    """
+    run = redumper_last_run(log_text)
+    blocks = list(_REDUMPER_DISC_TOC.finditer(run))
+    sessions = _redumper_toc_sessions(blocks[-1].group(1)) if blocks else []
+    configuration = _REDUMPER_CONFIGURATION_FIELDS.search(run)
+    if not sessions or configuration is None:
+        return None
+    pregap = int(configuration.group(4))
+    arguments = _REDUMPER_ARGUMENTS.search(run)
+    limits = dict(_REDUMPER_LBA_LIMIT.findall(arguments.group(1))) if arguments else {}
+    lead_out = sessions[-1][1]
+    start, end = int(limits.get("start", pregap)), min(int(limits.get("end", lead_out)), lead_out)
+    sectors = end - start
+    for (_, gap_start), (first, _) in zip(sessions, sessions[1:]):
+        if first is not None:
+            sectors -= max(min(first + pregap, end) - max(gap_start, start), 0)
+    return max(sectors, 0)
+
+
+def redumper_misread_layout(log_text: str) -> str | None:
+    """Why the last run's dump cannot be used, when the drive's sector order was misread.
+
+    Returns the error to report when subchannel Q failed in more than ``MISREAD_Q_SHARE`` of the
+    dumped sectors, and None otherwise or when the log does not give the counts. An order without
+    ``SUB`` reads no subchannel, so its Q fails everywhere by design and is not checked.
+    """
+    run = redumper_last_run(log_text)
+    errors, sectors, drive = redumper_media_errors(run), redumper_dumped_sectors(run), redumper_drive(run)
+    if errors is None or not sectors or errors["qSectors"] <= MISREAD_Q_SHARE * sectors:
+        return None
+    used = drive["sectorOrder"] if drive else None
+    if isinstance(used, str) and "SUB" not in used:
+        return None
+    others = ", ".join(o for o in SECTOR_ORDERS if o != used)
+    return (
+        f"redumper found an invalid subchannel in {errors['qSectors']} of {sectors} sectors: it read the drive's data, "
+        f"C2 and subchannel in the wrong order ({used or 'unknown'}), so the dump cannot be used. Dump again into a new "
+        f"output folder (redumper will not overwrite this dump) with --backend-arg=--drive-sector-order=<order>, "
+        f"trying {others}; the right order reads with almost no Q errors."
+    )
 
 
 def _cdrdao(drive: str, directory: Path, name: str, log: Log, extra: Sequence[str]) -> Path:

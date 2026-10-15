@@ -47,6 +47,14 @@ Asking for `--backend redumper` downloads it the same way, but fails rather than
 The backend's own files (redumper's `.scram`, `.subcode`, `.toc` and `.log`, for example) are
 kept unchanged in the `archival` folder.
 
+### Drives redumper does not list
+
+redumper keeps a database of drives and how each returns a raw sector: the order of its data, C2 and subchannel blocks. A drive missing from it is read in the generic order, and a drive that returns its blocks in another order then reads as damaged in every sector: C2 errors throughout, an invalid subchannel everywhere, and a dump that takes hours. The archiver passes redumper `--auto-detect`, which reads one sector in each order and keeps the first whose subchannel checks out. redumper detects the order of every drive it reads in the generic way, which takes in the drives its database lists with the generic drive type (detection confirms or replaces their listed order), and leaves other drive types alone.
+
+`--backend-arg=--drive-sector-order=<order>` sets the order by hand, and the archiver then leaves detection off. The manifest's `source.driveConfiguration` records the configuration redumper read with and where the order came from.
+
+A dump whose subchannel is invalid in more than 90% of its sectors is refused: the order was misread, so the dump cannot be used. The error names the orders to try. Dump again into a new output folder, since redumper will not overwrite the refused dump. A correctly read disc fails the check in a fraction of a percent of its sectors, even when scratched. An order without a subchannel (`DATA_C2`) is not checked.
+
 ### Downloading redumper
 
 The release to download is pinned in
@@ -342,6 +350,12 @@ My Game/
   it then reads with offset 0. Both are null when the log does not say. cdrdao is corrected with
   `--read-offset`, recording the value given, and false and null without it. Both are null for an
   image (whose offset the archiver cannot know) or the data track copy (which reads no audio).
+  `driveConfiguration` is the drive configuration redumper read with, from its log, and null for any other source or when the log does not show it:
+  - `vendor`, `product` and `revision`: the drive's inquiry. `revision` is null when the drive reports none.
+  - `inRedumperDatabase`: false when redumper warned that its database does not list the drive, or lists it without its firmware revision. Either way redumper starts from the generic configuration.
+  - `type`, `readOffset`, `c2Shift`, `pregapStart` and `readMethod`: redumper's `configuration:` line.
+  - `sectorOrder`: the order of the data, C2 and subchannel blocks the dump read with.
+  - `sectorOrderSource`: `database` (redumper's entry for the drive), `auto-detected` (found by `--auto-detect`, see [Drives redumper does not list](#drives-redumper-does-not-list)), `override` (given with `--backend-arg=--drive-sector-order=<order>`) or `default` (the generic order, for a drive the database lacks when detection found none).
 - `profile.checks`: each expectation of the profile and what the disc showed.
 - `outputs`: each format's files, with size, CRC32, MD5, SHA-1 and SHA-256 (the hashes disc
   databases such as Redump list, which `--dat` compares) and XXH3-128 (`xxh3`), what the
