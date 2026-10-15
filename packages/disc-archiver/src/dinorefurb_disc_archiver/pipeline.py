@@ -336,6 +336,8 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
             missing = sorted({e.path for e in expected} - {e.path for e in written})
             changed = sorted(e.path for e in written if e not in expected)
             result.differences.append(f"the extracted files differ: missing {missing[:5]}, changed {changed[:5]}")
+    if any(t.subchannel for t in disc.tracks):
+        result.not_compared.append("the subchannel the source stores after each sector, which the archiver skips")
     return result
 
 
@@ -408,6 +410,10 @@ def derive(
             shutil.rmtree(directory, ignore_errors=True)
             continue
         write_notice(directory)
+        if any(t.subchannel for t in disc.tracks):
+            output.notes.append(
+                "The source stores subchannel after each sector. The archiver skips it, so this copy does not carry it."
+            )
         log(f"Verifying {identifier}")
         verification = verify_output(output, disc, reference, root, log)
         log(f"{identifier}: {verification.status}")

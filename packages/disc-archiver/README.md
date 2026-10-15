@@ -176,8 +176,9 @@ disc-archiver notice                                     # the personal-use noti
 `.ccd`, `.chd` (through `chdman`), `.mds` with its `.mdf`, and `.nrg`. An Alcohol 120% image is
 read from a version 1 descriptor with 2,352-byte sectors or 2,448-byte sectors with subchannel. A
 Nero image is read in version 1 or 2, disc-at-once or track-at-once, with raw sectors (with or
-without subchannel) or MODE1 2,048-byte user data. Both must hold one session of a CD; anything
-else is refused with the reason ([ADR 0047](../../docs/decisions/0047-alcohol-and-nero-images.md)). `rip` passes `--backend-arg` values on to the backend program,
+without subchannel) or MODE1 2,048-byte user data. Stored subchannel is skipped, and every copy
+made from such an image says so in its notes and `notCompared`. Both must hold one session of a
+CD; anything else is refused with the reason ([ADR 0047](../../docs/decisions/0047-alcohol-and-nero-images.md)). `rip` passes `--backend-arg` values on to the backend program,
 for example `--backend-arg=--retries=20` for redumper, and `--no-download` keeps it from
 downloading redumper. Progress goes to standard error and the
 summary to standard output.

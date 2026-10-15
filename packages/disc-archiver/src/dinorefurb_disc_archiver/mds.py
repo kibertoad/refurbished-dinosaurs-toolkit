@@ -19,7 +19,7 @@ import struct
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from .ccd import control
+from .ccd import SUBCHANNEL_BYTES, control, flags
 from .disc import MSF_OFFSET, RAW_SECTOR, Disc, DiscError, Track, msf
 
 SIGNATURE = b"MEDIA DESCRIPTOR"
@@ -30,14 +30,16 @@ EXTRA_BYTES = 8
 FOOTER_BYTES = 16
 MAXIMUM_DESCRIPTOR_BYTES = 1024 * 1024
 MAXIMUM_TRACKS = 99
-SUBCHANNEL_BYTES = 96
 # The track mode byte. libmirage reads only the low nibble; these are the values Aaru documents.
 MODES = {
     0xA9: "AUDIO", 0xE9: "AUDIO",
     0xAA: "MODE1", 0xEA: "MODE1",
     0xAB: "MODE2", 0xAC: "MODE2", 0xEC: "MODE2", 0xAD: "MODE2", 0xED: "MODE2",
 }
-WRITTEN_MODES = {"AUDIO": 0xA9, "MODE1": 0xAA, "MODE2": 0xAB}
+# A MODE2 track is written as Mode 2 Form 1 (0xEC), the code Aaru writes for it, which libmirage
+# and Aaru both read as 2,048-byte form 1 sectors. 0xAB would make both read every sector as
+# 2,336 bytes of formless Mode 2, so a CD-XA data track would read from the wrong offset.
+WRITTEN_MODES = {"AUDIO": 0xA9, "MODE1": 0xAA, "MODE2": 0xEC}
 CD_MEDIA = {0x00: "CD-ROM", 0x01: "CD-R", 0x02: "CD-RW"}
 
 
@@ -87,7 +89,12 @@ def _image_file(descriptor: Path, name: str) -> Path:
         extension = name[2:]
         if not extension or not extension.isalnum():
             raise DiscError(f"{descriptor.name}: the image file name {name!r} is not one the archiver reads")
-        return descriptor.with_suffix(f".{extension}")
+        image = descriptor.with_suffix(f".{extension}")
+        if not image.is_file():
+            # On a case-sensitive file system, GAME.MDS from a FAT disc sits beside GAME.MDF.
+            wanted = image.name.casefold()
+            image = next((p for p in descriptor.parent.iterdir() if p.name.casefold() == wanted and p.is_file()), image)
+        return image
     # Any other name is relative to the descriptor. An absolute path or a step out of its
     # directory could make the reader open any file, so both are refused.
     for pure in (PurePosixPath(name), PureWindowsPath(name)):
@@ -143,8 +150,10 @@ def read_mds(path: Path) -> Disc:
                 f"{path.name}: track {point} stores {sector_size}-byte sectors; only 2,352-byte sectors, or 2,448 with "
                 "interleaved subchannel, are read"
             )
-        if files != 1 or not footer:
+        if files != 1:
             raise DiscError(f"{path.name}: track {point} is stored in {files} files; only one .mdf file is read")
+        if not footer:
+            raise DiscError(f"{path.name}: track {point} has no footer naming its image file")
         if not extra:
             raise DiscError(f"{path.name}: track {point} has no extra block giving its pregap and length")
         pregap, length = reader.unpack("<II", extra, "track extra block")
@@ -212,9 +221,6 @@ def _tracks(path: Path, image: Path, blocks: list[_Block]) -> list[Track]:
     for i, block in enumerate(blocks):
         pregap = block.pregap if i else 0
         first = block.offset - (pregap * stride if stored[i] else 0)
-        flags = ()
-        if block.mode == "AUDIO":
-            flags = tuple(name for bit, name in ((0x8, "4CH"), (0x2, "DCP"), (0x1, "PRE")) if block.control & bit)
         tracks.append(
             Track(
                 number=block.number,
@@ -226,7 +232,7 @@ def _tracks(path: Path, image: Path, blocks: list[_Block]) -> list[Track]:
                 source=image,
                 source_offset=first,
                 source_length=block.offset + lengths[i] * stride - first,
-                flags=flags,
+                flags=flags(block.mode, block.control),
                 subchannel=block.subchannel,
             )
         )

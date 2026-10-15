@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from synthetic import SyntheticDisc, iso_image
+from synthetic import SyntheticDisc, iso_image, mode2_raw
 
 from dinorefurb_disc_archiver import mds, nrg
 from dinorefurb_disc_archiver.cue import read_cue, read_iso
@@ -138,6 +138,20 @@ class RoundTripTests(ImageTestCase):
         self.assertEqual(struct.unpack_from("<II", data, extra), (150, 800))
         self.assertEqual(struct.unpack_from("<IQ", data, track2 + 36), (self.disc.tracks[1].index1, self.disc.tracks[1].index1 * RAW_SECTOR))
 
+    def test_a_mode2_track_is_written_as_mode_2_form_1(self) -> None:
+        source = self.dir / "xa"
+        source.mkdir()
+        (source / "d.bin").write_bytes(mode2_raw(self.synthetic.iso))
+        (source / "x.cue").write_text('FILE "d.bin" BINARY\n TRACK 01 MODE2/2352\n  INDEX 01 00:00:00\n')
+        disc = read_cue(source / "x.cue")
+        data = self.write("mds", disc).entry.read_bytes()
+        session_at = struct.unpack_from("<I", data, 80)[0]
+        blocks_at = struct.unpack_from("<I", data, session_at + 20)[0]
+        track1 = blocks_at + 3 * 80
+        self.assertEqual(data[track1], 0xEC)
+        self.assertEqual(data[blocks_at + 10], 0x20, "the A0 entry's PSEC gives a CD-ROM XA disc")
+        self.assertSameDisc(self.write("mds", disc, "xa-mds").entry, fingerprint(disc))
+
     def test_the_nrg_keeps_the_catalog_isrc_flags_and_indexes_and_the_mds_says_what_it_drops(self) -> None:
         source = self.dir / "meta"
         source.mkdir()
@@ -235,6 +249,21 @@ class HandBuiltMdsTests(ImageTestCase):
         path = self.image(*self.tracks(2448, 0x08))
         self.assertSameDisc(path)
         self.assertEqual(mds.read_mds(path).tracks[0].subchannel, 96)
+
+    def test_a_copy_of_an_image_with_subchannel_says_the_subchannel_was_skipped(self) -> None:
+        with open_source(self.image(*self.tracks(2448, 0x08)), self.dir, silent_log) as disc:
+            manifest = derive(disc, self.dir / "out", "Synth", ["bincue"], BUILTIN_PROFILES["any"], silent_log, {})
+        (output,) = manifest["outputs"]
+        self.assertEqual(output["verification"]["status"], "partial")
+        self.assertIn("subchannel", " ".join(output["verification"]["notCompared"]))
+        self.assertIn("skips it", " ".join(output["notes"]))
+
+    def test_an_mdf_whose_name_differs_from_the_descriptor_only_in_case(self) -> None:
+        tracks, mdf = self.tracks(2352, 0)
+        (self.dir / "GAME.MDF").write_bytes(mdf)
+        path = self.dir / "GAME.MDS"
+        path.write_bytes(mds_descriptor(tracks))
+        self.assertSameDisc(path)
 
     def test_a_pregap_the_mdf_does_not_store_reads_as_silence(self) -> None:
         path = self.image(*self.tracks(2352, 0, "missing"))
@@ -367,6 +396,32 @@ class HandBuiltNrgTests(ImageTestCase):
         for data, message in cases:
             with self.subTest(message=message):
                 self.assertRefused(self.nrg(data, "Bad"), message)
+
+    def test_a_track_without_index_00_whose_index_02_comes_first_in_the_cue_block(self) -> None:
+        source = self.dir / "indexes"
+        source.mkdir()
+        (source / "d.bin").write_bytes(self.synthetic.data_raw)
+        (source / "a.bin").write_bytes(self.synthetic.track_audio(0))
+        (source / "i.cue").write_text(
+            'FILE "d.bin" BINARY\n TRACK 01 MODE1/2352\n  INDEX 01 00:00:00\n'
+            'FILE "a.bin" BINARY\n TRACK 02 AUDIO\n  INDEX 01 00:00:00\n  INDEX 02 00:02:00\n'
+        )
+        disc = read_cue(source / "i.cue")
+        written = self.write("nrg", disc).entry.read_bytes()
+        chain = struct.unpack(">Q", written[-8:])[0]
+        chunks, position = {}, chain
+        while written[position : position + 4] != b"END!":
+            (length,) = struct.unpack_from(">I", written, position + 4)
+            chunks[written[position : position + 4]] = written[position + 8 : position + 8 + length]
+            position += 8 + length
+        entries = [chunks[b"CUEX"][i : i + 8] for i in range(0, len(chunks[b"CUEX"]), 8)]
+        track2 = [e for e in entries if e[1] == 0x02]
+        self.assertEqual([e[2] for e in track2], [0, 1, 2])
+        others = [e for e in entries if e[1] != 0x02]
+        chunks[b"CUEX"] = b"".join([*others[:-1], track2[2], track2[1], others[-1]])
+        path = self.nrg(nrg_file(written[:chain], [nrg_chunk(name, body) for name, body in chunks.items()]))
+        self.assertSameDisc(path, fingerprint(disc))
+        self.assertEqual(nrg.read_nrg(path).tracks[1].extra_indexes, {2: 150})
 
     def test_a_cue_block_that_disagrees_with_the_tracks_fits_neither_reading(self) -> None:
         data = bytearray(self.dao_v1(True))

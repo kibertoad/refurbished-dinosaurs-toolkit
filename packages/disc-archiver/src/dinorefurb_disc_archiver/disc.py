@@ -174,7 +174,8 @@ class Track:
                     # A WAVE file's last sector may be short; CD audio pads it with silence.
                     data += bytes(want - len(data))
                 if stride != size:
-                    data = b"".join(data[offset : offset + size] for offset in range(0, len(data), stride))
+                    view = memoryview(data)
+                    data = b"".join(view[offset : offset + size] for offset in range(0, len(data), stride))
                 yield data
                 position += count
 

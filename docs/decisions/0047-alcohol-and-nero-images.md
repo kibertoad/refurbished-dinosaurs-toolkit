@@ -53,12 +53,16 @@ track's start sector counts from.
 3. Writing is limited to what the layouts hold without guessing:
    - `mds`: a version 1.5 descriptor, as Alcohol 120% writes it, and a `.mdf` of raw 2,352-byte
      sectors without subchannel. Each later track's pregap is stored ahead of its INDEX 01, as
-     Aaru writes it. The descriptor has no place for the catalog number, ISRC codes or indexes
-     after INDEX 01, so they are listed in `notCompared` when the source has them.
+     Aaru writes it. Tracks are typed as Aaru's writer types them: audio `0xA9`, MODE1 `0xAA`,
+     and MODE2 `0xEC` (Mode 2 Form 1), which libmirage and Aaru both read as 2,048-byte form 1
+     sectors; formless `0xAB` would make them read 2,336 bytes from the wrong offset. The
+     descriptor has no place for the catalog number, ISRC codes or indexes after INDEX 01, so they
+     are listed in `notCompared` when the source has them.
    - `nrg`: a version 2 disc-at-once image of raw 2,352-byte sectors with `CUEX`, `DAOX`, `SINF`,
-     `MTYP` and `END!`, keeping the catalog number, ISRC codes, flags and every index. The layout
-     stores track 1's 150-sector pregap before LBA 0, which no source holds, so it is written as
-     zero bytes and the output's notes say so. A catalog number or ISRC the block cannot hold
+     `MTYP` and `END!`, keeping the catalog number, ISRC codes, flags and every index. MODE2
+     tracks use mode code `0x06`, which libmirage reads as mixed form 1 and form 2 sectors. The
+     layout stores track 1's 150-sector pregap before LBA 0, which the archiver does not read from
+     any source, so it is written as zero bytes and the output's notes say so. A catalog number or ISRC the block cannot hold
      makes the format `unavailable` with the reason.
    - Both need raw sectors, so they are `unavailable` from user data alone, like BIN/CUE.
 4. Both formats are verified like the others: read back through these readers and compared with

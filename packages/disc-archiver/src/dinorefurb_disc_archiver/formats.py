@@ -216,8 +216,8 @@ def write_nrg(disc: Disc, directory: Path, name: str) -> Output:
         raise FormatUnavailable(problem)
     image = nrg.write_nrg(disc, directory, name)
     notes = [
-        "Track 1's 150-sector pregap before LBA 0, which the NRG layout stores and the source does not hold, is "
-        "written as zero bytes.",
+        "Track 1's 150-sector pregap before LBA 0, which the NRG layout stores and the archiver does not read from "
+        "any source, is written as zero bytes.",
         *_virtual_pregap_notes(disc),
     ]
     return Output("nrg", directory, image, [image], notes)

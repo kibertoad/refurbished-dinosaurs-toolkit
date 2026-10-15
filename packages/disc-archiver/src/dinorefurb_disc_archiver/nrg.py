@@ -19,14 +19,13 @@ import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .ccd import control
+from .ccd import SUBCHANNEL_BYTES, control, flags
 from .disc import COOKED_SECTOR, MSF_OFFSET, RAW_SECTOR, Disc, DiscError, Track, bcd
 
 MAXIMUM_DESCRIPTOR_BYTES = 1024 * 1024
 MAXIMUM_BLOCKS = 1024
 MAXIMUM_TRACKS = 99
 TAO_PREGAP = 150
-SUBCHANNEL_BYTES = 96
 # Mode code: (mode, storage, sector bytes, subchannel bytes). 0x02 and 0x03 hold MODE2 user data
 # without the sector headers, which the disc model has no storage for.
 MODES = {
@@ -68,11 +67,16 @@ class _Entry:
 class _Layout:
     """A track as the disc lays it out: INDEX 00 and INDEX 01 LBAs and later indexes."""
 
-    index0: int
-    index1: int
+    index0: int | None = None
+    index1: int = 0
     extra: dict[int, int] = field(default_factory=dict)
     control: int = 0
     has_index1: bool = False
+
+    @property
+    def start(self) -> int:
+        """INDEX 00, or INDEX 01 for a track without a pregap."""
+        return self.index1 if self.index0 is None else self.index0
 
 
 def _mode(path: Path, number: int, code: int, sector_size: int | None) -> tuple[str, str, int, int]:
@@ -256,7 +260,7 @@ def _dao_layout(path: Path, entries: list[_Entry], cue: list[tuple[int, int, int
             continue
         if not 1 <= number <= len(entries):
             raise DiscError(f"{path.name}: the cue block gives track {number}, which the disc-at-once block does not list")
-        layout = layouts.setdefault(number, _Layout(lba, lba))
+        layout = layouts.setdefault(number, _Layout())
         if index == 0:
             layout.index0 = lba
         elif index == 1:
@@ -273,7 +277,7 @@ def _dao_layout(path: Path, entries: list[_Entry], cue: list[tuple[int, int, int
             raise DiscError(f"{path.name}: the cue block gives no INDEX 01 for track {entry.number}")
         stored = (entry.start_offset - entry.pregap_offset) // entry.stride
         length = (entry.end_offset - entry.start_offset) // entry.stride
-        pregap = layout.index1 - layout.index0
+        pregap = layout.index1 - layout.start
         if entry.number == 1:
             if layout.index1 != 0:
                 raise DiscError(f"{path.name}: track 1 starts at LBA {layout.index1}; only discs whose first track starts at LBA 0 are read")
@@ -281,8 +285,8 @@ def _dao_layout(path: Path, entries: list[_Entry], cue: list[tuple[int, int, int
             if not 0 <= pregap <= MSF_OFFSET or stored > MSF_OFFSET:
                 raise DiscError(f"{path.name}: track 1's pregap of {pregap} sectors, {stored} of them stored, is not the 150 sectors before LBA 0")
             pregap = stored = 0
-        elif layout.index0 != position:
-            raise DiscError(f"{path.name}: track {entry.number} starts at LBA {layout.index0}, not at LBA {position} where track {entry.number - 1} ends")
+        elif layout.start != position:
+            raise DiscError(f"{path.name}: track {entry.number} starts at LBA {layout.start}, not at LBA {position} where track {entry.number - 1} ends")
         if pregap < 0 or stored not in (0, pregap):
             raise DiscError(f"{path.name}: track {entry.number} stores {stored} pregap sectors, but its indexes give a {pregap}-sector pregap")
         previous = layout.index1
@@ -291,9 +295,6 @@ def _dao_layout(path: Path, entries: list[_Entry], cue: list[tuple[int, int, int
                 raise DiscError(f"{path.name}: track {entry.number}'s INDEX {index:02d} is out of order or outside the track")
             previous = layout.extra[index]
         position = layout.index1 + length
-        flags = ()
-        if entry.mode == "AUDIO":
-            flags = tuple(name for bit, name in ((0x8, "4CH"), (0x2, "DCP"), (0x1, "PRE")) if layout.control & bit)
         first = entry.start_offset - stored * entry.stride
         tracks.append(
             Track(
@@ -307,7 +308,7 @@ def _dao_layout(path: Path, entries: list[_Entry], cue: list[tuple[int, int, int
                 source_offset=first,
                 source_length=entry.end_offset - first,
                 extra_indexes={i: lba - layout.index1 for i, lba in layout.extra.items()},
-                flags=flags,
+                flags=flags(entry.mode, layout.control),
                 isrc=entry.isrc,
                 subchannel=entry.subchannel,
             )
@@ -430,7 +431,6 @@ def write_nrg(disc: Disc, directory: Path, name: str) -> Path:
     """
     image = directory / f"{name}.nrg"
     offsets = []
-    position = 0
     with image.open("wb") as handle:
         handle.write(bytes(MSF_OFFSET * RAW_SECTOR))
         position = MSF_OFFSET * RAW_SECTOR
