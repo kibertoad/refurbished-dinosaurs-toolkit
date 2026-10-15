@@ -64,7 +64,7 @@ internal sealed class FlacDecoder
         if (bits.Read(1) != 0) throw Damaged("a frame header sets its reserved bit");
         // The frame or sample number, coded like UTF-8, is not needed.
         var first = (int)bits.Read(8);
-        var extra = first < 0x80 ? 0 : first >= 0xFE ? 6 : first >= 0xFC ? 5 : first >= 0xF8 ? 4 : first >= 0xF0 ? 3 : first >= 0xE0 ? 2 : first >= 0xC0 ? 1 : -1;
+        var extra = first < 0x80 ? 0 : first == 0xFF ? -1 : first == 0xFE ? 6 : first >= 0xFC ? 5 : first >= 0xF8 ? 4 : first >= 0xF0 ? 3 : first >= 0xE0 ? 2 : first >= 0xC0 ? 1 : -1;
         if (extra < 0) throw Damaged("a frame number is not coded correctly");
         for (var index = 0; index < extra; index++)
         {

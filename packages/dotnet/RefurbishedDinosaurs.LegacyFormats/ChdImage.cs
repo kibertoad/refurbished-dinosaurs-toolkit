@@ -452,6 +452,9 @@ internal sealed class ChdHunkReader : IDisposable
     private readonly bool[] content;
     private IncrementalHash? sha1 = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
     private int hashedHunks;
+    // The SHA-1 mismatch, once found. The hash is not computed again, so every later read fails
+    // with it instead of handing out data known to be damaged.
+    private string? damaged;
 
     // content marks the hunks a caller reads for their frames. The others hold only padding, and
     // are read here only to carry the SHA-1 across them.
@@ -469,6 +472,7 @@ internal sealed class ChdHunkReader : IDisposable
 
     public void ReadHunk(int hunk, Span<byte> destination)
     {
+        if (damaged is not null) throw new InvalidDataException(damaged);
         // Hunks before this one that hold only padding are read for the SHA-1, so that reading
         // every content hunk in order checks the whole data.
         while (sha1 is not null && hashedHunks < hunk && !content[hashedHunks]) Hash(hashedHunks);
@@ -497,10 +501,10 @@ internal sealed class ChdHunkReader : IDisposable
         var actual = sha1.GetHashAndReset();
         sha1.Dispose();
         sha1 = null;
-        if (!actual.AsSpan().SequenceEqual(image.RawSha1))
-            throw new InvalidDataException(
-                $"The CHD's data has SHA-1 {Convert.ToHexStringLower(actual)}, but its header records " +
-                $"{Convert.ToHexStringLower(image.RawSha1)}; the file is damaged.");
+        if (actual.AsSpan().SequenceEqual(image.RawSha1)) return;
+        damaged = $"The CHD's data has SHA-1 {Convert.ToHexStringLower(actual)}, but its header records " +
+                  $"{Convert.ToHexStringLower(image.RawSha1)}; the file is damaged.";
+        throw new InvalidDataException(damaged);
     }
 
     private void Decode(int hunk, Span<byte> destination)

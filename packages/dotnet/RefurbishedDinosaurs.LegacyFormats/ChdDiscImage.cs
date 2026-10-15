@@ -49,7 +49,7 @@ internal sealed class ChdDisc
 // A read-only seekable stream over a CD CHD's sectors: the raw 2352-byte sectors of the BIN image,
 // or for a CHD of 2048-byte sectors, their user data. Each stream reads the file through its own
 // handle and keeps the last hunk it decoded.
-internal sealed class ChdSectorStream : Stream
+internal sealed class ChdSectorStream : DecodingMemberStream
 {
     private readonly ChdDisc disc;
     private readonly int sectorSize;
@@ -58,9 +58,8 @@ internal sealed class ChdSectorStream : Stream
     private readonly byte[] sector;
     private int cachedHunk = -1;
     private long cachedSector = -1;
-    private long position;
 
-    public ChdSectorStream(ChdDisc disc, int sectorSize)
+    public ChdSectorStream(ChdDisc disc, int sectorSize) : base(disc.Sectors * sectorSize, "CHD image")
     {
         this.disc = disc;
         this.sectorSize = sectorSize;
@@ -69,26 +68,9 @@ internal sealed class ChdSectorStream : Stream
         sector = new byte[sectorSize];
     }
 
-    public override bool CanRead => true;
-    public override bool CanSeek => true;
-    public override bool CanWrite => false;
-    public override long Length => disc.Sectors * sectorSize;
-
-    public override long Position
+    protected override int ReadAt(long position, Span<byte> destination)
     {
-        get => position;
-        set => position = value >= 0 && value <= Length ? value : throw new IOException("Seek lies outside the CHD image.");
-    }
-
-    public override int Read(byte[] buffer, int offset, int count)
-    {
-        ValidateBufferArguments(buffer, offset, count);
-        return Read(buffer.AsSpan(offset, count));
-    }
-
-    public override int Read(Span<byte> buffer)
-    {
-        var total = (int)Math.Min(buffer.Length, Length - position);
+        var total = (int)Math.Min(destination.Length, Length - position);
         var done = 0;
         while (done < total)
         {
@@ -96,25 +78,15 @@ internal sealed class ChdSectorStream : Stream
             var within = (int)(position % sectorSize);
             var count = Math.Min(total - done, sectorSize - within);
             LoadSector(index);
-            sector.AsSpan(within, count).CopyTo(buffer[done..]);
+            sector.AsSpan(within, count).CopyTo(destination[done..]);
             position += count;
             done += count;
         }
         return total;
     }
 
-    // Reads complete synchronously; the decoding is CPU work on data already read.
-    public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        return ValueTask.FromResult(Read(buffer.Span));
-    }
-
-    public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-    {
-        ValidateBufferArguments(buffer, offset, count);
-        return ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
-    }
+    // Each read finds its sector from the position, and a failed read leaves no sector cached.
+    protected override void Moved(long next, bool failed) { }
 
     private void LoadSector(long index)
     {
@@ -143,18 +115,6 @@ internal sealed class ChdSectorStream : Stream
         else data.CopyTo(sector);
         cachedSector = index;
     }
-
-    public override long Seek(long offset, SeekOrigin origin) => Position = origin switch
-    {
-        SeekOrigin.Begin => offset,
-        SeekOrigin.Current => checked(position + offset),
-        SeekOrigin.End => checked(Length + offset),
-        _ => throw new ArgumentOutOfRangeException(nameof(origin)),
-    };
-
-    public override void Flush() { }
-    public override void SetLength(long value) => throw new NotSupportedException();
-    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
     protected override void Dispose(bool disposing)
     {
@@ -186,6 +146,11 @@ internal static class ChdDiscImage
         var tracks = image.Tracks;
         var builder = new DiscLayoutBuilder();
 
+        if (tracks[0].Type == ChdTrackType.Audio)
+            throw new NotSupportedException($"The CHD {name} begins with an audio track; only discs whose first track holds the data are read.");
+        // The volume starts at the data track's first stored frame, for 2048-byte sectors as for raw ones.
+        if (tracks[0].StoredPregap > 0)
+            throw new NotSupportedException($"The CHD {name} stores a pregap before track 01's data; the data track must start at sector 0.");
         if (tracks[0].Type == ChdTrackType.Mode1Cooked)
         {
             if (tracks.Count > 1)
@@ -198,10 +163,6 @@ internal static class ChdDiscImage
             return new(DiscImageFormats.Chd, [path], null, null, builder.Sheet(name, []), builder.Segments, builder.Position,
                 new CookedDiscDataTrack(new ChdSectorStore(disc, 2048), 0, disc.Sectors), new Dictionary<int, string>());
         }
-        if (tracks[0].Type == ChdTrackType.Audio)
-            throw new NotSupportedException($"The CHD {name} begins with an audio track; only discs whose first track holds the data are read.");
-        if (tracks[0].StoredPregap > 0)
-            throw new NotSupportedException($"The CHD {name} stores a pregap before track 01's data; the data track must start at sector 0.");
 
         var raw = new ChdSectorStore(disc, CueBinSheet.RawSectorSize);
         for (var index = 0; index < tracks.Count; index++)

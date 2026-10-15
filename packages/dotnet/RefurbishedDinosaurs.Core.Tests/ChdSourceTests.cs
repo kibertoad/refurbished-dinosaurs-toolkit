@@ -234,6 +234,14 @@ public sealed class ChdSourceTests
             Assert.Equal(SyntheticChdDiscs.Iso(), await ReadAllAsync(chd.OpenVolume()));
             var failed = await Assert.ThrowsAsync<InvalidDataException>(() => ReadAllAsync(chd.OpenBin()));
             Assert.Contains("SHA-1", failed.Message);
+
+            // The stream that found the mismatch keeps failing, also after a seek back to data it
+            // decoded before, where the hash is not computed again.
+            await using var bin = chd.OpenBin();
+            await Assert.ThrowsAsync<InvalidDataException>(() => bin.CopyToAsync(Stream.Null, TestContext.Current.CancellationToken));
+            bin.Position = bin.Length - RawSector;
+            var again = Assert.Throws<InvalidDataException>(() => bin.ReadExactly(new byte[RawSector]));
+            Assert.Contains("SHA-1", again.Message);
         }
         finally { Directory.Delete(root, true); }
     }
@@ -268,6 +276,7 @@ public sealed class ChdSourceTests
                 Made(root, bin, [MixedTracks[0], MixedTracks[1], new("MODE1", 7)]), "mixes tracks of raw sectors");
             AssertRefused<NotSupportedException>(
                 Made(root, bin, [MixedTracks[0] with { StoredPregap = 2 }, MixedTracks[1], MixedTracks[2]]), "data track must start at sector 0");
+            AssertRefused<NotSupportedException>(Made(root, bin, [new("MODE1", 30, StoredPregap: 2)]), "data track must start at sector 0");
             AssertRefused<NotSupportedException>(
                 Made(root, bin, [MixedTracks[0], MixedTracks[1], MixedTracks[2] with { Postgap = 2 }]), "postgap");
         }

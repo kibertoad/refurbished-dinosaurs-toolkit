@@ -12,7 +12,8 @@ namespace RefurbishedDinosaurs.LegacyFormats;
 internal sealed class FlacAudioFile : ISectorStore
 {
     // A frame of 65535 samples of two 16-bit channels, stored verbatim, takes about 256 KiB; an
-    // escaped residual of 31 bits a sample about 500 KiB. A frame is read from a window this large.
+    // escaped residual of 31 bits a sample about 500 KiB. A frame is read from a window that holds
+    // at least this much of the file from its start, or the rest of the file.
     private const int MaximumFrameBytes = 1024 * 1024;
     private const string ReadOnly = "a disc-image source reads FLAC only of 16-bit stereo 44.1 kHz audio, the CD's own samples.";
 
@@ -92,14 +93,14 @@ internal sealed class FlacAudioFile : ISectorStore
         var starts = new List<long>();
         var offsets = new List<long>();
         var decoder = new FlacDecoder();
-        var window = new byte[MaximumFrameBytes];
         var output = new byte[4 * FlacDecoder.MaximumBlockSize];
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
         using var stream = file.OpenBuffered();
+        var window = new FrameWindow(stream);
         long decoded = 0, offset = firstFrame;
         while (decoded < Samples)
         {
-            var span = Window(stream, offset, window);
+            var span = window.At(offset);
             var count = Decode(decoder, span, (int)Math.Min(Samples - decoded, FlacDecoder.MaximumBlockSize), output, out var length);
             starts.Add(decoded);
             offsets.Add(offset);
@@ -115,12 +116,29 @@ internal sealed class FlacAudioFile : ISectorStore
         return new FrameIndex([.. starts], [.. offsets]);
     }
 
-    // Reads up to a window's worth of the file from offset.
-    private static ReadOnlySpan<byte> Window(Stream stream, long offset, byte[] window)
+    // The bytes of the file from a frame's start, read through a buffer twice the largest frame. It
+    // is filled again only when fewer bytes than the largest frame remain in it past that start and
+    // the file goes on, so frames decoded in order read each byte of the file about once.
+    private sealed class FrameWindow(Stream stream)
     {
-        stream.Position = offset;
-        var got = stream.ReadAtLeast(window, window.Length, throwOnEndOfStream: false);
-        return window.AsSpan(0, got);
+        private readonly byte[] buffer = new byte[2 * MaximumFrameBytes];
+        private long start = -1;
+        private int length;
+
+        public ReadOnlySpan<byte> At(long offset)
+        {
+            var end = start + length;
+            // A fill shorter than the buffer reached the end of the file.
+            var reachesEnd = length < buffer.Length;
+            if (start < 0 || offset < start || offset > end || (end - offset < MaximumFrameBytes && !reachesEnd))
+            {
+                stream.Position = offset;
+                length = stream.ReadAtLeast(buffer, buffer.Length, throwOnEndOfStream: false);
+                start = offset;
+                end = start + length;
+            }
+            return buffer.AsSpan((int)(offset - start), (int)(end - offset));
+        }
     }
 
     private int Decode(FlacDecoder decoder, ReadOnlySpan<byte> input, int maximumSamples, Span<byte> output, out int length)
@@ -141,36 +159,26 @@ internal sealed class FlacAudioFile : ISectorStore
 
     // The samples of a FLAC file as a read-only seekable stream of little-endian bytes. Each stream
     // reads the file through its own handle and keeps the last frame it decoded.
-    private sealed class FlacPcmStream(FlacAudioFile audio) : Stream
+    private sealed class FlacPcmStream : DecodingMemberStream
     {
-        private readonly Stream file = audio.file.OpenBuffered();
+        private readonly FlacAudioFile audio;
+        private readonly Stream file;
+        private readonly FrameWindow window;
         private readonly FlacDecoder decoder = new();
-        private readonly byte[] window = new byte[MaximumFrameBytes];
         private readonly byte[] frame = new byte[4 * FlacDecoder.MaximumBlockSize];
         private int cachedFrame = -1;
         private int cachedSamples;
-        private long position;
 
-        public override bool CanRead => true;
-        public override bool CanSeek => true;
-        public override bool CanWrite => false;
-        public override long Length => audio.Samples * 4;
-
-        public override long Position
+        public FlacPcmStream(FlacAudioFile audio) : base(audio.Samples * 4, "FLAC audio")
         {
-            get => position;
-            set => position = value >= 0 && value <= Length ? value : throw new IOException("Seek lies outside the FLAC audio.");
+            this.audio = audio;
+            file = audio.file.OpenBuffered();
+            window = new FrameWindow(file);
         }
 
-        public override int Read(byte[] buffer, int offset, int count)
+        protected override int ReadAt(long position, Span<byte> destination)
         {
-            ValidateBufferArguments(buffer, offset, count);
-            return Read(buffer.AsSpan(offset, count));
-        }
-
-        public override int Read(Span<byte> buffer)
-        {
-            var total = (int)Math.Min(buffer.Length, Length - position);
+            var total = (int)Math.Min(destination.Length, Length - position);
             if (total == 0) return 0;
             var index = audio.index.Value;
             var done = 0;
@@ -182,44 +190,22 @@ internal sealed class FlacAudioFile : ISectorStore
                 if (number != cachedFrame)
                 {
                     cachedFrame = -1;
-                    var span = Window(file, index.Offsets[number], window);
+                    var span = window.At(index.Offsets[number]);
                     var remaining = audio.Samples - index.Starts[number];
                     cachedSamples = audio.Decode(decoder, span, (int)Math.Min(remaining, FlacDecoder.MaximumBlockSize), frame, out _);
                     cachedFrame = number;
                 }
                 var within = (int)(position - index.Starts[number] * 4);
                 var count = Math.Min(total - done, 4 * cachedSamples - within);
-                frame.AsSpan(within, count).CopyTo(buffer[done..]);
+                frame.AsSpan(within, count).CopyTo(destination[done..]);
                 done += count;
                 position += count;
             }
             return total;
         }
 
-        // Reads complete synchronously; the decoding is CPU work on data already read.
-        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            return ValueTask.FromResult(Read(buffer.Span));
-        }
-
-        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-        {
-            ValidateBufferArguments(buffer, offset, count);
-            return ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
-        }
-
-        public override long Seek(long offset, SeekOrigin origin) => Position = origin switch
-        {
-            SeekOrigin.Begin => offset,
-            SeekOrigin.Current => checked(position + offset),
-            SeekOrigin.End => checked(Length + offset),
-            _ => throw new ArgumentOutOfRangeException(nameof(origin)),
-        };
-
-        public override void Flush() { }
-        public override void SetLength(long value) => throw new NotSupportedException();
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        // Each read finds its frame from the position, and a failed decode leaves no frame cached.
+        protected override void Moved(long next, bool failed) { }
 
         protected override void Dispose(bool disposing)
         {
