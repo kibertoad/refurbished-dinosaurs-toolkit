@@ -131,7 +131,6 @@ keeps a legally made copy from being identified as the same edition:
 - Alcohol MDS/MDF and Nero NRG copies are neither read nor written;
 - `OriginalContentSource` reads a directory, an ISO and cue/bin, not the CHD, CloneCD or
   ISO-plus-audio forms the archiver writes;
-- sessions are not kept, so a CD-Extra disc's cue, CloneCD and CHD copies lose them;
 - the Redump DAT comparison is done by hand.
 
 Until they are closed, test the importer against the forms it reads, and record each form it
@@ -139,12 +138,13 @@ should accept and does not in the restoration's plan.
 
 ## What each format keeps
 
-| Format | Data sectors | Audio | Pregaps | Subchannel |
-|---|---|---|---|---|
-| redumper dump (`archival/`) | raw | yes | yes | read from the disc |
-| `bincue-split`, `bincue`, `chd` | raw | yes | yes | none |
-| `ccd` | raw | yes | yes | generated from the table of contents |
-| `iso-flac`, `iso-wav` | user data | yes, from INDEX 01 | as a cue `PREGAP` | none |
-| `iso-ogg` | user data | lossy | as a cue `PREGAP` | none |
-| `iso` | user data | no | no | none |
-| `files` | the file system's files | no | no | none |
+| Format | Data sectors | Audio | Pregaps | Subchannel | Sessions |
+|---|---|---|---|---|---|
+| redumper dump (`archival/`) | raw | yes | yes | read from the disc | yes |
+| `bincue-split`, `bincue` | raw | yes | yes | none | `REM SESSION` lines |
+| `chd` | raw | yes | yes | none | only from a chdman newer than MAME 0.289 |
+| `ccd` | raw | yes | yes | generated from the table of contents | yes |
+| `iso-flac`, `iso-wav` | user data | yes, from INDEX 01 | as a cue `PREGAP` | none | `REM SESSION` lines |
+| `iso-ogg` | user data | lossy | as a cue `PREGAP` | none | `REM SESSION` lines |
+| `iso` | user data | no | no | none | no |
+| `files` | the file system's files | no | no | none | no |

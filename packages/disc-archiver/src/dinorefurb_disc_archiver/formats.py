@@ -121,12 +121,20 @@ def _need_raw(disc: Disc, fmt: str) -> None:
         )
 
 
-def _virtual_pregap_notes(disc: Disc) -> list[str]:
+def _virtual_pregap_notes(disc: Disc, data_note: str = "the cue sheet gives it as PREGAP") -> list[str]:
     return [
         f"Track {t.number}'s {t.pregap}-sector pregap was not stored in the source and is written as silence."
+        if t.is_audio
+        else f"Track {t.number}'s {t.pregap}-sector pregap was not stored in the source, so it is not stored here either; {data_note}."
         for t in disc.tracks
         if t.pregap and not t.pregap_stored
     ]
+
+
+def _stores_pregap(track: Track) -> bool:
+    """Whether a raw format stores the track's pregap: an audio pregap no file held is written as
+    silence, and a data pregap no file held, whose sectors are not known, is left out."""
+    return track.pregap_stored or track.is_audio
 
 
 def _cue_type(track: Track) -> str:
@@ -139,34 +147,51 @@ def write_bincue_split(disc: Disc, directory: Path, name: str) -> Output:
     files, cue_files = [], []
     for track in disc.tracks:
         filename = f"{name}.bin" if len(disc.tracks) == 1 else track_file_name(name, disc, track, ".bin")
-        _write(directory / filename, track.iter_raw(-track.pregap, track.length))
+        stored = _stores_pregap(track)
+        _write(directory / filename, track.iter_raw(-track.pregap if stored else 0, track.length))
         files.append(directory / filename)
-        cue_files.append(CueFile(filename, "BINARY", [(track, 0, True, _cue_type(track))]))
+        cue_files.append(CueFile(filename, "BINARY", [(track, 0, stored, _cue_type(track))]))
     sheet = directory / f"{name}.cue"
     sheet.write_text(render_cue(disc, cue_files), encoding="utf-8")
     return Output("bincue-split", directory, sheet, [sheet, *files], _virtual_pregap_notes(disc))
 
 
 def write_bincue(disc: Disc, directory: Path, name: str) -> Output:
-    """Every track in one .bin with one cue sheet."""
+    """Every track in one .bin with one cue sheet. The gaps between sessions hold no sectors and
+    are not stored: the sheet's ``REM SESSION`` lines place them."""
     _need_raw(disc, "BIN/CUE")
     image = directory / f"{name}.bin"
-    _write(image, (chunk for t in disc.tracks for chunk in t.iter_raw(-t.pregap, t.length)))
+    entries, position = [], 0
+    for track in disc.tracks:
+        stored = _stores_pregap(track)
+        entries.append((track, position, stored, _cue_type(track)))
+        position += track.length + (track.pregap if stored else 0)
+    _write(image, (chunk for t, _, stored, _ in entries for chunk in t.iter_raw(-t.pregap if stored else 0, t.length)))
     sheet = directory / f"{name}.cue"
-    cue_file = CueFile(image.name, "BINARY", [(t, t.start, True, _cue_type(t)) for t in disc.tracks])
-    sheet.write_text(render_cue(disc, [cue_file]), encoding="utf-8")
+    sheet.write_text(render_cue(disc, [CueFile(image.name, "BINARY", entries)]), encoding="utf-8")
     return Output("bincue", directory, sheet, [sheet, image], _virtual_pregap_notes(disc))
 
 
 def write_ccd(disc: Disc, directory: Path, name: str) -> Output:
     """A CloneCD image with a subchannel generated from the table of contents."""
     _need_raw(disc, "CloneCD")
+    for track in disc.tracks:
+        if track.pregap and not _stores_pregap(track) and not ccd.opens_later_session(disc, track):
+            raise FormatUnavailable(
+                f"CloneCD stores every sector from each track's INDEX 00, and track {track.number}'s {track.pregap}-sector "
+                "data pregap was not stored in the source. BIN/CUE gives it as a cue PREGAP."
+            )
     files = ccd.write_ccd(disc, directory, name)
     notes = [
         "The .sub subchannel is generated from the table of contents (P marks pregaps, Q carries "
         "positions); it was not read from the disc.",
-        *_virtual_pregap_notes(disc),
+        *_virtual_pregap_notes(disc, "the table of contents places the track's INDEX 01 after it"),
     ]
+    if len(disc.sessions) > 1:
+        notes.append(
+            "The table of contents has each session's A0, A1 and A2 entries and its tracks, with the gap between "
+            "sessions; it has no mode 5 (B0, C0) entries, which the source did not give."
+        )
     if any(t.isrc for t in disc.tracks):
         notes.append("The tracks' ISRC codes are not carried into the CloneCD files.")
     return Output("ccd", directory, files[0], files, notes)

@@ -73,7 +73,7 @@ Writing the copy (`--format`, repeat for several):
 | `bincue-split` | one `.bin` per track and a `.cue` | Every raw sector, pregaps included: the Redump layout. |
 | `bincue` | one `.bin` and a `.cue` | The same in one file. Read by most tools and by the toolkit's `OriginalContentSource`. |
 | `ccd` | `.ccd`, `.img`, `.sub` | Every raw sector; the subchannel is generated from the table of contents, not read from the disc. |
-| `chd` | `.chd` | Every raw sector, compressed by MAME's `chdman`. Needs `chdman`. |
+| `chd` | `.chd` | Every raw sector, compressed by MAME's `chdman`. Needs `chdman`. chdman releases up to MAME 0.289 store no sessions; see [Sessions](#sessions). |
 | `iso-flac` | `.iso`, one `.flac` per audio track, `.cue` | Data user data and lossless audio from each track's INDEX 01. Needs `ffmpeg`. |
 | `iso-wav` | `.iso`, one `.wav` per audio track, `.cue` | The same with WAV audio: the DOSBox-style sheet. |
 | `iso-ogg` | `.iso`, one `.ogg` per audio track, `.cue` | The form many re-releases ship. Lossy. Needs `ffmpeg`. |
@@ -211,7 +211,10 @@ My Game/
 
 - `disc`: the layout, the volume identifier (each byte read as the Latin-1 character of the same
   value without the trailing spaces and NULs, as the .NET `OriginalContentSource.Label` reads it,
-  or `null` when it is all padding), each track's start, pregap and length, the SHA-256 of the
+  or `null` when it is all padding), the sessions (`sessions`: each one's `number`, `firstTrack`,
+  `lastTrack` and `leadOut`, the LBA just past its last track; see [Sessions](#sessions)), each
+  track's `session`, `start` (the LBA of its INDEX 00 on the disc, past the gaps between
+  sessions), `pregap` and `length`, the SHA-256 of the
   data track's user data from INDEX 01, and the SHA-256 of each audio track's samples
   from INDEX 01 to the next track's INDEX 00. These hashes are the same whichever format holds the
   disc, so they are what restorations' fingerprints and the formats are compared by.
@@ -245,36 +248,83 @@ My Game/
   - `partial`: everything compared agreed, and `notCompared` lists what the format does not hold
     or could not be compared: audio left out of an ISO, lossy Ogg audio, sound in a pregap that
     ISO-plus-audio formats drop, which sectors were empty form 2 sectors (an ISO holds them as zero
-    blocks, and its `notes` name them).
+    blocks, and its `notes` name them), sessions a CHD does not hold.
   - `mismatched`: `differences` says what differs.
 - `unavailable`: formats that could not be made from this source, and why. A plain ISO has no raw
   sectors, so no BIN/CUE, CloneCD or CHD can be made from it. A data track with sectors that hold
   no user data has no ISO form, so the ISO formats are unavailable for it; BIN/CUE, CloneCD and
   CHD keep those sectors and compare them byte for byte.
 
-## Data tracks after audio
+## Sessions
 
 A CD-Extra (Enhanced CD) disc holds its audio in a first session and its data track in a second.
-That track's ISO 9660 volume is usually mastered with addresses counted from the start of the
-disc, while a volume on a disc's first track counts from the track. The archiver reads the
-primary volume descriptor at sector 16 of the track and tries each place the addresses can count
-from:
+Between two sessions lie the first one's lead-out and the next one's lead-in, which hold no track
+sectors: 6,750 sectors of lead-out after the first session, 2,250 after a later one, and 4,500 of
+lead-in. These are the multisession sizes that chdman and libmirage lay sessions out with. The
+next session's first track starts there, usually with a 150-sector pregap, so a CD-Extra disc's
+data track has its INDEX 01 11,400 sectors past the first session's lead-out. The manifest's
+track starts and `leadOut` values count these gaps.
+
+Reading:
+
+- A cue sheet gives sessions with `REM SESSION nn` before the first track of each session, as
+  redumper, DiscImageCreator and chdman write them. They must be numbered from `01` in order, and
+  each session must have a track. A sheet without them describes one session.
+- DiscImageCreator also writes `REM LEAD-OUT 01:30:00`, `REM LEAD-IN 01:00:00` and
+  `REM PREGAP 00:02:00` around a session change. The first two must give the sizes above, or the
+  sheet is refused: one-file sheets from IsoBuster and DiscImageCreator give the lead-out's
+  position there, which the archiver does not read. `REM PREGAP` is the pregap of the session's
+  first track, which its file does not hold unless the track's INDEX 00 says so.
+- A CloneCD image gives each track's session and disc address in its `[Entry]` sections, and each
+  session's lead-out in its A2 entry. The image holds each session's sectors back to back. A later
+  session's first track must start where the sizes above put it; when it has no `INDEX 0` and
+  starts later, as DiscImageCreator writes it, the sectors in between are its pregap, which the
+  image does not hold.
+- A CHD is read through `chdman extractcd`, which gives sessions only for a CHD written by a
+  chdman newer than MAME 0.289.
+
+Writing:
+
+- `bincue-split` writes `REM SESSION nn` before the `FILE` line of each session's first track,
+  as redumper does, so a Redump-style dump is written back byte for byte. `bincue` writes it
+  before the `TRACK` line inside its one file, as chdman does. A disc of one session gets no
+  `REM SESSION` line.
+- `ccd` writes a `[Session N]` section per session, and each session's A0, A1 and A2 entries and
+  track entries with its session number and disc addresses. The `[TRACK]` index addresses and the
+  generated subchannel's Q times count the gaps; the image holds no sectors for them. The table of
+  contents has no mode 5 (B0, C0) entries.
+- `chd` gives chdman the `bincue` sheet. chdman releases up to MAME 0.289 read its sessions but do
+  not store them in the CHD, so reading it back gives one session with the tracks back to back.
+  The CHD then gets a note saying so, its verification lists the sessions and the track starts
+  under `notCompared`, and it is `partial`; every sector is still compared. A CHD from a later
+  chdman keeps them and is compared in full.
+- A data pregap that the source did not store (DiscImageCreator's `REM PREGAP`, or a cue `PREGAP`
+  on a data track) is written as a cue `PREGAP`; CloneCD leaves it out of the image for the first
+  track of a later session and is unavailable for any other track.
+
+## Data tracks after audio
+
+The volume on a CD-Extra disc's data track is usually mastered with addresses counted from the
+start of the disc, while a volume on a disc's first track counts from the track. The archiver
+reads the primary volume descriptor at sector 16 of the track and tries each place the addresses
+can count from:
 
 - the track's first sector;
-- the track's LBA with the disc's tracks laid out back to back from LBA 0, as the archiver reads
-  every image;
-- for raw sectors, the LBA the header of sector 16 gives. A cue sheet lays the sessions out back
-  to back without the lead-out and lead-in between them, and so does a CloneCD image, so on a
-  CD-Extra dump this is the place that fits.
+- the track's LBA as the source lays the disc out. When the source gives sessions, this is where
+  the track sits on the disc, and it is the place that fits.
+- for raw sectors of a track in the first session, the LBA the header of sector 16 gives. A
+  source without sessions lays every track out back to back without the lead-out and lead-in
+  between sessions, so on a CD-Extra dump read that way this is the place that fits. A track in
+  a later session sits where its sessions put it, so its sector headers are not asked.
 
 A place fits when the root directory extent the descriptor gives lands inside the track and the
 volume, past the volume descriptors, on a directory whose `.` record gives that same extent.
 Every address the file system gives, its file extents and declared volume size included, is read
-against the one place that fits. When none fits, or more than one does, the archiver does not choose: `files` is
-unavailable with the reason, a profile's `expectedPaths` stop the run, and the fingerprint admits
-no sector past the volume. An ISO-plus-cue copy of a CD-Extra disc made by another tool keeps no
-sector headers, so unless its sheet places the track where it sits on the disc its files cannot be
-located.
+against the one place that fits. When none fits, or more than one does, the archiver does not
+choose: `files` is unavailable with the reason, a profile's `expectedPaths` stop the run, and the
+fingerprint admits no sector past the volume. An ISO-plus-cue copy of a CD-Extra disc keeps no
+sector headers, so its files can be located only when its sheet gives the sessions with
+`REM SESSION` lines or otherwise places the track where it sits on the disc.
 
 ## Disc profiles
 
@@ -322,10 +372,10 @@ The supported imports are the names in `dinorefurb_disc_archiver.__all__`.
 
 ## Limits
 
-- Sessions are not kept. A cue sheet's `REM SESSION` lines are ignored, so a multisession disc's
-  tracks are laid out back to back without the gap between sessions, in the manifest's track
-  starts and in the BIN/CUE, CloneCD and CHD written from it. A cue sheet's first track must start
-  at `INDEX 01 00:00:00`; `POSTGAP`, `MODE2/2336`, `CDG` and `MOTOROLA` files are refused.
+- A cue sheet's first track must start at `INDEX 01 00:00:00`; `POSTGAP`, `MODE2/2336`, `CDG` and
+  `MOTOROLA` files are refused.
+- Sessions are laid out with the standard lead-out and lead-in sizes. A cue sheet or CloneCD image
+  that gives other sizes, or a lead-out's position, is refused (see [Sessions](#sessions)).
 - Cue sheets are limited to 1 MiB and 99 tracks, profiles to 64 KiB, file systems to 200,000 files.
 - `data-copy` stops at the first sector that still fails after five reads. Nothing stands in for
   an unread sector.

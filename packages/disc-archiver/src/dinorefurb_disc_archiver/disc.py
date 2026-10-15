@@ -2,7 +2,9 @@
 
 Disc addresses are logical block addresses (LBA) with track 1's INDEX 01 at 0, the convention cue
 sheets use. Each track runs from its INDEX 00 (its pregap) through its INDEX 01 to the next
-track's INDEX 00, or to the end of the disc for the last track.
+track's INDEX 00, or to the end of the disc for the last track. On a disc of several sessions, the
+last track of a session runs to that session's lead-out, and the next session's first track
+starts after the lead-out and the next lead-in (see :func:`session_gap`).
 """
 
 from __future__ import annotations
@@ -20,6 +22,31 @@ MSF_OFFSET = 150
 SYNC = b"\x00" + b"\xff" * 10 + b"\x00"
 # Sectors read in one go when streaming a track.
 CHUNK_SECTORS = 1024
+# The lead-out of a disc's first session, of each later session, and the lead-in of each session
+# after the first, in sectors: 01:30:00, 00:30:00 and 01:00:00, the multisession sizes (Orange
+# Book) that Enhanced CD (Blue Book) discs follow. MAME's chdman lays sessions out with these
+# (src/lib/util/cdrom.cpp, parse_cue), as does libmirage for CloneCD images (image-ccd/parser.c:
+# 11,250 after the first session, 6,750 after later ones). redumper uses 01:30:00 and 01:00:00 for
+# the first boundary (cd/cd.ixx, CD_LEADOUT_MIN_SIZE and CD_LEADIN_MIN_SIZE) and keeps no gap in
+# its cue sheet, whose REM SESSION lines it writes from the disc's table of contents.
+FIRST_LEAD_OUT = 6750
+LEAD_OUT = 2250
+LEAD_IN = 4500
+
+
+def lead_out_sectors(session: int) -> int:
+    """The sectors of session ``session``'s lead-out when another session follows it."""
+    return FIRST_LEAD_OUT if session == 1 else LEAD_OUT
+
+
+def session_gap(session: int) -> int:
+    """Sectors between the lead-out of session ``session`` and INDEX 00 of the next session's first track.
+
+    They are session ``session``'s lead-out and the next session's lead-in. The next session's
+    first track usually has a 150-sector pregap of its own, which the track holds, so on a CD-Extra
+    disc its INDEX 01 sits 6,750 + 4,500 + 150 = 11,400 sectors past the first session's lead-out.
+    """
+    return lead_out_sectors(session) + LEAD_IN
 
 
 class DiscError(Exception):
@@ -71,6 +98,8 @@ class Track:
     extra_indexes: dict[int, int] = field(default_factory=dict)
     flags: tuple[str, ...] = ()
     isrc: str | None = None
+    # The session the track is in, from 1.
+    session: int = 1
     # Disc LBA of INDEX 00; set by Disc.
     start: int = 0
 
@@ -258,9 +287,26 @@ def describe_ranges(ranges: list[list[int]]) -> str:
     return f"{text} and {more} more ranges" if more > 0 else text
 
 
+@dataclass(frozen=True)
+class Session:
+    """One session of a disc and its tracks."""
+
+    number: int
+    tracks: tuple[Track, ...]
+
+    @property
+    def lead_out(self) -> int:
+        """Disc LBA where the session's lead-out starts, just past its last track."""
+        return self.tracks[-1].end
+
+
 @dataclass
 class Disc:
-    """The tracks of one disc, laid out back to back from track 1's INDEX 01 at LBA 0."""
+    """The tracks of one disc, from track 1's INDEX 01 at LBA 0.
+
+    The tracks of a session lie back to back. Each later session's first track starts
+    :func:`session_gap` sectors past the previous session's lead-out.
+    """
 
     tracks: list[Track]
     catalog: str | None = None
@@ -270,12 +316,20 @@ class Disc:
     def __post_init__(self) -> None:
         if not self.tracks:
             raise DiscError("the disc has no tracks")
+        if self.tracks[0].session != 1:
+            raise DiscError(f"track {self.tracks[0].number} is in session {self.tracks[0].session}; the first session is 1")
         position = -self.tracks[0].pregap
+        session = 1
         for expected, track in enumerate(self.tracks, start=1):
             if track.number != expected:
                 raise DiscError(f"track {track.number} follows track {expected - 1}")
             if track.length <= 0:
                 raise DiscError(f"track {track.number} has no sectors after INDEX 01")
+            if track.session != session:
+                if track.session != session + 1:
+                    raise DiscError(f"track {track.number} is in session {track.session}, after a track of session {session}")
+                position += session_gap(session)
+                session = track.session
             track.start = position
             position = track.end
         if self.tracks[0].pregap:
@@ -286,8 +340,16 @@ class Disc:
 
     @property
     def total_sectors(self) -> int:
-        """Sectors from LBA 0 to the lead-out."""
+        """Sectors from LBA 0 to the last session's lead-out, the gaps between sessions included."""
         return self.tracks[-1].end
+
+    @property
+    def sessions(self) -> list[Session]:
+        """The disc's sessions in order. A disc read without session information has one."""
+        grouped: dict[int, list[Track]] = {}
+        for track in self.tracks:
+            grouped.setdefault(track.session, []).append(track)
+        return [Session(number, tuple(tracks)) for number, tracks in grouped.items()]
 
     @property
     def data_tracks(self) -> list[Track]:

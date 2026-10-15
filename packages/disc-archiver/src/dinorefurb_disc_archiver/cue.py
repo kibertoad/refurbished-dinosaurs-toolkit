@@ -4,6 +4,13 @@ The reader accepts the sheets that rippers write: one or several ``BINARY`` file
 sectors (redumper, DiscImageCreator, cdrdao's ``toc2cue``, binmerge), ``MODE1/2048`` data in an
 ISO file, and ``WAVE`` audio files, the DOSBox and re-release form. A line it does not understand
 fails the sheet rather than being skipped.
+
+Sessions are read from ``REM SESSION nn`` lines, which redumper, DiscImageCreator and chdman write
+before the first track of each session of a disc with more than one. A sheet without them
+describes one session. DiscImageCreator's ``REM LEAD-OUT``, ``REM LEAD-IN`` and ``REM PREGAP``
+around a session change are read too: the first two must give the sizes the archiver lays
+sessions out with (see ``disc.session_gap``), and ``REM PREGAP`` gives the pregap of the session's
+first track, which its file holds only when INDEX 00 says so.
 """
 
 from __future__ import annotations
@@ -12,7 +19,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from .disc import COOKED_SECTOR, RAW_SECTOR, Disc, DiscError, Track, format_msf, wave_data
+from .disc import COOKED_SECTOR, LEAD_IN, RAW_SECTOR, Disc, DiscError, Track, format_msf, lead_out_sectors, wave_data
 
 MAXIMUM_CUE_BYTES = 1024 * 1024
 MAXIMUM_TRACKS = 99
@@ -23,8 +30,9 @@ TRACK_TYPES = {
     "MODE1/2048": ("MODE1", "cooked"),
 }
 FLAG_NAMES = {"DCP", "4CH", "PRE", "SCMS"}
-# Commands that describe the disc for players and change nothing about where sectors are.
-IGNORED = {"REM", "PERFORMER", "TITLE", "SONGWRITER", "CDTEXTFILE"}
+# Commands that describe the disc for players and change nothing about where sectors are. REM
+# lines are read for sessions and otherwise skipped.
+IGNORED = {"PERFORMER", "TITLE", "SONGWRITER", "CDTEXTFILE"}
 _TIME = re.compile(r"^(\d{1,3}):(\d{2}):(\d{2})$")
 # A word is a double-quoted string, which may hold spaces, or a run of non-space characters.
 _WORD = re.compile(r'"([^"]*)"|(\S+)')
@@ -39,6 +47,70 @@ class _Track:
     pregap: int = 0
     flags: tuple[str, ...] = ()
     isrc: str | None = None
+    session: int = 1
+    # The pregap a REM PREGAP line gave the first track of its session.
+    session_pregap: int | None = None
+
+
+@dataclass
+class _Sessions:
+    """The session lines read so far."""
+
+    # The session the next track is in, and whether any REM SESSION line was read.
+    current: int = 1
+    given: bool = False
+    # Whether the session the last REM SESSION started has a track yet.
+    has_track: bool = True
+    # The line of a REM LEAD-OUT waiting for the REM SESSION of the session after it.
+    lead_out_line: int | None = None
+    pregap: int | None = None
+
+    def read(self, args: list[str], line: int, tracks: list[_Track]) -> None:
+        """Read one REM line's arguments. Other remarks change nothing."""
+        what = args[0].upper() if args else ""
+        if what == "SESSION" and len(args) == 2:
+            number = _number(args[1], line)
+            if number == 1:
+                if self.given or tracks:
+                    raise DiscError(f"line {line}: REM SESSION 01 must come before every track and session")
+            elif not self.given:
+                raise DiscError(f"line {line}: REM SESSION {number:02d} follows no REM SESSION 01")
+            elif number != self.current + 1:
+                raise DiscError(f"line {line}: REM SESSION {number:02d} follows session {self.current}")
+            elif not self.has_track:
+                raise DiscError(f"line {line}: session {self.current} has no tracks")
+            self.current, self.given, self.has_track, self.lead_out_line = number, True, False, None
+        elif what == "LEAD-OUT" and len(args) == 2:
+            # DiscImageCreator writes it before the REM SESSION of the next session.
+            expected = lead_out_sectors(self.current)
+            if not self.given or _time(args[1], line) != expected:
+                raise DiscError(
+                    f"line {line}: REM LEAD-OUT {args[1]} is not the {format_msf(expected)} lead-out the archiver lays session "
+                    f"{self.current} out with; some programs give the lead-out's position here, which the archiver does not read"
+                )
+            self.lead_out_line = line
+        elif what in ("LEAD-IN", "PREGAP") and len(args) == 2:
+            if self.current == 1 or self.has_track:
+                raise DiscError(f"line {line}: REM {what} must follow the REM SESSION of a session after the first, before its first track")
+            value = _time(args[1], line)
+            if what == "LEAD-IN" and value != LEAD_IN:
+                raise DiscError(f"line {line}: REM LEAD-IN {args[1]} is not the {format_msf(LEAD_IN)} lead-in the archiver lays sessions out with")
+            if what == "PREGAP":
+                self.pregap = value
+
+    def track(self) -> tuple[int, int | None]:
+        """The session of the next track, and the pregap a REM PREGAP gave it."""
+        if self.lead_out_line is not None:
+            raise DiscError(f"line {self.lead_out_line}: REM LEAD-OUT is not followed by a REM SESSION")
+        pregap, self.pregap, self.has_track = self.pregap, None, True
+        return self.current, pregap
+
+    def finish(self) -> None:
+        """Check the end of the sheet."""
+        if self.lead_out_line is not None:
+            raise DiscError(f"line {self.lead_out_line}: REM LEAD-OUT is not followed by a REM SESSION")
+        if not self.has_track:
+            raise DiscError(f"session {self.current} has no tracks")
 
 
 def _time(text: str, line: int) -> int:
@@ -74,6 +146,7 @@ def read_cue(sheet: Path) -> Disc:
     text = sheet.read_bytes().decode("utf-8-sig", errors="replace")
     files: list[tuple[Path, str]] = []
     tracks: list[_Track] = []
+    sessions = _Sessions()
     catalog = None
     for number, raw in enumerate(text.splitlines(), start=1):
         if not raw.strip():
@@ -83,6 +156,9 @@ def read_cue(sheet: Path) -> Disc:
         words = [quoted if quoted or plain == "" else plain for quoted, plain in _WORD.findall(raw)]
         command, args = words[0].upper(), words[1:]
         current = tracks[-1] if tracks else None
+        if command == "REM":
+            sessions.read(args, number, tracks)
+            continue
         if command in IGNORED:
             continue
         if command == "CATALOG" and len(args) == 1:
@@ -100,7 +176,8 @@ def read_cue(sheet: Path) -> Disc:
                 raise DiscError(f"line {number}: track type {args[1]} is not supported")
             if len(tracks) >= MAXIMUM_TRACKS:
                 raise DiscError(f"line {number}: more than {MAXIMUM_TRACKS} tracks")
-            tracks.append(_Track(_number(args[0], number), kind, len(files) - 1))
+            session, session_pregap = sessions.track()
+            tracks.append(_Track(_number(args[0], number), kind, len(files) - 1, session=session, session_pregap=session_pregap))
         elif command == "INDEX" and len(args) == 2 and current:
             index = _number(args[0], number)
             if index in current.indexes or index > 99:
@@ -121,6 +198,7 @@ def read_cue(sheet: Path) -> Disc:
             current.isrc = args[0]
         else:
             raise DiscError(f"line {number}: cannot read {raw.strip()!r}")
+    sessions.finish()
     return _layout(sheet, files, tracks, catalog)
 
 
@@ -160,6 +238,12 @@ def _layout(sheet: Path, files: list[tuple[Path, str]], parsed: list[_Track], ca
             raise DiscError(f"track {entry.number} runs past the end of {path.name}")
         pregap_stored = 0 in entry.indexes
         pregap = entry.indexes[1] - entry.indexes[0] if pregap_stored else entry.pregap
+        if entry.session_pregap is not None:
+            # DiscImageCreator gives the pregap of a session's first track as REM PREGAP and leaves
+            # it out of the track's file, unless INDEX 00 says the file holds it.
+            if (pregap_stored or entry.pregap) and pregap != entry.session_pregap:
+                raise DiscError(f"track {entry.number}: REM PREGAP {format_msf(entry.session_pregap)} disagrees with the track's own pregap")
+            pregap = entry.session_pregap
         offset = base + stored_start * sector_size
         tracks.append(
             Track(
@@ -175,6 +259,7 @@ def _layout(sheet: Path, files: list[tuple[Path, str]], parsed: list[_Track], ca
                 extra_indexes={k: v - entry.indexes[1] for k, v in entry.indexes.items() if k > 1},
                 flags=entry.flags,
                 isrc=entry.isrc,
+                session=entry.session,
             )
         )
     return Disc(tracks, catalog=catalog, origin=sheet)
@@ -216,13 +301,24 @@ class CueFile:
 
 
 def render_cue(disc: Disc, files: list[CueFile]) -> str:
-    """A cue sheet for ``files``, keeping the disc's catalog, flags and ISRCs."""
+    """A cue sheet for ``files``, keeping the disc's catalog, sessions, flags and ISRCs.
+
+    A disc of more than one session gets a ``REM SESSION nn`` line before the first track of each
+    session, as redumper writes them: before the track's ``FILE`` line when the track opens the
+    file, otherwise before its ``TRACK`` line, where chdman writes it in a one-file sheet. A disc of
+    one session gets none, as from redumper.
+    """
     lines = []
     if disc.catalog:
         lines.append(f"CATALOG {disc.catalog}")
+    sessions = disc.sessions
+    firsts = {s.tracks[0].number: s.number for s in sessions} if len(sessions) > 1 else {}
     for file in files:
-        lines.append(f"FILE {_quote(file.name)} {file.kind}")
-        for track, first, pregap_stored, kind in file.tracks:
+        for position, (track, first, pregap_stored, kind) in enumerate(file.tracks):
+            if track.number in firsts:
+                lines.append(f"REM SESSION {firsts[track.number]:02d}")
+            if position == 0:
+                lines.append(f"FILE {_quote(file.name)} {file.kind}")
             lines.append(f"  TRACK {track.number:02d} {kind}")
             if track.flags:
                 lines.append(f"    FLAGS {' '.join(track.flags)}")

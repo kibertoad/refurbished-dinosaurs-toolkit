@@ -613,11 +613,24 @@ class VolumeAddressTests(FormatTestCase):
         volume = isofs.locate(read_iso(path).first_data_track())
         self.assertEqual((volume.base, volume.end), (0, len(image) // 2048))
 
+    def test_a_cd_extra_volume_is_read_at_the_lba_its_sessions_give(self) -> None:
+        extra = SyntheticCdExtra()
+        for cooked in (False, True):
+            with self.subTest(cooked=cooked):
+                disc = self.source(extra, cooked)
+                track = disc.first_data_track()
+                self.assertEqual((track.session, track.index1), (2, extra.start))
+                self.assertEqual(isofs.locate(track).base, extra.start)
+                self.assertEqual(fingerprint(disc)["data"]["sha256"], hashlib.sha256(extra.iso).hexdigest())  # type: ignore[index]
+                self.assertFilesRead(disc, extra)
+                shutil.rmtree(self.dir / "files")
+                shutil.rmtree(self.dir / "out")
+
     def test_a_cd_extra_volume_is_read_at_the_track_address_its_sector_headers_give(self) -> None:
-        extra = SyntheticCdExtra(padding=self.PADDING)
+        extra = SyntheticCdExtra(padding=self.PADDING, sessions=False)
         disc = self.source(extra)
         track = disc.first_data_track()
-        # The sheet leaves out the gap between the sessions; the sector headers do not.
+        # The sheet gives no sessions and leaves out the gap between them; the sector headers do not.
         self.assertEqual(track.index1, extra.sheet_start)
         self.assertEqual(isofs.locate(track).base, extra.start)
         self.assertEqual(
@@ -645,7 +658,7 @@ class VolumeAddressTests(FormatTestCase):
         self.assertIn(f"counts its addresses from LBA {SyntheticCdExtra().start}", " ".join(output.notes))
 
     def test_a_cd_extra_volume_is_read_at_the_track_address_the_sheet_gives(self) -> None:
-        extra = SyntheticCdExtra(session_gap=0)
+        extra = SyntheticCdExtra(session_gap=0, sessions=False)
         for cooked in (False, True):
             with self.subTest(cooked=cooked):
                 disc = self.source(extra, cooked)
@@ -670,11 +683,11 @@ class VolumeAddressTests(FormatTestCase):
         self.assertFalse((self.dir / "files" / "Synth").exists())
         self.assertIsNone(isofs.volume_sectors(disc.first_data_track()))
         # Nothing past the volume is admitted when the volume cannot be located.
-        with self.assertRaisesRegex(DiscError, f"sector {extra.sheet_start + extra.volume} has no data sync pattern"):
+        with self.assertRaisesRegex(DiscError, f"sector {extra.start + extra.volume} has no data sync pattern"):
             fingerprint(disc)
 
     def test_a_cooked_cd_extra_track_whose_sheet_leaves_out_the_session_gap_is_unsupported(self) -> None:
-        extra = SyntheticCdExtra()
+        extra = SyntheticCdExtra(sessions=False)
         disc = self.source(extra, cooked=True)
         manifest = derive(disc, self.dir / "out", "Extra", ["files", "iso"], BUILTIN_PROFILES["any"], silent_log, {})
         self.assertEqual([o["format"] for o in manifest["outputs"]], ["iso"])  # type: ignore[union-attr, index]
@@ -686,7 +699,7 @@ class VolumeAddressTests(FormatTestCase):
             derive(disc, self.dir / "out2", "Extra", ["iso"], self.PATHS, silent_log, {})
 
     def test_a_root_directory_found_from_two_bases_is_unsupported(self) -> None:
-        extra = SyntheticCdExtra(session_gap=0, audio_lengths=[20], padding=200)
+        extra = SyntheticCdExtra(session_gap=0, audio_lengths=[20], padding=200, sessions=False)
         root = int.from_bytes(extra.iso[16 * 2048 + 158 : 16 * 2048 + 162], "little")
         data = bytearray(extra.data_raw)
         # The root directory's sector again at the track sector its address names when counted

@@ -141,6 +141,9 @@ def _data_fingerprint(track: Track) -> dict[str, object]:
 def fingerprint(disc: Disc) -> dict[str, object]:
     """The disc's layout and content hashes, the same whichever format holds it.
 
+    The layout gives each session's tracks and lead-out, and each track's session, start (the LBA
+    of its INDEX 00, past the gaps ``disc.session_gap`` gives between sessions), pregap and length.
+
     The data hash covers the first data track's user data from INDEX 01 to the track's end, apart
     from the sectors past the volume described below, with empty form 2 sectors read as zeros.
     Each audio hash covers the track's raw samples from INDEX 01 to the next track's INDEX 00, the
@@ -181,8 +184,12 @@ def fingerprint(disc: Disc) -> dict[str, object]:
     return {
         "layout": disc.layout,
         "volumeIdentifier": volume,
+        "sessions": [
+            {"number": s.number, "firstTrack": s.tracks[0].number, "lastTrack": s.tracks[-1].number, "leadOut": s.lead_out}
+            for s in disc.sessions
+        ],
         "tracks": [
-            {"number": t.number, "mode": t.mode, "start": t.start, "pregap": t.pregap, "length": t.length}
+            {"number": t.number, "session": t.session, "mode": t.mode, "start": t.start, "pregap": t.pregap, "length": t.length}
             for t in disc.tracks
         ],
         "data": data,
@@ -271,8 +278,17 @@ def _compare(reference: dict, found: dict, result: Verification, layout: bool, a
             result.differences.append(f"audio of tracks {changed} differs from the source")
     if layout:
         result.compared.append("track layout")
-        if reference["tracks"] != found["tracks"]:
+        if (reference["sessions"], reference["tracks"]) != (found["sessions"], found["tracks"]):
             result.differences.append("the track layout differs from the source")
+
+
+_WITHOUT_SESSIONS = ("session", "start")
+
+
+def _drop_sessions(fingerprint_: dict) -> dict:  # type: ignore[type-arg]
+    """The fingerprint without what sessions decide: the session list, each track's session and its start."""
+    tracks = [{k: v for k, v in t.items() if k not in _WITHOUT_SESSIONS} for t in fingerprint_["tracks"]]
+    return {**fingerprint_, "sessions": None, "tracks": tracks}
 
 
 def _decoded_sha256(ffmpeg: Path, path: Path) -> str:
@@ -301,6 +317,15 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
                 for mine, theirs in zip(reference["tracks"], found["tracks"], strict=False)
             ]
             result.not_compared.append("the data track's MODE2 sector mode, which an ISO does not hold")
+        if kind == "chd" and len(reference["sessions"]) > 1 and len(found["sessions"]) == 1:
+            # chdman reads the sessions of the cue sheet it is given, but releases up to MAME 0.289
+            # store none in the CHD, so extractcd gives back one session with the tracks back to back.
+            output.notes.append(
+                f"The CHD holds no sessions: the chdman that wrote it did not store the disc's {len(reference['sessions'])} "
+                "sessions, so a reader of this CHD sees one session with the tracks back to back. The tracks' sectors are kept."
+            )
+            result.not_compared.append("the sessions and the track starts they decide, which the CHD does not hold")
+            reference, found = _drop_sessions(reference), _drop_sessions(found)
         _compare(reference, found, result, layout=True, audio=True, form2=kind != "iso-wav")
         if kind == "iso-wav" and any(a["pregapSilent"] is False for a in reference["audio"]):
             result.not_compared.append("audio in pregaps, which the format does not hold")
