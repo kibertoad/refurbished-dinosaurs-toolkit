@@ -306,15 +306,19 @@ def _with_session_gaps(disc: Disc) -> Disc:
     its own disc address in the header of its INDEX 01 sector, which gives the gap: the sectors
     from the previous session's lead-out to the track's INDEX 00. A session that opens with audio,
     with a data track stored as 2,048-byte user data, or with a sector whose header holds no
-    address, keeps the standard gap, marked ``assumed``. An address closer to the lead-out than
-    the standard gap is refused, and so is one the track's last sector contradicts (see
-    :func:`opening_address`).
+    address, keeps the standard gap, marked ``assumed``. A header gap after such a session is
+    marked ``headers-after-assumed``: the header verified the session's address, and the gap counts
+    the earlier assumed one, so it holds as many sectors too many as that gap was really longer.
+    An address closer to the lead-out than the standard gap is refused, and so is one the track's
+    last sector contradicts (see :func:`opening_address`).
     """
     gaps: dict[int, SessionGap] = {}
+    assumed_before = False
     for number in range(2, disc.tracks[-1].session + 1):
         track = disc.sessions[number - 1].tracks[0]
         found = opening_address(track)
         if found is None:
+            assumed_before = True
             continue
         # Sessions are taken in order, so the previous session's lead-out counts every gap before it.
         lead_out = disc.sessions[number - 2].lead_out
@@ -325,7 +329,7 @@ def _with_session_gaps(disc: Disc) -> Disc:
                 f"less than the standard {session_gap(number - 1)} sectors of lead-out and lead-in, which are minimums, "
                 f"past session {number - 1}'s lead-out at LBA {lead_out} and the track's {track.pregap}-sector pregap"
             )
-        gaps[number] = SessionGap(sectors, "headers")
+        gaps[number] = SessionGap(sectors, "headers-after-assumed" if assumed_before else "headers")
         disc = Disc(disc.tracks, catalog=disc.catalog, cd_text=disc.cd_text, origin=disc.origin, gaps=dict(gaps))
     return disc
 

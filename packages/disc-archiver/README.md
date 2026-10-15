@@ -461,8 +461,13 @@ treats the sizes as minimums (`CD_LEADOUT_MIN_SIZE`, `CD_LEADIN_MIN_SIZE`), and 
 longer gap. The archiver takes each gap from the source where the source gives it, and refuses one
 shorter than the standard. The manifest's track starts and `leadOut` values count the gaps, and
 each later session's entry gives its `gap` in sectors and `gapSource`: `toc` when a table of
-contents gave it, `headers` when the header of the session's first data sector did, and `assumed`
-when the source gives neither and the standard gap stands in.
+contents gave it, `headers` when the header of the session's first data sector did,
+`headers-after-assumed` when that header did but an earlier session's gap is `assumed`, and
+`assumed` when the source gives neither and the standard gap stands in. A
+`headers-after-assumed` gap is the verified address of the session's first track less the
+previous session's lead-out, which counts the assumed gap, so when that gap was really longer, this
+one holds the difference too. Verification compares each `gap` as part of the track layout and
+ignores `gapSource`, which says only where the gap was read.
 
 Reading:
 
@@ -473,7 +478,9 @@ Reading:
   its INDEX 01 sector gives the gap (`headers`). The header of the track's last sector must give
   the address that many sectors on, or the sheet is refused, so one damaged header does not move
   the session. A later session that opens with audio, or with a data track stored as 2,048-byte
-  user data, has no such address, so it gets the standard gap, marked `assumed`.
+  user data, has no such address, so it gets the standard gap, marked `assumed`, and a header gap
+  in any session after it is marked `headers-after-assumed`. A CloneCD image gives every
+  session's address in its table of contents, so it has no assumed gaps.
 - DiscImageCreator also writes `REM LEAD-OUT 01:30:00`, `REM LEAD-IN 01:00:00` and
   `REM PREGAP 00:02:00` around a session change. It writes these three values on every disc,
   whatever its gap, so they are not read as the gap. The first two must give the sizes above, or

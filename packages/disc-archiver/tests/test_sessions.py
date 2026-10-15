@@ -469,6 +469,39 @@ class GapTests(SessionTestCase):
         self.assertIn("A reader of this sheet lays the session out with the standard 11250-sector gap, not the disc's 11550", " ".join(cue["notes"]))
         self.assertEqual(read_cue(self.dir / "from-ccd" / "bincue" / "Audio.cue").gaps, {2: SessionGap(SESSION_GAP, "assumed")})
 
+    def test_a_header_gap_after_an_assumed_gap_says_so(self) -> None:
+        # Session 1: audio track 1 (80 sectors). Session 2: audio track 2 (120), whose real gap is
+        # 11,550. Session 3: the data track after the standard 6,750-sector gap, its INDEX 01 at
+        # 80 + 11,550 + 120 + 6,750 + 150 = 18,650, where its headers put it.
+        directory = self.dir / "three"
+        directory.mkdir()
+        disc_data = SyntheticCdExtra(audio_lengths=[80, 120], session_gap=18650 - 350)
+        self.assertEqual(disc_data.start, 18650)
+        (directory / "1.bin").write_bytes(audio(1, 80))
+        (directory / "2.bin").write_bytes(audio(2, 120))
+        (directory / "3.bin").write_bytes(disc_data.data_raw)
+        (directory / "three.cue").write_text(
+            "REM SESSION 01\nFILE \"1.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n"
+            "REM SESSION 02\nFILE \"2.bin\" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n"
+            "REM SESSION 03\nFILE \"3.bin\" BINARY\n  TRACK 03 MODE1/2352\n    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n"
+        )
+        disc = read_cue(directory / "three.cue")
+        # Session 2 is laid out with the standard 11,250 sectors, so session 3's gap holds the
+        # other 300: the header verified its address, not the split between the two gaps.
+        self.assertEqual(disc.gaps, {2: SessionGap(SESSION_GAP, "assumed"), 3: SessionGap(6750 + 300, "headers-after-assumed")})
+        self.assertEqual(disc.tracks[2].index1, 18650)
+        self.assertEqual(fingerprint(disc)["sessions"][2]["gapSource"], "headers-after-assumed")  # type: ignore[index]
+        # A CloneCD image gives both real gaps. Its cue copy lays session 2 out with the standard
+        # gap and reads session 3's back from the header, after an assumed gap.
+        real = Disc(disc.tracks, gaps={2: SessionGap(SESSION_GAP + 300, "toc"), 3: SessionGap(6750, "toc")})
+        manifest = derive(real, self.dir / "three-out", "Three", ["bincue"], BUILTIN_PROFILES["any"], silent_log, {})
+        cue = manifest["outputs"][0]  # type: ignore[index]
+        self.assertEqual(cue["verification"]["status"], "partial")
+        self.assertEqual(cue["verification"]["notCompared"], ["the 11550-sector gap before session 2, and the track starts that follow, which a cue sheet does not hold"])
+        self.assertIn("gives session 3's address, so its tracks keep their starts", " ".join(cue["notes"]))
+        copy = read_cue(self.dir / "three-out" / "bincue" / "Three.cue")
+        self.assertEqual(copy.gaps, {2: SessionGap(SESSION_GAP, "assumed"), 3: SessionGap(6750 + 300, "headers-after-assumed")})
+
     def test_a_gap_a_copy_does_not_hold_leaves_the_sessions_before_it_compared(self) -> None:
         dropped = _drop_gaps(self.late_reference, 2)
         self.assertEqual(dropped["sessions"][0], self.late_reference["sessions"][0])  # type: ignore[index]

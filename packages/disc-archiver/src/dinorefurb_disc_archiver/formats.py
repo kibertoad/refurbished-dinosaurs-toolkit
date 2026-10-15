@@ -226,19 +226,34 @@ def _header_address(track: Track) -> int | None:
 def _cue_gap_notes(disc: Disc, data_raw: bool = True) -> list[str]:
     """Notes on the gaps between sessions that differ from the standard one, which a cue sheet
     cannot hold. ``data_raw`` is False for a sheet whose data track is an ISO file, which keeps no
-    sector headers."""
+    sector headers. A session after one whose gap a reader lays out with the standard size gets a
+    note too when its header gives its address, since its gap is read back counting the other."""
     notes = []
-    for session in disc.nonstandard_gaps():
+    # The first session whose gap a reader of the sheet lays out with the standard size.
+    unheld: int | None = None
+    nonstandard = {s.number for s in disc.nonstandard_gaps()}
+    for session in disc.sessions[1:]:
         assert session.gap is not None
         track = session.tracks[0]
         standard = session_gap(session.number - 1)
-        if data_raw and _header_address(track) == track.index1:
+        readable = data_raw and _header_address(track) == track.index1
+        if session.number not in nonstandard and not (readable and unheld is not None):
+            continue
+        if readable and unheld is not None:
+            notes.append(
+                f"A cue sheet holds no gap between sessions. The header of track {track.number}'s INDEX 01 sector gives "
+                f"session {session.number}'s address, so its tracks keep their starts, but the gap read back before it "
+                f"also counts the sectors by which session {unheld}'s gap is longer than the standard one, and is "
+                "marked headers-after-assumed."
+            )
+        elif readable:
             notes.append(
                 f"A cue sheet holds no gap between sessions. The {session.gap.sectors}-sector gap before session "
                 f"{session.number} (the standard one is {standard}) is read back from the header of track {track.number}'s "
                 "INDEX 01 sector, which carries its address."
             )
         else:
+            unheld = session.number if unheld is None else unheld
             notes.append(
                 f"A cue sheet holds no gap between sessions, and session {session.number} opens with track {track.number}, "
                 f"whose INDEX 01 sector carries no address that gives it. A reader of this sheet lays the session out with the standard "

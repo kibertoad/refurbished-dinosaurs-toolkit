@@ -53,8 +53,9 @@ def session_gap(session: int) -> int:
 
 
 # Where a SessionGap was read: a table of contents (a CloneCD image's), the header of the next
-# session's first data sector, or nowhere, so the standard gap is assumed.
-GAP_SOURCES = ("toc", "headers", "assumed")
+# session's first data sector, that header past an earlier assumed gap, or nowhere, so the
+# standard gap is assumed.
+GAP_SOURCES = ("toc", "headers", "headers-after-assumed", "assumed")
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,10 @@ class SessionGap:
     ``source`` says where they were read: ``toc`` from a table of contents that gives the track's
     address, ``headers`` from the address in the header of the track's INDEX 01 sector, or
     ``assumed`` when the source gives neither (a cue sheet whose later session opens with audio)
-    and the standard gap of :func:`session_gap` stands in.
+    and the standard gap of :func:`session_gap` stands in. ``headers-after-assumed`` is a gap the
+    header gave when an earlier session's gap is ``assumed``: the header verified the session's
+    address, and the gap is that address less the previous session's lead-out, which counts the
+    assumed gap, so any error in the assumed gap is in this one too.
     """
 
     sectors: int

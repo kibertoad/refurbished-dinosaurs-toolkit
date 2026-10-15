@@ -179,7 +179,7 @@ def fingerprint(disc: Disc, unread: Mapping[int, list[list[int]]] | None = None)
 
     The layout gives each session's tracks and lead-out, the gap before each later session
     (``gap``, the sectors from the previous session's lead-out to its first track's INDEX 00) and
-    where that gap was read (``gapSource``: ``toc``, ``headers`` or ``assumed``, see
+    where that gap was read (``gapSource``: ``toc``, ``headers``, ``headers-after-assumed`` or ``assumed``, see
     ``disc.SessionGap``), and each track's session, start (the LBA of its INDEX 00, past the gaps
     between sessions), pregap and length. Session 1's ``gap`` and ``gapSource`` are null.
 
