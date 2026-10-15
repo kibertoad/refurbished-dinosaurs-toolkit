@@ -115,7 +115,7 @@ public abstract class OriginalContentSource : IDisposable
     /// the whole file. For a <see cref="ContentSourceKinds.DiscImage"/> source that holds raw
     /// sectors, it opens the disc's tracks as one stream of 2352-byte sectors from the data track's
     /// <c>INDEX 01</c>, laid out as <see cref="Cue"/> gives them, whatever files the form stores them
-    /// in and with any subchannel left out, so a track's
+    /// in, decoded from a CHD or a FLAC file and with any subchannel left out, so a track's
     /// <see cref="CueBinSheet.TrackExtent"/> reads the same audio from every form of one disc. A read
     /// of sectors no file stores, such as a pregap a cue sheet declares with <c>PREGAP</c>, or the
     /// raw sectors of a data track stored as 2048-byte user data, throws
@@ -169,7 +169,7 @@ public abstract class OriginalContentSource : IDisposable
     /// Opens <paramref name="path"/> as a directory source when it is a directory, as a cue/bin image
     /// (see <see cref="OpenCueBin"/>) when it is a <c>.cue</c> file, as a disc image (see
     /// <see cref="OpenDiscImage"/>) when it is a <c>.ccd</c>, <c>.mds</c>, <c>.mdx</c> or <c>.nrg</c>
-    /// file, as an InstallShield cabinet set
+    /// file or any file that starts with the CHD signature, as an InstallShield cabinet set
     /// (see <see cref="OpenInstallShieldCabinet(string, InstallShieldCabinetLimits?, InstallShieldCompressedFormat)"/>) with the
     /// default limits when it is a <c>.hdr</c> file, as an InstallShield 3 archive (see
     /// <see cref="OpenInstallShieldArchive(string, InstallShieldArchiveLimits?)"/>) with the default
@@ -193,7 +193,8 @@ public abstract class OriginalContentSource : IDisposable
         {
             var extension = Path.GetExtension(path);
             if (extension.Equals(".cue", StringComparison.OrdinalIgnoreCase)) return OpenCueBin(path);
-            if (extension.ToLowerInvariant() is ".ccd" or ".mds" or ".mdx" or ".nrg") return OpenDiscImage(path);
+            if (extension.ToLowerInvariant() is ".ccd" or ".mds" or ".mdx" or ".nrg" || ChdImage.HasSignature(path))
+                return OpenDiscImage(path);
             if (extension.Equals(".hdr", StringComparison.OrdinalIgnoreCase)) return OpenInstallShieldCabinet(path);
             if (InstallShieldArchiveOpener.HasSignature(path)) return OpenInstallShieldArchive(path);
             return OpenIso9660(path);
@@ -226,11 +227,12 @@ public abstract class OriginalContentSource : IDisposable
     /// Opens a copy of a CD in any form of <see cref="DiscImageFormats"/> as a
     /// <see cref="ContentSourceKinds.DiscImage"/> source, which lists and reads the files of the data
     /// track's ISO 9660 volume and gives the CD audio tracks through <see cref="OpenBin"/> and
-    /// <see cref="Cue"/>. The form is chosen by the extension of <paramref name="path"/>: <c>.cue</c>
+    /// <see cref="Cue"/>. A file that starts with the CHD signature is read as a CHD whatever its
+    /// extension. Otherwise the form is chosen by the extension of <paramref name="path"/>: <c>.cue</c>
     /// (or a <c>.bin</c>, read through the <c>.cue</c> with its name, else the only one), <c>.iso</c>,
     /// <c>.ccd</c> (or its <c>.img</c>), <c>.mds</c> (or its <c>.mdf</c>) and <c>.nrg</c>. A directory
-    /// is read through the one <c>.cue</c>, <c>.ccd</c>, <c>.mds</c> or <c>.nrg</c> in it, else its one
-    /// <c>.iso</c>. A <c>.cue</c> whose first <c>FILE</c> is the <c>.img</c>, <c>.mdf</c> or
+    /// is read through the one <c>.cue</c>, <c>.ccd</c>, <c>.mds</c>, <c>.nrg</c> or <c>.chd</c> in it,
+    /// else its one <c>.iso</c>. A <c>.cue</c> whose first <c>FILE</c> is the <c>.img</c>, <c>.mdf</c> or
     /// <c>.nrg</c> of a <c>.ccd</c>, <c>.mds</c> or <c>.nrg</c> of its name beside it, such as the sheet
     /// CloneCD writes, is passed over for that descriptor.
     /// <para>
@@ -248,16 +250,29 @@ public abstract class OriginalContentSource : IDisposable
     /// track may also be <c>MODE1/2048</c> or <c>MODE2/2048</c>, in a <c>BINARY</c> file of 2048-byte
     /// sectors that holds no other track, that <c>PREGAP</c> declares a pregap no file stores, and
     /// that every <c>FILE</c> is read. A later <c>BINARY</c> file holds raw 2352-byte audio sectors,
-    /// and a later <c>WAVE</c> file 16-bit stereo 44.1 kHz PCM. An audio file the source cannot read,
-    /// because it is missing, holds FLAC, Ogg, MP3 or other audio, or is not a whole number of
-    /// sectors, does not stop the source opening: its tracks, and those of every later file, are
+    /// and a later <c>WAVE</c> file 16-bit stereo 44.1 kHz PCM, in a RIFF WAVE file or a FLAC file
+    /// (RFC 9639). An audio file the source cannot read, because it is missing, holds Ogg, MP3, FLAC
+    /// or PCM of another sample format, or is not a whole number of sectors, does not stop the
+    /// source opening: its tracks, and those of every later file, are
     /// listed in <see cref="Cue"/> after the image and reported as unreadable with that reason.
     /// <c>POSTGAP</c> is refused. A CloneCD <c>.ccd</c> must be version 2 or 3, its table of contents
     /// and <c>[TRACK]</c> sections must agree, and its <c>.img</c> must end at the lead-out; the
     /// <c>.sub</c> is not read. An Alcohol <c>.mds</c> must be version 1 and describe a CD whose
     /// tracks lie in one <c>.mdf</c> in order. A Nero <c>.nrg</c> must be a version 1 or 2 image of
-    /// disc-at-once tracks whose cue and track chunks agree. Subchannel data stored after each sector
-    /// is left out.
+    /// disc-at-once tracks whose cue and track chunks agree. A CHD must be a MAME CHD of version 5
+    /// that needs no parent, stores its hunks uncompressed or with chdman's CD codecs (<c>cdlz</c>,
+    /// <c>cdzl</c>, <c>cdfl</c>) and describes its tracks in <c>CHT2</c> or <c>CHTR</c> metadata:
+    /// raw <c>MODE1_RAW</c> or <c>MODE2_RAW</c> data followed by <c>AUDIO</c> tracks, or one
+    /// <c>MODE1</c> track of 2048-byte sectors. Its raw stream is the BIN image chdman read, without
+    /// the frames chdman pads each track with and with audio samples little-endian. Subchannel data
+    /// stored after each sector is left out.
+    /// </para>
+    /// <para>
+    /// A FLAC file's frames are decoded when a stream first reads from it, checking each frame's
+    /// CRC-8 and CRC-16, the sample count its <c>STREAMINFO</c> declares and, when it records one, the
+    /// MD5 of the samples. A CHD's hunks are decoded as they are read, checking each hunk's CRC-16
+    /// and, when a stream reads every hunk from the first to the last, the SHA-1 of the whole data,
+    /// as <c>chdman verify</c> does. A failed check throws <see cref="InvalidDataException"/>.
     /// </para>
     /// <para>
     /// The source records the length and last-write time of every file it reads when it opens, and
@@ -275,7 +290,8 @@ public abstract class OriginalContentSource : IDisposable
     /// <exception cref="NotSupportedException">
     /// The image is of a form or layout not read: a DAEMON Tools <c>.mdx</c>, an <c>.mds</c> of version
     /// 2, a DVD, several sessions, a scrambled or track-at-once image, a first track that is not data
-    /// or a later one that is, or a sector layout outside those above.
+    /// or a later one that is, a sector layout outside those above, or a CHD of version 3 or 4, one
+    /// that needs a parent, a GD-ROM, another codec or another track layout.
     /// </exception>
     public static OriginalContentSource OpenDiscImage(string path)
     {

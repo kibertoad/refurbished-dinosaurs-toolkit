@@ -6,7 +6,7 @@ internal sealed record CueBinFiles(CueBinSheet Sheet, string CuePath, byte[] Cue
 // The length and last-write time of an .iso or BIN image when its source opened. The source checked
 // that file, so each time it opens the file again it compares both, and reading a file that changed
 // fails instead of describing bytes the source never checked.
-internal sealed class ImageSnapshot
+internal sealed class ImageSnapshot : ISectorStore
 {
     private readonly DateTime lastWriteTimeUtc;
 
@@ -31,6 +31,9 @@ internal sealed class ImageSnapshot
 
     // For the data track, which reads one raw sector at a time.
     public Stream OpenBuffered() => Checked(new FileStream(Path, FileMode.Open, FileAccess.Read, FileShare.Read));
+
+    // A disc image's sectors stored in the file as they are.
+    Stream ISectorStore.OpenSectors() => OpenBuffered();
 
     // One stat of the open handle per stream, so the check describes the file the stream reads.
     private FileStream Checked(FileStream stream)

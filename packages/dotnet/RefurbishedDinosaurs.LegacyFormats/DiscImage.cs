@@ -24,12 +24,24 @@ public static class DiscImageFormats
     public const string AlcoholMds = "alcohol-mds";
     /// <summary>A Nero image: one <c>.nrg</c> file of disc-at-once tracks with a version 1 or 2 footer.</summary>
     public const string NeroNrg = "nero-nrg";
+    /// <summary>
+    /// A MAME CHD version 5 CD image, such as <c>chdman createcd</c> writes from a cue sheet or an
+    /// <c>.iso</c>: raw data and audio sectors, or one data track of 2048-byte sectors.
+    /// </summary>
+    public const string Chd = "chd";
+}
+
+// Where a disc image stores sectors: a file, or a decoded form of one, such as a CHD's sectors or a
+// FLAC file's samples. Each stream it opens reads from the start of what it stores and is seekable.
+internal interface ISectorStore
+{
+    Stream OpenSectors();
 }
 
 // One run of sectors of a disc image's raw stream: Sectors raw sectors read from File, each Stride
 // bytes apart from Offset, of which the first 2352 are the sector, or sectors stored in no file,
 // whose reads throw with Reason.
-internal sealed record RawSegment(long StartSector, long Sectors, ImageSnapshot? File, long Offset, int Stride, string? Reason);
+internal sealed record RawSegment(long StartSector, long Sectors, ISectorStore? File, long Offset, int Stride, string? Reason);
 
 // How a disc image stores its data track's user data.
 internal abstract record DiscDataTrack(long Sectors);
@@ -40,7 +52,7 @@ internal abstract record DiscDataTrack(long Sectors);
 internal sealed record RawDiscDataTrack(RawDataTrackMode Mode, long Sectors, string? LayoutSource = null) : DiscDataTrack(Sectors);
 
 // The data track is 2048-byte user data sectors stored one after another in File from Offset.
-internal sealed record CookedDiscDataTrack(ImageSnapshot File, long Offset, long Sectors) : DiscDataTrack(Sectors);
+internal sealed record CookedDiscDataTrack(ISectorStore File, long Offset, long Sectors) : DiscDataTrack(Sectors);
 
 // Lays out a disc image's tracks as one stream of raw sectors from the data track's INDEX 01, the
 // layout every form is read in, and records where each index falls in it.
@@ -56,7 +68,7 @@ internal sealed class DiscLayoutBuilder
     public IReadOnlyList<RawSegment> Segments => segments;
     public int TrackCount => tracks.Count;
 
-    public void Stored(ImageSnapshot file, long offset, int stride, long sectors) => Add(sectors, file, offset, stride, null);
+    public void Stored(ISectorStore file, long offset, int stride, long sectors) => Add(sectors, file, offset, stride, null);
 
     public void Unavailable(long sectors, string reason) => Add(sectors, null, 0, 0, reason);
 
@@ -71,7 +83,7 @@ internal sealed class DiscLayoutBuilder
     public int? StartOf(int number, int index) =>
         number <= tracks.Count && tracks[number - 1].Indices.TryGetValue(index, out var sector) ? sector : null;
 
-    private void Add(long sectors, ImageSnapshot? file, long offset, int stride, string? reason)
+    private void Add(long sectors, ISectorStore? file, long offset, int stride, string? reason)
     {
         if (sectors < 0) throw new InvalidDataException("A track of the disc image ends before it starts.");
         if (sectors == 0) return;
@@ -127,7 +139,7 @@ internal sealed record DiscImage(
                 break;
             case CookedDiscDataTrack cooked:
                 openFiles = openVolume = () => new ExtentReadStream(
-                    cooked.File.OpenBuffered(), cooked.Offset, checked(cooked.Sectors * 2048));
+                    cooked.File.OpenSectors(), cooked.Offset, checked(cooked.Sectors * 2048));
                 break;
             default:
                 throw new InvalidOperationException("Unknown data track layout.");
@@ -168,7 +180,7 @@ internal sealed class DiscImageContentSource(OriginalContentSource volume, DiscI
 internal sealed class RawSectorStream(IReadOnlyList<RawSegment> segments, long sectors) : Stream
 {
     private const int Raw = CueBinSheet.RawSectorSize;
-    private readonly Dictionary<ImageSnapshot, Stream> opened = [];
+    private readonly Dictionary<ISectorStore, Stream> opened = [];
     private long position;
 
     public override bool CanRead => true;
@@ -238,9 +250,9 @@ internal sealed class RawSectorStream(IReadOnlyList<RawSegment> segments, long s
         return low;
     }
 
-    private Stream StreamFor(ImageSnapshot file)
+    private Stream StreamFor(ISectorStore file)
     {
-        if (!opened.TryGetValue(file, out var stream)) opened.Add(file, stream = file.OpenBuffered());
+        if (!opened.TryGetValue(file, out var stream)) opened.Add(file, stream = file.OpenSectors());
         return stream;
     }
 
@@ -268,7 +280,7 @@ internal sealed class RawSectorStream(IReadOnlyList<RawSegment> segments, long s
 internal static class DiscImageOpener
 {
     private const int MaximumDescriptorBytes = 16 * 1024 * 1024;
-    private static readonly string[] Descriptors = [".cue", ".ccd", ".mds", ".nrg"];
+    private static readonly string[] Descriptors = [".cue", ".ccd", ".mds", ".nrg", ".chd"];
 
     public static OriginalContentSource Open(string path)
     {
@@ -276,6 +288,8 @@ internal static class DiscImageOpener
         if (Directory.Exists(full)) full = Choose(full);
         else if (!File.Exists(full)) throw new FileNotFoundException("Disc image does not exist.", full);
         var directory = Path.GetDirectoryName(full)!;
+        // A CHD is known by its signature, whatever its extension.
+        if (ChdImage.HasSignature(full)) return ChdDiscImage.Read(full).Open();
         var extension = Path.GetExtension(full).ToLowerInvariant();
         return extension switch
         {
@@ -290,9 +304,10 @@ internal static class DiscImageOpener
                 $"{Path.GetFileName(full)} is a DAEMON Tools or Alcohol 2 .mdx image, which is not read. Convert it to a " +
                 "cue/bin or CloneCD image."),
             ".nrg" => NrgImage.Read(full).Open(),
+            ".chd" => throw new InvalidDataException($"{Path.GetFileName(full)} does not start with the CHD signature, so it is not a CHD."),
             _ => throw new InvalidDataException(
-                $"{Path.GetFileName(full)} is not a disc image the disc-image kind reads by its extension: .cue, .bin, " +
-                ".iso, .ccd, .img, .mds, .mdf or .nrg."),
+                $"{Path.GetFileName(full)} is not a disc image the disc-image kind reads by its extension (.cue, .bin, " +
+                ".iso, .ccd, .img, .mds, .mdf or .nrg) or a CHD."),
         };
     }
 
@@ -305,7 +320,7 @@ internal static class DiscImageOpener
             new CookedDiscDataTrack(image, 0, image.Length / 2048), new Dictionary<int, string>()));
     }
 
-    // The one descriptor in a directory, else its one .iso. A .cue whose first FILE is the .img,
+    // The one descriptor (or CHD) in a directory, else its one .iso. A .cue whose first FILE is the .img,
     // .mdf or .nrg of a .ccd, .mds or .nrg of its name beside it, such as the sheet CloneCD and
     // DiscImageCreator write next to their .ccd, is a second description of that image and is
     // passed over.
@@ -322,7 +337,7 @@ internal static class DiscImageOpener
         return candidates.Length == 1
             ? candidates[0]
             : throw new InvalidDataException(candidates.Length == 0
-                ? $"{directory} holds no disc image: no .cue, .ccd, .mds, .nrg or .iso file."
+                ? $"{directory} holds no disc image: no .cue, .ccd, .mds, .nrg, .chd or .iso file."
                 : $"{directory} holds several disc images ({string.Join(", ", candidates.Select(Path.GetFileName))}); " +
                   "pass the one to read.");
     }
@@ -343,9 +358,11 @@ internal static class DiscImageOpener
         {
             ".ccd" => ".img",
             ".mds" => ".mdf",
-            _ => ".nrg",
+            ".nrg" => ".nrg",
+            // A CHD holds its sectors itself; no sheet describes it.
+            _ => null,
         };
-        return image is not null && Path.GetExtension(image).Equals(data, StringComparison.OrdinalIgnoreCase) &&
+        return image is not null && data is not null && Path.GetExtension(image).Equals(data, StringComparison.OrdinalIgnoreCase) &&
                Path.GetFileNameWithoutExtension(image).Equals(Path.GetFileNameWithoutExtension(descriptor), StringComparison.OrdinalIgnoreCase);
     }
 
@@ -468,19 +485,32 @@ internal static class CueDiscImage
         if (full is null) return "that file does not exist.";
         if (type is not ("BINARY" or "WAVE"))
             return $"the sheet gives it FILE type {CueBinSheet.Truncate(type)}; a disc-image source reads only BINARY " +
-                   "files of raw sectors and WAVE files of 16-bit stereo 44.1 kHz PCM.";
+                   "files of raw sectors and WAVE files of 16-bit stereo 44.1 kHz PCM, as RIFF WAVE or FLAC.";
         var file = ImageSnapshot.Take(full);
+        ISectorStore store = file;
         long offset = 0, length = file.Length;
         if (type == "WAVE")
         {
             using var stream = file.OpenBuffered();
-            var wave = WaveData(stream);
-            if (wave.Problem is { } problem) return problem;
-            (offset, length) = (wave.Offset, wave.Length);
+            // A FLAC file is decoded to the samples a WAVE would hold, as DOSBox-style sheets give
+            // it the WAVE type.
+            if (FlacAudioFile.HasSignature(stream))
+            {
+                var (flac, problem) = FlacAudioFile.Read(file, stream);
+                if (flac is null) return problem;
+                (store, length) = (flac, flac.Samples * 4);
+            }
+            else
+            {
+                stream.Position = 0;
+                var wave = WaveData(stream);
+                if (wave.Problem is { } problem) return problem;
+                (offset, length) = (wave.Offset, wave.Length);
+            }
         }
         if (length == 0 || length % CueBinSheet.RawSectorSize != 0)
             return $"it holds {length} bytes of audio, not a whole number of {CueBinSheet.RawSectorSize}-byte sectors.";
-        var placed = Place(builder, file, offset, length / CueBinSheet.RawSectorSize, numbers, tracks, path);
+        var placed = Place(builder, store, offset, length / CueBinSheet.RawSectorSize, numbers, tracks, path);
         if (placed is null) read.Add(full);
         return placed;
     }
@@ -488,7 +518,7 @@ internal static class CueDiscImage
     // Lays out the tracks of one FILE of raw sectors. Each index counts from the file's start; a
     // PREGAP adds sectors stored in no file before the track's INDEX 01. Returns a problem, or null.
     private static string? Place(
-        DiscLayoutBuilder builder, ImageSnapshot file, long offset, long fileSectors, IReadOnlyList<int> numbers,
+        DiscLayoutBuilder builder, ISectorStore file, long offset, long fileSectors, IReadOnlyList<int> numbers,
         List<(int Number, string Type, Dictionary<int, int> Indices, int Pregap)> tracks, string path)
     {
         // Validate first, so a FILE that does not fit adds nothing to the layout.
@@ -533,11 +563,10 @@ internal static class CueDiscImage
     internal static (long Offset, long Length, string? Problem) WaveData(Stream stream)
     {
         const string ReadOnly = "a disc-image source reads only BINARY files of raw sectors and WAVE files of 16-bit " +
-            "stereo 44.1 kHz PCM, the CD's own samples.";
+            "stereo 44.1 kHz PCM, as RIFF WAVE or FLAC, the CD's own samples.";
         var header = new byte[12];
         var got = stream.ReadAtLeast(header, header.Length, throwOnEndOfStream: false);
         ReadOnlySpan<byte> start = header.AsSpan(0, got);
-        if (start.StartsWith("fLaC"u8)) return (0, 0, $"it holds FLAC audio; {ReadOnly}");
         if (start.StartsWith("OggS"u8)) return (0, 0, $"it holds Ogg audio; {ReadOnly}");
         if (start.StartsWith("ID3"u8) || (got >= 2 && start[0] == 0xFF && (start[1] & 0xE0) == 0xE0))
             return (0, 0, $"it holds MP3 audio; {ReadOnly}");

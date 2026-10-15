@@ -2,9 +2,10 @@ using System.Runtime.ExceptionServices;
 
 namespace RefurbishedDinosaurs.LegacyFormats;
 
-// A read-only seekable stream over one archive member that is decoded while it is read. It keeps the
-// position, bounds seeks, refuses use after disposal, and makes a failed read stick: every later read
-// rethrows it until a seek, after which the subclass decodes again from the start.
+// A read-only seekable stream over data that is decoded while it is read, such as one archive
+// member, a CHD's sectors or a FLAC file's samples. It keeps the position, bounds seeks, refuses use
+// after disposal, and makes a failed read stick: every later read rethrows it until a seek, which
+// the subclass is told of, so that one decoding in order can start again.
 internal abstract class DecodingMemberStream(long length, string description) : Stream
 {
     private long position;

@@ -61,6 +61,35 @@ internal static class SyntheticDiscImages
             "FILE \"game (Track 03).wav\" WAVE", "  TRACK 03 AUDIO", "    INDEX 01 00:00:00");
     }
 
+    // The data track as an ISO and each audio track as a FLAC file from its INDEX 01, given the WAVE
+    // file type, as the archiver's iso-flac form writes them.
+    public static string IsoFlac(string root, SyntheticFlacOptions? track2 = null)
+    {
+        File.WriteAllBytes(Path.Combine(root, "game.iso"), Iso);
+        File.WriteAllBytes(Path.Combine(root, "game (Track 02).flac"), SyntheticFlacWriter.Write(Track2, track2));
+        // Track 03 in blocks of another size, ending in a short block.
+        File.WriteAllBytes(Path.Combine(root, "game (Track 03).flac"),
+            SyntheticFlacWriter.Write(Track3, new() { BlockSize = 1152 }));
+        return Text(root, "game.cue",
+            "FILE \"game.iso\" BINARY", "  TRACK 01 MODE1/2048", "    INDEX 01 00:00:00",
+            "FILE \"game (Track 02).flac\" WAVE", "  TRACK 02 AUDIO", "    PREGAP 00:02:00", "    INDEX 01 00:00:00",
+            "FILE \"game (Track 03).flac\" WAVE", "  TRACK 03 AUDIO", "    INDEX 01 00:00:00");
+    }
+
+    // A CHD of the disc as chdman writes one from the cue/bin, with track 02's pregap stored, or
+    // with the pregap recorded but not stored, as chdman writes one from a sheet that declares it
+    // with PREGAP.
+    public static string Chd(string root, bool unstoredPregap = false)
+    {
+        var path = Path.Combine(root, "game.chd");
+        File.WriteAllBytes(path, unstoredPregap
+            ? SyntheticChdWriter.Write([.. RawData, .. Track2, .. Track3],
+                [new("MODE1_RAW", DataSectors), new("AUDIO", TrackSectors, UnstoredPregap: PregapSectors), new("AUDIO", TrackSectors)])
+            : SyntheticChdWriter.Write(Bin,
+                [new("MODE1_RAW", DataSectors), new("AUDIO", PregapSectors + TrackSectors, PregapSectors), new("AUDIO", TrackSectors)]));
+        return path;
+    }
+
     public static string CloneCd(string root, Func<string, string>? edit = null, byte[]? image = null)
     {
         File.WriteAllBytes(Path.Combine(root, "game.img"), image ?? Bin);
