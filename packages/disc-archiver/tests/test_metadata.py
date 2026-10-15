@@ -175,20 +175,20 @@ class AlteredTests(MetadataTestCase):
         ]
         for identifier in ("bincue-split", "bincue", "iso-wav"):
             output = self.write(identifier)
-            original = output.entry.read_text(newline="")
+            original = output.entry.read_bytes().decode()
             for old, new, difference in cases:
                 with self.subTest(identifier=identifier, item=old):
                     altered = re.sub(old, new, original)
                     self.assertNotEqual(altered, original)
-                    output.entry.write_text(altered, newline="")
+                    output.entry.write_bytes(altered.encode())
                     self.assertMismatched(output, difference)
-            output.entry.write_text(original, newline="")
+            output.entry.write_bytes(original.encode())
             self.assertEqual(self.verify(output).status, "matched")
 
     def test_a_copy_that_adds_an_item_is_a_mismatch(self) -> None:
         output = self.write("bincue")
-        text = output.entry.read_text(newline="")
-        output.entry.write_text(text.replace("  TRACK 01 MODE1/2352\r\n", "  TRACK 01 MODE1/2352\r\n    ISRC ABCDE0000001\r\n"), newline="")
+        text = output.entry.read_bytes().decode()
+        output.entry.write_bytes((text.replace("  TRACK 01 MODE1/2352\r\n", "  TRACK 01 MODE1/2352\r\n    ISRC ABCDE0000001\r\n")).encode())
         self.assertMismatched(output, "the ISRC codes of tracks [1] differ from the source")
 
     def test_an_altered_clonecd_table_of_contents_is_a_mismatch(self) -> None:
