@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import tempfile
 import zlib
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from importlib import metadata
@@ -24,7 +24,7 @@ from pathlib import Path
 
 import xxhash
 
-from . import ccd, isofs, redump, tools
+from . import cdda, ccd, isofs, redump, tools
 from .cue import read_cue, read_iso
 from .disc import RAW_SECTOR, Disc, DiscError, NotDataSector, Track, add_to_ranges, block_data, describe_ranges
 from .formats import FORMATS, FormatUnavailable, Output, cdda_name, track_file_name, write_format
@@ -149,7 +149,7 @@ def _data_fingerprint(track: Track) -> dict[str, object]:
     }
 
 
-def fingerprint(disc: Disc) -> dict[str, object]:
+def fingerprint(disc: Disc, unread: Mapping[int, list[list[int]]] | None = None) -> dict[str, object]:
     """The disc's layout and content hashes, the same whichever format holds it.
 
     The data hash covers the first data track's user data from INDEX 01 to the track's end, apart
@@ -182,6 +182,11 @@ def fingerprint(disc: Disc) -> dict[str, object]:
     form 2 sector, or a :class:`DiscError` names the first that is neither. The sector headers'
     stored addresses are not checked; the address in the header of sector 16 is one of the bases
     ``isofs.locate`` tries.
+
+    Each audio entry also carries the track's offset-tolerant ``fingerprint`` (see :mod:`.cdda`),
+    or null with the reason in ``fingerprintProblem``. ``unread`` maps a track number to the
+    ``[first, stop)`` sample ranges, counted from INDEX 01, that the dump filled with zeros instead
+    of reading (see ``cdda.correct_read_offset``); the entry lists them in ``unreadSamples``.
     """
     data = None
     volume = None
@@ -191,21 +196,24 @@ def fingerprint(disc: Disc) -> dict[str, object]:
         volume = isofs.volume_identifier(track)
     audio = []
     for track in disc.audio_tracks:
-        digest = isofs.HashingWriter()
-        for chunk in track.iter_raw(0, track.length):
-            digest.write(chunk)
+        digest, xxh3, size, central = cdda.track_hashes(track)
         silent = None
         if track.pregap and track.pregap_stored:
             silent = all(not any(chunk) for chunk in track.iter_raw(-track.pregap, 0))
+        unread_samples = [list(r) for r in (unread or {}).get(track.number, [])]
+        recorded = cdda.record(disc, track, central, unread_samples)
         audio.append(
             {
                 "track": track.number,
-                "sectors": digest.size // RAW_SECTOR,
+                "sectors": size // RAW_SECTOR,
                 "first": track.index1,
                 "stop": track.end,
-                "sha256": digest.sha256.hexdigest(),
-                "xxh3": digest.xxh3.hexdigest(),
+                "sha256": digest,
+                "xxh3": xxh3,
                 "pregapSilent": silent,
+                "unreadSamples": unread_samples,
+                "fingerprint": recorded.fingerprint,
+                "fingerprintProblem": recorded.problem(),
             }
         )
     return {
@@ -417,9 +425,14 @@ def derive(
     profile: Profile,
     log: Log,
     source: dict[str, object],
+    unread: Mapping[int, list[list[int]]] | None = None,
     dat: redump.Dat | None = None,
 ) -> dict[str, object]:
     """Write each format under ``root/<format>``, verify it, and write the manifest. Returns the manifest.
+
+    ``unread`` lists, per audio track, the sample ranges the dump filled instead of reading; see
+    :func:`fingerprint`. A written format is compared with the source sample for sample, since
+    the archiver writes every format from the same samples and none of them shifts the audio.
 
     With a ``dat``, ``bincue-split`` is written too, and its files are compared with the DAT's
     games (see ``redump.compare``) into the manifest's ``redump``.
@@ -428,7 +441,7 @@ def derive(
     root.mkdir(parents=True, exist_ok=True)
     write_notice(root)
     log("Reading the source and computing its fingerprint")
-    reference = fingerprint(disc)
+    reference = fingerprint(disc, unread)
     requested = set(formats)
     if dat is not None and "bincue-split" not in requested:
         log("Writing bincue-split as well, to compare it with the DAT")
@@ -556,6 +569,156 @@ def manifest_ok(manifest: dict[str, object]) -> bool:
     )
 
 
+MAXIMUM_MANIFEST_BYTES = 16 * 1024 * 1024
+# The audio statuses that identify a track as the manifest's.
+IDENTIFIED = ("matched", "matched-shifted")
+
+
+def load_manifest(path: Path) -> dict[str, object]:
+    """Read a ``rip-manifest.json`` and return it, after checking its version and ``disc``."""
+    try:
+        size = path.stat().st_size
+        if size > MAXIMUM_MANIFEST_BYTES:
+            raise DiscError(f"{path} is {size} bytes; a manifest is at most {MAXIMUM_MANIFEST_BYTES}")
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise DiscError(f"cannot read the manifest {path}: {error}") from None
+    if not isinstance(manifest, dict) or manifest.get("manifest") != MANIFEST_VERSION or not isinstance(manifest.get("disc"), dict):
+        raise DiscError(f"{path} is not a version {MANIFEST_VERSION} {MANIFEST_NAME}")
+    problem = _manifest_disc_problem(manifest["disc"])
+    if problem:
+        raise DiscError(f"{path}: {problem}")
+    return manifest
+
+
+def _manifest_disc_problem(disc: dict) -> str | None:  # type: ignore[type-arg]
+    """What in a manifest's ``disc`` the check cannot use, or None when it holds every field the
+    check reads in the shape :func:`fingerprint` writes."""
+    data = disc.get("data")
+    if data is not None and not (
+        isinstance(data, dict)
+        and isinstance(data.get("sha256"), str)
+        and isinstance(data.get("emptyForm2Sectors"), list)
+        and isinstance(data.get("nonDataSectors"), list)
+    ):
+        return "disc.data is neither null nor a data track's hashes"
+    tracks = disc.get("tracks")
+    if not isinstance(tracks, list) or not all(isinstance(t, dict) and isinstance(t.get("mode"), str) for t in tracks):
+        return "disc.tracks is not a list of tracks with a mode"
+    audio = disc.get("audio")
+    if not isinstance(audio, list):
+        return "disc.audio is not a list"
+    for entry in audio:
+        if not (
+            isinstance(entry, dict)
+            and type(entry.get("track")) is int
+            and type(entry.get("sectors")) is int
+            and isinstance(entry.get("sha256"), str)
+        ):
+            return "an entry of disc.audio lacks its track number, sectors or sha256"
+        number = entry["track"]
+        ranges = entry.get("unreadSamples", [])
+        if not isinstance(ranges, list) or not all(
+            isinstance(r, list) and len(r) == 2 and all(type(v) is int for v in r) and r[0] < r[1] for r in ranges
+        ):
+            return f"disc.audio track {number}: unreadSamples is not a list of [first, stop) sample ranges"
+        recorded = entry.get("fingerprint")
+        if recorded is not None:
+            try:
+                cdda.check_fingerprint(recorded)
+            except DiscError as error:
+                return str(error)
+            if recorded["track"] != number or recorded["samples"] != entry["sectors"] * cdda.SAMPLES_PER_SECTOR:
+                return f"disc.audio track {number}: the fingerprint is of another track, or of another length"
+        problem = entry.get("fingerprintProblem")
+        if problem is not None and not (
+            isinstance(problem, dict) and isinstance(problem.get("reason"), str) and isinstance(problem.get("detail"), str)
+        ):
+            return f"disc.audio track {number}: fingerprintProblem is neither null nor a reason and detail"
+    return None
+
+
+def check_against_manifest(disc: Disc, found: dict, manifest: dict) -> dict[str, object]:  # type: ignore[type-arg]
+    """Compare a copy, and its fingerprint ``found``, with the disc a manifest records.
+
+    The data track must match exactly. Each audio track of the manifest gets a ``status``:
+
+    - ``matched``: every sample from INDEX 01 to the next track's INDEX 00 equals the manifest's,
+      and the manifest lists none of them as unread;
+    - ``matched-shifted``: the track's fingerprint matched at exactly one shift, given in
+      ``shift`` (0 when the samples sit where they did but the track's ends differ or were not
+      read); the samples within the tolerance of each end were not compared;
+    - ``ambiguous``: the anchor matched at several shifts, or the manifest could record no anchor
+      because the audio repeats around every place tried, and the samples differ;
+    - ``out-of-range``: the anchor matched at no shift within the tolerance;
+    - ``mismatched``: the central samples differ at the shift the anchor gave;
+    - ``wrong-length``, ``unreadable`` (samples the check needs lie past the image or are not held
+      as raw samples), ``missing`` (the copy holds no such audio track), or ``not-fingerprinted``
+      (the samples differ, or equal the manifest's only with samples it lists as unread, and the
+      manifest has no fingerprint for the track, for the reason ``detail`` gives).
+
+    ``identified`` is true when the data track matched, the copy's tracks are the manifest's, and
+    every audio track is ``matched`` or ``matched-shifted``.
+    """
+    reference = manifest["disc"]
+    differences: list[str] = []
+    data = None
+    if reference.get("data") is not None:
+        result = Verification()
+        raw = bool(disc.data_tracks) and disc.first_data_track().storage == "raw"
+        _compare(reference, found, result, layout=False, audio=False, form2=raw)
+        data = result.as_json()
+    if [t["mode"] == "AUDIO" for t in reference["tracks"]] != [t["mode"] == "AUDIO" for t in found["tracks"]]:
+        differences.append("the copy's tracks are not the manifest's: the number of tracks, or which of them are audio, differs")
+    found_audio = {a["track"]: a for a in found["audio"]}
+    audio = []
+    for entry in reference["audio"]:
+        number = entry["track"]
+        mine = found_audio.get(number)
+        samples = entry["sectors"] * cdda.SAMPLES_PER_SECTOR
+        unread = [r for r in entry.get("unreadSamples", []) if r[1] > 0 and r[0] < samples]
+        unread_text = ", ".join(f"{a} to {b}" for a, b in unread)
+        item: dict[str, object] = {"track": number}
+        if mine is None:
+            item.update(status="missing", detail="the copy holds no audio track with this number")
+        elif mine["sha256"] == entry["sha256"] and not unread:
+            item.update(status="matched", shift=0, detail="every sample equals the manifest's")
+        elif entry.get("fingerprint") is not None:
+            expected = cdda.check_fingerprint(entry["fingerprint"])
+            verified = cdda.verify(disc, disc.tracks[number - 1], expected)
+            item.update(status=verified.status, shifts=list(verified.shifts), detail=verified.detail)
+            if verified.status == "matched":
+                item.update(
+                    status="matched-shifted",
+                    shift=verified.shift,
+                    detail=f"matched at a shift of {verified.shift} samples; the {expected['toleranceSamples']} samples "
+                    "at each end of the track were not compared",
+                )
+            if unread:
+                item["detail"] = f"{item['detail']}; the manifest's samples {unread_text} were not read from the disc"
+        elif mine["sha256"] == entry["sha256"]:
+            # Equal samples that include the manifest's zero fill: the fill is not disc content.
+            problem = entry.get("fingerprintProblem") or {"detail": "the manifest records no fingerprint for this track"}
+            item.update(
+                status="not-fingerprinted",
+                detail=f"every sample equals the manifest's, but its samples {unread_text} were not read from the disc, "
+                f"and it has no fingerprint for the track: {problem['detail']}",
+            )
+        else:
+            problem = entry.get("fingerprintProblem") or {"reason": "absent", "detail": "the manifest records no fingerprint for this track"}
+            item.update(
+                status="ambiguous" if problem["reason"] == "ambiguous" else "not-fingerprinted",
+                detail=f"the samples differ from the manifest's, which has no fingerprint for the track: {problem['detail']}",
+            )
+        audio.append(item)
+    identified = (
+        not differences
+        and (data is None or data["status"] in ("matched", "partial"))
+        and all(a["status"] in IDENTIFIED for a in audio)
+    )
+    return {"identified": identified, "differences": differences, "data": data, "audio": audio}
+
+
 def archive(
     *,
     output: Path,
@@ -568,6 +731,7 @@ def archive(
     backend_args: Iterable[str] = (),
     image: Path | None = None,
     allow_download: bool = True,
+    read_offset: int | None = None,
     dat: Path | None = None,
 ) -> dict[str, object]:
     """Copy a disc from ``drive``, or take the ``image`` already made, and write ``formats``.
@@ -576,24 +740,72 @@ def archive(
     writes the profile's recommendation. ``allow_download`` lets a missing redumper be downloaded
     (see ``backends.choose_backend``). ``dat`` is a Redump DAT file to compare the
     ``bincue-split`` copy with; it is read before the disc. Returns the manifest.
+
+    ``read_offset`` is the drive's read offset in samples, for the ``cdrdao`` backend only: the
+    dump's audio is corrected by it into ``output/archival/offset-corrected`` (see
+    ``cdda.correct_read_offset``), and the formats are written from that copy. redumper corrects
+    the offset itself, so any other backend refuses it. The manifest's ``source`` records
+    ``readOffsetCorrected`` and ``readOffset``, the offset applied. For redumper both come from
+    its log (see ``backends.redumper_read_offset``): false when redumper did not know the drive's
+    offset, null when the log does not say. cdrdao is corrected when given ``read_offset`` and
+    uncorrected without it. Both are null for an image or the data track copy, which reads no audio.
     """
     from . import backends
 
     if (drive is None) == (image is None):
         raise DiscError("give either a drive or an image")
+    if read_offset is not None and (drive is None or backend != "cdrdao"):
+        raise DiscError(
+            "a read offset is only corrected for the cdrdao backend; redumper corrects the drive's offset itself, "
+            "so choose --backend cdrdao to give one"
+        )
+    if read_offset is not None:
+        # Checked before the disc is read, so a wrong value does not cost a whole dump.
+        cdda.check_read_offset(read_offset)
     loaded = redump.load_dat(dat) if dat is not None else None
+    unread: dict[int, list[list[int]]] = {}
     if drive is not None:
         chosen = backends.choose_backend(backend, log, allow_download)
         name = check_name(name or "disc")
         log(f"Copying the disc in {drive} with {chosen.title}")
         dump = backends.rip(chosen, drive, output / "archival", name, log, list(backend_args))
-        source: dict[str, object] = {"kind": "drive", "drive": drive, "backend": chosen.id, "dump": dump.relative_to(output).as_posix()}
+        corrected: bool | None = None
+        applied = read_offset
+        if chosen.id == "redumper":
+            redumper_log = dump.parent / f"{name}.log"
+            text = redumper_log.read_text(encoding="utf-8", errors="replace") if redumper_log.is_file() else ""
+            corrected, applied = backends.redumper_read_offset(text, list(backend_args))
+            if corrected is None:
+                log(f"{redumper_log.name} does not say which read offset redumper used, so the manifest leaves it unknown.")
+            elif not corrected:
+                log(
+                    "redumper does not know this drive's read offset and read with offset 0: the audio is uncorrected. "
+                    "Dump again with --backend-arg=--drive-read-offset=<offset> to correct it."
+                )
+        elif chosen.id == "cdrdao" and read_offset is not None:
+            dump, unread = cdda.correct_read_offset(dump, read_offset, output / "archival" / "offset-corrected", log)
+            write_notice(dump.parent)
+            corrected = True
+        elif chosen.id == "cdrdao":
+            corrected = False
+            log(
+                "cdrdao does not correct the drive's read offset: the audio is uncorrected, and its hashes differ from a "
+                "corrected dump's by the drive's offset. Give --read-offset with the drive's offset to correct it."
+            )
+        source: dict[str, object] = {
+            "kind": "drive",
+            "drive": drive,
+            "backend": chosen.id,
+            "dump": dump.relative_to(output).as_posix(),
+            "readOffsetCorrected": corrected,
+            "readOffset": applied,
+        }
     else:
         assert image is not None
         dump = image
         name = check_name(name or image.stem)
-        source = {"kind": "image", "file": image.name}
+        source = {"kind": "image", "file": image.name, "readOffsetCorrected": None, "readOffset": None}
     with open_source(dump, output, log) as disc:
         raw = all(t.storage != "cooked" for t in disc.tracks)
         wanted = list(formats) if formats is not None else list(recommended_formats(profile, disc.layout, raw))
-        return derive(disc, output, name, wanted, profile, log, source, loaded)
+        return derive(disc, output, name, wanted, profile, log, source, unread, loaded)

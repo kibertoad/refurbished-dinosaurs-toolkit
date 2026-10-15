@@ -13,7 +13,17 @@ from . import backends, drives, redump, redumper, tools
 from .disc import DiscError
 from .formats import FORMAT_IDS, FORMATS
 from .notice import NOTICE
-from .pipeline import archive, fingerprint, manifest_ok, open_source, package_version, profile_paths, redump_check
+from .pipeline import (
+    archive,
+    check_against_manifest,
+    fingerprint,
+    load_manifest,
+    manifest_ok,
+    open_source,
+    package_version,
+    profile_paths,
+    redump_check,
+)
 from .profile import BUILTIN_PROFILES, check_profile, load_profile
 
 EXIT_OK = 0
@@ -23,8 +33,9 @@ EXIT_MISMATCH = 3
 
 EPILOG = f"""\
 exit codes: {EXIT_OK} done and verified; {EXIT_FAILED} failed; {EXIT_USAGE} usage error or notice not
-accepted; {EXIT_MISMATCH} a profile check failed, a written format differs from its source, or
---dat found the copy mismatched with the DAT's game.
+accepted; {EXIT_MISMATCH} a profile check failed, a written format differs from its source, a
+checked copy is not identified as its manifest's disc, or --dat found the copy mismatched with
+the DAT's game.
 
 Copies are for your own archive and your own restoration runtime only. Never share them.
 Run "disc-archiver notice" to read the full notice."""
@@ -93,15 +104,30 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="never download redumper; auto falls back to cdrdao, then to the data track copy",
     )
+    rip.add_argument(
+        "--read-offset",
+        type=int,
+        metavar="SAMPLES",
+        help="the drive's read offset, as AccurateRip lists it; corrects the audio of a cdrdao dump "
+        "(--backend cdrdao only: redumper corrects the offset itself)",
+    )
     common(rip)
 
     convert = commands.add_parser("convert", help="write the chosen formats from a copy you already have")
     convert.add_argument("--input", required=True, type=Path, help="a .cue, .iso, .ccd or .chd file")
     common(convert)
 
-    check = commands.add_parser("check", help="print a copy's fingerprint and check it against a profile")
+    check = commands.add_parser(
+        "check", help="print a copy's fingerprint and check it against a profile, and against a manifest if given"
+    )
     check.add_argument("--input", required=True, type=Path, help="a .cue, .iso, .ccd or .chd file")
     check.add_argument("--profile", default="any", help="a disc profile file or a built-in profile")
+    check.add_argument(
+        "--manifest",
+        type=Path,
+        help="a rip-manifest.json: the copy's data track must match it exactly, and each audio track "
+        "exactly or at a shift within the fingerprint's tolerance",
+    )
     dat_option(check, "the cue sheet and its track files")
     return parser
 
@@ -207,6 +233,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return EXIT_OK
         profile = load_profile(arguments.profile)
         if arguments.command == "check":
+            manifest = load_manifest(arguments.manifest) if arguments.manifest else None
             dat = None
             if arguments.dat is not None:
                 if arguments.input.suffix.lower() != ".cue":
@@ -215,12 +242,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             with tempfile.TemporaryDirectory() as work, open_source(arguments.input, Path(work), _log) as disc:
                 found = fingerprint(disc)
                 checks = check_profile(profile, found, profile_paths(profile, disc))
-                report = redump_check(dat, arguments.input, disc) if dat is not None else None
-            print(json.dumps({"disc": found, "checks": [c.as_json() for c in checks], "redump": report}, indent=2))
-            if report is not None:
-                _log(f"redump: {redump.summary(report)}")
-            failed = not all(c.matched for c in checks) or (report is not None and report["status"] == "mismatched")
-            return EXIT_MISMATCH if failed else EXIT_OK
+                redump_report = redump_check(dat, arguments.input, disc) if dat is not None else None
+                result: dict[str, object] = {"disc": found, "checks": [c.as_json() for c in checks], "redump": redump_report}
+                if manifest is not None:
+                    result["manifest"] = check_against_manifest(disc, found, manifest)
+            print(json.dumps(result, indent=2))
+            if redump_report is not None:
+                _log(f"redump: {redump.summary(redump_report)}")
+            failed = not all(c.matched for c in checks) or (redump_report is not None and redump_report["status"] == "mismatched")
+            identified = manifest is None or result["manifest"]["identified"]  # type: ignore[index]
+            return EXIT_MISMATCH if failed or not identified else EXIT_OK
+        if arguments.command == "rip" and arguments.read_offset is not None and arguments.backend != "cdrdao":
+            print(
+                "error: --read-offset corrects a cdrdao dump and needs --backend cdrdao; redumper corrects the drive's "
+                "read offset itself",
+                file=sys.stderr,
+            )
+            return EXIT_USAGE
         if not _require_acceptance(arguments):
             return EXIT_USAGE
         manifest = archive(
@@ -234,6 +272,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             backend_args=getattr(arguments, "backend_arg", ()),
             image=getattr(arguments, "input", None),
             allow_download=not getattr(arguments, "no_download", False),
+            read_offset=getattr(arguments, "read_offset", None),
             dat=arguments.dat,
         )
         return _report(manifest)

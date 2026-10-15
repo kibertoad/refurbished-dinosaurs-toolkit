@@ -80,11 +80,14 @@ checked, and the same on every machine it is kept on.
 1. **Dump with redumper and write every format.** Run
    `disc-archiver rip --backend redumper --format all`. `--backend redumper` makes the run fail
    instead of falling back to cdrdao or the data track copy. cdrdao keeps no subchannel or
-   protection data and does not correct the drive's read offset, so its audio differs from a
-   corrected dump by a shift. redumper must know the drive's read offset; a drive it lists as
-   supported is best ([redumper's drive list](https://github.com/superg/redumper)). `--format all`
-   writes every form the importer tests need from the same dump, each read back and compared with
-   it.
+   protection data, and corrects the drive's read offset only when given it with `--read-offset`;
+   the manifest's `source.readOffsetCorrected` says which. redumper must know the drive's read
+   offset; a drive it lists as supported is best
+   ([redumper's drive list](https://github.com/superg/redumper)). When its database has no offset
+   for the drive, redumper reads with offset 0 and the manifest records `readOffsetCorrected`
+   false; dump again with `--backend-arg=--drive-read-offset=<offset>`, taking the offset from
+   AccurateRip's drive list. `--format all` writes every form the importer tests need from the
+   same dump, each read back and compared with it.
 2. **Read redumper's log.** In `archival/<name>.log`, look for C2 errors and sectors that stayed
    unreadable after the retries. Every format was written from that dump and carries the same
    errors. Clean the disc and dump again into a new `--output` folder with
@@ -121,16 +124,36 @@ checked, and the same on every machine it is kept on.
    on the chdman version that wrote it.
 6. **Copy only to machines you own, and check each copy.** Move the folder over your own storage
    or network, never through a public or shared link. On each machine, run
-   `disc-archiver check --input <copy>.cue` and compare the `disc` hashes it reports with the
-   manifest, which catches a damaged transfer of the files that cue sheet names. The manifest
-   holds no hashes of redumper's `.scram`, `.subcode` and `.toc` files, so record their SHA-256
-   (or the compressed archive's) on the first machine and compare each copy with that record.
+   `disc-archiver check --input <copy>.cue --manifest rip-manifest.json`, which catches a damaged
+   transfer of the files that cue sheet names: exit code `0` with every audio track `matched`
+   means the copy is unchanged. The manifest holds no hashes of redumper's `.scram`, `.subcode`
+   and `.toc` files, so record their SHA-256 (or the compressed archive's) on the first machine
+   and compare each copy with that record.
+
+## Checking another copy of the disc
+
+A player's copy of the same disc often differs from the dump in every audio byte: a drive's read
+offset moves all the audio by a few hundred samples, and redumper corrects it while cdrdao, ImgBurn,
+Alcohol and many EAC setups do not. To check such a copy, run:
+
+```sh
+disc-archiver check --input "$GAME_DIR/player-copy/Game.cue" --manifest "$GAME_DIR/disc-forms/rip-manifest.json"
+```
+
+The data track must match exactly. Each audio track is `matched` when every sample agrees, and
+`matched-shifted` with its `shift` in samples when the track's fingerprint finds it shifted
+within the tolerance (3,528 samples) and the samples away from its ends agree. A track that is
+`ambiguous`, `out-of-range`, `mismatched` or otherwise not matched leaves the copy unidentified,
+with exit code `3`; the package README lists every status. Each audio track's `fingerprint` in
+the manifest has the fields of the .NET `CddaTrackFingerprint`, so a restoration that identifies
+audio with `CddaTrackFingerprints` can copy the values into its records.
 
 ## Hashes
 
 | Hash | Where | Used for |
 |---|---|---|
 | XXH3-128 (`xxh3`) | the documentation standard's build entries, restorations' asset manifests, the engine's and reader's source identity; `rip-manifest.json` `disc` content hashes, each output file and the `game-dir` listing | Identifying an edition and every file it reads. `xxhsum -H2` prints it. |
+| XXH3-128 anchor and central hashes | each audio track's `fingerprint` in `rip-manifest.json` | Identifying an audio track shifted by a read offset, with the values .NET `CddaTrackFingerprint` holds. |
 | SHA-256 | `rip-manifest.json` `disc` content hashes; each output file | Comparing formats with each other inside the archiver. |
 | CRC32, MD5, SHA-1 | each output file in `rip-manifest.json` | Comparing a dump with a Redump DAT, which lists these (`--dat`). |
 
@@ -152,10 +175,6 @@ same range: `CueBinSheet.TrackExtent`, `CddaWave` and `CddaTrackFingerprints`.
 [Issue #514](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/issues/514) tracks what
 keeps a legally made copy from being identified as the same edition:
 
-- audio hashes are sample-exact, so a copy shifted by a drive's read offset (cdrdao, and player
-  rips made without offset correction) has audio hashes that differ from a corrected dump's, and
-  nothing in the archiver tells a shift from changed audio; `CddaTrackFingerprints` in
-  LegacyFormats accepts the shift;
 - Alcohol MDS/MDF and Nero NRG copies are neither read nor written;
 - `OriginalContentSource` reads a directory, an ISO and cue/bin, not the CHD, CloneCD or
   ISO-plus-audio forms the archiver writes, and of a `bincue-split` sheet it reads only the

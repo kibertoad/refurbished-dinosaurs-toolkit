@@ -110,7 +110,9 @@ Makes personal archival copies of discs a player owns
   ISO 9660 file system with pycdlib.
 - Reads each format back and compares it with the dump by format-independent content hashes,
   and writes `rip-manifest.json`, with each content hash as SHA-256 and XXH3-128.
-- Checks the disc against a restoration's disc profile (`schemas/disc-profile.schema.json`).
+- Checks the disc against a restoration's disc profile (`schemas/disc-profile.schema.json`), and
+  checks another copy against a manifest, identifying audio a drive's read offset has shifted.
+  Corrects a cdrdao dump by the drive's read offset when given it.
 - Provides `disc-archiver` and the Tk window `disc-archiver-gui`. Both require the personal-use
   notice to be accepted before copying.
 - Downloads the redumper release pinned in `redumper.json` when redumper is missing, checked by
