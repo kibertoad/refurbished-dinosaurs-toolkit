@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import redumper, tools
+from . import dataerrors, redumper, tools
 from .disc import COOKED_SECTOR, DiscError
 from .tools import Log
 
@@ -100,39 +100,126 @@ def backend_by_id(identifier: str) -> Backend:
     raise DiscError(f"unknown backend {identifier!r}; choose auto or one of {', '.join(b.id for b in BACKENDS)}")
 
 
-def rip(backend: Backend, drive: str, directory: Path, name: str, log: Log, extra: Sequence[str] = ()) -> Path:
-    """Dump the disc in ``drive`` into ``directory`` and return the cue sheet or ISO written."""
+@dataclass(frozen=True)
+class Dump:
+    """What a backend wrote: the cue sheet or ISO the archiver reads, and the dump's data errors.
+
+    ``data_errors`` is the manifest's ``source.dataErrors`` record (see :func:`_recover`), None
+    when the dump had none or the backend does not report them.
+    """
+
+    path: Path
+    data_errors: dict[str, object] | None = None
+
+
+def rip(backend: Backend, drive: str, directory: Path, name: str, log: Log, extra: Sequence[str] = ()) -> Dump:
+    """Dump the disc in ``drive`` into ``directory`` and return what was written."""
     directory.mkdir(parents=True, exist_ok=True)
     if backend.id == "redumper":
         return _redumper(drive, directory, name, log, extra)
     if backend.id == "cdrdao":
-        return _cdrdao(drive, directory, name, log, extra)
-    return copy_data_track(drive, directory / f"{name}.iso", log)
+        return Dump(_cdrdao(drive, directory, name, log, extra))
+    return Dump(copy_data_track(drive, directory / f"{name}.iso", log))
 
 
-def _redumper(drive: str, directory: Path, name: str, log: Log, extra: Sequence[str]) -> Path:
+def _redumper(drive: str, directory: Path, name: str, log: Log, extra: Sequence[str]) -> Dump:
     program = tools.require_tool("redumper")
     # With no mode, redumper runs its whole disc sequence: dump, protection, refine, split, hash
     # and info. Split writes the Redump cue sheet and one .bin per track.
     # redumper runs in ``directory``, so a relative image path would point below it again.
-    command = [
-        program, f"--drive={drive}", f"--image-path={directory.absolute()}", f"--image-name={name}",
-        *redumper_detect_arguments(extra), *extra,
-    ]
+    image = [f"--image-path={directory.absolute()}", f"--image-name={name}"]
+    command = [program, f"--drive={drive}", *image, *redumper_detect_arguments(extra), *extra]
     redumper_log = directory / f"{name}.log"
+    data_errors = None
     try:
         tools.run(command, log, cwd=directory)
     except DiscError as error:
+        text = _read_text(redumper_log)
         # A misread sector order makes every sector look damaged, so split fails on it too.
-        if misread := redumper_misread_layout(_read_text(redumper_log)):
+        if misread := redumper_misread_layout(text):
             raise DiscError(misread) from None
-        raise DiscError(f"{error}. {_access_hint()}") from None
-    if misread := redumper_misread_layout(_read_text(redumper_log)):
-        raise DiscError(misread)
+        if not dataerrors.reported(text):
+            raise DiscError(f"{error}{_access_hint(text)}") from None
+        data_errors = _recover(program, drive, directory, name, log, extra, text)
+    else:
+        if misread := redumper_misread_layout(_read_text(redumper_log)):
+            raise DiscError(misread)
     sheet = directory / f"{name}.cue"
     if not sheet.is_file():
         raise DiscError(f"redumper finished without writing {sheet.name}; its log is {name}.log")
-    return sheet
+    return Dump(sheet, data_errors)
+
+
+def _recover(
+    program: Path, drive: str, directory: Path, name: str, log: Log, extra: Sequence[str], log_text: str
+) -> dict[str, object]:
+    """Write the image of a dump redumper stopped on for data errors, and say what they affect.
+
+    With at most ``dataerrors.REFINE_MAX_SECTORS`` bad sectors, ``redumper refine`` reads them once
+    more, slowly (``REFINE_SPEED``, ``REFINE_RETRIES``), with the drive's sector order given
+    explicitly, since ``--auto-detect`` acts in the disc command only. Then ``redumper split``
+    writes the image, with ``--force-split`` while bad sectors remain: it regenerates them from
+    their data, as Redump's dumps of such discs hold them. Returns the ``dataErrors`` record:
+    ``sectorsBefore``, ``refined``, ``sectors`` left, ``edcFailing`` among them, their ``ranges``,
+    the ``files`` holding them (null when the file system could not be read) and the ``outcome``
+    (see ``dataerrors.outcome``).
+    """
+    offset = dataerrors.write_offset(log_text)
+    if offset is None:
+        raise DiscError(f"redumper stopped on data errors, and {name}.log gives no disc write offset to locate them")
+    facts = dataerrors.examine(directory, name, offset)
+    before = len(facts.sectors)
+    if not before:
+        raise DiscError(f"redumper stopped on data errors, but {name}.state flags no sector; its log is {name}.log")
+    log(f"redumper found {before} sectors with C2 errors, {facts.edc_failing} of them with damaged data.")
+    image = [f"--image-path={directory.absolute()}", f"--image-name={name}"]
+    refined = before <= dataerrors.REFINE_MAX_SECTORS
+    if refined:
+        order = redumper_drive(log_text, extra)
+        explicit = (
+            [f"--drive-sector-order={order['sectorOrder']}"]
+            if order is not None and order["sectorOrderSource"] == "auto-detected"
+            else []
+        )
+        pace = [
+            *([] if _flag_given(extra, "--speed") else [f"--speed={dataerrors.REFINE_SPEED}"]),
+            *([] if _flag_given(extra, "--retries") else [f"--retries={dataerrors.REFINE_RETRIES}"]),
+        ]
+        log("Reading them again, slowly.")
+        tools.run([program, "refine", f"--drive={drive}", *image, *explicit, *extra, *pace], log, cwd=directory)
+        facts = dataerrors.examine(directory, name, offset)
+    else:
+        log(f"That is more than {dataerrors.REFINE_MAX_SECTORS}, so they are not read again.")
+    tools.run([program, "split", *image, *extra, *(["--force-split"] if facts.sectors else [])], log, cwd=directory)
+    result = dataerrors.outcome(before, facts)
+    _log_outcome(log, result, facts)
+    return {
+        "sectorsBefore": before,
+        "refined": refined,
+        "sectors": len(facts.sectors),
+        "edcFailing": facts.edc_failing,
+        "ranges": dataerrors.ranges(facts.sectors),
+        "files": facts.as_files(),
+        "outcome": result,
+    }
+
+
+def _log_outcome(log: Log, result: str, facts: dataerrors.Facts) -> None:
+    if result == "cleared":
+        log("Reading them again cleared every bad sector.")
+        return
+    count = len(facts.sectors)
+    if result == "outsideFiles":
+        log(f"{count} bad sectors remain, and no file of the disc holds any of them: every file was read intact.")
+        return
+    if result == "insideFiles":
+        held = ", ".join(f"{path} ({n})" for path, n in sorted((facts.files or {}).items()))
+        log(f"{count} bad sectors remain, and these files hold some of them: {held}.")
+    elif result == "unlocated":
+        log(f"{count} bad sectors remain, and the disc's file system could not be read to say which files hold them.")
+    else:
+        log(f"{count} bad sectors were found.")
+    log("Clean the disc and copy it again, or copy it in another drive.")
 
 
 # redumper b761 logs the drive's settings as "  configuration: <type> (read offset: +6, ...)"
@@ -337,12 +424,21 @@ def _cdrdao(drive: str, directory: Path, name: str, log: Log, extra: Sequence[st
     return directory / f"{name}.cue"
 
 
-def _access_hint() -> str:
+# redumper b761 throws "unable to open drive (<path>, SYSTEM: <error>)" when it cannot open the
+# drive (``scsi/sptd.ixx``), which its log records as an error line.
+_REDUMPER_DRIVE_NOT_OPENED = "unable to open drive"
+
+
+def _access_hint(log_text: str) -> str:
+    """How to get access to the drive, as a sentence after a failure, when the log shows redumper
+    could not open it; empty otherwise."""
+    if _REDUMPER_DRIVE_NOT_OPENED not in log_text:
+        return ""
     if sys.platform == "win32":
-        return "If its log says the drive could not be opened, start Disc Archiver as administrator."
+        return ". redumper could not open the drive: start Disc Archiver as administrator"
     if sys.platform.startswith("linux"):
-        return "If the drive could not be opened, add yourself to the group that owns it (often cdrom)."
-    return "Check that the drive name is right and that a disc is inserted."
+        return ". redumper could not open the drive: add yourself to the group that owns it (often cdrom)"
+    return ". redumper could not open the drive: check that the drive name is right and that a disc is inserted"
 
 
 def device_path(drive: str) -> str:

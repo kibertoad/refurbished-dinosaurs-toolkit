@@ -2,36 +2,59 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import struct
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-from synthetic import SyntheticDisc, iso_image, redumper_log
+from synthetic import SyntheticDisc, iso_extent, iso_image, redumper_log
 
-from dinorefurb_disc_archiver import backends, redumper
+from dinorefurb_disc_archiver import backends, cli, dataerrors, redumper
 from dinorefurb_disc_archiver.disc import DiscError
 from dinorefurb_disc_archiver.cue import read_cue
 from dinorefurb_disc_archiver.notice import NOTICE_FILENAME
-from dinorefurb_disc_archiver.pipeline import MANIFEST_NAME, archive, fingerprint
+from dinorefurb_disc_archiver.pipeline import MANIFEST_NAME, archive, fingerprint, manifest_ok
 from dinorefurb_disc_archiver.profile import BUILTIN_PROFILES
 
 # Writes a synthetic split dump where redumper would write the real one, and records its arguments.
 # STAND_IN_DRIVE picks the drive it logs: "known" (in redumper's database), "unknown" (not in it:
 # --auto-detect finds DATA_SUB_C2, as on the drive this was written against), or "misread" (not in
 # it, and the sector order stays the generic one, so every sector's subchannel Q fails).
-# STAND_IN_EXIT is its exit code once the log is written.
+# STAND_IN_EXIT is its exit code once the log is written. The drive "denied" cannot be opened.
+# STAND_IN_ERRORS, JSON {"bad": [LBAs], "transient": bool}, makes the disc a data-only one whose
+# dump has C2 errors in those sectors: the disc run stops at split as redumper does, "refine"
+# clears them when transient, and "split" refuses remaining ones without --force-split. Every
+# call's arguments are appended to calls.json.
 FAKE_REDUMPER = """\
 #!{python}
 import json, os, sys
 sys.path.insert(0, {tests!r})
 from pathlib import Path
-from synthetic import SyntheticDisc, iso_image, redumper_log
+from synthetic import SyntheticDisc, iso_image, redumper_log, write_redumper_dump
+command = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("--") else "disc"
 args = dict(a[2:].split("=", 1) for a in sys.argv[1:] if a.startswith("--") and "=" in a)
+folder, name = Path(args["image-path"]), args["image-name"]
+calls = folder / "calls.json"
+calls.write_text(json.dumps([*(json.loads(calls.read_text()) if calls.is_file() else []), sys.argv[1:]]))
+errors = json.loads(os.environ.get("STAND_IN_ERRORS", "null"))
+remaining = folder / "remaining.json"
+if command == "refine":
+    if errors and errors.get("transient"):
+        write_redumper_dump(folder, name, iso_image())
+        remaining.write_text("[]")
+    sys.exit(0)
+if command == "split":
+    if json.loads(remaining.read_text()) and "--force-split" not in sys.argv:
+        print("error: data errors detected, unable to continue")
+        sys.exit(4)
+    SyntheticDisc(iso_image(), audio_lengths=[]).write_split(folder, name)
+    sys.exit(0)
 Path(args["image-path"], "argv.json").write_text(json.dumps(sys.argv[1:]))
 if args.get("drive") == "broken":
     print("drive not ready", file=sys.stderr)
@@ -39,17 +62,27 @@ if args.get("drive") == "broken":
 drive = os.environ.get("STAND_IN_DRIVE", "known")
 order = args.get("drive-sector-order", "DATA_C2_SUB")
 detect = "--auto-detect" in sys.argv and drive == "unknown" and "drive-sector-order" not in args
+if args.get("drive") == "denied":
+    log = redumper_log(dumped=False, extra_lines=("error: unable to open drive (E:, SYSTEM: Access is denied.)",))
+    Path(folder, name + ".log").write_text(log)
+    sys.exit(4)
 log = redumper_log(
     in_database=drive == "known",
     configured_order=order,
     detected_order="DATA_SUB_C2" if detect else None,
     arguments=" ".join(sys.argv[1:]),
     q_errors=1000 if drive == "misread" else 2,
+    write_offset=0 if errors else None,
+    data_error_sectors=len(errors["bad"]) if errors else None,
 )
-Path(args["image-path"], args["image-name"] + ".log").write_text(log)
+Path(folder, name + ".log").write_text(log)
+if errors:
+    write_redumper_dump(folder, name, iso_image(), set(errors["bad"]))
+    remaining.write_text(json.dumps(errors["bad"]))
+    sys.exit(4)
 exit_code = int(os.environ.get("STAND_IN_EXIT", "0"))
 if not exit_code:
-    SyntheticDisc(iso_image()).write_split(Path(args["image-path"]), args["image-name"])
+    SyntheticDisc(iso_image()).write_split(folder, name)
 sys.exit(exit_code)
 """
 
@@ -134,6 +167,7 @@ class ProgramBackendTests(unittest.TestCase):
                     "sectorOrder": "DATA_C2_SUB",
                     "sectorOrderSource": "database",
                 },
+                "dataErrors": None,
             },
         )
         self.assertEqual([o["format"] for o in manifest["outputs"]], ["bincue"])  # type: ignore[union-attr]
@@ -150,9 +184,68 @@ class ProgramBackendTests(unittest.TestCase):
         self.assertEqual(manifest["source"]["dump"], "archival/Game.cue")  # type: ignore[index]
 
     def test_a_failed_dump_fails_the_run(self) -> None:
-        with self.assertRaisesRegex(DiscError, "redumper exited with code 1"):
+        with self.assertRaisesRegex(DiscError, "redumper exited with code 1") as caught:
             archive(output=self.dir / "out", profile=BUILTIN_PROFILES["any"], log=silent_log, drive="broken", backend="redumper")
+        self.assertNotIn("could not open the drive", str(caught.exception))
         self.assertFalse((self.dir / "out" / MANIFEST_NAME).exists())
+
+    def test_a_drive_redumper_cannot_open_gets_the_access_hint(self) -> None:
+        with self.assertRaisesRegex(DiscError, r"exited with code 4\. redumper could not open the drive: "):
+            archive(output=self.dir / "out", profile=BUILTIN_PROFILES["any"], log=silent_log, drive="denied", backend="redumper")
+
+    def _rip_with_errors(self, bad: list[int], transient: bool = False, drive: str = "known") -> tuple[dict, list[list[str]]]:  # type: ignore[type-arg]
+        out = self.dir / "out"
+        errors = json.dumps({"bad": bad, "transient": transient})
+        with mock.patch.dict(os.environ, {"STAND_IN_ERRORS": errors, "STAND_IN_DRIVE": drive}):
+            manifest = archive(output=out, profile=BUILTIN_PROFILES["data-only"], log=silent_log, drive="E:", name="Game", backend="redumper")
+        return manifest, json.loads((out / "archival" / "calls.json").read_text())
+
+    def test_errors_a_slow_reread_clears_are_gone_from_the_copy(self) -> None:
+        manifest, calls = self._rip_with_errors([iso_extent(iso_image(), "/README.TXT;1")], transient=True)
+        refine = next(c for c in calls if c[0] == "refine")
+        self.assertIn("--speed=8", refine)
+        self.assertIn("--retries=3", refine)
+        self.assertEqual(next(c for c in calls if c[0] == "split")[-1], "--image-name=Game")
+        self.assertEqual(
+            manifest["source"]["dataErrors"],  # type: ignore[index]
+            {"sectorsBefore": 1, "refined": True, "sectors": 0, "edcFailing": 0, "ranges": [], "files": [], "outcome": "cleared"},
+        )
+        self.assertTrue(manifest_ok(manifest))
+
+    def test_errors_outside_every_file_are_kept_and_the_copy_is_written(self) -> None:
+        manifest, calls = self._rip_with_errors([5, 6], drive="unknown")
+        # The order --auto-detect found in the disc run is given to refine, which does not detect.
+        self.assertIn("--drive-sector-order=DATA_SUB_C2", next(c for c in calls if c[0] == "refine"))
+        self.assertIn("--force-split", next(c for c in calls if c[0] == "split"))
+        record = manifest["source"]["dataErrors"]  # type: ignore[index]
+        self.assertEqual(
+            record,
+            {
+                "sectorsBefore": 2, "refined": True, "sectors": 2, "edcFailing": 2,
+                "ranges": [{"first": 5, "last": 6, "sectors": 2}], "files": [], "outcome": "outsideFiles",
+            },
+        )
+        self.assertEqual(manifest["outputs"][0]["verification"]["status"], "matched")  # type: ignore[index]
+        self.assertTrue(manifest_ok(manifest))
+
+    def test_errors_inside_a_file_name_it_and_exit_with_a_mismatch(self) -> None:
+        readme = iso_extent(iso_image(), "/README.TXT;1")
+        printed = io.StringIO()
+        errors = json.dumps({"bad": [readme], "transient": False})
+        arguments = ["rip", "--drive", "E:", "--backend", "redumper", "--output", str(self.dir / "out"), "--profile", "data-only", "--accept-personal-use"]
+        with mock.patch.dict(os.environ, {"STAND_IN_ERRORS": errors}), redirect_stdout(printed), redirect_stderr(io.StringIO()):
+            code = cli.main(arguments)
+        self.assertEqual(code, cli.EXIT_MISMATCH)
+        self.assertIn("data errors: insideFiles, 1 of 1 bad sectors left after reading them again", printed.getvalue())
+        self.assertIn("in /README.TXT: 1 sectors", printed.getvalue())
+
+    def test_too_many_errors_are_not_read_again(self) -> None:
+        with mock.patch.object(dataerrors, "REFINE_MAX_SECTORS", 1):
+            manifest, calls = self._rip_with_errors([5, 6])
+        self.assertNotIn("refine", [c[0] for c in calls])
+        record = manifest["source"]["dataErrors"]  # type: ignore[index]
+        self.assertEqual((record["refined"], record["sectors"], record["outcome"]), (False, 2, "tooMany"))
+        self.assertFalse(manifest_ok(manifest))
 
     def test_a_drive_redumper_does_not_list_has_its_sector_order_detected(self) -> None:
         lines: list[str] = []

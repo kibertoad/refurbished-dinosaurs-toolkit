@@ -24,7 +24,7 @@ from pathlib import Path
 
 import xxhash
 
-from . import cdda, ccd, isofs, mds, nrg, redump, tools
+from . import cdda, ccd, dataerrors, isofs, mds, nrg, redump, tools
 from .cue import read_cue, read_cue_metadata, read_iso
 from .disc import (
     RAW_SECTOR,
@@ -720,8 +720,9 @@ def redump_check(dat: redump.Dat, sheet: Path, disc: Disc) -> dict[str, object]:
 
 
 def manifest_ok(manifest: dict[str, object]) -> bool:
-    """Whether every profile check matched, no written format differs from the source, and the
-    Redump comparison, when one was made, is not ``mismatched``."""
+    """Whether every profile check matched, no written format differs from the source, the Redump
+    comparison, when one was made, is not ``mismatched``, and the dump's data errors, when it had
+    any, left every file intact (see ``dataerrors.FAILED_OUTCOMES``)."""
     checks = manifest["profile"]["checks"]  # type: ignore[index]
     outputs = manifest["outputs"]
     report = manifest.get("redump")
@@ -729,7 +730,14 @@ def manifest_ok(manifest: dict[str, object]) -> bool:
         all(c["matched"] for c in checks)  # type: ignore[union-attr]
         and all(o["verification"]["status"] != "mismatched" for o in outputs)  # type: ignore[union-attr, index]
         and (report is None or report["status"] != "mismatched")  # type: ignore[index]
+        and _data_errors_ok(manifest)
     )
+
+
+def _data_errors_ok(manifest: dict[str, object]) -> bool:
+    source = manifest.get("source")
+    record = source.get("dataErrors") if isinstance(source, dict) else None
+    return not isinstance(record, dict) or record.get("outcome") not in dataerrors.FAILED_OUTCOMES
 
 
 MAXIMUM_MANIFEST_BYTES = 16 * 1024 * 1024
@@ -913,7 +921,9 @@ def archive(
     offset, null when the log does not say. cdrdao is corrected when given ``read_offset`` and
     uncorrected without it. Both are null for an image or the data track copy, which reads no audio.
     ``driveConfiguration`` is the drive configuration redumper read with, from its log (see
-    ``backends.redumper_drive``), and null for any other source.
+    ``backends.redumper_drive``), and null for any other source. ``dataErrors`` says what
+    redumper's data errors affect when it stopped on them and the archiver wrote the image anyway
+    (see ``backends.Dump``), and is null when the dump had none.
     """
     from . import backends
 
@@ -933,7 +943,8 @@ def archive(
         chosen = backends.choose_backend(backend, log, allow_download)
         name = check_name(name or "disc")
         log(f"Copying the disc in {drive} with {chosen.title}")
-        dump = backends.rip(chosen, drive, output / "archival", name, log, list(backend_args))
+        ripped = backends.rip(chosen, drive, output / "archival", name, log, list(backend_args))
+        dump = ripped.path
         corrected: bool | None = None
         applied = read_offset
         configuration: dict[str, object] | None = None
@@ -969,12 +980,13 @@ def archive(
             "readOffsetCorrected": corrected,
             "readOffset": applied,
             "driveConfiguration": configuration,
+            "dataErrors": ripped.data_errors,
         }
     else:
         assert image is not None
         dump = image
         name = check_name(name or image.stem)
-        source = {"kind": "image", "file": image.name, "readOffsetCorrected": None, "readOffset": None, "driveConfiguration": None}
+        source = {"kind": "image", "file": image.name, "readOffsetCorrected": None, "readOffset": None, "driveConfiguration": None, "dataErrors": None}
     with open_source(dump, output, log) as disc:
         raw = all(t.storage != "cooked" for t in disc.tracks)
         wanted = list(formats) if formats is not None else list(recommended_formats(profile, disc.layout, raw))

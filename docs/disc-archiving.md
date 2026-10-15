@@ -92,12 +92,10 @@ checked, and the same on every machine it is kept on.
    AccurateRip's drive list. A drive redumper does not list at all has its sector order detected, and `source.driveConfiguration` records the order and where it came from. A misread order is refused instead of producing a dump.
    `--format all` writes every form the importer tests need from the
    same dump, each read back and compared with it.
-2. **Read redumper's log.** In `archival/<name>.log`, look for C2 errors and sectors that stayed
-   unreadable after the retries. Every format was written from that dump and carries the same
-   errors. Clean the disc and dump again into a new `--output` folder with
-   `--backend-arg=--retries=20` before trusting a dump that has them.
-3. **Read the result.** Exit code `3` means a written format differs from the dump or a profile
-   check failed, and the manifest says which. Exit code `0` means neither happened. It still
+2. **Read the data errors.** When redumper stops on sectors with C2 errors, the archiver rereads a few of them slowly, writes the image, and records in the manifest's `source.dataErrors` which sectors remain and which files hold them ([Data errors](../packages/disc-archiver/README.md#data-errors)). `outsideFiles` means every file was read intact. `insideFiles` names the damaged files: clean the disc and dump again into a new `--output` folder, or use another drive, before trusting the copy.
+3. **Read the result.** Exit code `3` means a written format differs from the dump, a profile
+   check failed, or data errors remain in a file or could not be located, and the manifest says
+   which. Exit code `0` means none of these happened. It still
    allows a format that was not written because a program it needs (chdman, ffmpeg) is missing,
    listed under the manifest's `unavailable`, and a `partial` format, whose `notCompared` says
    what was not compared.

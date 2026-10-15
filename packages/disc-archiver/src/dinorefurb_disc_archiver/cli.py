@@ -34,8 +34,9 @@ EXIT_MISMATCH = 3
 EPILOG = f"""\
 exit codes: {EXIT_OK} done and verified; {EXIT_FAILED} failed; {EXIT_USAGE} usage error or notice not
 accepted; {EXIT_MISMATCH} a profile check failed, a written format differs from its source, a
-checked copy is not identified as its manifest's disc, or --dat found the copy mismatched with
-the DAT's game.
+checked copy is not identified as its manifest's disc, --dat found the copy mismatched with
+the DAT's game, or a rip's data errors remain in a file, in too many sectors to read again, or
+where the file system could not say.
 
 Copies are for your own archive and your own restoration runtime only. Never share them.
 Run "disc-archiver notice" to read the full notice."""
@@ -177,7 +178,19 @@ def _report(manifest: dict) -> int:  # type: ignore[type-arg]
         if not check["matched"]:
             print(f"profile: {check['check']} expected {check['expected']!r}, found {check['found']!r}")
     _report_redump(manifest["redump"])
+    _report_data_errors(manifest["source"].get("dataErrors"))
     return EXIT_OK if manifest_ok(manifest) else EXIT_MISMATCH
+
+
+def _report_data_errors(record: dict | None) -> None:  # type: ignore[type-arg]
+    if record is None:
+        return
+    print(
+        f"data errors: {record['outcome']}, {record['sectors']} of {record['sectorsBefore']} bad sectors left"
+        f"{' after reading them again' if record['refined'] else ''}"
+    )
+    for item in record["files"] or []:
+        print(f"  in {item['path']}: {item['sectors']} sectors")
 
 
 def _report_redump(report: dict | None) -> None:  # type: ignore[type-arg]
