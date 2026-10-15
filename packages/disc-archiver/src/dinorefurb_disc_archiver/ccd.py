@@ -75,12 +75,6 @@ def opens_later_session(disc: Disc, track: Track) -> bool:
     return track.session > 1 and disc.tracks[track.number - 2].session != track.session
 
 
-def _in_image(track: Track) -> bool:
-    # A data pregap no source stored is left out of the image. Only the first track of a later
-    # session may have one, and the table of contents then places its INDEX 01 after it.
-    return track.pregap_stored or track.is_audio
-
-
 def _entry(number: int, session: int, point: int, ctrl: int, frames: tuple[int, int, int]) -> list[str]:
     pmin, psec, pframe = frames
     return [
@@ -135,7 +129,7 @@ def render_ccd(disc: Disc) -> str:
             entry += 1
     for track in disc.tracks:
         lines += [f"[TRACK {track.number}]", f"MODE={_mode(track)}"]
-        if track.pregap and _in_image(track):
+        if track.pregap and track.pregap_writable:
             lines.append(f"INDEX 0={track.start}")
         lines.append(f"INDEX 1={track.index1}")
         for index, offset in sorted(track.extra_indexes.items()):
@@ -152,7 +146,9 @@ def write_ccd(disc: Disc, directory: Path, name: str) -> list[Path]:
     ccd, img, sub = (directory / f"{name}{ext}" for ext in (".ccd", ".img", ".sub"))
     with img.open("wb") as image, sub.open("wb") as channel:
         for track in disc.tracks:
-            first = -track.pregap if _in_image(track) else 0
+            # A data pregap no source stored is left out of the image. Only the first track of a
+            # later session may have one, and the table of contents then places INDEX 01 after it.
+            first = -track.pregap if track.pregap_writable else 0
             image_written = 0
             for chunk in track.iter_raw(first, track.length):
                 image.write(chunk)
@@ -199,6 +195,9 @@ def _toc(path: Path, sections: dict[str, dict[str, str]]) -> tuple[dict[int, tup
         if not re.fullmatch(r"ENTRY \d+", name):
             continue
         try:
+            # Only mode 1 entries give tracks and lead-outs; a mode 5 entry's point means otherwise.
+            if int(entry.get("ADR", "1"), 0) != 1:
+                continue
             point = int(entry["POINT"], 0)
             session = int(entry["SESSION"])
             if "PLBA" in entry:
@@ -206,7 +205,7 @@ def _toc(path: Path, sections: dict[str, dict[str, str]]) -> tuple[dict[int, tup
             else:
                 lba = (int(entry["PMIN"]) * 60 + int(entry["PSEC"])) * 75 + int(entry["PFRAME"]) - MSF_OFFSET
         except (KeyError, ValueError):
-            raise DiscError(f"{path.name}: [{name.title()}] does not give its session, point and address") from None
+            raise DiscError(f"{path.name}: [{name.title()}] does not give its mode, session, point and address") from None
         if 1 <= point <= 99:
             tracks[point] = (session, lba)
         elif point == 0xA2:

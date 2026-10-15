@@ -73,6 +73,23 @@ def bcd(value: int) -> int:
     return (value // 10) << 4 | value % 10
 
 
+def header_lba(sector: bytes) -> int | None:
+    """The disc LBA a raw data sector's header gives, or None when the sector has no sync
+    pattern or its address is not a valid BCD time."""
+    if bytes(sector[:12]) != SYNC:
+        return None
+    parts = []
+    for value in sector[12:15]:
+        high, low = value >> 4, value & 0x0F
+        if high > 9 or low > 9:
+            return None
+        parts.append(high * 10 + low)
+    minutes, seconds, frames = parts
+    if seconds >= 60 or frames >= FRAMES_PER_SECOND:
+        return None
+    return (minutes * 60 + seconds) * FRAMES_PER_SECOND + frames - MSF_OFFSET
+
+
 @dataclass
 class Track:
     """One track and where its sectors are stored.
@@ -109,6 +126,12 @@ class Track:
     def is_audio(self) -> bool:
         """Whether the track holds CD audio."""
         return self.mode == "AUDIO"
+
+    @property
+    def pregap_writable(self) -> bool:
+        """Whether a raw copy can hold the track's pregap: it is stored, or it is audio, whose
+        unstored pregap reads as silence. A data pregap no file stored has no known sectors."""
+        return self.pregap_stored or self.is_audio
 
     @property
     def index1(self) -> int:

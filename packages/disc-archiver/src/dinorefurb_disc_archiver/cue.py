@@ -10,7 +10,9 @@ before the first track of each session of a disc with more than one. A sheet wit
 describes one session. DiscImageCreator's ``REM LEAD-OUT``, ``REM LEAD-IN`` and ``REM PREGAP``
 around a session change are read too: the first two must give the sizes the archiver lays
 sessions out with (see ``disc.session_gap``), and ``REM PREGAP`` gives the pregap of the session's
-first track, which its file holds only when INDEX 00 says so.
+first track, which its file holds only when INDEX 00 says so. A sheet gives no gap between
+sessions, so a raw data track that opens a later session must carry, in the header of its INDEX 01
+sector, the address the standard gap gives it.
 """
 
 from __future__ import annotations
@@ -19,7 +21,18 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from .disc import COOKED_SECTOR, LEAD_IN, RAW_SECTOR, Disc, DiscError, Track, format_msf, lead_out_sectors, wave_data
+from .disc import (
+    COOKED_SECTOR,
+    LEAD_IN,
+    RAW_SECTOR,
+    Disc,
+    DiscError,
+    Track,
+    format_msf,
+    header_lba,
+    lead_out_sectors,
+    wave_data,
+)
 
 MAXIMUM_CUE_BYTES = 1024 * 1024
 MAXIMUM_TRACKS = 99
@@ -87,8 +100,10 @@ class _Sessions:
             self.current, self.given, self.has_track, self.lead_out_line = number, True, False, None
         elif what == "LEAD-OUT" and len(args) == 2:
             # DiscImageCreator writes it before the REM SESSION of the next session.
+            if not self.given:
+                raise DiscError(f"line {line}: REM LEAD-OUT follows no REM SESSION 01")
             expected = lead_out_sectors(self.current)
-            if not self.given or _time(args[1], line) != expected:
+            if _time(args[1], line) != expected:
                 raise DiscError(
                     f"line {line}: REM LEAD-OUT {args[1]} is not the {format_msf(expected)} lead-out the archiver lays session "
                     f"{self.current} out with; some programs give the lead-out's position here, which the archiver does not read"
@@ -152,7 +167,9 @@ def read_cue(sheet: Path) -> Disc:
     size = sheet.stat().st_size
     if size > MAXIMUM_CUE_BYTES:
         raise DiscError(f"{sheet} is {size} bytes; a cue sheet is at most {MAXIMUM_CUE_BYTES}")
-    text = sheet.read_bytes().decode("utf-8-sig", errors="replace")
+    # CD-Text is written back as the sheet gave it: redumper writes the disc's CD-Text bytes, often
+    # ISO 8859-1, which are not UTF-8. Bytes that are not UTF-8 are kept as surrogate escapes.
+    text = sheet.read_bytes().decode("utf-8-sig", errors="surrogateescape")
     files: list[tuple[Path, str]] = []
     tracks: list[_Track] = []
     sessions = _Sessions()
@@ -214,7 +231,30 @@ def read_cue(sheet: Path) -> Disc:
     sessions.finish()
     disc = _layout(sheet, files, tracks, catalog)
     disc.cd_text = _ordered(disc_text)
+    if sessions.given:
+        _check_session_starts(disc)
     return disc
+
+
+def _check_session_starts(disc: Disc) -> None:
+    """Refuse a disc whose sector headers put a later session elsewhere than the layout does.
+
+    A cue sheet gives no gap between sessions, and the archiver lays each later session out the
+    standard lead-out and lead-in past the one before it. A raw data track that opens a later
+    session carries its own disc address in the header of its INDEX 01 sector, and when that
+    address differs, the standard gap would give the track an address it does not have.
+    """
+    for session in disc.sessions[1:]:
+        track = session.tracks[0]
+        if track.is_audio or track.storage != "raw":
+            continue
+        found = header_lba(next(track.iter_raw(0, 1)))
+        if found is not None and found != track.index1:
+            raise DiscError(
+                f"track {track.number} opens session {session.number}, and its sector headers put its INDEX 01 at "
+                f"LBA {found}; the cue sheet gives no gap between sessions, and the standard lead-out and lead-in "
+                f"put it at LBA {track.index1}. The archiver lays sessions out with the standard gap only"
+            )
 
 
 def _layout(sheet: Path, files: list[tuple[Path, str]], parsed: list[_Track], catalog: str | None) -> Disc:
@@ -303,6 +343,12 @@ def _quote(name: str) -> str:
     return f'"{name}"'
 
 
+def _cd_text(text: str) -> str:
+    # Text read from unquoted words may hold a double quote, which no quoted string can. Written
+    # bare, it reads back as the same words.
+    return text if '"' in text else _quote(text)
+
+
 @dataclass
 class CueFile:
     """One FILE of a cue sheet being written, with the tracks it stores.
@@ -332,7 +378,7 @@ def render_cue(disc: Disc, files: list[CueFile]) -> str:
     lines = []
     if disc.catalog:
         lines.append(f"CATALOG {disc.catalog}")
-    lines += [f"{command} {_quote(text)}" for command, text in disc.cd_text]
+    lines += [f"{command} {_cd_text(text)}" for command, text in disc.cd_text]
     sessions = disc.sessions
     firsts = {s.tracks[0].number: s.number for s in sessions} if len(sessions) > 1 else {}
     for file in files:
@@ -342,7 +388,7 @@ def render_cue(disc: Disc, files: list[CueFile]) -> str:
             if position == 0:
                 lines.append(f"FILE {_quote(file.name)} {file.kind}")
             lines.append(f"  TRACK {track.number:02d} {kind}")
-            lines += [f"    {command} {_quote(text)}" for command, text in track.cd_text]
+            lines += [f"    {command} {_cd_text(text)}" for command, text in track.cd_text]
             if track.isrc:
                 lines.append(f"    ISRC {track.isrc}")
             if track.flags:

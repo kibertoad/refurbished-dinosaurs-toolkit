@@ -269,7 +269,9 @@ Reading:
 
 - A cue sheet gives sessions with `REM SESSION nn` before the first track of each session, as
   redumper, DiscImageCreator and chdman write them. They must be numbered from `01` in order, and
-  each session must have a track. A sheet without them describes one session.
+  each session must have a track. A sheet without them describes one session. A sheet gives no
+  gap between sessions, so when a raw data track opens a later session, the address in the header
+  of its INDEX 01 sector must be where the sizes above put it, or the sheet is refused.
 - DiscImageCreator also writes `REM LEAD-OUT 01:30:00`, `REM LEAD-IN 01:00:00` and
   `REM PREGAP 00:02:00` around a session change. The first two must give the sizes above, or the
   sheet is refused: one-file sheets from IsoBuster and DiscImageCreator give the lead-out's
@@ -375,7 +377,8 @@ The supported imports are the names in `dinorefurb_disc_archiver.__all__`.
 - A cue sheet's first track must start at `INDEX 01 00:00:00`; `POSTGAP`, `MODE2/2336`, `CDG` and
   `MOTOROLA` files are refused.
 - Sessions are laid out with the standard lead-out and lead-in sizes. A cue sheet or CloneCD image
-  that gives other sizes, or a lead-out's position, is refused (see [Sessions](#sessions)).
+  that gives other sizes, or a lead-out's position, is refused, as is a cue sheet whose later
+  session's data track has sector headers that place it elsewhere (see [Sessions](#sessions)).
 - Cue sheets are limited to 1 MiB and 99 tracks, profiles to 64 KiB, file systems to 200,000 files.
 - `data-copy` stops at the first sector that still fails after five reads. Nothing stands in for
   an unread sector.

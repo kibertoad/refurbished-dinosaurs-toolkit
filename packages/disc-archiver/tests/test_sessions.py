@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from synthetic import SyntheticCdExtra, SyntheticDisc, audio
+from synthetic import SESSION_GAP, SyntheticCdExtra, SyntheticDisc, audio
 
 from dinorefurb_disc_archiver import ccd
 from dinorefurb_disc_archiver.ccd import read_ccd
@@ -292,11 +292,23 @@ class RefusalTests(SessionTestCase):
         self.assertRefused("REM SESSION 01\nREM SESSION 02\n" + self.track(1), "session 1 has no tracks")
         self.assertRefused("REM SESSION 01\n" + self.track(1) + "REM SESSION 02\n", "session 2 has no tracks")
 
+    def test_a_later_session_whose_sector_headers_place_it_elsewhere(self) -> None:
+        # The sheet gives no gap; the data track's headers say it sits 150 sectors past the
+        # standard one, so the standard layout would give it the wrong address.
+        extra = SyntheticCdExtra(session_gap=SESSION_GAP + 150)
+        sheet = extra.write_split(self.dir / "late")
+        with self.assertRaisesRegex(DiscError, f"headers put its INDEX 01 at LBA {extra.start}; .* at LBA {extra.start - 150}"):
+            read_cue(sheet)
+        # Without REM SESSION lines the sheet describes one session, as before.
+        sheet = SyntheticCdExtra(session_gap=SESSION_GAP + 150, sessions=False).write_split(self.dir / "flat")
+        self.assertEqual([t.session for t in read_cue(sheet).tracks], [1, 1, 1])
+
     def test_lead_out_and_lead_in_other_than_the_standard_sizes(self) -> None:
         first = "REM SESSION 01\n" + self.track(1)
         # IsoBuster and DiscImageCreator's one-file sheets give the lead-out's position instead.
         self.assertRefused(first + "REM LEAD-OUT 00:00:10\nREM SESSION 02\n" + self.track(2), "is not the 01:30:00 lead-out")
         self.assertRefused(first + "REM LEAD-OUT 01:30:00\n" + self.track(2), "REM LEAD-OUT is not followed by a REM SESSION")
+        self.assertRefused(self.track(1) + "REM LEAD-OUT 01:30:00\n" + self.track(2), "REM LEAD-OUT follows no REM SESSION 01")
         self.assertRefused(first + "REM SESSION 02\nREM LEAD-IN 00:59:00\n" + self.track(2), "is not the 01:00:00 lead-in")
         self.assertRefused(first + "REM PREGAP 00:02:00\nREM SESSION 02\n" + self.track(2), "must follow the REM SESSION of a session after the first")
         self.assertRefused(
@@ -341,6 +353,10 @@ class RefusalTests(SessionTestCase):
                 output.entry.write_text(changed)
                 with self.assertRaisesRegex(DiscError, message):
                     read_ccd(output.entry)
+        # A mode 5 entry's point is no track: one that names track 3 changes nothing.
+        mode5 = "[Entry 99]\nSession=2\nPoint=0x03\nADR=0x05\nControl=0x04\nTrackNo=0\nPMin=0\nPSec=0\nPFrame=0\nPLBA=-150\n"
+        output.entry.write_text(text + mode5)
+        self.assertEqual(fingerprint(read_ccd(output.entry)), self.reference)
         output.entry.write_text(text)
         image = output.directory / "Extra.img"
         image.write_bytes(image.read_bytes()[:-RAW_SECTOR])

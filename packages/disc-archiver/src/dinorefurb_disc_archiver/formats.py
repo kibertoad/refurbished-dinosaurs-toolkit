@@ -131,12 +131,6 @@ def _virtual_pregap_notes(disc: Disc, data_note: str = "the cue sheet gives it a
     ]
 
 
-def _stores_pregap(track: Track) -> bool:
-    """Whether a raw format stores the track's pregap: an audio pregap no file held is written as
-    silence, and a data pregap no file held, whose sectors are not known, is left out."""
-    return track.pregap_stored or track.is_audio
-
-
 def _cue_type(track: Track) -> str:
     return "AUDIO" if track.is_audio else f"{track.mode}/{RAW_SECTOR}"
 
@@ -147,12 +141,12 @@ def write_bincue_split(disc: Disc, directory: Path, name: str) -> Output:
     files, cue_files = [], []
     for track in disc.tracks:
         filename = f"{name}.bin" if len(disc.tracks) == 1 else track_file_name(name, disc, track, ".bin")
-        stored = _stores_pregap(track)
+        stored = track.pregap_writable
         _write(directory / filename, track.iter_raw(-track.pregap if stored else 0, track.length))
         files.append(directory / filename)
         cue_files.append(CueFile(filename, "BINARY", [(track, 0, stored, _cue_type(track))]))
     sheet = directory / f"{name}.cue"
-    sheet.write_text(render_cue(disc, cue_files), encoding="utf-8")
+    sheet.write_text(render_cue(disc, cue_files), encoding="utf-8", errors="surrogateescape")
     return Output("bincue-split", directory, sheet, [sheet, *files], _virtual_pregap_notes(disc))
 
 
@@ -163,12 +157,12 @@ def write_bincue(disc: Disc, directory: Path, name: str) -> Output:
     image = directory / f"{name}.bin"
     entries, position = [], 0
     for track in disc.tracks:
-        stored = _stores_pregap(track)
+        stored = track.pregap_writable
         entries.append((track, position, stored, _cue_type(track)))
         position += track.length + (track.pregap if stored else 0)
     _write(image, (chunk for t, _, stored, _ in entries for chunk in t.iter_raw(-t.pregap if stored else 0, t.length)))
     sheet = directory / f"{name}.cue"
-    sheet.write_text(render_cue(disc, [CueFile(image.name, "BINARY", entries)]), encoding="utf-8")
+    sheet.write_text(render_cue(disc, [CueFile(image.name, "BINARY", entries)]), encoding="utf-8", errors="surrogateescape")
     return Output("bincue", directory, sheet, [sheet, image], _virtual_pregap_notes(disc))
 
 
@@ -176,7 +170,7 @@ def write_ccd(disc: Disc, directory: Path, name: str) -> Output:
     """A CloneCD image with a subchannel generated from the table of contents."""
     _need_raw(disc, "CloneCD")
     for track in disc.tracks:
-        if track.pregap and not _stores_pregap(track) and not ccd.opens_later_session(disc, track):
+        if track.pregap and not track.pregap_writable and not ccd.opens_later_session(disc, track):
             raise FormatUnavailable(
                 f"CloneCD stores every sector from each track's INDEX 00, and track {track.number}'s {track.pregap}-sector "
                 "data pregap was not stored in the source. BIN/CUE gives it as a cue PREGAP."
@@ -194,7 +188,13 @@ def write_ccd(disc: Disc, directory: Path, name: str) -> Output:
         )
     if any(t.isrc for t in disc.tracks):
         notes.append("The tracks' ISRC codes are not carried into the CloneCD files.")
+    if _has_cd_text(disc):
+        notes.append("The CD-Text the cue sheet gave is not carried into the CloneCD files.")
     return Output("ccd", directory, files[0], files, notes)
+
+
+def _has_cd_text(disc: Disc) -> bool:
+    return bool(disc.cd_text) or any(t.cd_text for t in disc.tracks)
 
 
 def _first_non_data_past_volume(track: Track, volume: isofs.Volume | None) -> NotDataSector | None:
@@ -327,7 +327,7 @@ def write_iso_audio(disc: Disc, directory: Path, name: str, codec: str, log: Log
         if not _pregap_is_silent(track):
             notes.append(f"Track {track.number}'s pregap holds sound, which this format leaves out.")
     sheet = directory / f"{name}.cue"
-    sheet.write_text(render_cue(disc, cue_files), encoding="utf-8")
+    sheet.write_text(render_cue(disc, cue_files), encoding="utf-8", errors="surrogateescape")
     notes.append("Each audio track starts at its INDEX 01; its pregap is written as a cue PREGAP.")
     if codec == "ogg":
         notes.append("Ogg Vorbis is lossy: the audio is close to, not the same as, the disc's.")
@@ -348,7 +348,10 @@ def write_chd(disc: Disc, directory: Path, name: str, log: Log) -> Output:
         tools.run([chdman, "createcd", "-i", source.entry, "-o", target, "-f"], log)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    return Output("chd", directory, target, [target], _virtual_pregap_notes(disc))
+    notes = _virtual_pregap_notes(disc)
+    if _has_cd_text(disc):
+        notes.append("The CD-Text the cue sheet gave is not carried into the CHD; chdman does not store it.")
+    return Output("chd", directory, target, [target], notes)
 
 
 def write_files(disc: Disc, directory: Path, name: str) -> Output:

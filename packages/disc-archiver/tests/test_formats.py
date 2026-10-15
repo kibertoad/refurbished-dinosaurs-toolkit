@@ -111,6 +111,26 @@ class RawFormatTests(FormatTestCase):
         source.write_text(sheet.replace("FLAGS DCP PRE", "FLAGS PRE DCP"))
         shutil.rmtree(output.directory)
         self.assertEqual(self.write("bincue-split", read_cue(source)).entry.read_text(), sheet)
+        # CloneCD holds no CD-Text, and its notes say so.
+        self.assertIn("CD-Text the cue sheet gave is not carried", " ".join(self.write("ccd", read_cue(source)).notes))
+
+    def test_cd_text_with_a_double_quote_in_an_unquoted_word_is_written_back(self) -> None:
+        source = self.dir / "source" / "Synth.cue"
+        sheet = source.read_text().replace("  TRACK 02 AUDIO\n", '  TRACK 02 AUDIO\n    TITLE 12"Single" Mix\n', 1)
+        source.write_text(sheet)
+        disc = read_cue(source)
+        self.assertEqual(disc.tracks[1].cd_text, (("TITLE", '12"Single" Mix'),))
+        output = self.write("bincue-split", disc)
+        self.assertEqual(read_cue(output.entry).tracks[1].cd_text, disc.tracks[1].cd_text)
+
+    def test_cd_text_that_is_not_utf8_is_written_back_byte_for_byte(self) -> None:
+        # redumper writes the disc's CD-Text bytes, which are often ISO 8859-1.
+        source = self.dir / "source" / "Synth.cue"
+        title = b'    TITLE "Caf\xe9"'
+        sheet = source.read_bytes().replace(b"  TRACK 02 AUDIO", b"  TRACK 02 AUDIO\n" + title, 1)
+        source.write_bytes(sheet)
+        output = self.write("bincue-split", read_cue(source))
+        self.assertIn(title, output.entry.read_bytes())
 
     def test_one_file_bincue_matches_a_hand_built_single_bin(self) -> None:
         output = self.write("bincue")
