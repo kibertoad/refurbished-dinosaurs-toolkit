@@ -108,7 +108,7 @@ class UserDataStream(io.RawIOBase):
         track = self._track
         stored_first, _ = track.stored_range()
         size = track.stored_sector_size
-        self._handle.seek(track.source_offset + (index - stored_first) * size)
+        self._handle.seek(track.source_offset + (index - stored_first) * track.stored_stride)
         data = self._handle.read(size)
         if len(data) < size:
             raise DiscError(f"{track.source} ends inside track {track.number}")

@@ -9,7 +9,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import ccd, isofs, tools
+from . import ccd, isofs, mds, nrg, tools
 from .cue import CueFile, render_cue, write_cue
 from .disc import COOKED_SECTOR, RAW_SECTOR, Disc, DiscError, NotDataSector, Track, block_data, describe_ranges
 from .tools import Log
@@ -54,6 +54,19 @@ FORMATS: tuple[Format, ...] = (
     ),
     Format("chd", "CHD", "MAME's compressed disc image, made by chdman from the one-file BIN/CUE.", ("chdman",), True),
     Format(
+        "mds",
+        "Alcohol 120% (.mds/.mdf)",
+        "Every raw sector in .mdf with a version 1 .mds descriptor, without subchannel. The descriptor holds no "
+        "catalog number, ISRC codes or indexes after INDEX 01.",
+        complete=True,
+    ),
+    Format(
+        "nrg",
+        "Nero (.nrg)",
+        "Every raw sector in one version 2 disc-at-once .nrg file, with the catalog number, ISRC codes and indexes.",
+        complete=True,
+    ),
+    Format(
         "iso-flac",
         "ISO + FLAC audio",
         "The data track as an ISO file and each audio track as lossless FLAC, with a cue sheet.",
@@ -97,7 +110,7 @@ class Output:
 
     format: str
     directory: Path
-    # The file a reader opens: a cue sheet, an ISO, a .ccd, a .chd, or the extracted tree.
+    # The file a reader opens: a cue sheet, an ISO, a .ccd, a .chd, a .mds, a .nrg, or the extracted tree.
     entry: Path
     files: list[Path] = field(default_factory=list)
     # What the format left out or generated, and anything else a reader of the copy should know.
@@ -205,6 +218,67 @@ def write_ccd(disc: Disc, directory: Path, name: str) -> Output:
 
 def _has_cd_text(disc: Disc) -> bool:
     return bool(disc.cd_text) or any(t.cd_text for t in disc.tracks)
+
+
+def _need_one_session_and_pregaps(disc: Disc, fmt: str) -> None:
+    """Refuse what the MDS and NRG writers cannot lay out: a second session, and a data pregap no
+    source stored, which they would have to write sectors for."""
+    sessions = disc.sessions
+    if len(sessions) > 1:
+        raise FormatUnavailable(
+            f"the archiver writes {fmt} images of one session, and the disc has {len(sessions)}. "
+            "BIN/CUE and CloneCD keep the sessions."
+        )
+    for track in disc.tracks:
+        if track.pregap and not track.pregap_writable:
+            raise FormatUnavailable(
+                f"{fmt} stores every sector from each track's INDEX 00, and track {track.number}'s "
+                f"{track.pregap}-sector data pregap was not stored in the source. BIN/CUE gives it as a cue PREGAP."
+            )
+
+
+def write_mds(disc: Disc, directory: Path, name: str) -> Output:
+    """An Alcohol 120% image: a version 1 ``.mds`` descriptor and a ``.mdf`` of raw sectors."""
+    _need_raw(disc, "Alcohol 120% MDS/MDF")
+    _need_one_session_and_pregaps(disc, "Alcohol 120% MDS/MDF")
+    files = mds.write_mds(disc, directory, name)
+    notes = _virtual_pregap_notes(disc)
+    losses = mds_losses(disc)
+    if losses:
+        notes.append(f"Not carried into the .mds, which has no place for them: {', '.join(losses)}.")
+    if _has_cd_text(disc):
+        notes.append("The CD-Text the cue sheet gave is not carried into the .mds.")
+    return Output("mds", directory, files[0], files, notes)
+
+
+def mds_losses(disc: Disc) -> list[str]:
+    """What the disc holds that an MDS descriptor cannot."""
+    losses = []
+    if disc.catalog:
+        losses.append("the disc's catalog number")
+    if any(t.isrc for t in disc.tracks):
+        losses.append("the tracks' ISRC codes")
+    if any(t.extra_indexes for t in disc.tracks):
+        losses.append("the tracks' indexes after INDEX 01")
+    return losses
+
+
+def write_nrg(disc: Disc, directory: Path, name: str) -> Output:
+    """A Nero version 2 disc-at-once image of raw sectors."""
+    _need_raw(disc, "Nero NRG")
+    _need_one_session_and_pregaps(disc, "Nero NRG")
+    problem = nrg.check_writable(disc)
+    if problem:
+        raise FormatUnavailable(problem)
+    image = nrg.write_nrg(disc, directory, name)
+    notes = [
+        "Track 1's 150-sector pregap before LBA 0, which the NRG layout stores and the archiver does not read from "
+        "any source, is written as zero bytes.",
+        *_virtual_pregap_notes(disc),
+    ]
+    if _has_cd_text(disc):
+        notes.append("The CD-Text the cue sheet gave is not carried into the NRG.")
+    return Output("nrg", directory, image, [image], notes)
 
 
 def _first_non_data_past_volume(track: Track, volume: isofs.Volume | None) -> NotDataSector | None:
@@ -456,6 +530,10 @@ def write_format(identifier: str, disc: Disc, directory: Path, name: str, log: L
         return write_ccd(disc, directory, name)
     if identifier == "chd":
         return write_chd(disc, directory, name, log)
+    if identifier == "mds":
+        return write_mds(disc, directory, name)
+    if identifier == "nrg":
+        return write_nrg(disc, directory, name)
     if identifier.startswith("iso-"):
         return write_iso_audio(disc, directory, name, identifier[4:], log)
     if identifier == "iso":

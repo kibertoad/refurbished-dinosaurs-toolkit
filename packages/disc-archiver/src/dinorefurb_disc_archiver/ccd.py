@@ -43,6 +43,13 @@ def control(track: Track) -> int:
     return value
 
 
+def flags(mode: str, ctl: int) -> tuple[str, ...]:
+    """The cue FLAGS a Q control nibble gives a track of ``mode``; a data track has none."""
+    if mode != "AUDIO":
+        return ()
+    return tuple(name for bit, name in ((0x8, "4CH"), (0x2, "DCP"), (0x1, "PRE")) if ctl & bit)
+
+
 def _bcd_msf(frames: int) -> list[int]:
     return [bcd(part) for part in msf(frames)]
 

@@ -346,8 +346,14 @@ class RefusalTests(SessionTestCase):
         output = self.write("bincue", disc)
         self.assertIn("  TRACK 02 MODE1/2352\n    PREGAP 00:02:00\n    INDEX 01 00:00:10\n", output.entry.read_text())
         self.assertEqual(fingerprint(read_cue(output.entry)), fingerprint(disc))
-        with self.assertRaisesRegex(FormatUnavailable, "track 2's 150-sector data pregap was not stored in the source"):
-            self.write("ccd", disc)
+        for identifier in ("ccd", "mds", "nrg"):
+            with self.subTest(format=identifier), self.assertRaisesRegex(FormatUnavailable, "track 2's 150-sector data pregap was not stored in the source"):
+                self.write(identifier, disc)
+
+    def test_alcohol_and_nero_images_are_unavailable_for_several_sessions(self) -> None:
+        for identifier in ("mds", "nrg"):
+            with self.subTest(format=identifier), self.assertRaisesRegex(FormatUnavailable, "images of one session, and the disc has 2"):
+                self.write(identifier)
 
     def test_a_clonecd_image_whose_sessions_do_not_fit(self) -> None:
         output = self.write("ccd")

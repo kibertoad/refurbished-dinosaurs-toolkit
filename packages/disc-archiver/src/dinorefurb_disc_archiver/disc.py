@@ -97,7 +97,8 @@ class Track:
     ``storage`` is ``raw`` for 2,352-byte sectors, ``cooked`` for the 2,048 bytes of user data a
     data sector carries (an ISO file), or ``pcm`` for a WAVE file's 44.1 kHz 16-bit stereo samples.
     A pregap is stored ahead of INDEX 01 when ``pregap_stored`` is true; otherwise it is a cue
-    ``PREGAP`` that no file holds.
+    ``PREGAP`` that no file holds. ``subchannel`` is the number of subchannel bytes stored after
+    each raw sector (96 in an image of 2,448-byte sectors), which reads skip.
     """
 
     number: int
@@ -119,6 +120,7 @@ class Track:
     cd_text: tuple[tuple[str, str], ...] = ()
     # The session the track is in, from 1.
     session: int = 1
+    subchannel: int = 0
     # Disc LBA of INDEX 00; set by Disc.
     start: int = 0
 
@@ -147,6 +149,11 @@ class Track:
     def stored_sector_size(self) -> int:
         """Bytes per sector in ``source``."""
         return COOKED_SECTOR if self.storage == "cooked" else RAW_SECTOR
+
+    @property
+    def stored_stride(self) -> int:
+        """Bytes ``source`` holds per sector: the sector and any subchannel stored after it."""
+        return self.stored_sector_size + self.subchannel
 
     def stored_range(self) -> tuple[int, int]:
         """The sectors, relative to INDEX 01, that ``source`` holds."""
@@ -204,13 +211,14 @@ class Track:
     def _read(self, first: int, stop: int) -> Iterator[bytes]:
         stored_first, _ = self.stored_range()
         size = self.stored_sector_size
-        consumed = (first - stored_first) * size
+        stride = self.stored_stride
+        consumed = (first - stored_first) * stride
         with self.source.open("rb") as handle:
             handle.seek(self.source_offset + consumed)
             position = first
             while position < stop:
                 count = min(CHUNK_SECTORS, stop - position)
-                want = count * size
+                want = count * stride
                 available = want if self.source_length is None else max(0, min(want, self.source_length - consumed))
                 data = handle.read(available)
                 consumed += len(data)
@@ -219,6 +227,9 @@ class Track:
                         raise DiscError(f"{self.source} ends inside track {self.number}")
                     # A WAVE file's last sector may be short; CD audio pads it with silence.
                     data += bytes(want - len(data))
+                if stride != size:
+                    view = memoryview(data)
+                    data = b"".join(view[offset : offset + size] for offset in range(0, len(data), stride))
                 yield data
                 position += count
 

@@ -7,8 +7,8 @@ ship, and how to use the formats to test an importer.
 
 > Copies are for the owner's personal archive and their own restoration runtime only. They are
 > never shared, and never enter a repository, a test fixture, an issue or a pull request.
-> `tools/Verify-Repository.ps1` keeps `.cue`, `.iso`, `.wav` and `.ogg` files out; the rest is on
-> you.
+> `tools/Verify-Repository.ps1` keeps `.cue`, `.iso`, `.mds`, `.mdf`, `.nrg`, `.wav` and `.ogg`
+> files out; the rest is on you.
 
 ## What a restoration ships
 
@@ -175,9 +175,8 @@ same range: `CueBinSheet.TrackExtent`, `CddaWave` and `CddaTrackFingerprints`.
 [Issue #514](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/issues/514) tracks what
 keeps a legally made copy from being identified as the same edition:
 
-- Alcohol MDS/MDF and Nero NRG copies are neither read nor written;
-- `OriginalContentSource` reads a directory, an ISO and cue/bin, not the CHD, CloneCD or
-  ISO-plus-audio forms the archiver writes, and of a `bincue-split` sheet it reads only the
+- `OriginalContentSource` reads a directory, an ISO and cue/bin, not the CHD, CloneCD, MDS, NRG
+  or ISO-plus-audio forms the archiver writes, and of a `bincue-split` sheet it reads only the
   data track, so its audio tracks cannot be fingerprinted.
 
 Until they are closed, test the importer against the forms it reads, and record each form it
@@ -191,6 +190,7 @@ should accept and does not in the restoration's plan.
 | `bincue-split`, `bincue` | raw | yes | yes | none | `REM SESSION` lines |
 | `chd` | raw | yes | yes | none | only from a chdman newer than MAME 0.289 |
 | `ccd` | raw | yes | yes | generated from the table of contents | yes |
+| `mds`, `nrg` | raw | yes | yes | none | one session only |
 | `iso-flac`, `iso-wav` | user data | yes, from INDEX 01 | as a cue `PREGAP` | none | `REM SESSION` lines |
 | `iso-ogg` | user data | lossy | as a cue `PREGAP` | none | `REM SESSION` lines |
 | `iso` | user data | no | no | none | no |
