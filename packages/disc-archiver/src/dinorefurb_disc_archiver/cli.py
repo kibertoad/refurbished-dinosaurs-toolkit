@@ -25,7 +25,7 @@ from .pipeline import (
     redump_check,
     reference_backend,
 )
-from .profile import BUILTIN_PROFILES, RECOMMENDED, REFERENCE, check_profile, load_profile
+from .profile import ALL, BUILTIN_PROFILES, RECOMMENDED, REFERENCE, check_profile, load_profile
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -104,7 +104,8 @@ def _parser() -> argparse.ArgumentParser:
     rip.add_argument(
         "--no-download",
         action="store_true",
-        help="never download redumper; auto falls back to cdrdao, then to the data track copy",
+        help="never download redumper; auto falls back to cdrdao, then to the data track copy, "
+        "and a missing redumper stops a 'reference' copy",
     )
     rip.add_argument(
         "--read-offset",
@@ -137,16 +138,15 @@ def _parser() -> argparse.ArgumentParser:
 def _formats(requested: list[str] | None) -> list[str] | None:
     """The formats asked for, or None for the profile's recommendation.
 
-    The presets ``recommended`` and ``reference`` stay in the list: the recommendation depends on
-    the disc, so the pipeline resolves both once the disc is read (see ``profile.resolve_formats``).
+    The presets ``all``, ``recommended`` and ``reference`` stay in the list: the recommendation
+    depends on the disc, so the pipeline resolves every preset once the disc is read (see
+    ``profile.resolve_formats``).
     """
     if not requested:
         return None
     chosen: list[str] = []
     for item in requested:
-        if item == "all":
-            chosen += FORMAT_IDS
-        elif item in FORMAT_IDS or item in (RECOMMENDED, REFERENCE):
+        if item in FORMAT_IDS or item in (ALL, RECOMMENDED, REFERENCE):
             chosen.append(item)
         else:
             raise DiscError(f"unknown format {item!r}; choose from {', '.join(FORMAT_IDS)}, recommended, reference or all")

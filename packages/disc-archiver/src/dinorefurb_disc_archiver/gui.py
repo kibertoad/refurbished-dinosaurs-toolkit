@@ -99,6 +99,8 @@ class ArchiverWindow:
         self.messages: queue.Queue[tuple[str, object]] = queue.Queue()
         self.worker: threading.Thread | None = None
         self.result: dict[str, object] | None = None
+        # The formats preset ticked on every profile, source or backend change, until the other is chosen.
+        self.preset = RECOMMENDED
         self.profiles: dict[str, Profile] = {p.title: p for p in BUILTIN_PROFILES.values()}
         if profile is not None:
             self.profiles = {profile.title: profile, **self.profiles}
@@ -157,10 +159,11 @@ class ArchiverWindow:
         ttk.Button(box, text="Refresh", command=self._refresh_drives).grid(row=0, column=2)
         ttk.Label(box, text="Copied with").grid(row=1, column=0, sticky="w")
         self.backend_labels = {AUTO_LABEL: "auto", **{backend_label(b): b.id for b in backends.BACKENDS}}
+        self.redumper_label = next(label for label, identifier in self.backend_labels.items() if identifier == "redumper")
         self.backend = tk.StringVar(value=AUTO_LABEL)
         backend_box = ttk.Combobox(box, textvariable=self.backend, values=list(self.backend_labels), state="readonly")
         backend_box.grid(row=1, column=1, sticky="ew", padx=4, pady=2)
-        backend_box.bind("<<ComboboxSelected>>", lambda _: self._profile_changed())
+        backend_box.bind("<<ComboboxSelected>>", lambda _: self.backend_chosen())
         self.backend_notes = ttk.Label(box, wraplength=640, justify="left")
         self.backend_notes.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
         ttk.Radiobutton(box, text="Image I already made", value="image", variable=self.source_kind).grid(row=2, column=0, sticky="w")
@@ -192,7 +195,7 @@ class ArchiverWindow:
             button.grid(row=row // 2, column=row % 2, sticky="w", padx=(0, 16))
             self.format_vars[fmt.id] = var
             self.format_buttons[fmt.id] = button
-        ttk.Button(self.format_box, text="Use the recommended formats", command=self._profile_changed).grid(
+        ttk.Button(self.format_box, text="Use the recommended formats", command=self.use_recommended).grid(
             row=len(FORMATS) // 2 + 1, column=0, sticky="w", pady=(6, 0)
         )
         ttk.Button(self.format_box, text="Make a reference copy", command=self.use_reference).grid(
@@ -285,18 +288,33 @@ class ArchiverWindow:
         return self.source_kind.get() == "image" or will_hold_raw_sectors(self.backend_labels[self.backend.get()])
 
     def use_reference(self) -> None:
-        """Tick the golden-reference formats and, for a drive, choose redumper, which alone makes one."""
-        if self.source_kind.get() == "drive":
-            redumper_label = next(label for label, identifier in self.backend_labels.items() if identifier == "redumper")
-            self.backend.set(redumper_label)
-        self._profile_changed(REFERENCE)
+        """Tick the golden-reference formats and, for a drive, choose redumper, which alone makes one.
 
-    def _profile_changed(self, preset: str = RECOMMENDED) -> None:
+        Both stay chosen when the profile or the source changes, until the recommended formats or
+        another backend are chosen.
+        """
+        self.preset = REFERENCE
+        self._profile_changed()
+
+    def use_recommended(self) -> None:
+        """Tick the profile's recommended formats."""
+        self.preset = RECOMMENDED
+        self._profile_changed()
+
+    def backend_chosen(self) -> None:
+        """Update the formats for the backend chosen; a backend other than redumper ends a reference copy."""
+        if self.backend_labels[self.backend.get()] != "redumper":
+            self.preset = RECOMMENDED
+        self._profile_changed()
+
+    def _profile_changed(self) -> None:
+        if self.preset == REFERENCE and self.source_kind.get() == "drive":
+            self.backend.set(self.redumper_label)
         profile = self.profiles[self.profile_name.get()]
         backend_id = self.backend_labels[self.backend.get()]
         description = AUTO_DESCRIPTION if backend_id == "auto" else backends.backend_by_id(backend_id).description
         self.backend_notes.configure(text=description if self.source_kind.get() == "drive" else "")
-        for choice in format_choices(profile, raw=self.raw_copy(), preset=preset):
+        for choice in format_choices(profile, raw=self.raw_copy(), preset=self.preset):
             button = self.format_buttons[choice.id]
             button.configure(text=choice.label + (f" - {choice.reason}" if choice.reason else ""))
             button.state(["!disabled"] if choice.enabled else ["disabled"])
@@ -343,13 +361,17 @@ class ArchiverWindow:
             job["allow_download"] = False
             if needs_download(backend_id):
                 pin = redumper.load_pin()
+                declined = (
+                    "If you choose No, nothing is copied. Choose another backend to copy without redumper."
+                    if backend_id == "redumper"
+                    else "If you choose No, cdrdao is used if it is installed, and otherwise only the data "
+                    "track is copied, without audio."
+                )
                 job["allow_download"] = messagebox.askyesno(
                     "Download redumper",
                     f"redumper, the program that makes the archival copy, is not installed.\n\n"
                     f"Download redumper {pin.tag} for {redumper.platform_key()} from GitHub now? It is "
-                    f"checked by SHA-256 and kept in {redumper.install_dir(pin)}.\n\n"
-                    "If you choose No, cdrdao is used if it is installed, and otherwise only the data "
-                    "track is copied, without audio.",
+                    f"checked by SHA-256 and kept in {redumper.install_dir(pin)}.\n\n" + declined,
                 )
                 if not job["allow_download"] and backend_id == "redumper":
                     return

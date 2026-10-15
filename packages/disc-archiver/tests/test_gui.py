@@ -100,6 +100,27 @@ class WindowTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_a_reference_copy_stays_chosen_until_another_backend_or_the_recommendation(self) -> None:
+        root = tkinter.Tk()
+        try:
+            window = gui.ArchiverWindow(root)
+            window.source_kind.set("image")
+            window.use_reference()
+            self.assertEqual(window.selected_formats(), ["bincue-split", "files"])
+            window.profile_name.set(BUILTIN_PROFILES["mixed-mode"].title)
+            window._profile_changed()
+            window.source_kind.set("drive")
+            self.assertEqual(window.selected_formats(), ["bincue-split", "files"])
+            self.assertEqual(window.backend_labels[window.backend.get()], "redumper")
+            window.backend.set(next(label for label, i in window.backend_labels.items() if i == "cdrdao"))
+            window.backend_chosen()
+            self.assertEqual(window.selected_formats(), ["bincue"])
+            window.use_reference()
+            window.use_recommended()
+            self.assertEqual(window.selected_formats(), ["bincue"])
+        finally:
+            window.close()
+
     def test_a_redump_dat_is_passed_on_only_when_one_is_given(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = tkinter.Tk()

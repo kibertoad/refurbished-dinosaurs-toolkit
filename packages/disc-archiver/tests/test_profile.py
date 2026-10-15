@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from dinorefurb_disc_archiver.disc import DiscError
+from dinorefurb_disc_archiver.formats import FORMAT_IDS
 from dinorefurb_disc_archiver.profile import (
     BUILTIN_PROFILES,
     Check,
@@ -87,6 +88,8 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(resolve_formats(["reference", "recommended"], profile), ("bincue-split", "files", "bincue"))
         self.assertEqual(resolve_formats(["recommended"], BUILTIN_PROFILES["any"], "data-only"), ("iso",))
         self.assertEqual(resolve_formats(["recommended", "chd"], BUILTIN_PROFILES["mixed-mode"], raw=False), ("iso", "chd"))
+        self.assertEqual(resolve_formats(["all"], profile), FORMAT_IDS)
+        self.assertEqual(resolve_formats(["all", "recommended"], profile), FORMAT_IDS)
 
     def test_loading(self) -> None:
         self.assertIs(load_profile("data-only"), BUILTIN_PROFILES["data-only"])

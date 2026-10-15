@@ -20,6 +20,8 @@ PROFILE_VERSION = 1
 LAYOUTS = ("data-only", "mixed-mode")
 MAXIMUM_PROFILE_BYTES = 64 * 1024
 
+ALL = "all"
+"""The preset naming every format."""
 RECOMMENDED = "recommended"
 """The preset naming the profile's recommended formats for the disc read."""
 REFERENCE = "reference"
@@ -150,13 +152,15 @@ def recommended_formats(profile: Profile, layout: str | None = None, raw: bool =
 def resolve_formats(requested: Iterable[str], profile: Profile, layout: str | None = None, raw: bool = True) -> tuple[str, ...]:
     """The format ids ``requested`` names, with the presets among them replaced by their formats.
 
-    ``recommended`` becomes the profile's recommendation for the disc read (see
-    :func:`recommended_formats`), and ``reference`` becomes :data:`REFERENCE_FORMATS`. A format
+    ``all`` becomes every format id, ``recommended`` the profile's recommendation for the disc read
+    (see :func:`recommended_formats`), and ``reference`` :data:`REFERENCE_FORMATS`. A format
     named twice is kept once, where it was first named.
     """
     chosen: list[str] = []
     for item in requested:
-        if item == RECOMMENDED:
+        if item == ALL:
+            chosen += FORMAT_IDS
+        elif item == RECOMMENDED:
             chosen += recommended_formats(profile, layout, raw)
         elif item == REFERENCE:
             chosen += REFERENCE_FORMATS

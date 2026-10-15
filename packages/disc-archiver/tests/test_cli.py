@@ -16,7 +16,8 @@ from synthetic import SyntheticDisc, iso_image
 from dinorefurb_disc_archiver import tools
 from dinorefurb_disc_archiver.cli import EXIT_FAILED, EXIT_MISMATCH, EXIT_OK, EXIT_USAGE, main
 from dinorefurb_disc_archiver.notice import NOTICE, NOTICE_FILENAME
-from dinorefurb_disc_archiver.pipeline import MANIFEST_NAME
+from dinorefurb_disc_archiver.pipeline import MANIFEST_NAME, archive
+from dinorefurb_disc_archiver.profile import BUILTIN_PROFILES
 
 
 def run(*args: str) -> tuple[int, str, str]:
@@ -112,6 +113,12 @@ class CliTests(unittest.TestCase):
         manifest = json.loads((self.out / MANIFEST_NAME).read_text())
         self.assertEqual([o["format"] for o in manifest["outputs"]], ["bincue-split", "files"])
 
+    def test_formats_given_as_a_generator_are_all_written(self) -> None:
+        manifest = archive(
+            output=self.out, profile=BUILTIN_PROFILES["any"], log=lambda _: None, image=self.sheet, formats=(f for f in ["iso", "files"])
+        )
+        self.assertEqual([o["format"] for o in manifest["outputs"]], ["iso", "files"])  # type: ignore[union-attr, index]
+
     def test_a_reference_copy_of_an_iso_names_the_format_it_cannot_make(self) -> None:
         iso = self.dir / "plain.iso"
         iso.write_bytes(iso_image())
@@ -132,6 +139,14 @@ class CliTests(unittest.TestCase):
             self.assertNotIn("PERSONAL ARCHIVAL COPY", err)
         self.assertFalse(self.out.exists())
 
+    def test_a_reference_rip_with_an_unknown_backend_names_the_backends(self) -> None:
+        code, _, err = run(
+            "rip", "--drive", "E:", "--backend", "redumpr", "--format", "reference", "--output", str(self.out), "--accept-personal-use"
+        )
+        self.assertEqual(code, EXIT_USAGE)
+        self.assertIn("unknown backend 'redumpr'", err)
+        self.assertFalse(self.out.exists())
+
     def test_a_reference_rip_without_redumper_stops_instead_of_falling_back(self) -> None:
         home = self.dir / "home"
         hidden = {"DISC_ARCHIVER_HOME": str(home), "PATH": ""}
@@ -143,6 +158,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, EXIT_FAILED)
         self.assertIn("downloading it was declined", err)
         self.assertIn("A reference copy is made only with redumper", err)
+        self.assertNotIn("choose another backend", err)
         self.assertNotIn("falling back", err)
         self.assertFalse((self.out / "archival").exists())
 

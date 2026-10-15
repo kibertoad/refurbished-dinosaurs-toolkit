@@ -900,12 +900,12 @@ def archive(
     """Copy a disc from ``drive``, or take the ``image`` already made, and write ``formats``.
 
     A drive's dump stays in ``output/archival`` as the backend wrote it. ``formats`` of None
-    writes the profile's recommendation. ``formats`` may also name the presets ``recommended``
-    and ``reference`` among the format ids (see ``profile.resolve_formats``); a drive copied for
-    ``reference`` is read with redumper only (see :func:`reference_backend`). ``allow_download``
-    lets a missing redumper be downloaded (see ``backends.choose_backend``). ``dat`` is a Redump
-    DAT file to compare the ``bincue-split`` copy with; it is read before the disc. Returns the
-    manifest.
+    writes the profile's recommendation. ``formats`` may also name the presets ``all``,
+    ``recommended`` and ``reference`` among the format ids (see ``profile.resolve_formats``); a
+    drive copied for ``reference`` is read with redumper only (see :func:`reference_backend`).
+    ``allow_download`` lets a missing redumper be downloaded (see ``backends.choose_backend``).
+    ``dat`` is a Redump DAT file to compare the ``bincue-split`` copy with; it is read before the
+    disc. Returns the manifest.
 
     ``read_offset`` is the drive's read offset in samples, for the ``cdrdao`` backend only: the
     dump's audio is corrected by it into ``output/archival/offset-corrected`` (see
@@ -928,6 +928,8 @@ def archive(
     if read_offset is not None:
         # Checked before the disc is read, so a wrong value does not cost a whole dump.
         cdda.check_read_offset(read_offset)
+    # Read once: the preset check below and resolve_formats both walk it, and a generator walks only once.
+    formats = None if formats is None else list(formats)
     reference = formats is not None and REFERENCE in formats
     if reference and drive is not None:
         backend = reference_backend(backend)
@@ -936,10 +938,13 @@ def archive(
     if drive is not None:
         try:
             chosen = backends.choose_backend(backend, log, allow_download)
-        except DiscError as error:
+        except backends.RedumperUnavailable as error:
             if not reference:
                 raise
-            raise DiscError(f"{error}. A reference copy is made only with redumper: leave out the reference format to copy with another backend") from None
+            raise DiscError(
+                f"{error.reason}. Install it from {backends.REDUMPER_HOME}. A reference copy is made only with redumper: "
+                "leave out the reference format to copy with another backend"
+            ) from None
         name = check_name(name or "disc")
         log(f"Copying the disc in {drive} with {chosen.title}")
         dump = backends.rip(chosen, drive, output / "archival", name, log, list(backend_args))
@@ -991,8 +996,12 @@ def reference_backend(backend: str) -> str:
     ``auto`` becomes ``redumper``, so a missing redumper stops the copy instead of falling back to
     cdrdao or the data track copy, which keep no subchannel or protection data.
 
-    :raises DiscError: another backend was chosen.
+    :raises DiscError: another backend, or an unknown one, was chosen.
     """
+    from . import backends
+
+    if backend != "auto":
+        backends.backend_by_id(backend)
     if backend in ("auto", "redumper"):
         return "redumper"
     raise DiscError(f"a reference copy is made only with redumper, not with the {backend} backend")

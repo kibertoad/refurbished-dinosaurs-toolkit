@@ -89,7 +89,15 @@ gives the same cue bytes on Windows, macOS and Linux, so a `bincue-split` sheet 
 DAT's cue entry wherever it was written. redumper's own `.cue` in `archival` is left as redumper
 wrote it, which is CRLF on Windows and LF elsewhere.
 
-`--format all` writes every format that can be made. `--format recommended`, the default, writes what the disc profile recommends, and combines with other formats: `--format recommended --format iso` writes both. `--format reference` makes a golden-reference copy: `bincue-split`, the layout a Redump DAT lists, so `check --dat` compares the copy later without converting it, and `files`. On `rip` it reads the disc with redumper only. With `--backend auto` it does not fall back to cdrdao or the data track copy, which keep no subchannel or protection data: if redumper is neither installed nor downloadable, or `--no-download` declines it, the rip stops before reading the disc. `--backend cdrdao` or `data-copy` with `reference` is a usage error (exit code `2`). An ISO given to `convert` has no raw sectors, so `bincue-split` is reported as not written.
+`--format all` writes every format that can be made. `--format recommended`, the default, writes
+what the disc profile recommends, and combines with other formats: `--format recommended --format
+iso` writes both. `--format reference` makes a golden-reference copy: `bincue-split`, the layout a
+Redump DAT lists, so `check --dat` compares the copy later without converting it, and `files`. On
+`rip` it reads the disc with redumper only. With `--backend auto` it does not fall back to cdrdao
+or the data track copy, which keep no subchannel or protection data: if redumper is neither
+installed nor downloadable, or `--no-download` declines it, the rip stops before reading the disc.
+`--backend cdrdao` or `data-copy` with `reference` is a usage error (exit code `2`). An ISO given
+to `convert` has no raw sectors, so `bincue-split` is reported as not written.
 
 Programs are found on `PATH`, or through `DISC_ARCHIVER_REDUMPER`, `DISC_ARCHIVER_CDRDAO`,
 `DISC_ARCHIVER_TOC2CUE`, `DISC_ARCHIVER_CHDMAN` and `DISC_ARCHIVER_FFMPEG`. A format whose program
@@ -159,7 +167,12 @@ profile selected:
 disc-archiver-gui --profile path/to/disc-profile.json         # installed with Python
 ```
 
-Tick the notice, choose the drive (or an image you already made), the game's profile and the folder, and press **Make the copy**. The formats the profile recommends are ticked already. **Make a reference copy** ticks the reference formats instead and, for a drive, chooses redumper. **Redump DAT**, under the folder, takes a DAT you downloaded, as `--dat` does.
+Tick the notice, choose the drive (or an image you already made), the game's profile and the
+folder, and press **Make the copy**. The formats the profile recommends are ticked already. **Make
+a reference copy** ticks the reference formats instead and, for a drive, chooses redumper; both
+stay chosen when the profile or the source changes, until you choose another backend or **Use the
+recommended formats**. **Redump DAT**, under the folder, takes a DAT you downloaded, as `--dat`
+does.
 
 ### The command
 
