@@ -534,11 +534,18 @@ class RedumperDiscAnalysisTests(unittest.TestCase):
             {"lba": 1241, "count": 5000, "offset": -572},
         ]
         printed: list[str] = []
-        pipeline._log_disc_analysis(printed.append, {"protections": [], "protectionSchemes": [], "offsetShifts": shifts})
+        pipeline._log_disc_analysis(printed.append, {"protections": [], "protectionSchemes": [], "writeOffset": None, "offsetShifts": shifts})
         self.assertEqual(
             printed,
             ["redumper's log shows write offset -572 shifting to +16 in 2 ranges (42 sectors, LBA 999-1240). The manifest's source.discAnalysis records them."],
         )
+
+    def test_the_write_offset_split_logs_is_the_discs_own_offset(self) -> None:
+        # Fewer sectors sit at the logged write offset than at the shifted one.
+        shifts = [{"lba": -1, "count": 100, "offset": -572}, {"lba": 99, "count": 500, "offset": 16}, {"lba": 599, "count": 50, "offset": -572}]
+        printed: list[str] = []
+        pipeline._log_disc_analysis(printed.append, {"protections": [], "protectionSchemes": [], "writeOffset": -572, "offsetShifts": shifts})
+        self.assertIn("write offset -572 shifting to +16 in 1 range (500 sectors, LBA 99-598)", printed[0])
 
     def analysis(self, text: str) -> dict:  # type: ignore[type-arg]
         found = backends.redumper_disc_analysis(text)
