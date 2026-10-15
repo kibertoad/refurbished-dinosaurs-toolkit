@@ -50,7 +50,7 @@ from .formats import (
     write_format,
 )
 from .notice import NOTICE_FILENAME, write_notice
-from .profile import Profile, check_profile, recommended_formats
+from .profile import RECOMMENDED, REFERENCE, Profile, check_profile, resolve_formats
 from .tools import Log
 
 MANIFEST_NAME = "rip-manifest.json"
@@ -900,9 +900,12 @@ def archive(
     """Copy a disc from ``drive``, or take the ``image`` already made, and write ``formats``.
 
     A drive's dump stays in ``output/archival`` as the backend wrote it. ``formats`` of None
-    writes the profile's recommendation. ``allow_download`` lets a missing redumper be downloaded
-    (see ``backends.choose_backend``). ``dat`` is a Redump DAT file to compare the
-    ``bincue-split`` copy with; it is read before the disc. Returns the manifest.
+    writes the profile's recommendation. ``formats`` may also name the presets ``recommended``
+    and ``reference`` among the format ids (see ``profile.resolve_formats``); a drive copied for
+    ``reference`` is read with redumper only (see :func:`reference_backend`). ``allow_download``
+    lets a missing redumper be downloaded (see ``backends.choose_backend``). ``dat`` is a Redump
+    DAT file to compare the ``bincue-split`` copy with; it is read before the disc. Returns the
+    manifest.
 
     ``read_offset`` is the drive's read offset in samples, for the ``cdrdao`` backend only: the
     dump's audio is corrected by it into ``output/archival/offset-corrected`` (see
@@ -925,10 +928,18 @@ def archive(
     if read_offset is not None:
         # Checked before the disc is read, so a wrong value does not cost a whole dump.
         cdda.check_read_offset(read_offset)
+    reference = formats is not None and REFERENCE in formats
+    if reference and drive is not None:
+        backend = reference_backend(backend)
     loaded = redump.load_dat(dat) if dat is not None else None
     unread: dict[int, list[list[int]]] = {}
     if drive is not None:
-        chosen = backends.choose_backend(backend, log, allow_download)
+        try:
+            chosen = backends.choose_backend(backend, log, allow_download)
+        except DiscError as error:
+            if not reference:
+                raise
+            raise DiscError(f"{error}. A reference copy is made only with redumper: leave out the reference format to copy with another backend") from None
         name = check_name(name or "disc")
         log(f"Copying the disc in {drive} with {chosen.title}")
         dump = backends.rip(chosen, drive, output / "archival", name, log, list(backend_args))
@@ -970,5 +981,18 @@ def archive(
         source = {"kind": "image", "file": image.name, "readOffsetCorrected": None, "readOffset": None}
     with open_source(dump, output, log) as disc:
         raw = all(t.storage != "cooked" for t in disc.tracks)
-        wanted = list(formats) if formats is not None else list(recommended_formats(profile, disc.layout, raw))
+        wanted = list(resolve_formats(formats if formats is not None else [RECOMMENDED], profile, disc.layout, raw))
         return derive(disc, output, name, wanted, profile, log, source, unread, loaded)
+
+
+def reference_backend(backend: str) -> str:
+    """The backend a drive is copied with for the ``reference`` preset: always redumper.
+
+    ``auto`` becomes ``redumper``, so a missing redumper stops the copy instead of falling back to
+    cdrdao or the data track copy, which keep no subchannel or protection data.
+
+    :raises DiscError: another backend was chosen.
+    """
+    if backend in ("auto", "redumper"):
+        return "redumper"
+    raise DiscError(f"a reference copy is made only with redumper, not with the {backend} backend")

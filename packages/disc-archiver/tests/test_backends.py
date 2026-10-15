@@ -156,6 +156,21 @@ class ProgramBackendTests(unittest.TestCase):
         self.assertTrue(any("the audio is uncorrected" in line for line in lines))
         self.assertNotEqual(uncorrected["disc"]["audio"][0]["sha256"], reference["audio"][0]["sha256"])  # type: ignore[index]
 
+    def test_a_reference_copy_reads_with_redumper_and_writes_its_formats(self) -> None:
+        out = self.dir / "out"
+        manifest = archive(output=out, profile=BUILTIN_PROFILES["any"], log=silent_log, drive="E:", formats=["reference"])
+        self.assertEqual(manifest["source"]["backend"], "redumper")  # type: ignore[index]
+        self.assertEqual([o["format"] for o in manifest["outputs"]], ["bincue-split", "files"])  # type: ignore[union-attr]
+
+    def test_a_reference_copy_does_not_fall_back_to_cdrdao(self) -> None:
+        os.environ["DISC_ARCHIVER_REDUMPER"] = str(self.dir / "nowhere")
+        out = self.dir / "out"
+        with self.assertRaisesRegex(DiscError, "A reference copy is made only with redumper"):
+            archive(output=out, profile=BUILTIN_PROFILES["any"], log=silent_log, drive="E:", formats=["reference"])
+        self.assertFalse((out / "archival" / "argv.json").exists())
+        with self.assertRaisesRegex(DiscError, "not with the cdrdao backend"):
+            archive(output=out, profile=BUILTIN_PROFILES["any"], log=silent_log, drive="E:", backend="cdrdao", formats=["reference"])
+
     def test_a_missing_program_that_cannot_be_downloaded_says_how_to_install_it(self) -> None:
         os.environ["DISC_ARCHIVER_REDUMPER"] = str(self.dir / "nowhere")
         with self.assertRaisesRegex(DiscError, "offline in tests.*github.com/superg/redumper"):

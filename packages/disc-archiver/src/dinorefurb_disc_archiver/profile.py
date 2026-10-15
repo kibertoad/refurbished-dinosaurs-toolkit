@@ -9,6 +9,7 @@ disc and that the copy is complete, before the restoration's importer fingerprin
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,6 +19,14 @@ from .formats import FORMAT_IDS, FORMATS
 PROFILE_VERSION = 1
 LAYOUTS = ("data-only", "mixed-mode")
 MAXIMUM_PROFILE_BYTES = 64 * 1024
+
+RECOMMENDED = "recommended"
+"""The preset naming the profile's recommended formats for the disc read."""
+REFERENCE = "reference"
+"""The preset for a golden-reference copy, made only from redumper's dump."""
+REFERENCE_FORMATS = ("bincue-split", "files")
+"""The reference preset's formats: the layout Redump lists, which a DAT checks without converting
+it, and the data track's files."""
 
 
 @dataclass(frozen=True)
@@ -136,6 +145,24 @@ def recommended_formats(profile: Profile, layout: str | None = None, raw: bool =
         complete = {f.id for f in FORMATS if f.complete}
         chosen = tuple(f for f in chosen if f not in complete) or ("iso",)
     return chosen
+
+
+def resolve_formats(requested: Iterable[str], profile: Profile, layout: str | None = None, raw: bool = True) -> tuple[str, ...]:
+    """The format ids ``requested`` names, with the presets among them replaced by their formats.
+
+    ``recommended`` becomes the profile's recommendation for the disc read (see
+    :func:`recommended_formats`), and ``reference`` becomes :data:`REFERENCE_FORMATS`. A format
+    named twice is kept once, where it was first named.
+    """
+    chosen: list[str] = []
+    for item in requested:
+        if item == RECOMMENDED:
+            chosen += recommended_formats(profile, layout, raw)
+        elif item == REFERENCE:
+            chosen += REFERENCE_FORMATS
+        else:
+            chosen.append(item)
+    return tuple(dict.fromkeys(chosen))
 
 
 @dataclass(frozen=True)

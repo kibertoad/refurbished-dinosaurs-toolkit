@@ -23,8 +23,9 @@ from .pipeline import (
     package_version,
     profile_paths,
     redump_check,
+    reference_backend,
 )
-from .profile import BUILTIN_PROFILES, check_profile, load_profile
+from .profile import BUILTIN_PROFILES, RECOMMENDED, REFERENCE, check_profile, load_profile
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -78,7 +79,8 @@ def _parser() -> argparse.ArgumentParser:
             dest="formats",
             metavar="FORMAT",
             help=f"a format to write; repeat for several. One of {', '.join(FORMAT_IDS)}, "
-            "'recommended' (the profile's choice, the default) or 'all'",
+            "'recommended' (the profile's choice, the default), 'reference' (bincue-split and files from "
+            "redumper's dump, for a golden-reference copy) or 'all'",
         )
         sub.add_argument(
             "--profile",
@@ -133,19 +135,21 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _formats(requested: list[str] | None) -> list[str] | None:
-    """The formats asked for, or None for the profile's recommendation."""
-    if not requested or requested == ["recommended"]:
+    """The formats asked for, or None for the profile's recommendation.
+
+    The presets ``recommended`` and ``reference`` stay in the list: the recommendation depends on
+    the disc, so the pipeline resolves both once the disc is read (see ``profile.resolve_formats``).
+    """
+    if not requested:
         return None
-    if "recommended" in requested:
-        raise DiscError("'recommended' depends on the disc; give it alone or list the formats")
     chosen: list[str] = []
     for item in requested:
         if item == "all":
             chosen += FORMAT_IDS
-        elif item in FORMAT_IDS:
+        elif item in FORMAT_IDS or item in (RECOMMENDED, REFERENCE):
             chosen.append(item)
         else:
-            raise DiscError(f"unknown format {item!r}; choose from {', '.join(FORMAT_IDS)}, recommended or all")
+            raise DiscError(f"unknown format {item!r}; choose from {', '.join(FORMAT_IDS)}, recommended, reference or all")
     return list(dict.fromkeys(chosen))
 
 
@@ -259,13 +263,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return EXIT_USAGE
+        formats = _formats(arguments.formats)
+        if arguments.command == "rip" and formats is not None and REFERENCE in formats:
+            try:
+                reference_backend(arguments.backend)
+            except DiscError as error:
+                print(f"error: {error}", file=sys.stderr)
+                return EXIT_USAGE
         if not _require_acceptance(arguments):
             return EXIT_USAGE
         manifest = archive(
             output=arguments.output,
             profile=profile,
             log=_log,
-            formats=_formats(arguments.formats),
+            formats=formats,
             name=arguments.name,
             drive=getattr(arguments, "drive", None),
             backend=getattr(arguments, "backend", "auto"),

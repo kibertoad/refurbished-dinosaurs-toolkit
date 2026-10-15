@@ -32,6 +32,14 @@ class ChoiceTests(unittest.TestCase):
         self.assertFalse(choices["iso"].selected)
         self.assertIn("(recommended)", choices["bincue"].label)
 
+    def test_the_reference_preset_ticks_only_its_formats(self) -> None:
+        profile = parse_profile({"profile": 1, "title": "x", "recommendedFormats": ["bincue"]})
+        choices = {c.id: c for c in gui.format_choices(profile, {}, preset="reference")}
+        self.assertEqual({i for i, c in choices.items() if c.selected}, {"bincue-split", "files"})
+        self.assertIn("(recommended)", choices["bincue"].label)
+        unread = {c.id: c for c in gui.format_choices(profile, {}, raw=False, preset="reference")}
+        self.assertEqual({i for i, c in unread.items() if c.selected}, {"files"})
+
     def test_a_data_track_copy_rules_out_raw_formats(self) -> None:
         choices = {c.id: c for c in gui.format_choices(BUILTIN_PROFILES["mixed-mode"], {}, raw=False)}
         self.assertEqual(choices["bincue"].reason, "needs redumper or cdrdao")

@@ -21,7 +21,7 @@ from .disc import DiscError
 from .formats import FORMATS
 from .notice import NOTICE
 from .pipeline import MANIFEST_NAME, archive, manifest_ok
-from .profile import BUILTIN_PROFILES, Profile, load_profile, recommended_formats
+from .profile import BUILTIN_PROFILES, RECOMMENDED, REFERENCE, REFERENCE_FORMATS, Profile, load_profile, recommended_formats
 
 ACCEPT_TEXT = "I own this disc, and I will keep the copy to myself and never share it or anything taken from it."
 
@@ -37,14 +37,18 @@ class FormatChoice:
     reason: str = ""
 
 
-def format_choices(profile: Profile, found: dict[str, Path | None] | None = None, raw: bool = True) -> list[FormatChoice]:
-    """The format list for a profile, with the recommended formats ticked and what blocks the rest.
+def format_choices(
+    profile: Profile, found: dict[str, Path | None] | None = None, raw: bool = True, preset: str = RECOMMENDED
+) -> list[FormatChoice]:
+    """The format list for a profile, with the preset's formats ticked and what blocks the rest.
 
-    ``raw`` is false when the copy will hold no raw sectors (a plain data track copy), which rules
-    out the formats that store every sector.
+    ``preset`` is ``recommended`` (the profile's recommendation) or ``reference`` (the
+    golden-reference formats). ``raw`` is false when the copy will hold no raw sectors (a plain
+    data track copy), which rules out the formats that store every sector.
     """
     found = tools.available_tools() if found is None else found
     recommended = set(recommended_formats(profile, raw=raw))
+    ticked = set(REFERENCE_FORMATS) if preset == REFERENCE else recommended
     choices = []
     for fmt in FORMATS:
         missing = [name for name in fmt.needs if found.get(name) is None]
@@ -53,7 +57,7 @@ def format_choices(profile: Profile, found: dict[str, Path | None] | None = None
             # A data track copy holds neither raw sectors nor audio.
             reason = "needs redumper or cdrdao"
         label = fmt.title + (" (recommended)" if fmt.id in recommended else "")
-        choices.append(FormatChoice(fmt.id, label, not reason, fmt.id in recommended and not reason, reason))
+        choices.append(FormatChoice(fmt.id, label, not reason, fmt.id in ticked and not reason, reason))
     return choices
 
 
@@ -191,6 +195,9 @@ class ArchiverWindow:
         ttk.Button(self.format_box, text="Use the recommended formats", command=self._profile_changed).grid(
             row=len(FORMATS) // 2 + 1, column=0, sticky="w", pady=(6, 0)
         )
+        ttk.Button(self.format_box, text="Make a reference copy", command=self.use_reference).grid(
+            row=len(FORMATS) // 2 + 1, column=1, sticky="w", pady=(6, 0)
+        )
         ttk.Label(
             self.format_box,
             text="A disc copied from a drive also keeps the dump itself in the 'archival' folder.",
@@ -277,12 +284,19 @@ class ArchiverWindow:
         """Whether the copy will hold raw sectors: an existing image is assumed to, a data track copy does not."""
         return self.source_kind.get() == "image" or will_hold_raw_sectors(self.backend_labels[self.backend.get()])
 
-    def _profile_changed(self) -> None:
+    def use_reference(self) -> None:
+        """Tick the golden-reference formats and, for a drive, choose redumper, which alone makes one."""
+        if self.source_kind.get() == "drive":
+            redumper_label = next(label for label, identifier in self.backend_labels.items() if identifier == "redumper")
+            self.backend.set(redumper_label)
+        self._profile_changed(REFERENCE)
+
+    def _profile_changed(self, preset: str = RECOMMENDED) -> None:
         profile = self.profiles[self.profile_name.get()]
         backend_id = self.backend_labels[self.backend.get()]
         description = AUTO_DESCRIPTION if backend_id == "auto" else backends.backend_by_id(backend_id).description
         self.backend_notes.configure(text=description if self.source_kind.get() == "drive" else "")
-        for choice in format_choices(profile, raw=self.raw_copy()):
+        for choice in format_choices(profile, raw=self.raw_copy(), preset=preset):
             button = self.format_buttons[choice.id]
             button.configure(text=choice.label + (f" - {choice.reason}" if choice.reason else ""))
             button.state(["!disabled"] if choice.enabled else ["disabled"])
