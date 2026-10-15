@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 from xml.sax.saxutils import quoteattr
 
-from synthetic import SyntheticDisc, iso_image
+from synthetic import SyntheticCdExtra, SyntheticDisc, iso_image
 
 from dinorefurb_disc_archiver import redump
 from dinorefurb_disc_archiver.cli import EXIT_FAILED, EXIT_MISMATCH, EXIT_OK, main
@@ -190,6 +190,23 @@ class RedumpTests(unittest.TestCase):
         code, out, err = run("check", "--input", str(single), "--dat", str(self.reference_dat()))
         self.assertEqual(code, EXIT_FAILED, out)
         self.assertIn("convert the copy to bincue-split first", err)
+
+    def test_a_cd_extra_dump_with_sessions_matches_its_listing(self) -> None:
+        # Redump lists a CD-Extra disc's sheet with its REM SESSION lines. The bincue-split copy
+        # written from such a dump must give back that sheet's bytes for the DAT to match.
+        source = SyntheticCdExtra().write_split(self.dir / "extra", "Extra Game")
+        roms = [rom_xml(source)] + [rom_xml(t) for t in sorted(source.parent.glob("*.bin"))]
+        dat = self.write_dat(dat_xml({"Extra Game": roms}))
+        code, out, _ = run("check", "--input", str(source), "--dat", str(dat))
+        self.assertEqual((code, json.loads(out)["redump"]["status"]), (EXIT_OK, "matched"))
+        output = self.dir / "extra-out"
+        code, out, _ = run(
+            "convert", "--input", str(source), "--output", str(output), "--name", "Extra Game", "--dat", str(dat),
+            "--format", "ccd", "--accept-personal-use",
+        )
+        self.assertEqual(code, EXIT_OK, out)
+        report = json.loads((output / MANIFEST_NAME).read_text())["redump"]
+        self.assertEqual((report["status"], report["game"]), ("matched", "Extra Game"))
 
     def test_games_with_the_same_tracks_are_told_apart_by_the_cue_sheet(self) -> None:
         # "A Game" sorts first and lists the same track files, but not this cue sheet.

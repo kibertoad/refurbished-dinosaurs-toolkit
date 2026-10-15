@@ -122,8 +122,8 @@ def read_mds(path: Path) -> Disc:
         raise DiscError(f"{path.name} describes medium type 0x{medium:02x}, which is not a CD; DVD images are not read")
     if sessions != 1:
         raise DiscError(
-            f"{path.name} holds {sessions} sessions. Only single-session images are read, since the archiver does not "
-            "keep sessions yet"
+            f"{path.name} holds {sessions} sessions. Only single-session images are read; the archiver "
+            "does not read an MDS image's sessions"
         )
     (sessions_offset,) = reader.unpack("<I", 80, "header")
     _, _, _, all_blocks, _, first, last, _, blocks_offset = reader.unpack("<iiHBBHHII", sessions_offset, "session block")

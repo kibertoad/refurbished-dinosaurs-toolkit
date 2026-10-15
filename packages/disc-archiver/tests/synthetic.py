@@ -234,8 +234,9 @@ def relocated(iso: bytes, base: int) -> bytes:
 class SyntheticCdExtra:
     """Audio tracks in a first session and a data track in a second, as a CD-Extra disc holds them.
 
-    The sheet lays the tracks out back to back, as cue sheets do, so the data track's INDEX 01 is
-    at :attr:`sheet_start` there and ``session_gap`` sectors later on the disc, at :attr:`start`.
+    The sheet gives the sessions with REM SESSION lines when ``sessions``, as redumper writes them.
+    Without them it lays the tracks out back to back, so the data track's INDEX 01 is at
+    :attr:`sheet_start` there and ``session_gap`` sectors later on the disc, at :attr:`start`.
     The data sectors' headers carry the disc addresses. The volume is mastered with addresses
     counted from LBA ``start + shift`` when ``absolute``, as a second session's volume is, and
     from the track's first sector otherwise. ``padding`` sectors of zeros follow the volume.
@@ -248,10 +249,11 @@ class SyntheticCdExtra:
     shift: int = 0
     padding: int = 0
     pregap: int = 150
+    sessions: bool = True
 
     @property
     def sheet_start(self) -> int:
-        """The data track's INDEX 01 LBA as the sheet lays the tracks out."""
+        """The data track's INDEX 01 LBA as a sheet without sessions lays the tracks out."""
         return sum(self.audio_lengths) + self.pregap
 
     @property
@@ -284,12 +286,16 @@ class SyntheticCdExtra:
 
     def _audio_lines(self, directory: Path, name: str) -> list[str]:
         directory.mkdir(parents=True, exist_ok=True)
-        lines = ["REM SESSION 01"]
+        lines = ["REM SESSION 01"] if self.sessions else []
         for i, length in enumerate(self.audio_lengths):
             file = f"{name} (Track {i + 1}).bin"
-            (directory / file).write_bytes(audio(i + 1, length, "cd-extra"))
+            (directory / file).write_bytes(self.track_audio(i))
             lines += [f'FILE "{file}" BINARY', f"  TRACK {i + 1:02d} AUDIO", "    INDEX 01 00:00:00"]
-        return lines + ["REM SESSION 02"]
+        return lines + (["REM SESSION 02"] if self.sessions else [])
+
+    def track_audio(self, index: int) -> bytes:
+        """The samples of audio track ``index`` (0 for track 1)."""
+        return audio(index + 1, self.audio_lengths[index], "cd-extra")
 
     def write_split(self, directory: Path, name: str = "Extra") -> Path:
         """Redump layout, one file per track with the data track's pregap stored; returns the sheet."""
@@ -299,7 +305,8 @@ class SyntheticCdExtra:
         lines += [f'FILE "{file}" BINARY', f"  TRACK {self.number:02d} MODE1/2352", "    INDEX 00 00:00:00"]
         lines.append(f"    INDEX 01 {_time(self.pregap)}")
         sheet = directory / f"{name}.cue"
-        sheet.write_text("\n".join(lines) + "\n")
+        # Redump's cue sheets end every line with CRLF.
+        sheet.write_bytes("".join(line + "\r\n" for line in lines).encode())
         return sheet
 
     def write_cooked(self, directory: Path, name: str = "Extra") -> Path:

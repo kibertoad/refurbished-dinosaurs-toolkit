@@ -120,8 +120,8 @@ def read_nrg(path: Path) -> Disc:
     cue_name, dao_name, tao_name = (b"CUEX", b"DAOX", b"ETN2") if version == 2 else (b"CUES", b"DAOI", b"ETNF")
     if names.count(b"SINF") > 1 or max(names.count(cue_name), names.count(dao_name), names.count(tao_name)) > 1:
         raise DiscError(
-            f"{path.name} holds more than one session. Only single-session images are read, since the archiver does "
-            "not keep sessions yet"
+            f"{path.name} holds more than one session. Only single-session images are read; the archiver "
+            "does not read an NRG image's sessions"
         )
     if names.count(b"MTYP") > 1:
         raise DiscError(f"{path.name} holds more than one MTYP block")

@@ -144,9 +144,11 @@ def _need_raw(disc: Disc, fmt: str) -> None:
         )
 
 
-def _virtual_pregap_notes(disc: Disc) -> list[str]:
+def _virtual_pregap_notes(disc: Disc, data_note: str = "the cue sheet gives it as PREGAP") -> list[str]:
     return [
         f"Track {t.number}'s {t.pregap}-sector pregap was not stored in the source and is written as silence."
+        if t.is_audio
+        else f"Track {t.number}'s {t.pregap}-sector pregap was not stored in the source, so it is not stored here either; {data_note}."
         for t in disc.tracks
         if t.pregap and not t.pregap_stored
     ]
@@ -162,47 +164,90 @@ def write_bincue_split(disc: Disc, directory: Path, name: str) -> Output:
     files, cue_files = [], []
     for track in disc.tracks:
         filename = f"{name}.bin" if len(disc.tracks) == 1 else track_file_name(name, disc, track, ".bin")
-        _write(directory / filename, track.iter_raw(-track.pregap, track.length))
+        stored = track.pregap_writable
+        _write(directory / filename, track.iter_raw(-track.pregap if stored else 0, track.length))
         files.append(directory / filename)
-        cue_files.append(CueFile(filename, "BINARY", [(track, 0, True, _cue_type(track))]))
+        cue_files.append(CueFile(filename, "BINARY", [(track, 0, stored, _cue_type(track))]))
     sheet = directory / f"{name}.cue"
     write_cue(sheet, render_cue(disc, cue_files))
     return Output("bincue-split", directory, sheet, [sheet, *files], _virtual_pregap_notes(disc))
 
 
 def write_bincue(disc: Disc, directory: Path, name: str) -> Output:
-    """Every track in one .bin with one cue sheet."""
+    """Every track in one .bin with one cue sheet. The gaps between sessions hold no sectors and
+    are not stored: the sheet's ``REM SESSION`` lines place them."""
     _need_raw(disc, "BIN/CUE")
     image = directory / f"{name}.bin"
-    _write(image, (chunk for t in disc.tracks for chunk in t.iter_raw(-t.pregap, t.length)))
+    entries, position = [], 0
+    for track in disc.tracks:
+        stored = track.pregap_writable
+        entries.append((track, position, stored, _cue_type(track)))
+        position += track.length + (track.pregap if stored else 0)
+    _write(image, (chunk for t, _, stored, _ in entries for chunk in t.iter_raw(-t.pregap if stored else 0, t.length)))
     sheet = directory / f"{name}.cue"
-    cue_file = CueFile(image.name, "BINARY", [(t, t.start, True, _cue_type(t)) for t in disc.tracks])
-    write_cue(sheet, render_cue(disc, [cue_file]))
+    write_cue(sheet, render_cue(disc, [CueFile(image.name, "BINARY", entries)]))
     return Output("bincue", directory, sheet, [sheet, image], _virtual_pregap_notes(disc))
 
 
 def write_ccd(disc: Disc, directory: Path, name: str) -> Output:
     """A CloneCD image with a subchannel generated from the table of contents."""
     _need_raw(disc, "CloneCD")
+    for track in disc.tracks:
+        if track.pregap and not track.pregap_writable and not ccd.opens_later_session(disc, track):
+            raise FormatUnavailable(
+                f"CloneCD stores every sector from each track's INDEX 00, and track {track.number}'s {track.pregap}-sector "
+                "data pregap was not stored in the source. BIN/CUE gives it as a cue PREGAP."
+            )
     files = ccd.write_ccd(disc, directory, name)
     notes = [
         "The .sub subchannel is generated from the table of contents (P marks pregaps, Q carries "
         "positions); it was not read from the disc.",
-        *_virtual_pregap_notes(disc),
+        *_virtual_pregap_notes(disc, "the table of contents places the track's INDEX 01 after it"),
     ]
+    if len(disc.sessions) > 1:
+        notes.append(
+            "The table of contents has each session's A0, A1 and A2 entries and its tracks, with the gap between "
+            "sessions; it has no mode 5 (B0, C0) entries, which the source did not give."
+        )
     if any(t.isrc for t in disc.tracks):
         notes.append("The tracks' ISRC codes are not carried into the CloneCD files.")
+    if _has_cd_text(disc):
+        notes.append("The CD-Text the cue sheet gave is not carried into the CloneCD files.")
     return Output("ccd", directory, files[0], files, notes)
+
+
+def _has_cd_text(disc: Disc) -> bool:
+    return bool(disc.cd_text) or any(t.cd_text for t in disc.tracks)
+
+
+def _need_one_session_and_pregaps(disc: Disc, fmt: str) -> None:
+    """Refuse what the MDS and NRG writers cannot lay out: a second session, and a data pregap no
+    source stored, which they would have to write sectors for."""
+    sessions = disc.sessions
+    if len(sessions) > 1:
+        raise FormatUnavailable(
+            f"the archiver writes {fmt} images of one session, and the disc has {len(sessions)}. "
+            "BIN/CUE and CloneCD keep the sessions."
+        )
+    for track in disc.tracks:
+        if track.pregap and not track.pregap_writable:
+            raise FormatUnavailable(
+                f"{fmt} stores every sector from each track's INDEX 00, and track {track.number}'s "
+                f"{track.pregap}-sector data pregap was not stored in the source. BIN/CUE gives it as a cue PREGAP."
+            )
 
 
 def write_mds(disc: Disc, directory: Path, name: str) -> Output:
     """An Alcohol 120% image: a version 1 ``.mds`` descriptor and a ``.mdf`` of raw sectors."""
     _need_raw(disc, "Alcohol 120% MDS/MDF")
+    _need_one_session_and_pregaps(disc, "Alcohol 120% MDS/MDF")
     files = mds.write_mds(disc, directory, name)
     notes = _virtual_pregap_notes(disc)
     losses = mds_losses(disc)
     if losses:
         notes.append(f"Not carried into the .mds, which has no place for them: {', '.join(losses)}.")
+    if _has_cd_text(disc):
+        notes.append("The CD-Text the cue sheet gave is not carried into the .mds.")
     return Output("mds", directory, files[0], files, notes)
 
 
@@ -221,6 +266,7 @@ def mds_losses(disc: Disc) -> list[str]:
 def write_nrg(disc: Disc, directory: Path, name: str) -> Output:
     """A Nero version 2 disc-at-once image of raw sectors."""
     _need_raw(disc, "Nero NRG")
+    _need_one_session_and_pregaps(disc, "Nero NRG")
     problem = nrg.check_writable(disc)
     if problem:
         raise FormatUnavailable(problem)
@@ -230,6 +276,8 @@ def write_nrg(disc: Disc, directory: Path, name: str) -> Output:
         "any source, is written as zero bytes.",
         *_virtual_pregap_notes(disc),
     ]
+    if _has_cd_text(disc):
+        notes.append("The CD-Text the cue sheet gave is not carried into the NRG.")
     return Output("nrg", directory, image, [image], notes)
 
 
@@ -384,7 +432,10 @@ def write_chd(disc: Disc, directory: Path, name: str, log: Log) -> Output:
         tools.run([chdman, "createcd", "-i", source.entry, "-o", target, "-f"], log)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    return Output("chd", directory, target, [target], _virtual_pregap_notes(disc))
+    notes = _virtual_pregap_notes(disc)
+    if _has_cd_text(disc):
+        notes.append("The CD-Text the cue sheet gave is not carried into the CHD; chdman does not store it.")
+    return Output("chd", directory, target, [target], notes)
 
 
 def write_files(disc: Disc, directory: Path, name: str) -> Output:

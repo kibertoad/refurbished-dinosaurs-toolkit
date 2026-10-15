@@ -67,8 +67,9 @@ track's start sector counts from.
    - Both need raw sectors, so they are `unavailable` from user data alone, like BIN/CUE.
 4. Both formats are verified like the others: read back through these readers and compared with
    the source by the content hashes and track layout of ADR 0004 decision 4.
-5. Until the disc model keeps sessions, the readers refuse multisession images and the writers
-   write one session.
+5. The readers refuse multisession images, and the writers write one session: both formats are
+   `unavailable` for a disc of more than one session, which the disc model keeps since disc
+   archiver 3.0.0. Reading and writing their session layouts is left until a copy needs it.
 
 ## Consequences
 

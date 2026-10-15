@@ -64,12 +64,21 @@ def iter_disc_samples(disc: Disc, first: int, count: int) -> Iterator[bytes]:
     """Yield the raw bytes of ``count`` samples from disc sample ``first`` (LBA 0 at sample 0).
 
     Tracks are read back to back as the Disc lays them out, pregaps included, so a range may run
-    across track boundaries. Raises :class:`Unreadable` for samples outside the disc or in a track
-    stored without its raw sectors.
+    across track boundaries. Raises :class:`Unreadable` for samples outside the disc, in the
+    lead-out and lead-in between two sessions, which hold no track sectors, or in a track stored
+    without its raw sectors.
     """
     total = disc.total_sectors * SAMPLES_PER_SECTOR
     if first < 0 or count < 0 or first + count > total:
         raise Unreadable(f"samples {first} to {first + count} lie outside the image's {total} samples")
+    sessions = disc.sessions
+    for before, after in zip(sessions, sessions[1:]):
+        gap = (before.lead_out * SAMPLES_PER_SECTOR, after.tracks[0].start * SAMPLES_PER_SECTOR)
+        if first < gap[1] and first + count > gap[0]:
+            raise Unreadable(
+                f"samples {first} to {first + count} reach the lead-out and lead-in between sessions "
+                f"{before.number} and {after.number}, which hold no track sectors"
+            )
     skip = (first % SAMPLES_PER_SECTOR) * BYTES_PER_SAMPLE
     remaining = count * BYTES_PER_SAMPLE
     first_sector = first // SAMPLES_PER_SECTOR
@@ -326,7 +335,7 @@ def correct_read_offset(sheet: Path, offset: int, directory: Path, log: Log) -> 
     shifted left)"), and does it in ``cd/cd_dump.ixx``: the sector the drive returns for LBA L is
     written with ``write_entry(..., read_offset * CD_SAMPLE_SIZE)``, which ``utils/file_io.ixx``
     places at byte ``L * 2352 - read_offset * 4``, so corrected sample ``q`` is the drive's sample
-    ``q + read_offset``. Each run of consecutive audio tracks, pregaps included,
+    ``q + read_offset``. Each run of consecutive audio tracks of one session, pregaps included,
     is one stream of samples on the disc, so samples move across the boundaries between its tracks.
     Data sectors, which the drive addresses by their headers, are copied unchanged.
 
@@ -386,11 +395,12 @@ def correct_read_offset(sheet: Path, offset: int, directory: Path, log: Log) -> 
 
 
 def _audio_runs(disc: Disc) -> list[list[Track]]:
+    # A run ends at a session's lead-out: the next session's audio is another stream.
     runs: list[list[Track]] = []
     previous_audio = False
     for track in disc.tracks:
         if track.is_audio:
-            if previous_audio:
+            if previous_audio and runs[-1][-1].session == track.session:
                 runs[-1].append(track)
             else:
                 runs.append([track])

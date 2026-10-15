@@ -177,22 +177,22 @@ keeps a legally made copy from being identified as the same edition:
 
 - `OriginalContentSource` reads a directory, an ISO and cue/bin, not the CHD, CloneCD, MDS, NRG
   or ISO-plus-audio forms the archiver writes, and of a `bincue-split` sheet it reads only the
-  data track, so its audio tracks cannot be fingerprinted;
-- sessions are not kept, so a CD-Extra disc's cue, CloneCD and CHD copies lose them.
+  data track, so its audio tracks cannot be fingerprinted.
 
 Until they are closed, test the importer against the forms it reads, and record each form it
 should accept and does not in the restoration's plan.
 
 ## What each format keeps
 
-| Format | Data sectors | Audio | Pregaps | Subchannel |
-|---|---|---|---|---|
-| redumper dump (`archival/`) | raw | yes | yes | read from the disc |
-| `bincue-split`, `bincue`, `chd` | raw | yes | yes | none |
-| `ccd` | raw | yes | yes | generated from the table of contents |
-| `mds`, `nrg` | raw | yes | yes | none |
-| `iso-flac`, `iso-wav` | user data | yes, from INDEX 01 | as a cue `PREGAP` | none |
-| `iso-ogg` | user data | lossy | as a cue `PREGAP` | none |
-| `iso` | user data | no | no | none |
-| `files` | the file system's files | no | no | none |
-| `game-dir` | the file system's files | yes, from INDEX 01, as `.cdda` | no | none |
+| Format | Data sectors | Audio | Pregaps | Subchannel | Sessions |
+|---|---|---|---|---|---|
+| redumper dump (`archival/`) | raw | yes | yes | read from the disc | yes |
+| `bincue-split`, `bincue` | raw | yes | yes | none | `REM SESSION` lines |
+| `chd` | raw | yes | yes | none | only from a chdman newer than MAME 0.289 |
+| `ccd` | raw | yes | yes | generated from the table of contents | yes |
+| `mds`, `nrg` | raw | yes | yes | none | one session only |
+| `iso-flac`, `iso-wav` | user data | yes, from INDEX 01 | as a cue `PREGAP` | none | `REM SESSION` lines |
+| `iso-ogg` | user data | lossy | as a cue `PREGAP` | none | `REM SESSION` lines |
+| `iso` | user data | no | no | none | no |
+| `files` | the file system's files | no | no | none | no |
+| `game-dir` | the file system's files | yes, from INDEX 01, as `.cdda` | no | none | no |

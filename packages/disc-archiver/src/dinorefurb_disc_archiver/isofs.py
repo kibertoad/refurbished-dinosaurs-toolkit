@@ -248,10 +248,11 @@ def locate(track: Track) -> Volume:
     """Find where the addresses of the track's ISO 9660 file system point in the track.
 
     A volume gives its addresses counted either from the track's first sector or from the start
-    of the disc. Each base the track offers is tried: 0, the track's LBA as the disc describes it,
-    and for raw sectors the LBA by the address in the header of sector 16, which also counts the
-    gap between sessions that a cue sheet leaves out. A base fits when the root directory extent the
-    primary volume descriptor gives lands inside the track and the volume, past the volume
+    of the disc. Each base the track offers is tried: 0, the track's LBA as the disc describes it
+    (with the gap between sessions when the source gives sessions), and for raw sectors of a track
+    in the first session the LBA by the address in the header of sector 16, which also counts the
+    gap between sessions that a source without sessions leaves out. A base fits when the root
+    directory extent the primary volume descriptor gives lands inside the track and the volume, past the volume
     descriptors, on a directory whose ``.`` record gives that same extent. A nonzero base must also
     lie past the volume descriptors, which sit at sector 16 of the track whatever the base.
 
@@ -278,7 +279,10 @@ def locate(track: Track) -> Volume:
         descriptors_end = set_end + 1
         offered = {0: "the track's first sector"}
         offered.setdefault(track.index1, f"LBA {track.index1}, where the disc's layout puts the track")
-        header = _header_start(track)
+        # A track in a later session sits where the source's sessions put it. A track in the
+        # first session may come from a source that gives no sessions, which places a later
+        # session's track without the gap; its sector headers may still give the disc address.
+        header = _header_start(track) if track.session == 1 else None
         if header is not None:
             offered.setdefault(header, f"LBA {header}, by the address in the track's sector headers")
         fitting = [
