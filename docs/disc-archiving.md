@@ -91,7 +91,10 @@ checked, and the same on every machine it is kept on.
    `bincue-split` and compares it with every disc in the DAT; the manifest's `redump` gives the
    outcome. `matched` means the dump is the known good one. `partial` means every track matches
    but the cue sheet differs, and says how (usually only the file names it lists). `mismatched`
-   names the tracks that differ and exits with `3`: dump again. `notListed` means the disc is not
+   names the tracks that differ and exits with `3`. Either the dump is bad or the disc is an
+   edition the DAT does not list that shares some tracks with the game named; dump it again,
+   on another drive if you can. If the second dump has the same hashes, the edition is most
+   likely unlisted. `notListed` means the disc is not
    in the DAT, so the dump cannot be checked this way; dumping it again on another drive and
    comparing is the next best check. To check an existing split dump, run
    `disc-archiver check --input <dump>.cue --dat <the DAT>`.

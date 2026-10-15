@@ -132,18 +132,21 @@ class RedumpTests(unittest.TestCase):
                 self.assertEqual((report["status"], report["game"]), ("mismatched", "Synth Game"))
                 self.assertEqual([f["matched"] for f in report["files"]], [False, True, False, True])
                 self.assertEqual(
-                    report["differences"],
+                    report["differences"][:-1],
                     [
                         "bincue-split/Synth Game (Track 2).bin matches no file of 'Synth Game'",
                         "the copy has no file matching 'Synth Game (Track 2).bin'",
                     ],
                 )
+                # The DAT cannot tell a bad dump from an unlisted edition sharing tracks.
+                self.assertIn("either the dump is bad or the disc is an edition", report["differences"][-1])
 
     def test_a_copy_missing_a_track_the_dat_lists_is_mismatched(self) -> None:
         roms = [rom_xml(self.cue)] + [rom_xml(t) for t in self.tracks] + [rom_xml(self.tracks[0], name="Synth Game (Track 4).bin", sha1="3" * 40)]
         code, _, manifest = self.convert(self.write_dat(dat_xml({"Synth Game": roms})), "--name", "Synth Game")
         self.assertEqual(code, EXIT_MISMATCH)
-        self.assertEqual(manifest["redump"]["differences"], ["the copy has no file matching 'Synth Game (Track 4).bin'"])
+        self.assertEqual(manifest["redump"]["differences"][:-1], ["the copy has no file matching 'Synth Game (Track 4).bin'"])
+        self.assertIn("either the dump is bad", manifest["redump"]["differences"][-1])
 
     def test_a_disc_the_dat_does_not_list_is_printed_and_does_not_fail(self) -> None:
         other = self.dir / "other.bin"
@@ -179,6 +182,22 @@ class RedumpTests(unittest.TestCase):
         code, _, err = run("check", "--input", str(iso), "--dat", str(dat))
         self.assertEqual(code, EXIT_FAILED)
         self.assertIn("convert the copy to bincue-split first", err)
+
+    def test_check_refuses_a_cue_sheet_without_the_split_layout(self) -> None:
+        # One BIN holding every track is the same disc as the DAT's entry, but none of its files
+        # can match; comparing it would report the disc as not listed.
+        single = SyntheticDisc(iso_image()).write_single(self.dir / "single", "Synth Game")
+        code, out, err = run("check", "--input", str(single), "--dat", str(self.reference_dat()))
+        self.assertEqual(code, EXIT_FAILED, out)
+        self.assertIn("convert the copy to bincue-split first", err)
+
+    def test_games_with_the_same_tracks_are_told_apart_by_the_cue_sheet(self) -> None:
+        # "A Game" sorts first and lists the same track files, but not this cue sheet.
+        other = [rom_xml(self.cue, sha1="5" * 40)] + [rom_xml(t, name=t.name.replace("Synth Game", "A Game")) for t in self.tracks]
+        mine = [rom_xml(self.cue)] + [rom_xml(t) for t in self.tracks]
+        code, _, manifest = self.convert(self.write_dat(dat_xml({"A Game": other, "Synth Game": mine})), "--name", "Synth Game")
+        self.assertEqual(code, EXIT_OK)
+        self.assertEqual((manifest["redump"]["status"], manifest["redump"]["game"]), ("matched", "Synth Game"))
 
     def test_a_refused_dat_stops_the_run_before_anything_is_written(self) -> None:
         dat = self.write_dat("<datafile><game name='x'>")
@@ -220,6 +239,9 @@ class DatRefusalTests(unittest.TestCase):
         self.refused(external, "refers to the entity 'secret'")
         self.refused(b'<datafile><game name="&#38;secret;"/>&secret;</datafile>', "refers to the entity 'secret'")
         self.refused('<datafile/>'.encode("utf-16"), "not UTF-8")
+        # A declared encoding is not followed: the text is read as UTF-8.
+        latin = f'<?xml version="1.0" encoding="ISO-8859-1"?><datafile><game name="Caf\xe9">{self.ROM}</game></datafile>'
+        self.refused(latin.encode("latin-1"), "not well-formed XML")
 
     def test_malformed_and_foreign_xml_is_refused(self) -> None:
         self.refused(b"<datafile><game name='x'>", "not well-formed XML")

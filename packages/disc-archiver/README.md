@@ -194,7 +194,9 @@ profile check failed, a written format differs from its source, or the Redump co
 yourself from [redump.org](http://redump.org/downloads/): the `.dat` file, or the `.zip` the site
 serves holding one `.dat`. The archiver never downloads a DAT. `rip` and `convert` also write
 `bincue-split`, the layout Redump lists, and compare its files; `check` compares the `.cue` it is
-given and the track files it names, and refuses other inputs. The comparison and its outcome are
+given and the track files it names. `check` refuses other inputs, and a cue sheet of another layout
+(several tracks in one file, an ISO or WAVE file, a pregap no file holds), whose files could not
+match the DAT's. The comparison and its outcome are
 in the manifest's `redump` (in `check`'s output, its `redump`).
 
 Each track file is matched with a DAT file by size, CRC32, MD5 and SHA-1, all four agreeing; file
@@ -205,7 +207,7 @@ names are reported separately. The outcome is:
 | `matched` | Every track file and the cue sheet match one game's files, and the game lists no other file. | `0` |
 | `partial` | Every track file matches one game, which lists no other track, but the cue sheet differs. `differences` says whether only its `FILE` names (Redump names them `<game> (Track N).bin`; `--name` with the game's name writes those), only its line endings (a sheet redumper wrote outside Windows ends lines with LF), or its content differs. | `0` |
 | `notListed` | No game in the DAT lists any of the track files. Printed; the copy cannot be checked this way. | `0` |
-| `mismatched` | Some track files match a game and others do not, or the copy lacks a file the game lists. `differences` names them. | `3` |
+| `mismatched` | Some track files match a game and others do not, or the copy lacks a file the game lists. `differences` names them. The DAT cannot tell a bad dump from an edition it does not list that shares some of the game's tracks; dumping again and comparing tells them apart. | `3` |
 | `notCompared` | `bincue-split` could not be written from this source (an ISO has no raw sectors). | `0` |
 
 A DAT is read only when it is UTF-8 Logiqx XML of at most 128 MiB, every file lists a decimal

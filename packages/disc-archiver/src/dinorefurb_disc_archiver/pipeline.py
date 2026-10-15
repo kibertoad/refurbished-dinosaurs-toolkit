@@ -425,7 +425,7 @@ def derive(
     redump_report = None
     if dat is not None:
         redump_report = _redump(dat, root, outputs, unavailable)
-        log(f"redump: {redump_report['status']}" + (f" ({redump_report['game']})" if redump_report["game"] else ""))
+        log(f"redump: {redump.summary(redump_report)}")
     manifest = {
         "manifest": MANIFEST_VERSION,
         "notice": f"A personal archival copy of a disc you own. Never share it. See {NOTICE_FILENAME}.",
@@ -457,8 +457,22 @@ def _redump(dat: redump.Dat, root: Path, outputs: list[dict], unavailable: list[
 
 
 def redump_check(dat: redump.Dat, sheet: Path, disc: Disc) -> dict[str, object]:
-    """Compare a cue sheet and the track files it names with ``dat``, for ``check``."""
+    """Compare a cue sheet and the track files it names with ``dat``, for ``check``.
+
+    Raises :class:`DiscError` unless the sheet has Redump's split layout: each track in a BINARY
+    file of its own holding raw sectors from its first stored sector, pregap included. Another
+    layout's files could never match the DAT's, and comparing them would report the disc as not
+    listed or mismatched.
+    """
     sources = list(dict.fromkeys(t.source for t in disc.tracks))
+    split = len(sources) == len(disc.tracks) and all(
+        t.storage == "raw" and t.source_offset == 0 and (t.pregap_stored or not t.pregap) for t in disc.tracks
+    )
+    if not split:
+        raise DiscError(
+            f"--dat compares a split BIN/CUE copy (one BINARY file of raw sectors per track, pregaps "
+            f"included), and {sheet.name} has another layout; convert the copy to bincue-split first"
+        )
     return redump.compare(
         dat, file_hashes(sheet, sheet.parent), sheet.read_bytes(), [file_hashes(s, s.parent) for s in sources]
     )

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-from . import backends, drives, redumper, tools
+from . import backends, drives, redump, redumper, tools
 from .disc import DiscError
 from .formats import FORMATS
 from .notice import NOTICE
@@ -396,7 +396,7 @@ class ArchiverWindow:
         ]
         report = manifest.get("redump")
         if report is not None:
-            lines.append(f"Redump: {report['status']}" + (f" ({report['game']})" if report["game"] else ""))
+            lines.append(f"Redump: {redump.summary(report)}")
             lines += [f"  {d}" for d in report["differences"]]
         for line in lines:
             self._append(line)

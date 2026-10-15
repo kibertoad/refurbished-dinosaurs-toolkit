@@ -218,7 +218,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 report = redump_check(dat, arguments.input, disc) if dat is not None else None
             print(json.dumps({"disc": found, "checks": [c.as_json() for c in checks], "redump": report}, indent=2))
             if report is not None:
-                _log(f"redump: {report['status']}" + (f" ({report['game']})" if report["game"] else ""))
+                _log(f"redump: {redump.summary(report)}")
             failed = not all(c.matched for c in checks) or (report is not None and report["status"] == "mismatched")
             return EXIT_MISMATCH if failed else EXIT_OK
         if not _require_acceptance(arguments):

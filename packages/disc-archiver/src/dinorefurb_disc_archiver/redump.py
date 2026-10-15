@@ -92,7 +92,7 @@ def _dat_bytes(path: Path) -> bytes:
                 raise DiscError(f"{member.filename} in {path} is larger than {MAXIMUM_DAT_BYTES} bytes, more than a DAT can be")
             with archive.open(member) as handle:
                 return _read_limited(handle, f"{member.filename} in {path}")  # type: ignore[arg-type]
-    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error) as error:
+    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError, OSError) as error:
         raise DiscError(f"{path} cannot be read as a zip: {error}") from None
 
 
@@ -152,7 +152,8 @@ def parse_dat(data: bytes, file: str) -> Dat:
             current = None
         stack.pop()
 
-    parser = expat.ParserCreate()
+    # The text is read as UTF-8 whatever encoding its XML declaration names.
+    parser = expat.ParserCreate(encoding="utf-8")
     parser.SetParamEntityParsing(expat.XML_PARAM_ENTITY_PARSING_NEVER)
     parser.StartDoctypeDeclHandler = doctype
     parser.EntityDeclHandler = entity
@@ -207,11 +208,13 @@ def _assign(tracks: list[dict[str, object]], game: DatGame) -> list[DatRom | Non
     used once. Of several equal roms, the one with the file's name, then the one at the file's
     position, is preferred."""
     roms = [r for r in game.roms if not r.is_cue]
+    rom_keys = [_key(r) for r in roms]
     used: set[int] = set()
     found: list[DatRom | None] = []
     for position, entry in enumerate(tracks):
         name = Path(str(entry["path"])).name
-        candidates = [i for i, r in enumerate(roms) if i not in used and _key(r) == _key(entry)]
+        key = _key(entry)
+        candidates = [i for i, k in enumerate(rom_keys) if i not in used and k == key]
         candidates.sort(key=lambda i: (roms[i].name != name, i != position, i))
         if candidates:
             used.add(candidates[0])
@@ -224,8 +227,11 @@ def _assign(tracks: list[dict[str, object]], game: DatGame) -> list[DatRom | Non
 def _sheet_explanation(sheet: bytes, renames: dict[str, str], wanted: list[DatRom]) -> str:
     """Which differences between the copy's cue sheet and the DAT's account for the mismatch."""
     renamed = sheet
-    for mine, theirs in renames.items():
-        renamed = renamed.replace(f'FILE "{mine}"'.encode(), f'FILE "{theirs}"'.encode())
+    if renames:
+        # One pass, so a name that is also another track's DAT name is not renamed twice.
+        theirs = {mine.encode(): new.encode() for mine, new in renames.items()}
+        pattern = re.compile(b'FILE "(' + b"|".join(re.escape(mine) for mine in theirs) + b')"')
+        renamed = pattern.sub(lambda m: b'FILE "' + theirs[m.group(1)] + b'"', sheet)
     unix = renamed.replace(b"\r\n", b"\n")
     keys = {_key(r) for r in wanted}
     if renames and _bytes_key(renamed) in keys:
@@ -248,11 +254,17 @@ def compare(dat: Dat, sheet: dict[str, object], sheet_bytes: bytes, tracks: list
     """
     assignments = [(game, _assign(tracks, game)) for game in dat.games]
 
-    def rank(item: tuple[DatGame, list[DatRom | None]]) -> tuple[int, int, str]:
+    sheet_key = _key(sheet)
+
+    def rank(item: tuple[DatGame, list[DatRom | None]]) -> tuple[int, int, bool, int, str]:
         # The game holding most of the track files, then the one with fewest files the copy lacks.
+        # Games listing the same track files are told apart by the cue sheet, then by file names.
         game, assigned = item
         held = sum(r is not None for r in assigned)
-        return (-held, sum(not r.is_cue for r in game.roms) - held, game.name)
+        lacking = sum(not r.is_cue for r in game.roms) - held
+        sheet_differs = not any(r.is_cue and _key(r) == sheet_key for r in game.roms)
+        renamed = sum(r is not None and r.name != Path(str(t["path"])).name for t, r in zip(tracks, assigned, strict=True))
+        return (-held, lacking, sheet_differs, renamed, game.name)
 
     game, assigned = min(assignments, key=rank)
     files = [{"path": sheet["path"], "kind": "cueSheet", "matched": False, "datName": None}]
@@ -278,10 +290,16 @@ def compare(dat: Dat, sheet: dict[str, object], sheet_bytes: bytes, tracks: list
     for name in missing:
         differences.append(f"the copy has no file matching {name!r}")
     if differences:
+        # The DAT shows only that the copy differs from the closest listed game. A bad dump and an
+        # edition the DAT does not list that shares some of its tracks look the same here.
+        differences.append(
+            f"either the dump is bad or the disc is an edition {dat.file} does not list that shares "
+            f"files with {game.name!r}; dump it again, on another drive if you can, and compare"
+        )
         result["status"] = "mismatched"
         return result
     sheets = [r for r in game.roms if r.is_cue]
-    match = next((r for r in sheets if _key(r) == _key(sheet)), None)
+    match = next((r for r in sheets if _key(r) == sheet_key), None)
     if match is not None:
         files[0].update(matched=True, datName=match.name)
         if match.name != Path(str(sheet["path"])).name:
@@ -294,6 +312,11 @@ def compare(dat: Dat, sheet: dict[str, object], sheet_bytes: bytes, tracks: list
     else:
         differences.append(_sheet_explanation(sheet_bytes, renames, sheets))
     return result
+
+
+def summary(report: dict[str, object]) -> str:
+    """A report's status, and the game it names, in one line: ``partial (Game (USA))``."""
+    return f"{report['status']}" + (f" ({report['game']})" if report["game"] else "")
 
 
 def not_compared(dat: Dat, reason: str) -> dict[str, object]:
