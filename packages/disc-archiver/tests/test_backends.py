@@ -11,11 +11,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from synthetic import iso_image
+from synthetic import SyntheticDisc, iso_image
 
 from dinorefurb_disc_archiver import backends, redumper
 from dinorefurb_disc_archiver.disc import DiscError
-from dinorefurb_disc_archiver.pipeline import MANIFEST_NAME, archive
+from dinorefurb_disc_archiver.cue import read_cue
+from dinorefurb_disc_archiver.notice import NOTICE_FILENAME
+from dinorefurb_disc_archiver.pipeline import MANIFEST_NAME, archive, fingerprint
 from dinorefurb_disc_archiver.profile import BUILTIN_PROFILES
 
 # Writes a synthetic split dump where redumper would write the real one, and records its arguments.
@@ -31,18 +33,24 @@ if args.get("drive") == "broken":
     print("drive not ready", file=sys.stderr)
     sys.exit(1)
 SyntheticDisc(iso_image()).write_split(Path(args["image-path"]), args["image-name"])
-Path(args["image-path"], args["image-name"] + ".log").write_text("dump log")
+Path(args["image-path"], args["image-name"] + ".log").write_text(
+    "drive information\\n"
+    "  configuration: GENERIC (read offset: +6, C2 shift: 0, pre-gap start: -135, read method: BE, sector order: DATA_C2_SUB)\\n"
+)
 """
 
 FAKE_CDRDAO = """\
 #!{python}
-import json, sys
+import json, os, sys
 sys.path.insert(0, {tests!r})
 from pathlib import Path
 from synthetic import SyntheticDisc, iso_image
 Path("argv.json").write_text(json.dumps(sys.argv[1:]))
 datafile = sys.argv[sys.argv.index("--datafile") + 1]
-sheet = SyntheticDisc(iso_image()).write_single(Path("."), Path(datafile).stem)
+# The audio moved by STAND_IN_DRIVE_OFFSET, as an uncorrected read from a drive with that read
+# offset holds it.
+offset = int(os.environ.get("STAND_IN_DRIVE_OFFSET", "0"))
+sheet = SyntheticDisc(iso_image(), unique_audio=True, audio_shift=offset).write_single(Path("."), Path(datafile).stem)
 Path(sys.argv[-1]).write_text("toc")
 Path(sheet.name + ".made").write_text(sheet.read_text())
 """
@@ -90,7 +98,10 @@ class ProgramBackendTests(unittest.TestCase):
         argv = json.loads((out / "archival" / "argv.json").read_text())
         self.assertEqual(argv, ["--drive=E:", f"--image-path={out / 'archival'}", "--image-name=Game"])
         self.assertTrue((out / "archival" / "Game.log").is_file())
-        self.assertEqual(manifest["source"], {"kind": "drive", "drive": "E:", "backend": "redumper", "dump": "archival/Game.cue"})
+        self.assertEqual(
+            manifest["source"],
+            {"kind": "drive", "drive": "E:", "backend": "redumper", "dump": "archival/Game.cue", "readOffsetCorrected": True, "readOffset": 6},
+        )
         self.assertEqual([o["format"] for o in manifest["outputs"]], ["bincue"])  # type: ignore[union-attr]
         self.assertEqual(manifest["outputs"][0]["verification"]["status"], "matched")  # type: ignore[index]
 
@@ -122,10 +133,60 @@ class ProgramBackendTests(unittest.TestCase):
         self.assertIn("generic-mmc-raw:0x20000", argv)
         self.assertEqual(manifest["outputs"][0]["verification"]["status"], "matched")  # type: ignore[index]
 
+    def test_cdrdao_audio_is_corrected_by_the_drives_read_offset(self) -> None:
+        reference = fingerprint(read_cue(SyntheticDisc(iso_image(), unique_audio=True).write_single(self.dir / "reference")))
+        with mock.patch.dict(os.environ, {"STAND_IN_DRIVE_OFFSET": "667"}):
+            out = self.dir / "out"
+            manifest = archive(
+                output=out, profile=BUILTIN_PROFILES["any"], log=silent_log, drive="/dev/sr0", name="Game", backend="cdrdao", read_offset=667
+            )
+            lines: list[str] = []
+            uncorrected = archive(
+                output=self.dir / "plain", profile=BUILTIN_PROFILES["any"], log=lines.append, drive="/dev/sr0", name="Game", backend="cdrdao"
+            )
+        source = manifest["source"]
+        self.assertEqual((source["readOffsetCorrected"], source["readOffset"]), (True, 667))  # type: ignore[index]
+        self.assertEqual(source["dump"], "archival/offset-corrected/Game.cue")  # type: ignore[index]
+        self.assertTrue((out / "archival" / "Game.bin").is_file())
+        self.assertTrue((out / "archival" / "offset-corrected" / NOTICE_FILENAME).is_file())
+        audio = manifest["disc"]["audio"]  # type: ignore[index]
+        self.assertEqual(audio[0]["sha256"], reference["audio"][0]["sha256"])  # type: ignore[index]
+        self.assertEqual(audio[1]["unreadSamples"], [[120 * 588 - 667, 120 * 588]])
+        self.assertEqual((uncorrected["source"]["readOffsetCorrected"], uncorrected["source"]["readOffset"]), (False, None))  # type: ignore[index]
+        self.assertTrue(any("the audio is uncorrected" in line for line in lines))
+        self.assertNotEqual(uncorrected["disc"]["audio"][0]["sha256"], reference["audio"][0]["sha256"])  # type: ignore[index]
+
     def test_a_missing_program_that_cannot_be_downloaded_says_how_to_install_it(self) -> None:
         os.environ["DISC_ARCHIVER_REDUMPER"] = str(self.dir / "nowhere")
         with self.assertRaisesRegex(DiscError, "offline in tests.*github.com/superg/redumper"):
             archive(output=self.dir / "out", profile=BUILTIN_PROFILES["any"], log=silent_log, drive="E:", backend="redumper")
+
+
+class RedumperReadOffsetTests(unittest.TestCase):
+    # The lines redumper b761 logs: drive_config_string and the warnings of drive_get_config.
+    CONFIGURATION = "  configuration: GENERIC (read offset: {}, C2 shift: 0, pre-gap start: -135, read method: BE, sector order: DATA_C2_SUB)\n"
+    UNKNOWN = "warning: drive read offset not found in the database\nwarning: drive not found in the database\n"
+
+    def test_a_known_drive_is_corrected_by_the_logged_offset(self) -> None:
+        self.assertEqual(backends.redumper_read_offset("drive information\n" + self.CONFIGURATION.format("+667")), (True, 667))
+        self.assertEqual(backends.redumper_read_offset(self.CONFIGURATION.format("-1164")), (True, -1164))
+
+    def test_a_drive_missing_from_the_database_is_reported_uncorrected(self) -> None:
+        self.assertEqual(backends.redumper_read_offset(self.UNKNOWN + self.CONFIGURATION.format("+0")), (False, None))
+
+    def test_an_offset_given_to_redumper_counts_as_a_correction(self) -> None:
+        text = self.UNKNOWN + self.CONFIGURATION.format("+48")
+        self.assertEqual(backends.redumper_read_offset(text, ["--drive-read-offset=48"]), (True, 48))
+        self.assertEqual(backends.redumper_read_offset(text, ["--drive-read-offset", "48"]), (True, 48))
+
+    def test_only_the_last_run_in_an_appended_log_counts(self) -> None:
+        earlier = self.UNKNOWN + self.CONFIGURATION.format("+0")
+        self.assertEqual(backends.redumper_read_offset(earlier + self.CONFIGURATION.format("+6")), (True, 6))
+        self.assertEqual(backends.redumper_read_offset(self.CONFIGURATION.format("+6") + earlier), (False, None))
+
+    def test_a_log_without_the_configuration_says_nothing(self) -> None:
+        self.assertEqual(backends.redumper_read_offset(""), (None, None))
+        self.assertEqual(backends.redumper_read_offset("dump log\n"), (None, None))
 
 
 class DataCopyTests(unittest.TestCase):

@@ -13,6 +13,7 @@ from unittest import mock
 import wave
 from pathlib import Path
 
+import xxhash
 from synthetic import FILES, SyntheticCdExtra, SyntheticDisc, form2_sector, iso_image, mode1_sector, mode2_raw
 
 from dinorefurb_disc_archiver import ccd, formats, isofs, pipeline
@@ -103,8 +104,9 @@ class RawFormatTests(FormatTestCase):
             "    INDEX 00 00:00:00\n"
             "    INDEX 01 00:02:00\n"
         )
+        # redumper ends every line with CRLF, as the sheet written back does on every platform.
         source = self.dir / "source" / "Synth.cue"
-        source.write_text(sheet)
+        source.write_bytes(sheet.replace("\n", "\r\n").encode())
         output = self.write("bincue-split", read_cue(source))
         self.assertEqual(output.entry.read_bytes(), source.read_bytes())
         # Flags given in another order are written in redumper's.
@@ -131,6 +133,24 @@ class RawFormatTests(FormatTestCase):
         source.write_bytes(sheet)
         output = self.write("bincue-split", read_cue(source))
         self.assertIn(title, output.entry.read_bytes())
+
+    def test_cue_sheets_end_every_line_with_crlf_on_every_platform(self) -> None:
+        # Redump's cue sheets, which its DATs hash, use CRLF; a sheet written on Linux must have
+        # the same bytes as one written on Windows.
+        expected = b"".join(
+            line.encode() + b"\r\n"
+            for line in [
+                'FILE "Synth (Track 1).bin" BINARY', "  TRACK 01 MODE1/2352", "    INDEX 01 00:00:00",
+                'FILE "Synth (Track 2).bin" BINARY', "  TRACK 02 AUDIO", "    INDEX 00 00:00:00", "    INDEX 01 00:02:00",
+                'FILE "Synth (Track 3).bin" BINARY', "  TRACK 03 AUDIO", "    INDEX 00 00:00:00", "    INDEX 01 00:02:00",
+            ]
+        )
+        self.assertEqual(self.write("bincue-split").entry.read_bytes(), expected)
+        for identifier in ("bincue", "iso-wav"):
+            data = self.write(identifier).entry.read_bytes()
+            self.assertTrue(data.endswith(b"\r\n"), identifier)
+            self.assertNotIn(b"\n", data.replace(b"\r\n", b""), identifier)
+            self.assertNotIn(b"\r", data.replace(b"\r\n", b""), identifier)
 
     def test_one_file_bincue_matches_a_hand_built_single_bin(self) -> None:
         output = self.write("bincue")
@@ -343,9 +363,11 @@ class PastTheVolumeTests(FormatTestCase):
                 "track": 1,
                 "sectors": self.volume + self.REPEATED + self.BLANK,
                 "sha256": hashlib.sha256(self.synthetic.iso + repeated_user).hexdigest(),
+                "xxh3": xxhash.xxh3_128_hexdigest(self.synthetic.iso + repeated_user),
                 "emptyForm2Sectors": [],
                 "nonDataSectors": [[first, first + self.BLANK]],
                 "nonDataSha256": hashlib.sha256(bytes(self.BLANK * RAW_SECTOR)).hexdigest(),
+                "nonDataXxh3": xxhash.xxh3_128_hexdigest(bytes(self.BLANK * RAW_SECTOR)),
             },
         )
         self.assertEqual(found["volumeIdentifier"], "SYNTH_DISC")
@@ -489,9 +511,11 @@ class EmptyForm2Tests(FormatTestCase):
                 "track": 1,
                 "sectors": v + self.TAIL,
                 "sha256": hashlib.sha256(self.synthetic.iso + bytes(self.TAIL * 2048)).hexdigest(),
+                "xxh3": xxhash.xxh3_128_hexdigest(self.synthetic.iso + bytes(self.TAIL * 2048)),
                 "emptyForm2Sectors": [[self.PAD, self.PAD + 1], [v, v + self.TAIL]],
                 "nonDataSectors": [],
                 "nonDataSha256": None,
+                "nonDataXxh3": None,
             },
         )
         # The same user data as a MODE1 image of the disc, which holds zero blocks there.
@@ -693,9 +717,11 @@ class VolumeAddressTests(FormatTestCase):
                 "track": extra.number,
                 "sectors": extra.volume + self.PADDING,
                 "sha256": hashlib.sha256(extra.iso).hexdigest(),
+                "xxh3": xxhash.xxh3_128_hexdigest(extra.iso),
                 "emptyForm2Sectors": [],
                 "nonDataSectors": [[extra.volume, extra.volume + self.PADDING]],
                 "nonDataSha256": hashlib.sha256(bytes(self.PADDING * RAW_SECTOR)).hexdigest(),
+                "nonDataXxh3": xxhash.xxh3_128_hexdigest(bytes(self.PADDING * RAW_SECTOR)),
             },
         )
         self.assertFilesRead(disc, extra)

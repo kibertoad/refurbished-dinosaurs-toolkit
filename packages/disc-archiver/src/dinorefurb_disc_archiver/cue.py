@@ -362,6 +362,17 @@ class CueFile:
     tracks: list[tuple[Track, int, bool, str]]  # track, first stored sector, pregap stored, type
 
 
+def write_cue(path: Path, text: str) -> None:
+    """Write a cue sheet from ``render_cue`` as UTF-8 with CRLF line endings on every platform.
+
+    Redump's cue sheets, which its DATs hash, end every line, the last included, with CRLF, so a
+    sheet written on Linux and one written on Windows from the same disc are the same bytes and
+    can match a DAT's cue entry. CD-Text bytes ``read_cue`` kept as surrogate escapes are written
+    back as they were.
+    """
+    path.write_bytes(text.replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8", errors="surrogateescape"))
+
+
 def render_cue(disc: Disc, files: list[CueFile]) -> str:
     """A cue sheet for ``files``, keeping the disc's catalog, CD-Text, sessions, flags and ISRCs.
 

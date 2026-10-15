@@ -524,7 +524,8 @@ a disc now carry the sessions, so their file hashes differ from earlier runs; th
 (`data.sha256` and each audio `sha256`) do not change.
 
 A cue sheet whose `REM SESSION` lines are out of order or leave a session without tracks, or whose
-`REM LEAD-OUT` or `REM LEAD-IN` gives other than the standard sizes, is now refused; earlier
+`REM LEAD-OUT` or `REM LEAD-IN` gives other than the standard sizes, or whose later session's data
+track has sector headers that place it elsewhere than the standard sizes do, is now refused; earlier
 versions skipped every `REM` line. Discs of one session keep every manifest value, and their
 manifests gain the two new fields.
 

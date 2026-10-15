@@ -11,7 +11,7 @@ from pathlib import Path
 
 from synthetic import SESSION_GAP, SyntheticCdExtra, SyntheticDisc, audio
 
-from dinorefurb_disc_archiver import ccd
+from dinorefurb_disc_archiver import ccd, cdda
 from dinorefurb_disc_archiver.ccd import read_ccd
 from dinorefurb_disc_archiver.cue import read_cue
 from dinorefurb_disc_archiver.disc import RAW_SECTOR, Disc, DiscError, Track
@@ -153,6 +153,13 @@ class LayoutTests(SessionTestCase):
         (directory / "three.cue").write_text("\n".join(lines) + "\n")
         disc = read_cue(directory / "three.cue")
         self.assertEqual([t.start for t in disc.tracks], [0, 10 + 6750 + 4500, 11260 + 10 + 2250 + 4500])
+        # Each session's audio is its own stream for a read offset correction.
+        self.assertEqual([[t.number for t in run] for run in cdda._audio_runs(disc)], [[1], [2], [3]])
+        # Samples are read inside a session; the lead-out and lead-in between two hold none.
+        per_sector = cdda.SAMPLES_PER_SECTOR
+        self.assertEqual(cdda.disc_samples(disc, 0, 10 * per_sector), audio(1, 10))
+        with self.assertRaisesRegex(cdda.Unreadable, "between sessions 1 and 2"):
+            cdda.disc_samples(disc, 9 * per_sector, 2 * per_sector)
 
     def test_discimagecreator_session_remarks_describe_the_same_disc(self) -> None:
         # DiscImageCreator leaves the pregap of the second session's first track out of its file
@@ -187,12 +194,13 @@ class RoundTripTests(SessionTestCase):
                 self.assertEqual(self.found(self.dir / "out" / output["entry"]), self.reference)  # type: ignore[index]
 
     def test_a_redump_sheet_is_written_back_byte_for_byte(self) -> None:
-        self.assertEqual(self.sheet.read_text(), REDUMP_SHEET)
+        # Byte for byte, CRLF line endings included, as Redump's DATs hash the sheet.
+        self.assertEqual(self.sheet.read_bytes(), REDUMP_SHEET.replace("\n", "\r\n").encode())
         output = self.write("bincue-split")
         for path in (self.dir / "source").iterdir():
             self.assertEqual((output.directory / path.name).read_bytes(), path.read_bytes(), path.name)
         single = self.write("bincue")
-        self.assertEqual(single.entry.read_text(), ONE_FILE_SHEET)
+        self.assertEqual(single.entry.read_bytes(), ONE_FILE_SHEET.replace("\n", "\r\n").encode())
         again = write_format("bincue-split", read_cue(single.entry), self.dir / "again", "Extra", silent_log)
         for path in (self.dir / "source").iterdir():
             self.assertEqual((again.directory / path.name).read_bytes(), path.read_bytes(), path.name)
