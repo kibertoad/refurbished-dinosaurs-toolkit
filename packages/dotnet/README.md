@@ -291,7 +291,9 @@ every file the source reads, its descriptor first.
 | `nero-nrg` | `.nrg` of version 1 (`NERO` footer) or 2 (`NER5`) | the disc-at-once tracks its `CUES`/`CUEX` and `DAOI`/`DAOX` chunks describe, raw or 2048-byte data sectors, with or without 96 bytes of subchannel; a version 1 `CUES` time is read as BCD and as binary, and the reading that fits the `DAOI` offsets is used |
 
 A directory is read through its one `.cue`, `.ccd`, `.mds` or `.nrg`, else its one `.iso`; a
-directory holding several is refused. `Open(path)` opens a `.ccd`, `.mds`, `.mdx` or `.nrg` as a disc
+directory holding several is refused. A `.cue` whose first `FILE` is the `.img`, `.mdf` or `.nrg` of
+a `.ccd`, `.mds` or `.nrg` of its name beside it, such as the sheet CloneCD writes next to its
+`.ccd`, describes that image and is passed over. `Open(path)` opens a `.ccd`, `.mds`, `.mdx` or `.nrg` as a disc
 image; it still opens a `.cue` with `OpenCueBin`.
 
 Every form is held to the disc `OpenCueBin` reads: one session whose first track holds the data,
