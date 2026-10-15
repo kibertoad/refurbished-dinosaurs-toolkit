@@ -114,6 +114,12 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     [GeneratedRegex("^\\s*INDEX\\s+(?<number>\\d+)\\s+(?<minute>\\d+):(?<second>\\d+):(?<frame>\\d+)\\s*$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking)]
     private static partial Regex IndexPattern();
+    [GeneratedRegex("^\\s*(?<command>PREGAP|POSTGAP)\\s+(?<minute>\\d+):(?<second>\\d+):(?<frame>\\d+)\\s*$",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking)]
+    private static partial Regex GapCommandPattern();
+    [GeneratedRegex("^\\s*(?:PREGAP|POSTGAP)(?:\\s|$)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking)]
+    private static partial Regex GapLinePattern();
 
     /// <summary>
     /// Sectors of the image that belong to the data track, or <see langword="null"/> when the image
@@ -181,6 +187,21 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     // The text is decoded as File.ReadAllText decodes it: UTF-8 unless a byte order mark says otherwise.
     internal static (byte[] Bytes, CueBinSheet Sheet) Read(string path)
     {
+        var bytes = ReadBytes(path);
+        return (bytes, Parse(Decode(bytes)));
+    }
+
+    // The sheet's text, decoded as File.ReadAllText decodes it.
+    internal static string Decode(byte[] bytes)
+    {
+        using var reader = new StreamReader(new MemoryStream(bytes, writable: false), Encoding.UTF8,
+            detectEncodingFromByteOrderMarks: true);
+        return reader.ReadToEnd();
+    }
+
+    // Reads a sheet file whole, up to MaximumCueLength bytes.
+    internal static byte[] ReadBytes(string path)
+    {
         if (!File.Exists(path)) throw new FileNotFoundException("Cue sheet not found.", path);
         byte[] bytes;
         using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
@@ -203,9 +224,7 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
             }
             bytes = buffer[..length];
         }
-        using var reader = new StreamReader(new MemoryStream(bytes, writable: false), Encoding.UTF8,
-            detectEncodingFromByteOrderMarks: true);
-        return (bytes, Parse(reader.ReadToEnd()));
+        return bytes;
     }
 
     /// <summary>
@@ -223,84 +242,7 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
     /// <exception cref="InvalidDataException">The text breaks one of these rules or a timestamp is invalid.</exception>
     public static CueBinSheet Parse(string text)
     {
-        ArgumentNullException.ThrowIfNull(text);
-        if (text.Length > MaximumCueLength) throw new InvalidDataException("Cue sheet is too large.");
-
-        // Each FILE with the list position of its first track.
-        var files = new List<(string Path, string Type, int FirstPosition)>();
-        var tracks = new List<(int Number, string Type, Dictionary<int, int> Indices)>();
-        foreach (var line in text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
-        {
-            var file = FilePattern().Match(line);
-            if (file.Success)
-            {
-                var path = file.Groups["quoted"].Success ? file.Groups["quoted"].Value : file.Groups["plain"].Value;
-                var type = file.Groups["type"].Value.ToUpperInvariant();
-                if (files.Count == 0 && type != "BINARY")
-                    throw new InvalidDataException(
-                        $"Unsupported cue FILE type {Truncate(type)} for the first FILE, the image; expected BINARY.");
-                if (files.Count > 0 && files[^1].FirstPosition == tracks.Count)
-                    throw new InvalidDataException($"Cue FILE {Truncate(files[^1].Path)} holds no track.");
-                files.Add((path, type, tracks.Count));
-                continue;
-            }
-
-            var track = TrackPattern().Match(line);
-            if (track.Success)
-            {
-                if (files.Count == 0) throw new InvalidDataException("Cue TRACK appears before FILE.");
-                if (!int.TryParse(track.Groups["number"].Value, out var number))
-                    throw new InvalidDataException("Cue track number is invalid.");
-                tracks.Add((number, track.Groups["type"].Value.ToUpperInvariant(), []));
-                continue;
-            }
-
-            var index = IndexPattern().Match(line);
-            if (!index.Success)
-            {
-                // A FILE, TRACK or INDEX line the patterns above cannot read changes the layout;
-                // skipping it would read the image against the wrong tracks or file.
-                if (LayoutCommandPattern().IsMatch(line))
-                    throw new InvalidDataException($"Unsupported cue line: {Truncate(line.Trim())}");
-                continue;
-            }
-            if (tracks.Count == 0) throw new InvalidDataException("Cue INDEX appears before TRACK.");
-            // An index counts from the start of the FILE it follows, so one between a later FILE and
-            // that FILE's first TRACK cannot belong to the track before, which another FILE holds.
-            if (files[^1].FirstPosition == tracks.Count)
-                throw new InvalidDataException(
-                    $"Cue INDEX appears in FILE {Truncate(files[^1].Path)} before its first TRACK; a track's " +
-                    "indices must follow it in the FILE that holds it.");
-            if (!int.TryParse(index.Groups["number"].Value, out var indexNumber) ||
-                !int.TryParse(index.Groups["minute"].Value, out var minute) ||
-                !int.TryParse(index.Groups["second"].Value, out var second) ||
-                !int.TryParse(index.Groups["frame"].Value, out var frame))
-                throw new InvalidDataException("Cue timestamp is invalid.");
-            if (second >= 60 || frame >= 75)
-                throw new InvalidDataException("Cue timestamp is outside the MM:SS:FF range.");
-            int sector;
-            try { sector = checked(minute * 60 * 75 + second * 75 + frame); }
-            catch (OverflowException exception) { throw new InvalidDataException("Cue timestamp is too large.", exception); }
-            var current = tracks[^1];
-            if (!current.Indices.TryAdd(indexNumber, sector))
-                throw new InvalidDataException($"Duplicate INDEX {indexNumber:D2} in track {current.Number:D2}.");
-        }
-
-        if (files.Count == 0 || string.IsNullOrWhiteSpace(files[0].Path))
-            throw new InvalidDataException("Cue sheet has no FILE entry.");
-        if (files[^1].FirstPosition == tracks.Count)
-            throw new InvalidDataException($"Cue FILE {Truncate(files[^1].Path)} holds no track.");
-        foreach (var (path, _, _) in files)
-        {
-            try { PortableAssetPath.Relative(path); }
-            catch (InvalidDataException exception)
-            {
-                throw new InvalidDataException(
-                    $"Cue FILE {Truncate(path)} must be a safe relative path. {exception.Message}", exception);
-            }
-        }
-        if (tracks.Count > 99)
-            throw new InvalidDataException("Cue sheet must contain between 1 and 99 tracks.");
+        var (files, tracks) = Tokenize(text, readGaps: false);
         if (tracks[0].Type is not ("MODE1/2352" or "MODE2/2352"))
             throw new InvalidDataException(
                 $"First cue track must be MODE1/2352 or MODE2/2352, not {Truncate(tracks[0].Type)}.");
@@ -309,7 +251,7 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
         var fileIndex = 0;
         for (var offset = 0; offset < tracks.Count; offset++)
         {
-            var (number, type, indices) = tracks[offset];
+            var (number, type, indices, _) = tracks[offset];
             // Each FILE's indices count from the start of that file.
             if (fileIndex + 1 < files.Count && files[fileIndex + 1].FirstPosition == offset)
             {
@@ -351,7 +293,119 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
             new CueBinTrack(track.Number, track.Type, track.Indices)).ToArray()) { Files = entries };
     }
 
-    private static string Truncate(string value) => value.Length <= 80 ? value : value[..80] + "...";
+    // Reads the FILE, TRACK and INDEX lines of a sheet, and with readGaps its PREGAP and POSTGAP
+    // lines, into the FILE entries, each with the list position of its first track, and the tracks
+    // with their indices and the PREGAP sectors each declares. It applies the rules every reader of
+    // a sheet shares: the first FILE is BINARY, every FILE holds a track and is a safe relative path,
+    // TRACK follows FILE, INDEX follows TRACK in the same FILE, timestamps are valid, no index is
+    // given twice, and 1 to 99 tracks are numbered consecutively from 1. Any other line is skipped,
+    // except a FILE, TRACK or INDEX line (or with readGaps a PREGAP or POSTGAP line) it cannot read.
+    internal static (List<(string Path, string Type, int FirstPosition)> Files,
+        List<(int Number, string Type, Dictionary<int, int> Indices, int Pregap)> Tracks) Tokenize(
+        string text, bool readGaps)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (text.Length > MaximumCueLength) throw new InvalidDataException("Cue sheet is too large.");
+
+        // Each FILE with the list position of its first track.
+        var files = new List<(string Path, string Type, int FirstPosition)>();
+        var tracks = new List<(int Number, string Type, Dictionary<int, int> Indices, int Pregap)>();
+        foreach (var line in text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'))
+        {
+            var file = FilePattern().Match(line);
+            if (file.Success)
+            {
+                var path = file.Groups["quoted"].Success ? file.Groups["quoted"].Value : file.Groups["plain"].Value;
+                var type = file.Groups["type"].Value.ToUpperInvariant();
+                if (files.Count == 0 && type != "BINARY")
+                    throw new InvalidDataException(
+                        $"Unsupported cue FILE type {Truncate(type)} for the first FILE, the image; expected BINARY.");
+                if (files.Count > 0 && files[^1].FirstPosition == tracks.Count)
+                    throw new InvalidDataException($"Cue FILE {Truncate(files[^1].Path)} holds no track.");
+                files.Add((path, type, tracks.Count));
+                continue;
+            }
+
+            var track = TrackPattern().Match(line);
+            if (track.Success)
+            {
+                if (files.Count == 0) throw new InvalidDataException("Cue TRACK appears before FILE.");
+                if (!int.TryParse(track.Groups["number"].Value, out var number))
+                    throw new InvalidDataException("Cue track number is invalid.");
+                tracks.Add((number, track.Groups["type"].Value.ToUpperInvariant(), [], 0));
+                continue;
+            }
+
+            if (readGaps && GapCommandPattern().Match(line) is { Success: true } gap)
+            {
+                if (gap.Groups["command"].Value.Equals("POSTGAP", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException(
+                        $"Cue POSTGAP is not read: {Truncate(line.Trim())}. The sectors it adds after a track are " +
+                        "stored in no file.");
+                if (tracks.Count == 0 || files[^1].FirstPosition == tracks.Count || tracks[^1].Indices.Count > 0 ||
+                    tracks[^1].Pregap > 0)
+                    throw new InvalidDataException("Cue PREGAP must follow its TRACK, once, before the track's first INDEX.");
+                var length = Timestamp(gap.Groups["minute"].Value, gap.Groups["second"].Value, gap.Groups["frame"].Value);
+                if (length == 0) throw new InvalidDataException("Cue PREGAP is empty.");
+                tracks[^1] = tracks[^1] with { Pregap = length };
+                continue;
+            }
+
+            var index = IndexPattern().Match(line);
+            if (!index.Success)
+            {
+                // A FILE, TRACK or INDEX line the patterns above cannot read changes the layout;
+                // skipping it would read the image against the wrong tracks or file.
+                if (LayoutCommandPattern().IsMatch(line) || (readGaps && GapLinePattern().IsMatch(line)))
+                    throw new InvalidDataException($"Unsupported cue line: {Truncate(line.Trim())}");
+                continue;
+            }
+            if (tracks.Count == 0) throw new InvalidDataException("Cue INDEX appears before TRACK.");
+            // An index counts from the start of the FILE it follows, so one between a later FILE and
+            // that FILE's first TRACK cannot belong to the track before, which another FILE holds.
+            if (files[^1].FirstPosition == tracks.Count)
+                throw new InvalidDataException(
+                    $"Cue INDEX appears in FILE {Truncate(files[^1].Path)} before its first TRACK; a track's " +
+                    "indices must follow it in the FILE that holds it.");
+            if (!int.TryParse(index.Groups["number"].Value, out var indexNumber))
+                throw new InvalidDataException("Cue timestamp is invalid.");
+            var sector = Timestamp(index.Groups["minute"].Value, index.Groups["second"].Value, index.Groups["frame"].Value);
+            var current = tracks[^1];
+            if (!current.Indices.TryAdd(indexNumber, sector))
+                throw new InvalidDataException($"Duplicate INDEX {indexNumber:D2} in track {current.Number:D2}.");
+        }
+
+        if (files.Count == 0 || string.IsNullOrWhiteSpace(files[0].Path))
+            throw new InvalidDataException("Cue sheet has no FILE entry.");
+        if (files[^1].FirstPosition == tracks.Count)
+            throw new InvalidDataException($"Cue FILE {Truncate(files[^1].Path)} holds no track.");
+        foreach (var (path, _, _) in files)
+        {
+            try { PortableAssetPath.Relative(path); }
+            catch (InvalidDataException exception)
+            {
+                throw new InvalidDataException(
+                    $"Cue FILE {Truncate(path)} must be a safe relative path. {exception.Message}", exception);
+            }
+        }
+        if (tracks.Count > 99)
+            throw new InvalidDataException("Cue sheet must contain between 1 and 99 tracks.");
+        return (files, tracks);
+    }
+
+    // An MM:SS:FF timestamp as a sector count at 75 sectors per second.
+    private static int Timestamp(string minuteText, string secondText, string frameText)
+    {
+        if (!int.TryParse(minuteText, out var minute) || !int.TryParse(secondText, out var second) ||
+            !int.TryParse(frameText, out var frame))
+            throw new InvalidDataException("Cue timestamp is invalid.");
+        if (second >= 60 || frame >= 75)
+            throw new InvalidDataException("Cue timestamp is outside the MM:SS:FF range.");
+        try { return checked(minute * 60 * 75 + second * 75 + frame); }
+        catch (OverflowException exception) { throw new InvalidDataException("Cue timestamp is too large.", exception); }
+    }
+
+    internal static string Truncate(string value) => value.Length <= 80 ? value : value[..80] + "...";
 
     /// <summary>
     /// Checks that <paramref name="path"/> is a whole number of raw sectors and that every index of
@@ -439,12 +493,12 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
         return (cuePath, binPath, sheet, cueBytes);
     }
 
-    private static string[] Enumerate(string directory, string extension) =>
+    internal static string[] Enumerate(string directory, string extension) =>
         Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
             .Where(path => Path.GetExtension(path).Equals(extension, StringComparison.OrdinalIgnoreCase))
             .Order(StringComparer.OrdinalIgnoreCase).ToArray();
 
-    private static string? MatchStem(string? source, IReadOnlyList<string> candidates)
+    internal static string? MatchStem(string? source, IReadOnlyList<string> candidates)
     {
         if (source is null) return null;
         var stem = Path.GetFileNameWithoutExtension(source);
@@ -452,10 +506,10 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
             Path.GetFileNameWithoutExtension(path).Equals(stem, StringComparison.OrdinalIgnoreCase));
     }
 
-    private static string Single(IReadOnlyList<string> paths, string label) => paths.Count == 1
+    internal static string Single(IReadOnlyList<string> paths, string label) => paths.Count == 1
         ? paths[0] : throw new InvalidDataException($"Could not select exactly one {label}.");
 
-    private static string? ResolveReference(string directory, string reference)
+    internal static string? ResolveReference(string directory, string reference)
     {
         var root = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         var path = Path.GetFullPath(Path.Combine(directory, reference.Replace('/', Path.DirectorySeparatorChar)));

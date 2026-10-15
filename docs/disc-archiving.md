@@ -41,12 +41,14 @@ Recommend what the importer reads:
 
 | Disc and importer | Recommend |
 |---|---|
-| Mixed-mode, importer reads the toolkit's `OriginalContentSource` or another one-file cue/bin reader | `bincue` |
+| Mixed-mode, importer reads a `disc-image` source of the toolkit's `OriginalContentSource` | `bincue`, `bincue-split`, `ccd` or `iso-wav`; each reads as the same disc |
+| Mixed-mode, importer reads the toolkit's `cue-bin` source or another one-file cue/bin reader | `bincue` |
 | Data-only, importer reads ISO files | `iso` |
 | Data-only, importer reads a directory only | `files`, then `iso` once ISO import exists |
 
 Prefer `bincue` for any disc with audio: it is the most complete format most readers accept, and
-an ISO loses the audio.
+an ISO loses the audio. A `disc-image` source reads the audio of `iso-flac` and `iso-ogg` copies as
+unreadable, so do not recommend them for an importer that checks audio.
 
 ## Testing an importer against every format
 
@@ -128,9 +130,9 @@ keeps a legally made copy from being identified as the same edition:
   standard's `GAME_DIR` layout (`CD/<path>`, `CD/trackNN.cdda`);
 - audio hashes are sample-exact, so a copy shifted by a drive's read offset (cdrdao, and most
   rips made with EAC, ImgBurn or Alcohol) reports `mismatched`;
-- Alcohol MDS/MDF and Nero NRG copies are neither read nor written;
-- `OriginalContentSource` reads a directory, an ISO and cue/bin, not the CHD, CloneCD or
-  ISO-plus-audio forms the archiver writes;
+- the archiver does not write Alcohol MDS/MDF or Nero NRG copies, which `OriginalContentSource`
+  reads;
+- `OriginalContentSource` does not read the CHD form the archiver writes;
 - sessions are not kept, so a CD-Extra disc's cue, CloneCD and CHD copies lose them;
 - the Redump DAT comparison is done by hand.
 

@@ -28,14 +28,23 @@ public static class ContentSourceKinds
     /// directory and file tables and the members' data. It is unsplit, or a split archive of one part.
     /// </summary>
     public const string InstallShieldArchive = "installshield3-archive";
+    /// <summary>
+    /// A copy of a CD in any of the image forms <see cref="OriginalContentSource.OpenDiscImage"/>
+    /// reads (see <see cref="DiscImageFormats"/>), which it tells apart by the file. Every form of one
+    /// disc gives the same files, volume and CD audio, so one manifest of this kind identifies the
+    /// disc whichever form the player holds.
+    /// </summary>
+    public const string DiscImage = "disc-image";
 
     /// <summary>Whether <paramref name="kind"/> is one of the kinds above.</summary>
-    public static bool IsSupported(string kind) => kind is Directory or Iso9660 or CueBin or InstallShieldCabinet or InstallShieldArchive;
+    public static bool IsSupported(string kind) =>
+        kind is Directory or Iso9660 or CueBin or InstallShieldCabinet or InstallShieldArchive or DiscImage;
 }
 
 /// <summary>
 /// Read access to the user's original files, from an installed directory, an ISO 9660 image, a
-/// cue/bin raw disc image, an InstallShield cabinet set or an InstallShield 3 archive, behind one interface. Paths are relative with <c>/</c> or <c>\</c>
+/// cue/bin raw disc image, another disc image form, an InstallShield cabinet set or an InstallShield
+/// 3 archive, behind one interface. Paths are relative with <c>/</c> or <c>\</c>
 /// separators and match ignoring case.
 /// </summary>
 public abstract class OriginalContentSource : IDisposable
@@ -50,18 +59,40 @@ public abstract class OriginalContentSource : IDisposable
     /// before their trailing padding give different labels.
     /// </summary>
     public abstract string? Label { get; }
-    /// <summary>The cue sheet of a <see cref="ContentSourceKinds.CueBin"/> source, otherwise <see langword="null"/>.</summary>
+    /// <summary>
+    /// The cue sheet of a <see cref="ContentSourceKinds.CueBin"/> source. For a
+    /// <see cref="ContentSourceKinds.DiscImage"/> source that holds raw sectors, every form but
+    /// <see cref="DiscImageFormats.Iso"/>, the layout of the stream <see cref="OpenBin"/> returns,
+    /// whatever form the image takes: one <c>BINARY</c> <c>FILE</c> named after the image's first
+    /// data file and holding every track the source reads, with each index at its sector in that
+    /// stream, then, for a cue sheet, the sheet's <c>FILE</c> entries from the first one the source
+    /// does not read. Otherwise <see langword="null"/>.
+    /// </summary>
     public virtual CueBinSheet? Cue => null;
     /// <summary>
-    /// The full path of the cue sheet file a <see cref="ContentSourceKinds.CueBin"/> source was
-    /// opened from, as <see cref="OpenCueBin"/> chose it, otherwise <see langword="null"/>. The source
+    /// The form of a <see cref="ContentSourceKinds.DiscImage"/> source, one of
+    /// <see cref="DiscImageFormats"/>, otherwise <see langword="null"/>.
+    /// </summary>
+    public virtual string? DiscImageFormat => null;
+    /// <summary>
+    /// The full paths of the files a <see cref="ContentSourceKinds.DiscImage"/> source read when it
+    /// opened and reads from, its descriptor (the cue sheet, <c>.ccd</c> or <c>.mds</c>) first, then
+    /// each image or audio file in the order the image lays them out. A file the source does not
+    /// read, such as a CloneCD <c>.sub</c> or an audio file in an encoding it does not decode, is not
+    /// listed. Otherwise <see langword="null"/>.
+    /// </summary>
+    public virtual IReadOnlyList<string>? ImageFiles => null;
+    /// <summary>
+    /// The full path of the cue sheet file a <see cref="ContentSourceKinds.CueBin"/> source, or a
+    /// <see cref="ContentSourceKinds.DiscImage"/> source of a cue sheet, was opened from, as
+    /// <see cref="OpenCueBin"/> or <see cref="OpenDiscImage"/> chose it, otherwise <see langword="null"/>. The source
     /// reads the file once, when it opens. Reading the path again can see a file replaced since then,
     /// so hash <see cref="CueSheetBytes"/> to record the sheet <see cref="Cue"/> was parsed from.
     /// </summary>
     public virtual string? CuePath => null;
     /// <summary>
-    /// The bytes of the cue sheet file that <see cref="OpenCueBin"/> read and parsed into
-    /// <see cref="Cue"/>, for a <see cref="ContentSourceKinds.CueBin"/> source, otherwise
+    /// The bytes of the cue sheet file that <see cref="OpenCueBin"/> or <see cref="OpenDiscImage"/>
+    /// read and parsed, for a source whose <see cref="CuePath"/> is set, otherwise
     /// <see langword="null"/>. Hash them with <c>FileFingerprint.Xxh3(source.CueSheetBytes.Value.Span)</c>
     /// to record the sheet as a role file.
     /// </summary>
@@ -81,15 +112,26 @@ public abstract class OriginalContentSource : IDisposable
     /// <summary>
     /// Opens the raw image of a <see cref="ContentSourceKinds.CueBin"/> source, the file at
     /// <see cref="BinPath"/>, as a read-only seekable stream of 2352-byte sectors. The stream reads
-    /// the whole file.
+    /// the whole file. For a <see cref="ContentSourceKinds.DiscImage"/> source that holds raw
+    /// sectors, it opens the disc's tracks as one stream of 2352-byte sectors from the data track's
+    /// <c>INDEX 01</c>, laid out as <see cref="Cue"/> gives them, whatever files the form stores them
+    /// in and with any subchannel left out, so a track's
+    /// <see cref="CueBinSheet.TrackExtent"/> reads the same audio from every form of one disc. A read
+    /// of sectors no file stores, such as a pregap a cue sheet declares with <c>PREGAP</c>, or the
+    /// raw sectors of a data track stored as 2048-byte user data, throws
+    /// <see cref="InvalidDataException"/> giving the reason.
     /// </summary>
-    /// <exception cref="NotSupportedException">The source is not a cue/bin image.</exception>
+    /// <exception cref="NotSupportedException">The source is not a cue/bin image or a disc image that holds raw sectors.</exception>
     /// <exception cref="IOException">
     /// The image's length or last-write time differs from when the source was opened, or the file
-    /// cannot be opened.
+    /// cannot be opened. For a disc image, each file is checked when the stream first reads from it.
     /// </exception>
     public virtual Stream OpenBin() =>
         throw new NotSupportedException($"A {Kind} source has no BIN image.");
+
+    // Why the source cannot read audio track `track`, which its Cue lists in a FILE after the image,
+    // or null for the default reason, that the source does not read that FILE.
+    internal virtual string? UnreadAudioTrack(int track) => null;
     /// <summary>
     /// Every file, sorted by path ignoring case. The sources this class opens list only paths
     /// <see cref="PortableAssetPath.Relative"/> accepts: a file whose path it rejects makes opening
@@ -111,9 +153,10 @@ public abstract class OriginalContentSource : IDisposable
     /// <summary>
     /// Opens the ISO 9660 volume as a read-only seekable stream of <see cref="VolumeBlocks"/> times
     /// 2048 bytes from logical block 0: the image's bytes for <see cref="ContentSourceKinds.Iso9660"/>,
-    /// and the user data of the data track's sectors for <see cref="ContentSourceKinds.CueBin"/>.
+    /// the user data of the data track's sectors for <see cref="ContentSourceKinds.CueBin"/>, and
+    /// either of these, as the form stores the data track, for <see cref="ContentSourceKinds.DiscImage"/>.
     /// Bytes past the declared volume, such as padding at the end of an image, are left out, so an
-    /// <c>.iso</c> image and a cue/bin image of one disc read the same bytes. Hash it with
+    /// <c>.iso</c> image and every other form of one disc read the same bytes. Hash it with
     /// <c>FileFingerprint.Xxh3Async</c> to record <c>AssetManifest.VolumeXxh3</c>.
     /// </summary>
     /// <exception cref="NotSupportedException">The source has no ISO 9660 volume.</exception>
@@ -124,7 +167,9 @@ public abstract class OriginalContentSource : IDisposable
 
     /// <summary>
     /// Opens <paramref name="path"/> as a directory source when it is a directory, as a cue/bin image
-    /// (see <see cref="OpenCueBin"/>) when it is a <c>.cue</c> file, as an InstallShield cabinet set
+    /// (see <see cref="OpenCueBin"/>) when it is a <c>.cue</c> file, as a disc image (see
+    /// <see cref="OpenDiscImage"/>) when it is a <c>.ccd</c>, <c>.mds</c>, <c>.mdx</c> or <c>.nrg</c>
+    /// file, as an InstallShield cabinet set
     /// (see <see cref="OpenInstallShieldCabinet(string, InstallShieldCabinetLimits?, InstallShieldCompressedFormat)"/>) with the
     /// default limits when it is a <c>.hdr</c> file, as an InstallShield 3 archive (see
     /// <see cref="OpenInstallShieldArchive(string, InstallShieldArchiveLimits?)"/>) with the default
@@ -134,8 +179,9 @@ public abstract class OriginalContentSource : IDisposable
     /// <see cref="ContentSourceKinds.CueBin"/> kind.
     /// </summary>
     /// <exception cref="NotSupportedException">
-    /// The cabinet set's InstallShield major version is not 0, 5 or 6, or the InstallShield 3 archive
-    /// is split into parts that are not all in this file or names another part number or count.
+    /// The cabinet set's InstallShield major version is not 0, 5 or 6, the InstallShield 3 archive
+    /// is split into parts that are not all in this file or names another part number or count, or
+    /// the disc image is of a form or layout <see cref="OpenDiscImage"/> refuses.
     /// </exception>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="InvalidDataException">The image is not a valid volume of its kind.</exception>
@@ -147,6 +193,7 @@ public abstract class OriginalContentSource : IDisposable
         {
             var extension = Path.GetExtension(path);
             if (extension.Equals(".cue", StringComparison.OrdinalIgnoreCase)) return OpenCueBin(path);
+            if (extension.ToLowerInvariant() is ".ccd" or ".mds" or ".mdx" or ".nrg") return OpenDiscImage(path);
             if (extension.Equals(".hdr", StringComparison.OrdinalIgnoreCase)) return OpenInstallShieldCabinet(path);
             if (InstallShieldArchiveOpener.HasSignature(path)) return OpenInstallShieldArchive(path);
             return OpenIso9660(path);
@@ -160,8 +207,9 @@ public abstract class OriginalContentSource : IDisposable
     /// <exception cref="InvalidDataException"><paramref name="kind"/> is unsupported, or the image is not a valid volume of that kind.</exception>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="NotSupportedException">
-    /// The cabinet set's InstallShield major version is not 0, 5 or 6, or the InstallShield 3 archive
-    /// is split into parts that are not all in this file or names another part number or count.
+    /// The cabinet set's InstallShield major version is not 0, 5 or 6, the InstallShield 3 archive
+    /// is split into parts that are not all in this file or names another part number or count, or
+    /// the disc image is of a form or layout <see cref="OpenDiscImage"/> refuses.
     /// </exception>
     public static OriginalContentSource Open(string path, string kind) => kind switch
     {
@@ -170,8 +218,68 @@ public abstract class OriginalContentSource : IDisposable
         ContentSourceKinds.CueBin => OpenCueBin(path),
         ContentSourceKinds.InstallShieldCabinet => OpenInstallShieldCabinet(path),
         ContentSourceKinds.InstallShieldArchive => OpenInstallShieldArchive(path),
+        ContentSourceKinds.DiscImage => OpenDiscImage(path),
         _ => throw new InvalidDataException($"Unsupported original-content source kind '{kind}'.")
     };
+
+    /// <summary>
+    /// Opens a copy of a CD in any form of <see cref="DiscImageFormats"/> as a
+    /// <see cref="ContentSourceKinds.DiscImage"/> source, which lists and reads the files of the data
+    /// track's ISO 9660 volume and gives the CD audio tracks through <see cref="OpenBin"/> and
+    /// <see cref="Cue"/>. The form is chosen by the extension of <paramref name="path"/>: <c>.cue</c>
+    /// (or a <c>.bin</c>, read through the <c>.cue</c> with its name, else the only one), <c>.iso</c>,
+    /// <c>.ccd</c> (or its <c>.img</c>), <c>.mds</c> (or its <c>.mdf</c>) and <c>.nrg</c>. A directory
+    /// is read through the one <c>.cue</c>, <c>.ccd</c>, <c>.mds</c> or <c>.nrg</c> in it, else its one
+    /// <c>.iso</c>.
+    /// <para>
+    /// The disc must be one session whose first track holds the data, starting at sector 0, followed
+    /// only by audio tracks, as for <see cref="OpenCueBin"/>. A raw data track is checked sector by
+    /// sector as <see cref="OpenCueBin"/> checks a <c>MODE1/2352</c> or <c>MODE2/2352</c> track, with
+    /// the same reading of empty Form 2 sectors as zeros for <see cref="OpenVolume"/>; a data track
+    /// stored as 2048-byte user data is read as <see cref="OpenIso9660(string)"/> reads an image. The
+    /// volume is checked as <see cref="OpenIso9660(string)"/> describes, so every form of one disc
+    /// gives the same <see cref="Files"/>, <see cref="Label"/>, <see cref="VolumeBlocks"/> and
+    /// <see cref="OpenVolume"/> bytes.
+    /// </para>
+    /// <para>
+    /// A cue sheet is checked as <see cref="CueBinSheet.Parse"/> checks one, except that its first
+    /// track may also be <c>MODE1/2048</c> or <c>MODE2/2048</c>, in a <c>BINARY</c> file of 2048-byte
+    /// sectors that holds no other track, that <c>PREGAP</c> declares a pregap no file stores, and
+    /// that every <c>FILE</c> is read. A later <c>BINARY</c> file holds raw 2352-byte audio sectors,
+    /// and a later <c>WAVE</c> file 16-bit stereo 44.1 kHz PCM. An audio file the source cannot read,
+    /// because it is missing, holds FLAC, Ogg, MP3 or other audio, or is not a whole number of
+    /// sectors, does not stop the source opening: its tracks, and those of every later file, are
+    /// listed in <see cref="Cue"/> after the image and reported as unreadable with that reason.
+    /// <c>POSTGAP</c> is refused. A CloneCD <c>.ccd</c> must be version 2 or 3, its table of contents
+    /// and <c>[TRACK]</c> sections must agree, and its <c>.img</c> must end at the lead-out; the
+    /// <c>.sub</c> is not read. An Alcohol <c>.mds</c> must be version 1 and describe a CD whose
+    /// tracks lie in one <c>.mdf</c> in order. A Nero <c>.nrg</c> must be a version 1 or 2 image of
+    /// disc-at-once tracks whose cue and track chunks agree. Subchannel data stored after each sector
+    /// is left out.
+    /// </para>
+    /// <para>
+    /// The source records the length and last-write time of every file it reads when it opens, and
+    /// each later read through it fails with an <see cref="IOException"/> when either has changed. A
+    /// rewrite that keeps both is not detected.
+    /// </para>
+    /// </summary>
+    /// <param name="path">The image's descriptor or data file, or the directory holding it.</param>
+    /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>, or a file the descriptor needs does not.</exception>
+    /// <exception cref="IOException">An image file changed while the source was being opened.</exception>
+    /// <exception cref="InvalidDataException">
+    /// The extension names no form read here, a directory holds no image or several, or the
+    /// descriptor, an image file or the volume is not valid.
+    /// </exception>
+    /// <exception cref="NotSupportedException">
+    /// The image is of a form or layout not read: a DAEMON Tools <c>.mdx</c>, an <c>.mds</c> of version
+    /// 2, a DVD, several sessions, a scrambled or track-at-once image, a first track that is not data
+    /// or a later one that is, or a sector layout outside those above.
+    /// </exception>
+    public static OriginalContentSource OpenDiscImage(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        return DiscImageOpener.Open(path);
+    }
 
     /// <summary>
     /// Opens an installed directory. Reparse points are skipped. Every file's path below the directory
