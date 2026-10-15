@@ -15,7 +15,7 @@ from unittest import mock
 
 from synthetic import REDUMPER_TEST_HASH, SyntheticDisc, iso_extent, iso_image, redumper_analysis_steps, redumper_log
 
-from dinorefurb_disc_archiver import backends, cli, dataerrors, redumper
+from dinorefurb_disc_archiver import backends, cli, dataerrors, pipeline, redumper
 from dinorefurb_disc_archiver.disc import DiscError
 from dinorefurb_disc_archiver.cue import read_cue
 from dinorefurb_disc_archiver.notice import NOTICE_FILENAME
@@ -204,7 +204,7 @@ class ProgramBackendTests(unittest.TestCase):
         self.assertEqual(analysis["protectionSchemes"], [{"system": "SecuROM", "file": "Synth Disc (Track 1).bin", "scheme": "unknown"}])
         self.assertEqual([s["offset"] for s in analysis["offsetShifts"]], [-572, 16, -572])
         self.assertIn(
-            "redumper's log shows SecuROM scheme unknown in Synth Disc (Track 1).bin; write offset shifts: -572 from LBA -1",
+            "redumper's log shows SecuROM scheme unknown in Synth Disc (Track 1).bin; write offset -572 shifting to +16 in 1 range",
             printed.getvalue(),
         )
 
@@ -524,6 +524,21 @@ class RedumperDriveTests(unittest.TestCase):
 
 class RedumperDiscAnalysisTests(unittest.TestCase):
     """What redumper's protection, split and info steps found, read from its log."""
+
+    def test_many_offset_shifts_print_as_one_summary_per_offset(self) -> None:
+        shifts = [
+            {"lba": -1, "count": 1000, "offset": -572},
+            {"lba": 999, "count": 19, "offset": 16},
+            {"lba": 1018, "count": 200, "offset": -572},
+            {"lba": 1218, "count": 23, "offset": 16},
+            {"lba": 1241, "count": 5000, "offset": -572},
+        ]
+        printed: list[str] = []
+        pipeline._log_disc_analysis(printed.append, {"protections": [], "protectionSchemes": [], "offsetShifts": shifts})
+        self.assertEqual(
+            printed,
+            ["redumper's log shows write offset -572 shifting to +16 in 2 ranges (42 sectors, LBA 999-1240). The manifest's source.discAnalysis records them."],
+        )
 
     def analysis(self, text: str) -> dict:  # type: ignore[type-arg]
         found = backends.redumper_disc_analysis(text)

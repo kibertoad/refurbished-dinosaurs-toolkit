@@ -1035,8 +1035,19 @@ def _log_disc_analysis(log: Log, analysis: dict[str, object] | None) -> None:
     found += [f"{s['system']} scheme {s['scheme']} in {s['file']}" for s in analysis["protectionSchemes"] or []]  # type: ignore[attr-defined]
     shifts: list[dict[str, int]] = analysis["offsetShifts"] or []  # type: ignore[assignment]
     if shifts:
-        offsets = ", ".join(f"{s['offset']:+} from LBA {s['lba']} ({s['count']} sectors)" for s in shifts)
-        found.append(f"write offset shifts: {offsets}")
+        # A disc can shift dozens of times, so the line names each offset once and the manifest
+        # keeps every entry. The offset holding most sectors is the disc's own.
+        totals: dict[int, int] = {}
+        for s in shifts:
+            totals[s["offset"]] = totals.get(s["offset"], 0) + s["count"]
+        main = max(totals, key=lambda o: totals[o])
+        others = []
+        for offset in (o for o in totals if o != main):
+            ranges = [s for s in shifts if s["offset"] == offset]
+            first, last = ranges[0]["lba"], ranges[-1]["lba"] + ranges[-1]["count"] - 1
+            places = f"{len(ranges)} ranges" if len(ranges) > 1 else "1 range"
+            others.append(f"{offset:+} in {places} ({totals[offset]} sectors, LBA {first}-{last})")
+        found.append(f"write offset {main:+} shifting to {', '.join(others)}")
     if found:
         log(f"redumper's log shows {'; '.join(found)}. The manifest's source.discAnalysis records them.")
 
