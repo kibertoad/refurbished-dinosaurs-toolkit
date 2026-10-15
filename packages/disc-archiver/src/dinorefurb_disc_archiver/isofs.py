@@ -73,6 +73,8 @@ class UserDataStream(io.RawIOBase):
         self._position = 0
         self._handle = track.source.open("rb")
         self._cached: tuple[int, bool, bytes] | None = None
+        # Volume descriptor sectors read as other bytes than the track holds; see _agreeing_copies.
+        self.replaced: dict[int, bytes] = {}
 
     def readable(self) -> bool:
         return True
@@ -122,7 +124,7 @@ class UserDataStream(io.RawIOBase):
 
     def read_sector(self, index: int) -> bytes:
         """The user data of track sector ``index``."""
-        return self._sector(index)
+        return self.replaced.get(index) or self._sector(index)
 
     def readinto(self, buffer: bytearray | memoryview) -> int:  # type: ignore[override]
         wanted = min(len(buffer), self._size - self._position)
@@ -147,9 +149,20 @@ class UserDataStream(io.RawIOBase):
             remaining -= len(part)
             position += len(part)
         data = b"".join(parts)
+        if self.replaced:
+            data = self._apply_replaced(data)
         buffer[: len(data)] = data
         self._position += len(data)
         return len(data)
+
+    def _apply_replaced(self, data: bytes) -> bytes:
+        # The replaced sectors are volume descriptors, which sit at their own place in the stream.
+        start, patched = self._position, bytearray(data)
+        for index, sector in self.replaced.items():
+            first, last = max(start, index * COOKED_SECTOR), min(start + len(data), (index + 1) * COOKED_SECTOR)
+            if first < last:
+                patched[first - start : last - start] = sector[first - index * COOKED_SECTOR : last - index * COOKED_SECTOR]
+        return bytes(patched)
 
     def close(self) -> None:
         self._handle.close()
@@ -308,6 +321,41 @@ def locate(track: Track) -> Volume:
     )
 
 
+# The application use field of a primary volume descriptor (ECMA-119 8.4.32). Nothing in the file
+# system is read from it.
+APPLICATION_USE = range(883, 1395)
+
+
+def _agreeing_copies(stream: UserDataStream, track: Track, volume: Volume) -> dict[int, bytes]:
+    """The later primary volume descriptors of the set that differ from the one at sector 16 only
+    in the application use field, each mapped to the first one's bytes.
+
+    ECMA-119 lets a volume record its primary volume descriptor more than once. pycdlib refuses a
+    volume whose copies differ in any field, the application use field included, which some
+    copy-protected discs mark in their second copy. Since no file system structure is read from
+    that field, :func:`walk` shows pycdlib such a copy as the first one, and the file system is
+    read from the first descriptor, as it is with matching copies. Raises
+    :class:`UnsupportedFileSystem` when a copy differs anywhere else, since which copy describes
+    the file system is then not known.
+    """
+    first = stream.read_sector(PVD_SECTOR)
+    agreeing: dict[int, bytes] = {}
+    # descriptors_end counts the sector after the set, which is not a descriptor of the set.
+    for index in range(PVD_SECTOR + 1, volume.descriptors_end - 1):
+        sector = stream.read_sector(index)
+        if sector[:6] != b"\x01CD001" or sector == first:
+            continue
+        outside = next((i for i in range(COOKED_SECTOR) if sector[i] != first[i] and i not in APPLICATION_USE), None)
+        if outside is not None:
+            raise UnsupportedFileSystem(
+                f"track {track.number}: the primary volume descriptor at sector {index} differs from the one at "
+                f"sector {PVD_SECTOR} at byte {outside}, outside the application use field, so which one describes "
+                "the file system is not known"
+            )
+        agreeing[index] = first
+    return agreeing
+
+
 @dataclass(frozen=True)
 class FileEntry:
     """One file of the file system: its path, size, SHA-256 and XXH3-128.
@@ -390,13 +438,20 @@ def walk(track: Track, destination: Path | None = None, primary: bool = False) -
     :func:`_primary_names` gives them, which is how a build entry names a file read from its CD.
     The file system's addresses are read
     against the base :func:`locate` finds, and :class:`UnsupportedFileSystem` is raised when it
-    finds none or when the file system reads an address that falls on no track sector.
+    finds none, when the file system reads an address that falls on no track sector, when copies of
+    the primary volume descriptor disagree outside the application use field (see
+    :func:`_agreeing_copies`), or when pycdlib cannot read the volume's descriptors and directories.
     """
     entries: list[FileEntry] = []
-    stream = UserDataStream(track, locate(track))
+    volume = locate(track)
+    stream = UserDataStream(track, volume)
     iso = pycdlib.PyCdlib()
     try:
-        iso.open_fp(stream)
+        try:
+            stream.replaced = _agreeing_copies(stream, track, volume)
+            iso.open_fp(stream)
+        except PyCdlibException as error:
+            raise UnsupportedFileSystem(f"track {track.number} is not a readable ISO 9660 file system: {error}") from None
         # pycdlib has read the system area, the descriptors and every directory; what it reads
         # from here on is file data.
         stream.files = True

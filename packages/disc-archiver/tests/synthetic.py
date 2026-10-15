@@ -44,6 +44,16 @@ def iso_image(files: dict[str, bytes] | None = None, volume: str = "SYNTH_DISC",
     return out.getvalue()
 
 
+def second_pvd(iso: bytes, changes: dict[int, int]) -> bytes:
+    """``iso`` (made by :func:`iso_image` with Joliet names) with its supplementary volume
+    descriptor at sector 17 replaced by a copy of the primary one at sector 16, each byte at an
+    offset in ``changes`` set to the value given. The volume then reads by its ISO 9660 names."""
+    copy = bytearray(iso[16 * 2048 : 17 * 2048])
+    for offset, value in changes.items():
+        copy[offset] = value
+    return iso[: 17 * 2048] + bytes(copy) + iso[18 * 2048 :]
+
+
 def _iso_name(name: str, is_file: bool) -> str:
     cleaned = "".join(c if c.isalnum() or c in "._" else "_" for c in name.upper())
     if not is_file:
