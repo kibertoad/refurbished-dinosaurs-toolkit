@@ -4,7 +4,7 @@ Disc addresses are logical block addresses (LBA) with track 1's INDEX 01 at 0, t
 sheets use. Each track runs from its INDEX 00 (its pregap) through its INDEX 01 to the next
 track's INDEX 00, or to the end of the disc for the last track. On a disc of several sessions, the
 last track of a session runs to that session's lead-out, and the next session's first track
-starts after the lead-out and the next lead-in (see :func:`session_gap`).
+starts after the gap of the lead-out and the next lead-in (see :class:`SessionGap`).
 """
 
 from __future__ import annotations
@@ -40,13 +40,39 @@ def lead_out_sectors(session: int) -> int:
 
 
 def session_gap(session: int) -> int:
-    """Sectors between the lead-out of session ``session`` and INDEX 00 of the next session's first track.
+    """The standard sectors between the lead-out of session ``session`` and INDEX 00 of the next
+    session's first track.
 
-    They are session ``session``'s lead-out and the next session's lead-in. The next session's
-    first track usually has a 150-sector pregap of its own, which the track holds, so on a CD-Extra
-    disc its INDEX 01 sits 6,750 + 4,500 + 150 = 11,400 sectors past the first session's lead-out.
+    They are session ``session``'s lead-out and the next session's lead-in at their standard
+    sizes, which redumper treats as minimums: a disc can have a longer gap (see
+    :class:`SessionGap`). The next session's first track usually has a 150-sector pregap of its
+    own, which the track holds, so on a CD-Extra disc with the standard gap its INDEX 01 sits
+    6,750 + 4,500 + 150 = 11,400 sectors past the first session's lead-out.
     """
     return lead_out_sectors(session) + LEAD_IN
+
+
+# Where a SessionGap was read: a table of contents (a CloneCD image's), the header of the next
+# session's first data sector, that header past an earlier assumed gap, or nowhere, so the
+# standard gap is assumed.
+GAP_SOURCES = ("toc", "headers", "headers-after-assumed", "assumed")
+
+
+@dataclass(frozen=True)
+class SessionGap:
+    """The sectors between a session's lead-out and INDEX 00 of the next session's first track.
+
+    ``source`` says where they were read: ``toc`` from a table of contents that gives the track's
+    address, ``headers`` from the address in the header of the track's INDEX 01 sector, or
+    ``assumed`` when the source gives neither (a cue sheet whose later session opens with audio)
+    and the standard gap of :func:`session_gap` stands in. ``headers-after-assumed`` is a gap the
+    header gave when an earlier session's gap is ``assumed``: the header verified the session's
+    address, and the gap is that address less the previous session's lead-out, which counts the
+    assumed gap, so any error in the assumed gap is in this one too.
+    """
+
+    sectors: int
+    source: str
 
 
 class DiscError(Exception):
@@ -329,6 +355,8 @@ class Session:
 
     number: int
     tracks: tuple[Track, ...]
+    # The gap between the previous session's lead-out and this session's first track; None for session 1.
+    gap: SessionGap | None = None
 
     @property
     def lead_out(self) -> int:
@@ -340,8 +368,11 @@ class Session:
 class Disc:
     """The tracks of one disc, from track 1's INDEX 01 at LBA 0.
 
-    The tracks of a session lie back to back. Each later session's first track starts
-    :func:`session_gap` sectors past the previous session's lead-out.
+    The tracks of a session lie back to back. Each later session's first track starts the
+    session's gap past the previous session's lead-out. ``gaps`` gives each later session's gap by
+    its number; a session it leaves out gets the standard gap of :func:`session_gap`, marked
+    ``assumed``, and once built ``gaps`` holds every later session's gap. A gap shorter than the
+    standard one is refused, since the standard lead-out and lead-in sizes are minimums.
     """
 
     tracks: list[Track]
@@ -350,14 +381,19 @@ class Disc:
     cd_text: tuple[tuple[str, str], ...] = ()
     # Where the disc was read from: the cue sheet or ISO file.
     origin: Path | None = None
+    gaps: dict[int, SessionGap] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.tracks:
             raise DiscError("the disc has no tracks")
         if self.tracks[0].session != 1:
             raise DiscError(f"track {self.tracks[0].number} is in session {self.tracks[0].session}; the first session is 1")
+        unknown = sorted(n for n in self.gaps if not 2 <= n <= self.tracks[-1].session)
+        if unknown:
+            raise DiscError(f"a gap is given before session {unknown[0]}, which is not a later session of the disc")
         position = -self.tracks[0].pregap
         session = 1
+        gaps = {}
         for expected, track in enumerate(self.tracks, start=1):
             if track.number != expected:
                 raise DiscError(f"track {track.number} follows track {expected - 1}")
@@ -366,10 +402,20 @@ class Disc:
             if track.session != session:
                 if track.session != session + 1:
                     raise DiscError(f"track {track.number} is in session {track.session}, after a track of session {session}")
-                position += session_gap(session)
+                gap = self.gaps.get(track.session, SessionGap(session_gap(session), "assumed"))
+                if gap.source not in GAP_SOURCES:
+                    raise DiscError(f"the gap before session {track.session} has the source {gap.source!r}")
+                if gap.sectors < session_gap(session):
+                    raise DiscError(
+                        f"the gap before session {track.session} is {gap.sectors} sectors, shorter than the standard "
+                        f"{session_gap(session)} of lead-out and lead-in, which are minimums"
+                    )
+                gaps[track.session] = gap
+                position += gap.sectors
                 session = track.session
             track.start = position
             position = track.end
+        self.gaps = gaps
         if self.tracks[0].pregap:
             raise DiscError(
                 "track 1 declares a pregap before INDEX 01; only discs whose first track starts "
@@ -387,7 +433,11 @@ class Disc:
         grouped: dict[int, list[Track]] = {}
         for track in self.tracks:
             grouped.setdefault(track.session, []).append(track)
-        return [Session(number, tuple(tracks)) for number, tracks in grouped.items()]
+        return [Session(number, tuple(tracks), self.gaps.get(number)) for number, tracks in grouped.items()]
+
+    def nonstandard_gaps(self) -> list[Session]:
+        """The later sessions whose gap differs from the standard one."""
+        return [s for s in self.sessions[1:] if s.gap is not None and s.gap.sectors != session_gap(s.number - 1)]
 
     @property
     def data_tracks(self) -> list[Track]:

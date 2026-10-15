@@ -10,9 +10,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .disc import MSF_OFFSET, RAW_SECTOR, Disc, DiscError, Track, bcd, msf, session_gap
+from .disc import MSF_OFFSET, RAW_SECTOR, Disc, DiscError, SessionGap, Track, bcd, msf, session_gap
 
 SUBCHANNEL_BYTES = 96
+# The shortest pregap of a session's first track: two seconds, as track 1 has. DiscImageCreator
+# writes REM PREGAP 00:02:00 for it on every disc of several sessions.
+SESSION_PREGAP = 150
 _CRC_TABLE: list[int] = []
 for _byte in range(256):
     _crc = _byte << 8
@@ -92,6 +95,38 @@ def opens_later_session(disc: Disc, track: Track) -> bool:
     return track.session > 1 and disc.tracks[track.number - 2].session != track.session
 
 
+def needs_index0(disc: Disc, track: Track) -> bool:
+    """Whether ``track`` opens a later session that a reader can lay out only from its INDEX 0.
+
+    Without INDEX 0, a reader takes the sectors from the standard gap to INDEX 01 as the pregap
+    when there are at most :data:`SESSION_PREGAP` of them (see :func:`_later_pregaps`). That holds
+    for a session with the standard gap and a pregap no longer than that, which is how
+    DiscImageCreator writes a CD-Extra, so such a track is written as it writes it.
+    """
+    if not opens_later_session(disc, track):
+        return False
+    gap = disc.gaps[track.session].sectors
+    return gap != session_gap(track.session - 1) or track.pregap > SESSION_PREGAP
+
+
+def ambiguous_pregaps(disc: Disc) -> list[int]:
+    """The tracks opening later sessions whose pregaps an image of ``disc`` could not be read back
+    with: more than one choice of which of those pregaps the image stores gives its size.
+
+    A reader decides which pregaps of the tracks that open later sessions the image stores from the
+    image size alone, so two such pregaps of the same size, one stored and one not, cannot be told
+    apart. Empty when the image can be read back.
+    """
+    openers = [t for t in disc.tracks if opens_later_session(disc, t) and t.pregap]
+    if len(openers) > 12:  # More than the reader decides.
+        return [t.number for t in openers]
+    held = sum(t.pregap for t in openers if t.pregap_writable)
+    choices = sum(
+        1 for mask in range(1 << len(openers)) if sum(t.pregap for bit, t in enumerate(openers) if mask >> bit & 1) == held
+    )
+    return [t.number for t in openers] if choices > 1 else []
+
+
 def _entry(number: int, session: int, point: int, ctrl: int, frames: tuple[int, int, int]) -> list[str]:
     pmin, psec, pframe = frames
     return [
@@ -116,8 +151,11 @@ def _entry(number: int, session: int, point: int, ctrl: int, frames: tuple[int, 
 def render_ccd(disc: Disc) -> str:
     """The ``.ccd`` text: each session's A0, A1 and A2 entries and its tracks, with disc addresses.
 
-    Track and index addresses count the gap between sessions, as DiscImageCreator writes them.
-    No mode 5 (B0, C0) entries are written.
+    Track and index addresses count the gap between sessions, as DiscImageCreator writes them, so
+    the entries give each session's gap. A later session's first track gets its INDEX 0 when its
+    pregap is stored, and also when a reader could not tell its pregap from the gap without it
+    (see :func:`needs_index0`): then INDEX 0 is at its INDEX 1 when it has no pregap, and at its
+    INDEX 00 when the image leaves its pregap out. No mode 5 (B0, C0) entries are written.
     """
     sessions = disc.sessions
     lines = [
@@ -146,7 +184,7 @@ def render_ccd(disc: Disc) -> str:
             entry += 1
     for track in disc.tracks:
         lines += [f"[TRACK {track.number}]", f"MODE={_mode(track)}"]
-        if track.pregap and track.pregap_writable:
+        if (track.pregap and track.pregap_writable) or needs_index0(disc, track):
             lines.append(f"INDEX 0={track.start}")
         lines.append(f"INDEX 1={track.index1}")
         for index, offset in sorted(track.extra_indexes.items()):
@@ -250,9 +288,10 @@ def read_ccd(path: Path) -> Disc:
     of the image. On an image of several sessions, which ``[Entry]`` sections give, each track's
     session and INDEX 01 come from its entry, each session ends at its A2 lead-out entry, and the
     ``[TRACK]`` sections give the pregaps and later indexes. The image holds each session's tracks
-    from the first track's INDEX 00 to the session's lead-out, back to back. A later session must
-    start :func:`disc.session_gap` sectors past the lead-out before it; a first track without
-    INDEX 0 that starts later has a pregap the image does not hold.
+    from the first track's INDEX 00 to the session's lead-out, back to back. The gap before a later
+    session is read from the table of contents: the sectors from the previous session's lead-out
+    to the first track's INDEX 00. See :func:`_later_pregaps` for how that track's pregap is told
+    from the gap.
 
     Each track's FLAGS come from the control nibble of its table of contents entry.
     """
@@ -312,6 +351,99 @@ def _one_session(
     return Disc(tracks, catalog=catalog, origin=path)
 
 
+def _later_pregaps(
+    path: Path, layout: list[list], lead_outs: dict[int, int], sectors: int  # type: ignore[type-arg]
+) -> None:
+    """Decide the pregap of each later session's first track, and whether the image stores it.
+
+    A gap between sessions may be longer than the standard one, so the sectors before such a
+    track's INDEX 01 could be its pregap or part of the gap. The ``[TRACK]`` section's INDEX 0
+    gives the pregap; the image, which holds every stored sector back to back, then says whether
+    it is stored. A session's first track has a pregap of at least :data:`SESSION_PREGAP` sectors,
+    so a track without INDEX 0 that starts at most that far past the standard gap has the standard
+    gap and a pregap of the sectors between, as DiscImageCreator writes a CD-Extra's data track,
+    and the image size again says whether it is stored. A track without INDEX 0 that starts
+    further out has a pregap only of the sectors the image holds ahead of its INDEX 01. When the
+    image holds none, the sectors could be an unstored pregap or a longer gap, and the image is
+    refused. Each entry of ``layout`` is updated in place.
+    """
+    # The tracks that open a later session, by their place in the layout, with the session before
+    # theirs, and the LBA such a session starts at the earliest: the standard gap past that
+    # session's lead-out. The sessions are checked to follow one another only once the Disc is built.
+    opening = {i: layout[i - 1][2] for i in range(1, len(layout)) if layout[i - 1][2] != layout[i][2]}
+    earliest = {i: lead_outs[previous] + session_gap(previous) for i, previous in opening.items()}
+    for i, previous in opening.items():
+        _, _, session, disc_index1, pregap, _, _ = layout[i]
+        start = disc_index1 - pregap
+        if start < earliest[i]:
+            raise DiscError(
+                f"{path.name}: session {session} starts at LBA {start}, less than the standard {session_gap(previous)} "
+                f"sectors of lead-out and lead-in, which are minimums, past the previous session's lead-out at LBA "
+                f"{lead_outs[previous]}"
+            )
+    # The sectors the image holds apart from the pregaps still to be decided: every track's from
+    # INDEX 01 to its end, and the pregaps of the tracks that do not open a later session.
+    base = 0
+    for i, (_, _, session, disc_index1, pregap, has_index0, _) in enumerate(layout):
+        following = layout[i + 1] if i + 1 < len(layout) else None
+        end = following[3] - following[4] if following and following[2] == session else lead_outs[session]
+        base += end - disc_index1 + (pregap if has_index0 and i not in opening else 0)
+    # A track without INDEX 0 that starts at most SESSION_PREGAP sectors past the standard gap has
+    # the standard gap and a pregap of those sectors: a longer gap would leave it a pregap shorter
+    # than a session's first track has. DiscImageCreator writes a CD-Extra's data track this way.
+    for i in opening:
+        if not layout[i][5] and layout[i][3] - earliest[i] <= SESSION_PREGAP:
+            layout[i][4] = layout[i][3] - earliest[i]
+    known = [layout[i] for i in opening if layout[i][4]]
+    unknown = [i for i in opening if not layout[i][5] and layout[i][3] - earliest[i] > SESSION_PREGAP]
+    extra = sectors - base
+    if not known and not unknown:
+        return  # Nothing to decide; _sessions checks the image size.
+    if len(unknown) > 1:
+        raise DiscError(
+            f"{path.name}: tracks {[layout[i][0] for i in unknown]} open later sessions past the standard gap without "
+            "INDEX 0, and the image size cannot say which of them stores a pregap"
+        )
+    if len(known) > 12:
+        raise DiscError(f"{path.name}: {len(known)} later sessions open with a pregap; at most 12 are read")
+    fits = []
+    for mask in range(1 << len(known)):
+        held = sum(e[4] for bit, e in enumerate(known) if mask >> bit & 1)
+        rest = extra - held
+        if unknown:
+            if 0 <= rest <= layout[unknown[0]][3] - earliest[unknown[0]]:
+                fits.append((mask, rest))
+        elif rest == 0:
+            fits.append((mask, 0))
+    undecided = [e[0] for e in known] + [layout[i][0] for i in unknown]
+    img = path.with_suffix(".img").name
+    if not fits:
+        raise DiscError(
+            f"{img} holds {sectors} sectors, and the table of contents lays out {base} without the pregaps of tracks "
+            f"{undecided}, which open later sessions; no choice of which of those pregaps the image stores makes up the rest"
+        )
+    if len(fits) > 1:
+        raise DiscError(
+            f"{img} holds {sectors} sectors, and more than one choice of which of the pregaps of tracks {undecided}, "
+            "which open later sessions, the image stores makes up that size, so the image does not say which it stores"
+        )
+    mask, rest = fits[0]
+    for bit, entry in enumerate(known):
+        entry[5] = bool(mask >> bit & 1)
+    if unknown:
+        previous = opening[unknown[0]]
+        entry = layout[unknown[0]]
+        if rest == 0:
+            raise DiscError(
+                f"{path.name}: track {entry[0]} opens session {entry[2]} at LBA {entry[3]}, past the standard gap after the "
+                f"lead-out at LBA {lead_outs[previous]}, with no INDEX 0, and the image holds no sectors ahead of its "
+                "INDEX 01. The sectors between could be a pregap the image leaves out, as DiscImageCreator writes it, or "
+                "a gap longer than the standard one, and nothing in the image decides which. Give the track's INDEX 0 "
+                "in its [TRACK] section"
+            )
+        entry[4], entry[5] = rest, True
+
+
 def _sessions(
     path: Path,
     img: Path,
@@ -329,23 +461,7 @@ def _sessions(
         if session not in lead_outs:
             raise DiscError(f"{path.name}: session {session} has no lead-out (A2) entry")
         layout.append([number, mode, session, disc_index1, 0 if index0 is None else index1 - index0, index0 is not None, extra])
-    for i, entry in enumerate(layout):
-        number, _, session, disc_index1, pregap, has_index0, _ = entry
-        if i == 0 or layout[i - 1][2] == session:
-            continue
-        previous = layout[i - 1][2]
-        expected = lead_outs[previous] + session_gap(previous)
-        start = disc_index1 - pregap
-        if not has_index0 and start > expected:
-            # DiscImageCreator writes no INDEX 0 for a later session's first track and leaves its
-            # pregap out of the image.
-            entry[4], entry[5] = disc_index1 - expected, False
-        elif start != expected:
-            raise DiscError(
-                f"{path.name}: session {session} starts at LBA {start}, and the archiver lays a session out "
-                f"{session_gap(previous)} sectors past the previous session's lead-out at LBA {lead_outs[previous]}, "
-                f"the standard lead-out and lead-in, so at LBA {expected}"
-            )
+    _later_pregaps(path, layout, lead_outs, sectors)
     tracks: list[Track] = []
     offset = 0
     for i, (number, mode, session, disc_index1, pregap, stored, extra) in enumerate(layout):
@@ -363,7 +479,12 @@ def _sessions(
         offset += held
     if offset != sectors:
         raise DiscError(f"{img.name} holds {sectors} sectors, and the table of contents lays out {offset}")
-    disc = Disc(tracks, catalog=catalog, origin=path)
+    gaps = {
+        entry[2]: SessionGap(entry[3] - entry[4] - lead_outs[layout[i - 1][2]], "toc")
+        for i, entry in enumerate(layout)
+        if i and layout[i - 1][2] != entry[2]
+    }
+    disc = Disc(tracks, catalog=catalog, origin=path, gaps=gaps)
     for track in disc.tracks:
         if track.index1 != toc[track.number][1]:
             raise DiscError(f"{path.name}: track {track.number} is at LBA {toc[track.number][1]}, out of the order of its session")
