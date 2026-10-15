@@ -13,7 +13,7 @@ from synthetic import SyntheticDisc, iso_image
 
 from dinorefurb_disc_archiver import ccd, mds, nrg
 from dinorefurb_disc_archiver.cue import read_cue, read_cue_metadata
-from dinorefurb_disc_archiver.disc import Metadata
+from dinorefurb_disc_archiver.disc import DiscError, Metadata
 from dinorefurb_disc_archiver.formats import Output, write_format
 from dinorefurb_disc_archiver.pipeline import Verification, compare_metadata, derive, fingerprint, verify_output
 from dinorefurb_disc_archiver.profile import BUILTIN_PROFILES
@@ -100,8 +100,8 @@ class RoundTripTests(MetadataTestCase):
         self.assertEqual(copy.catalog, "0123456789012")
         self.assertEqual([t.flags for t in copy.tracks], [("DCP",), ("DCP", "PRE"), ("4CH",)])
         self.assertEqual(copy.tracks[1].extra_indexes, {2: 150})
-        self.assertCompared(self.verify(output), [CATALOG, FLAGS, INDEXES], [ISRC, CD_TEXT], "a CloneCD image")
-        self.assertIn("a CloneCD image has no place for them: the tracks' ISRC codes; the CD-Text", " ".join(output.notes))
+        self.assertCompared(self.verify(output), [CATALOG, FLAGS, INDEXES], [ISRC, CD_TEXT], "the archiver's CloneCD image")
+        self.assertIn("Not carried into this copy: the tracks' ISRC codes; the CD-Text.", output.notes)
 
     def test_mds_keeps_the_flags(self) -> None:
         output = self.write("mds")
@@ -112,7 +112,7 @@ class RoundTripTests(MetadataTestCase):
         output = self.write("nrg")
         copy = nrg.read_nrg(output.entry)
         self.assertEqual([t.flags for t in copy.tracks], [("DCP",), ("DCP", "PRE"), ("4CH",)])
-        self.assertCompared(self.verify(output), [CATALOG, ISRC, FLAGS, INDEXES], [CD_TEXT], "an NRG image")
+        self.assertCompared(self.verify(output), [CATALOG, ISRC, FLAGS, INDEXES], [CD_TEXT], "the archiver's NRG image")
 
     def test_chd_holds_none_of_them(self) -> None:
         # chdman keeps none of the items, so nothing is compared with a copy; each is listed.
@@ -191,6 +191,12 @@ class AlteredTests(MetadataTestCase):
         output.entry.write_bytes((text.replace("  TRACK 01 MODE1/2352\r\n", "  TRACK 01 MODE1/2352\r\n    ISRC ABCDE0000001\r\n")).encode())
         self.assertMismatched(output, "the ISRC codes of tracks [1] differ from the source")
 
+    def test_a_catalog_number_on_one_side_only_names_the_other_as_none(self) -> None:
+        output = self.write("bincue")
+        text = output.entry.read_bytes().decode()
+        output.entry.write_bytes(text.replace("CATALOG 0123456789012\r\n", "").encode())
+        self.assertMismatched(output, "the catalog number differs from the source: none, where the source has '0123456789012'")
+
     def test_an_altered_clonecd_table_of_contents_is_a_mismatch(self) -> None:
         output = self.write("ccd")
         original = output.entry.read_text()
@@ -235,7 +241,7 @@ class AlteredTests(MetadataTestCase):
 class ControlFieldTests(MetadataTestCase):
     def test_flags_a_control_field_cannot_carry_are_listed(self) -> None:
         disc = self.source(SHEET.replace("    FLAGS DCP\n", "    FLAGS DCP PRE\n", 1).replace("FLAGS 4CH", "FLAGS 4CH SCMS"), "scms")
-        for identifier, holder in (("ccd", "a CloneCD image"), ("mds", "an MDS descriptor"), ("nrg", "an NRG image")):
+        for identifier, holder in (("ccd", "the archiver's CloneCD image"), ("mds", "an MDS descriptor"), ("nrg", "the archiver's NRG image")):
             with self.subTest(identifier):
                 output = write_format(identifier, disc, self.dir / "scms-out" / identifier, "Synth", silent_log)
                 verification = self.verify(output, disc)
@@ -249,6 +255,19 @@ class ControlFieldTests(MetadataTestCase):
         self.assertEqual(ccd.control(self.disc.tracks[0]), 0x6)
         self.assertEqual(ccd.flags("MODE1", 0x6), ("DCP",))
         self.assertEqual(ccd.flags("MODE1", 0x4), ())
+
+    def test_a_decimal_control_value_is_read_and_another_value_is_refused(self) -> None:
+        output = self.write("ccd")
+        original = output.entry.read_text()
+        old = "Point=0x02\nADR=0x01\nControl=0x03"
+        self.assertIn(old, original)
+        output.entry.write_text(original.replace(old, "Point=0x02\nADR=0x01\nControl=03"))
+        self.assertEqual(ccd.read_ccd(output.entry).tracks[1].flags, ("DCP", "PRE"))
+        for value in ("0x13", "high"):
+            with self.subTest(value):
+                output.entry.write_text(original.replace(old, f"Point=0x02\nADR=0x01\nControl={value}"))
+                with self.assertRaisesRegex(DiscError, f"Control='{value}', which is not a control nibble"):
+                    ccd.read_ccd(output.entry)
 
 
 if __name__ == "__main__":

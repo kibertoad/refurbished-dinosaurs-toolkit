@@ -114,7 +114,7 @@ class RawFormatTests(FormatTestCase):
         shutil.rmtree(output.directory)
         self.assertEqual(self.write("bincue-split", read_cue(source)).entry.read_text(), sheet)
         # CloneCD holds no CD-Text, and its notes say so.
-        self.assertIn("a CloneCD image has no place for them: the tracks' ISRC codes; the CD-Text", " ".join(self.write("ccd", read_cue(source)).notes))
+        self.assertIn("Not carried into this copy: the tracks' ISRC codes; the CD-Text.", self.write("ccd", read_cue(source)).notes)
 
     def test_cd_text_with_a_double_quote_in_an_unquoted_word_is_written_back(self) -> None:
         source = self.dir / "source" / "Synth.cue"

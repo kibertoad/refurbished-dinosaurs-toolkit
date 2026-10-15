@@ -225,9 +225,15 @@ def _toc(
                 lba = int(entry["PLBA"])
             else:
                 lba = (int(entry["PMIN"]) * 60 + int(entry["PSEC"])) * 75 + int(entry["PFRAME"]) - MSF_OFFSET
-            ctl = int(entry["CONTROL"], 0) if "CONTROL" in entry else None
         except (KeyError, ValueError):
             raise DiscError(f"{path.name}: [{name.title()}] does not give its mode, session, point and address") from None
+        ctl = None
+        if "CONTROL" in entry:
+            # CloneCD writes 0x04. A decimal value, zero-padded or not, is read too.
+            value = entry["CONTROL"]
+            base = 16 if value[:2].lower() == "0x" else 10
+            if not re.fullmatch(r"0[xX][0-9a-fA-F]+|\d+", value) or (ctl := int(value, base)) > 0xF:
+                raise DiscError(f"{path.name}: [{name.title()}] has Control={value!r}, which is not a control nibble")
         if 1 <= point <= 99:
             tracks[point] = (session, lba)
             if ctl is not None:

@@ -18,7 +18,7 @@ import tempfile
 import zlib
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from importlib import metadata
 from pathlib import Path
 
@@ -28,7 +28,6 @@ from . import cdda, ccd, isofs, mds, nrg, redump, tools
 from .cue import read_cue, read_cue_metadata, read_iso
 from .disc import RAW_SECTOR, Disc, DiscError, Metadata, NotDataSector, Track, add_to_ranges, block_data, describe_ranges
 from .formats import (
-    CONTROL_FLAGS,
     FORMATS,
     METADATA,
     FormatUnavailable,
@@ -342,17 +341,13 @@ def _compare(reference: dict, found: dict, result: Verification, layout: bool, a
 _TRACK_ITEMS = {"isrc": "ISRC codes", "flags": "FLAGS", "indexes": "indexes after INDEX 01"}
 
 
-def _metadata_values(metadata: Metadata, item: str, disc: Disc | None = None) -> object:
-    """One METADATA item of ``metadata``, empty when the disc has none of it. Given ``disc``, the
-    FLAGS are those a table of contents' control nibble carries."""
+def _metadata_values(metadata: Metadata, item: str) -> object:
+    """One METADATA item of ``metadata``, empty when the disc has none of it."""
     if item == "catalog":
         return metadata.catalog or None
     if item == "cd-text":
         tracks = {n: t.cd_text for n, t in metadata.tracks.items() if t.cd_text}
         return (metadata.cd_text, tracks) if metadata.cd_text or tracks else None
-    if item == "flags" and disc is not None:
-        controlled = {t.number: frozenset(t.flags) & ccd.control_flags(t) for t in disc.tracks}
-        return {n: f for n, f in controlled.items() if f}
     return {n: getattr(t, item) for n, t in metadata.tracks.items() if getattr(t, item)}
 
 
@@ -366,10 +361,14 @@ def compare_metadata(disc: Disc, copied: Metadata, identifier: str, result: Veri
     """
     fmt = format_by_id(identifier)
     source = Metadata.of(disc)
+    if fmt.control_flags:
+        # The copy can only carry the FLAGS a control nibble has bits for; the others are listed below.
+        tracks = {t.number: replace(source.tracks[t.number], flags=ccd.control_flags(t)) for t in disc.tracks}
+        source = replace(source, tracks=tracks)
     for item, text in METADATA.items():
         if item not in fmt.holds:
             continue
-        mine = _metadata_values(source, item, disc if item == "flags" and identifier in CONTROL_FLAGS else None)
+        mine = _metadata_values(source, item)
         theirs = _metadata_values(copied, item)
         if not mine and not theirs:
             continue
@@ -381,7 +380,9 @@ def compare_metadata(disc: Disc, copied: Metadata, identifier: str, result: Veri
             changed = sorted(n for n in mine.keys() | theirs.keys() if mine.get(n) != theirs.get(n))
             result.differences.append(f"the {_TRACK_ITEMS[item]} of tracks {changed} differ from the source")
         elif item == "catalog":
-            result.differences.append(f"the catalog number differs from the source: {theirs!r}, where the source has {mine!r}")
+            copy_has = f"{theirs!r}" if theirs else "none"
+            source_has = f"{mine!r}" if mine else "none"
+            result.differences.append(f"the catalog number differs from the source: {copy_has}, where the source has {source_has}")
         else:
             result.differences.append("the CD-Text differs from the source")
     holder = fmt.holder

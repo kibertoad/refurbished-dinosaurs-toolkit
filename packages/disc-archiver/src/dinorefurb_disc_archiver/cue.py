@@ -193,9 +193,14 @@ def read_cue_metadata(sheet: Path) -> Metadata:
     for track in parsed.tracks:
         if 1 not in track.indexes:
             raise DiscError(f"track {track.number} has no INDEX 01")
-        indexes = tuple((k, v - track.indexes[1]) for k, v in sorted(track.indexes.items()) if k > 1)
+        indexes = tuple(sorted(_extra_indexes(track).items()))
         tracks[track.number] = TrackMetadata(track.isrc, frozenset(track.flags), indexes, _ordered(track.cd_text))
     return Metadata(parsed.catalog, _ordered(parsed.cd_text), tracks)
+
+
+def _extra_indexes(track: _Track) -> dict[int, int]:
+    """INDEX 02 and later of a track that has an INDEX 01, in sectors after INDEX 01."""
+    return {k: v - track.indexes[1] for k, v in track.indexes.items() if k > 1}
 
 
 def _parse(sheet: Path) -> _Sheet:
@@ -342,7 +347,7 @@ def _layout(sheet: Path, files: list[tuple[Path, str]], parsed: list[_Track], ca
                 source=path,
                 source_offset=offset,
                 source_length=base + available - offset,
-                extra_indexes={k: v - entry.indexes[1] for k, v in entry.indexes.items() if k > 1},
+                extra_indexes=_extra_indexes(entry),
                 flags=entry.flags,
                 isrc=entry.isrc,
                 session=entry.session,

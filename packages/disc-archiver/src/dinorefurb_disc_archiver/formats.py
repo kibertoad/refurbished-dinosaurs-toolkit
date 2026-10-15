@@ -29,9 +29,6 @@ METADATA = {
     "cd-text": "the CD-Text",
 }
 CUE_METADATA = frozenset(METADATA)
-# Formats that hold FLAGS as the control nibble of each track's table of contents entry, which
-# carries only some of them (see ``ccd.control_flags``).
-CONTROL_FLAGS = ("ccd", "mds", "nrg")
 
 
 @dataclass(frozen=True)
@@ -48,6 +45,11 @@ class Format:
     # The METADATA it holds, and how a report names the copy when it lacks the rest.
     holds: frozenset[str] = frozenset()
     holder: str = ""
+    # Whether it holds FLAGS as the control nibble of each track's table of contents entry, which
+    # carries only some of them (see ``ccd.control_flags``).
+    control_flags: bool = False
+    # Whether it holds the first data track alone, so only that track's METADATA can be held.
+    first_data_track_only: bool = False
 
 
 FORMATS: tuple[Format, ...] = (
@@ -71,12 +73,18 @@ FORMATS: tuple[Format, ...] = (
     Format(
         "ccd",
         "CloneCD (.ccd/.img/.sub)",
-        "Every raw sector in .img; the .sub subchannel is generated from the table of contents. The .ccd holds the "
-        "catalog number, FLAGS and indexes, and no ISRC codes or CD-Text.",
+        "Every raw sector in .img; the .sub subchannel is generated from the table of contents. The archiver writes "
+        "the catalog number, FLAGS and indexes into the .ccd, and no ISRC codes or CD-Text.",
         complete=True,
         holds=frozenset({"catalog", "flags", "indexes"}),
-        holder="a CloneCD image",
+        holder="the archiver's CloneCD image",
+        control_flags=True,
     ),
+    # A CHD's track metadata (CHT2, and CHSE for sessions, in MAME's src/lib/util/chd.cpp) has no
+    # field for any METADATA item. chdman createcd's cue parser (cdrom_file::parse_cue in
+    # src/lib/util/cdrom.cpp) skips CATALOG, ISRC and the CD-Text keywords, keeps INDEX 02 and
+    # later only while parsing, and reads FLAGS into control_flags, which write_metadata never
+    # stores. extractcd writes none of them back. Checked against MAME 0.289 and master after it.
     Format(
         "chd",
         "CHD",
@@ -94,6 +102,7 @@ FORMATS: tuple[Format, ...] = (
         complete=True,
         holds=frozenset({"flags"}),
         holder="an MDS descriptor",
+        control_flags=True,
     ),
     Format(
         "nrg",
@@ -102,7 +111,8 @@ FORMATS: tuple[Format, ...] = (
         "indexes, without CD-Text.",
         complete=True,
         holds=frozenset({"catalog", "isrc", "flags", "indexes"}),
-        holder="an NRG image",
+        holder="the archiver's NRG image",
+        control_flags=True,
     ),
     Format(
         "iso-flac",
@@ -127,7 +137,13 @@ FORMATS: tuple[Format, ...] = (
         holds=CUE_METADATA,
         holder="a cue sheet",
     ),
-    Format("iso", "ISO", "The data track's 2,048-byte sectors only. Audio tracks are left out.", holder="an ISO"),
+    Format(
+        "iso",
+        "ISO",
+        "The data track's 2,048-byte sectors only. Audio tracks are left out.",
+        holder="an ISO",
+        first_data_track_only=True,
+    ),
     Format("files", "Extracted files", "The data track's files copied out, with their dates."),
     Format(
         "game-dir",
@@ -257,19 +273,15 @@ def write_ccd(disc: Disc, directory: Path, name: str) -> Output:
     return Output("ccd", directory, files[0], files, notes)
 
 
-def held_tracks(disc: Disc, identifier: str) -> list[Track]:
-    """The tracks whose metadata a format can hold: the first data track for ``iso``, every track otherwise."""
-    return disc.data_tracks[:1] if identifier == "iso" else disc.tracks
-
-
 def metadata_losses(disc: Disc, identifier: str) -> list[str]:
-    """The METADATA the disc has that the format ``identifier`` cannot hold, as a report names it.
+    """The METADATA the disc has that the format ``identifier`` does not hold, as a report names it.
 
-    A format that keeps FLAGS in its table of contents also loses each track's FLAGS that the
-    control nibble cannot carry.
+    A format that holds the first data track alone counts that track's items and the disc's. A
+    format that keeps FLAGS in its table of contents also loses each track's FLAGS that the control
+    nibble cannot carry.
     """
     fmt = format_by_id(identifier)
-    tracks = held_tracks(disc, identifier)
+    tracks = [disc.first_data_track()] if fmt.first_data_track_only else disc.tracks
     present = {
         "catalog": bool(disc.catalog),
         "isrc": any(t.isrc for t in tracks),
@@ -278,7 +290,7 @@ def metadata_losses(disc: Disc, identifier: str) -> list[str]:
         "cd-text": bool(disc.cd_text) or any(t.cd_text for t in tracks),
     }
     losses = [text for item, text in METADATA.items() if present[item] and item not in fmt.holds]
-    if identifier in CONTROL_FLAGS:
+    if fmt.control_flags:
         for track in tracks:
             lost = set(track.flags) - ccd.control_flags(track)
             if lost:
@@ -291,10 +303,7 @@ def metadata_losses(disc: Disc, identifier: str) -> list[str]:
 
 def _metadata_notes(disc: Disc, identifier: str) -> list[str]:
     losses = metadata_losses(disc, identifier)
-    if not losses:
-        return []
-    holder = format_by_id(identifier).holder
-    return [f"Not carried into this copy, since {holder} has no place for them: {'; '.join(losses)}."]
+    return [f"Not carried into this copy: {'; '.join(losses)}."] if losses else []
 
 
 def _need_one_session_and_pregaps(disc: Disc, fmt: str) -> None:
