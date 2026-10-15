@@ -41,13 +41,15 @@ Recommend what the importer reads:
 
 | Disc and importer | Recommend |
 |---|---|
-| Mixed-mode, importer reads the toolkit's `OriginalContentSource` or another one-file cue/bin reader | `bincue` |
+| Mixed-mode, importer reads a `disc-image` source of the toolkit's `OriginalContentSource` | `bincue`, `bincue-split`, `ccd`, `mds`, `nrg` or `iso-wav`; each reads as the same disc |
+| Mixed-mode, importer reads the toolkit's `cue-bin` source or another one-file cue/bin reader | `bincue` |
 | Data-only, importer reads ISO files | `iso` |
 | Data-only, importer reads a directory only | `files`, then `iso` once ISO import exists |
 | Importer reads a build laid out in `GAME_DIR/<build ID>/CD` | `game-dir` |
 
 Prefer `bincue` for any disc with audio: it is the most complete format most readers accept, and
-an ISO loses the audio.
+an ISO loses the audio. A `disc-image` source reads the audio of `iso-flac` and `iso-ogg` copies as
+unreadable, so do not recommend them for an importer that checks audio.
 
 ## Testing an importer against every format
 
@@ -175,11 +177,9 @@ same range: `CueBinSheet.TrackExtent`, `CddaWave` and `CddaTrackFingerprints`.
 [Issue #514](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/issues/514) tracks what
 keeps a legally made copy from being identified as the same edition:
 
-- `OriginalContentSource` reads a directory, an ISO and cue/bin, not the CHD, CloneCD, MDS, NRG
-  or ISO-plus-audio forms the archiver writes, and of a `bincue-split` sheet it reads only the
-  data track, so its audio tracks cannot be fingerprinted.
+- `OriginalContentSource` does not read the CHD form the archiver writes.
 
-Until they are closed, test the importer against the forms it reads, and record each form it
+Until it is closed, test the importer against the forms it reads, and record each form it
 should accept and does not in the restoration's plan.
 
 ## What each format keeps

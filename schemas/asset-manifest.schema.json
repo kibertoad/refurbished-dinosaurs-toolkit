@@ -13,13 +13,13 @@
   "$defs": {
     "holdsVolume": {
       "required": ["sourceKind"],
-      "properties": { "sourceKind": { "enum": ["iso9660", "cue-bin"] } }
+      "properties": { "sourceKind": { "enum": ["iso9660", "cue-bin", "disc-image"] } }
     }
   },
   "properties": {
     "gameId": { "type": "string", "minLength": 1 },
     "sourceEdition": { "type": "string", "minLength": 1 },
-    "sourceKind": { "enum": ["directory", "iso9660", "cue-bin", "installshield-cabinet", "installshield3-archive"], "default": "directory" },
+    "sourceKind": { "enum": ["directory", "iso9660", "cue-bin", "disc-image", "installshield-cabinet", "installshield3-archive"], "default": "directory" },
     "volumeIdentifier": {
       "type": "string",
       "$comment": "The ISO 9660 primary volume descriptor's identifier, without its trailing spaces and NULs. Each byte reads as the Latin-1 character of the same value, control bytes included.",
@@ -32,7 +32,7 @@
     },
     "volumeXxh3": {
       "type": "string",
-      "$comment": "XXH3-128 of the ISO 9660 volume's declared logical blocks from block 0. An .iso image and a cue/bin image of one disc give the same value.",
+      "$comment": "XXH3-128 of the ISO 9660 volume's declared logical blocks from block 0. Every image form of one disc, an .iso image and a cue/bin image among them, gives the same value.",
       "pattern": "^[0-9a-f]{32}$"
     },
     "files": {
@@ -73,7 +73,7 @@
     }
   },
   "if": {
-    "not": { "required": ["sourceKind"], "properties": { "sourceKind": { "const": "cue-bin" } } }
+    "not": { "required": ["sourceKind"], "properties": { "sourceKind": { "enum": ["cue-bin", "disc-image"] } } }
   },
   "then": {
     "properties": { "audioTracks": { "maxItems": 0 } }
