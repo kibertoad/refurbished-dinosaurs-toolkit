@@ -8,11 +8,12 @@ fails the sheet rather than being skipped.
 Sessions are read from ``REM SESSION nn`` lines, which redumper, DiscImageCreator and chdman write
 before the first track of each session of a disc with more than one. A sheet without them
 describes one session. DiscImageCreator's ``REM LEAD-OUT``, ``REM LEAD-IN`` and ``REM PREGAP``
-around a session change are read too: the first two must give the sizes the archiver lays
-sessions out with (see ``disc.session_gap``), and ``REM PREGAP`` gives the pregap of the session's
-first track, which its file holds only when INDEX 00 says so. A sheet gives no gap between
-sessions, so a raw data track that opens a later session must carry, in the header of its INDEX 01
-sector, the address the standard gap gives it.
+around a session change are read too: the first two must give the standard sizes (see
+``disc.session_gap``), and ``REM PREGAP`` gives the pregap of the session's first track, which its
+file holds only when INDEX 00 says so. A sheet gives no gap between sessions. The gap before a
+later session that opens with a raw data track is taken from the address in the header of the
+track's INDEX 01 sector; any other later session gets the standard gap, recorded as assumed (see
+``disc.SessionGap``).
 """
 
 from __future__ import annotations
@@ -27,10 +28,12 @@ from .disc import (
     RAW_SECTOR,
     Disc,
     DiscError,
+    SessionGap,
     Track,
     format_msf,
     header_lba,
     lead_out_sectors,
+    session_gap,
     wave_data,
 )
 
@@ -232,29 +235,40 @@ def read_cue(sheet: Path) -> Disc:
     disc = _layout(sheet, files, tracks, catalog)
     disc.cd_text = _ordered(disc_text)
     if sessions.given:
-        _check_session_starts(disc)
+        disc = _with_session_gaps(disc)
     return disc
 
 
-def _check_session_starts(disc: Disc) -> None:
-    """Refuse a disc whose sector headers put a later session elsewhere than the layout does.
+def _with_session_gaps(disc: Disc) -> Disc:
+    """The disc with each later session's gap taken from its sector headers where it can be.
 
-    A cue sheet gives no gap between sessions, and the archiver lays each later session out the
-    standard lead-out and lead-in past the one before it. A raw data track that opens a later
-    session carries its own disc address in the header of its INDEX 01 sector, and when that
-    address differs, the standard gap would give the track an address it does not have.
+    A cue sheet gives no gap between sessions. A raw data track that opens a later session carries
+    its own disc address in the header of its INDEX 01 sector, which gives the gap: the sectors
+    from the previous session's lead-out to the track's INDEX 00. A session that opens with audio,
+    with a data track stored as 2,048-byte user data, or with a sector whose header holds no
+    address, keeps the standard gap, marked ``assumed``. An address closer to the lead-out than
+    the standard gap is refused.
     """
-    for session in disc.sessions[1:]:
-        track = session.tracks[0]
+    gaps: dict[int, SessionGap] = {}
+    for number in range(2, disc.tracks[-1].session + 1):
+        track = disc.sessions[number - 1].tracks[0]
         if track.is_audio or track.storage != "raw":
             continue
         found = header_lba(next(track.iter_raw(0, 1)))
-        if found is not None and found != track.index1:
+        if found is None:
+            continue
+        # Sessions are taken in order, so the previous session's lead-out counts every gap before it.
+        lead_out = disc.sessions[number - 2].lead_out
+        sectors = found - track.pregap - lead_out
+        if sectors < session_gap(number - 1):
             raise DiscError(
-                f"track {track.number} opens session {session.number}, and its sector headers put its INDEX 01 at "
-                f"LBA {found}; the cue sheet gives no gap between sessions, and the standard lead-out and lead-in "
-                f"put it at LBA {track.index1}. The archiver lays sessions out with the standard gap only"
+                f"track {track.number} opens session {number}, and its sector headers put its INDEX 01 at LBA {found}: "
+                f"less than the standard {session_gap(number - 1)} sectors of lead-out and lead-in, which are minimums, "
+                f"past session {number - 1}'s lead-out at LBA {lead_out} and the track's {track.pregap}-sector pregap"
             )
+        gaps[number] = SessionGap(sectors, "headers")
+        disc = Disc(disc.tracks, catalog=disc.catalog, cd_text=disc.cd_text, origin=disc.origin, gaps=dict(gaps))
+    return disc
 
 
 def _layout(sheet: Path, files: list[tuple[Path, str]], parsed: list[_Track], catalog: str | None) -> Disc:

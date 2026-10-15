@@ -26,7 +26,7 @@ import xxhash
 
 from . import cdda, ccd, isofs, mds, nrg, redump, tools
 from .cue import read_cue, read_iso
-from .disc import RAW_SECTOR, Disc, DiscError, NotDataSector, Track, add_to_ranges, block_data, describe_ranges
+from .disc import RAW_SECTOR, Disc, DiscError, NotDataSector, Track, add_to_ranges, block_data, describe_ranges, session_gap
 from .formats import FORMATS, FormatUnavailable, Output, cdda_name, mds_losses, track_file_name, write_format
 from .notice import NOTICE_FILENAME, write_notice
 from .profile import Profile, check_profile, recommended_formats
@@ -156,8 +156,11 @@ def _data_fingerprint(track: Track) -> dict[str, object]:
 def fingerprint(disc: Disc, unread: Mapping[int, list[list[int]]] | None = None) -> dict[str, object]:
     """The disc's layout and content hashes, the same whichever format holds it.
 
-    The layout gives each session's tracks and lead-out, and each track's session, start (the LBA
-    of its INDEX 00, past the gaps ``disc.session_gap`` gives between sessions), pregap and length.
+    The layout gives each session's tracks and lead-out, the gap before each later session
+    (``gap``, the sectors from the previous session's lead-out to its first track's INDEX 00) and
+    where that gap was read (``gapSource``: ``toc``, ``headers`` or ``assumed``, see
+    ``disc.SessionGap``), and each track's session, start (the LBA of its INDEX 00, past the gaps
+    between sessions), pregap and length. Session 1's ``gap`` and ``gapSource`` are null.
 
     The data hash covers the first data track's user data from INDEX 01 to the track's end, apart
     from the sectors past the volume described below, with empty form 2 sectors read as zeros.
@@ -227,7 +230,14 @@ def fingerprint(disc: Disc, unread: Mapping[int, list[list[int]]] | None = None)
         "layout": disc.layout,
         "volumeIdentifier": volume,
         "sessions": [
-            {"number": s.number, "firstTrack": s.tracks[0].number, "lastTrack": s.tracks[-1].number, "leadOut": s.lead_out}
+            {
+                "number": s.number,
+                "firstTrack": s.tracks[0].number,
+                "lastTrack": s.tracks[-1].number,
+                "leadOut": s.lead_out,
+                "gap": s.gap.sectors if s.gap else None,
+                "gapSource": s.gap.source if s.gap else None,
+            }
             for s in disc.sessions
         ],
         "tracks": [
@@ -323,8 +333,14 @@ def _compare(reference: dict, found: dict, result: Verification, layout: bool, a
             result.differences.append(f"audio of tracks {changed} differs from the source")
     if layout:
         result.compared.append("track layout")
-        if (reference["sessions"], reference["tracks"]) != (found["sessions"], found["tracks"]):
+        # Where a gap was read is not part of the layout: a cue copy reads from the sector headers
+        # the gap a CloneCD source's table of contents gave.
+        if (_without_gap_sources(reference["sessions"]), reference["tracks"]) != (_without_gap_sources(found["sessions"]), found["tracks"]):
             result.differences.append("the track layout differs from the source")
+
+
+def _without_gap_sources(sessions: list[dict] | None) -> list[dict] | None:  # type: ignore[type-arg]
+    return None if sessions is None else [{k: v for k, v in s.items() if k != "gapSource"} for s in sessions]
 
 
 _WITHOUT_SESSIONS = ("session", "start")
@@ -334,6 +350,30 @@ def _drop_sessions(fingerprint_: dict) -> dict:  # type: ignore[type-arg]
     """The fingerprint without what sessions decide: the session list, each track's session and its start."""
     tracks = [{k: v for k, v in t.items() if k not in _WITHOUT_SESSIONS} for t in fingerprint_["tracks"]]
     return {**fingerprint_, "sessions": None, "tracks": tracks}
+
+
+def _drop_gaps(fingerprint_: dict) -> dict:  # type: ignore[type-arg]
+    """The fingerprint without what the gaps between sessions decide: each session's gap and
+    lead-out, and each track's start. The sessions and their tracks stay."""
+    sessions = [{k: v for k, v in s.items() if k not in ("leadOut", "gap", "gapSource")} for s in fingerprint_["sessions"]]
+    tracks = [{k: v for k, v in t.items() if k != "start"} for t in fingerprint_["tracks"]]
+    return {**fingerprint_, "sessions": sessions, "tracks": tracks}
+
+
+def _unheld_gaps(kind: str, reference: dict, found: dict) -> list[dict]:  # type: ignore[type-arg]
+    """The source's sessions whose gap the copy does not hold: every gap that is not the standard
+    one in a CHD, which chdman lays out with the standard gaps, and in any other copy each gap the
+    copy assumed where the source has another."""
+    theirs = {s["number"]: s for s in found["sessions"]}
+    unheld = []
+    for mine in reference["sessions"][1:]:
+        copy = theirs.get(mine["number"])
+        if kind == "chd":
+            if mine["gap"] != session_gap(mine["number"] - 1):
+                unheld.append(mine)
+        elif copy is not None and copy["gapSource"] == "assumed" and copy["gap"] != mine["gap"]:
+            unheld.append(mine)
+    return unheld
 
 
 def _decoded_sha256(ffmpeg: Path, path: Path) -> str:
@@ -371,6 +411,13 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
             )
             result.not_compared.append("the sessions and the track starts they decide, which the CHD does not hold")
             reference, found = _drop_sessions(reference), _drop_sessions(found)
+        elif len(reference["sessions"]) > 1 and len(found["sessions"]) == len(reference["sessions"]):
+            unheld = _unheld_gaps(kind, reference, found)
+            if unheld:
+                gaps = ", ".join(f"the {s['gap']}-sector gap before session {s['number']}" for s in unheld)
+                holder = "a CHD" if kind == "chd" else "a cue sheet"
+                result.not_compared.append(f"{gaps}, and the track starts that follow, which {holder} does not hold")
+                reference, found = _drop_gaps(reference), _drop_gaps(found)
         _compare(reference, found, result, layout=True, audio=True, form2=kind != "iso-wav")
         if kind == "iso-wav" and any(a["pregapSilent"] is False for a in reference["audio"]):
             result.not_compared.append("audio in pregaps, which the format does not hold")

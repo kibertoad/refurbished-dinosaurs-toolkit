@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import ccd, isofs, mds, nrg, tools
 from .cue import CueFile, render_cue, write_cue
-from .disc import COOKED_SECTOR, RAW_SECTOR, Disc, DiscError, NotDataSector, Track, block_data, describe_ranges
+from .disc import COOKED_SECTOR, RAW_SECTOR, Disc, DiscError, NotDataSector, Track, block_data, describe_ranges, session_gap
 from .tools import Log
 
 
@@ -154,6 +154,31 @@ def _virtual_pregap_notes(disc: Disc, data_note: str = "the cue sheet gives it a
     ]
 
 
+def _cue_gap_notes(disc: Disc, data_raw: bool = True) -> list[str]:
+    """Notes on the gaps between sessions that differ from the standard one, which a cue sheet
+    cannot hold. ``data_raw`` is False for a sheet whose data track is an ISO file, which keeps no
+    sector headers."""
+    notes = []
+    for session in disc.nonstandard_gaps():
+        assert session.gap is not None
+        track = session.tracks[0]
+        standard = session_gap(session.number - 1)
+        if data_raw and not track.is_audio and track.storage == "raw":
+            notes.append(
+                f"A cue sheet holds no gap between sessions. The {session.gap.sectors}-sector gap before session "
+                f"{session.number} (the standard one is {standard}) is read back from the header of track {track.number}'s "
+                "INDEX 01 sector, which carries its address."
+            )
+        else:
+            notes.append(
+                f"A cue sheet holds no gap between sessions, and session {session.number} opens with track {track.number}, "
+                f"whose sectors carry no address. A reader of this sheet lays the session out with the standard "
+                f"{standard}-sector gap, not the disc's {session.gap.sectors}, so the track starts from session "
+                f"{session.number} on differ from the disc's."
+            )
+    return notes
+
+
 def _cue_type(track: Track) -> str:
     return "AUDIO" if track.is_audio else f"{track.mode}/{RAW_SECTOR}"
 
@@ -170,7 +195,7 @@ def write_bincue_split(disc: Disc, directory: Path, name: str) -> Output:
         cue_files.append(CueFile(filename, "BINARY", [(track, 0, stored, _cue_type(track))]))
     sheet = directory / f"{name}.cue"
     write_cue(sheet, render_cue(disc, cue_files))
-    return Output("bincue-split", directory, sheet, [sheet, *files], _virtual_pregap_notes(disc))
+    return Output("bincue-split", directory, sheet, [sheet, *files], [*_virtual_pregap_notes(disc), *_cue_gap_notes(disc)])
 
 
 def write_bincue(disc: Disc, directory: Path, name: str) -> Output:
@@ -186,7 +211,7 @@ def write_bincue(disc: Disc, directory: Path, name: str) -> Output:
     _write(image, (chunk for t, _, stored, _ in entries for chunk in t.iter_raw(-t.pregap if stored else 0, t.length)))
     sheet = directory / f"{name}.cue"
     write_cue(sheet, render_cue(disc, [CueFile(image.name, "BINARY", entries)]))
-    return Output("bincue", directory, sheet, [sheet, image], _virtual_pregap_notes(disc))
+    return Output("bincue", directory, sheet, [sheet, image], [*_virtual_pregap_notes(disc), *_cue_gap_notes(disc)])
 
 
 def write_ccd(disc: Disc, directory: Path, name: str) -> Output:
@@ -413,6 +438,7 @@ def write_iso_audio(disc: Disc, directory: Path, name: str, codec: str, log: Log
     sheet = directory / f"{name}.cue"
     write_cue(sheet, render_cue(disc, cue_files))
     notes.append("Each audio track starts at its INDEX 01; its pregap is written as a cue PREGAP.")
+    notes += _cue_gap_notes(disc, data_raw=False)
     if codec == "ogg":
         notes.append("Ogg Vorbis is lossy: the audio is close to, not the same as, the disc's.")
     if codec != "wav":
@@ -433,6 +459,13 @@ def write_chd(disc: Disc, directory: Path, name: str, log: Log) -> Output:
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     notes = _virtual_pregap_notes(disc)
+    notes += [
+        f"chdman lays sessions out with the standard gap between them, so the CHD does not hold the "
+        f"{s.gap.sectors}-sector gap before session {s.number} (the standard one is {session_gap(s.number - 1)}), "
+        "and a reader of the CHD places that session's tracks at other addresses than the disc's."
+        for s in disc.nonstandard_gaps()
+        if s.gap is not None
+    ]
     if _has_cd_text(disc):
         notes.append("The CD-Text the cue sheet gave is not carried into the CHD; chdman does not store it.")
     return Output("chd", directory, target, [target], notes)

@@ -508,6 +508,29 @@ region's `start`, `end`, `segment` and `ip`.
 
 ## Disc archiver upgrades
 
+### Disc archiver 4.0.0: gaps between sessions are read from the source
+
+A gap between two sessions can be longer than the standard lead-out and lead-in. The archiver now
+takes each gap from the source: from the table of contents of a CloneCD image, and from the header
+of the INDEX 01 sector of a raw data track that opens a later session in a cue sheet. A disc with a
+longer gap, which 3.x refused, is archived with the track starts the source gives. A later session
+of a cue sheet that opens with audio keeps the standard gap. Each later session in the manifest's
+`disc.sessions` gains `gap`, the sectors from the previous session's lead-out to the first track's
+INDEX 00, and `gapSource`: `toc`, `headers` or `assumed`. Session 1 has `null` for both.
+
+A CloneCD image whose later session's first track has no `INDEX 0` and starts past the standard gap
+is read with a pregap of the sectors the image holds ahead of its INDEX 01. When the image holds
+none, which is how DiscImageCreator writes such a track, the sectors could be a pregap the image
+leaves out or a longer gap, so the image is now refused; 3.x read them as the pregap. Add the
+track's `INDEX 0=<LBA>` line to its `[TRACK]` section, the LBA of its INDEX 00, and open the image
+again, or dump the disc with redumper.
+
+The `ccd` copy of a disc of several sessions now gives a later session's first track an `INDEX 0`
+line even when the image leaves its pregap out or it has none, so its `.ccd` hash differs from a
+3.x run. Verification compares the gaps as part of the track layout. A copy that cannot hold a gap
+longer than the standard one lists it under `notCompared` and is `partial`: a `chd`, and a cue
+sheet whose later session opens with audio.
+
 ### Disc archiver 3.0.0: track starts count the gap between sessions
 
 The archiver reads sessions: `REM SESSION` lines in cue sheets, the `[Entry]` sessions of a

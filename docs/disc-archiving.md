@@ -187,9 +187,9 @@ should accept and does not in the restoration's plan.
 | Format | Data sectors | Audio | Pregaps | Subchannel | Sessions |
 |---|---|---|---|---|---|
 | redumper dump (`archival/`) | raw | yes | yes | read from the disc | yes |
-| `bincue-split`, `bincue` | raw | yes | yes | none | `REM SESSION` lines |
-| `chd` | raw | yes | yes | none | only from a chdman newer than MAME 0.289 |
-| `ccd` | raw | yes | yes | generated from the table of contents | yes |
+| `bincue-split`, `bincue` | raw | yes | yes | none | `REM SESSION` lines; a gap longer than the standard one only through the sector headers of a data track that opens the session |
+| `chd` | raw | yes | yes | none | only from a chdman newer than MAME 0.289, with the standard gaps |
+| `ccd` | raw | yes | yes | generated from the table of contents | yes, with each gap |
 | `mds`, `nrg` | raw | yes | yes | none | one session only |
 | `iso-flac`, `iso-wav` | user data | yes, from INDEX 01 | as a cue `PREGAP` | none | `REM SESSION` lines |
 | `iso-ogg` | user data | lossy | as a cue `PREGAP` | none | `REM SESSION` lines |
