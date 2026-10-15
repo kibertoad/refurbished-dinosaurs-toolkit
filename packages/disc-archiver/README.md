@@ -149,6 +149,7 @@ disc-archiver-gui --profile path/to/disc-profile.json         # installed with P
 
 Tick the notice, choose the drive (or an image you already made), the game's profile and the
 folder, and press **Make the copy**. The formats the profile recommends are ticked already.
+**Redump DAT**, under the folder, takes a DAT you downloaded, as `--dat` does.
 
 ### The command
 
@@ -166,6 +167,7 @@ disc-archiver rip --drive /dev/sr0 --output ~/discs/game --format all --accept-p
 disc-archiver convert --input "My Game.cue" --output ~/discs/game --format iso --format files \
     --accept-personal-use                                # formats from a copy you already have
 disc-archiver check --input "My Game.cue" --profile disc-profile.json
+disc-archiver check --input "My Game.cue" --dat redump-pc.zip     # against a Redump DAT
 disc-archiver formats                                    # every format, most complete first
 disc-archiver notice                                     # the personal-use notice
 ```
@@ -177,7 +179,33 @@ downloading redumper. Progress goes to standard error and the
 summary to standard output.
 
 Exit codes: `0` done and verified, `1` failed, `2` usage error or notice not accepted, `3` a
-profile check failed or a written format differs from its source.
+profile check failed, a written format differs from its source, or the Redump comparison is
+`mismatched`.
+
+### Comparing with a Redump DAT
+
+`--dat <file>` on `rip`, `convert` and `check` compares the copy with a DAT you downloaded
+yourself from [redump.org](http://redump.org/downloads/): the `.dat` file, or the `.zip` the site
+serves holding one `.dat`. The archiver never downloads a DAT. `rip` and `convert` also write
+`bincue-split`, the layout Redump lists, and compare its files; `check` compares the `.cue` it is
+given and the track files it names, and refuses other inputs. The comparison and its outcome are
+in the manifest's `redump` (in `check`'s output, its `redump`).
+
+Each track file is matched with a DAT file by size, CRC32, MD5 and SHA-1, all four agreeing; file
+names are reported separately. The outcome is:
+
+| `status` | Means | Exit code |
+|---|---|---|
+| `matched` | Every track file and the cue sheet match one game's files, and the game lists no other file. | `0` |
+| `partial` | Every track file matches one game, which lists no other track, but the cue sheet differs. `differences` says whether only its `FILE` names (Redump names them `<game> (Track N).bin`; `--name` with the game's name writes those), only its line endings, or its content differs. | `0` |
+| `notListed` | No game in the DAT lists any of the track files. Printed; the copy cannot be checked this way. | `0` |
+| `mismatched` | Some track files match a game and others do not, or the copy lacks a file the game lists. `differences` names them. | `3` |
+| `notCompared` | `bincue-split` could not be written from this source (an ISO has no raw sectors). | `0` |
+
+A DAT is read only when it is UTF-8 Logiqx XML of at most 128 MiB, every file lists a decimal
+size and well-formed CRC32, MD5 and SHA-1, and it uses no entities. The DTD a document type
+declaration names is never loaded. A DAT that breaks one of these rules is refused before the disc
+is read.
 
 On Windows, if redumper cannot open the drive, start the window or the terminal as
 administrator. On Linux, add yourself to the group that owns the drive (often `cdrom`).
@@ -239,7 +267,7 @@ My Game/
   addresses stored in the sector headers are not checked.
 - `profile.checks`: each expectation of the profile and what the disc showed.
 - `outputs`: each format's files, with size, CRC32, MD5, SHA-1 and SHA-256 (the hashes disc
-  databases such as Redump list, so you can check your dump against them yourself), what the
+  databases such as Redump list, which `--dat` compares), what the
   format leaves out or generates (`notes`), and its `verification`:
   - `matched`: everything the source holds was compared and agreed.
   - `partial`: everything compared agreed, and `notCompared` lists what the format does not hold
@@ -251,6 +279,11 @@ My Game/
   sectors, so no BIN/CUE, CloneCD or CHD can be made from it. A data track with sectors that hold
   no user data has no ISO form, so the ISO formats are unavailable for it; BIN/CUE, CloneCD and
   CHD keep those sectors and compare them byte for byte.
+- `redump`: `null` without `--dat`. Otherwise the DAT's file name (`dat`), the outcome (`status`,
+  see [Comparing with a Redump DAT](#comparing-with-a-redump-dat)), the game the track files match
+  best (`game`, `null` when none), each file of the `bincue-split` copy with its `kind`
+  (`cueSheet` or `track`), whether it `matched` and the DAT's name for it (`datName`), the files
+  whose name differs from the DAT's (`nameDifferences`), and what differed (`differences`).
 
 ## Data tracks after audio
 

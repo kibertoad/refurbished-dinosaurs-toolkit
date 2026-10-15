@@ -85,11 +85,16 @@ checked, and the same on every machine it is kept on.
 3. **Write every format.** Add `--format all`, so one run writes every form the importer tests
    need, each read back and compared with the dump. Exit code `0` means every format was written
    and verified; `3` means a format or the profile check differs, and the manifest says which.
-4. **Check against Redump.** The manifest gives each output file's CRC32, MD5 and SHA-1. Compare
-   the `bincue-split` files with the disc's entry in the Redump PC DAT from
-   [redump.org](http://redump.org/downloads/). A match means the dump is the known good one. When
-   the disc is not listed, the dump cannot be checked this way; dumping it again on another drive
-   and comparing is the next best check.
+4. **Check against Redump.** Download the Redump PC DAT from
+   [redump.org](http://redump.org/downloads/) and add `--dat <the .zip or .dat>`, with `--name`
+   set to the game's Redump name so the files carry Redump's names. The run writes
+   `bincue-split` and compares it with every disc in the DAT; the manifest's `redump` gives the
+   outcome. `matched` means the dump is the known good one. `partial` means every track matches
+   but the cue sheet differs, and says how (usually only the file names it lists). `mismatched`
+   names the tracks that differ and exits with `3`: dump again. `notListed` means the disc is not
+   in the DAT, so the dump cannot be checked this way; dumping it again on another drive and
+   comparing is the next best check. To check an existing split dump, run
+   `disc-archiver check --input <dump>.cue --dat <the DAT>`.
 5. **Keep the master.** Keep the whole output folder. These are the copies to keep for the long
    term:
 
@@ -112,7 +117,7 @@ checked, and the same on every machine it is kept on.
 |---|---|---|
 | XXH3-128 (`xxh3`) | the documentation standard's build entries, restorations' asset manifests, the engine's and reader's source identity | Identifying an edition and every file it reads. `xxhsum -H2` prints it. |
 | SHA-256 | `rip-manifest.json` `disc` content hashes; each output file | Comparing formats with each other inside the archiver. |
-| CRC32, MD5, SHA-1 | each output file in `rip-manifest.json` | Comparing a dump with a Redump DAT, which lists these. |
+| CRC32, MD5, SHA-1 | each output file in `rip-manifest.json` | Comparing a dump with a Redump DAT, which lists these (`--dat`). |
 
 Identify a disc by its content (the data track's user data and each audio track's samples), never
 by the hash of a container file such as a `.chd` or a one-file `.bin`, which changes with the
@@ -131,8 +136,7 @@ keeps a legally made copy from being identified as the same edition:
 - Alcohol MDS/MDF and Nero NRG copies are neither read nor written;
 - `OriginalContentSource` reads a directory, an ISO and cue/bin, not the CHD, CloneCD or
   ISO-plus-audio forms the archiver writes;
-- sessions are not kept, so a CD-Extra disc's cue, CloneCD and CHD copies lose them;
-- the Redump DAT comparison is done by hand.
+- sessions are not kept, so a CD-Extra disc's cue, CloneCD and CHD copies lose them.
 
 Until they are closed, test the importer against the forms it reads, and record each form it
 should accept and does not in the restoration's plan.

@@ -92,6 +92,27 @@ class WindowTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_a_redump_dat_is_passed_on_only_when_one_is_given(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = tkinter.Tk()
+            try:
+                window = gui.ArchiverWindow(root)
+                window.accepted.set(True)
+                window.source_kind.set("image")
+                window.image.set(str(Path(temp) / "Synth.cue"))
+                window.output.set(str(Path(temp) / "out"))
+                jobs = []
+                with mock.patch.object(window, "_work", side_effect=jobs.append):
+                    window.start()
+                    window.worker.join()  # type: ignore[union-attr]
+                    window.dat.set(f"  {Path(temp) / 'redump.zip'} ")
+                    window.start()
+                    window.worker.join()  # type: ignore[union-attr]
+                self.assertNotIn("dat", jobs[0])
+                self.assertEqual(jobs[1]["dat"], Path(temp) / "redump.zip")
+            finally:
+                window.close()
+
     def test_the_copy_starts_only_after_the_notice_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             sheet = SyntheticDisc(iso_image()).write_split(Path(temp) / "source")
