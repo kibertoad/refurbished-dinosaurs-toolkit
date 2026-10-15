@@ -6,6 +6,7 @@ import calendar
 import hashlib
 import io
 import os
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -316,15 +317,18 @@ class FileEntry:
     xxh3: str
 
 
-class _HashingWriter:
-    def __init__(self, target: io.BufferedWriter | None) -> None:
+class HashingWriter:
+    """The size, SHA-256 and XXH3-128 of the bytes written, passing them on to ``target`` if given."""
+
+    def __init__(self, target: io.BufferedWriter | None = None) -> None:
         self.target = target
-        self.hash = hashlib.sha256()
+        self.sha256 = hashlib.sha256()
         self.xxh3 = xxhash.xxh3_128()
         self.size = 0
 
-    def write(self, data: bytes) -> int:
-        self.hash.update(data)
+    def write(self, data: bytes | memoryview) -> int:
+        """Hash ``data``, write it to the target, and return its length."""
+        self.sha256.update(data)
         self.xxh3.update(data)
         self.size += len(data)
         if self.target:
@@ -361,14 +365,14 @@ def _mtime(record: object) -> float | None:
     return stamp - date.gmtoffset * 15 * 60
 
 
-def _primary_names(names: list[str]) -> dict[str, str]:
+def _primary_names(names: list[str], directories: list[str]) -> dict[str, str]:
     """The file names of one directory of the primary tree as the documentation standard writes
     them (ENTRY-TYPES-11): without the version suffix and without a dot that ends a name with no
-    extension, except that names which would then be the same keep their version."""
+    extension, except that a name which would then be the same as another file's or a
+    subdirectory's (``INSTALL.;1`` beside the directory ``INSTALL``) is kept in full."""
     short = {name: _component(name, joliet=False) for name in names}
-    taken: dict[str, int] = {}
-    for value in short.values():
-        taken[value] = taken.get(value, 0) + 1
+    taken = Counter(short.values())
+    taken.update(_component(name, joliet=False) for name in directories)
     return {name: value if taken[value] == 1 else _component(name, joliet=False, keep_version=True) for name, value in short.items()}
 
 
@@ -394,9 +398,9 @@ def walk(track: Track, destination: Path | None = None, primary: bool = False) -
         stream.files = True
         joliet = iso.has_joliet() and not primary
         key = "joliet_path" if joliet else "iso_path"
-        for root, _, files in iso.walk(**{key: "/"}):
+        for root, directories, files in iso.walk(**{key: "/"}):
             relative_dir = [_component(p, joliet) for p in root.strip("/").split("/") if p]
-            named = _primary_names(files) if primary else {name: _component(name, joliet) for name in files}
+            named = _primary_names(files, directories) if primary else {name: _component(name, joliet) for name in files}
             for name in files:
                 parts = [*relative_dir, named[name]]
                 iso_name = f"{root.rstrip('/')}/{name}"
@@ -408,7 +412,7 @@ def walk(track: Track, destination: Path | None = None, primary: bool = False) -
                     out.parent.mkdir(parents=True, exist_ok=True)
                     target = out.open("wb")
                 try:
-                    writer = _HashingWriter(target)
+                    writer = HashingWriter(target)
                     iso.get_file_from_iso_fp(writer, **{key: iso_name})
                 finally:
                     if target:
@@ -417,7 +421,7 @@ def walk(track: Track, destination: Path | None = None, primary: bool = False) -
                     stamp = _mtime(iso.get_record(**{key: iso_name}))
                     if stamp is not None:
                         os.utime(destination.joinpath(*parts), (stamp, stamp))
-                entries.append(FileEntry("/".join(parts), writer.size, writer.hash.hexdigest(), writer.xxh3.hexdigest()))
+                entries.append(FileEntry("/".join(parts), writer.size, writer.sha256.hexdigest(), writer.xxh3.hexdigest()))
     except PyCdlibException as error:
         raise DiscError(f"track {track.number} is not a readable ISO 9660 file system: {error}") from None
     finally:
@@ -435,11 +439,11 @@ def tree_entries(root: Path) -> list[FileEntry]:
     for path in root.rglob("*"):
         if not path.is_file() or path.is_symlink():
             continue
-        writer = _HashingWriter(None)
+        writer = HashingWriter()
         with path.open("rb") as handle:
             for block in iter(lambda: handle.read(1 << 20), b""):
                 writer.write(block)
-        entries.append(FileEntry(path.relative_to(root).as_posix(), writer.size, writer.hash.hexdigest(), writer.xxh3.hexdigest()))
+        entries.append(FileEntry(path.relative_to(root).as_posix(), writer.size, writer.sha256.hexdigest(), writer.xxh3.hexdigest()))
     # Sorted by the path text, as walk sorts, so the two lists compare equal when the files do.
     return sorted(entries, key=lambda e: e.path)
 

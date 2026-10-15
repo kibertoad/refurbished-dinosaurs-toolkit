@@ -9,8 +9,6 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import xxhash
-
 from . import ccd, isofs, tools
 from .cue import CueFile, render_cue
 from .disc import COOKED_SECTOR, RAW_SECTOR, Disc, DiscError, NotDataSector, Track, block_data, describe_ranges
@@ -384,19 +382,21 @@ def write_game_dir(disc: Disc, directory: Path) -> Output:
     except isofs.UnsupportedFileSystem as error:
         # derive removes the format's folder with any file written before the error.
         raise FormatUnavailable(str(error)) from None
-    taken = {e.path.casefold() for e in entries}
+    # The first component of each path: a root file, or a root directory holding files.
+    taken = {e.path.split("/", 1)[0].casefold() for e in entries}
     clash = [cdda_name(t) for t in disc.audio_tracks if cdda_name(t).casefold() in taken]
     if clash:
-        raise FormatUnavailable(f"the disc's file system holds a file named {clash[0]} at its root, the name the layout gives an audio track")
+        raise FormatUnavailable(
+            f"the disc's file system holds a file or directory named {clash[0]} at its root, the name the layout gives an audio track"
+        )
     listing: list[dict[str, object]] = [{"path": f"CD:{e.path}", "size": e.size, "xxh3": e.xxh3} for e in entries]
     for audio in disc.audio_tracks:
-        digest, size = xxhash.xxh3_128(), 0
-        with (cd / cdda_name(audio)).open("wb") as handle:
+        name = cdda_name(audio)
+        with (cd / name).open("wb") as handle:
+            writer = isofs.HashingWriter(handle)
             for chunk in audio.iter_raw(0, audio.length):
-                handle.write(chunk)
-                digest.update(chunk)
-                size += len(chunk)
-        listing.append({"path": f"CD:track{audio.number:02d}", "format": "cdda", "size": size, "xxh3": digest.hexdigest()})
+                writer.write(chunk)
+        listing.append({"path": f"CD:{name.removesuffix('.cdda')}", "format": "cdda", "size": writer.size, "xxh3": writer.xxh3.hexdigest()})
     notes = [
         f"{len(entries)} files from track {track.number}'s primary ISO 9660 volume, named as a build entry names them.",
         "Copy CD into GAME_DIR/<build ID>/, or rename it CD2 and so on for a later disc of the game.",

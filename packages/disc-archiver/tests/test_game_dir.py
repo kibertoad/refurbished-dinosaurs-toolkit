@@ -124,6 +124,22 @@ class GameDirTests(GameDirTestCase):
         self.assertEqual(output["verification"]["status"], "matched")
         self.assertEqual([e["path"] for e in output["listing"]], ["CD:GAME.CFG;1", "CD:GAME.CFG;2", "CD:NOEXT"])
 
+    def test_a_file_named_like_a_directory_beside_it_is_kept_in_full(self) -> None:
+        iso = pycdlib.PyCdlib()
+        iso.new(interchange_level=1)
+        iso.add_fp(io.BytesIO(b"top"), 3, "/INSTALL.;1")
+        iso.add_directory("/INSTALL")
+        iso.add_fp(io.BytesIO(b"in"), 2, "/INSTALL/A.TXT;1")
+        image = io.BytesIO()
+        iso.write_fp(image)
+        iso.close()
+        path = self.dir / "install.iso"
+        path.write_bytes(image.getvalue())
+        manifest = self.derive(read_iso(path))
+        output = manifest["outputs"][0]  # type: ignore[index]
+        self.assertEqual(output["verification"]["status"], "matched")
+        self.assertEqual([e["path"] for e in output["listing"]], ["CD:INSTALL.;1", "CD:INSTALL/A.TXT"])
+
     def test_a_changed_track_file_is_a_mismatch(self) -> None:
         output = write_format("game-dir", self.disc, self.dir / "game-dir", "Synth", silent_log)
         track = output.entry / "track03.cdda"
@@ -165,6 +181,21 @@ class GameDirUnavailableTests(GameDirTestCase):
         clash = SyntheticDisc(iso_image({"TRACK02.CDDA": b"x"}))
         disc = read_cue(clash.write_split(self.dir / "clash"))
         manifest = self.derive(disc)
+        self.assertIn("track02.cdda", manifest["unavailable"][0]["reason"])  # type: ignore[index]
+        self.assertFalse((self.dir / "out" / "game-dir").exists())
+
+    def test_a_disc_directory_named_like_a_track_file_is_unavailable(self) -> None:
+        iso = pycdlib.PyCdlib()
+        iso.new(interchange_level=4)
+        iso.add_fp(io.BytesIO(b"x"), 1, "/README.TXT;1")
+        iso.add_directory("/TRACK02.CDDA")
+        iso.add_fp(io.BytesIO(b"in"), 2, "/TRACK02.CDDA/A.TXT;1")
+        image = io.BytesIO()
+        iso.write_fp(image)
+        iso.close()
+        clash = SyntheticDisc(image.getvalue())
+        manifest = self.derive(read_cue(clash.write_split(self.dir / "clash")))
+        self.assertEqual(manifest["outputs"], [])
         self.assertIn("track02.cdda", manifest["unavailable"][0]["reason"])  # type: ignore[index]
         self.assertFalse((self.dir / "out" / "game-dir").exists())
 

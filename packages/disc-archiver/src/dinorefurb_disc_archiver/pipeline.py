@@ -91,20 +91,6 @@ def _extracted_chd(path: Path, work: Path, log: Log) -> Iterator[Path]:
         shutil.rmtree(staging, ignore_errors=True)
 
 
-class _Digest:
-    """SHA-256 and XXH3-128 of the same bytes."""
-
-    def __init__(self) -> None:
-        self.sha256 = hashlib.sha256()
-        self.xxh3 = xxhash.xxh3_128()
-        self.size = 0
-
-    def update(self, data: bytes | memoryview) -> None:
-        self.sha256.update(data)
-        self.xxh3.update(data)
-        self.size += len(data)
-
-
 def _sha256(chunks: Iterable[bytes]) -> tuple[str, int]:
     digest, size = hashlib.sha256(), 0
     for chunk in chunks:
@@ -114,10 +100,10 @@ def _sha256(chunks: Iterable[bytes]) -> tuple[str, int]:
 
 
 def _data_fingerprint(track: Track) -> dict[str, object]:
-    user = _Digest()
+    user = isofs.HashingWriter()
     if track.storage != "raw":
         for chunk in track.iter_user_data():
-            user.update(chunk)
+            user.write(chunk)
         return {
             "track": track.number,
             "sectors": track.length,
@@ -131,7 +117,7 @@ def _data_fingerprint(track: Track) -> dict[str, object]:
     # Only sectors past the declared volume may hold no user data: inside it, such a sector is a
     # BIN that does not match its sheet, or a damaged dump.
     volume_end = isofs.volume_sectors(track)
-    raw = _Digest()
+    raw = isofs.HashingWriter()
     empty: list[list[int]] = []
     ranges: list[list[int]] = []
     index = 0
@@ -144,10 +130,10 @@ def _data_fingerprint(track: Track) -> dict[str, object]:
             except NotDataSector:
                 if volume_end is None or index < volume_end:
                     raise
-                raw.update(sector)
+                raw.write(sector)
                 add_to_ranges(ranges, index)
             else:
-                user.update(data)
+                user.write(data)
                 if empty_form2:
                     add_to_ranges(empty, index)
             index += 1
@@ -205,9 +191,9 @@ def fingerprint(disc: Disc) -> dict[str, object]:
         volume = isofs.volume_identifier(track)
     audio = []
     for track in disc.audio_tracks:
-        digest = _Digest()
+        digest = isofs.HashingWriter()
         for chunk in track.iter_raw(0, track.length):
-            digest.update(chunk)
+            digest.write(chunk)
         silent = None
         if track.pregap and track.pregap_stored:
             silent = all(not any(chunk) for chunk in track.iter_raw(-track.pregap, 0))
@@ -387,11 +373,10 @@ def _verify_game_dir(output: Output, disc: Disc, reference: dict, result: Verifi
     with the files."""
     result.compared.append("every file's path, size, SHA-256 and XXH3-128")
     written = isofs.tree_entries(output.entry)
+    names = (cdda_name(disc.tracks[a["track"] - 1]) for a in reference["audio"])
     tracks = {
-        cdda_name(disc.tracks[a["track"] - 1]): isofs.FileEntry(
-            cdda_name(disc.tracks[a["track"] - 1]), a["sectors"] * RAW_SECTOR, a["sha256"], a["xxh3"]
-        )
-        for a in reference["audio"]
+        name: isofs.FileEntry(name, a["sectors"] * RAW_SECTOR, a["sha256"], a["xxh3"])
+        for name, a in zip(names, reference["audio"], strict=True)
     }
     if tracks:
         result.compared.append("each audio track's .cdda file with the audio hashes from INDEX 01")
@@ -448,7 +433,9 @@ def derive(
     paths = profile_paths(profile, disc)
     if paths is None and disc.data_tracks and requested & {"files", "game-dir"} and admitted:
         try:
-            isofs.walk(disc.first_data_track())
+            # Under the names the requested format writes, so a Joliet name that is not a safe
+            # file name does not stop a run that writes only game-dir's primary names.
+            isofs.walk(disc.first_data_track(), primary="files" not in requested)
         except isofs.UnsupportedFileSystem:
             pass  # The files and game-dir writers make their format unavailable with this reason.
     checks = check_profile(profile, reference, paths)

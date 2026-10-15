@@ -79,7 +79,7 @@ Writing the copy (`--format`, repeat for several):
 | `iso-ogg` | `.iso`, one `.ogg` per audio track, `.cue` | The form many re-releases ship. Lossy. Needs `ffmpeg`. |
 | `iso` | `.iso` | The data track's user data only. Audio tracks are left out. A CD-Extra disc's ISO keeps the addresses counted from the start of the disc, so most programs cannot list its files; the manifest notes it. |
 | `files` | a directory | The data track's files, with Joliet names where the disc has them, and their dates. Unavailable, with the reason, when the file system cannot be located (see [Data tracks after audio](#data-tracks-after-audio)). |
-| `game-dir` | a `CD` directory | The documentation standard's `GAME_DIR` layout of a build's files from one disc (see [The GAME_DIR layout](#the-game_dir-layout)). Unavailable when the disc has no data track or its file system cannot be located. |
+| `game-dir` | a `CD` directory | The documentation standard's `GAME_DIR` layout of a build's files from one disc (see [The GAME_DIR layout](#the-game_dir-layout)). Unavailable when the disc has no data track, its file system cannot be located, or a root file or directory is named like a track file. |
 
 `--format all` writes every format that can be made. `--format recommended`, the default,
 writes what the disc profile recommends.
@@ -271,8 +271,9 @@ directory for one disc, ready to copy into `GAME_DIR/<build ID>/`:
 - `CD/<path>` for each file of the first data track. Names come from the disc's primary ISO 9660
   volume, as a build entry names a file read from its CD (the standard's ENTRY-TYPES-11), not from
   Joliet: the version suffix is dropped, so `SETUP.EXE;1` becomes `CD/SETUP.EXE`, as is a dot
-  that ends a name with no extension. Names that would then be the same keep their version. Each
-  file gets the date the volume records.
+  that ends a name with no extension. A name that would then be the same as another file's or a
+  directory's beside it is kept in full (`INSTALL.;1` beside the directory `INSTALL`). Each file
+  gets the date the volume records.
 - `CD/trackNN.cdda` for each audio track, with its two-digit number from the table of contents:
   the track's raw 2,352-byte sectors from INDEX 01 to the next track's INDEX 00, or to the lead-out
   for the last track, with no header. This is the range of the manifest's audio hashes, and the
@@ -291,8 +292,8 @@ copy into the restoration's build entry:
 Each `xxh3` is what `xxhsum -H2` prints for the file. The run reads every written file back and
 compares its path, size, SHA-256 and XXH3-128 with the source's files and audio hashes, and the
 listing with the written files. Sound in a pregap, which the layout does not hold, is listed as
-not compared. A disc file at the root named like a track file (`TRACK02.CDDA`) makes the format
-unavailable, since the two would share a name.
+not compared. A disc file or directory at the root named like a track file (`TRACK02.CDDA`)
+makes the format unavailable, since the two would share a name.
 
 ## Data tracks after audio
 
