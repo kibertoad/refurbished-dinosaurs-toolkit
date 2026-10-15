@@ -80,6 +80,12 @@ Writing the copy (`--format`, repeat for several):
 | `iso` | `.iso` | The data track's user data only. Audio tracks are left out. A CD-Extra disc's ISO keeps the addresses counted from the start of the disc, so most programs cannot list its files; the manifest notes it. |
 | `files` | a directory | The data track's files, with Joliet names where the disc has them, and their dates. Unavailable, with the reason, when the file system cannot be located (see [Data tracks after audio](#data-tracks-after-audio)). |
 
+Every cue sheet the archiver writes (`bincue-split`, `bincue` and the `iso-*` sheets) is UTF-8
+with CRLF at the end of every line, the last included, as Redump's cue sheets are. The same disc
+gives the same cue bytes on Windows, macOS and Linux, so a `bincue-split` sheet can match a Redump
+DAT's cue entry wherever it was written. redumper's own `.cue` in `archival` is left as redumper
+wrote it, which is CRLF on Windows and LF elsewhere.
+
 `--format all` writes every format that can be made. `--format recommended`, the default,
 writes what the disc profile recommends.
 
@@ -197,7 +203,7 @@ names are reported separately. The outcome is:
 | `status` | Means | Exit code |
 |---|---|---|
 | `matched` | Every track file and the cue sheet match one game's files, and the game lists no other file. | `0` |
-| `partial` | Every track file matches one game, which lists no other track, but the cue sheet differs. `differences` says whether only its `FILE` names (Redump names them `<game> (Track N).bin`; `--name` with the game's name writes those), only its line endings, or its content differs. | `0` |
+| `partial` | Every track file matches one game, which lists no other track, but the cue sheet differs. `differences` says whether only its `FILE` names (Redump names them `<game> (Track N).bin`; `--name` with the game's name writes those), only its line endings (a sheet redumper wrote outside Windows ends lines with LF), or its content differs. | `0` |
 | `notListed` | No game in the DAT lists any of the track files. Printed; the copy cannot be checked this way. | `0` |
 | `mismatched` | Some track files match a game and others do not, or the copy lacks a file the game lists. `differences` names them. | `3` |
 | `notCompared` | `bincue-split` could not be written from this source (an ISO has no raw sectors). | `0` |
