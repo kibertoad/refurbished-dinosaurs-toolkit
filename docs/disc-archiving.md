@@ -42,6 +42,7 @@ Recommend what the importer reads:
 | Disc and importer | Recommend |
 |---|---|
 | Mixed-mode, importer reads the toolkit's `OriginalContentSource` or another one-file cue/bin reader | `bincue` |
+| Any disc, importer reads the toolkit's `OriginalContentSource` with a `chd` manifest | `chd`, the smallest copy that keeps every sector |
 | Data-only, importer reads ISO files | `iso` |
 | Data-only, importer reads a directory only | `files`, then `iso` once ISO import exists |
 
@@ -129,7 +130,7 @@ keeps a legally made copy from being identified as the same edition:
 - audio hashes are sample-exact, so a copy shifted by a drive's read offset (cdrdao, and most
   rips made with EAC, ImgBurn or Alcohol) reports `mismatched`;
 - Alcohol MDS/MDF and Nero NRG copies are neither read nor written;
-- `OriginalContentSource` reads a directory, an ISO and cue/bin, not the CHD, CloneCD or
+- `OriginalContentSource` reads a directory, an ISO, cue/bin and CHD, not the CloneCD or
   ISO-plus-audio forms the archiver writes;
 - sessions are not kept, so a CD-Extra disc's cue, CloneCD and CHD copies lose them;
 - the Redump DAT comparison is done by hand.

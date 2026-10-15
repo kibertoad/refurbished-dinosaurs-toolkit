@@ -65,10 +65,21 @@ LegacyFormats parts of it:
   and last-write time when it opens, and every read of the `.iso` or BIN through the source,
   including `OpenBin`, fails with an `IOException` when either has changed. A rewrite that keeps
   both is not detected. A stream the importer opens from `BinPath` itself is not checked.
-- An `.iso` or cue/bin source also gives its ISO 9660 volume: the identifier (`Label`), the size in
-  blocks (`VolumeBlocks`) and the bytes (`OpenVolume`). An `iso9660` or `cue-bin` manifest can pin
-  them with `VolumeIdentifier`, `VolumeBlocks` and `VolumeXxh3`, which tells apart two pressings
-  that carry the same files. The pins add checks; every file is still verified.
+- `OriginalContentSource.OpenChd` reads a CHD CD image, such as `chdman createcd` writes from a
+  cue/bin or an `.iso` image, as the `chd` source kind, and `Open(path)` picks it by the file's
+  signature. It reads the disc image the CHD holds with the cue/bin reader and its checks, so a
+  CHD lists the same files and gives the same volume and audio as the cue/bin image it was made
+  from. `OpenBin` gives the BIN image without chdman's track padding and with audio samples in a
+  BIN's byte order, and `Cue` its sheet, so `CddaTrackFingerprints` and `CddaWave` read its audio
+  tracks as they read a cue/bin image's. It decodes hunks stored uncompressed or compressed with
+  chdman's CD codecs (`cdlz`, `cdzl`, `cdfl`), checks each hunk's CRC-16, and checks the SHA-1 of
+  the whole data when a stream reads it to the end. A CHD of version 3 or 4, one that needs a
+  parent, a GD-ROM, another codec or another track layout is refused with `NotSupportedException`
+  naming the reason ([CHD images](../packages/dotnet/README.md#chd-images)).
+- An `.iso`, cue/bin or CHD source also gives its ISO 9660 volume: the identifier (`Label`), the
+  size in blocks (`VolumeBlocks`) and the bytes (`OpenVolume`). An `iso9660`, `cue-bin` or `chd`
+  manifest can pin them with `VolumeIdentifier`, `VolumeBlocks` and `VolumeXxh3`, which tells apart
+  two pressings that carry the same files. The pins add checks; every file is still verified.
   `OpenIso9660(Stream)` opens an `.iso` image held in a seekable stream, such as a modified copy
   built in memory for a negative control, and reads the same files and volume as the image on disk.
 - `OriginalContentSource.OpenInstallShieldCabinet` lists and reads the members of an InstallShield
@@ -111,7 +122,10 @@ LegacyFormats parts of it:
   writes, and removes what it wrote when it fails or is cancelled. See
   [extracting a source into a stage](../packages/dotnet/README.md#extracting-a-source-into-a-stage).
 - `AssetManifest` describes a supported edition by paths, sizes and XXH3-128 hashes, the same
-  `xxh3` values the spec's build entries give, and names the source kind to read it as.
+  `xxh3` values the spec's build entries give, and names the source kind to read it as. To accept
+  a disc in several forms, such as cue/bin and CHD, ship one manifest per source kind with the same
+  files and pins; they share one `Fingerprint()`, and `IdentifyAsync` opens the player's copy once
+  per kind.
   `AssetVerifier.IdentifyAsync` tries every edition against the player's copy and reports why the
   others did not match. It names an edition only when exactly one matches, and sets `IsAmbiguous`
   when the manifests cannot tell two apart. A file it cannot read is reported as `Unreadable`.
@@ -120,7 +134,7 @@ LegacyFormats parts of it:
   failed read is reported for every edition that checks it, so all editions get the answer of one
   read.
   `AssetManifest.Fingerprint()` names the edition in the installed manifest.
-- A `cue-bin` manifest can also list `AudioTracks`, each a `CddaTrackFingerprint` recorded with
+- A `cue-bin` or `chd` manifest can also list `AudioTracks`, each a `CddaTrackFingerprint` recorded with
   `CddaTrackFingerprints.RecordAsync`. `AssetVerifier` accepts a track shifted by a drive read
   offset up to the fingerprint's tolerance, and reports a shift past it, an anchor that matches at
   several shifts and changed audio as separate problems.

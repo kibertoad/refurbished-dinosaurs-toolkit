@@ -104,8 +104,8 @@ public static class AssetVerifier
     /// <see cref="AssetManifest.AudioTracks"/> is checked against the source's cue sheet and image as
     /// <see cref="CddaTrackFingerprints.VerifyAsync"/> describes. Its problems carry
     /// <see cref="AssetVerificationIssue.AudioTrack"/>; a track the sheet lacks or does not mark
-    /// <c>AUDIO</c> is <see cref="AssetProblem.Missing"/>, and a source that is not a cue/bin image
-    /// reports each track as <see cref="AssetProblem.Unreadable"/>.
+    /// <c>AUDIO</c> is <see cref="AssetProblem.Missing"/>, and a source with no cue sheet, one that is
+    /// not a cue/bin image or a CHD of raw sectors, reports each track as <see cref="AssetProblem.Unreadable"/>.
     /// </summary>
     /// <param name="source">The opened original.</param>
     /// <param name="manifest">The manifest, validated before any file is read.</param>
@@ -140,8 +140,8 @@ public static class AssetVerifier
     /// source that cannot be opened is reported as <see cref="AssetProblem.Unreadable"/>.
     /// </summary>
     /// <param name="path">
-    /// The directory, <c>.iso</c> image, <c>.cue</c> sheet, InstallShield <c>.hdr</c> header or
-    /// InstallShield 3 archive holding the original.
+    /// The directory, <c>.iso</c> image, <c>.cue</c> sheet, <c>.chd</c> image, InstallShield
+    /// <c>.hdr</c> header or InstallShield 3 archive holding the original.
     /// </param>
     /// <param name="manifest">The manifest, validated before the source is opened.</param>
     /// <param name="cancellationToken">Cancels between files and during hashing.</param>
@@ -176,8 +176,8 @@ public static class AssetVerifier
     /// manifests cannot tell them apart and <see cref="EditionIdentification.IsAmbiguous"/> is set.
     /// </remarks>
     /// <param name="path">
-    /// The directory, <c>.iso</c> image, <c>.cue</c> sheet, InstallShield <c>.hdr</c> header or
-    /// InstallShield 3 archive holding the original.
+    /// The directory, <c>.iso</c> image, <c>.cue</c> sheet, <c>.chd</c> image, InstallShield
+    /// <c>.hdr</c> header or InstallShield 3 archive holding the original.
     /// </param>
     /// <param name="editions">The supported editions' manifests.</param>
     /// <param name="cancellationToken">Cancels between files and during hashing.</param>

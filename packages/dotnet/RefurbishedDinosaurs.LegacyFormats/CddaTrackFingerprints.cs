@@ -29,7 +29,9 @@ public sealed record CddaTrackVerification(AssetProblem? Problem, IReadOnlyList<
 
 /// <summary>
 /// Records and checks <see cref="CddaTrackFingerprint"/> values against the audio tracks of a raw
-/// cue/bin image, whose sectors hold 16-bit stereo samples as the image stores them.
+/// cue/bin image, whose sectors hold 16-bit stereo samples as the image stores them. For a CHD, pass
+/// the image <see cref="OriginalContentSource.OpenBin"/> gives, which holds the samples in a BIN's
+/// byte order.
 /// </summary>
 /// <remarks>
 /// A rip shifted by a drive read offset moves the end of a track into the sectors that follow it, so

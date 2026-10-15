@@ -16,4 +16,7 @@
     <ProjectReference Include="../RefurbishedDinosaurs.Media.Fli/RefurbishedDinosaurs.Media.Fli.csproj" />
     <ProjectReference Include="../RefurbishedDinosaurs.Media.Smacker/RefurbishedDinosaurs.Media.Smacker.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="Fixtures/Chd/*.chd" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

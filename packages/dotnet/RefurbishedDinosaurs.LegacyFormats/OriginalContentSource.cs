@@ -28,15 +28,22 @@ public static class ContentSourceKinds
     /// directory and file tables and the members' data. It is unsplit, or a split archive of one part.
     /// </summary>
     public const string InstallShieldArchive = "installshield3-archive";
+    /// <summary>
+    /// A MAME CHD version 5 CD image, such as <c>chdman createcd</c> writes from a cue/bin or an
+    /// <c>.iso</c> image. See <see cref="OriginalContentSource.OpenChd"/>.
+    /// </summary>
+    public const string Chd = "chd";
 
     /// <summary>Whether <paramref name="kind"/> is one of the kinds above.</summary>
-    public static bool IsSupported(string kind) => kind is Directory or Iso9660 or CueBin or InstallShieldCabinet or InstallShieldArchive;
+    public static bool IsSupported(string kind) =>
+        kind is Directory or Iso9660 or CueBin or InstallShieldCabinet or InstallShieldArchive or Chd;
 }
 
 /// <summary>
 /// Read access to the user's original files, from an installed directory, an ISO 9660 image, a
-/// cue/bin raw disc image, an InstallShield cabinet set or an InstallShield 3 archive, behind one interface. Paths are relative with <c>/</c> or <c>\</c>
-/// separators and match ignoring case.
+/// cue/bin raw disc image, a CHD CD image, an InstallShield cabinet set or an InstallShield 3
+/// archive, behind one interface. Paths are relative with <c>/</c> or <c>\</c> separators and match
+/// ignoring case.
 /// </summary>
 public abstract class OriginalContentSource : IDisposable
 {
@@ -50,7 +57,11 @@ public abstract class OriginalContentSource : IDisposable
     /// before their trailing padding give different labels.
     /// </summary>
     public abstract string? Label { get; }
-    /// <summary>The cue sheet of a <see cref="ContentSourceKinds.CueBin"/> source, otherwise <see langword="null"/>.</summary>
+    /// <summary>
+    /// The cue sheet of a <see cref="ContentSourceKinds.CueBin"/> source, the sheet of the BIN image a
+    /// <see cref="ContentSourceKinds.Chd"/> source of raw sectors holds (see <see cref="OpenChd"/>),
+    /// otherwise <see langword="null"/>.
+    /// </summary>
     public virtual CueBinSheet? Cue => null;
     /// <summary>
     /// The full path of the cue sheet file a <see cref="ContentSourceKinds.CueBin"/> source was
@@ -81,9 +92,10 @@ public abstract class OriginalContentSource : IDisposable
     /// <summary>
     /// Opens the raw image of a <see cref="ContentSourceKinds.CueBin"/> source, the file at
     /// <see cref="BinPath"/>, as a read-only seekable stream of 2352-byte sectors. The stream reads
-    /// the whole file.
+    /// the whole file. For a <see cref="ContentSourceKinds.Chd"/> source of raw sectors it reads the
+    /// BIN image the CHD holds, which <see cref="Cue"/> describes, as <see cref="OpenChd"/> lays it out.
     /// </summary>
-    /// <exception cref="NotSupportedException">The source is not a cue/bin image.</exception>
+    /// <exception cref="NotSupportedException">The source is not a cue/bin image or a CHD of raw sectors.</exception>
     /// <exception cref="IOException">
     /// The image's length or last-write time differs from when the source was opened, or the file
     /// cannot be opened.
@@ -124,7 +136,8 @@ public abstract class OriginalContentSource : IDisposable
 
     /// <summary>
     /// Opens <paramref name="path"/> as a directory source when it is a directory, as a cue/bin image
-    /// (see <see cref="OpenCueBin"/>) when it is a <c>.cue</c> file, as an InstallShield cabinet set
+    /// (see <see cref="OpenCueBin"/>) when it is a <c>.cue</c> file, as a CHD image (see
+    /// <see cref="OpenChd"/>) when the file starts with the CHD signature, as an InstallShield cabinet set
     /// (see <see cref="OpenInstallShieldCabinet(string, InstallShieldCabinetLimits?, InstallShieldCompressedFormat)"/>) with the
     /// default limits when it is a <c>.hdr</c> file, as an InstallShield 3 archive (see
     /// <see cref="OpenInstallShieldArchive(string, InstallShieldArchiveLimits?)"/>) with the default
@@ -134,8 +147,9 @@ public abstract class OriginalContentSource : IDisposable
     /// <see cref="ContentSourceKinds.CueBin"/> kind.
     /// </summary>
     /// <exception cref="NotSupportedException">
-    /// The cabinet set's InstallShield major version is not 0, 5 or 6, or the InstallShield 3 archive
-    /// is split into parts that are not all in this file or names another part number or count.
+    /// The cabinet set's InstallShield major version is not 0, 5 or 6, the InstallShield 3 archive
+    /// is split into parts that are not all in this file or names another part number or count, or
+    /// the CHD is one <see cref="OpenChd"/> refuses as unsupported.
     /// </exception>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="InvalidDataException">The image is not a valid volume of its kind.</exception>
@@ -148,6 +162,7 @@ public abstract class OriginalContentSource : IDisposable
             var extension = Path.GetExtension(path);
             if (extension.Equals(".cue", StringComparison.OrdinalIgnoreCase)) return OpenCueBin(path);
             if (extension.Equals(".hdr", StringComparison.OrdinalIgnoreCase)) return OpenInstallShieldCabinet(path);
+            if (HasChdSignature(path)) return OpenChd(path);
             if (InstallShieldArchiveOpener.HasSignature(path)) return OpenInstallShieldArchive(path);
             return OpenIso9660(path);
         }
@@ -160,14 +175,16 @@ public abstract class OriginalContentSource : IDisposable
     /// <exception cref="InvalidDataException"><paramref name="kind"/> is unsupported, or the image is not a valid volume of that kind.</exception>
     /// <exception cref="FileNotFoundException">Nothing exists at <paramref name="path"/>.</exception>
     /// <exception cref="NotSupportedException">
-    /// The cabinet set's InstallShield major version is not 0, 5 or 6, or the InstallShield 3 archive
-    /// is split into parts that are not all in this file or names another part number or count.
+    /// The cabinet set's InstallShield major version is not 0, 5 or 6, the InstallShield 3 archive
+    /// is split into parts that are not all in this file or names another part number or count, or
+    /// the CHD is one <see cref="OpenChd"/> refuses as unsupported.
     /// </exception>
     public static OriginalContentSource Open(string path, string kind) => kind switch
     {
         ContentSourceKinds.Directory => OpenDirectory(path),
         ContentSourceKinds.Iso9660 => OpenIso9660(path),
         ContentSourceKinds.CueBin => OpenCueBin(path),
+        ContentSourceKinds.Chd => OpenChd(path),
         ContentSourceKinds.InstallShieldCabinet => OpenInstallShieldCabinet(path),
         ContentSourceKinds.InstallShieldArchive => OpenInstallShieldArchive(path),
         _ => throw new InvalidDataException($"Unsupported original-content source kind '{kind}'.")
@@ -298,6 +315,71 @@ public abstract class OriginalContentSource : IDisposable
             ContentSourceKinds.CueBin, new CueBinFiles(sheet, cuePath, cueBytes, bin),
             openVolume: () => new RawDataTrackUserDataStream(
                 bin.OpenBuffered(), dataSectors, sheet.DataTrackMode, emptyForm2AsZeros: true));
+    }
+
+    /// <summary>
+    /// Opens a MAME CHD version 5 CD image, such as <c>chdman createcd</c> writes, as a
+    /// <see cref="ContentSourceKinds.Chd"/> source. The source reads the disc image the CHD holds as
+    /// <see cref="OpenCueBin"/> reads a cue/bin image, with the same checks.
+    /// <para>
+    /// A CHD made from a cue/bin image stores raw 2352-byte sectors. The source lays them out as the
+    /// BIN image chdman read: each track's stored frames in order, without the frames chdman adds to
+    /// pad each track to a multiple of 4, and with audio samples little-endian as in a BIN, where a
+    /// CHD stores them big-endian. <see cref="OpenBin"/> opens that image, and <see cref="Cue"/> is
+    /// its sheet: one <c>FILE</c> named after the CHD with a <c>.bin</c> extension, and each track's
+    /// stored pregap as its <c>INDEX 00</c>. The sheet is checked as <see cref="CueBinSheet.Parse"/>
+    /// checks a cue sheet, so the CHD must begin with a <c>MODE1_RAW</c> or <c>MODE2_RAW</c> data
+    /// track and hold only <c>AUDIO</c> tracks after it. The data track's sectors are checked as
+    /// they are read, as for a cue/bin image, and <see cref="OpenVolume"/> reads an empty Form 2
+    /// sector as zeros. Read a track's audio from <see cref="OpenBin"/> at the track's
+    /// <see cref="CueBinSheet.TrackExtent"/> with <c>CddaTrackFingerprints</c> or <c>CddaWave</c>:
+    /// the samples equal those of the cue/bin image the CHD was made from.
+    /// A CHD made from an <c>.iso</c> image holds one <c>MODE1</c> track of 2048-byte sectors. The
+    /// source reads those sectors as the volume, and has no <see cref="Cue"/> or <see cref="OpenBin"/>.
+    /// </para>
+    /// <para>
+    /// The header, the track metadata (<c>CHT2</c> or <c>CHTR</c>) and the hunk map are read when the
+    /// source opens, and the map's CRC-16 and every hunk's place in the file are checked then. Hunks
+    /// are decoded as they are read: stored uncompressed, compressed by chdman's CD codecs
+    /// <c>cdlz</c> (LZMA, with the sync pattern and ECC chdman removed from a sector rebuilt),
+    /// <c>cdzl</c> (deflate) or <c>cdfl</c> (FLAC), or a repeat of an earlier hunk. Each hunk's
+    /// CRC-16 is checked when it is decoded; a CHD with no codecs records no CRC for its hunks. A stream that reads every hunk from the first to
+    /// the last, as reading <see cref="OpenBin"/> to its end does, also checks the SHA-1 of the whole
+    /// data against the header's, as <c>chdman verify</c> does. A failed check throws
+    /// <see cref="InvalidDataException"/>, so a damaged CHD never reads as other bytes.
+    /// </para>
+    /// <para>
+    /// The source records the file's length and last-write time here, and every later read through it
+    /// compares them with the file when it opens it and fails with an <see cref="IOException"/> when
+    /// either has changed. A rewrite that keeps both is not detected.
+    /// </para>
+    /// </summary>
+    /// <param name="path">The <c>.chd</c> file.</param>
+    /// <exception cref="FileNotFoundException">The file does not exist.</exception>
+    /// <exception cref="IOException">The file changed while the source was being opened.</exception>
+    /// <exception cref="NotSupportedException">
+    /// The CHD is valid but not one this reader opens, and the message says why: it is of version 3
+    /// or 4, needs a parent CHD, holds a GD-ROM, a DVD or no CD, uses a codec other than
+    /// <c>cdlz</c>, <c>cdzl</c> and <c>cdfl</c>, describes its tracks only in the old <c>CHCD</c>
+    /// metadata, holds a track type other than <c>MODE1_RAW</c>, <c>MODE2_RAW</c> and <c>AUDIO</c>
+    /// (or one <c>MODE1</c> track alone), or lays its tracks out as no cue/bin image this library opens.
+    /// </exception>
+    /// <exception cref="InvalidDataException">
+    /// The file is not a CHD, is truncated or damaged, or does not hold a valid ISO 9660 volume.
+    /// </exception>
+    public static OriginalContentSource OpenChd(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var fullPath = Path.GetFullPath(path);
+        if (!File.Exists(fullPath)) throw new FileNotFoundException("CHD image does not exist.", fullPath);
+        // Recorded before the CHD is checked, so the source describes only the file it checked.
+        return ChdContentSource.Open(ImageSnapshot.Take(fullPath));
+    }
+
+    private static bool HasChdSignature(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        return ChdImage.HasSignature(stream);
     }
 
     /// <summary>

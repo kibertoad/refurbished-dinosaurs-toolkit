@@ -14,7 +14,7 @@ namespace RefurbishedDinosaurs.Core.Assets;
 /// <param name="Files">The expected files, with paths relative to the original's root.</param>
 /// <param name="SourceKind">
 /// How the copy is read, one of the <c>ContentSourceKinds</c> of RefurbishedDinosaurs.LegacyFormats:
-/// <c>directory</c>, <c>iso9660</c>, <c>cue-bin</c>, <c>installshield-cabinet</c> or
+/// <c>directory</c>, <c>iso9660</c>, <c>cue-bin</c>, <c>chd</c>, <c>installshield-cabinet</c> or
 /// <c>installshield3-archive</c>.
 /// </param>
 public sealed record AssetManifest(
@@ -25,7 +25,8 @@ public sealed record AssetManifest(
 {
     /// <summary>
     /// CD audio tracks of the image to identify across drive read offsets, or <see langword="null"/>
-    /// for none. Only a <c>cue-bin</c> manifest may list any, since only that source holds CD audio.
+    /// for none. Only a <c>cue-bin</c> or <c>chd</c> manifest may list any, since only those sources
+    /// hold CD audio.
     /// </summary>
     public IReadOnlyList<CddaTrackFingerprint>? AudioTracks { get; init; }
 
@@ -42,8 +43,8 @@ public sealed record AssetManifest(
     /// <summary>
     /// The identifier the ISO 9660 primary volume descriptor must carry, compared ordinally with
     /// <c>OriginalContentSource.Label</c> after the descriptor's trailing spaces and NULs are removed,
-    /// or <see langword="null"/> to leave it unchecked. Only an <c>iso9660</c> or <c>cue-bin</c>
-    /// manifest may give it. The label reads each descriptor byte as the Latin-1 character of the
+    /// or <see langword="null"/> to leave it unchecked. Only an <c>iso9660</c>, <c>cue-bin</c> or
+    /// <c>chd</c> manifest may give it. The label reads each descriptor byte as the Latin-1 character of the
     /// same value, so a byte above 0x7F is written as that character: byte 0xC9 is <c>É</c>
     /// (U+00C9), and a control byte such as 0x85 as its control character (in JSON, <c>"\u0085"</c>).
     /// The identifier holds 1 to 32 characters from U+0000 to U+00FF and does not end in a space or
@@ -53,16 +54,17 @@ public sealed record AssetManifest(
 
     /// <summary>
     /// The volume space size the ISO 9660 primary volume descriptor must declare, in 2048-byte
-    /// logical blocks, or <see langword="null"/> to leave it unchecked. Only an <c>iso9660</c> or
-    /// <c>cue-bin</c> manifest may give it.
+    /// logical blocks, or <see langword="null"/> to leave it unchecked. Only an <c>iso9660</c>,
+    /// <c>cue-bin</c> or <c>chd</c> manifest may give it.
     /// </summary>
     public long? VolumeBlocks { get; init; }
 
     /// <summary>
     /// The XXH3-128 fingerprint of the ISO 9660 volume: its declared logical blocks from block 0, as
     /// <c>OriginalContentSource.OpenVolume</c> of RefurbishedDinosaurs.LegacyFormats reads them, or
-    /// <see langword="null"/> to leave it unchecked. An <c>.iso</c> image and a cue/bin image of one
-    /// disc give the same value. Only an <c>iso9660</c> or <c>cue-bin</c> manifest may give it.
+    /// <see langword="null"/> to leave it unchecked. An <c>.iso</c> image, a cue/bin image and a CHD
+    /// of one disc give the same value. Only an <c>iso9660</c>, <c>cue-bin</c> or <c>chd</c> manifest
+    /// may give it.
     /// </summary>
     public string? VolumeXxh3 { get; init; }
 
@@ -106,9 +108,9 @@ public sealed record AssetManifest(
         return copy.ToArray();
     }
 
-    // The values ContentSourceKinds.Iso9660 and CueBin have in RefurbishedDinosaurs.LegacyFormats,
+    // The values ContentSourceKinds.Iso9660, CueBin and Chd have in RefurbishedDinosaurs.LegacyFormats,
     // which this package does not reference: the kinds that hold an ISO 9660 volume.
-    private static readonly string[] VolumeSourceKinds = ["iso9660", "cue-bin"];
+    private static readonly string[] VolumeSourceKinds = ["iso9660", "cue-bin", "chd"];
 
     // The fewest blocks an ISO 9660 volume can declare: 16 system-area blocks, the primary volume
     // descriptor and the set terminator.
@@ -127,7 +129,7 @@ public sealed record AssetManifest(
         if (!PinsVolume) return;
         if (!VolumeSourceKinds.Contains(SourceKind))
             throw new InvalidDataException(
-                $"Asset manifest pins an ISO 9660 volume for source kind '{SourceKind}'; only 'iso9660' and 'cue-bin' hold one.");
+                $"Asset manifest pins an ISO 9660 volume for source kind '{SourceKind}'; only 'iso9660', 'cue-bin' and 'chd' hold one.");
         // The descriptor holds 32 bytes, the reader maps each byte to the Latin-1 character of the
         // same value and drops trailing spaces and NULs, so these are exactly the labels it can give.
         if (VolumeIdentifier is { } identifier &&
@@ -150,10 +152,10 @@ public sealed record AssetManifest(
     /// path passes <see cref="PortableAssetPath.Relative"/> and appears once (ignoring case), no size is
     /// negative, and every hash is an XXH3-128 fingerprint (<see cref="FileFingerprint.IsXxh3"/>).
     /// A volume pin (<see cref="VolumeIdentifier"/>, <see cref="VolumeBlocks"/>, <see cref="VolumeXxh3"/>)
-    /// needs the <c>iso9660</c> or <c>cue-bin</c> source kind, an identifier of 1 to 32 Latin-1
+    /// needs the <c>iso9660</c>, <c>cue-bin</c> or <c>chd</c> source kind, an identifier of 1 to 32 Latin-1
     /// characters (U+0000 to U+00FF) that does not end in a space or NUL, at least 18 blocks, and an
     /// XXH3-128 fingerprint.
-    /// <see cref="AudioTracks"/>, when given, needs the <c>cue-bin</c> source kind, and each track must
+    /// <see cref="AudioTracks"/>, when given, needs the <c>cue-bin</c> or <c>chd</c> source kind, and each track must
     /// pass <see cref="CddaTrackFingerprint.Validate"/> and appear once.
     /// </summary>
     /// <remarks>
@@ -187,9 +189,9 @@ public sealed record AssetManifest(
             throw new InvalidDataException("Asset manifest names no required file.");
 
         if (AudioTracks is not { Count: > 0 }) return;
-        if (SourceKind != CueBinSourceKind)
+        if (!AudioSourceKinds.Contains(SourceKind))
             throw new InvalidDataException(
-                $"Asset manifest gives audio tracks for source kind '{SourceKind}'; only '{CueBinSourceKind}' holds CD audio.");
+                $"Asset manifest gives audio tracks for source kind '{SourceKind}'; only 'cue-bin' and 'chd' hold CD audio.");
         var tracks = new HashSet<int>();
         foreach (var track in AudioTracks)
         {
@@ -200,8 +202,9 @@ public sealed record AssetManifest(
         }
     }
 
-    // ContentSourceKinds.CueBin in RefurbishedDinosaurs.LegacyFormats, which this package does not reference.
-    private const string CueBinSourceKind = "cue-bin";
+    // The values ContentSourceKinds.CueBin and Chd have in RefurbishedDinosaurs.LegacyFormats, which
+    // this package does not reference: the kinds that hold CD audio.
+    private static readonly string[] AudioSourceKinds = ["cue-bin", "chd"];
 
     /// <summary>
     /// The edition's fingerprint: XXH3-128 of every file's normalized path, size and hash, ordered by
@@ -215,7 +218,7 @@ public sealed record AssetManifest(
     /// share one fingerprint. A manifest that pins the volume has a fingerprint no directory manifest
     /// shares, and two editions that differ only in their volume pins have different fingerprints.
     /// Each of the <see cref="AudioTracks"/> adds all of its values, ordered by track number, including
-    /// how it was recorded (tolerance and anchor), so a <c>cue-bin</c> manifest with audio tracks has a
+    /// how it was recorded (tolerance and anchor), so a disc image manifest with audio tracks has a
     /// fingerprint no directory manifest shares, and re-recording a track with other parameters
     /// changes it.
     /// </remarks>
