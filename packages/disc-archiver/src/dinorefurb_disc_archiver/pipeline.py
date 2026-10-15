@@ -24,7 +24,7 @@ from pathlib import Path
 
 import xxhash
 
-from . import ccd, isofs, tools
+from . import ccd, isofs, redump, tools
 from .cue import read_cue, read_iso
 from .disc import RAW_SECTOR, Disc, DiscError, NotDataSector, Track, add_to_ranges, block_data, describe_ranges
 from .formats import FORMATS, FormatUnavailable, Output, cdda_name, track_file_name, write_format
@@ -417,14 +417,22 @@ def derive(
     profile: Profile,
     log: Log,
     source: dict[str, object],
+    dat: redump.Dat | None = None,
 ) -> dict[str, object]:
-    """Write each format under ``root/<format>``, verify it, and write the manifest. Returns the manifest."""
+    """Write each format under ``root/<format>``, verify it, and write the manifest. Returns the manifest.
+
+    With a ``dat``, ``bincue-split`` is written too, and its files are compared with the DAT's
+    games (see ``redump.compare``) into the manifest's ``redump``.
+    """
     name = check_name(name)
     root.mkdir(parents=True, exist_ok=True)
     write_notice(root)
     log("Reading the source and computing its fingerprint")
     reference = fingerprint(disc)
     requested = set(formats)
+    if dat is not None and "bincue-split" not in requested:
+        log("Writing bincue-split as well, to compare it with the DAT")
+        requested.add("bincue-split")
     # The fingerprint admits sectors without user data past the volume and empty form 2 sectors,
     # and a file extent that reaches one fails only when the file is read. Reading the files here
     # stops such a run before any format is written, as a damaged dump stops at the fingerprint.
@@ -479,6 +487,10 @@ def derive(
                 "verification": verification.as_json(),
             }
         )
+    redump_report = None
+    if dat is not None:
+        redump_report = _redump(dat, root, outputs, unavailable)
+        log(f"redump: {redump.summary(redump_report)}")
     manifest = {
         "manifest": MANIFEST_VERSION,
         "notice": f"A personal archival copy of a disc you own. Never share it. See {NOTICE_FILENAME}.",
@@ -494,17 +506,53 @@ def derive(
         "disc": reference,
         "outputs": outputs,
         "unavailable": unavailable,
+        "redump": redump_report,
     }
     (root / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest
 
 
+def _redump(dat: redump.Dat, root: Path, outputs: list[dict], unavailable: list[dict]) -> dict[str, object]:  # type: ignore[type-arg]
+    split = next((o for o in outputs if o["format"] == "bincue-split"), None)
+    if split is None:
+        reason = next((u["reason"] for u in unavailable if u["format"] == "bincue-split"), "it was not written")
+        return redump.not_compared(dat, f"bincue-split, the layout Redump lists, could not be written: {reason}")
+    sheet, *tracks = split["files"]
+    return redump.compare(dat, sheet, (root / sheet["path"]).read_bytes(), tracks)
+
+
+def redump_check(dat: redump.Dat, sheet: Path, disc: Disc) -> dict[str, object]:
+    """Compare a cue sheet and the track files it names with ``dat``, for ``check``.
+
+    Raises :class:`DiscError` unless the sheet has Redump's split layout: each track in a BINARY
+    file of its own holding raw sectors from its first stored sector, pregap included. Another
+    layout's files could never match the DAT's, and comparing them would report the disc as not
+    listed or mismatched.
+    """
+    sources = list(dict.fromkeys(t.source for t in disc.tracks))
+    split = len(sources) == len(disc.tracks) and all(
+        t.storage == "raw" and t.source_offset == 0 and (t.pregap_stored or not t.pregap) for t in disc.tracks
+    )
+    if not split:
+        raise DiscError(
+            f"--dat compares a split BIN/CUE copy (one BINARY file of raw sectors per track, pregaps "
+            f"included), and {sheet.name} has another layout; convert the copy to bincue-split first"
+        )
+    return redump.compare(
+        dat, file_hashes(sheet, sheet.parent), sheet.read_bytes(), [file_hashes(s, s.parent) for s in sources]
+    )
+
+
 def manifest_ok(manifest: dict[str, object]) -> bool:
-    """Whether every profile check matched and no written format differs from the source."""
+    """Whether every profile check matched, no written format differs from the source, and the
+    Redump comparison, when one was made, is not ``mismatched``."""
     checks = manifest["profile"]["checks"]  # type: ignore[index]
     outputs = manifest["outputs"]
-    return all(c["matched"] for c in checks) and all(  # type: ignore[union-attr]
-        o["verification"]["status"] != "mismatched" for o in outputs  # type: ignore[union-attr, index]
+    report = manifest.get("redump")
+    return (
+        all(c["matched"] for c in checks)  # type: ignore[union-attr]
+        and all(o["verification"]["status"] != "mismatched" for o in outputs)  # type: ignore[union-attr, index]
+        and (report is None or report["status"] != "mismatched")  # type: ignore[index]
     )
 
 
@@ -520,17 +568,20 @@ def archive(
     backend_args: Iterable[str] = (),
     image: Path | None = None,
     allow_download: bool = True,
+    dat: Path | None = None,
 ) -> dict[str, object]:
     """Copy a disc from ``drive``, or take the ``image`` already made, and write ``formats``.
 
     A drive's dump stays in ``output/archival`` as the backend wrote it. ``formats`` of None
     writes the profile's recommendation. ``allow_download`` lets a missing redumper be downloaded
-    (see ``backends.choose_backend``). Returns the manifest.
+    (see ``backends.choose_backend``). ``dat`` is a Redump DAT file to compare the
+    ``bincue-split`` copy with; it is read before the disc. Returns the manifest.
     """
     from . import backends
 
     if (drive is None) == (image is None):
         raise DiscError("give either a drive or an image")
+    loaded = redump.load_dat(dat) if dat is not None else None
     if drive is not None:
         chosen = backends.choose_backend(backend, log, allow_download)
         name = check_name(name or "disc")
@@ -545,4 +596,4 @@ def archive(
     with open_source(dump, output, log) as disc:
         raw = all(t.storage != "cooked" for t in disc.tracks)
         wanted = list(formats) if formats is not None else list(recommended_formats(profile, disc.layout, raw))
-        return derive(disc, output, name, wanted, profile, log, source)
+        return derive(disc, output, name, wanted, profile, log, source, loaded)

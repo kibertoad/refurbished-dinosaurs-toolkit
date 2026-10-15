@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import ccd, isofs, tools
-from .cue import CueFile, render_cue
+from .cue import CueFile, render_cue, write_cue
 from .disc import COOKED_SECTOR, RAW_SECTOR, Disc, DiscError, NotDataSector, Track, block_data, describe_ranges
 from .tools import Log
 
@@ -153,7 +153,7 @@ def write_bincue_split(disc: Disc, directory: Path, name: str) -> Output:
         files.append(directory / filename)
         cue_files.append(CueFile(filename, "BINARY", [(track, 0, True, _cue_type(track))]))
     sheet = directory / f"{name}.cue"
-    sheet.write_text(render_cue(disc, cue_files), encoding="utf-8")
+    write_cue(sheet, render_cue(disc, cue_files))
     return Output("bincue-split", directory, sheet, [sheet, *files], _virtual_pregap_notes(disc))
 
 
@@ -164,7 +164,7 @@ def write_bincue(disc: Disc, directory: Path, name: str) -> Output:
     _write(image, (chunk for t in disc.tracks for chunk in t.iter_raw(-t.pregap, t.length)))
     sheet = directory / f"{name}.cue"
     cue_file = CueFile(image.name, "BINARY", [(t, t.start, True, _cue_type(t)) for t in disc.tracks])
-    sheet.write_text(render_cue(disc, [cue_file]), encoding="utf-8")
+    write_cue(sheet, render_cue(disc, [cue_file]))
     return Output("bincue", directory, sheet, [sheet, image], _virtual_pregap_notes(disc))
 
 
@@ -312,7 +312,7 @@ def write_iso_audio(disc: Disc, directory: Path, name: str, codec: str, log: Log
         if not _pregap_is_silent(track):
             notes.append(f"Track {track.number}'s pregap holds sound, which this format leaves out.")
     sheet = directory / f"{name}.cue"
-    sheet.write_text(render_cue(disc, cue_files), encoding="utf-8")
+    write_cue(sheet, render_cue(disc, cue_files))
     notes.append("Each audio track starts at its INDEX 01; its pregap is written as a cue PREGAP.")
     if codec == "ogg":
         notes.append("Ogg Vorbis is lossy: the audio is close to, not the same as, the disc's.")
