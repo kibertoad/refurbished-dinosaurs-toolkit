@@ -2,17 +2,18 @@ using System.Buffers.Binary;
 
 namespace RefurbishedDinosaurs.LegacyFormats;
 
-// Decodes the FLAC frames of chdman's cdfl codec (RFC 9639): frames with no stream header, each of
-// two channels of 16-bit samples, written out interleaved and big-endian, as a CD CHD stores its
-// audio. Every frame's CRC-8 and CRC-16 are checked.
-internal sealed class ChdFlacDecoder
+// Decodes FLAC frames (RFC 9639) of two channels of 16-bit samples: the frames of chdman's cdfl
+// codec, which have no stream header and are written out interleaved and big-endian as a CD CHD
+// stores its audio, and the frames of a FLAC file, written out little-endian as a BIN or WAVE holds
+// them. Every frame's CRC-8 and CRC-16 are checked.
+internal sealed class FlacDecoder
 {
-    private const int MaximumBlockSize = 65535;
+    public const int MaximumBlockSize = 65535;
     private int[] left = new int[4096];
     private int[] right = new int[4096];
 
-    // Fills output with output.Length / 4 stereo samples and returns the bytes of input the
-    // frames took, so the caller finds what follows them.
+    // Fills output with output.Length / 4 stereo samples, big-endian, and returns the bytes of
+    // input the frames took, so the caller finds what follows them.
     public int Decode(ReadOnlySpan<byte> input, Span<byte> output)
     {
         var total = output.Length / 4;
@@ -20,18 +21,36 @@ internal sealed class ChdFlacDecoder
         var offset = 0;
         while (decoded < total)
         {
-            var frame = new FlacBitReader(input[offset..]);
-            var blockSize = DecodeFrame(ref frame, input[offset..], total - decoded);
-            for (var index = 0; index < blockSize; index++)
+            var blockSize = DecodeFrame(input[offset..], total - decoded, output[(4 * decoded)..], bigEndian: true, out var length);
+            decoded += blockSize;
+            offset += length;
+        }
+        return offset;
+    }
+
+    // Decodes the one frame at the start of input, which holds at most maximumSamples stereo
+    // samples, into output as interleaved 16-bit samples, and returns its sample count. length is
+    // the frame's size in bytes.
+    public int DecodeFrame(ReadOnlySpan<byte> input, int maximumSamples, Span<byte> output, bool bigEndian, out int length)
+    {
+        var frame = new FlacBitReader(input);
+        var blockSize = DecodeFrame(ref frame, input, maximumSamples);
+        for (var index = 0; index < blockSize; index++)
+        {
+            var at = 4 * index;
+            if (bigEndian)
             {
-                var at = 4 * (decoded + index);
                 BinaryPrimitives.WriteInt16BigEndian(output[at..], (short)left[index]);
                 BinaryPrimitives.WriteInt16BigEndian(output[(at + 2)..], (short)right[index]);
             }
-            decoded += blockSize;
-            offset += frame.BytePosition;
+            else
+            {
+                BinaryPrimitives.WriteInt16LittleEndian(output[at..], (short)left[index]);
+                BinaryPrimitives.WriteInt16LittleEndian(output[(at + 2)..], (short)right[index]);
+            }
         }
-        return offset;
+        length = frame.BytePosition;
+        return blockSize;
     }
 
     private int DecodeFrame(ref FlacBitReader bits, ReadOnlySpan<byte> data, int remaining)
@@ -73,7 +92,7 @@ internal sealed class ChdFlacDecoder
         if (bits.Overrun) throw Damaged("a frame header is truncated");
         if (Crc8(data[..headerLength]) != bits.Read(8)) throw Damaged("a frame header fails its CRC-8 check");
         if (blockSize > remaining || blockSize > MaximumBlockSize)
-            throw Damaged("a frame holds more samples than the hunk");
+            throw Damaged("a frame holds more samples than are left to decode");
         if (left.Length < blockSize)
         {
             left = new int[blockSize];

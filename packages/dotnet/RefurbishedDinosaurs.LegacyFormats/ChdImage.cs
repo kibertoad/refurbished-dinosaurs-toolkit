@@ -22,7 +22,9 @@ internal enum ChdTrackType
 // One track of a CD CHD. Frames counts the sectors the CHD stores for it, a stored pregap included,
 // and ChdFrame is where they start among the CHD's 2448-byte frames. chdman pads every track to a
 // multiple of 4 frames, so a track's frames start after the padding of the tracks before it.
-internal sealed record ChdTrack(int Number, ChdTrackType Type, int Frames, int StoredPregap, long ChdFrame);
+// UnstoredPregap counts the sectors of a pregap the CHD records but does not store, such as one a
+// cue sheet declared with PREGAP.
+internal sealed record ChdTrack(int Number, ChdTrackType Type, int Frames, int StoredPregap, long ChdFrame, int UnstoredPregap = 0);
 
 // A MAME CHD version 5 CD image: its header, hunk map and track metadata, read and checked when it
 // opens. The hunks are read through a ChdHunkReader, one per stream.
@@ -93,6 +95,13 @@ internal sealed partial class ChdImage
     // Where a hunk's data is: its type, its compressed length, and its offset in the file (or, for
     // a self reference, the hunk it repeats), with the CRC-16 of its decompressed bytes.
     internal readonly record struct MapEntry(byte Type, int Length, long Offset, ushort Crc);
+
+    // Whether the file at path starts with the CHD signature.
+    public static bool HasSignature(string path)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+        return HasSignature(stream);
+    }
 
     // Whether the stream starts with the CHD signature.
     public static bool HasSignature(Stream stream)
@@ -285,13 +294,20 @@ internal sealed partial class ChdImage
             // A pregap whose type starts with V is stored in the CHD as the track's first frames, as
             // chdman stores the INDEX 00 pregap of a cue sheet. Any other pregap was generated, such
             // as by a cue PREGAP command, and is not stored, so it is not in the image either.
-            var storedPregap = 0;
-            if (match.Groups["pregap"].Success && match.Groups["pgtype"].Value.StartsWith('V'))
+            int storedPregap = 0, unstoredPregap = 0;
+            if (match.Groups["pregap"].Success)
             {
-                if (!int.TryParse(match.Groups["pregap"].Value, out storedPregap) || storedPregap >= frames)
+                if (!int.TryParse(match.Groups["pregap"].Value, out var pregap) || pregap > MaximumFrames)
+                    throw new InvalidDataException($"CHD track {number} has an invalid pregap.");
+                if (!match.Groups["pgtype"].Value.StartsWith('V')) unstoredPregap = pregap;
+                else if (pregap >= frames)
                     throw new InvalidDataException($"CHD track {number} has a stored pregap that does not fit in its frames.");
+                else storedPregap = pregap;
+                if (!int.TryParse(match.Groups["postgap"].Value, out var postgap) || postgap != 0)
+                    throw new NotSupportedException(
+                        $"CHD track {number} records a postgap, which no disc image form this library reads stores.");
             }
-            tracks.Add(new ChdTrack(number, type, frames, storedPregap, chdFrame));
+            tracks.Add(new ChdTrack(number, type, frames, storedPregap, chdFrame, unstoredPregap));
             chdFrame += Padded(frames);
             if (chdFrame > MaximumFrames)
                 throw new InvalidDataException($"The CHD's tracks hold more than {MaximumFrames} frames, more than any CD.");
@@ -432,7 +448,7 @@ internal sealed class ChdHunkReader : IDisposable
     private readonly byte[] scratch;
     private byte[]? padding;
     private readonly ChdLzmaDecoder lzma = new();
-    private readonly ChdFlacDecoder flac = new();
+    private readonly FlacDecoder flac = new();
     private readonly bool[] content;
     private IncrementalHash? sha1 = IncrementalHash.CreateHash(HashAlgorithmName.SHA1);
     private int hashedHunks;

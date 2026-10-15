@@ -33,7 +33,7 @@ on an undocumented public member.
 
 | Namespace | Types | Use |
 |---|---|---|
-| `Assets` | `AssetManifest`, `AssetFileSpec`, `CddaTrackFingerprint` | One supported edition: its files' paths, sizes and XXH3-128 hashes, for a cue/bin or CHD source the fingerprints of its CD audio tracks, how the copy is read, and the edition's `Fingerprint()`. |
+| `Assets` | `AssetManifest`, `AssetFileSpec`, `CddaTrackFingerprint` | One supported edition: its files' paths, sizes and XXH3-128 hashes, for a cue/bin or disc image source the fingerprints of its CD audio tracks, how the copy is read, and the edition's `Fingerprint()`. |
 | `Assets` | `FileFingerprint` | XXH3-128 of bytes, a file or a stream, in the documentation standard's form, and a bounded copy that hashes what it copies (`CopyXxh3Async`). |
 | `Assets` | `ImportDiskPlanner` | Free space an import needs, counting files it will replace. |
 | `Assets` | `StagedAssetPack` | Build a content directory beside the live one and swap it in, restoring the old one on failure. |
@@ -139,7 +139,7 @@ restoration's data.
 ## Pinning a disc image's volume
 
 Two pressings of a disc can carry the same files in different ISO 9660 volumes. An `iso9660`,
-`cue-bin` or `chd` manifest can pin the volume as well as the files, with any of three fields:
+`cue-bin` or `disc-image` manifest can pin the volume as well as the files, with any of three fields:
 
 | Field | Checked against | Problem when it differs |
 |---|---|---|
@@ -158,8 +158,8 @@ identifiers as JSON strings with control characters escaped, so the found value 
 the manifest.
 
 `OpenVolume` reads the same bytes from an `.iso` image, from the data track of a cue/bin image and
-from a CHD of one disc, and leaves out padding after the declared volume, so one `VolumeXxh3` serves
-all of them.
+from every other form of one disc, and leaves out padding after the declared volume, so one
+`VolumeXxh3` serves them all.
 Record it from a reference copy with `FileFingerprint.Xxh3Async(source.OpenVolume())`.
 `AssetVerifier` checks the pins before the files, skips the hash when the identifier or size
 already differs, and reports a source with no volume, or a volume it cannot read, as `Unreadable`.
@@ -196,7 +196,8 @@ contexts outside per-frame loops.
 | Types | Reads |
 |---|---|
 | `AssetVerifier` | Check the player's original against an `AssetManifest` through any `OriginalContentSource`, and `IdentifyAsync` the supported edition it is, or that several editions match. |
-| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image, a CHD CD image, an InstallShield cabinet set or an InstallShield 3 archive behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path, and from the first bytes for a CHD or an InstallShield 3 archive; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin`, `OpenChd`, `OpenInstallShieldCabinet` and `OpenInstallShieldArchive` take it explicitly. A CHD source reads the disc image the CHD holds as a cue/bin source reads its image (see [CHD images](#chd-images)). ISO 9660 file and directory names read byte for byte as Latin-1 (ISO-8859-1), as the volume label does, and lose their `;` version suffix and trailing dots unless that would give two entries of one directory the same name ignoring case, as `README.;1` and `README.;2` would; those keep their whole identifiers, as the documentation standard writes disc paths. `OpenIso9660(stream)` opens an `.iso` image from a readable, seekable stream the caller keeps and the source never disposes; the streams it opens each keep their own position over it. A cue/bin source reads a `MODE1/2352` or `MODE2/2352` Form 1 data track (see [Cue/bin data tracks](#cuebin-data-tracks)). It gives the sheet as `Cue` and the full paths of the files `OpenCueBin` chose as `CuePath` and `BinPath`. It reads the sheet once and gives those bytes as `CueSheetBytes`: hash them to record the sheet that was parsed, since the file at `CuePath` may have been replaced after the source opened. An `.iso` or cue/bin source opened from a path records the image's length and last-write time when it opens, and each read of the `.iso` or BIN through the source (`OpenRead`, `OpenVolume`, `OpenBin` and the audio checks) fails with an `IOException` when either has changed; a rewrite that keeps both is not detected. A stream opened from `BinPath` is not checked, so read the image with `OpenBin`. |
+| `OriginalContentSource`, `ContentSourceKinds` | An installed directory, a `.iso` image, a cue/bin raw disc image, a CD in any other image form (see [Disc images](#disc-images)), an InstallShield cabinet set or an InstallShield 3 archive behind one file listing and `OpenRead`. `Open(path)` picks the kind from the path, and from the first bytes for a CHD or an InstallShield 3 archive; `Open(path, kind)`, `OpenDirectory`, `OpenIso9660`, `OpenCueBin`, `OpenDiscImage`, `OpenInstallShieldCabinet` and `OpenInstallShieldArchive` take it explicitly. ISO 9660 file and directory names read byte for byte as Latin-1 (ISO-8859-1), as the volume label does, and lose their `;` version suffix and trailing dots unless that would give two entries of one directory the same name ignoring case, as `README.;1` and `README.;2` would; those keep their whole identifiers, as the documentation standard writes disc paths. `OpenIso9660(stream)` opens an `.iso` image from a readable, seekable stream the caller keeps and the source never disposes; the streams it opens each keep their own position over it. A cue/bin source reads a `MODE1/2352` or `MODE2/2352` Form 1 data track (see [Cue/bin data tracks](#cuebin-data-tracks)). It gives the sheet as `Cue` and the full paths of the files `OpenCueBin` chose as `CuePath` and `BinPath`. It reads the sheet once and gives those bytes as `CueSheetBytes`: hash them to record the sheet that was parsed, since the file at `CuePath` may have been replaced after the source opened. An `.iso` or cue/bin source opened from a path records the image's length and last-write time when it opens, and each read of the `.iso` or BIN through the source (`OpenRead`, `OpenVolume`, `OpenBin` and the audio checks) fails with an `IOException` when either has changed; a rewrite that keeps both is not detected. A stream opened from `BinPath` is not checked, so read the image with `OpenBin`. |
+| `DiscImageFormats` | The forms a `disc-image` source reads, as its `DiscImageFormat` gives them: `iso`, `cue`, `clonecd`, `alcohol-mds`, `nero-nrg` and `chd`. See [Disc images](#disc-images). |
 | `InstallShieldArchiveSource`, `InstallShieldArchiveLimits` | The members of an InstallShield 3 archive held in one file (such as `_SETUP.1`), from a file, inside another source or from a stream. See [InstallShield 3 archives](#installshield-3-archives). |
 | `InstallShieldCabinetSource`, `InstallShieldCabinetLimits` | The members of an InstallShield cabinet set of major version 0, 5 or 6 (`dataN.hdr` and `dataN.cab`), on disk or inside another source. See [InstallShield cabinets](#installshield-cabinets). |
 | `InstallShieldMember`, `InstallShieldEntryMetadata`, `InstallShieldFileGroup`, `InstallShieldFileGroupMembership`, `InstallShieldFileGroupMembershipKind` | Each listed member's file-table entry (index, directory, name) and the file groups whose ranges hold it, from either InstallShield source's `Members`. See [Member metadata and file groups](#member-metadata-and-file-groups). |
@@ -239,7 +240,8 @@ each entry and the tracks it holds (setting `Files` on a sheet checks that the e
 another file. The data track ends where the image's second track begins, or at the end of the
 image when the image holds no other track. `AssetVerifier` reports a fingerprinted audio track
 stored in another file as `Unreadable`, naming the file, `CddaTrackFingerprints.RecordAsync`
-refuses to record one, and `BuildListing` gives it as a `stopped` item. `CueSheet.Tracks` reads
+refuses to record one, and `BuildListing`, listing a sheet that is not named `.cue` through
+`OpenCueBin`, gives it as a `stopped` item. `CueSheet.Tracks` reads
 single-file sheets only and throws for a sheet with a second `FILE`.
 
 ## Cue/bin data tracks
@@ -272,31 +274,94 @@ descriptor. `OpenRead` still throws for a file that covers an empty Form 2 secto
 still throws for a Form 2 sector with any nonzero data byte. The EDC, the ECC and the address in
 each sector's header are not checked.
 
-## CHD images
+## Disc images
 
-`OpenChd` reads a MAME CHD version 5 CD image, such as `chdman createcd` writes, as the
-`chd` source kind. `Open(path)` opens any file that starts with the CHD signature this way,
-whatever its extension. The source reads the disc image the CHD holds with the reader behind
-`OpenCueBin`, so it lists the same files, reads the same file and volume bytes, and gives the same
-`Label`, `VolumeBlocks` and `VolumeXxh3` as the cue/bin image the CHD was made from, with the same
-sector checks ([Cue/bin data tracks](#cuebin-data-tracks)).
+Players hold a CD in many forms. `OpenDiscImage(path)`, or `Open(path, ContentSourceKinds.DiscImage)`,
+opens any of the forms below as one `disc-image` source, and every form of one disc lists the same
+files and gives the same `Label`, `VolumeBlocks`, `OpenVolume` bytes and CD audio. A manifest of kind
+`disc-image` can therefore pin the volume and list `AudioTracks` once and identify the disc whichever
+form the player has. `DiscImageFormat` says which form was read and `ImageFiles` the full path of
+every file the source reads, its descriptor first.
 
-A CHD made from a cue/bin image stores raw 2352-byte sectors. `OpenBin()` reads them as the BIN
-image chdman read: each track's stored frames in order, without the frames chdman adds to pad each
-track to a multiple of 4, and with audio samples little-endian, where the CHD stores them
-big-endian. `Cue` is that image's sheet, with one `FILE` named after the CHD, and each track's
-pregap stored in the CHD as its `INDEX 00`. The sheet is checked as `CueBinSheet.Parse` checks a
-cue sheet, so a CHD whose first track is not `MODE1_RAW` or `MODE2_RAW`, or with a data track after
-the first, is refused. `CuePath`, `BinPath` and `CueSheetBytes` are `null`. Audio tracks are read
-through `OpenBin()` and `Cue.TrackExtent`, and a fingerprint recorded from the cue/bin image
-matches the CHD at shift 0. A CHD that chdman made from an `.iso` image holds one `MODE1` track of
-2048-byte sectors: the source reads the volume from them and has no `Cue` or `OpenBin()`.
+| Form (`DiscImageFormat`) | Opened from | Read |
+|---|---|---|
+| `iso` | `.iso`, or a directory holding only one | the 2048-byte sectors; no audio |
+| `cue` | `.cue`, or a `.bin` through the `.cue` with its name | every `FILE`: the data track as raw `MODE1/2352` or `MODE2/2352` sectors, or as an ISO of 2048-byte sectors declared `MODE1/2048` or `MODE2/2048`; audio in the same `BINARY` file, later `BINARY` files of raw sectors, and `WAVE` files of PCM or FLAC |
+| `clonecd` | `.ccd`, or its `.img` | the `.img` from LBA 0 to the lead-out; the `.sub` is not read |
+| `alcohol-mds` | `.mds` of version 1, or its `.mdf` | the one `.mdf` it names (`*.mdf` is the descriptor's own name): Mode 1, Mode 2 (read as CD-XA Form 1) or Mode 2 Form 1 data and audio, raw or 2048-byte data sectors, with or without 96 bytes of subchannel per sector; a later track's pregap stored after the previous track's sectors, counted in that track's length or not, or not stored |
+| `chd` | a file that starts with the CHD signature, whatever its extension, such as a `.chd` | the BIN image chdman read, decoded from the hunks; see [CHD images](#chd-images) |
+| `nero-nrg` | `.nrg` of version 1 (`NERO` footer) or 2 (`NER5`) | the disc-at-once tracks its `CUES`/`CUEX` and `DAOI`/`DAOX` chunks describe, raw or 2048-byte data sectors, with or without 96 bytes of subchannel; a version 1 `CUES` time is read as BCD and as binary, and the reading that fits the `DAOI` offsets is used |
+
+A directory is read through its one `.cue`, `.ccd`, `.mds`, `.nrg` or `.chd`, else its one `.iso`; a
+directory holding several is refused. A `.cue` whose first `FILE` is the `.img`, `.mdf` or `.nrg` of
+a `.ccd`, `.mds` or `.nrg` of its name beside it, such as the sheet CloneCD writes next to its
+`.ccd`, describes that image and is passed over. `Open(path)` opens a `.ccd`, `.mds`, `.mdx` or `.nrg`, and any
+file that starts with the CHD signature, as a disc image; it still opens a `.cue` with `OpenCueBin`.
+
+Every form is held to the disc `OpenCueBin` reads: one session whose first track holds the data,
+starting at sector 0, followed only by audio tracks. A raw data track is checked sector by sector as
+in [Cue/bin data tracks](#cuebin-data-tracks), including the empty Form 2 rule; a data track stored as
+2048-byte sectors is read as an `.iso` is. Subchannel bytes stored after each sector are left out.
+The source records the length and last-write time of every file it reads, and a read through it of a
+file that has changed since fails with `IOException`.
+
+`OpenBin()` gives the disc's tracks as one stream of 2352-byte sectors from the data track's
+`INDEX 01`, and `Cue` lays them out as a sheet with one `BINARY` `FILE` named after the first data
+file, so `Cue.TrackExtent`, `CddaWave` and `CddaTrackFingerprints` read a track the same way from
+every form. Sectors no file stores are in the stream's layout but a read of them throws
+`InvalidDataException` with the reason: a pregap a cue sheet declares with `PREGAP`, an Alcohol
+image does not store or a CHD records without storing it, and the raw sectors of a data track stored as 2048-byte sectors.
+
+A cue sheet read as a disc image follows the rules of [Cue sheets](#cue-sheets) with these
+differences: the first track may also be `MODE1/2048` or `MODE2/2048`, in a file that holds no other
+track; `PREGAP` adds a pregap no file stores before a track's `INDEX 01` (a track may not have both
+`PREGAP` and `INDEX 00`); `POSTGAP` is refused; and the first track of each later `FILE` must start at
+`00:00:00`. Audio is read from raw `BINARY` files and from `WAVE` files of 16-bit stereo 44.1 kHz PCM
+(format 1) or FLAC (see [FLAC audio tracks](#flac-audio-tracks)), the CD's own samples, whose audio is
+a whole number of sectors. Ogg Vorbis and MP3 are lossy and can never match a fingerprint. An Ogg or
+MP3 file, a WAVE or FLAC of another sample format, a missing file or one that is not a whole number
+of sectors does not stop the source opening: its tracks and those of every later `FILE` follow the
+image in `Cue`, and `AssetVerifier` reports each fingerprinted one as `Unreadable` with the reason,
+such as `it holds Ogg audio`. The files, the volume and the tracks before it are
+still verified.
+
+Each form refuses what it cannot read with the reason, as `NotSupportedException` for a form or layout
+outside the ones above and `InvalidDataException` for a descriptor or image that is malformed or
+disagrees with itself:
+
+| Form | Refused |
+|---|---|
+| every form but `iso` | more than one session (a CD-Extra or multisession copy), a first track that is not data or a later one that is, more sectors than a CD's 99:59:74 addresses reach |
+| `clonecd` | a version other than 2 or 3, scrambled data tracks, table-of-contents points other than the tracks, A0, A1 and A2, a table of contents that disagrees with the `[TRACK]` sections, an `.img` that does not end at the lead-out, an unknown section or a line that is not `key=value` |
+| `alcohol-mds` | version 2 descriptors and DAEMON Tools `.mdx` images, DVD media, Mode 2 Form 2 tracks and mode bytes whose low three bits are 0, 6 or 7, sector sizes other than 2352, 2448 and 2048, tracks split across several files, a track whose LBA or `.mdf` offset neither follows the previous track nor its own pregap after it, tracks that end before the session does |
+| `chd` | see [CHD images](#chd-images) |
+| `nero-nrg` | a file without the `NER5` or `NERO` footer, an `MTYP` media type that is not a CD, track-at-once images (`ETNF`, `ETN2`), 2336-byte Mode 2 tracks and 2352-byte tracks with a 2048-byte mode code, a chunk it does not know, cue and track chunks that disagree on a track's sectors, `CUES` times that fit the tracks both as BCD and as binary with different sectors |
+
+The table of contents of each form is read as libmirage's `image-ccd`, `image-mds` and `image-nrg`
+parsers read it. The Alcohol and Nero layouts are checked against Aaru's `Alcohol120` and `Nero` images where the two
+differ: Alcohol's pregap storage, and whether a `CUES` time is BCD. The source files are cited in the
+readers' comments. The readers are tested against synthetic images built to those layouts. A raw
+data track whose sectors do not match the mode its descriptor declares fails naming the descriptor,
+such as `Sector 0 is mode 1, but the Alcohol .mds game.mds declares MODE2/2352.`
+
+### CHD images
+
+A CHD is read when the file starts with the CHD signature, whatever its extension. A CHD made from a
+cue/bin image stores raw 2352-byte sectors, and `OpenBin()` reads them as the BIN image chdman read:
+each track's stored frames in order, without the frames chdman adds to pad each track to a multiple
+of 4, and with audio samples little-endian, where the CHD stores them big-endian. `Cue` names the
+CHD as its one `FILE` and gives a pregap stored in the CHD as the track's `INDEX 00`. A pregap the
+CHD records but does not store, as chdman writes for a sheet's `PREGAP`, is in the layout as sectors
+no file stores, as for the sheet itself. So the samples and track extents equal those of the cue/bin
+image the CHD was made from, and a fingerprint recorded from that image matches the CHD at shift 0.
+A CHD that chdman made from an `.iso` holds one `MODE1` track of 2048-byte sectors, read as a cue
+sheet's `MODE1/2048` track is.
 
 | CHD feature | Read |
 |---|---|
 | Version | 5. Versions 3 and 4 are refused with `NotSupportedException`; `chdman copy` writes a version 5 copy. |
 | Track metadata | `CHT2` and `CHTR`. A CHD with only the old binary `CHCD` metadata, a GD-ROM (`CHGD`, `CHGT`), a DVD and a CHD with no CD track metadata are refused with `NotSupportedException`. |
-| Track types | `MODE1_RAW`, `MODE2_RAW` and `AUDIO`, or one `MODE1` track alone. Other types are refused with `NotSupportedException`. |
+| Track types | `MODE1_RAW` or `MODE2_RAW` first, then `AUDIO`, or one `MODE1` track alone. Other types, a data track after the first, audio first, a pregap stored before track 1 and a postgap are refused with `NotSupportedException`. |
 | Hunks | Uncompressed, `cdlz` (LZMA, with the sync pattern and ECC chdman removed from a data sector rebuilt), `cdzl` (deflate), `cdfl` (FLAC) and copies of an earlier hunk. Another codec, such as `cdzs`, is refused with `NotSupportedException`; `chdman copy -c cdlz,cdzl,cdfl` writes a copy the reader opens. |
 | Parent CHDs | Refused with `NotSupportedException`: the reader does not open a parent. `chdman copy` with the parent given as `-ip` writes a CHD that holds the whole disc. |
 
@@ -305,11 +370,21 @@ CRC-16 and every hunk's place in the file are checked then, so a truncated file 
 hunk's CRC-16 is checked when it is decoded (a CHD with no codecs records none), and a stream that
 reads every hunk from the first to the last, as reading `OpenBin()` to its end does, checks the
 SHA-1 of the whole data against the header's, as `chdman verify` does. A failed check throws
-`InvalidDataException`. As for an `.iso` or cue/bin image, the source records the file's length and
-last-write time when it opens, and each later read through it fails with an `IOException` when
-either has changed. The decoders are managed code in this package: the LZMA decoder is adapted from
-the public-domain reference decoder of the LZMA SDK, and the FLAC decoder reads the frames chdman's
-encoder writes (RFC 9639, two channels of 16-bit samples) and checks each frame's CRC-8 and CRC-16.
+`InvalidDataException`. The decoders are managed code in this package: the LZMA decoder is adapted
+from the public-domain reference decoder of the LZMA SDK, and the FLAC decoder reads RFC 9639 frames
+of two 16-bit channels, checking each frame's CRC-8 and CRC-16.
+
+### FLAC audio tracks
+
+A cue sheet's `WAVE` file that starts with the FLAC signature is decoded, as the archiver's
+`iso-flac` form and DOSBox sheets give FLAC tracks the `WAVE` type. Its `STREAMINFO` must declare
+16-bit stereo 44.1 kHz audio and its sample count, which must be a whole number of sectors; other
+audio is reported as `Unreadable` with the channels, bits and rate it holds. The frames are decoded
+the first time a stream reads the file: each frame's CRC-8 and CRC-16 are checked, the samples must
+add up to the declared count, and their MD5 must equal the one `STREAMINFO` records, unless it
+records none. A failed check throws `InvalidDataException` from the read, which `AssetVerifier`
+reports as `Unreadable`. The decoded samples are the WAVE's, so a fingerprint recorded from cue/bin
+verifies against an ISO-plus-FLAC copy.
 
 ## Listing a build
 
@@ -329,7 +404,8 @@ File.WriteAllText("spec/builds/BLD-X.listing.yaml", record.ToYaml());
 |---|---|
 | Installation directory | Every file under it with its size, hidden and system files included, in every subdirectory. A symbolic link or junction is a `link` item with its target as stored, and is not entered (`links: listed`, `cycles: null`). Any other file reparse point, such as a cloud file's placeholder or a deduplicated file, is a file with the size the file system gives. Any other directory reparse point, a link whose target cannot be read, and a directory that cannot be entered are `stopped` items with the reason. |
 | `.iso` image | Each file of the primary volume under the disc's prefix, named as `OpenIso9660` names it, with layout `2048`. |
-| cue/bin image (the sheet, whatever its extension, or the `.bin`) | The same for the data track, with the track's type as the layout (`MODE1/2352` or `MODE2/2352`), and each audio track as `CD:track02` and so on, with the size of its raw audio from `CueBinSheet.TrackExtent`. An audio track the sheet stores in a later `FILE` is a `stopped` item naming that file, since the listing does not read it. |
+| `.cue` sheet or its `.bin`, CloneCD `.ccd` (or its `.img` when the `.ccd` of the same name is beside it), Alcohol `.mds` or `.mdf`, Nero `.nrg`, a CHD of any extension | Opened with `OpenDiscImage`. The same for the data track, with layout `MODE1/2352` or `MODE2/2352` for raw sectors and `2048` for a data track of 2048-byte sectors (an ISO with WAVE or FLAC audio, a cooked CloneCD, Alcohol or Nero track, or a CHD made from an `.iso`), and each audio track as `CD:track02` and so on, with the size of its raw audio from `CueBinSheet.TrackExtent` on the source's `Cue`. An audio track the image does not read, such as one in an Ogg or MP3 file, or one after it, is a `stopped` item giving the image's reason. |
+| cue sheet with any other extension | Opened with `OpenCueBin`, and listed the same way. An audio track the sheet stores in a later `FILE` is a `stopped` item naming that file, since the listing does not read it. |
 
 `BuildListingDisc.Source` is the image's path as the manifest or the list of other files writes it,
 which the record gives as the medium's `source`. A mounted disc is refused, since the drive gives
@@ -698,10 +774,11 @@ track, its length in samples (16-bit stereo pairs, 588 to a sector), a tolerance
 length and XXH3-128, and the XXH3-128 of the central samples, which leave out the tolerance at each
 end. Record one from a reference rip with `CddaTrackFingerprints.RecordAsync`, which refuses an
 anchor whose samples repeat within twice the tolerance (the range a rip shifted by up to the
-tolerance shows the verifier), and list it in a `cue-bin` or `chd` manifest's `AudioTracks`. To
+tolerance shows the verifier), and list it in a `cue-bin` or `disc-image` manifest's `AudioTracks`. To
 record from an opened source, pass its `OpenBin()` stream and the track's `Cue.TrackExtent`, so the
-samples come from the BIN the source checked. A CHD source's `OpenBin()` gives the samples in a
-BIN's byte order, so a fingerprint recorded from a cue/bin image checks the CHD made from it.
+samples come from the image the source checked. A `disc-image` source's `OpenBin()` and `Cue` give
+the same extents and samples for every raw form of one disc, so a fingerprint recorded from a cue/bin
+verifies against a CloneCD, Alcohol, Nero, CHD, ISO-plus-WAVE or ISO-plus-FLAC copy.
 
 `AssetVerifier` checks each track after the files. A track starts at its `INDEX 01` and ends at the
 next track's `INDEX 00`, that track's `INDEX 01` without one, or the end of the image. The checks
@@ -716,8 +793,9 @@ run in order, and each problem carries `AudioTrack`:
 
 A shifted rip moves the end of a track into the sectors after it, so the checks read past the
 track's extent into the rest of the image. When a check needs samples past the end of the image, the
-track is reported as `Unreadable`, with the check that was not made. A source with no cue sheet,
-one that is not a cue/bin image or a CHD of raw sectors, reports each track as `Unreadable`. `IdentifyAsync` verifies a track once per source and
+track is reported as `Unreadable`, with the check that was not made. A source that holds no CD audio,
+such as a directory or an `.iso`, reports each track as `Unreadable`, and so does a `disc-image`
+source for a track in an audio file it does not read, with the reason. `IdentifyAsync` verifies a track once per source and
 reports the outcome, a failed read included, for every edition that lists the same fingerprint.
 The tolerance is at most 5880 samples and the anchor at most 44100 samples, since the anchor is
 hashed once per shift.
@@ -727,7 +805,7 @@ hashed once per shift.
 `CddaWave.Write(source, output, startSector, sectorCount)` and `WriteAsync`, which also takes a
 `CancellationToken`, copy raw sectors of an image into a 16-bit stereo 44.1 kHz WAVE file. For a
 track of a cue/bin image, pass the `StartSector` and `Sectors` of `CueBinSheet.TrackExtent`; for a
-CHD, pass the source's `OpenBin()` with the extent from its `Cue`.
+disc image of another form, pass the source's `OpenBin()` with the extent from its `Cue`.
 `WriteAsync` checks the token before each read of up to 128 KiB, so a cancelled copy stops within a
 read and leaves a partial file for the caller to delete.
 

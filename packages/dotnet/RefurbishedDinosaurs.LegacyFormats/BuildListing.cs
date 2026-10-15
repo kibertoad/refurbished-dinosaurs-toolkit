@@ -8,10 +8,12 @@ namespace RefurbishedDinosaurs.LegacyFormats;
 /// <summary>A disc that <see cref="BuildListing.Make"/> lists, read from an image of it.</summary>
 /// <param name="Prefix">The prefix its paths take: <c>CD:</c>, or <c>CD1:</c>, <c>CD2:</c> and so on.</param>
 /// <param name="ImagePath">
-/// Where to read the image: an <c>.iso</c> file of 2,048-byte sectors, or the cue sheet, whatever its
-/// extension, or the <c>.bin</c> file of a cue/bin raw image whose data track is <c>MODE1/2352</c> or
-/// <c>MODE2/2352</c>. Any file that is not an <c>.iso</c> is opened as
-/// <see cref="OriginalContentSource.OpenCueBin(string)"/> opens it.
+/// Where to read the image: an <c>.iso</c> file of 2,048-byte sectors; a <c>.cue</c> sheet or its
+/// <c>.bin</c>, a CloneCD <c>.ccd</c> (or its <c>.img</c> when the <c>.ccd</c> of the same name is
+/// beside it), an Alcohol <c>.mds</c> or <c>.mdf</c>, a Nero <c>.nrg</c>, or a CHD (a file that starts
+/// with the CHD signature, whatever its extension), each opened as
+/// <see cref="OriginalContentSource.OpenDiscImage(string)"/> opens it; or a cue sheet with any other
+/// extension, opened as <see cref="OriginalContentSource.OpenCueBin(string)"/> opens it.
 /// </param>
 /// <param name="Source">
 /// The image's path as the build's manifest or list of other files writes it, which the record gives
@@ -129,14 +131,18 @@ public sealed class BuildListingRecord
 /// the reason. A file's size is taken from the file system; no file is read.
 /// </para>
 /// <para>
-/// A disc is read through <see cref="OriginalContentSource.OpenIso9660(string)"/> or
-/// <see cref="OriginalContentSource.OpenCueBin(string)"/>, with their checks. Its paths are the
+/// A disc is read through <see cref="OriginalContentSource.OpenIso9660(string)"/>,
+/// <see cref="OriginalContentSource.OpenDiscImage(string)"/> or
+/// <see cref="OriginalContentSource.OpenCueBin(string)"/>, as <see cref="BuildListingDisc.ImagePath"/>
+/// gives, with their checks. Its paths are the
 /// names of its primary volume as that reader gives them: without the version suffix or the dot that
 /// ends a name with no extension, except where dropping them would give two entries of one directory
-/// the same name ignoring case. A cue/bin image's audio tracks are file items under their track references
+/// the same name ignoring case. The audio tracks of an image that holds them are file items under their track references
 /// (<c>CD:track02</c>), each with the size of its raw audio from its <c>INDEX 01</c> to where the next
-/// track's pregap or audio begins, as <see cref="CueBinSheet.TrackExtent"/> gives it. An audio track
-/// the sheet stores in a later <c>FILE</c> is a stopped item under its track reference, naming the file.
+/// track's pregap or audio begins, as <see cref="CueBinSheet.TrackExtent"/> gives it on the source's
+/// <see cref="OriginalContentSource.Cue"/>. An audio track that source does not read, such as one in
+/// an Ogg or MP3 file or, for <see cref="OriginalContentSource.OpenCueBin(string)"/>, in a later
+/// <c>FILE</c> of the sheet, is a stopped item under its track reference, naming the file.
 /// </para>
 /// <para>
 /// The listing goes inside no archive. A record shows what was listed, not what the game uses; the
@@ -178,9 +184,14 @@ public static partial class BuildListing
     /// character, <c>|</c>, which marks an archive member, a <c>\</c>, which Linux and macOS allow
     /// in a name, or an unpaired surrogate. Or a name at its top starts like a disc path
     /// (<c>CD:</c>, <c>CD2:</c>), which Linux and macOS allow. Or a disc image is not valid, as its
-    /// reader describes, such as a file that is not an <c>.iso</c> and is not a cue sheet or
-    /// <c>.bin</c>. The discs are read before the installation directory is walked, so an invalid
+    /// reader describes, such as a file whose extension names no disc image form and that is not a
+    /// cue sheet. The discs are read before the installation directory is walked, so an invalid
     /// image fails first.
+    /// </exception>
+    /// <exception cref="NotSupportedException">
+    /// A disc image is of a form or layout <see cref="OriginalContentSource.OpenDiscImage(string)"/>
+    /// refuses, such as a DAEMON Tools <c>.mdx</c>, an <c>.mds</c> of version 2, a DVD or a disc of
+    /// several sessions.
     /// </exception>
     /// <exception cref="UnauthorizedAccessException">The installation directory itself cannot be read.</exception>
     /// <exception cref="IOException">The installation directory itself cannot be read, or a disc image changed while it was read.</exception>
@@ -205,7 +216,7 @@ public static partial class BuildListing
                     nameof(discs));
             if (string.IsNullOrWhiteSpace(disc.ImagePath) || Directory.Exists(disc.ImagePath))
                 throw new ArgumentException(
-                    $"Disc {disc.Prefix} is read from an .iso image or a cue/bin image's sheet or .bin, not {disc.ImagePath}. " +
+                    $"Disc {disc.Prefix} is read from a disc image file, such as an .iso, a cue sheet, a .ccd, an .mds, an .nrg or a .chd, not {disc.ImagePath}. " +
                     "A mounted disc gives the names the drive chooses, such as Joliet names, not those of the primary volume.",
                     nameof(discs));
         }
@@ -304,10 +315,8 @@ public static partial class BuildListing
 
     private static BuildListingMedium ListDisc(BuildListingDisc disc, List<BuildListingItem> items)
     {
-        // Make refused a blank path and a directory before listing anything. An .iso is read as
-        // 2048-byte sectors and any other file as a cue/bin image's sheet or .bin.
-        var cueBin = !Path.GetExtension(disc.ImagePath).Equals(".iso", StringComparison.OrdinalIgnoreCase);
-        using var source = cueBin ? OriginalContentSource.OpenCueBin(disc.ImagePath) : OriginalContentSource.OpenIso9660(disc.ImagePath);
+        // Make refused a blank path and a directory before listing anything.
+        using var source = OpenDisc(disc.ImagePath);
         foreach (var file in source.Files) items.Add(new($"{disc.Prefix}{file.Path}", file.Size, null, null));
         if (source.Cue is not { } sheet) return new BuildListingMedium(disc.Prefix, disc.Source, "2048");
         long imageSectors;
@@ -317,15 +326,37 @@ public static partial class BuildListing
             if (track.Number > sheet.ImageTracks)
             {
                 // The track's audio is in a separate file the sheet names, which may be compressed,
-                // so its raw size is not known without decoding it.
+                // so its raw size is not known without decoding it. A disc image gives why it did
+                // not read the file.
                 items.Add(new($"{disc.Prefix}track{track.Number:D2}", null, null,
-                    $"stored in {sheet.FileOf(track.Number).Path}, a separate file the listing does not read"));
+                    source.UnreadAudioTrack(track.Number)?.TrimEnd('.')
+                    ?? $"stored in {sheet.FileOf(track.Number).Path}, a separate file the listing does not read"));
                 continue;
             }
             var extent = sheet.TrackExtent(track.Number, imageSectors);
             items.Add(new($"{disc.Prefix}track{track.Number:D2}", extent.Sectors * CueBinSheet.RawSectorSize, null, null));
         }
-        return new BuildListingMedium(disc.Prefix, disc.Source, sheet.Tracks[0].Type);
+        // A data track of 2048-byte sectors (an ISO with WAVE audio, or a cooked CloneCD, Alcohol or
+        // Nero data track) is read as an .iso is.
+        var layout = sheet.Tracks[0].Type is "MODE1/2048" or "MODE2/2048" ? "2048" : sheet.Tracks[0].Type;
+        return new BuildListingMedium(disc.Prefix, disc.Source, layout);
+    }
+
+    // An .iso is read as 2048-byte sectors. A .cue or .bin, a CloneCD .ccd (or its .img when the
+    // .ccd is beside it), an Alcohol .mds or .mdf, a Nero .nrg and a CHD of any extension are read as
+    // OpenDiscImage reads them. Any other file is read as OpenCueBin reads it, as a cue sheet
+    // whatever its extension.
+    private static OriginalContentSource OpenDisc(string path)
+    {
+        var extension = Path.GetExtension(path).ToLowerInvariant();
+        if (File.Exists(path) && ChdImage.HasSignature(path)) return OriginalContentSource.OpenDiscImage(path);
+        if (extension == ".iso") return OriginalContentSource.OpenIso9660(path);
+        // OpenDiscImage finds an .img's .ccd by name ignoring case, so the check here does too.
+        if (extension is ".cue" or ".bin" or ".ccd" or ".mds" or ".mdf" or ".mdx" or ".nrg" ||
+            extension == ".img" && File.Exists(path) && CueBinSheet.MatchStem(path,
+                CueBinSheet.Enumerate(Path.GetDirectoryName(Path.GetFullPath(path))!, ".ccd")) is not null)
+            return OriginalContentSource.OpenDiscImage(path);
+        return OriginalContentSource.OpenCueBin(path);
     }
 
     private static string ToolName()

@@ -89,7 +89,7 @@ persistence, viewport math, input snapshots and action bindings, indexed palette
 PNG writer. LegacyFormats holds
 bounded PCX, BMP, CUE/CDDA, raw Mode 1, ISO-9660, InstallShield (major versions 0, 5 and 6) cabinet and 16-bit PCM
 WAVE readers, and `OriginalContentSource`, which reads the original from a directory, an `.iso` image,
-a cue/bin raw disc image, an InstallShield cabinet set (ADRs 0014, 0019, 0020 and 0021) or an InstallShield 3 archive (ADR 0018) through one interface. LegacyFormats references Core, so the two are built, versioned and published together.
+a cue/bin raw disc image, a CD in any other image form (CloneCD, Alcohol MDS, Nero NRG, ISO with WAVE audio) as one `disc-image` kind (ADR 0048), an InstallShield cabinet set (ADRs 0014, 0019, 0020 and 0021) or an InstallShield 3 archive (ADR 0018) through one interface. LegacyFormats references Core, so the two are built, versioned and published together.
 Media.Smacker, Media.Avi, Media.Fli, Media.Playback and Media.Audio are independent, dependency-free NuGet
 libraries. Smacker was moved from LegacyFormats; runtime package IDs and namespaces use
 RefurbishedDinosaurs, while research tooling retains ScientificMethod. See ADR 0005 and
@@ -104,12 +104,16 @@ Makes personal archival copies of discs a player owns
 
 - Reads the disc through redumper or cdrdao, or copies a data-only disc's 2,048-byte sectors
   itself, and keeps the dump unchanged.
-- Writes split and one-file BIN/CUE, CloneCD, CHD (through chdman), ISO with FLAC, WAV or Ogg
-  audio tracks (through ffmpeg for the compressed ones), ISO, and the extracted files. Reads the
-  ISO 9660 file system with pycdlib.
+- Reads and writes split and one-file BIN/CUE, CloneCD, Alcohol 120% MDS/MDF and Nero NRG
+  ([ADR 0047](decisions/0047-alcohol-and-nero-images.md)). Reads and writes CHD through chdman.
+  Writes ISO with FLAC, WAV or Ogg audio tracks (through ffmpeg for the compressed ones), ISO, the
+  extracted files, and the documentation standard's `GAME_DIR` layout of the disc's files and raw
+  audio tracks. Reads the ISO 9660 file system with pycdlib.
 - Reads each format back and compares it with the dump by format-independent content hashes,
-  and writes `rip-manifest.json`.
-- Checks the disc against a restoration's disc profile (`schemas/disc-profile.schema.json`).
+  and writes `rip-manifest.json`, with each content hash as SHA-256 and XXH3-128.
+- Checks the disc against a restoration's disc profile (`schemas/disc-profile.schema.json`), and
+  checks another copy against a manifest, identifying audio a drive's read offset has shifted.
+  Corrects a cdrdao dump by the drive's read offset when given it.
 - Provides `disc-archiver` and the Tk window `disc-archiver-gui`. Both require the personal-use
   notice to be accepted before copying.
 - Downloads the redumper release pinned in `redumper.json` when redumper is missing, checked by
@@ -195,8 +199,8 @@ through matching version numbers.
   to JavaScript with declaration files, because Node refuses to strip types under `node_modules`.
 - The Node workspace uses pnpm. oxlint lints and oxfmt formats the TypeScript.
 - The Python packages build with hatchling and are tested with `unittest`. The disc archiver pins
-  pycdlib and uses only the standard library otherwise; its window is tkinter. The session
-  package has no dependencies; its tests run on Windows.
+  pycdlib and `xxhash` (the engine's version) and uses only the standard library otherwise; its
+  window is tkinter. The session package has no dependencies; its tests run on Windows.
 - The engine pins Capstone and pypcode, because reports depend on the decoder and the
   instruction specification they used.
   Its `test` extra adds Unicorn, the concrete oracle for synthetic tests. Unicorn's core is GPLv2,

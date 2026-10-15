@@ -1,7 +1,7 @@
 # CHD fixtures
 
 Synthetic CD images compressed by MAME's `chdman`, for `ChdSourceTests`. They hold no game content:
-`SyntheticDiscImages` builds the BIN images, cue sheets and `.iso` they were made from, with a
+`SyntheticChdDiscs` builds the BIN images, cue sheets and `.iso` they were made from, with a
 generated ISO 9660 volume and generated tones, and the tests rebuild those sources to compare each
 CHD with the image it came from. The cue sheets and BIN images are not committed.
 
@@ -17,7 +17,7 @@ Made with chdman 0.289 (mame0289), from `mame0289b_x64.exe` of
 [MAME's release](https://github.com/mamedev/mame/releases/tag/mame0289) (SHA-256
 `a1aa7912168c9d1b05e611906bc21b8b9be3935822aead36d12a1da363150b7d`).
 
-To make them again after changing `SyntheticDiscImages`, write the sources with the explicit test,
+To make them again after changing `SyntheticChdDiscs`, write the sources with the explicit test,
 then run chdman on them:
 
 ```sh

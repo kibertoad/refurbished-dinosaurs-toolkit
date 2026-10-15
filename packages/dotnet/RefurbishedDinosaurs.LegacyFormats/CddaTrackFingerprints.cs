@@ -29,9 +29,9 @@ public sealed record CddaTrackVerification(AssetProblem? Problem, IReadOnlyList<
 
 /// <summary>
 /// Records and checks <see cref="CddaTrackFingerprint"/> values against the audio tracks of a raw
-/// cue/bin image, whose sectors hold 16-bit stereo samples as the image stores them. For a CHD, pass
-/// the image <see cref="OriginalContentSource.OpenBin"/> gives, which holds the samples in a BIN's
-/// byte order.
+/// cue/bin image, whose sectors hold 16-bit stereo samples as the image stores them. For a disc image
+/// of another form, such as a CHD or a cue sheet with FLAC tracks, pass the stream
+/// <see cref="OriginalContentSource.OpenBin"/> gives, which holds the samples in a BIN's byte order.
 /// </summary>
 /// <remarks>
 /// A rip shifted by a drive read offset moves the end of a track into the sectors that follow it, so
@@ -129,10 +129,18 @@ public static class CddaTrackFingerprints
             throw new InvalidDataException($"Track {extent.Track:D2} ends past the image.");
         // A rip shifted by s shows the verifier's search the reference samples from shift
         // -tolerance - s to tolerance - s, so across every s within the tolerance the anchor must not
-        // repeat within twice the tolerance. Samples past either end of the image cannot be checked.
+        // repeat within twice the tolerance. Samples past either end of the image cannot be checked,
+        // nor can the sectors of a disc image stream that no file stores, such as a pregap that an
+        // ISO-plus-WAVE sheet declares with PREGAP.
         var anchorStart = trackStart + anchorOffset;
-        var windowStart = Math.Max(0, anchorStart - 2L * toleranceSamples);
-        var windowEnd = Math.Min(imageSamples, anchorStart + anchorSamples + 2L * toleranceSamples);
+        var (storedStart, storedEnd) = (0L, imageSamples);
+        if (image is RawSectorStream disc)
+        {
+            var (first, end) = disc.StoredRun(anchorStart / CddaTrackFingerprint.SamplesPerSector);
+            (storedStart, storedEnd) = (first * CddaTrackFingerprint.SamplesPerSector, end * CddaTrackFingerprint.SamplesPerSector);
+        }
+        var windowStart = Math.Max(storedStart, anchorStart - 2L * toleranceSamples);
+        var windowEnd = Math.Min(storedEnd, anchorStart + anchorSamples + 2L * toleranceSamples);
         var window = await ReadAsync(image, windowStart, (int)(windowEnd - windowStart), cancellationToken)
             .ConfigureAwait(false);
         var anchorAt = (int)(anchorStart - windowStart);

@@ -6,10 +6,12 @@ import calendar
 import hashlib
 import io
 import os
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
 import pycdlib
+import xxhash
 from pycdlib.pycdlibexception import PyCdlibException
 
 from .disc import COOKED_SECTOR, FRAMES_PER_SECOND, MSF_OFFSET, DiscError, NotDataSector, Track, block_data, user_data
@@ -106,7 +108,7 @@ class UserDataStream(io.RawIOBase):
         track = self._track
         stored_first, _ = track.stored_range()
         size = track.stored_sector_size
-        self._handle.seek(track.source_offset + (index - stored_first) * size)
+        self._handle.seek(track.source_offset + (index - stored_first) * track.stored_stride)
         data = self._handle.read(size)
         if len(data) < size:
             raise DiscError(f"{track.source} ends inside track {track.number}")
@@ -246,10 +248,11 @@ def locate(track: Track) -> Volume:
     """Find where the addresses of the track's ISO 9660 file system point in the track.
 
     A volume gives its addresses counted either from the track's first sector or from the start
-    of the disc. Each base the track offers is tried: 0, the track's LBA as the disc describes it,
-    and for raw sectors the LBA by the address in the header of sector 16, which also counts the
-    gap between sessions that a cue sheet leaves out. A base fits when the root directory extent the
-    primary volume descriptor gives lands inside the track and the volume, past the volume
+    of the disc. Each base the track offers is tried: 0, the track's LBA as the disc describes it
+    (with the gap between sessions when the source gives sessions), and for raw sectors of a track
+    in the first session the LBA by the address in the header of sector 16, which also counts the
+    gap between sessions that a source without sessions leaves out. A base fits when the root
+    directory extent the primary volume descriptor gives lands inside the track and the volume, past the volume
     descriptors, on a directory whose ``.`` record gives that same extent. A nonzero base must also
     lie past the volume descriptors, which sit at sector 16 of the track whatever the base.
 
@@ -276,7 +279,10 @@ def locate(track: Track) -> Volume:
         descriptors_end = set_end + 1
         offered = {0: "the track's first sector"}
         offered.setdefault(track.index1, f"LBA {track.index1}, where the disc's layout puts the track")
-        header = _header_start(track)
+        # A track in a later session sits where the source's sessions put it. A track in the
+        # first session may come from a source that gives no sessions, which places a later
+        # session's track without the gap; its sector headers may still give the disc address.
+        header = _header_start(track) if track.session == 1 else None
         if header is not None:
             offered.setdefault(header, f"LBA {header}, by the address in the track's sector headers")
         fitting = [
@@ -304,35 +310,44 @@ def locate(track: Track) -> Volume:
 
 @dataclass(frozen=True)
 class FileEntry:
-    """One file of the file system: its path, size and SHA-256."""
+    """One file of the file system: its path, size, SHA-256 and XXH3-128.
+
+    ``xxh3`` is 32 lower-case hex digits in canonical byte order, as ``xxhsum -H2`` prints it.
+    """
 
     path: str
     size: int
     sha256: str
+    xxh3: str
 
 
-class _HashingWriter:
-    def __init__(self, target: io.BufferedWriter | None) -> None:
+class HashingWriter:
+    """The size, SHA-256 and XXH3-128 of the bytes written, passing them on to ``target`` if given."""
+
+    def __init__(self, target: io.BufferedWriter | None = None) -> None:
         self.target = target
-        self.hash = hashlib.sha256()
+        self.sha256 = hashlib.sha256()
+        self.xxh3 = xxhash.xxh3_128()
         self.size = 0
 
-    def write(self, data: bytes) -> int:
-        self.hash.update(data)
+    def write(self, data: bytes | memoryview) -> int:
+        """Hash ``data``, write it to the target, and return its length."""
+        self.sha256.update(data)
+        self.xxh3.update(data)
         self.size += len(data)
         if self.target:
             self.target.write(data)
         return len(data)
 
 
-def _component(name: str, joliet: bool) -> str:
+def _component(name: str, joliet: bool, keep_version: bool = False) -> str:
     # Both trees may carry a ";1" version, as mkisofs writes in Joliet names too. An ISO 9660 name
     # ends at its ";"; a Joliet name may hold ";" itself, so only a trailing ";<digits>" is a version.
     if joliet:
         stem, separator, version = name.rpartition(";")
-        if separator and version.isdigit():
+        if separator and version.isdigit() and not keep_version:
             name = stem
-    else:
+    elif not keep_version:
         name = name.split(";", 1)[0]
     if name.endswith(".") and len(name) > 1:
         name = name[:-1]
@@ -354,11 +369,26 @@ def _mtime(record: object) -> float | None:
     return stamp - date.gmtoffset * 15 * 60
 
 
-def walk(track: Track, destination: Path | None = None) -> list[FileEntry]:
-    """List every file with its size and SHA-256, extracting each under ``destination`` if given.
+def _primary_names(names: list[str], directories: list[str]) -> dict[str, str]:
+    """The file names of one directory of the primary tree as the documentation standard writes
+    them (ENTRY-TYPES-11): without the version suffix and without a dot that ends a name with no
+    extension, except that a name which would then be the same as another file's or a
+    subdirectory's (``INSTALL.;1`` beside the directory ``INSTALL``) is kept in full."""
+    short = {name: _component(name, joliet=False) for name in names}
+    taken = Counter(short.values())
+    taken.update(_component(name, joliet=False) for name in directories)
+    return {name: value if taken[value] == 1 else _component(name, joliet=False, keep_version=True) for name, value in short.items()}
+
+
+def walk(track: Track, destination: Path | None = None, primary: bool = False) -> list[FileEntry]:
+    """List every file with its size, SHA-256 and XXH3-128, extracting each under ``destination``
+    if given, with its recorded date.
 
     Joliet names are used when the volume has them, since they keep the long names Windows shows;
-    otherwise ISO 9660 names without their ``;1`` version. The file system's addresses are read
+    otherwise ISO 9660 names without their ``;1`` version. With ``primary``, the primary volume's
+    ISO 9660 names are used even when the volume has Joliet names, named as
+    :func:`_primary_names` gives them, which is how a build entry names a file read from its CD.
+    The file system's addresses are read
     against the base :func:`locate` finds, and :class:`UnsupportedFileSystem` is raised when it
     finds none or when the file system reads an address that falls on no track sector.
     """
@@ -370,12 +400,13 @@ def walk(track: Track, destination: Path | None = None) -> list[FileEntry]:
         # pycdlib has read the system area, the descriptors and every directory; what it reads
         # from here on is file data.
         stream.files = True
-        joliet = iso.has_joliet()
+        joliet = iso.has_joliet() and not primary
         key = "joliet_path" if joliet else "iso_path"
-        for root, _, files in iso.walk(**{key: "/"}):
+        for root, directories, files in iso.walk(**{key: "/"}):
             relative_dir = [_component(p, joliet) for p in root.strip("/").split("/") if p]
+            named = _primary_names(files, directories) if primary else {name: _component(name, joliet) for name in files}
             for name in files:
-                parts = [*relative_dir, _component(name, joliet)]
+                parts = [*relative_dir, named[name]]
                 iso_name = f"{root.rstrip('/')}/{name}"
                 if len(entries) >= MAXIMUM_FILES:
                     raise DiscError(f"the file system holds more than {MAXIMUM_FILES} files")
@@ -385,7 +416,7 @@ def walk(track: Track, destination: Path | None = None) -> list[FileEntry]:
                     out.parent.mkdir(parents=True, exist_ok=True)
                     target = out.open("wb")
                 try:
-                    writer = _HashingWriter(target)
+                    writer = HashingWriter(target)
                     iso.get_file_from_iso_fp(writer, **{key: iso_name})
                 finally:
                     if target:
@@ -394,7 +425,7 @@ def walk(track: Track, destination: Path | None = None) -> list[FileEntry]:
                     stamp = _mtime(iso.get_record(**{key: iso_name}))
                     if stamp is not None:
                         os.utime(destination.joinpath(*parts), (stamp, stamp))
-                entries.append(FileEntry("/".join(parts), writer.size, writer.hash.hexdigest()))
+                entries.append(FileEntry("/".join(parts), writer.size, writer.sha256.hexdigest(), writer.xxh3.hexdigest()))
     except PyCdlibException as error:
         raise DiscError(f"track {track.number} is not a readable ISO 9660 file system: {error}") from None
     finally:
@@ -407,16 +438,16 @@ def walk(track: Track, destination: Path | None = None) -> list[FileEntry]:
 
 
 def tree_entries(root: Path) -> list[FileEntry]:
-    """Every file under an extracted directory, with its size and SHA-256."""
+    """Every file under an extracted directory, with its size, SHA-256 and XXH3-128."""
     entries = []
     for path in root.rglob("*"):
         if not path.is_file() or path.is_symlink():
             continue
-        digest = hashlib.sha256()
+        writer = HashingWriter()
         with path.open("rb") as handle:
             for block in iter(lambda: handle.read(1 << 20), b""):
-                digest.update(block)
-        entries.append(FileEntry(path.relative_to(root).as_posix(), path.stat().st_size, digest.hexdigest()))
+                writer.write(block)
+        entries.append(FileEntry(path.relative_to(root).as_posix(), writer.size, writer.sha256.hexdigest(), writer.xxh3.hexdigest()))
     # Sorted by the path text, as walk sorts, so the two lists compare equal when the files do.
     return sorted(entries, key=lambda e: e.path)
 

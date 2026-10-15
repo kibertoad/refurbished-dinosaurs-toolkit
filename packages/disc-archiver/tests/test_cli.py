@@ -60,7 +60,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("Never share it", manifest["notice"])
         self.assertEqual(manifest["name"], "Synth")
         bin_file = next(f for f in manifest["outputs"][0]["files"] if f["path"].endswith(".bin"))
-        self.assertEqual(set(bin_file), {"path", "size", "crc32", "md5", "sha1", "sha256"})
+        self.assertEqual(set(bin_file), {"path", "size", "crc32", "md5", "sha1", "sha256", "xxh3"})
         self.assertIn("iso: partial -> iso/Synth.iso", out)
 
     def test_the_profiles_recommendation_is_the_default(self) -> None:

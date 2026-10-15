@@ -1,7 +1,3 @@
-using System.Globalization;
-using System.Text;
-using RefurbishedDinosaurs.Core.IO;
-
 namespace RefurbishedDinosaurs.LegacyFormats;
 
 // The sectors of a CD CHD laid out as the BIN image chdman made it from: each track's stored
@@ -167,112 +163,75 @@ internal sealed class ChdSectorStream : Stream
     }
 }
 
-// A CD CHD read as the disc image it holds. The ISO 9660 volume and its files are read by the same
-// reader as a cue/bin source, from the sectors ChdSectorStream gives.
-internal sealed class ChdContentSource : OriginalContentSource
+// Opens a CHD's sectors as a disc image's raw stream (2352-byte sectors) or as a data track of
+// 2048-byte sectors.
+internal sealed class ChdSectorStore(ChdDisc disc, int sectorSize) : ISectorStore
 {
-    private readonly ChdDisc disc;
-    private readonly OriginalContentSource volume;
-    private readonly CueBinSheet? sheet;
+    public Stream OpenSectors() => new ChdSectorStream(disc, sectorSize);
+}
 
-    private ChdContentSource(ChdDisc disc, OriginalContentSource volume, CueBinSheet? sheet)
+// A CD CHD read as a disc image: the BIN image chdman read, as ChdDisc lays it out, with the track
+// layout the CHD's metadata gives. A CHD made from an .iso holds one MODE1 track of 2048-byte
+// sectors, read as a cue sheet's MODE1/2048 track is.
+internal static class ChdDiscImage
+{
+    public static DiscImage Read(string path)
     {
-        this.disc = disc;
-        this.volume = volume;
-        this.sheet = sheet;
-    }
-
-    public static ChdContentSource Open(ImageSnapshot snapshot)
-    {
+        // Recorded before the CHD is checked, so the source describes only the file it checked.
+        var snapshot = ImageSnapshot.Take(path);
         ChdImage image;
         using (var file = snapshot.OpenBuffered()) image = ChdImage.Read(file);
         var disc = new ChdDisc(snapshot, image);
+        var name = Path.GetFileName(path);
         var tracks = image.Tracks;
+        var builder = new DiscLayoutBuilder();
+
         if (tracks[0].Type == ChdTrackType.Mode1Cooked)
         {
             if (tracks.Count > 1)
                 throw new NotSupportedException(
-                    "The CHD's data track stores 2048-byte sectors and other tracks follow it; only a CHD of one " +
-                    "such track, as chdman makes from an .iso image, is read. A CHD made from a cue/bin image stores raw sectors.");
-            if (disc.Sectors <= 16)
-                throw new InvalidDataException("The CHD's data track does not hold an ISO 9660 volume.");
-            return new ChdContentSource(disc,
-                new Iso9660ContentSource(() => new ChdSectorStream(disc, 2048), ContentSourceKinds.Chd, null), null);
+                    $"The CHD {name} stores its data track as 2048-byte sectors and other tracks follow it; only a CHD of " +
+                    "one such track, as chdman makes from an .iso image, is read. A CHD made from a cue/bin image stores raw sectors.");
+            builder.Track(1, "MODE1/2048");
+            builder.Index(1, 0);
+            builder.Unavailable(disc.Sectors, DiscImageOpener.CookedReason(name));
+            return new(DiscImageFormats.Chd, [path], null, null, builder.Sheet(name, []), builder.Segments, builder.Position,
+                new CookedDiscDataTrack(new ChdSectorStore(disc, 2048), 0, disc.Sectors), new Dictionary<int, string>());
         }
-        if (tracks.Skip(1).Any(track => track.Type == ChdTrackType.Mode1Cooked))
-            throw new NotSupportedException(
-                "The CHD mixes tracks of raw sectors with tracks of 2048-byte sectors, which no cue/bin image holds.");
+        if (tracks[0].Type == ChdTrackType.Audio)
+            throw new NotSupportedException($"The CHD {name} begins with an audio track; only discs whose first track holds the data are read.");
+        if (tracks[0].StoredPregap > 0)
+            throw new NotSupportedException($"The CHD {name} stores a pregap before track 01's data; the data track must start at sector 0.");
 
-        var sheet = Sheet(snapshot.Path, disc);
-        sheet.ValidateBinLength(disc.Sectors * CueBinSheet.RawSectorSize);
-        long dataSectors = sheet.DataTrackSectors ?? disc.Sectors;
-        if (dataSectors <= 16)
-            throw new InvalidDataException("The CHD's data track does not hold an ISO 9660 volume.");
-        var mode = sheet.DataTrackMode;
-        var volume = new Iso9660ContentSource(
-            () => new RawDataTrackUserDataStream(new ChdSectorStream(disc, CueBinSheet.RawSectorSize), dataSectors, mode),
-            ContentSourceKinds.Chd, null,
-            openVolume: () => new RawDataTrackUserDataStream(
-                new ChdSectorStream(disc, CueBinSheet.RawSectorSize), dataSectors, mode, emptyForm2AsZeros: true));
-        return new ChdContentSource(disc, volume, sheet);
-    }
-
-    // The cue sheet of the BIN image the CHD holds, parsed and checked as a cue/bin source's sheet
-    // is, so the CHD is held to the same layout: a MODE1/2352 or MODE2/2352 data track at sector 0
-    // followed by audio tracks, each with its stored pregap as INDEX 00.
-    private static CueBinSheet Sheet(string chdPath, ChdDisc disc)
-    {
-        var text = new StringBuilder();
-        text.Append(CultureInfo.InvariantCulture, $"FILE \"{BinName(chdPath)}\" BINARY\n");
-        for (var index = 0; index < disc.Image.Tracks.Count; index++)
+        var raw = new ChdSectorStore(disc, CueBinSheet.RawSectorSize);
+        for (var index = 0; index < tracks.Count; index++)
         {
-            var track = disc.Image.Tracks[index];
-            var type = track.Type switch
+            var track = tracks[index];
+            if (index > 0 && track.Type != ChdTrackType.Audio)
+                throw new NotSupportedException(track.Type == ChdTrackType.Mode1Cooked
+                    ? $"The CHD {name} mixes tracks of raw sectors with a track of 2048-byte sectors, which no disc image form holds."
+                    : $"The CHD {name} gives track {track.Number:D2} a data type; only track 01 may hold data.");
+            builder.Track(track.Number, track.Type switch
             {
                 ChdTrackType.Mode1Raw => "MODE1/2352",
                 ChdTrackType.Mode2Raw => "MODE2/2352",
                 _ => "AUDIO",
-            };
-            text.Append(CultureInfo.InvariantCulture, $"TRACK {track.Number:D2} {type}\n");
-            var start = disc.BinStart(index);
-            if (track.StoredPregap > 0) text.Append(CultureInfo.InvariantCulture, $"INDEX 00 {Msf(start)}\n");
-            text.Append(CultureInfo.InvariantCulture, $"INDEX 01 {Msf(start + track.StoredPregap)}\n");
+            });
+            // The two seconds before track 01 lie before LBA 0, outside every image form. A later
+            // track's unstored pregap stays in the layout, as a cue sheet's PREGAP does.
+            if (index > 0 && track.UnstoredPregap > 0)
+            {
+                builder.Index(0, builder.Position);
+                builder.Unavailable(track.UnstoredPregap,
+                    $"track {track.Number:D2}'s {track.UnstoredPregap}-sector pregap is recorded in the CHD, which does not store it.");
+            }
+            else if (track.StoredPregap > 0) builder.Index(0, builder.Position);
+            builder.Index(1, builder.Position + track.StoredPregap);
+            builder.Stored(raw, disc.BinStart(index) * CueBinSheet.RawSectorSize, CueBinSheet.RawSectorSize, track.Frames);
         }
-        try
-        {
-            return CueBinSheet.Parse(text.ToString());
-        }
-        catch (InvalidDataException exception)
-        {
-            throw new NotSupportedException(
-                $"The CHD's tracks do not form a disc image this reader opens: {exception.Message}", exception);
-        }
+        var dataSectors = builder.StartOf(2, 0) ?? builder.StartOf(2, 1) ?? builder.Position;
+        var mode = tracks[0].Type == ChdTrackType.Mode1Raw ? RawDataTrackMode.Mode1 : RawDataTrackMode.Mode2Form1;
+        return new(DiscImageFormats.Chd, [path], null, null, builder.Sheet(name, []), builder.Segments, builder.Position,
+            new RawDiscDataTrack(mode, dataSectors, $"the CHD {name}"), new Dictionary<int, string>());
     }
-
-    // The BIN the sheet names: the CHD's name with a .bin extension, or disc.bin when that name is
-    // not one a cue sheet can give.
-    private static string BinName(string chdPath)
-    {
-        var name = Path.GetFileNameWithoutExtension(chdPath) + ".bin";
-        if (name.Contains('"')) return "disc.bin";
-        try { return PortableAssetPath.Relative(name); }
-        catch (InvalidDataException) { return "disc.bin"; }
-    }
-
-    private static string Msf(long sector) =>
-        string.Create(CultureInfo.InvariantCulture, $"{sector / 4500:D2}:{sector / 75 % 60:D2}:{sector % 75:D2}");
-
-    public override string Kind => ContentSourceKinds.Chd;
-    public override string? Label => volume.Label;
-    public override CueBinSheet? Cue => sheet;
-    public override IReadOnlyList<ContentSourceEntry> Files => volume.Files;
-    public override bool TryGetFile(string relativePath, out ContentSourceEntry? entry) => volume.TryGetFile(relativePath, out entry);
-    public override Stream OpenRead(string relativePath) => volume.OpenRead(relativePath);
-    public override long? VolumeBlocks => volume.VolumeBlocks;
-    public override Stream OpenVolume() => volume.OpenVolume();
-
-    public override Stream OpenBin() =>
-        sheet is null ? base.OpenBin() : new ChdSectorStream(disc, CueBinSheet.RawSectorSize);
-
-    public override void Dispose() => volume.Dispose();
 }

@@ -14,9 +14,9 @@ public sealed class ChdSourceTests
 
     private static readonly SyntheticChdTrack[] MixedTracks =
     [
-        new("MODE1_RAW", SyntheticDiscImages.MixedDataSectors),
-        new("AUDIO", SyntheticDiscImages.MixedTrack2Pregap + SyntheticDiscImages.MixedTrack2Sectors, SyntheticDiscImages.MixedTrack2Pregap),
-        new("AUDIO", SyntheticDiscImages.MixedTrack3Sectors),
+        new("MODE1_RAW", SyntheticChdDiscs.MixedDataSectors),
+        new("AUDIO", SyntheticChdDiscs.MixedTrack2Pregap + SyntheticChdDiscs.MixedTrack2Sectors, SyntheticChdDiscs.MixedTrack2Pregap),
+        new("AUDIO", SyntheticChdDiscs.MixedTrack3Sectors),
     ];
 
     // Writes the synthetic BIN images, cue sheets and .iso the CHD fixtures are made from into the
@@ -27,7 +27,7 @@ public sealed class ChdSourceTests
     {
         var directory = Environment.GetEnvironmentVariable("CHD_FIXTURE_SOURCES");
         Assert.False(string.IsNullOrWhiteSpace(directory), "Set CHD_FIXTURE_SOURCES to the directory to write to.");
-        SyntheticDiscImages.WriteSources(directory!);
+        SyntheticChdDiscs.WriteSources(directory!);
     }
 
     [Theory]
@@ -39,36 +39,36 @@ public sealed class ChdSourceTests
         var root = CreateTemporaryDirectory();
         try
         {
-            var cuePath = WriteCueBin(root, "mixed", SyntheticDiscImages.MixedBin(), SyntheticDiscImages.MixedCue);
-            using var cueBin = OriginalContentSource.OpenCueBin(cuePath);
-            using var chd = OriginalContentSource.OpenChd(Fixture(fixture));
+            var cuePath = WriteCueBin(root, "mixed", SyntheticChdDiscs.MixedBin(), SyntheticChdDiscs.MixedCue);
+            using var cueBin = OriginalContentSource.OpenDiscImage(cuePath);
+            using var chd = OriginalContentSource.OpenDiscImage(Fixture(fixture));
 
-            Assert.Equal(ContentSourceKinds.Chd, chd.Kind);
+            Assert.Equal(ContentSourceKinds.DiscImage, chd.Kind);
+            Assert.Equal(DiscImageFormats.Chd, chd.DiscImageFormat);
+            Assert.Equal([Path.GetFullPath(Fixture(fixture))], chd.ImageFiles);
             await AssertSameVolumeAsync(cueBin, chd);
             Assert.Null(chd.CuePath);
             Assert.Null(chd.BinPath);
             Assert.Null(chd.CueSheetBytes);
-            Assert.Equal(Path.GetFileNameWithoutExtension(fixture) + ".bin", chd.Cue!.ReferencedFile);
-            Assert.Equal(cueBin.Cue!.DataTrackSectors, chd.Cue.DataTrackSectors);
-            Assert.Equal(cueBin.Cue.Tracks.Select(Describe), chd.Cue.Tracks.Select(Describe));
+            Assert.Equal(fixture, chd.Cue!.ReferencedFile);
+            Assert.Equal(cueBin.Cue!.Tracks.Select(Describe), chd.Cue.Tracks.Select(Describe));
 
             // The raw image equals the BIN, audio samples in the BIN's byte order and without
             // chdman's padding frames, and reading it to its end checks the CHD's SHA-1.
             var bin = await ReadAllAsync(chd.OpenBin());
-            Assert.Equal(SyntheticDiscImages.MixedBin(), bin);
+            Assert.Equal(SyntheticChdDiscs.MixedBin(), bin);
 
-            var cueManifest = await RecordAsync(cuePath, cueBin);
-            Assert.True((await AssetVerifier.VerifyAsync(cueBin, cueManifest, TestContext.Current.CancellationToken)).IsValid);
-            var chdManifest = cueManifest with { SourceKind = ContentSourceKinds.Chd };
-            var result = await AssetVerifier.VerifyAsync(Fixture(fixture), chdManifest, TestContext.Current.CancellationToken);
+            // One disc-image manifest recorded from the cue/bin identifies the CHD chdman made from it.
+            var manifest = await RecordAsync(cuePath, cueBin);
+            Assert.True((await AssetVerifier.VerifyAsync(cueBin, manifest, TestContext.Current.CancellationToken)).IsValid);
+            var result = await AssetVerifier.VerifyAsync(Fixture(fixture), manifest, TestContext.Current.CancellationToken);
             Assert.True(result.IsValid, string.Join("; ", result.Issues.Select(issue => issue.Detail)));
-            Assert.Equal(cueManifest.Fingerprint(), chdManifest.Fingerprint());
 
             await using var image = chd.OpenBin();
-            foreach (var track in cueManifest.AudioTracks!)
+            foreach (var track in manifest.AudioTracks!)
             {
                 var extent = chd.Cue.TrackExtent(track.Track, image.Length / RawSector);
-                Assert.Equal(cueBin.Cue.TrackExtent(track.Track, SyntheticDiscImages.MixedBin().Length / RawSector), extent);
+                Assert.Equal(cueBin.Cue.TrackExtent(track.Track, SyntheticChdDiscs.MixedBin().Length / RawSector), extent);
                 var verification = await CddaTrackFingerprints.VerifyAsync(image, extent, track, TestContext.Current.CancellationToken);
                 Assert.True(verification.IsMatch, verification.Detail);
                 Assert.Equal(0, verification.Shift);
@@ -100,16 +100,16 @@ public sealed class ChdSourceTests
         var root = CreateTemporaryDirectory();
         try
         {
-            var cuePath = WriteCueBin(root, "data-mode2", SyntheticDiscImages.DataMode2Bin(), SyntheticDiscImages.DataMode2Cue);
+            var cuePath = WriteCueBin(root, "data-mode2", SyntheticChdDiscs.DataMode2Bin(), SyntheticChdDiscs.DataMode2Cue);
             using var cueBin = OriginalContentSource.OpenCueBin(cuePath);
-            using var chd = OriginalContentSource.OpenChd(Fixture("data-mode2.chd"));
+            using var chd = OriginalContentSource.OpenDiscImage(Fixture("data-mode2.chd"));
             await AssertSameVolumeAsync(cueBin, chd);
             Assert.Equal("MODE2/2352", Assert.Single(chd.Cue!.Tracks).Type);
             // The empty Form 2 sector reads as zeros in the volume, as a MODE1 image holds there.
             var volume = await ReadAllAsync(chd.OpenVolume());
-            Assert.False(volume.AsSpan(SyntheticDiscImages.DataMode2EmptyForm2Sector * 2048, 2048).ContainsAnyExcept((byte)0));
-            Assert.Equal(SyntheticDiscImages.Iso(), volume);
-            Assert.Equal(SyntheticDiscImages.DataMode2Bin(), await ReadAllAsync(chd.OpenBin()));
+            Assert.False(volume.AsSpan(SyntheticChdDiscs.DataMode2EmptyForm2Sector * 2048, 2048).ContainsAnyExcept((byte)0));
+            Assert.Equal(SyntheticChdDiscs.Iso(), volume);
+            Assert.Equal(SyntheticChdDiscs.DataMode2Bin(), await ReadAllAsync(chd.OpenBin()));
         }
         finally { Directory.Delete(root, true); }
     }
@@ -121,18 +121,20 @@ public sealed class ChdSourceTests
         try
         {
             var isoPath = Path.Combine(root, "data.iso");
-            await File.WriteAllBytesAsync(isoPath, SyntheticDiscImages.Iso(), TestContext.Current.CancellationToken);
+            await File.WriteAllBytesAsync(isoPath, SyntheticChdDiscs.Iso(), TestContext.Current.CancellationToken);
             using var iso = OriginalContentSource.OpenIso9660(isoPath);
-            using var chd = OriginalContentSource.OpenChd(Fixture("data-iso.chd"));
+            using var chd = OriginalContentSource.OpenDiscImage(Fixture("data-iso.chd"));
             await AssertSameVolumeAsync(iso, chd);
-            Assert.Null(chd.Cue);
-            Assert.Throws<NotSupportedException>(() => chd.OpenBin());
+            // As a cue sheet's MODE1/2048 track: the raw sectors are in the layout but not stored.
+            Assert.Equal("MODE1/2048", Assert.Single(chd.Cue!.Tracks).Type);
+            var error = await Assert.ThrowsAsync<InvalidDataException>(() => ReadAllAsync(chd.OpenBin()));
+            Assert.Contains("2048-byte user data", error.Message);
         }
         finally { Directory.Delete(root, true); }
     }
 
     [Fact]
-    public async Task OpenRecognizesAChdByItsSignatureAndKind()
+    public async Task OpenRecognizesAChdByItsSignature()
     {
         var root = CreateTemporaryDirectory();
         try
@@ -142,15 +144,19 @@ public sealed class ChdSourceTests
             foreach (var path in new[] { Fixture("mixed-cdlz.chd"), renamed })
             {
                 using var opened = OriginalContentSource.Open(path);
-                Assert.Equal(ContentSourceKinds.Chd, opened.Kind);
-                using var byKind = OriginalContentSource.Open(path, ContentSourceKinds.Chd);
+                Assert.Equal(DiscImageFormats.Chd, opened.DiscImageFormat);
+                using var byKind = OriginalContentSource.Open(path, ContentSourceKinds.DiscImage);
                 Assert.Equal(opened.Files, byKind.Files);
             }
-            Assert.True(ContentSourceKinds.IsSupported("chd"));
+            // A directory is read through its one .chd; the .img holding a CHD is not one by its name.
+            File.Copy(Fixture("mixed-cdlz.chd"), Path.Combine(root, "game.chd"));
+            using (var directory = OriginalContentSource.OpenDiscImage(root))
+                Assert.Equal(DiscImageFormats.Chd, directory.DiscImageFormat);
+            Assert.False(ContentSourceKinds.IsSupported("chd"));
 
-            var payload = SyntheticDiscImages.Payload();
+            var payload = SyntheticChdDiscs.Payload();
             var edition = new AssetManifest("game", "retail",
-                [new("EI/TEST.BIN", payload.Length, FileFingerprint.Xxh3(payload))], ContentSourceKinds.Chd)
+                [new("EI/TEST.BIN", payload.Length, FileFingerprint.Xxh3(payload))], ContentSourceKinds.DiscImage)
             { VolumeIdentifier = "SYNTHETIC_EI", VolumeBlocks = 23 };
             var identified = await AssetVerifier.IdentifyAsync(renamed, [edition, edition with { SourceKind = ContentSourceKinds.CueBin }],
                 TestContext.Current.CancellationToken);
@@ -167,7 +173,7 @@ public sealed class ChdSourceTests
         var root = CreateTemporaryDirectory();
         try
         {
-            var bin = SyntheticDiscImages.MixedBin();
+            var bin = SyntheticChdDiscs.MixedBin();
             foreach (var options in new SyntheticChdOptions[]
             {
                 new() { Uncompressed = true },
@@ -181,10 +187,10 @@ public sealed class ChdSourceTests
                     // The old track metadata records no pregap, so the BIN's pregap is track 02's start.
                     ? MixedTracks.Select(track => track with { StoredPregap = 0 }).ToArray() : MixedTracks;
                 await File.WriteAllBytesAsync(path, SyntheticChdWriter.Write(bin, tracks, options), TestContext.Current.CancellationToken);
-                using var chd = OriginalContentSource.OpenChd(path);
+                using var chd = OriginalContentSource.OpenDiscImage(path);
                 Assert.Equal("SYNTHETIC_EI", chd.Label);
                 Assert.Equal(bin, await ReadAllAsync(chd.OpenBin()));
-                Assert.Equal(SyntheticDiscImages.Iso(), await ReadAllAsync(chd.OpenVolume()));
+                Assert.Equal(SyntheticChdDiscs.Iso(), await ReadAllAsync(chd.OpenVolume()));
             }
         }
         finally { Directory.Delete(root, true); }
@@ -196,19 +202,19 @@ public sealed class ChdSourceTests
         var root = CreateTemporaryDirectory();
         try
         {
-            var bin = SyntheticDiscImages.MixedBin();
+            var bin = SyntheticChdDiscs.MixedBin();
             var path = Path.Combine(root, "made.chd");
 
             // Hunk 2 holds sector 16, the volume descriptor the source reads when it opens.
             await File.WriteAllBytesAsync(path, SyntheticChdWriter.Write(bin, MixedTracks, new() { WrongCrcHunk = 2 }),
                 TestContext.Current.CancellationToken);
-            var refused = Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenChd(path));
+            var refused = Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenDiscImage(path));
             Assert.Contains("hunk 2 fails its CRC-16 check", refused.Message);
 
             // Hunk 5 holds audio, read only through OpenBin.
             await File.WriteAllBytesAsync(path, SyntheticChdWriter.Write(bin, MixedTracks, new() { WrongCrcHunk = 5 }),
                 TestContext.Current.CancellationToken);
-            using var chd = OriginalContentSource.OpenChd(path);
+            using var chd = OriginalContentSource.OpenDiscImage(path);
             var failed = await Assert.ThrowsAsync<InvalidDataException>(() => ReadAllAsync(chd.OpenBin()));
             Assert.Contains("hunk 5 fails its CRC-16 check", failed.Message);
         }
@@ -222,10 +228,10 @@ public sealed class ChdSourceTests
         try
         {
             var path = PatchedFixture(root, "mixed-cdlz.chd", bytes => bytes[64] ^= 0x01);
-            using var chd = OriginalContentSource.OpenChd(path);
+            using var chd = OriginalContentSource.OpenDiscImage(path);
             // Each hunk passes its CRC, so the volume reads; the whole data's SHA-1 is checked when a
             // stream reads every hunk.
-            Assert.Equal(SyntheticDiscImages.Iso(), await ReadAllAsync(chd.OpenVolume()));
+            Assert.Equal(SyntheticChdDiscs.Iso(), await ReadAllAsync(chd.OpenVolume()));
             var failed = await Assert.ThrowsAsync<InvalidDataException>(() => ReadAllAsync(chd.OpenBin()));
             Assert.Contains("SHA-1", failed.Message);
         }
@@ -243,7 +249,7 @@ public sealed class ChdSourceTests
             AssertRefused<NotSupportedException>(
                 PatchedFixture(root, "mixed-cdlz.chd", bytes => BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(12), 4)), "version 4");
 
-            var bin = SyntheticDiscImages.MixedBin();
+            var bin = SyntheticChdDiscs.MixedBin();
             AssertRefused<NotSupportedException>(Made(root, bin, MixedTracks, new() { TrackTag = "CHGD" }), "GD-ROM");
             AssertRefused<NotSupportedException>(
                 Made(root, bin, MixedTracks, new() { TrackTag = "CHGD", ExtraMetadata = [("CHT2", "TRACK:1 TYPE:MODE1_RAW SUBTYPE:NONE FRAMES:30 PREGAP:0 PGTYPE:MODE1 PGSUB:NONE POSTGAP:0")] }),
@@ -253,9 +259,17 @@ public sealed class ChdSourceTests
             AssertRefused<NotSupportedException>(
                 Made(root, bin, [new("MODE2_FORM1", 30), MixedTracks[1], MixedTracks[2]]), "MODE2_FORM1");
             AssertRefused<NotSupportedException>(
-                Made(root, bin, [MixedTracks[2], new("MODE1_RAW", 30), MixedTracks[1]]), "First cue track must be MODE1/2352 or MODE2/2352");
+                Made(root, bin, [MixedTracks[2], new("MODE1_RAW", 30), MixedTracks[1]]), "begins with an audio track");
             AssertRefused<NotSupportedException>(
                 Made(root, bin, [new("MODE1", 30), MixedTracks[1], MixedTracks[2]]), "other tracks follow it");
+            AssertRefused<NotSupportedException>(
+                Made(root, bin, [MixedTracks[0], MixedTracks[1], new("MODE1_RAW", 7)]), "only track 01 may hold data");
+            AssertRefused<NotSupportedException>(
+                Made(root, bin, [MixedTracks[0], MixedTracks[1], new("MODE1", 7)]), "mixes tracks of raw sectors");
+            AssertRefused<NotSupportedException>(
+                Made(root, bin, [MixedTracks[0] with { StoredPregap = 2 }, MixedTracks[1], MixedTracks[2]]), "data track must start at sector 0");
+            AssertRefused<NotSupportedException>(
+                Made(root, bin, [MixedTracks[0], MixedTracks[1], MixedTracks[2] with { Postgap = 2 }]), "postgap");
         }
         finally { Directory.Delete(root, true); }
     }
@@ -288,28 +302,12 @@ public sealed class ChdSourceTests
         {
             var path = Path.Combine(root, "disc.chd");
             File.Copy(Fixture("mixed-cdfl.chd"), path);
-            using var chd = OriginalContentSource.OpenChd(path);
+            using var chd = OriginalContentSource.OpenDiscImage(path);
             File.SetLastWriteTimeUtc(path, File.GetLastWriteTimeUtc(path).AddMinutes(1));
-            Assert.Throws<IOException>(() => chd.OpenBin());
+            await Assert.ThrowsAsync<IOException>(async () => await ReadAllAsync(chd.OpenBin()));
             await Assert.ThrowsAsync<IOException>(async () => await ReadAllAsync(chd.OpenRead("EI/TEST.BIN")));
         }
         finally { Directory.Delete(root, true); }
-    }
-
-    [Fact]
-    public void ChdManifestsMayPinTheVolumeAndListAudioTracks()
-    {
-        var track = new CddaTrackFingerprint(2, 5880, Tolerance, AnchorOffset, AnchorSamples,
-            new string('1', FileFingerprint.Xxh3Length), new string('2', FileFingerprint.Xxh3Length));
-        var manifest = new AssetManifest("game", "retail", [new("EI/TEST.BIN", 1)], ContentSourceKinds.Chd)
-        {
-            VolumeIdentifier = "SYNTHETIC_EI",
-            VolumeBlocks = 23,
-            AudioTracks = [track],
-        };
-        manifest.Validate();
-        var directory = manifest with { SourceKind = ContentSourceKinds.Directory, VolumeIdentifier = null, VolumeBlocks = null };
-        Assert.Contains("only 'cue-bin' and 'chd'", Assert.Throws<InvalidDataException>(directory.Validate).Message);
     }
 
     private static async Task AssertSameVolumeAsync(OriginalContentSource expected, OriginalContentSource actual)
@@ -328,9 +326,9 @@ public sealed class ChdSourceTests
         foreach (var track in new[] { 2, 3 })
             tracks.Add(await CddaTrackFingerprints.RecordAsync(cuePath, track, Tolerance, AnchorOffset, AnchorSamples,
                 TestContext.Current.CancellationToken));
-        var payload = SyntheticDiscImages.Payload();
+        var payload = SyntheticChdDiscs.Payload();
         return new AssetManifest("game", "retail",
-            [new("EI/TEST.BIN", payload.Length, FileFingerprint.Xxh3(payload))], ContentSourceKinds.CueBin)
+            [new("EI/TEST.BIN", payload.Length, FileFingerprint.Xxh3(payload))], ContentSourceKinds.DiscImage)
         {
             AudioTracks = tracks,
             VolumeIdentifier = source.Label,
@@ -350,7 +348,7 @@ public sealed class ChdSourceTests
 
     private static void AssertRefused<T>(string path, string reason) where T : Exception
     {
-        var refused = Assert.Throws<T>(() => OriginalContentSource.OpenChd(path));
+        var refused = Assert.Throws<T>(() => OriginalContentSource.OpenDiscImage(path));
         Assert.Contains(reason, refused.Message);
     }
 

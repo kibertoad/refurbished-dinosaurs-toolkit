@@ -6,8 +6,8 @@ using System.Text;
 namespace RefurbishedDinosaurs.Core.Tests;
 
 // One track of a CHD the writer makes: its CHT2 type, its frames in the BIN (a stored pregap
-// included) and the stored pregap.
-internal sealed record SyntheticChdTrack(string Type, int Frames, int StoredPregap = 0);
+// included), the stored pregap, a pregap recorded but not stored, and a postgap.
+internal sealed record SyntheticChdTrack(string Type, int Frames, int StoredPregap = 0, int UnstoredPregap = 0, int Postgap = 0);
 
 // How the writer stores the hunks, and the damage or unsupported features it writes on purpose.
 internal sealed record SyntheticChdOptions
@@ -76,8 +76,9 @@ internal static class SyntheticChdWriter
             var track = tracks[index];
             var text = options.TrackTag == "CHTR"
                 ? $"TRACK:{index + 1} TYPE:{track.Type} SUBTYPE:NONE FRAMES:{track.Frames}"
-                : $"TRACK:{index + 1} TYPE:{track.Type} SUBTYPE:NONE FRAMES:{track.Frames} PREGAP:{track.StoredPregap} " +
-                  $"PGTYPE:{(track.StoredPregap > 0 ? "V" + track.Type : "MODE1")} PGSUB:NONE POSTGAP:0";
+                : $"TRACK:{index + 1} TYPE:{track.Type} SUBTYPE:NONE FRAMES:{track.Frames} " +
+                  $"PREGAP:{(track.StoredPregap > 0 ? track.StoredPregap : track.UnstoredPregap)} " +
+                  $"PGTYPE:{(track.StoredPregap > 0 ? "V" + track.Type : "MODE1")} PGSUB:NONE POSTGAP:{track.Postgap}";
             metadata.Add((options.TrackTag, Encoding.ASCII.GetBytes(text + "\0")));
         }
 
