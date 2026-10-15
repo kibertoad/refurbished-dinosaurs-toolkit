@@ -9,7 +9,8 @@ Sessions are read from ``REM SESSION nn`` lines, which redumper, DiscImageCreato
 before the first track of each session of a disc with more than one. A sheet without them
 describes one session. DiscImageCreator's ``REM LEAD-OUT``, ``REM LEAD-IN`` and ``REM PREGAP``
 around a session change are read too: the first two must give the standard sizes (see
-``disc.session_gap``), and ``REM PREGAP`` gives the pregap of the session's first track, which its
+``disc.session_gap``), which DiscImageCreator writes as constants on every disc whatever its gap
+(output.cpp, WriteCueForMultiSessionMultiBin), so they say nothing about the gap; and ``REM PREGAP`` gives the pregap of the session's first track, which its
 file holds only when INDEX 00 says so. A sheet gives no gap between sessions. The gap before a
 later session that opens with a raw data track is taken from the address in the header of the
 track's INDEX 01 sector; any other later session gets the standard gap, recorded as assumed (see
@@ -239,6 +240,29 @@ def read_cue(sheet: Path) -> Disc:
     return disc
 
 
+def opening_address(track: Track) -> int | None:
+    """The disc LBA of ``track``'s INDEX 01 that its sector headers give, or None when they give none.
+
+    A raw data track carries its address in the header of each sector. The INDEX 01 sector's
+    address is checked against the track's last sector, whose header must give the LBA
+    ``length - 1`` sectors on when it gives one, so a single damaged header does not move a
+    session. None for audio, for a track stored as 2,048-byte user data, and when the INDEX 01
+    sector has no sync pattern or no valid address.
+    """
+    if track.is_audio or track.storage != "raw":
+        return None
+    found = header_lba(next(track.iter_raw(0, 1)))
+    if found is None:
+        return None
+    last = header_lba(next(track.iter_raw(track.length - 1, track.length)))
+    if last is not None and last != found + track.length - 1:
+        raise DiscError(
+            f"track {track.number}'s sector headers disagree: its INDEX 01 sector gives LBA {found}, and its last "
+            f"sector, {track.length - 1} sectors on, gives LBA {last} where {found + track.length - 1} was expected"
+        )
+    return found
+
+
 def _with_session_gaps(disc: Disc) -> Disc:
     """The disc with each later session's gap taken from its sector headers where it can be.
 
@@ -247,14 +271,13 @@ def _with_session_gaps(disc: Disc) -> Disc:
     from the previous session's lead-out to the track's INDEX 00. A session that opens with audio,
     with a data track stored as 2,048-byte user data, or with a sector whose header holds no
     address, keeps the standard gap, marked ``assumed``. An address closer to the lead-out than
-    the standard gap is refused.
+    the standard gap is refused, and so is one the track's last sector contradicts (see
+    :func:`opening_address`).
     """
     gaps: dict[int, SessionGap] = {}
     for number in range(2, disc.tracks[-1].session + 1):
         track = disc.sessions[number - 1].tracks[0]
-        if track.is_audio or track.storage != "raw":
-            continue
-        found = header_lba(next(track.iter_raw(0, 1)))
+        found = opening_address(track)
         if found is None:
             continue
         # Sessions are taken in order, so the previous session's lead-out counts every gap before it.

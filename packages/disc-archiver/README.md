@@ -458,23 +458,27 @@ Reading:
   redumper, DiscImageCreator and chdman write them. They must be numbered from `01` in order, and
   each session must have a track. A sheet without them describes one session. A sheet gives no
   gap between sessions. When a raw data track opens a later session, the address in the header of
-  its INDEX 01 sector gives the gap (`headers`). A later session that opens with audio, or with a
-  data track stored as 2,048-byte user data, has no such address, so it gets the standard gap,
-  marked `assumed`.
+  its INDEX 01 sector gives the gap (`headers`). The header of the track's last sector must give
+  the address that many sectors on, or the sheet is refused, so one damaged header does not move
+  the session. A later session that opens with audio, or with a data track stored as 2,048-byte
+  user data, has no such address, so it gets the standard gap, marked `assumed`.
 - DiscImageCreator also writes `REM LEAD-OUT 01:30:00`, `REM LEAD-IN 01:00:00` and
-  `REM PREGAP 00:02:00` around a session change. The first two must give the sizes above, or the
-  sheet is refused: one-file sheets from IsoBuster and DiscImageCreator give the lead-out's
+  `REM PREGAP 00:02:00` around a session change. It writes these three values on every disc,
+  whatever its gap, so they are not read as the gap. The first two must give the sizes above, or
+  the sheet is refused: one-file sheets from IsoBuster and DiscImageCreator give the lead-out's
   position there, which the archiver does not read. `REM PREGAP` is the pregap of the session's
   first track, which its file does not hold unless the track's INDEX 00 says so.
 - A CloneCD image gives each track's session and disc address in its `[Entry]` sections, and each
   session's lead-out in its A2 entry. The image holds each session's sectors back to back. A later
   session's gap runs from the previous session's lead-out to its first track's INDEX 00 (`toc`).
   That track's `INDEX 0` in its `[TRACK]` section gives its pregap, and the image size says whether
-  the image holds it. A first track without `INDEX 0` that starts past the standard gap has a
-  pregap only of the sectors the image holds ahead of its INDEX 01. When the image holds none, as
-  DiscImageCreator leaves such a pregap out, the sectors could be an unstored pregap or a longer
-  gap, and the image is refused; adding the track's `INDEX 0` to its `[TRACK]` section decides
-  it.
+  the image holds it. A session's first track has a pregap of at least 150 sectors, so a first
+  track without `INDEX 0` that starts at most 150 sectors past the standard gap has the standard
+  gap and a pregap of the sectors between, stored or not as the image size says. That is how
+  DiscImageCreator writes a CD-Extra. A first track without `INDEX 0` that starts further out has
+  a pregap only of the sectors the image holds ahead of its INDEX 01. When the image holds none,
+  the sectors could be an unstored pregap or a longer gap, and the image is refused; adding the
+  track's `INDEX 0` to its `[TRACK]` section decides it.
 - A CHD is read through `chdman extractcd`, which gives sessions only for a CHD written by a
   chdman newer than MAME 0.289.
 
@@ -484,7 +488,7 @@ Writing:
   as redumper does, so a Redump-style dump is written back byte for byte. `bincue` writes it
   before the `TRACK` line inside its one file, as chdman does. A disc of one session gets no
   `REM SESSION` line. A sheet cannot hold a gap other than the standard one. When the session
-  opens with a raw data track, the copy's notes say so and reading the copy back takes the gap from
+  opens with a raw data track whose headers give its address, the copy's notes say so and reading the copy back takes the gap from
   the sector headers again. Otherwise the notes say that a reader lays the session out with the
   standard gap, and the verification lists the gap and the track starts that follow under
   `notCompared`, so the copy is `partial`. The `iso-*` sheets, whose data track is an ISO file,
@@ -492,9 +496,14 @@ Writing:
 - `ccd` writes a `[Session N]` section per session, and each session's A0, A1 and A2 entries and
   track entries with its session number and disc addresses. The `[TRACK]` index addresses and the
   generated subchannel's Q times count the gaps, whatever their length; the image holds no
-  sectors for them. A later session's first track always gets its `INDEX 0`, even when it has no
-  pregap or the image leaves its pregap out, so a reader can tell the pregap from the gap. The
-  table of contents has no mode 5 (B0, C0) entries.
+  sectors for them. A later session's first track gets its `INDEX 0` when the image holds its
+  pregap, and when the gap before it is longer than the standard one or its pregap is longer than
+  150 sectors, so a reader can tell the pregap from the gap; that `INDEX 0` sits at INDEX 1 when
+  the track has no pregap. Otherwise the track is written as DiscImageCreator writes it, without
+  `INDEX 0`. When two pregaps of
+  tracks that open later sessions, one stored and one not, would leave the image size unable to
+  say which the image holds, `ccd` is unavailable. The table of contents has no mode 5 (B0, C0)
+  entries.
 - `chd` gives chdman the `bincue` sheet. chdman releases up to MAME 0.289 read its sessions but do
   not store them in the CHD, so reading it back gives one session with the tracks back to back.
   The CHD then gets a note saying so, its verification lists the sessions and the track starts

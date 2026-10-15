@@ -352,11 +352,15 @@ def _drop_sessions(fingerprint_: dict) -> dict:  # type: ignore[type-arg]
     return {**fingerprint_, "sessions": None, "tracks": tracks}
 
 
-def _drop_gaps(fingerprint_: dict) -> dict:  # type: ignore[type-arg]
-    """The fingerprint without what the gaps between sessions decide: each session's gap and
-    lead-out, and each track's start. The sessions and their tracks stay."""
-    sessions = [{k: v for k, v in s.items() if k not in ("leadOut", "gap", "gapSource")} for s in fingerprint_["sessions"]]
-    tracks = [{k: v for k, v in t.items() if k != "start"} for t in fingerprint_["tracks"]]
+def _drop_gaps(fingerprint_: dict, first: int) -> dict:  # type: ignore[type-arg]
+    """The fingerprint without what the gap before session ``first`` decides: the gap and lead-out
+    of that session and each one after it, and the start of each of their tracks. The sessions and
+    their tracks stay, and so does everything before session ``first``."""
+    sessions = [
+        {k: v for k, v in s.items() if s["number"] < first or k not in ("leadOut", "gap", "gapSource")}
+        for s in fingerprint_["sessions"]
+    ]
+    tracks = [{k: v for k, v in t.items() if t["session"] < first or k != "start"} for t in fingerprint_["tracks"]]
     return {**fingerprint_, "sessions": sessions, "tracks": tracks}
 
 
@@ -417,7 +421,8 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
                 gaps = ", ".join(f"the {s['gap']}-sector gap before session {s['number']}" for s in unheld)
                 holder = "a CHD" if kind == "chd" else "a cue sheet"
                 result.not_compared.append(f"{gaps}, and the track starts that follow, which {holder} does not hold")
-                reference, found = _drop_gaps(reference), _drop_gaps(found)
+                first = min(s["number"] for s in unheld)
+                reference, found = _drop_gaps(reference, first), _drop_gaps(found, first)
         _compare(reference, found, result, layout=True, audio=True, form2=kind != "iso-wav")
         if kind == "iso-wav" and any(a["pregapSilent"] is False for a in reference["audio"]):
             result.not_compared.append("audio in pregaps, which the format does not hold")

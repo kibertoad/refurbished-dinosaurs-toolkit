@@ -16,7 +16,7 @@ from dinorefurb_disc_archiver.ccd import read_ccd
 from dinorefurb_disc_archiver.cue import read_cue
 from dinorefurb_disc_archiver.disc import RAW_SECTOR, Disc, DiscError, SessionGap, Track
 from dinorefurb_disc_archiver.formats import FormatUnavailable, write_format
-from dinorefurb_disc_archiver.pipeline import derive, fingerprint, open_source
+from dinorefurb_disc_archiver.pipeline import _drop_gaps, derive, fingerprint, open_source
 from dinorefurb_disc_archiver.profile import BUILTIN_PROFILES
 
 # Stands in for chdman: a "CHD" is the cue sheet and BIN stored together in a zip. With "--old" it
@@ -184,9 +184,10 @@ class LayoutTests(SessionTestCase):
         self.assertEqual([o["verification"]["status"] for o in manifest["outputs"]], ["matched"] * 3)  # type: ignore[union-attr, index]
         split = (self.dir / "out" / "bincue-split" / "Extra.cue").read_text()
         self.assertIn("REM SESSION 02\nFILE \"Extra (Track 3).bin\" BINARY\n  TRACK 03 MODE1/2352\n    PREGAP 00:02:00\n    INDEX 01 00:00:00\n", split)
-        # The CloneCD image leaves the pregap out and gives its INDEX 0, so a reader tells it from the gap.
+        # The CloneCD image leaves the pregap out and gives no INDEX 0, as DiscImageCreator writes it:
+        # with the standard gap, the 150 sectors before INDEX 01 can only be the pregap.
         clone = (self.dir / "out" / "ccd" / "Extra.ccd").read_text()
-        self.assertIn(f"[TRACK 3]\nMODE=1\nINDEX 0={self.extra.start - 150}\nINDEX 1={self.extra.start}\n", clone)
+        self.assertIn(f"[TRACK 3]\nMODE=1\nINDEX 1={self.extra.start}\n", clone)
         copy = read_ccd(self.dir / "out" / "ccd" / "Extra.ccd")
         self.assertEqual((copy.tracks[2].pregap, copy.tracks[2].pregap_stored), (150, False))
         notes = " ".join(manifest["outputs"][2]["notes"])  # type: ignore[index]
@@ -369,9 +370,11 @@ class RefusalTests(SessionTestCase):
         output = self.write("ccd")
         text = output.entry.read_text()
         cases = {
-            "moved": (text.replace("PLBA=200\n", "PLBA=190\n"), "395 sectors of Extra.img do not fit one layout of the pregaps"),
+            "moved": (text.replace("PLBA=200\n", "PLBA=190\n"), "Extra.img holds 395 sectors, and the table of contents lays out 235 without the pregaps of tracks \\[3\\]"),
             "early": (text.replace("INDEX 0=11450", "INDEX 0=11300"), "session 2 starts at LBA 11300, less than the standard 11250 sectors"),
             "no lead-out": (text.replace("Point=0xa2", "Point=0xb0", 1), "session 1 has no lead-out"),
+            # Sessions 1 and 3: the session before the track that opens one is the one before it in the table.
+            "skipped": (text.replace("Session=2", "Session=3").replace("[Session 2]", "[Session 3]"), "track 3 is in session 3, after a track of session 1"),
         }
         for name, (changed, message) in cases.items():
             with self.subTest(name):
@@ -385,7 +388,7 @@ class RefusalTests(SessionTestCase):
         output.entry.write_text(text)
         image = output.directory / "Extra.img"
         image.write_bytes(image.read_bytes()[:-RAW_SECTOR])
-        with self.assertRaisesRegex(DiscError, "394 sectors of Extra.img do not fit one layout"):
+        with self.assertRaisesRegex(DiscError, "Extra.img holds 394 sectors, and the table of contents lays out 245 without"):
             read_ccd(output.entry)
 
 
@@ -466,6 +469,12 @@ class GapTests(SessionTestCase):
         self.assertIn("A reader of this sheet lays the session out with the standard 11250-sector gap, not the disc's 11550", " ".join(cue["notes"]))
         self.assertEqual(read_cue(self.dir / "from-ccd" / "bincue" / "Audio.cue").gaps, {2: SessionGap(SESSION_GAP, "assumed")})
 
+    def test_a_gap_a_copy_does_not_hold_leaves_the_sessions_before_it_compared(self) -> None:
+        dropped = _drop_gaps(self.late_reference, 2)
+        self.assertEqual(dropped["sessions"][0], self.late_reference["sessions"][0])  # type: ignore[index]
+        self.assertEqual(dropped["sessions"][1], {"number": 2, "firstTrack": 3, "lastTrack": 3})
+        self.assertEqual(["start" in t for t in dropped["tracks"]], [True, True, False])
+
     def test_a_clonecd_image_without_index_0_is_decided_by_the_image_size(self) -> None:
         for name, disc, gap in (("standard", self.disc, SESSION_GAP), ("late", self.late_disc, SESSION_GAP + 150)):
             with self.subTest(name):
@@ -477,22 +486,68 @@ class GapTests(SessionTestCase):
                 self.assertEqual((copy.tracks[2].pregap, copy.tracks[2].pregap_stored, copy.gaps[2].sectors), (150, True, gap))
                 self.assertEqual(without_gap_sources(fingerprint(copy)), without_gap_sources(fingerprint(disc)))
 
-    def test_an_ambiguous_discimagecreator_image_is_refused(self) -> None:
-        # DiscImageCreator gives the first track of a later session no INDEX 0 and leaves its pregap
-        # out of the image; the 150 sectors before INDEX 01 could then as well be a longer gap.
-        output = self.write("ccd")
-        start = self.disc.tracks[2].start
+    def _without_pregap_or_index_0(self, name: str, disc: Disc) -> tuple[Path, int]:
+        """A CloneCD image of ``disc`` as DiscImageCreator writes it: the first track of session 2
+        has no INDEX 0 and the image leaves its pregap out."""
+        output = write_format("ccd", disc, self.dir / name, "Extra", silent_log)
+        start = disc.tracks[2].start
         output.entry.write_text(output.entry.read_text().replace(f"INDEX 0={start}\n", ""))
         image = output.directory / "Extra.img"
         data = image.read_bytes()
         audio_bytes = sum(self.extra.audio_lengths) * RAW_SECTOR
         image.write_bytes(data[:audio_bytes] + data[audio_bytes + 150 * RAW_SECTOR :])
+        return output.entry, start
+
+    def test_a_discimagecreator_image_with_the_standard_gap_is_decided(self) -> None:
+        # The 150 sectors before INDEX 01 cannot be part of a longer gap, which would leave the
+        # session's first track a pregap shorter than 150 sectors.
+        entry, _ = self._without_pregap_or_index_0("standard", self.disc)
+        copy = read_ccd(entry)
+        self.assertEqual((copy.tracks[2].pregap, copy.tracks[2].pregap_stored, copy.gaps[2]), (150, False, SessionGap(SESSION_GAP, "toc")))
+
+    def test_an_ambiguous_discimagecreator_image_is_refused(self) -> None:
+        # Past a longer gap, the 300 sectors before INDEX 01 could be a pregap the image leaves out,
+        # or a 150-sector pregap and a gap 150 sectors longer still.
+        entry, start = self._without_pregap_or_index_0("late", self.late_disc)
         with self.assertRaisesRegex(DiscError, "could be a pregap the image leaves out, as DiscImageCreator writes it, or a gap longer"):
-            read_ccd(output.entry)
+            read_ccd(entry)
         # With INDEX 0 the same image is decided: the pregap is not stored.
-        output.entry.write_text(output.entry.read_text().replace(f"INDEX 1={start + 150}\n", f"INDEX 0={start}\nINDEX 1={start + 150}\n"))
-        copy = read_ccd(output.entry)
-        self.assertEqual((copy.tracks[2].pregap, copy.tracks[2].pregap_stored, copy.gaps[2].sectors), (150, False, SESSION_GAP))
+        entry.write_text(entry.read_text().replace(f"INDEX 1={start + 150}\n", f"INDEX 0={start}\nINDEX 1={start + 150}\n"))
+        copy = read_ccd(entry)
+        self.assertEqual((copy.tracks[2].pregap, copy.tracks[2].pregap_stored, copy.gaps[2].sectors), (150, False, SESSION_GAP + 150))
+
+    def test_a_clonecd_image_that_could_not_be_read_back_is_unavailable(self) -> None:
+        # Two later sessions open with 150-sector data pregaps, one stored and one not: the image
+        # size cannot say which of them the image holds.
+        source = self.dir / "unused.bin"
+
+        def track(number: int, session: int, mode: str, stored: bool) -> Track:
+            return Track(number, mode, "raw", 0 if mode == "AUDIO" else 150, stored, 100, source, 0, session=session)
+
+        disc = Disc([track(1, 1, "AUDIO", False), track(2, 2, "MODE1", True), track(3, 3, "MODE1", False)])
+        with self.assertRaisesRegex(FormatUnavailable, r"pregaps of tracks \[2, 3\].*more than one way"):
+            self.write("ccd", disc)
+
+    def test_a_header_the_last_sector_contradicts_is_refused(self) -> None:
+        directory = self.dir / "damaged"
+        sheet = self.late.write_split(directory)
+        data = directory / "Extra (Track 3).bin"
+        raw = bytearray(data.read_bytes())
+        # The INDEX 01 sector, after the 150-sector pregap the file holds, claims 10:00:00.
+        raw[150 * RAW_SECTOR + 12 : 150 * RAW_SECTOR + 15] = b"\x10\x00\x00"
+        data.write_bytes(bytes(raw))
+        with self.assertRaisesRegex(DiscError, "track 3's sector headers disagree: its INDEX 01 sector gives LBA 44850"):
+            read_cue(sheet)
+
+    def test_a_cue_copy_says_when_no_header_gives_the_gap(self) -> None:
+        output = self.write("ccd", self.late_disc)
+        image = output.directory / "Extra.img"
+        raw = bytearray(image.read_bytes())
+        raw[(sum(self.extra.audio_lengths) + 150) * RAW_SECTOR] = 0x55  # Breaks the INDEX 01 sector's sync pattern.
+        image.write_bytes(bytes(raw))
+        notes = " ".join(self.write("bincue", read_ccd(output.entry)).notes)
+        self.assertIn("whose INDEX 01 sector carries no address that gives it", notes)
+        self.assertNotIn("is read back from the header", notes)
 
     def test_a_disc_refuses_a_gap_shorter_than_the_standard_one(self) -> None:
         with self.assertRaisesRegex(DiscError, "the gap before session 2 is 100 sectors, shorter than the standard 11250"):

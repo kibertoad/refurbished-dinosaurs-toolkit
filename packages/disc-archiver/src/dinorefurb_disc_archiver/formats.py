@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import ccd, isofs, mds, nrg, tools
-from .cue import CueFile, render_cue, write_cue
+from .cue import CueFile, opening_address, render_cue, write_cue
 from .disc import COOKED_SECTOR, RAW_SECTOR, Disc, DiscError, NotDataSector, Track, block_data, describe_ranges, session_gap
 from .tools import Log
 
@@ -154,6 +154,15 @@ def _virtual_pregap_notes(disc: Disc, data_note: str = "the cue sheet gives it a
     ]
 
 
+def _header_address(track: Track) -> int | None:
+    """The INDEX 01 address a cue reader takes from ``track``'s sector headers, or None when it
+    takes none (see :func:`cue.opening_address`)."""
+    try:
+        return opening_address(track)
+    except DiscError:
+        return None
+
+
 def _cue_gap_notes(disc: Disc, data_raw: bool = True) -> list[str]:
     """Notes on the gaps between sessions that differ from the standard one, which a cue sheet
     cannot hold. ``data_raw`` is False for a sheet whose data track is an ISO file, which keeps no
@@ -163,7 +172,7 @@ def _cue_gap_notes(disc: Disc, data_raw: bool = True) -> list[str]:
         assert session.gap is not None
         track = session.tracks[0]
         standard = session_gap(session.number - 1)
-        if data_raw and not track.is_audio and track.storage == "raw":
+        if data_raw and _header_address(track) == track.index1:
             notes.append(
                 f"A cue sheet holds no gap between sessions. The {session.gap.sectors}-sector gap before session "
                 f"{session.number} (the standard one is {standard}) is read back from the header of track {track.number}'s "
@@ -172,7 +181,7 @@ def _cue_gap_notes(disc: Disc, data_raw: bool = True) -> list[str]:
         else:
             notes.append(
                 f"A cue sheet holds no gap between sessions, and session {session.number} opens with track {track.number}, "
-                f"whose sectors carry no address. A reader of this sheet lays the session out with the standard "
+                f"whose INDEX 01 sector carries no address that gives it. A reader of this sheet lays the session out with the standard "
                 f"{standard}-sector gap, not the disc's {session.gap.sectors}, so the track starts from session "
                 f"{session.number} on differ from the disc's."
             )
@@ -223,6 +232,12 @@ def write_ccd(disc: Disc, directory: Path, name: str) -> Output:
                 f"CloneCD stores every sector from each track's INDEX 00, and track {track.number}'s {track.pregap}-sector "
                 "data pregap was not stored in the source. BIN/CUE gives it as a cue PREGAP."
             )
+    if ambiguous := ccd.ambiguous_pregaps(disc):
+        raise FormatUnavailable(
+            f"A CloneCD image says which pregaps of the tracks that open later sessions it stores only through its size, "
+            f"and the pregaps of tracks {ambiguous}, some stored in the source and some not, make up that size in more "
+            "than one way, so the image could not be read back. BIN/CUE gives each one."
+        )
     files = ccd.write_ccd(disc, directory, name)
     notes = [
         "The .sub subchannel is generated from the table of contents (P marks pregaps, Q carries "

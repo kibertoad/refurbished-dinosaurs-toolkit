@@ -518,18 +518,24 @@ of a cue sheet that opens with audio keeps the standard gap. Each later session 
 `disc.sessions` gains `gap`, the sectors from the previous session's lead-out to the first track's
 INDEX 00, and `gapSource`: `toc`, `headers` or `assumed`. Session 1 has `null` for both.
 
-A CloneCD image whose later session's first track has no `INDEX 0` and starts past the standard gap
-is read with a pregap of the sectors the image holds ahead of its INDEX 01. When the image holds
-none, which is how DiscImageCreator writes such a track, the sectors could be a pregap the image
-leaves out or a longer gap, so the image is now refused; 3.x read them as the pregap. Add the
-track's `INDEX 0=<LBA>` line to its `[TRACK]` section, the LBA of its INDEX 00, and open the image
-again, or dump the disc with redumper.
+A CloneCD image whose later session's first track has no `INDEX 0` and starts more than 150
+sectors past the standard gap is read with a pregap of the sectors the image holds ahead of its
+INDEX 01. When the image holds none, the sectors could be a pregap the image leaves out or a longer
+gap, so the image is now refused; 3.x read them as the pregap. Add the track's `INDEX 0=<LBA>` line
+to its `[TRACK]` section, the LBA of its INDEX 00, and open the image again, or dump the disc with
+redumper. A DiscImageCreator image of a disc with the standard gap, whose track starts 150 sectors
+past it, is read as before.
 
-The `ccd` copy of a disc of several sessions now gives a later session's first track an `INDEX 0`
-line even when the image leaves its pregap out or it has none, so its `.ccd` hash differs from a
-3.x run. Verification compares the gaps as part of the track layout. A copy that cannot hold a gap
-longer than the standard one lists it under `notCompared` and is `partial`: a `chd`, and a cue
-sheet whose later session opens with audio.
+A raw data track that opens a later session of a cue sheet must have sector headers that agree: the
+header of its last sector must give the address its INDEX 01 sector's header gives, that many
+sectors on. A sheet whose headers disagree is refused.
+
+The `ccd` copy of a disc whose later session has a gap longer than the standard one gives that
+session's first track an `INDEX 0` line, even when the image leaves its pregap out or it has none,
+and so does a first track whose unstored pregap is longer than 150 sectors. A disc with the
+standard gaps and shorter unstored pregaps gets the same `.ccd` as from 3.x. Verification compares the gaps as part of the
+track layout. A copy that cannot hold a gap longer than the standard one lists it under
+`notCompared` and is `partial`: a `chd`, and a cue sheet whose later session opens with audio.
 
 ### Disc archiver 3.0.0: track starts count the gap between sessions
 
