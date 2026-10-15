@@ -21,9 +21,9 @@ MAXIMUM_FILES = 200_000
 
 
 class UnsupportedFileSystem(DiscError):
-    """A data track whose ISO 9660 file system cannot be located: no volume descriptor, a
-    descriptor whose copies of a value disagree, or addresses that resolve to no sector or to more
-    than one place in the track."""
+    """A data track whose ISO 9660 file system cannot be located or read: no volume descriptor, a
+    descriptor whose copies of a value disagree, addresses that resolve to no sector or to more
+    than one place in the track, or descriptors and directories pycdlib cannot read."""
 
 
 @dataclass(frozen=True)
@@ -326,34 +326,45 @@ def locate(track: Track) -> Volume:
 APPLICATION_USE = range(883, 1395)
 
 
-def _agreeing_copies(stream: UserDataStream, track: Track, volume: Volume) -> dict[int, bytes]:
-    """The later primary volume descriptors of the set that differ from the one at sector 16 only
-    in the application use field, each mapped to the first one's bytes.
+def _later_copies(stream: UserDataStream, volume: Volume) -> dict[int, bytes]:
+    """The later primary volume descriptors of the set, by track sector, as the stream reads them."""
+    # descriptors_end counts the sector after the set, which is not a descriptor of the set.
+    sectors = ((index, stream.read_sector(index)) for index in range(PVD_SECTOR + 1, volume.descriptors_end - 1))
+    return {index: sector for index, sector in sectors if sector[:6] == b"\x01CD001"}
+
+
+def _agreeing_copies(stream: UserDataStream, volume: Volume) -> dict[int, bytes]:
+    """The later primary volume descriptors of the set whose application use field differs from
+    the one at sector 16, each with that field replaced by the first one's.
 
     ECMA-119 lets a volume record its primary volume descriptor more than once. pycdlib refuses a
-    volume whose copies differ in any field, the application use field included, which some
-    copy-protected discs mark in their second copy. Since no file system structure is read from
-    that field, :func:`walk` shows pycdlib such a copy as the first one, and the file system is
-    read from the first descriptor, as it is with matching copies. Raises
-    :class:`UnsupportedFileSystem` when a copy differs anywhere else, since which copy describes
-    the file system is then not known.
+    volume whose copies differ in any field it compares, the application use field included, which
+    some copy-protected discs mark in their second copy. Since no file system structure is read
+    from that field, :func:`walk` shows pycdlib such a copy with the first one's field, and the
+    file system is read from the first descriptor, as it is with matching copies. The other bytes
+    are left as recorded, so pycdlib still refuses copies whose other fields disagree.
     """
     first = stream.read_sector(PVD_SECTOR)
-    agreeing: dict[int, bytes] = {}
-    # descriptors_end counts the sector after the set, which is not a descriptor of the set.
-    for index in range(PVD_SECTOR + 1, volume.descriptors_end - 1):
-        sector = stream.read_sector(index)
-        if sector[:6] != b"\x01CD001" or sector == first:
-            continue
+    field = slice(APPLICATION_USE.start, APPLICATION_USE.stop)
+    return {
+        index: sector[: field.start] + first[field] + sector[field.stop :]
+        for index, sector in _later_copies(stream, volume).items()
+        if sector[field] != first[field]
+    }
+
+
+def _first_difference(stream: UserDataStream, volume: Volume) -> str:
+    """Where the first later copy of the primary volume descriptor that differs from the one at
+    sector 16 outside the application use field does so, or an empty string."""
+    first = stream.read_sector(PVD_SECTOR)
+    for index, sector in _later_copies(stream, volume).items():
         outside = next((i for i in range(COOKED_SECTOR) if sector[i] != first[i] and i not in APPLICATION_USE), None)
         if outside is not None:
-            raise UnsupportedFileSystem(
-                f"track {track.number}: the primary volume descriptor at sector {index} differs from the one at "
-                f"sector {PVD_SECTOR} at byte {outside}, outside the application use field, so which one describes "
-                "the file system is not known"
+            return (
+                f" (the primary volume descriptor at sector {index} differs from the one at sector {PVD_SECTOR} at "
+                f"byte {outside}, outside the application use field)"
             )
-        agreeing[index] = first
-    return agreeing
+    return ""
 
 
 @dataclass(frozen=True)
@@ -438,9 +449,9 @@ def walk(track: Track, destination: Path | None = None, primary: bool = False) -
     :func:`_primary_names` gives them, which is how a build entry names a file read from its CD.
     The file system's addresses are read
     against the base :func:`locate` finds, and :class:`UnsupportedFileSystem` is raised when it
-    finds none, when the file system reads an address that falls on no track sector, when copies of
-    the primary volume descriptor disagree outside the application use field (see
-    :func:`_agreeing_copies`), or when pycdlib cannot read the volume's descriptors and directories.
+    finds none, when the file system reads an address that falls on no track sector, or when pycdlib
+    cannot read the volume's descriptors and directories, copies of the primary volume descriptor
+    that disagree outside the application use field among them (see :func:`_agreeing_copies`).
     """
     entries: list[FileEntry] = []
     volume = locate(track)
@@ -448,13 +459,16 @@ def walk(track: Track, destination: Path | None = None, primary: bool = False) -
     iso = pycdlib.PyCdlib()
     try:
         try:
-            stream.replaced = _agreeing_copies(stream, track, volume)
+            stream.replaced = _agreeing_copies(stream, volume)
             iso.open_fp(stream)
         except PyCdlibException as error:
-            raise UnsupportedFileSystem(f"track {track.number} is not a readable ISO 9660 file system: {error}") from None
+            raise UnsupportedFileSystem(
+                f"track {track.number} is not a readable ISO 9660 file system: {error}{_first_difference(stream, volume)}"
+            ) from None
         # pycdlib has read the system area, the descriptors and every directory; what it reads
-        # from here on is file data.
+        # from here on is file data, which is read as the track holds it.
         stream.files = True
+        stream.replaced = {}
         joliet = iso.has_joliet() and not primary
         key = "joliet_path" if joliet else "iso_path"
         for root, directories, files in iso.walk(**{key: "/"}):

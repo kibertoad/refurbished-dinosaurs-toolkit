@@ -276,6 +276,13 @@ class DataFormatTests(FormatTestCase):
         self.assertEqual((output.entry / "README.TXT").read_bytes(), b"x")
         self.assertEqual((output.entry / "DATA" / "A.BIN").read_bytes(), b"y" * 5000)
 
+    def test_files_are_read_when_a_pvd_copy_also_differs_in_the_reserved_bytes(self) -> None:
+        marked = self.dir / "reserved.iso"
+        # pycdlib does not compare the reserved bytes after the application use field.
+        marked.write_bytes(second_pvd(iso_image({"README.TXT": b"x"}), {898: 0x25, 1400: 0x7F}))
+        output = self.write("files", read_iso(marked))
+        self.assertEqual((output.entry / "README.TXT").read_bytes(), b"x")
+
     def test_a_pvd_copy_differing_outside_application_use_leaves_files_unavailable(self) -> None:
         disagreeing = self.dir / "disagreeing.iso"
         # The second copy's root directory record gives another recording year.

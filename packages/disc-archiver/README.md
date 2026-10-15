@@ -559,7 +559,7 @@ fingerprint admits no sector past the volume. An ISO-plus-cue copy of a CD-Extra
 sector headers, so its files can be located only when its sheet gives the sessions with
 `REM SESSION` lines or otherwise places the track where it sits on the disc.
 
-A volume may record its primary volume descriptor more than once. Some copy-protected discs mark the second copy in its application use field, which the file system never reads, so a copy that differs from the one at sector 16 only there is read as the first one. A copy that differs anywhere else leaves which one describes the file system unknown: `files` and `game-dir` are unavailable with the reason, and the other formats are still written. The same holds for a volume whose descriptors or directories cannot be read at all.
+A volume may record its primary volume descriptor more than once. Some copy-protected discs mark the second copy in its application use field, which the file system never reads, so a copy that differs from the one at sector 16 only there is read as the first one. The bytes after that field are reserved, and pycdlib reads a copy that differs only in them, or in the file structure version, as it is. A copy whose other fields differ leaves which one describes the file system unknown: `files` and `game-dir` are unavailable with the reason, and the other formats are still written. The same holds for a volume whose descriptors or directories cannot be read at all.
 
 ## Disc profiles
 
