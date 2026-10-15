@@ -406,6 +406,73 @@ def redumper_log(
     return "\n".join(lines) + "\n"
 
 
+REDUMPER_TEST_HASH = "0123456789abcdef0123456789abcdef01234567"
+
+
+def redumper_analysis_steps(
+    *,
+    file: str = "Synth Disc (Track 1).bin",
+    protection: str | tuple[str, ...] = "none",
+    offsets: tuple[tuple[int, int, int, int], ...] = ((-1, -1, 40951, -572), (40949, 40949, 477, 16), (41426, 41427, 1162, -572)),
+    write_offset: int = -572,
+    info: bool = True,
+    securom: str | None = "unknown",
+) -> list[str]:
+    """The protection, split, hash and info steps of a redumper b761 disc run, after its dump.
+
+    The lines follow b761's ``cd/protection.ixx``, ``cd/cd_split.ixx``, ``cd/cd_common.ixx``,
+    ``info.ixx``, ``systems/s_cdrom.ixx`` and ``systems/securom.ixx``, with made-up values.
+    ``protection`` is one protection or several; ``offsets`` the offset configuration's records as
+    (position, header LBA, count, offset); ``info`` adds the hash and info steps; ``securom`` the
+    SecuROM block's scheme, or no block when None.
+    """
+    if isinstance(protection, str):
+        protected = [f"protection: {protection}"]
+    else:
+        protected = ["protections: ", *(f"  {p}" for p in protection)]
+    lines = ["", "*** PROTECTION (time check: 0s)", "", *protected, ""]
+    lines += [
+        "*** SPLIT (time check: 0s)",
+        "",
+        "warning: shifting subchannel data (shift: -3)",
+        "warning: TOC / QTOC mismatch, track index 01 (track: 1, LBA: 0 <=> -3)",
+        "warning: TOC / QTOC mismatch, nonexistent track in QTOC (track: A)",
+        "data disc detected, offset configuration: ",
+        *(
+            f"  LBA: {position:6} -> {lba:6}, MSF: 00:01:74, count: {count:6}, offset: {offset:+}"
+            for position, lba, count, offset in offsets
+        ),
+        "non-zero  TOC sample range: [   -88200 .. +158385444]",
+        "non-zero data sample range: [    +8836 .. +158384111]",
+        f"Universal Hash (SHA-1): {REDUMPER_TEST_HASH}",
+        "",
+        f"disc write offset: {write_offset:+}",
+        "warning: incomplete pre-gap (session: 1, unavailable: 149/150)",
+        "warning: lead-out ends with unavailable sector (session: 1)",
+        "",
+    ]
+    if info:
+        lines += ["*** HASH (time check: 0s)", ""]
+        lines += [
+            "*** INFO (time check: 0s)",
+            "",
+            f"CD-ROM [{file}]:",
+            "  sectors count: 249163",
+            "  mode1 sectors: 249162",
+            "  mode2 (form 1) sectors: 1",
+            "  MSF errors: 613 (LBA: 40950-41426, 42589-42724)",
+            "  ECC errors: 4 (LBA: 40949, 41426, 42588, 42724)",
+            "",
+            "  REDUMP.INFO errors: 4",
+            "warning: shifting subchannel data (shift: -3)",
+        ]
+        if securom is not None:
+            lines += ["", f"SecuROM [{file}]:", f"  scheme: {securom}", "MSF: 00:01:70 Q-Data: 410100 00:00:02 00 00:01:73 30C5"]
+        lines.append("")
+    lines += ["", "*** END (time check: 0s)"]
+    return lines
+
+
 # redumper's CD dump files start at this LBA, the start of the lead-in, with 588 samples per
 # sector (``LBA_START`` and the ``.state`` layout in redumper).
 DUMP_FIRST_LBA = -45150

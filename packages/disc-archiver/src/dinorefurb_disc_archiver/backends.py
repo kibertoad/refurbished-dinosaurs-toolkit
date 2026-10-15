@@ -338,14 +338,169 @@ def redumper_last_run(log_text: str) -> str:
     ``--auto-detect``: the configuration of the dump is the one its own run read with. A log
     without run headers is taken as one run. Empty when no run dumped from a drive.
     """
-    return next(
-        (
-            run
-            for run in reversed(dataerrors.runs(log_text))
-            if _REDUMPER_CONFIGURATION_FIELDS.search(run) and not _REDUMPER_REFINE_RUN.search(run)
-        ),
-        "",
-    )
+    return next((run for run in reversed(dataerrors.runs(log_text)) if _redumper_dumped(run)), "")
+
+
+def _redumper_dumped(run: str) -> bool:
+    """Whether one run of redumper's log dumped from a drive: it logs a drive configuration and is
+    not a ``refine`` run."""
+    return bool(_REDUMPER_CONFIGURATION_FIELDS.search(run)) and not _REDUMPER_REFINE_RUN.search(run)
+
+
+# The step headers ``redumper`` (``redumper.ixx``) logs before each command it runs, a whole disc
+# sequence or one command such as ``split``.
+_REDUMPER_STEP = re.compile(r"^\*\*\* (\S+) \(time check: \d+s\)[ \t]*$", re.MULTILINE)
+# ``redumper_protection`` (``cd/protection.ixx``): one protection, "none", or a list.
+_REDUMPER_PROTECTION = re.compile(r"^protection: (.+?)[ \t]*$", re.MULTILINE)
+_REDUMPER_PROTECTIONS = re.compile(r"^protections: *\n((?:  \S.*\n?)+)", re.MULTILINE)
+# ``redumper_split`` (``cd/cd_split.ixx``): the sync records of a data disc, one per run of sectors
+# with one offset, as "LBA: <position> -> <header LBA>, MSF: .., count: <sectors>, offset: <samples>".
+_REDUMPER_OFFSET_CONFIGURATION = re.compile(r"^data disc detected, offset configuration: *\n((?:  LBA:.*\n?)+)", re.MULTILINE)
+_REDUMPER_OFFSET_RECORD = re.compile(r"^  LBA:\s*(-?\d+) ->\s*(-?\d+), MSF: \S+, count:\s*(\d+), offset: ([+-]?\d+)")
+_REDUMPER_UNIVERSAL_HASH = re.compile(r"^Universal Hash \(SHA-1\): ([0-9a-f]{40})[ \t]*$", re.MULTILINE)
+# ``subcode`` correction (``cd/cd_common.ixx``), logged by split and again by info when it reads Q.
+_REDUMPER_SUBCHANNEL_SHIFT = re.compile(r"^warning: shifting subchannel data \(shift: ([+-]?\d+)\)", re.MULTILINE)
+_REDUMPER_WARNING = re.compile(r"^[ \t]*warning: (.+?)[ \t]*$", re.MULTILINE)
+# ``redumper_info`` (``info.ixx``) logs "<system> [<file>]:" and the system's lines below it. The
+# file name is the image name the person chose, which may hold brackets of its own.
+_REDUMPER_INFO_BLOCK = re.compile(r"^(\S[^\[\n]*?) \[(.+)\]:[ \t]*$", re.MULTILINE)
+# The CD-ROM system (``systems/s_cdrom.ixx``) logs each count only when it is not zero.
+_REDUMPER_INFO_RANGES = {
+    "invalidSyncSectors": re.compile(r"^  invalid sync sectors: (\d+) \(LBA: ([^)]*)\)", re.MULTILINE),
+    "invalidModeSectors": re.compile(r"^  invalid mode sectors: (\d+) \(LBA: ([^)]*)\)", re.MULTILINE),
+    "generatedSectors": re.compile(r"^  generated sectors \(0x55\): (\d+) \(LBA: ([^)]*)\)", re.MULTILINE),
+    "msfErrors": re.compile(r"^  MSF errors: (\d+) \(LBA: ([^)]*)\)", re.MULTILINE),
+    "nonCompliantEccErrors": re.compile(r"^  ECC errors \(non-compliant\): (\d+) \(LBA: ([^)]*)\)", re.MULTILINE),
+    "eccErrors": re.compile(r"^  ECC errors: (\d+) \(LBA: ([^)]*)\)", re.MULTILINE),
+    "edcErrors": re.compile(r"^  EDC errors: (\d+) \(LBA: ([^)]*)\)", re.MULTILINE),
+}
+_REDUMPER_INFO_XA_MISMATCHES = re.compile(r"^  CD-XA subheader mismatches: (\d+)", re.MULTILINE)
+_REDUMPER_INFO_REDUMP_ERRORS = re.compile(r"^  REDUMP\.INFO errors: (\d+)", re.MULTILINE)
+_REDUMPER_INFO_RANGE = re.compile(r"(-?\d+)(?:-(-?\d+))?")
+# The SecuROM system (``systems/securom.ixx``) logs its scheme, 1 to 4 or "unknown".
+_REDUMPER_INFO_SCHEME = re.compile(r"^  scheme: (\S+)", re.MULTILINE)
+# The steps whose warnings ``redumper_disc_analysis`` keeps: those after the dump.
+_REDUMPER_ANALYSIS_STEPS = ("PROTECTION", "REFINE", "SPLIT", "HASH", "INFO")
+
+
+def _sections(text: str, header: re.Pattern[str]) -> list[tuple[re.Match[str], str]]:
+    """Each match of ``header`` in ``text`` with the text after it up to the next match."""
+    found = list(header.finditer(text))
+    return [(m, text[m.end() : following.start() if following else len(text)]) for m, following in zip(found, [*found[1:], None])]
+
+
+def _redumper_steps(runs: Sequence[str]) -> list[tuple[str, str]]:
+    """Each step of ``runs`` as its name and what it logged, in order. Text before the first step
+    header of each run, the run's arguments and drive information, belongs to no step."""
+    return [(header.group(1), body) for run in runs for header, body in _sections(run, _REDUMPER_STEP)]
+
+
+def _redumper_ranges(listed: str) -> list[dict[str, int]]:
+    """``first`` and ``last`` LBA of each range in redumper's "40950-41426, 42589" listing."""
+    ranges = []
+    for part in listed.split(","):
+        found = _REDUMPER_INFO_RANGE.fullmatch(part.strip())
+        if found:
+            first = int(found.group(1))
+            ranges.append({"first": first, "last": int(found.group(2)) if found.group(2) else first})
+    return ranges
+
+
+def _redumper_info(info: str) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """The CD-ROM blocks of an info step as data tracks, and its SecuROM blocks as schemes."""
+    tracks: list[dict[str, object]] = []
+    schemes: list[dict[str, object]] = []
+    for block, body in _sections(info, _REDUMPER_INFO_BLOCK):
+        system, file = block.group(1), block.group(2)
+        if system == "CD-ROM":
+            track: dict[str, object] = {"file": file}
+            for key, pattern in _REDUMPER_INFO_RANGES.items():
+                found = pattern.search(body)
+                track[key] = {"count": int(found.group(1)), "ranges": _redumper_ranges(found.group(2))} if found else {"count": 0, "ranges": []}
+            xa_mismatches = _REDUMPER_INFO_XA_MISMATCHES.search(body)
+            track["xaSubheaderMismatches"] = int(xa_mismatches.group(1)) if xa_mismatches else 0
+            redump_errors = _REDUMPER_INFO_REDUMP_ERRORS.search(body)
+            track["redumpInfoErrors"] = int(redump_errors.group(1)) if redump_errors else None
+            tracks.append(track)
+        elif system == "SecuROM" and (scheme := _REDUMPER_INFO_SCHEME.search(body)):
+            schemes.append({"system": system, "file": file, "scheme": scheme.group(1)})
+    return tracks, schemes
+
+
+def redumper_disc_analysis(log_text: str) -> dict[str, object] | None:
+    """What redumper's steps after the dump found on the disc, from its log: the manifest's
+    ``source.discAnalysis``.
+
+    The log is read from the last run that dumped from a drive (see :func:`redumper_last_run`) to
+    its end, so the ``refine`` and ``split`` runs the archiver adds after data errors count too.
+    Where a step ran more than once, its last run counts. The keys:
+
+    - ``protections``: what the protection step found, ``[]`` for redumper's "protection: none".
+    - ``writeOffset``: the disc write offset in samples, from split.
+    - ``offsetShifts``: split's offset configuration of a data disc, each run of sectors as its
+      first positional ``lba``, ``count`` of sectors and write ``offset``, without the one-sector
+      false sync frames split drops, listed only when the runs have more than one offset; ``[]``
+      when they share one.
+    - ``universalHashSha1``: split's Universal Hash.
+    - ``subchannelShift``: the shift in sectors of redumper's "shifting subchannel data" warning.
+    - ``dataTracks``: each CD-ROM block of the info step, as the track's ``file``, its
+      ``invalidSyncSectors``, ``invalidModeSectors``, ``generatedSectors``, ``msfErrors``,
+      ``nonCompliantEccErrors``, ``eccErrors`` and ``edcErrors`` (each a ``count`` and ``ranges``
+      of ``first`` and ``last`` LBA, zero when redumper logs none), ``xaSubheaderMismatches`` (a
+      count, zero when redumper logs none) and ``redumpInfoErrors``.
+    - ``protectionSchemes``: each SecuROM block of the info step, as ``system``, ``file`` and
+      ``scheme`` (1 to 4, or ``unknown``).
+    - ``warnings``: every warning of the protection, refine, split, hash and info steps, without
+      the ``warning:`` prefix, each once, in order.
+
+    A key is None when the steps that log it did not run or did not log it: ``dataTracks`` and
+    ``protectionSchemes`` without an info step, as after data errors, where the hash and info
+    steps are not run. Returns None when no run dumped from a drive.
+    """
+    runs = dataerrors.runs(log_text)
+    dumped = [i for i, run in enumerate(runs) if _redumper_dumped(run)]
+    if not dumped:
+        return None
+    steps = _redumper_steps(runs[dumped[-1] :])
+
+    def last(name: str) -> str | None:
+        return next((body for step, body in reversed(steps) if step == name), None)
+
+    protection, split, info = last("PROTECTION"), last("SPLIT"), last("INFO")
+    protections: list[str] | None = None
+    if protection is not None:
+        if listed := _REDUMPER_PROTECTIONS.search(protection):
+            protections = [line.strip() for line in listed.group(1).splitlines() if line.strip()]
+        elif single := _REDUMPER_PROTECTION.search(protection):
+            protections = [] if single.group(1) == "none" else [single.group(1)]
+    write_offset = dataerrors.write_offset(split) if split is not None else None
+    shifts: list[dict[str, int]] | None = None
+    universal = None
+    if split is not None:
+        if configurations := list(_REDUMPER_OFFSET_CONFIGURATION.finditer(split)):
+            # A record of one sector is a false sync frame, which split drops before it applies
+            # the offsets (``disc_offset_normalize_records``).
+            records = [
+                {"lba": int(m.group(1)), "count": int(m.group(3)), "offset": int(m.group(4))}
+                for line in configurations[-1].group(1).splitlines()
+                if (m := _REDUMPER_OFFSET_RECORD.match(line)) and int(m.group(3)) > 1
+            ]
+            shifts = records if len({r["offset"] for r in records}) > 1 else []
+        if hashes := _REDUMPER_UNIVERSAL_HASH.findall(split):
+            universal = hashes[-1]
+    after_dump = "".join(body for step, body in steps if step in _REDUMPER_ANALYSIS_STEPS)
+    shift = _REDUMPER_SUBCHANNEL_SHIFT.findall(after_dump)
+    tracks, schemes = _redumper_info(info) if info is not None else (None, None)
+    return {
+        "protections": protections,
+        "writeOffset": write_offset,
+        "offsetShifts": shifts,
+        "universalHashSha1": universal,
+        "subchannelShift": int(shift[-1]) if shift else None,
+        "dataTracks": tracks,
+        "protectionSchemes": schemes,
+        "warnings": list(dict.fromkeys(_REDUMPER_WARNING.findall(after_dump))),
+    }
 
 
 def redumper_drive(log_text: str, extra: Sequence[str] = ()) -> dict[str, object] | None:

@@ -110,7 +110,10 @@ checked, and the same on every machine it is kept on.
    on another drive if you can. If the second dump has the same hashes, the edition is most
    likely unlisted. `notListed` means the disc is not
    in the DAT, so the dump cannot be checked this way; dumping it again on another drive and
-   comparing is the next best check. To check an existing split dump, run
+   comparing is the next best check. For both, `redump.candidates` names the games nearest by
+   track size, and
+   [When the DAT does not list the disc](../packages/disc-archiver/README.md#when-the-dat-does-not-list-the-disc)
+   describes how to judge the copy with them and with `source.discAnalysis`. To check an existing split dump, run
    `disc-archiver check --input <dump>.cue --dat <the DAT>`.
 5. **Keep the master.** Keep the whole output folder. These are the copies to keep for the long
    term:

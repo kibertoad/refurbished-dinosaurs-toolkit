@@ -242,7 +242,88 @@ def _sheet_explanation(sheet: bytes, renames: dict[str, str], wanted: list[DatRo
     return "the cue sheet's content differs from the DAT's" + (" beyond its FILE names and line endings" if renames else "")
 
 
-def compare(dat: Dat, sheet: dict[str, object], sheet_bytes: bytes, tracks: list[dict[str, object]]) -> dict[str, object]:
+MAXIMUM_CANDIDATES = 5
+"""The most games :func:`candidates` lists."""
+
+
+def candidates(dat: Dat, tracks: list[dict[str, object]]) -> list[dict[str, object]]:
+    """The games of ``dat`` nearest to a copy by track size, for a copy the DAT does not match.
+
+    Track files are paired by position: the copy's Nth track with the game's Nth file that is not
+    a cue sheet, in the DAT's order, which is track order in redump.org's DATs. A game is a
+    candidate when at least one pair has the same size. Candidates are ranked by the pairs whose
+    sizes agree, then by the pairs whose size, CRC32, MD5 and SHA-1 all agree, then by name, and
+    at most ``MAXIMUM_CANDIDATES`` are returned. Each gives the ``game``, its ``trackCount``,
+    whether that equals the copy's (``trackCountMatches``), and for each of the copy's tracks its
+    ``path``, the paired file's ``datName`` (None when the game has fewer files), ``sizeMatches``
+    and ``hashMatches``.
+    """
+    return _ranked_candidates(dat, tracks)[:MAXIMUM_CANDIDATES]
+
+
+def _ranked_candidates(dat: Dat, tracks: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Every candidate of :func:`candidates`, ranked, without the cap."""
+    found: list[tuple[tuple[int, int, str], dict[str, object]]] = []
+    for game in dat.games:
+        roms = [r for r in game.roms if not r.is_cue]
+        if not any(rom.size == entry["size"] for rom, entry in zip(roms, tracks)):
+            continue
+        pairs = []
+        for position, entry in enumerate(tracks):
+            rom = roms[position] if position < len(roms) else None
+            pairs.append(
+                {
+                    "path": entry["path"],
+                    "datName": rom.name if rom else None,
+                    "sizeMatches": rom is not None and rom.size == entry["size"],
+                    "hashMatches": rom is not None and _key(rom) == _key(entry),
+                }
+            )
+        sizes = sum(bool(p["sizeMatches"]) for p in pairs)
+        hashes = sum(bool(p["hashMatches"]) for p in pairs)
+        candidate = {"game": game.name, "trackCount": len(roms), "trackCountMatches": len(roms) == len(tracks), "tracks": pairs}
+        found.append(((-sizes, -hashes, game.name), candidate))
+    found.sort(key=lambda item: item[0])
+    return [candidate for _, candidate in found]
+
+
+def _unlisted_pressing(candidates_: list[dict[str, object]], kinds: list[str] | None, dat: Dat) -> str | None:
+    """The hint for candidates whose audio tracks all have the copy's sizes while the data tracks
+    do not, or None when no candidate shows that or the track kinds are not known. ``candidates_``
+    is every candidate, not only the ones the report lists, so that same-size revisions filling
+    the report's list do not hide such a game."""
+    if kinds is None:
+        return None
+    games = []
+    for candidate in candidates_:
+        pairs: list[dict[str, object]] = candidate["tracks"]  # type: ignore[assignment]
+        if not candidate["trackCountMatches"] or len(kinds) != len(pairs):
+            continue
+        audio = [p for p, kind in zip(pairs, kinds, strict=True) if kind == "audio"]
+        data = [p for p, kind in zip(pairs, kinds, strict=True) if kind != "audio"]
+        if audio and data and all(p["sizeMatches"] for p in audio) and not any(p["sizeMatches"] for p in data):
+            games.append(repr(candidate["game"]))
+    if not games:
+        return None
+    named = ", ".join(games)
+    several = sum(kind != "audio" for kind in kinds) > 1
+    data = "the data tracks' sizes differ" if several else "the data track's size differs"
+    build = "other builds of the data tracks" if several else "another build of the data track"
+    return (
+        f"every audio track has the size of its counterpart in {named}, and {data}. A misread does "
+        f"not change a track's size, so this is what a pressing {dat.file} does not list looks like, with "
+        f"{build}, rather than a bad dump. The DAT cannot prove it: compare the disc's ring codes, "
+        f"version and barcode with the Redump page of {named}, and dump it again, on another drive if you can"
+    )
+
+
+def compare(
+    dat: Dat,
+    sheet: dict[str, object],
+    sheet_bytes: bytes,
+    tracks: list[dict[str, object]],
+    kinds: list[str] | None = None,
+) -> dict[str, object]:
     """Compare a split BIN/CUE copy with every game in ``dat``.
 
     ``sheet`` and each of ``tracks`` (in track order) give the file's ``path``, ``size``,
@@ -251,7 +332,23 @@ def compare(dat: Dat, sheet: dict[str, object], sheet_bytes: bytes, tracks: list
     track file and the cue sheet match one game's files and the game lists no other file,
     ``partial`` when the track files match that way but the cue sheet does not (or the DAT lists
     none), ``notListed`` when no game lists any of the track files, and ``mismatched`` otherwise.
+
+    For ``notListed`` and ``mismatched``, ``candidates`` lists the games nearest by track size
+    (see :func:`candidates`); it is empty otherwise. ``kinds`` gives each track's kind, ``audio``
+    or ``data``; with it, ``differences`` says when a candidate has every audio track's size and
+    not the data track's (see :func:`_unlisted_pressing`).
     """
+    report = _compare(dat, sheet, sheet_bytes, tracks)
+    report["candidates"] = []
+    if report["status"] in ("notListed", "mismatched"):
+        ranked = _ranked_candidates(dat, tracks)
+        report["candidates"] = ranked[:MAXIMUM_CANDIDATES]
+        if hint := _unlisted_pressing(ranked, kinds, dat):
+            report["differences"].append(hint)  # type: ignore[attr-defined]
+    return report
+
+
+def _compare(dat: Dat, sheet: dict[str, object], sheet_bytes: bytes, tracks: list[dict[str, object]]) -> dict[str, object]:
     assignments = [(game, _assign(tracks, game)) for game in dat.games]
 
     sheet_key = _key(sheet)
@@ -319,6 +416,33 @@ def summary(report: dict[str, object]) -> str:
     return f"{report['status']}" + (f" ({report['game']})" if report["game"] else "")
 
 
+def candidates_summary(report: dict[str, object]) -> str | None:
+    """A report's ``candidates`` in one line, or None when it lists none.
+
+    ``nearest by track size: 'Game (Disc 1)' (2 of 3 sizes, 0 hashes, 3 tracks), ...``
+    """
+    listed: list[dict[str, object]] = report.get("candidates") or []  # type: ignore[assignment]
+    if not listed:
+        return None
+    parts = []
+    for candidate in listed:
+        pairs: list[dict[str, object]] = candidate["tracks"]  # type: ignore[assignment]
+        sizes = sum(bool(p["sizeMatches"]) for p in pairs)
+        hashes = sum(bool(p["hashMatches"]) for p in pairs)
+        parts.append(
+            f"{candidate['game']!r} ({sizes} of {len(pairs)} sizes, {hashes} hashes, {candidate['trackCount']} tracks)"
+        )
+    return "nearest by track size: " + ", ".join(parts)
+
+
 def not_compared(dat: Dat, reason: str) -> dict[str, object]:
     """The report when no split BIN/CUE copy could be compared with ``dat``."""
-    return {"dat": dat.file, "status": "notCompared", "game": None, "files": [], "nameDifferences": [], "differences": [reason]}
+    return {
+        "dat": dat.file,
+        "status": "notCompared",
+        "game": None,
+        "files": [],
+        "nameDifferences": [],
+        "differences": [reason],
+        "candidates": [],
+    }
