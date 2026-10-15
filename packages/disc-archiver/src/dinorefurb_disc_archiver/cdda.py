@@ -307,9 +307,16 @@ def _describe(shifts: tuple[int, ...]) -> str:
 def correct_read_offset(sheet: Path, offset: int, directory: Path, log: Log) -> tuple[Path, dict[int, list[list[int]]]]:
     """Write a copy of a one-file raw dump with its audio moved by the drive's read ``offset``.
 
-    ``offset`` is counted as AccurateRip and EAC count it: a drive with a read offset of +N returns,
-    at each position, the sample N samples earlier on the disc, so the corrected sample at each
-    position is the dump's sample N later. Each run of consecutive audio tracks, pregaps included,
+    ``offset`` means what the same value means to redumper, whose drive database takes AccurateRip's
+    offsets: a drive with a read offset of +N returns, at each position, the sample N samples
+    earlier on the disc, so the corrected sample at each position is the dump's sample N later.
+    redumper (release b756, the one ``redumper.json`` pins) says so beside
+    ``drive_get_read_offset`` in ``drive.ixx`` ("the drive offset number has to be added to the
+    data read start in order to get it corrected (positive offset means that data has to be
+    shifted left)"), and does it in ``cd/cd_dump.ixx``: the sector the drive returns for LBA L is
+    written with ``write_entry(..., read_offset * CD_SAMPLE_SIZE)``, which ``utils/file_io.ixx``
+    places at byte ``L * 2352 - read_offset * 4``, so corrected sample ``q`` is the drive's sample
+    ``q + read_offset``. Each run of consecutive audio tracks, pregaps included,
     is one stream of samples on the disc, so samples move across the boundaries between its tracks.
     Data sectors, which the drive addresses by their headers, are copied unchanged.
 

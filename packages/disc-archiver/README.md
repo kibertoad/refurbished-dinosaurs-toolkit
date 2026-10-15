@@ -288,9 +288,9 @@ from the same samples, and none of them moves the audio.
 
 ## Read offsets
 
-A drive reads audio a fixed number of samples early or late: its read offset. Counted as
-AccurateRip and EAC count it, a drive with an offset of +N returns at each position the sample N
-samples earlier on the disc. redumper corrects it. cdrdao does not, and neither do many player
+A drive reads audio a fixed number of samples early or late: its read offset. The archiver counts
+it as redumper and AccurateRip's drive list do, so the same value means the same thing in both: a
+drive with an offset of +N returns at each position the sample N samples earlier on the disc. redumper corrects it. cdrdao does not, and neither do many player
 rips (ImgBurn, Alcohol, older cdrdao, EAC set up without the offset), so their audio sits N samples
 later than in a corrected dump and its `sha256` differs in every track. The disc's data track is
 addressed by its sector headers and is not moved.

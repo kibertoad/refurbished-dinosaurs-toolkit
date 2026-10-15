@@ -228,6 +228,26 @@ class ReadOffsetTests(unittest.TestCase):
     def dump(self, offset: int) -> Path:
         return SyntheticDisc(self.ISO, unique_audio=True, loud_pregap=True, audio_shift=offset).write_single(self.dir / "dump", "Game")
 
+    def test_the_offset_means_what_it_means_to_redumper(self) -> None:
+        # redumper writes the sector a drive returns for LBA L at sample L * 588 - read_offset, so
+        # corrected sample q is the drive's sample q + read_offset. Worked example with eight
+        # samples numbered 1 to 8 as the drive returned them: +2 takes each sample two later, and
+        # the two at the end, which no read reached, are zeros; -2 takes each two earlier.
+        returned = b"".join(n.to_bytes(4, "little") for n in range(1, 9))
+        for offset, expected in ((2, [3, 4, 5, 6, 7, 8, 0, 0]), (-2, [0, 0, 1, 2, 3, 4, 5, 6]), (0, list(range(1, 9)))):
+            with self.subTest(offset=offset):
+                dump, out = io.BytesIO(returned), io.BytesIO(bytes(len(returned)))
+                cdda._shift_run(dump, out, 0, 8, offset)
+                corrected = out.getvalue()
+                self.assertEqual([int.from_bytes(corrected[i : i + 4], "little") for i in range(0, 32, 4)], expected)
+        # A drive listed at +6 (as AccurateRip and redumper list many) returns sample q - 6 of the
+        # disc at position q, and the correction gives back the disc's samples.
+        disc = b"".join(n.to_bytes(4, "little") for n in range(100, 140))
+        drive = bytes(6 * 4) + disc[: -6 * 4]
+        out = io.BytesIO(bytes(len(disc)))
+        cdda._shift_run(io.BytesIO(drive), out, 0, 40, 6)
+        self.assertEqual(out.getvalue()[: -6 * 4], disc[: -6 * 4])
+
     def test_a_positive_offset_is_corrected_and_the_unread_end_is_zero_fill(self) -> None:
         dump = self.dump(667)
         SyntheticDisc(self.ISO, unique_audio=True, loud_pregap=True, audio_shift=667).write_single(self.dir / "dump-again", "Game")
