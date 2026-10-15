@@ -11,9 +11,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from pycdlib import dates as pycdlib_dates
 from synthetic import SyntheticDisc, iso_image
 
-from dinorefurb_disc_archiver import tools
+from dinorefurb_disc_archiver import isofs, tools
 from dinorefurb_disc_archiver.cli import EXIT_FAILED, EXIT_MISMATCH, EXIT_OK, EXIT_USAGE, main
 from dinorefurb_disc_archiver.notice import NOTICE, NOTICE_FILENAME
 from dinorefurb_disc_archiver.pipeline import MANIFEST_NAME, archive
@@ -112,6 +113,24 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, EXIT_OK, out)
         manifest = json.loads((self.out / MANIFEST_NAME).read_text())
         self.assertEqual([o["format"] for o in manifest["outputs"]], ["bincue-split", "files"])
+
+    def test_reading_the_files_leaves_no_parsed_date_for_interpreter_shutdown(self) -> None:
+        # A time.struct_time alive at exit makes CPython 3.12 from before September 2024 print
+        # "Exception ignored in tp_clear" (python/cpython#122527); pycdlib caches one per date.
+        cached = pycdlib_dates.string_to_timestruct
+        cached.cache_clear()
+        held: list[int] = []
+
+        def clear() -> None:
+            held.append(cached.cache_info().currsize)
+            cached.cache_clear()
+
+        with mock.patch.object(isofs, "pycdlib_dates") as dates:
+            dates.string_to_timestruct.cache_clear.side_effect = clear
+            code, out, _ = run("convert", "--input", str(self.sheet), "--output", str(self.out), "--format", "files", "--accept-personal-use")
+        self.assertEqual(code, EXIT_OK, out)
+        self.assertTrue(held and held[0] > 0, f"pycdlib parsed no date to cache: {held}")
+        self.assertEqual(cached.cache_info().currsize, 0)
 
     def test_formats_given_as_a_generator_are_all_written(self) -> None:
         manifest = archive(

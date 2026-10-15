@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pycdlib
 import xxhash
+from pycdlib import dates as pycdlib_dates
 from pycdlib.pycdlibexception import PyCdlibException
 
 from .disc import COOKED_SECTOR, FRAMES_PER_SECOND, MSF_OFFSET, DiscError, NotDataSector, Track, block_data, user_data
@@ -503,6 +504,10 @@ def walk(track: Track, destination: Path | None = None, primary: bool = False) -
         except PyCdlibException:
             pass
         stream.close()
+        # pycdlib caches the time.struct_time of every date it parses. One that lives until the
+        # interpreter exits makes a CPython 3.12 from before September 2024 print "Exception
+        # ignored in tp_clear" while shutting down (python/cpython#122527), so none is left there.
+        pycdlib_dates.string_to_timestruct.cache_clear()
     return sorted(entries, key=lambda e: e.path)
 
 
