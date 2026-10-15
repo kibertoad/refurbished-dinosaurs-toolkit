@@ -943,7 +943,9 @@ def archive(
             corrected, applied = backends.redumper_read_offset(text, list(backend_args))
             configuration = backends.redumper_drive(text, list(backend_args))
             if configuration is not None and configuration["sectorOrderSource"] == "auto-detected":
-                log(f"redumper does not list this drive and detected its sector order: {configuration['sectorOrder']}.")
+                # Detection also runs for drives the database lists with the generic drive type.
+                who = "redumper" if configuration["inRedumperDatabase"] else "redumper does not list this drive and"
+                log(f"{who} detected its sector order: {configuration['sectorOrder']}.")
             if corrected is None:
                 log(f"{redumper_log.name} does not say which read offset redumper used, so the manifest leaves it unknown.")
             elif not corrected:
