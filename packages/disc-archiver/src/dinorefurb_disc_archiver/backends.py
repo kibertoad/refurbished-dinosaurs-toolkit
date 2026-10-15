@@ -187,7 +187,9 @@ def _recover(
     offset = dataerrors.write_offset(log_text)
     if offset is None:
         raise DiscError(f"redumper stopped on data errors, and {name}.log gives no disc write offset to locate them")
-    facts = dataerrors.examine(directory, name, offset)
+    # C2 errors in audio tracks are not what redumper stopped on, so only data tracks are counted.
+    tracks = dataerrors.data_tracks(log_text)
+    facts = dataerrors.examine(directory, name, offset, tracks)
     before = len(facts.sectors)
     if not before:
         raise DiscError(f"redumper stopped on data errors, but {name}.state flags no sector; its log is {name}.log")
@@ -207,7 +209,7 @@ def _recover(
         ]
         log("Reading them again, slowly.")
         tools.run([program, "refine", f"--drive={drive}", *image, *explicit, *extra, *pace], log, cwd=directory)
-        facts = dataerrors.examine(directory, name, offset)
+        facts = dataerrors.examine(directory, name, offset, tracks)
     else:
         log(f"That is more than {dataerrors.REFINE_MAX_SECTORS}, so they are not read again.")
     tools.run([program, "split", *image, *extra, *(["--force-split"] if facts.sectors else [])], log, cwd=directory)

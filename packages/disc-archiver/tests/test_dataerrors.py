@@ -71,6 +71,12 @@ class ExamineTests(unittest.TestCase):
         self.assertEqual(facts.files, {"/": 1})
         self.assertEqual(dataerrors.outcome(1, facts), "insideFiles")
 
+    def test_sectors_outside_the_data_tracks_are_left_out(self) -> None:
+        # C2 errors in an audio track are not data errors: only sectors inside a data track count.
+        write_redumper_dump(self.dir, "d", self.iso, {3, 5})
+        self.assertEqual(dataerrors.examine(self.dir, "d", 0, [(0, 4)]).sectors, [3])
+        self.assertEqual(dataerrors.examine(self.dir, "d", 0, None).sectors, [3, 5])
+
     def test_without_a_volume_the_files_are_unknown(self) -> None:
         write_redumper_dump(self.dir, "d", bytes(2048 * 20), {3})
         facts = dataerrors.examine(self.dir, "d", 0)
@@ -116,6 +122,29 @@ class LogTests(unittest.TestCase):
         self.assertIsNone(dataerrors.write_offset(redumper_log()))
         # An earlier run's offset is not taken for a later run that logged none.
         self.assertIsNone(dataerrors.write_offset(redumper_log(write_offset=5) + redumper_log()))
+
+    def test_data_tracks_leave_out_audio_tracks_and_the_lead_out(self) -> None:
+        self.assertEqual(dataerrors.data_tracks(redumper_log(lead_out=1000)), [(0, 999)])
+        self.assertEqual(dataerrors.data_tracks(redumper_log(sessions=[(0, 500), (11900, 12400)])), [(0, 499), (11900, 12399)])
+        self.assertEqual(dataerrors.data_tracks(MIXED_MODE_LOG), [(0, 799)])
+        self.assertIsNone(dataerrors.data_tracks(redumper_log(lead_out=1000).split("disc TOC:")[0]))
+        # The last run's listing counts: a later run without one leaves the tracks unknown.
+        self.assertIsNone(dataerrors.data_tracks(MIXED_MODE_LOG + redumper_log(dumped=False).split("*** DUMP")[0]))
+
+
+# A data track then an audio track with a pre-gap, in the layout of b761's ``TOC::print``.
+MIXED_MODE_LOG = (
+    "=== 2026-01-02 03:04:05 " + "=" * 56 + "\n"
+    "disc TOC:\n"
+    "  track 1 {  data }\n"
+    "    index 01 { LBA: [     0 ..    799], length:    800, MSF: 00:02:00-00:12:49 }\n"
+    "  track 2 { audio }\n"
+    "    index 00 { LBA: [   800 ..    949], length:    150, MSF: 00:12:50-00:14:74 }\n"
+    "    index 01 { LBA: [   950 ..   1999], length:   1050, MSF: 00:14:75-00:28:49 }\n"
+    "  track A { audio }\n"
+    "    index 01 { LBA:   2000, MSF: 00:28:50 }\n"
+    "\n"
+)
 
 
 if __name__ == "__main__":

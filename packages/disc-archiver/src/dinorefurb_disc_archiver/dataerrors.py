@@ -74,6 +74,37 @@ def write_offset(log_text: str) -> int | None:
     return int(found[-1]) if found else None
 
 
+# ``TOC::print`` (``cd/toc.ixx``): a "track N { flags }" line per track, "track A" for the lead-out,
+# then its index lines, "LBA: [start .. last]" for an index with sectors.
+_DISC_TOC = re.compile(r"^disc TOC:\s*\n((?:[ \t]+.*\n?)+)", re.MULTILINE)
+_TOC_TRACK = re.compile(r"^\s*track (\S+) \{(.*)\}\s*$")
+_TOC_INDEX_RANGE = re.compile(r"^\s*index \d+ \{ LBA: \[\s*(-?\d+) \.\.\s*(-?\d+)\]")
+
+
+def data_tracks(log_text: str) -> list[tuple[int, int]] | None:
+    """The first and last LBA of each data track in the last ``disc TOC:`` listing of the last run.
+
+    A data track's flags in the listing include ``data``; an audio track's do not. None when the
+    run lists no TOC or no data track in it, so the caller cannot tell data sectors from others.
+    """
+    blocks = list(_DISC_TOC.finditer(runs(log_text)[-1]))
+    if not blocks:
+        return None
+    tracks: list[tuple[int, int]] = []
+    current: list[int] | None = None
+    for line in blocks[-1].group(1).splitlines():
+        if track := _TOC_TRACK.match(line):
+            if current:
+                tracks.append((min(current), max(current)))
+            is_data = track.group(1) != "A" and "data" in track.group(2).split()
+            current = [] if is_data else None
+        elif current is not None and (index := _TOC_INDEX_RANGE.match(line)):
+            current += [int(index.group(1)), int(index.group(2))]
+    if current:
+        tracks.append((min(current), max(current)))
+    return tracks or None
+
+
 def bad_sectors(state: bytes | mmap.mmap, offset: int) -> list[int]:
     """The LBAs of the data sectors with at least one flagged sample, in order.
 
@@ -252,14 +283,21 @@ class Facts:
         return [{"path": path, "sectors": count} for path, count in sorted(self.files.items())]
 
 
-def examine(directory: Path, name: str, offset: int) -> Facts:
-    """Read the bad sectors of the dump ``name`` in ``directory``, their EDC and the files holding them."""
+def examine(directory: Path, name: str, offset: int, tracks: list[tuple[int, int]] | None = None) -> Facts:
+    """Read the bad sectors of the dump ``name`` in ``directory``, their EDC and the files holding them.
+
+    ``tracks`` (see :func:`data_tracks`) limits the sectors to those of the data tracks: C2 errors
+    in audio tracks, the lead-in or the lead-out are not data errors. None keeps every flagged
+    sector.
+    """
     sectors: list[int] = []
     with (directory / f"{name}.state").open("rb") as state:
         # The state file of a whole CD is over 200 MB: it is mapped, not read into memory.
         if state.seek(0, 2):
             with mmap.mmap(state.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
                 sectors = bad_sectors(mapped, offset)
+    if tracks is not None:
+        sectors = [lba for lba in sectors if any(first <= lba <= last for first, last in tracks)]
     scram = Scram(directory / f"{name}.scram", offset)
     try:
         failing = sum(1 for lba in sectors if not edc_valid(scram.sector(lba)))

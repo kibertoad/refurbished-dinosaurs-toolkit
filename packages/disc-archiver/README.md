@@ -57,7 +57,7 @@ A dump whose subchannel is invalid in more than 90% of its sectors is refused: t
 
 ### Data errors
 
-redumper does not write the image of a dump whose data track has sectors the drive flagged with C2 errors: its log ends with "data errors detected, unable to continue". The archiver then reads, from redumper's own files, which sectors those are, whether each one's data is damaged (its EDC), and which file of the disc's ISO 9660 volume holds it, if any. It reads the volume's directory itself, so a volume whose primary volume descriptor copies differ, which pycdlib refuses, is still read.
+redumper does not write the image of a dump whose data track has sectors the drive flagged with C2 errors: its log ends with "data errors detected, unable to continue". The archiver then reads, from redumper's own files, which sectors those are, whether each one's data is damaged (its EDC), and which file of the disc's ISO 9660 volume holds it, if any. It counts only sectors inside the data tracks of the `disc TOC:` that redumper logged, since C2 errors in audio tracks do not stop redumper; when the log lists no TOC, every flagged sector counts. It reads the volume's directory itself, so a volume whose primary volume descriptor copies differ, which pycdlib refuses, is still read.
 
 With at most 2,000 bad sectors it runs `redumper refine` once, at speed 8 with 3 rereads per sector (`--backend-arg=--speed=` or `--retries=` override them), with the sector order the dump used, and reads the sectors again. A slow reread clears dust and marginal reads; a sector that fails three slow reads fails the same way on more. With more bad sectors it does not reread: about ten minutes of rereads at most is the limit before dumping again is the better use of time.
 
