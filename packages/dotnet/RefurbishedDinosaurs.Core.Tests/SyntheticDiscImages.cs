@@ -97,9 +97,10 @@ internal static class SyntheticDiscImages
     // pregap is stored in no file. Otherwise every sector is raw, followed by 96 bytes of subchannel
     // when subchannel is set, and the pregap ends track 1's data, counted in track 1's length or,
     // with pregapApart, stored after it outside that length, as Aaru's Alcohol120 writer and the
-    // archiver lay it out. With mode2, track 1 is a raw Mode 2 (0xAB) track of CD-XA Form 1 sectors.
+    // archiver lay it out. With mode2, track 1 is a raw Mode 2 track of CD-XA Form 1 sectors, typed with
+    // that mode byte: 0xAB (Mode 2 formless) or 0xEC (Mode 2 Form 1, as Aaru's writer and the archiver type it).
     public static string Mds(string root, bool cookedData = false, bool subchannel = false, bool pregapApart = false,
-        bool mode2 = false, Action<byte[]>? edit = null)
+        byte? mode2 = null, Action<byte[]>? edit = null)
     {
         var sectorSize = RawSector + (subchannel ? 96 : 0);
         byte[] Sectors(byte[] raw) => subchannel ? WithSubchannel(raw) : raw;
@@ -112,10 +113,10 @@ internal static class SyntheticDiscImages
             tracks.Add((2, 0xA9, sectorSize, Track2Start, mdf.Length, PregapSectors, TrackSectors));
             mdf.Write(Sectors(Track2));
         }
-        else if (pregapApart || mode2)
+        else if (pregapApart || mode2 is not null)
         {
-            tracks.Add((1, mode2 ? (byte)0xAB : (byte)0xAA, sectorSize, 0, 0, 150, DataSectors));
-            mdf.Write(Sectors([.. mode2 ? Mode2Form1SourceTests.ToMode2Form1(Iso) : RawData, .. Silence]));
+            tracks.Add((1, mode2 ?? 0xAA, sectorSize, 0, 0, 150, DataSectors));
+            mdf.Write(Sectors([.. mode2 is not null ? Mode2Form1SourceTests.ToMode2Form1(Iso) : RawData, .. Silence]));
             tracks.Add((2, 0xA9, sectorSize, Track2Start, mdf.Length, PregapSectors, TrackSectors));
             mdf.Write(Sectors(Track2));
         }

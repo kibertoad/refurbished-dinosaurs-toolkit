@@ -210,7 +210,23 @@ internal sealed class RawSectorStream(IReadOnlyList<RawSegment> segments, long s
         return total;
     }
 
-    private RawSegment Find(long sector)
+    // The sectors around sector, from the first to past the last, that are stored in a file with no
+    // unstored sector between them and it. The whole stream when sector itself is stored in no file,
+    // so that reading it throws with the reason.
+    public (long Start, long End) StoredRun(long sector)
+    {
+        var at = IndexOf(sector);
+        if (segments[at].Reason is not null) return (0, sectors);
+        var first = at;
+        while (first > 0 && segments[first - 1].Reason is null) first--;
+        var last = at;
+        while (last + 1 < segments.Count && segments[last + 1].Reason is null) last++;
+        return (segments[first].StartSector, segments[last].StartSector + segments[last].Sectors);
+    }
+
+    private RawSegment Find(long sector) => segments[IndexOf(sector)];
+
+    private int IndexOf(long sector)
     {
         int low = 0, high = segments.Count - 1;
         while (low < high)
@@ -219,7 +235,7 @@ internal sealed class RawSectorStream(IReadOnlyList<RawSegment> segments, long s
             if (segments[middle].StartSector <= sector) low = middle;
             else high = middle - 1;
         }
-        return segments[low];
+        return low;
     }
 
     private Stream StreamFor(ImageSnapshot file)
@@ -289,12 +305,17 @@ internal static class DiscImageOpener
             new CookedDiscDataTrack(image, 0, image.Length / 2048), new Dictionary<int, string>()));
     }
 
-    // The one descriptor in a directory, else its one .iso.
+    // The one descriptor in a directory, else its one .iso. A .cue whose first FILE is the .img,
+    // .mdf or .nrg of a .ccd, .mds or .nrg of its name beside it, such as the sheet CloneCD and
+    // DiscImageCreator write next to their .ccd, is a second description of that image and is
+    // passed over.
     private static string Choose(string directory)
     {
         var all = Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
             .Order(StringComparer.OrdinalIgnoreCase).ToArray();
         var descriptors = all.Where(file => Descriptors.Contains(Path.GetExtension(file).ToLowerInvariant())).ToArray();
+        var others = descriptors.Where(file => !Path.GetExtension(file).Equals(".cue", StringComparison.OrdinalIgnoreCase)).ToArray();
+        descriptors = descriptors.Where(file => others.Contains(file) || !Describes(file, others)).ToArray();
         var candidates = descriptors.Length > 0
             ? descriptors
             : all.Where(file => Path.GetExtension(file).Equals(".iso", StringComparison.OrdinalIgnoreCase)).ToArray();
@@ -304,6 +325,28 @@ internal static class DiscImageOpener
                 ? $"{directory} holds no disc image: no .cue, .ccd, .mds, .nrg or .iso file."
                 : $"{directory} holds several disc images ({string.Join(", ", candidates.Select(Path.GetFileName))}); " +
                   "pass the one to read.");
+    }
+
+    // Whether the sheet at cuePath describes the image of one of descriptors with its name: its first
+    // FILE is that descriptor's .img, .mdf or .nrg. A sheet that cannot be read describes none.
+    private static bool Describes(string cuePath, IReadOnlyList<string> descriptors)
+    {
+        if (CueBinSheet.MatchStem(cuePath, descriptors) is not { } descriptor) return false;
+        string? image;
+        try
+        {
+            var (files, _) = CueBinSheet.Tokenize(CueBinSheet.Decode(CueBinSheet.ReadBytes(cuePath)), readGaps: true);
+            image = CueBinSheet.ResolveReference(Path.GetDirectoryName(cuePath)!, files[0].Path);
+        }
+        catch (InvalidDataException) { return false; }
+        var data = Path.GetExtension(descriptor).ToLowerInvariant() switch
+        {
+            ".ccd" => ".img",
+            ".mds" => ".mdf",
+            _ => ".nrg",
+        };
+        return image is not null && Path.GetExtension(image).Equals(data, StringComparison.OrdinalIgnoreCase) &&
+               Path.GetFileNameWithoutExtension(image).Equals(Path.GetFileNameWithoutExtension(descriptor), StringComparison.OrdinalIgnoreCase);
     }
 
     // The descriptor with the image's name, or for a .bin the only cue sheet when none has its name.
@@ -354,7 +397,7 @@ internal static class CueDiscImage
         if (!cooked && first is not ("MODE1/2352" or "MODE2/2352"))
             throw new InvalidDataException(
                 $"First cue track must be MODE1/2352, MODE2/2352, MODE1/2048 or MODE2/2048, not {CueBinSheet.Truncate(first)}.");
-        CheckTracks(files, tracks);
+        CueBinSheet.CheckTracks(files, tracks, discImage: true);
         if (cooked && FileTracks(files, tracks.Count, 0).Count > 1)
             throw new InvalidDataException(
                 $"Cue FILE {CueBinSheet.Truncate(files[0].Path)} holds the {first} data track and other tracks; a file of " +
@@ -477,44 +520,6 @@ internal static class CueDiscImage
         }
         builder.Stored(file, offset + cursor * CueBinSheet.RawSectorSize, CueBinSheet.RawSectorSize, fileSectors - cursor);
         return null;
-    }
-
-    // The rules of a disc-image sheet beyond those Tokenize applies.
-    private static void CheckTracks(
-        List<(string Path, string Type, int FirstPosition)> files,
-        List<(int Number, string Type, Dictionary<int, int> Indices, int Pregap)> tracks)
-    {
-        var previous = -1;
-        var fileIndex = 0;
-        for (var offset = 0; offset < tracks.Count; offset++)
-        {
-            var (number, type, indices, pregap) = tracks[offset];
-            if (fileIndex + 1 < files.Count && files[fileIndex + 1].FirstPosition == offset)
-            {
-                fileIndex++;
-                previous = -1;
-            }
-            if (number != offset + 1)
-                throw new InvalidDataException("Cue track numbers must be consecutive and start at 1.");
-            if (!indices.TryGetValue(1, out var start))
-                throw new InvalidDataException($"Track {number:D2} has no INDEX 01.");
-            if (indices.TryGetValue(0, out var stored))
-            {
-                if (stored > start) throw new InvalidDataException($"Track {number:D2} has INDEX 00 after INDEX 01.");
-                if (pregap > 0 && offset > 0)
-                    throw new InvalidDataException(
-                        $"Track {number:D2} has both PREGAP and INDEX 00, so its pregap is declared twice.");
-            }
-            if (offset == 0 && start != 0) throw new InvalidDataException("Track 01 INDEX 01 must be at 00:00:00.");
-            if (offset > 0 && type != "AUDIO")
-                throw new InvalidDataException(
-                    $"Unsupported non-audio track {number:D2}: {CueBinSheet.Truncate(type)}. Only track 01 may hold data.");
-            foreach (var (_, sector) in indices.OrderBy(entry => entry.Key))
-            {
-                if (sector < previous) throw new InvalidDataException("Cue track indices are not in order.");
-                previous = sector;
-            }
-        }
     }
 
     // The numbers of the tracks FILE index holds.

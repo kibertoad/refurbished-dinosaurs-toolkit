@@ -230,7 +230,9 @@ public abstract class OriginalContentSource : IDisposable
     /// (or a <c>.bin</c>, read through the <c>.cue</c> with its name, else the only one), <c>.iso</c>,
     /// <c>.ccd</c> (or its <c>.img</c>), <c>.mds</c> (or its <c>.mdf</c>) and <c>.nrg</c>. A directory
     /// is read through the one <c>.cue</c>, <c>.ccd</c>, <c>.mds</c> or <c>.nrg</c> in it, else its one
-    /// <c>.iso</c>.
+    /// <c>.iso</c>. A <c>.cue</c> whose first <c>FILE</c> is the <c>.img</c>, <c>.mdf</c> or
+    /// <c>.nrg</c> of a <c>.ccd</c>, <c>.mds</c> or <c>.nrg</c> of its name beside it, such as the sheet
+    /// CloneCD writes, is passed over for that descriptor.
     /// <para>
     /// The disc must be one session whose first track holds the data, starting at sector 0, followed
     /// only by audio tracks, as for <see cref="OpenCueBin"/>. A raw data track is checked sector by

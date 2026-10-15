@@ -183,9 +183,14 @@ public static partial class BuildListing
     /// character, <c>|</c>, which marks an archive member, a <c>\</c>, which Linux and macOS allow
     /// in a name, or an unpaired surrogate. Or a name at its top starts like a disc path
     /// (<c>CD:</c>, <c>CD2:</c>), which Linux and macOS allow. Or a disc image is not valid, as its
-    /// reader describes, such as a file that is not an <c>.iso</c> and is not a cue sheet or
-    /// <c>.bin</c>. The discs are read before the installation directory is walked, so an invalid
+    /// reader describes, such as a file whose extension names no disc image form and that is not a
+    /// cue sheet. The discs are read before the installation directory is walked, so an invalid
     /// image fails first.
+    /// </exception>
+    /// <exception cref="NotSupportedException">
+    /// A disc image is of a form or layout <see cref="OriginalContentSource.OpenDiscImage(string)"/>
+    /// refuses, such as a DAEMON Tools <c>.mdx</c>, an <c>.mds</c> of version 2, a DVD or a disc of
+    /// several sessions.
     /// </exception>
     /// <exception cref="UnauthorizedAccessException">The installation directory itself cannot be read.</exception>
     /// <exception cref="IOException">The installation directory itself cannot be read, or a disc image changed while it was read.</exception>
@@ -210,7 +215,7 @@ public static partial class BuildListing
                     nameof(discs));
             if (string.IsNullOrWhiteSpace(disc.ImagePath) || Directory.Exists(disc.ImagePath))
                 throw new ArgumentException(
-                    $"Disc {disc.Prefix} is read from an .iso image or a cue/bin image's sheet or .bin, not {disc.ImagePath}. " +
+                    $"Disc {disc.Prefix} is read from a disc image file, such as an .iso, a cue sheet, a .ccd, an .mds or an .nrg, not {disc.ImagePath}. " +
                     "A mounted disc gives the names the drive chooses, such as Joliet names, not those of the primary volume.",
                     nameof(discs));
         }
@@ -343,8 +348,10 @@ public static partial class BuildListing
     {
         var extension = Path.GetExtension(path).ToLowerInvariant();
         if (extension == ".iso") return OriginalContentSource.OpenIso9660(path);
+        // OpenDiscImage finds an .img's .ccd by name ignoring case, so the check here does too.
         if (extension is ".cue" or ".bin" or ".ccd" or ".mds" or ".mdf" or ".mdx" or ".nrg" ||
-            extension == ".img" && File.Exists(Path.ChangeExtension(path, ".ccd")))
+            extension == ".img" && File.Exists(path) && CueBinSheet.MatchStem(path,
+                CueBinSheet.Enumerate(Path.GetDirectoryName(Path.GetFullPath(path))!, ".ccd")) is not null)
             return OriginalContentSource.OpenDiscImage(path);
         return OriginalContentSource.OpenCueBin(path);
     }

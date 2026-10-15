@@ -13,8 +13,8 @@ public sealed class DiscImageSourceTests
     private const int AnchorSamples = CddaTrackFingerprint.SamplesPerSector;
 
     public static TheoryData<string> Forms =>
-        ["cue-bin", "split-bin", "iso-wav", "clonecd", "mds", "mds-sub", "mds-cooked", "mds-apart", "mds-mode2", "nrg-v2", "nrg-v1",
-            "nrg-v1-binary"];
+        ["cue-bin", "split-bin", "iso-wav", "clonecd", "mds", "mds-sub", "mds-cooked", "mds-apart", "mds-mode2", "mds-mode2-form1",
+            "nrg-v2", "nrg-v1", "nrg-v1-binary"];
 
     private static string Write(string form, string root) => form switch
     {
@@ -26,7 +26,8 @@ public sealed class DiscImageSourceTests
         "mds-sub" => Mds(root, subchannel: true),
         "mds-cooked" => Mds(root, cookedData: true),
         "mds-apart" => Mds(root, pregapApart: true),
-        "mds-mode2" => Mds(root, mode2: true),
+        "mds-mode2" => Mds(root, mode2: 0xAB),
+        "mds-mode2-form1" => Mds(root, mode2: 0xEC),
         "nrg-v2" => Nrg(root),
         "nrg-v1" => Nrg(root, version2: false),
         "nrg-v1-binary" => Nrg(root, version2: false, bcdTimes: false),
@@ -72,6 +73,12 @@ public sealed class DiscImageSourceTests
                     var extent = source.Cue!.TrackExtent(track, raw.Length / RawSector);
                     Assert.Equal(expected.Cue!.TrackExtent(track, bin.Length / RawSector), extent);
                     Assert.Equal(WaveOf(bin, extent), WaveOf(raw, extent));
+                    // The anchor lies within twice the tolerance of the track's start, so recording
+                    // searches the pregap, which some forms do not store.
+                    var ct = TestContext.Current.CancellationToken;
+                    Assert.Equal(
+                        await CddaTrackFingerprints.RecordAsync(bin, extent, Tolerance, AnchorOffset, AnchorSamples, ct),
+                        await CddaTrackFingerprints.RecordAsync(raw, extent, Tolerance, AnchorOffset, AnchorSamples, ct));
                 }
             }
 
@@ -324,6 +331,7 @@ public sealed class DiscImageSourceTests
     [Theory]
     [InlineData("clonecd", "the CloneCD .ccd game.ccd declares MODE2/2352")]
     [InlineData("mds", "the Alcohol .mds game.mds declares MODE2/2352")]
+    [InlineData("mds-form1", "the Alcohol .mds game.mds declares MODE2/2352")]
     [InlineData("nrg", "the Nero .nrg game.nrg declares MODE2/2352")]
     public async Task ASectorThatDoesNotMatchItsDescriptorNamesIt(string form, string message)
     {
@@ -335,6 +343,7 @@ public sealed class DiscImageSourceTests
             {
                 "clonecd" => CloneCd(root, edit: ccd => ccd.Replace("[TRACK 1]\r\nMODE=1", "[TRACK 1]\r\nMODE=2", StringComparison.Ordinal)),
                 "mds" => Mds(root, edit: mds => mds[88 + 24 + 3 * 80] = 0xAB),
+                "mds-form1" => Mds(root, edit: mds => mds[88 + 24 + 3 * 80] = 0xEC),
                 _ => Nrg(root, edit: chunks => Edit(chunks, "DAOX", dao => dao[22 + 14] = 0x06)),
             };
             var error = await Assert.ThrowsAsync<InvalidDataException>(async () =>
@@ -443,6 +452,26 @@ public sealed class DiscImageSourceTests
                 Assert.Equal(DiscImageFormats.CloneCd, source.DiscImageFormat);
             using (var source = OriginalContentSource.Open(Path.Combine(root, "game.ccd")))
                 Assert.Equal(ContentSourceKinds.DiscImage, source.Kind);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void ADirectoryPassesOverTheSheetBesideACloneCdImage()
+    {
+        var root = Temporary();
+        try
+        {
+            CloneCd(root);
+            File.WriteAllText(Path.Combine(root, "game.cue"),
+                "FILE \"game.img\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n");
+            using (var source = OriginalContentSource.OpenDiscImage(root))
+                Assert.Equal(DiscImageFormats.CloneCd, source.DiscImageFormat);
+            // A sheet of the same name that describes another image is a second disc image.
+            File.WriteAllText(Path.Combine(root, "game.cue"),
+                "FILE \"other.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n");
+            Assert.Contains("several disc images",
+                Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenDiscImage(root)).Message, StringComparison.Ordinal);
         }
         finally { Directory.Delete(root, true); }
     }

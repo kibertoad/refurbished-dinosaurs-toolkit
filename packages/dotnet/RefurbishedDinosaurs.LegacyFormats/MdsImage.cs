@@ -69,8 +69,13 @@ internal static class MdsImage
             // nibble and treats a value and that value plus 8 alike, so the low three bits give the
             // mode: 1 audio, 2 Mode 1, 3 Mode 2, 4 Mode 2 Form 1, 5 Mode 2 Form 2 (0 and 7 Mode 2, 6
             // unknown). Aaru's Alcohol120/Enums.cs lists the bytes Alcohol writes: A9/E9 audio, AA/EA
-            // Mode 1, AB Mode 2 formless, AC/EC Mode 2 Form 1, AD/ED Mode 2 Form 2. A raw Mode 2 track
-            // (AB, as a cue sheet's MODE2/2352) is read as CD-XA Form 1, each sector checked as it is read.
+            // Mode 1, AB Mode 2 formless, AC/EC Mode 2 Form 1, AD/ED Mode 2 Form 2. Aaru's writer and the
+            // archiver type a CD-XA data track EC. libmirage and Aaru read AB as formless 2336-byte
+            // sectors; this reader reads a raw AB track, like a raw EC track and a cue sheet's
+            // MODE2/2352, as CD-XA Form 1: a raw track stores all 2352 bytes either way, and each sector
+            // is checked as it is read (sync, mode byte, two equal subheader copies, Form 1 or empty
+            // Form 2), so a sector that is not CD-XA fails. A 2048-byte track stores user data only, so
+            // there AB is refused and EC read.
             var kind = mode & 0x07;
             if (kind is not (1 or 2 or 3 or 4))
                 throw new NotSupportedException(
@@ -152,9 +157,10 @@ internal static class MdsImage
                 throw new NotSupportedException($"{name} gives track {track.Number} data; only track 1 may hold data.");
             if (lengths[at] <= 0) throw new InvalidDataException($"{name} gives track {track.Number} no sectors.");
             var bytes = checked(lengths[at] * track.SectorSize);
-            if (track.Offset + bytes > mdf.Length)
+            // Compared without adding, so an offset near the 64-bit limit cannot wrap past the check.
+            if (track.Offset > mdf.Length - bytes)
                 throw new InvalidDataException(
-                    $"{name} puts track {track.Number} at bytes {track.Offset} to {track.Offset + bytes} of {mdfName}, past the end of the file.");
+                    $"{name} puts track {track.Number}'s {bytes} bytes at byte {track.Offset} of {mdfName}, past the end of the file.");
 
             var mode = track.Kind == 2 ? RawDataTrackMode.Mode1 : RawDataTrackMode.Mode2Form1;
             builder.Track(track.Number, track.Number == 1 ? DiscImageOpener.TypeOf(mode, track.Cooked) : "AUDIO");

@@ -534,3 +534,10 @@ audio track in a later `BINARY` file or a PCM WAVE file of the sheet is now a fi
 size where it was a `stopped` item, and a track in a FLAC, Ogg or MP3 file, or one after it, is a
 `stopped` item giving the image's reason. A record made from such a sheet changes when it is made
 again. A sheet with another extension is still opened with `OpenCueBin` and listed as before.
+
+Some `.cue` and `.bin` inputs that listed before now fail, as `OpenDiscImage` refuses them: a sheet
+with `POSTGAP`, a track with both `PREGAP` and `INDEX 00`, and a sheet whose first `FILE` does not
+exist, which `OpenCueBin` replaced with the `.bin` of the sheet's name or the only `.bin` beside
+it. Fix the sheet, or pass it with another extension to keep the `OpenCueBin` reading. A disc image
+of a form or layout `OpenDiscImage` refuses, such as an `.mds` of version 2 or several sessions,
+throws `NotSupportedException`, so code that catches the exceptions of `Make` catches it as well.

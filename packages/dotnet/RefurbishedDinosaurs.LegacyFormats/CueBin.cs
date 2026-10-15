@@ -8,8 +8,15 @@ namespace RefurbishedDinosaurs.LegacyFormats;
 /// <param name="Number">The track number, from 1.</param>
 /// <param name="Type">
 /// The track type in upper case: <c>MODE1/2352</c> or <c>MODE2/2352</c> for the first, <c>AUDIO</c> for the rest.
+/// In the <see cref="OriginalContentSource.Cue"/> of a <see cref="ContentSourceKinds.DiscImage"/>
+/// source whose data track is stored as 2048-byte sectors, the first is <c>MODE1/2048</c> or
+/// <c>MODE2/2048</c>.
 /// </param>
-/// <param name="Indices">Sector of each <c>INDEX</c>, keyed by index number, at 75 sectors per second.</param>
+/// <param name="Indices">
+/// Sector of each <c>INDEX</c>, keyed by index number, at 75 sectors per second. A track after
+/// <see cref="CueBinSheet.ImageTracks"/> in a disc-image source's <see cref="OriginalContentSource.Cue"/>
+/// has none, since the source does not read its file.
+/// </param>
 public sealed record CueBinTrack(int Number, string Type, IReadOnlyDictionary<int, int> Indices);
 
 /// <summary>The sectors of one track in a cue/bin image, as <see cref="CueBinSheet.TrackExtent"/> gives them.</summary>
@@ -246,12 +253,33 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
         if (tracks[0].Type is not ("MODE1/2352" or "MODE2/2352"))
             throw new InvalidDataException(
                 $"First cue track must be MODE1/2352 or MODE2/2352, not {Truncate(tracks[0].Type)}.");
+        CheckTracks(files, tracks, discImage: false);
 
+        var entries = new CueBinFile[files.Count];
+        for (var i = 0; i < files.Count; i++)
+        {
+            var last = i + 1 < files.Count ? files[i + 1].FirstPosition : tracks.Count;
+            entries[i] = new(files[i].Path, files[i].Type, files[i].FirstPosition + 1, last);
+        }
+        return new(files[0].Path, tracks.Select(track =>
+            new CueBinTrack(track.Number, track.Type, track.Indices)).ToArray()) { Files = entries };
+    }
+
+    // The track rules a sheet's reader applies after Tokenize: tracks numbered consecutively from 1,
+    // each with an INDEX 01 and any INDEX 00 before it, track 01's INDEX 01 at 00:00:00, only track 01
+    // holding data, and the indices of each FILE in order. A disc-image sheet (discImage) also refuses
+    // a later track that declares its pregap with both PREGAP and INDEX 00, and names a later data
+    // track without its FILE, since its later FILE entries are read.
+    internal static void CheckTracks(
+        List<(string Path, string Type, int FirstPosition)> files,
+        List<(int Number, string Type, Dictionary<int, int> Indices, int Pregap)> tracks,
+        bool discImage)
+    {
         var previous = -1;
         var fileIndex = 0;
         for (var offset = 0; offset < tracks.Count; offset++)
         {
-            var (number, type, indices, _) = tracks[offset];
+            var (number, type, indices, gap) = tracks[offset];
             // Each FILE's indices count from the start of that file.
             if (fileIndex + 1 < files.Count && files[fileIndex + 1].FirstPosition == offset)
             {
@@ -262,18 +290,25 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
                 throw new InvalidDataException("Cue track numbers must be consecutive and start at 1.");
             if (!indices.TryGetValue(1, out var start))
                 throw new InvalidDataException($"Track {number:D2} has no INDEX 01.");
-            if (indices.TryGetValue(0, out var pregap) && pregap > start)
-                throw new InvalidDataException($"Track {number:D2} has INDEX 00 after INDEX 01.");
+            if (indices.TryGetValue(0, out var pregap))
+            {
+                if (pregap > start) throw new InvalidDataException($"Track {number:D2} has INDEX 00 after INDEX 01.");
+                if (discImage && gap > 0 && offset > 0)
+                    throw new InvalidDataException(
+                        $"Track {number:D2} has both PREGAP and INDEX 00, so its pregap is declared twice.");
+            }
             // The data track's user data is read from the first sector of the BIN, so its
             // INDEX 01 must be there; a stored pregap ahead of it would be read as the volume.
             if (offset == 0 && start != 0)
                 throw new InvalidDataException("Track 01 INDEX 01 must be at 00:00:00.");
             if (offset > 0 && type != "AUDIO")
-                throw new InvalidDataException(fileIndex == 0
-                    ? $"Unsupported non-audio track {number:D2}: {Truncate(type)}."
-                    : $"Unsupported non-audio track {number:D2}: {Truncate(type)} in FILE " +
-                      $"{Truncate(files[fileIndex].Path)}. Only the first FILE may hold the data track; " +
-                      "later FILE entries may hold only AUDIO tracks.");
+                throw new InvalidDataException(discImage
+                    ? $"Unsupported non-audio track {number:D2}: {Truncate(type)}. Only track 01 may hold data."
+                    : fileIndex == 0
+                        ? $"Unsupported non-audio track {number:D2}: {Truncate(type)}."
+                        : $"Unsupported non-audio track {number:D2}: {Truncate(type)} in FILE " +
+                          $"{Truncate(files[fileIndex].Path)}. Only the first FILE may hold the data track; " +
+                          "later FILE entries may hold only AUDIO tracks.");
             // Every index of a track must follow every index of the track before it in the same
             // FILE, and the indices of one track must rise with their numbers.
             foreach (var (_, sector) in indices.OrderBy(entry => entry.Key))
@@ -282,15 +317,6 @@ public sealed partial record CueBinSheet(string ReferencedFile, IReadOnlyList<Cu
                 previous = sector;
             }
         }
-
-        var entries = new CueBinFile[files.Count];
-        for (var i = 0; i < files.Count; i++)
-        {
-            var last = i + 1 < files.Count ? files[i + 1].FirstPosition : tracks.Count;
-            entries[i] = new(files[i].Path, files[i].Type, files[i].FirstPosition + 1, last);
-        }
-        return new(files[0].Path, tracks.Select(track =>
-            new CueBinTrack(track.Number, track.Type, track.Indices)).ToArray()) { Files = entries };
     }
 
     // Reads the FILE, TRACK and INDEX lines of a sheet, and with readGaps its PREGAP and POSTGAP
