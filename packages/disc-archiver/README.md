@@ -52,9 +52,9 @@ kept unchanged in the `archival` folder.
 The release to download is pinned in
 [`src/dinorefurb_disc_archiver/redumper.json`](src/dinorefurb_disc_archiver/redumper.json): a
 tag and the SHA-256 of each platform's zip. A download is used only when its SHA-256 matches the
-pin, or, for a platform the pin leaves `null`, the digest GitHub publishes for that asset; a
-download with neither is refused. It is unpacked, unmodified, into your own data folder under its
-tag, so a new pin downloads its own copy:
+pin; any other download is refused. It is unpacked, unmodified, into your own data folder under
+its tag, so a new pin downloads its own copy, and the copies of earlier tags there are removed once
+it is in place:
 
 | System | Folder |
 |---|---|
@@ -191,7 +191,7 @@ profile check failed, a written format differs from its source, or the Redump co
 ### Comparing with a Redump DAT
 
 `--dat <file>` on `rip`, `convert` and `check` compares the copy with a DAT you downloaded
-yourself from [redump.org](http://redump.org/downloads/): the `.dat` file, or the `.zip` the site
+yourself from [redump.org](https://redump.org/downloads/): the `.dat` file, or the `.zip` the site
 serves holding one `.dat`. The archiver never downloads a DAT. `rip` and `convert` also write
 `bincue-split`, the layout Redump lists, and compare its files; `check` compares the `.cue` it is
 given and the track files it names. `check` refuses other inputs, and a cue sheet of another layout

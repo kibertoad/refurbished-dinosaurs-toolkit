@@ -74,19 +74,25 @@ compare its build entry's `xxh3` with the manifest; see [Hashes](#hashes).
 The procedure for a maintainer copying their own disc for research, so that the copy is complete,
 checked, and the same on every machine it is kept on.
 
-1. **Dump with redumper.** Run `disc-archiver rip --backend redumper`, so the run fails instead of
-   falling back to cdrdao or the data track copy. cdrdao keeps no subchannel or protection data
-   and does not correct the drive's read offset, so its audio differs from a corrected dump by a
-   shift. redumper must know the drive's read offset; a drive it lists as supported is best
-   ([redumper's drive list](https://github.com/superg/redumper)).
+1. **Dump with redumper and write every format.** Run
+   `disc-archiver rip --backend redumper --format all`. `--backend redumper` makes the run fail
+   instead of falling back to cdrdao or the data track copy. cdrdao keeps no subchannel or
+   protection data and does not correct the drive's read offset, so its audio differs from a
+   corrected dump by a shift. redumper must know the drive's read offset; a drive it lists as
+   supported is best ([redumper's drive list](https://github.com/superg/redumper)). `--format all`
+   writes every form the importer tests need from the same dump, each read back and compared with
+   it.
 2. **Read redumper's log.** In `archival/<name>.log`, look for C2 errors and sectors that stayed
-   unreadable after the retries. Clean the disc and dump again with `--backend-arg=--retries=20`
-   before trusting a dump that has them.
-3. **Write every format.** Add `--format all`, so one run writes every form the importer tests
-   need, each read back and compared with the dump. Exit code `0` means every format was written
-   and verified; `3` means a format or the profile check differs, and the manifest says which.
+   unreadable after the retries. Every format was written from that dump and carries the same
+   errors. Clean the disc and dump again into a new `--output` folder with
+   `--backend-arg=--retries=20` before trusting a dump that has them.
+3. **Read the result.** Exit code `3` means a written format differs from the dump or a profile
+   check failed, and the manifest says which. Exit code `0` means neither happened. It still
+   allows a format that was not written because a program it needs (chdman, ffmpeg) is missing,
+   listed under the manifest's `unavailable`, and a `partial` format, whose `notCompared` says
+   what was not compared.
 4. **Check against Redump.** Download the Redump PC DAT from
-   [redump.org](http://redump.org/downloads/) and add `--dat <the .zip or .dat>`, with `--name`
+   [redump.org](https://redump.org/downloads/) and add `--dat <the .zip or .dat>`, with `--name`
    set to the game's Redump name so the files carry Redump's names. The run writes
    `bincue-split` and compares it with every disc in the DAT; the manifest's `redump` gives the
    outcome. `matched` means the dump is the known good one. `partial` means every track matches
@@ -107,12 +113,15 @@ checked, and the same on every machine it is kept on.
    | `bincue-split/` | The Redump layout, the form disc databases list and most tools read. |
    | `rip-manifest.json` | The content hashes every other copy is checked against. |
 
-   CHD is a good compact copy for emulators but not a master: it keeps no subchannel, and the
-   `.chd` file's own hash depends on the chdman version that wrote it.
+   The archiver's `chd` is a good compact copy for emulators but not a master: chdman makes it
+   from the one-file BIN/CUE, so it holds no subchannel, and the `.chd` file's own hash depends
+   on the chdman version that wrote it.
 6. **Copy only to machines you own, and check each copy.** Move the folder over your own storage
    or network, never through a public or shared link. On each machine, run
    `disc-archiver check --input <copy>.cue` and compare the `disc` hashes it reports with the
-   manifest, which catches a damaged transfer.
+   manifest, which catches a damaged transfer of the files that cue sheet names. The manifest
+   holds no hashes of redumper's `.scram`, `.subcode` and `.toc` files, so record their SHA-256
+   (or the compressed archive's) on the first machine and compare each copy with that record.
 
 ## Hashes
 
@@ -124,8 +133,10 @@ checked, and the same on every machine it is kept on.
 
 Identify a disc by its content (the data track's user data and each audio track's samples), never
 by the hash of a container file such as a `.chd` or a one-file `.bin`, which changes with the
-format and the program that wrote it. The archiver does not yet give content hashes as XXH3-128,
-so a restoration hashes the files it reads itself, the same way its build entry does.
+format and the program that wrote it. The manifest's data hash covers the first data track's
+user data from INDEX 01, and each audio hash the track's raw samples from INDEX 01 to the next
+track's INDEX 00. The archiver does not yet give content hashes as XXH3-128, so a restoration
+hashes the files it reads itself, the same way its build entry does.
 
 ## Known gaps
 
@@ -134,11 +145,14 @@ keeps a legally made copy from being identified as the same edition:
 
 - content hashes are SHA-256 only, not the `xxh3` a build entry gives, and no format writes the
   standard's `GAME_DIR` layout (`CD/<path>`, `CD/trackNN.cdda`);
-- audio hashes are sample-exact, so a copy shifted by a drive's read offset (cdrdao, and most
-  rips made with EAC, ImgBurn or Alcohol) reports `mismatched`;
+- audio hashes are sample-exact, so a copy shifted by a drive's read offset (cdrdao, and player
+  rips made without offset correction) has audio hashes that differ from a corrected dump's, and
+  nothing in the archiver tells a shift from changed audio; `CddaTrackFingerprints` in
+  LegacyFormats accepts the shift;
 - Alcohol MDS/MDF and Nero NRG copies are neither read nor written;
 - `OriginalContentSource` reads a directory, an ISO and cue/bin, not the CHD, CloneCD or
-  ISO-plus-audio forms the archiver writes;
+  ISO-plus-audio forms the archiver writes, and of a `bincue-split` sheet it reads only the
+  data track, so its audio tracks cannot be fingerprinted;
 - sessions are not kept, so a CD-Extra disc's cue, CloneCD and CHD copies lose them.
 
 Until they are closed, test the importer against the forms it reads, and record each form it
