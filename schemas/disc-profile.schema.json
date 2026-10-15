@@ -25,7 +25,7 @@
       "type": "array",
       "minItems": 1,
       "description": "The formats ticked by default: the ones the restoration's importer reads.",
-      "items": { "enum": ["bincue-split", "bincue", "ccd", "chd", "iso-flac", "iso-wav", "iso-ogg", "iso", "files"] }
+      "items": { "enum": ["bincue-split", "bincue", "ccd", "chd", "mds", "nrg", "iso-flac", "iso-wav", "iso-ogg", "iso", "files"] }
     },
     "notes": { "type": "string", "minLength": 1, "description": "Shown to the person choosing the profile." }
   },

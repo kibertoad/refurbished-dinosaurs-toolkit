@@ -104,9 +104,10 @@ Makes personal archival copies of discs a player owns
 
 - Reads the disc through redumper or cdrdao, or copies a data-only disc's 2,048-byte sectors
   itself, and keeps the dump unchanged.
-- Writes split and one-file BIN/CUE, CloneCD, CHD (through chdman), ISO with FLAC, WAV or Ogg
-  audio tracks (through ffmpeg for the compressed ones), ISO, and the extracted files. Reads the
-  ISO 9660 file system with pycdlib.
+- Reads and writes split and one-file BIN/CUE, CloneCD, Alcohol 120% MDS/MDF and Nero NRG
+  ([ADR 0047](decisions/0047-alcohol-and-nero-images.md)). Reads and writes CHD through chdman.
+  Writes ISO with FLAC, WAV or Ogg audio tracks (through ffmpeg for the compressed ones), ISO,
+  and the extracted files. Reads the ISO 9660 file system with pycdlib.
 - Reads each format back and compares it with the dump by format-independent content hashes,
   and writes `rip-manifest.json`.
 - Checks the disc against a restoration's disc profile (`schemas/disc-profile.schema.json`).

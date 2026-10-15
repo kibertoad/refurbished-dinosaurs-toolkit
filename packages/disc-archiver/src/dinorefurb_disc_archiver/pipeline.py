@@ -22,17 +22,17 @@ from dataclasses import dataclass, field
 from importlib import metadata
 from pathlib import Path
 
-from . import ccd, isofs, tools
+from . import ccd, isofs, mds, nrg, tools
 from .cue import read_cue, read_iso
 from .disc import RAW_SECTOR, Disc, DiscError, NotDataSector, Track, add_to_ranges, block_data, describe_ranges
-from .formats import FORMATS, FormatUnavailable, Output, track_file_name, write_format
+from .formats import FORMATS, FormatUnavailable, Output, mds_losses, track_file_name, write_format
 from .notice import NOTICE_FILENAME, write_notice
 from .profile import Profile, check_profile, recommended_formats
 from .tools import Log
 
 MANIFEST_NAME = "rip-manifest.json"
 MANIFEST_VERSION = 1
-SOURCE_SUFFIXES = (".cue", ".iso", ".ccd", ".chd")
+SOURCE_SUFFIXES = (".cue", ".iso", ".ccd", ".chd", ".mds", ".nrg")
 _UNSAFE_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
@@ -54,7 +54,7 @@ def check_name(name: str) -> str:
 
 @contextmanager
 def open_source(path: Path, work: Path, log: Log) -> Iterator[Disc]:
-    """Open a cue sheet, ISO, CloneCD or CHD image as a Disc. A CHD is unpacked under ``work``."""
+    """Open a cue sheet, ISO, CloneCD, CHD, Alcohol 120% or Nero image as a Disc. A CHD is unpacked under ``work``."""
     suffix = path.suffix.lower()
     if suffix == ".cue":
         yield read_cue(path)
@@ -62,6 +62,10 @@ def open_source(path: Path, work: Path, log: Log) -> Iterator[Disc]:
         yield read_iso(path)
     elif suffix == ".ccd":
         yield ccd.read_ccd(path)
+    elif suffix == ".mds":
+        yield mds.read_mds(path)
+    elif suffix == ".nrg":
+        yield nrg.read_nrg(path)
     elif suffix == ".chd":
         with _extracted_chd(path, work, log) as sheet:
             yield read_cue(sheet)
@@ -291,7 +295,7 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
     """Read a written format back and compare what it holds with the source's fingerprint."""
     result = Verification()
     kind = output.format
-    if kind in ("bincue-split", "bincue", "ccd", "chd", "iso-wav"):
+    if kind in ("bincue-split", "bincue", "ccd", "chd", "mds", "nrg", "iso-wav"):
         with open_source(output.entry, work, log) as copy:
             found = fingerprint(copy)
         if kind == "iso-wav" and any(t["mode"] == "MODE2" for t in reference["tracks"]):
@@ -304,6 +308,8 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
         _compare(reference, found, result, layout=True, audio=True, form2=kind != "iso-wav")
         if kind == "iso-wav" and any(a["pregapSilent"] is False for a in reference["audio"]):
             result.not_compared.append("audio in pregaps, which the format does not hold")
+        if kind == "mds":
+            result.not_compared += [f"{lost}, which an MDS descriptor does not hold" for lost in mds_losses(disc)]
     elif kind == "iso":
         found = fingerprint(read_iso(output.entry))
         _compare(reference, found, result, layout=False, audio=False, form2=False)

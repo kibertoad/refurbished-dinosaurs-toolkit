@@ -229,7 +229,7 @@ class ArchiverWindow:
             self.drive.set(found[0].name)
 
     def _browse_image(self) -> None:
-        path = filedialog.askopenfilename(filetypes=[("Disc images", "*.cue *.iso *.ccd *.chd"), ("All files", "*")])
+        path = filedialog.askopenfilename(filetypes=[("Disc images", "*.cue *.iso *.ccd *.chd *.mds *.nrg"), ("All files", "*")])
         if path:
             self.image.set(path)
             self.source_kind.set("image")

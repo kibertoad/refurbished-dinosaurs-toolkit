@@ -74,6 +74,8 @@ Writing the copy (`--format`, repeat for several):
 | `bincue` | one `.bin` and a `.cue` | The same in one file. Read by most tools and by the toolkit's `OriginalContentSource`. |
 | `ccd` | `.ccd`, `.img`, `.sub` | Every raw sector; the subchannel is generated from the table of contents, not read from the disc. |
 | `chd` | `.chd` | Every raw sector, compressed by MAME's `chdman`. Needs `chdman`. |
+| `mds` | `.mds`, `.mdf` | Every raw sector, without subchannel, with a version 1 Alcohol 120% descriptor. The descriptor has no place for the catalog number, ISRC codes or indexes after INDEX 01; the manifest lists them under `notCompared` when the disc has them. |
+| `nrg` | `.nrg` | Every raw sector in a version 2 Nero disc-at-once image, with the catalog number, ISRC codes and indexes. Track 1's 150-sector pregap before LBA 0, which the layout stores, is written as zero bytes. |
 | `iso-flac` | `.iso`, one `.flac` per audio track, `.cue` | Data user data and lossless audio from each track's INDEX 01. Needs `ffmpeg`. |
 | `iso-wav` | `.iso`, one `.wav` per audio track, `.cue` | The same with WAV audio: the DOSBox-style sheet. |
 | `iso-ogg` | `.iso`, one `.ogg` per audio track, `.cue` | The form many re-releases ship. Lossy. Needs `ffmpeg`. |
@@ -171,7 +173,11 @@ disc-archiver notice                                     # the personal-use noti
 ```
 
 `convert` and `check` read `.cue` (one or several BIN files, ISO-plus-WAVE sheets), `.iso`,
-`.ccd` and `.chd` (through `chdman`). `rip` passes `--backend-arg` values on to the backend program,
+`.ccd`, `.chd` (through `chdman`), `.mds` with its `.mdf`, and `.nrg`. An Alcohol 120% image is
+read from a version 1 descriptor with 2,352-byte sectors or 2,448-byte sectors with subchannel. A
+Nero image is read in version 1 or 2, disc-at-once or track-at-once, with raw sectors (with or
+without subchannel) or MODE1 2,048-byte user data. Both must hold one session of a CD; anything
+else is refused with the reason ([ADR 0047](../../docs/decisions/0047-alcohol-and-nero-images.md)). `rip` passes `--backend-arg` values on to the backend program,
 for example `--backend-arg=--retries=20` for redumper, and `--no-download` keeps it from
 downloading redumper. Progress goes to standard error and the
 summary to standard output.
@@ -248,7 +254,9 @@ My Game/
     blocks, and its `notes` name them).
   - `mismatched`: `differences` says what differs.
 - `unavailable`: formats that could not be made from this source, and why. A plain ISO has no raw
-  sectors, so no BIN/CUE, CloneCD or CHD can be made from it. A data track with sectors that hold
+  sectors, so no BIN/CUE, CloneCD, CHD, MDS or NRG can be made from it. An NRG file holds a
+  catalog number of 13 digits and ISRC codes of 12 letters and digits; a source with other values
+  has no NRG form. A data track with sectors that hold
   no user data has no ISO form, so the ISO formats are unavailable for it; BIN/CUE, CloneCD and
   CHD keep those sectors and compare them byte for byte.
 
@@ -326,7 +334,14 @@ The supported imports are the names in `dinorefurb_disc_archiver.__all__`.
   tracks are laid out back to back without the gap between sessions, in the manifest's track
   starts and in the BIN/CUE, CloneCD and CHD written from it. A cue sheet's first track must start
   at `INDEX 01 00:00:00`; `POSTGAP`, `MODE2/2336`, `CDG` and `MOTOROLA` files are refused.
-- Cue sheets are limited to 1 MiB and 99 tracks, profiles to 64 KiB, file systems to 200,000 files.
+- Cue sheets are limited to 1 MiB and 99 tracks, `.mds` descriptors and the descriptor blocks of
+  an `.nrg` to 1 MiB and 99 tracks, profiles to 64 KiB, file systems to 200,000 files.
+- Alcohol 120% and Nero images are read only with one session. MDS version 2 and MDX descriptors,
+  which can be encrypted, DVD images, split `.mdf` files, Nero MODE2 user data without sector
+  headers and Nero blocks other than `CUEX`, `CUES`, `DAOX`, `DAOI`, `ETN2`, `ETNF`, `SINF`,
+  `MTYP`, `CDTX`, `DINF`, `TOCT` and `END!` are refused. The written `.mds` and `.nrg` files
+  follow libmirage's and Aaru's readings of the formats and are checked by the archiver's own
+  readers, not by Alcohol 120%, DAEMON Tools or Nero.
 - `data-copy` stops at the first sector that still fails after five reads. Nothing stands in for
   an unread sector.
 - The CloneCD subchannel is generated, not read: it carries no copy-protection marks. Use the

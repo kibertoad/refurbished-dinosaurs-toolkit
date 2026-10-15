@@ -1,6 +1,7 @@
 # ADR 0004: personal disc archiving through established dumpers
 
-Status: accepted
+Status: accepted. Decision 3 is extended, and the consequence that Alcohol MDS/MDF and Nero NRG
+are not produced is superseded, by [ADR 0047](0047-alcohol-and-nero-images.md).
 
 ## Context
 
@@ -25,8 +26,9 @@ same content, to test its fingerprinting and import against all of them.
    data itself. Its only own reader is a plain copy of a data track's 2,048-byte sectors, for
    data-only discs on computers with neither program. The dumper's files are kept unchanged.
 3. Formats are written by the archiver itself, in pure Python, where the format is a plain layout
-   of sectors (BIN/CUE, CloneCD, ISO, WAV). The ISO 9660 file system is read with pycdlib. CHD is
-   made by MAME's chdman, and FLAC and Ogg Vorbis by ffmpeg, all optional.
+   of sectors (BIN/CUE, CloneCD, ISO, WAV, and since ADR 0047 Alcohol MDS/MDF and Nero NRG).
+   The ISO 9660 file system is read with pycdlib. CHD is made by MAME's chdman, and FLAC and Ogg
+   Vorbis by ffmpeg, all optional.
 4. Every written format is read back and compared with its source by content hashes that do not
    depend on the format: the data track's user data from INDEX 01, and each audio track's samples
    from INDEX 01 to the next track's INDEX 00. What a format cannot hold, or what could not be
@@ -60,6 +62,7 @@ same content, to test its fingerprinting and import against all of them.
   saying which forms hold the same content, and run its importer against each. The copies and
   manifests stay on the researcher's machine, like any other original content.
 - Formats with no maintained open writer (Alcohol MDS/MDF, Nero NRG) are not produced. A player
-  with one converts it with another tool or rips the disc again.
+  with one converts it with another tool or rips the disc again. Superseded by
+  [ADR 0047](0047-alcohol-and-nero-images.md): the archiver reads and writes both.
 - Copy protection is preserved only in the redumper dump. Derived formats do not carry it, and
   restorations do not need it, since they never run the original from the image.
