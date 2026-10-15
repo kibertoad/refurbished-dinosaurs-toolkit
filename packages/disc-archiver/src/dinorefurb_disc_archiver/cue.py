@@ -29,10 +29,14 @@ TRACK_TYPES = {
     "MODE2/2352": ("MODE2", "raw"),
     "MODE1/2048": ("MODE1", "cooked"),
 }
-FLAG_NAMES = {"DCP", "4CH", "PRE", "SCMS"}
+# In the order redumper writes them (cd/toc.ixx, printCUE); it never writes SCMS.
+FLAG_ORDER = ("4CH", "DCP", "PRE", "SCMS")
+FLAG_NAMES = set(FLAG_ORDER)
+# CD-Text commands, in the order redumper writes them (printCDTextCUE).
+CD_TEXT = ("TITLE", "PERFORMER", "SONGWRITER")
 # Commands that describe the disc for players and change nothing about where sectors are. REM
 # lines are read for sessions and otherwise skipped.
-IGNORED = {"PERFORMER", "TITLE", "SONGWRITER", "CDTEXTFILE"}
+IGNORED = {"CDTEXTFILE"}
 _TIME = re.compile(r"^(\d{1,3}):(\d{2}):(\d{2})$")
 # A word is a double-quoted string, which may hold spaces, or a run of non-space characters.
 _WORD = re.compile(r'"([^"]*)"|(\S+)')
@@ -48,6 +52,7 @@ class _Track:
     flags: tuple[str, ...] = ()
     isrc: str | None = None
     session: int = 1
+    cd_text: dict[str, str] = field(default_factory=dict)
     # The pregap a REM PREGAP line gave the first track of its session.
     session_pregap: int | None = None
 
@@ -113,6 +118,10 @@ class _Sessions:
             raise DiscError(f"session {self.current} has no tracks")
 
 
+def _ordered(text: dict[str, str]) -> tuple[tuple[str, str], ...]:
+    return tuple((command, text[command]) for command in CD_TEXT if text.get(command))
+
+
 def _time(text: str, line: int) -> int:
     match = _TIME.match(text)
     if not match:
@@ -148,6 +157,7 @@ def read_cue(sheet: Path) -> Disc:
     tracks: list[_Track] = []
     sessions = _Sessions()
     catalog = None
+    disc_text: dict[str, str] = {}
     for number, raw in enumerate(text.splitlines(), start=1):
         if not raw.strip():
             continue
@@ -158,6 +168,9 @@ def read_cue(sheet: Path) -> Disc:
         current = tracks[-1] if tracks else None
         if command == "REM":
             sessions.read(args, number, tracks)
+            continue
+        if command in CD_TEXT:
+            (current.cd_text if current else disc_text)[command] = " ".join(args)
             continue
         if command in IGNORED:
             continue
@@ -199,7 +212,9 @@ def read_cue(sheet: Path) -> Disc:
         else:
             raise DiscError(f"line {number}: cannot read {raw.strip()!r}")
     sessions.finish()
-    return _layout(sheet, files, tracks, catalog)
+    disc = _layout(sheet, files, tracks, catalog)
+    disc.cd_text = _ordered(disc_text)
+    return disc
 
 
 def _layout(sheet: Path, files: list[tuple[Path, str]], parsed: list[_Track], catalog: str | None) -> Disc:
@@ -260,6 +275,7 @@ def _layout(sheet: Path, files: list[tuple[Path, str]], parsed: list[_Track], ca
                 flags=entry.flags,
                 isrc=entry.isrc,
                 session=entry.session,
+                cd_text=_ordered(entry.cd_text),
             )
         )
     return Disc(tracks, catalog=catalog, origin=sheet)
@@ -301,7 +317,12 @@ class CueFile:
 
 
 def render_cue(disc: Disc, files: list[CueFile]) -> str:
-    """A cue sheet for ``files``, keeping the disc's catalog, sessions, flags and ISRCs.
+    """A cue sheet for ``files``, keeping the disc's catalog, CD-Text, sessions, flags and ISRCs.
+
+    Lines come in the order redumper's ``printCUE`` (cd/toc.ixx) writes them, so a sheet read from
+    a redumper dump is written back byte for byte: ``CATALOG``, the disc's CD-Text (``TITLE``,
+    ``PERFORMER``, ``SONGWRITER``), then for each track ``TRACK``, its CD-Text, ``ISRC``, ``FLAGS``
+    (``4CH DCP PRE``) and the indexes. redumper writes no ``PREGAP``; one goes before the indexes.
 
     A disc of more than one session gets a ``REM SESSION nn`` line before the first track of each
     session, as redumper writes them: before the track's ``FILE`` line when the track opens the
@@ -311,6 +332,7 @@ def render_cue(disc: Disc, files: list[CueFile]) -> str:
     lines = []
     if disc.catalog:
         lines.append(f"CATALOG {disc.catalog}")
+    lines += [f"{command} {_quote(text)}" for command, text in disc.cd_text]
     sessions = disc.sessions
     firsts = {s.tracks[0].number: s.number for s in sessions} if len(sessions) > 1 else {}
     for file in files:
@@ -320,10 +342,11 @@ def render_cue(disc: Disc, files: list[CueFile]) -> str:
             if position == 0:
                 lines.append(f"FILE {_quote(file.name)} {file.kind}")
             lines.append(f"  TRACK {track.number:02d} {kind}")
-            if track.flags:
-                lines.append(f"    FLAGS {' '.join(track.flags)}")
+            lines += [f"    {command} {_quote(text)}" for command, text in track.cd_text]
             if track.isrc:
                 lines.append(f"    ISRC {track.isrc}")
+            if track.flags:
+                lines.append(f"    FLAGS {' '.join(f for f in FLAG_ORDER if f in track.flags)}")
             if track.pregap and not pregap_stored:
                 lines.append(f"    PREGAP {format_msf(track.pregap)}")
             index1 = first + (track.pregap if pregap_stored else 0)

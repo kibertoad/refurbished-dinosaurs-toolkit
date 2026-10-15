@@ -70,7 +70,7 @@ Writing the copy (`--format`, repeat for several):
 
 | Format | Files | Holds |
 |---|---|---|
-| `bincue-split` | one `.bin` per track and a `.cue` | Every raw sector, pregaps included: the Redump layout. |
+| `bincue-split` | one `.bin` per track and a `.cue` | Every raw sector, pregaps included: the Redump layout. The sheet keeps the source sheet's `CATALOG`, CD-Text (`TITLE`, `PERFORMER`, `SONGWRITER`), `ISRC`, `FLAGS` and sessions in the line order redumper writes, so a redumper dump's sheet is written back byte for byte. |
 | `bincue` | one `.bin` and a `.cue` | The same in one file. Read by most tools and by the toolkit's `OriginalContentSource`. |
 | `ccd` | `.ccd`, `.img`, `.sub` | Every raw sector; the subchannel is generated from the table of contents, not read from the disc. |
 | `chd` | `.chd` | Every raw sector, compressed by MAME's `chdman`. Needs `chdman`. chdman releases up to MAME 0.289 store no sessions; see [Sessions](#sessions). |

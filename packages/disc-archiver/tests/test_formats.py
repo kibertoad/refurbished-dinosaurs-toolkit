@@ -78,6 +78,40 @@ class RawFormatTests(FormatTestCase):
         for name in ("Synth (Track 1).bin", "Synth (Track 2).bin", "Synth (Track 3).bin", "Synth.cue"):
             self.assertEqual((output.directory / name).read_bytes(), (self.dir / "source" / name).read_bytes(), name)
 
+    def test_a_redumper_sheet_with_cd_text_isrc_and_flags_is_written_back_byte_for_byte(self) -> None:
+        # The line order of redumper's printCUE (cd/toc.ixx): CATALOG, the disc's CD-Text, then
+        # per track TRACK, its CD-Text, ISRC, FLAGS (4CH DCP PRE) and the indexes.
+        sheet = (
+            "CATALOG 0000000000000\n"
+            'TITLE "Synthetic Disc"\n'
+            'PERFORMER "Nobody"\n'
+            'FILE "Synth (Track 1).bin" BINARY\n'
+            "  TRACK 01 MODE1/2352\n"
+            "    INDEX 01 00:00:00\n"
+            'FILE "Synth (Track 2).bin" BINARY\n'
+            "  TRACK 02 AUDIO\n"
+            '    TITLE "First Song"\n'
+            '    PERFORMER "Nobody"\n'
+            "    ISRC USXXX0000001\n"
+            "    FLAGS DCP PRE\n"
+            "    INDEX 00 00:00:00\n"
+            "    INDEX 01 00:02:00\n"
+            'FILE "Synth (Track 3).bin" BINARY\n'
+            "  TRACK 03 AUDIO\n"
+            "    ISRC USXXX0000002\n"
+            "    FLAGS 4CH DCP\n"
+            "    INDEX 00 00:00:00\n"
+            "    INDEX 01 00:02:00\n"
+        )
+        source = self.dir / "source" / "Synth.cue"
+        source.write_text(sheet)
+        output = self.write("bincue-split", read_cue(source))
+        self.assertEqual(output.entry.read_bytes(), source.read_bytes())
+        # Flags given in another order are written in redumper's.
+        source.write_text(sheet.replace("FLAGS DCP PRE", "FLAGS PRE DCP"))
+        shutil.rmtree(output.directory)
+        self.assertEqual(self.write("bincue-split", read_cue(source)).entry.read_text(), sheet)
+
     def test_one_file_bincue_matches_a_hand_built_single_bin(self) -> None:
         output = self.write("bincue")
         expected = self.synthetic.write_single(self.dir / "expected")

@@ -98,6 +98,8 @@ class Track:
     extra_indexes: dict[int, int] = field(default_factory=dict)
     flags: tuple[str, ...] = ()
     isrc: str | None = None
+    # CD-Text a cue sheet gives the track: TITLE, PERFORMER and SONGWRITER, as (command, text).
+    cd_text: tuple[tuple[str, str], ...] = ()
     # The session the track is in, from 1.
     session: int = 1
     # Disc LBA of INDEX 00; set by Disc.
@@ -310,6 +312,8 @@ class Disc:
 
     tracks: list[Track]
     catalog: str | None = None
+    # CD-Text a cue sheet gives the disc, as (command, text).
+    cd_text: tuple[tuple[str, str], ...] = ()
     # Where the disc was read from: the cue sheet or ISO file.
     origin: Path | None = None
 
