@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-from . import backends, drives, redumper, tools
+from . import backends, drives, redump, redumper, tools
 from .disc import DiscError
 from .formats import FORMATS
 from .notice import NOTICE
@@ -207,6 +207,16 @@ class ArchiverWindow:
         ttk.Label(box, text="Name").grid(row=1, column=0, sticky="w")
         self.name = tk.StringVar(value="disc")
         ttk.Entry(box, textvariable=self.name).grid(row=1, column=1, sticky="ew", padx=4, pady=2)
+        ttk.Label(box, text="Redump DAT").grid(row=2, column=0, sticky="w")
+        self.dat = tk.StringVar()
+        ttk.Entry(box, textvariable=self.dat).grid(row=2, column=1, sticky="ew", padx=4)
+        ttk.Button(box, text="Browse...", command=self._browse_dat).grid(row=2, column=2)
+        ttk.Label(
+            box,
+            text="Optional: a DAT you downloaded from redump.org. The BIN/CUE (split) copy is written and compared with it.",
+            wraplength=640,
+            justify="left",
+        ).grid(row=3, column=0, columnspan=3, sticky="w")
 
     def _run(self, parent: ttk.Frame) -> None:
         bar = ttk.Frame(parent)
@@ -240,6 +250,11 @@ class ArchiverWindow:
         path = filedialog.askdirectory()
         if path:
             self.output.set(path)
+
+    def _browse_dat(self) -> None:
+        path = filedialog.askopenfilename(filetypes=[("Redump DATs", "*.dat *.zip"), ("All files", "*")])
+        if path:
+            self.dat.set(path)
 
     def _browse_profile(self) -> None:
         path = filedialog.askopenfilename(filetypes=[("Disc profiles", "*.json"), ("All files", "*")])
@@ -305,6 +320,8 @@ class ArchiverWindow:
             "formats": formats,
             "name": self.name.get(),
         }
+        if self.dat.get().strip():
+            job["dat"] = Path(self.dat.get().strip()).expanduser()
         if self.source_kind.get() == "drive":
             backend_id = self.backend_labels[self.backend.get()]
             job["drive"] = self.drive.get().strip()
@@ -377,6 +394,10 @@ class ArchiverWindow:
             for c in manifest["profile"]["checks"]
             if not c["matched"]
         ]
+        report = manifest.get("redump")
+        if report is not None:
+            lines.append(f"Redump: {redump.summary(report)}")
+            lines += [f"  {d}" for d in report["differences"]]
         for line in lines:
             self._append(line)
         title = "Copy made" if manifest_ok(manifest) else "Copy made, with problems"
