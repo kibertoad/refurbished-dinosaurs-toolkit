@@ -418,6 +418,40 @@ class Disc:
         return self.data_tracks[0]
 
 
+@dataclass(frozen=True)
+class TrackMetadata:
+    """What a track carries besides its layout and sectors: its ISRC, its FLAGS, its indexes
+    after INDEX 01 as ``(index, sectors after INDEX 01)`` in order, and its CD-Text."""
+
+    isrc: str | None = None
+    flags: frozenset[str] = frozenset()
+    indexes: tuple[tuple[int, int], ...] = ()
+    cd_text: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class Metadata:
+    """What a disc carries besides its layout and sectors: the catalog number, the disc's CD-Text,
+    and each track's :class:`TrackMetadata` by track number. Verification compares it apart from
+    the fingerprint."""
+
+    catalog: str | None = None
+    cd_text: tuple[tuple[str, str], ...] = ()
+    tracks: dict[int, TrackMetadata] = field(default_factory=dict)
+
+    @classmethod
+    def of(cls, disc: Disc) -> Metadata:
+        """The metadata ``disc`` holds."""
+        return cls(
+            disc.catalog,
+            disc.cd_text,
+            {
+                t.number: TrackMetadata(t.isrc, frozenset(t.flags), tuple(sorted(t.extra_indexes.items())), t.cd_text)
+                for t in disc.tracks
+            },
+        )
+
+
 def wave_data(path: Path) -> tuple[int, int]:
     """The byte offset and length of a CD-audio WAVE file's sample data.
 
