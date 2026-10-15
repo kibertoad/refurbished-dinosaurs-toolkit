@@ -65,9 +65,93 @@ turn. Every `matched` and `partial` form must identify as the same edition, and 
 import or fail with the importer's precise unsupported-source message. A format the importer
 should accept and does not is an import gap. Record it in the restoration's plan, not here.
 
-The manifest's `disc` hashes are the format-independent content hashes. A restoration that
-fingerprints audio tracks over the same range (raw samples from INDEX 01 to the next track's
-INDEX 00) can compare its manifest with them directly.
+The manifest's `disc` hashes are the format-independent content hashes, but they are SHA-256, and
+the documentation standard makes every hash in a build entry XXH3-128. A restoration cannot
+compare its build entry's `xxh3` with the manifest; see [Hashes](#hashes).
+
+## Archiving a research disc
+
+The procedure for a maintainer copying their own disc for research, so that the copy is complete,
+checked, and the same on every machine it is kept on.
+
+1. **Dump with redumper and write every format.** Run
+   `disc-archiver rip --backend redumper --format all`. `--backend redumper` makes the run fail
+   instead of falling back to cdrdao or the data track copy. cdrdao keeps no subchannel or
+   protection data and does not correct the drive's read offset, so its audio differs from a
+   corrected dump by a shift. redumper must know the drive's read offset; a drive it lists as
+   supported is best ([redumper's drive list](https://github.com/superg/redumper)). `--format all`
+   writes every form the importer tests need from the same dump, each read back and compared with
+   it.
+2. **Read redumper's log.** In `archival/<name>.log`, look for C2 errors and sectors that stayed
+   unreadable after the retries. Every format was written from that dump and carries the same
+   errors. Clean the disc and dump again into a new `--output` folder with
+   `--backend-arg=--retries=20` before trusting a dump that has them.
+3. **Read the result.** Exit code `3` means a written format differs from the dump or a profile
+   check failed, and the manifest says which. Exit code `0` means neither happened. It still
+   allows a format that was not written because a program it needs (chdman, ffmpeg) is missing,
+   listed under the manifest's `unavailable`, and a `partial` format, whose `notCompared` says
+   what was not compared.
+4. **Check against Redump.** The manifest gives each output file's CRC32, MD5 and SHA-1. Compare
+   the `bincue-split` `.bin` files with the disc's entry in the Redump PC DAT from
+   [redump.org](https://redump.org/downloads/). A match means the dump is the known good one. The
+   archiver's `.cue` names the files after `--name` and is written with the platform's line
+   endings, so its hash need not match the DAT's cue sheet. When the disc is not listed, the dump
+   cannot be checked this way; dumping it again on another drive and comparing is the next best
+   check.
+5. **Keep the master.** Keep the whole output folder. These are the copies to keep for the long
+   term:
+
+   | Keep | Why |
+   |---|---|
+   | `archival/` (redumper's `.scram`, `.subcode`, `.toc`, `.log` and the split dump) | The master. It holds the lead-in, lead-out, subchannel and protection data no other format keeps, and the split dump can be rebuilt from it. Compress it with 7-Zip or zstd for storage. |
+   | `bincue-split/` | The Redump layout, the form disc databases list and most tools read. |
+   | `rip-manifest.json` | The content hashes every other copy is checked against. |
+
+   The archiver's `chd` is a good compact copy for emulators but not a master: chdman makes it
+   from the one-file BIN/CUE, so it holds no subchannel, and the `.chd` file's own hash depends
+   on the chdman version that wrote it.
+6. **Copy only to machines you own, and check each copy.** Move the folder over your own storage
+   or network, never through a public or shared link. On each machine, run
+   `disc-archiver check --input <copy>.cue` and compare the `disc` hashes it reports with the
+   manifest, which catches a damaged transfer of the files that cue sheet names. The manifest
+   holds no hashes of redumper's `.scram`, `.subcode` and `.toc` files, so record their SHA-256
+   (or the compressed archive's) on the first machine and compare each copy with that record.
+
+## Hashes
+
+| Hash | Where | Used for |
+|---|---|---|
+| XXH3-128 (`xxh3`) | the documentation standard's build entries, restorations' asset manifests, the engine's and reader's source identity | Identifying an edition and every file it reads. `xxhsum -H2` prints it. |
+| SHA-256 | `rip-manifest.json` `disc` content hashes; each output file | Comparing formats with each other inside the archiver. |
+| CRC32, MD5, SHA-1 | each output file in `rip-manifest.json` | Comparing a dump with a Redump DAT, which lists these. |
+
+Identify a disc by its content (the data track's user data and each audio track's samples), never
+by the hash of a container file such as a `.chd` or a one-file `.bin`, which changes with the
+format and the program that wrote it. The manifest's data hash covers the first data track's
+user data from INDEX 01, and each audio hash the track's raw samples from INDEX 01 to the next
+track's INDEX 00. The archiver does not yet give content hashes as XXH3-128, so a restoration
+hashes the files it reads itself, the same way its build entry does.
+
+## Known gaps
+
+[Issue #514](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/issues/514) tracks what
+keeps a legally made copy from being identified as the same edition:
+
+- content hashes are SHA-256 only, not the `xxh3` a build entry gives, and no format writes the
+  standard's `GAME_DIR` layout (`CD/<path>`, `CD/trackNN.cdda`);
+- audio hashes are sample-exact, so a copy shifted by a drive's read offset (cdrdao, and player
+  rips made without offset correction) has audio hashes that differ from a corrected dump's, and
+  nothing in the archiver tells a shift from changed audio; `CddaTrackFingerprints` in
+  LegacyFormats accepts the shift;
+- Alcohol MDS/MDF and Nero NRG copies are neither read nor written;
+- `OriginalContentSource` reads a directory, an ISO and cue/bin, not the CHD, CloneCD or
+  ISO-plus-audio forms the archiver writes, and of a `bincue-split` sheet it reads only the
+  data track, so its audio tracks cannot be fingerprinted;
+- sessions are not kept, so a CD-Extra disc's cue, CloneCD and CHD copies lose them;
+- the Redump DAT comparison is done by hand.
+
+Until they are closed, test the importer against the forms it reads, and record each form it
+should accept and does not in the restoration's plan.
 
 ## What each format keeps
 
