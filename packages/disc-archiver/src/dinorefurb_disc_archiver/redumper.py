@@ -1,10 +1,9 @@
 """Downloading the pinned redumper release when redumper is not installed.
 
 The pin is ``redumper.json`` beside this module: a release tag and the SHA-256 of each platform's
-zip. A download is used only once its SHA-256 matches the pin, or, while the pin holds no value
-for the platform, the digest GitHub publishes for the asset. It is unpacked, unmodified, into the
-person's own data folder under the tag, so a new pin downloads its own copy. This is the
-archiver's only use of the network.
+zip. A download is used only once its SHA-256 matches the pin. It is unpacked, unmodified, into
+the person's own data folder under the tag, so a new pin downloads its own copy and the copies of
+earlier tags are removed. This is the archiver's only use of the network.
 """
 
 from __future__ import annotations
@@ -14,6 +13,7 @@ import io
 import json
 import os
 import platform
+import re
 import shutil
 import sys
 import tempfile
@@ -40,10 +40,9 @@ class Pin:
     tag: str
     asset: str
     download_url: str
-    release_api_url: str
     source: str
     license_url: str
-    sha256: dict[str, str | None]
+    sha256: dict[str, str]
 
     def asset_name(self, key: str) -> str:
         """The release asset's file name for a platform."""
@@ -55,14 +54,19 @@ class Pin:
 
 
 def load_pin(text: str | None = None) -> Pin:
-    """The pin shipped with the package, or one given as JSON text."""
+    """The pin shipped with the package, or one given as JSON text.
+
+    :raises DiscError: a platform's SHA-256 is not 64 hexadecimal digits.
+    """
     if text is None:
         text = resources.files(__package__).joinpath("redumper.json").read_text(encoding="utf-8")
     data = json.loads(text)
-    return Pin(
-        data["tag"], data["asset"], data["downloadUrl"], data["releaseApiUrl"], data["source"],
-        data["licenseUrl"], dict(data["sha256"]),
-    )
+    sha256: dict[str, str] = {}
+    for key, digest in data["sha256"].items():
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
+            raise DiscError(f"the redumper pin holds no SHA-256 for {key}: {digest!r}")
+        sha256[key] = digest.lower()
+    return Pin(data["tag"], data["asset"], data["downloadUrl"], data["source"], data["licenseUrl"], sha256)
 
 
 def platform_key() -> str:
@@ -108,10 +112,6 @@ def fetch(url: str) -> bytes:
     if not url.startswith("https://"):
         raise DiscError(f"refusing to download from {url}: not HTTPS")
     headers = {"User-Agent": "dinorefurb-disc-archiver", "Accept": "application/octet-stream"}
-    if url.startswith("https://api.github.com/"):
-        headers["Accept"] = "application/vnd.github+json"
-        if os.environ.get("GITHUB_TOKEN"):
-            headers["Authorization"] = f"Bearer {os.environ['GITHUB_TOKEN']}"
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as response:  # noqa: S310
             data = response.read(DOWNLOAD_LIMIT + 1)
@@ -120,25 +120,6 @@ def fetch(url: str) -> bytes:
     if len(data) > DOWNLOAD_LIMIT:
         raise DiscError(f"{url} is larger than {DOWNLOAD_LIMIT} bytes")
     return data
-
-
-def expected_sha256(pin: Pin, key: str, get: Fetch | None = None) -> str:
-    """The SHA-256 the download must have: the pin's, or GitHub's published digest when unpinned."""
-    if key not in pin.sha256:
-        raise DiscError(f"redumper {pin.tag} has no build for {key}")
-    pinned = pin.sha256[key]
-    if pinned:
-        return pinned.lower()
-    try:
-        release = json.loads((get or fetch)(pin.url(pin.release_api_url)))
-    except json.JSONDecodeError:
-        raise DiscError("GitHub's release listing for redumper is not JSON") from None
-    name = pin.asset_name(key)
-    for asset in release.get("assets", []):
-        digest = asset.get("digest") or ""
-        if asset.get("name") == name and digest.startswith("sha256:"):
-            return digest.removeprefix("sha256:").lower()
-    raise DiscError(f"GitHub publishes no SHA-256 for {name}, and the pin has none; it was not downloaded")
 
 
 def unpack(archive: bytes, target: Path) -> None:
@@ -168,14 +149,18 @@ def unpack(archive: bytes, target: Path) -> None:
 def download(log: Log, get: Fetch | None = None, pin: Pin | None = None, target: Path | None = None) -> Path:
     """Download, check and unpack the pinned redumper; return its ``bin`` folder.
 
-    ``target`` defaults to the person's data folder; a bundle build passes its own. Nothing is
-    left behind when a step fails.
+    ``target`` defaults to the person's data folder, where the copies of other tags are removed
+    once this one is in place; a bundle build passes its own. Nothing is left behind when a step
+    fails.
     """
     pin = pin or load_pin()
     get = get or fetch
     key = platform_key()
+    if key not in pin.sha256:
+        raise DiscError(f"redumper {pin.tag} has no build for {key}")
+    expected = pin.sha256[key]
+    personal = target is None
     target = target or install_dir(pin)
-    expected = expected_sha256(pin, key, get)
     name = pin.asset_name(key)
     log(f"Downloading redumper {pin.tag} ({name}) from GitHub")
     archive = get(pin.url(pin.download_url, key))
@@ -195,4 +180,14 @@ def download(log: Log, get: Fetch | None = None, pin: Pin | None = None, target:
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     log(f"redumper {pin.tag} is in {target}")
+    if personal:
+        remove_other_tags(log, pin)
     return target / "bin"
+
+
+def remove_other_tags(log: Log, pin: Pin) -> None:
+    """Remove the finished downloads of tags other than the pin's, which nothing uses any more."""
+    for directory in sorted(install_dir(pin).parent.iterdir()):
+        if directory.name != pin.tag and not directory.name.startswith(".") and (directory / MARKER).is_file():
+            shutil.rmtree(directory, ignore_errors=True)
+            log(f"Removed redumper {directory.name} from {directory}")

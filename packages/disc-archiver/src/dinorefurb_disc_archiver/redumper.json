@@ -1,9 +1,8 @@
 {
-  "comment": "The redumper release the archiver downloads when redumper is not installed. Update tag and the per-platform SHA-256 values together. A null sha256 is checked against the digest GitHub publishes for the asset instead.",
+  "comment": "The redumper release the archiver downloads when redumper is not installed. Update tag and every platform's SHA-256 together; a download is used only when its SHA-256 matches, and the pin does not load while a platform has none.",
   "tag": "b761",
   "asset": "redumper-{tag}-{platform}.zip",
   "downloadUrl": "https://github.com/superg/redumper/releases/download/{tag}/{asset}",
-  "releaseApiUrl": "https://api.github.com/repos/superg/redumper/releases/tags/{tag}",
   "source": "https://github.com/superg/redumper/tree/{tag}",
   "licenseUrl": "https://raw.githubusercontent.com/superg/redumper/{tag}/LICENSE",
   "sha256": {

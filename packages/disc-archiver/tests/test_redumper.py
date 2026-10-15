@@ -6,6 +6,7 @@ A stand-in release zip is served by a fake fetch; nothing here touches the netwo
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import hashlib
 import io
 import json
@@ -22,9 +23,6 @@ from dinorefurb_disc_archiver.disc import DiscError
 
 KEY = redumper.platform_key()
 PIN = redumper.load_pin()
-# The shipped pin carries every platform's hash. The download tests serve stand-in zips, so they
-# run against the same release with no hashes pinned, which checks each zip against GitHub's digest.
-UNPINNED = redumper.Pin(**{**PIN.__dict__, "sha256": dict.fromkeys(PIN.sha256)})
 PROGRAM = "redumper.exe" if KEY.startswith("windows") else "redumper"
 
 
@@ -39,21 +37,23 @@ def release_zip(members: dict[str, bytes] | None = None) -> bytes:
     return out.getvalue()
 
 
-class FakeGitHub:
-    """Serves the release listing and the asset; records what was fetched."""
+def pin_json(sha256: object) -> str:
+    """The shipped pin as JSON text, with this platform's SHA-256 replaced."""
+    data = json.loads(redumper.resources.files(redumper.__package__).joinpath("redumper.json").read_text(encoding="utf-8"))
+    data["sha256"][KEY] = sha256
+    return json.dumps(data)
 
-    def __init__(self, archive: bytes, digest: str | None = "auto") -> None:
+
+class FakeGitHub:
+    """Serves the release asset; records what was fetched."""
+
+    def __init__(self, archive: bytes) -> None:
         self.archive = archive
-        self.digest = hashlib.sha256(archive).hexdigest() if digest == "auto" else digest
+        self.digest = hashlib.sha256(archive).hexdigest()
         self.fetched: list[str] = []
 
     def __call__(self, url: str) -> bytes:
         self.fetched.append(url)
-        if url == PIN.url(PIN.release_api_url):
-            asset = {"name": PIN.asset_name(KEY)}
-            if self.digest:
-                asset["digest"] = f"sha256:{self.digest}"
-            return json.dumps({"assets": [asset]}).encode()
         if url == PIN.url(PIN.download_url, KEY):
             return self.archive
         raise DiscError(f"unexpected URL {url}")
@@ -87,14 +87,17 @@ class RedumperDownloadTestCase(unittest.TestCase):
 
 @unittest.skipUnless(redumper.can_download(), f"redumper publishes no build for {KEY}")
 class DownloadTests(RedumperDownloadTestCase):
-    def setUp(self) -> None:
-        super().setUp()
-        unpinned = mock.patch.object(redumper, "load_pin", return_value=UNPINNED)
-        unpinned.start()
-        self.addCleanup(unpinned.stop)
+    """The shipped pin's tag and URLs, with this platform's hash set to the stand-in zip served."""
 
-    def test_a_download_checked_against_githubs_digest_is_installed_and_found(self) -> None:
-        github = FakeGitHub(release_zip())
+    def serve(self, archive: bytes) -> FakeGitHub:
+        pin = dataclasses.replace(PIN, sha256={**PIN.sha256, KEY: hashlib.sha256(archive).hexdigest()})
+        pinned = mock.patch.object(redumper, "load_pin", return_value=pin)
+        pinned.start()
+        self.addCleanup(pinned.stop)
+        return FakeGitHub(archive)
+
+    def test_a_download_matching_the_pin_is_installed_and_found(self) -> None:
+        github = self.serve(release_zip())
         bin_dir = redumper.download(self.log, github)
         self.assertEqual(bin_dir, redumper.install_dir() / "bin")
         self.assertTrue((redumper.install_dir() / "lib" / "libc++.1.dylib").is_file())
@@ -102,26 +105,31 @@ class DownloadTests(RedumperDownloadTestCase):
         self.assertEqual(marker["sha256"], github.digest)
         self.assertEqual(tools.find_tool("redumper"), bin_dir / PROGRAM)
         self.assertIn(f"{PIN.asset_name(KEY)}: SHA-256 {github.digest} checked", self.lines)
-
-    def test_a_pinned_hash_is_used_instead_of_githubs(self) -> None:
-        archive = release_zip()
-        pin = redumper.Pin(**{**PIN.__dict__, "sha256": {KEY: hashlib.sha256(archive).hexdigest()}})
-        github = FakeGitHub(archive, digest=None)
-        redumper.download(quiet, github, pin)
         self.assertEqual(github.fetched, [PIN.url(PIN.download_url, KEY)])
 
-    def test_a_download_with_the_wrong_hash_is_not_used(self) -> None:
-        github = FakeGitHub(release_zip(), digest="0" * 64)
-        with self.assertRaisesRegex(DiscError, "was expected; it was not used"):
+    def test_the_shipped_pin_refuses_a_zip_with_another_hash(self) -> None:
+        github = FakeGitHub(release_zip())
+        with self.assertRaisesRegex(DiscError, f"but {PIN.sha256[KEY]} was expected; it was not used"):
             redumper.download(quiet, github)
+        self.assertEqual(github.fetched, [PIN.url(PIN.download_url, KEY)])
         self.assertIsNone(tools.find_tool("redumper"))
         self.assertFalse(redumper.install_dir().exists())
 
-    def test_no_hash_anywhere_means_no_download(self) -> None:
-        github = FakeGitHub(release_zip(), digest=None)
-        with self.assertRaisesRegex(DiscError, "publishes no SHA-256"):
-            redumper.download(quiet, github)
-        self.assertNotIn(PIN.url(PIN.download_url, KEY), github.fetched)
+    def test_a_new_tag_removes_the_downloads_of_earlier_tags(self) -> None:
+        home = self.dir / "home" / "redumper"
+        (home / "b1").mkdir(parents=True)
+        (home / "b1" / redumper.MARKER).write_text("{}")
+        (home / "kept").mkdir()
+        redumper.download(self.log, self.serve(release_zip()))
+        self.assertEqual(sorted(p.name for p in home.iterdir()), sorted(["kept", PIN.tag]))
+        self.assertIn(f"Removed redumper b1 from {home / 'b1'}", self.lines)
+
+    def test_a_download_to_another_folder_leaves_the_data_folder_alone(self) -> None:
+        earlier = self.dir / "home" / "redumper" / "b1"
+        earlier.mkdir(parents=True)
+        (earlier / redumper.MARKER).write_text("{}")
+        redumper.download(quiet, self.serve(release_zip()), target=self.dir / "bundle")
+        self.assertTrue((earlier / redumper.MARKER).is_file())
 
     def test_unsafe_or_incomplete_zips_are_refused_and_leave_nothing(self) -> None:
         for members, message in (
@@ -129,19 +137,19 @@ class DownloadTests(RedumperDownloadTestCase):
             ({"top/lib/only": b"x"}, "no bin/redumper"),
         ):
             with self.subTest(message), self.assertRaisesRegex(DiscError, message):
-                redumper.download(quiet, FakeGitHub(release_zip(members)))
+                redumper.download(quiet, self.serve(release_zip(members)))
             self.assertFalse(redumper.install_dir().exists())
             self.assertEqual(list((self.dir / "home" / "redumper").glob(".redumper-*")), [])
         with self.assertRaisesRegex(DiscError, "not a zip"):
-            redumper.download(quiet, FakeGitHub(b"not a zip"))
+            redumper.download(quiet, self.serve(b"not a zip"))
 
     def test_choosing_redumper_downloads_it_first(self) -> None:
-        chosen = backends.choose_backend("auto", quiet, get=FakeGitHub(release_zip()))
+        chosen = backends.choose_backend("auto", quiet, get=self.serve(release_zip()))
         self.assertEqual(chosen.id, "redumper")
 
     def test_the_command_installs_it(self) -> None:
         out = io.StringIO()
-        with mock.patch.object(redumper, "fetch", FakeGitHub(release_zip())), contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        with mock.patch.object(redumper, "fetch", self.serve(release_zip())), contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(main(["install-redumper"]), EXIT_OK)
             self.assertEqual(main(["install-redumper"]), EXIT_OK)
         self.assertIn("redumper is already at", out.getvalue())
@@ -208,7 +216,13 @@ class PinTests(unittest.TestCase):
     def test_the_shipped_pin_holds_a_sha256_for_every_platform(self) -> None:
         for key, digest in PIN.sha256.items():
             with self.subTest(key):
-                self.assertRegex(digest or "", r"^[0-9a-f]{64}$")
+                self.assertRegex(digest, r"^[0-9a-f]{64}$")
+
+    def test_a_pin_without_a_valid_sha256_does_not_load(self) -> None:
+        for digest in (None, "", "0" * 63, "g" * 64):
+            with self.subTest(digest), self.assertRaisesRegex(DiscError, f"no SHA-256 for {KEY}"):
+                redumper.load_pin(pin_json(digest))
+        self.assertEqual(redumper.load_pin(pin_json("AB" * 32)).sha256[KEY], "ab" * 32)
 
     def test_platform_names(self) -> None:
         for system, machine, key in (("win32", "AMD64", "windows-x64"), ("linux", "aarch64", "linux-arm64"), ("darwin", "arm64", "macos-arm64")):

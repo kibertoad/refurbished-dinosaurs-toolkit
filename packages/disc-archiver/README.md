@@ -52,9 +52,9 @@ kept unchanged in the `archival` folder.
 The release to download is pinned in
 [`src/dinorefurb_disc_archiver/redumper.json`](src/dinorefurb_disc_archiver/redumper.json): a
 tag and the SHA-256 of each platform's zip. A download is used only when its SHA-256 matches the
-pin, or, for a platform the pin leaves `null`, the digest GitHub publishes for that asset; a
-download with neither is refused. It is unpacked, unmodified, into your own data folder under its
-tag, so a new pin downloads its own copy:
+pin; any other download is refused. It is unpacked, unmodified, into your own data folder under
+its tag, so a new pin downloads its own copy, and the copies of earlier tags there are removed once
+it is in place:
 
 | System | Folder |
 |---|---|
