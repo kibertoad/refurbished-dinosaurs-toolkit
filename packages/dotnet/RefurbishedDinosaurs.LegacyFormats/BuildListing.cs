@@ -10,7 +10,8 @@ namespace RefurbishedDinosaurs.LegacyFormats;
 /// <param name="ImagePath">
 /// Where to read the image: an <c>.iso</c> file of 2,048-byte sectors; a <c>.cue</c> sheet or its
 /// <c>.bin</c>, a CloneCD <c>.ccd</c> (or its <c>.img</c> when the <c>.ccd</c> of the same name is
-/// beside it), an Alcohol <c>.mds</c> or <c>.mdf</c>, or a Nero <c>.nrg</c>, each opened as
+/// beside it), an Alcohol <c>.mds</c> or <c>.mdf</c>, a Nero <c>.nrg</c>, or a CHD (a file that starts
+/// with the CHD signature, whatever its extension), each opened as
 /// <see cref="OriginalContentSource.OpenDiscImage(string)"/> opens it; or a cue sheet with any other
 /// extension, opened as <see cref="OriginalContentSource.OpenCueBin(string)"/> opens it.
 /// </param>
@@ -140,7 +141,7 @@ public sealed class BuildListingRecord
 /// (<c>CD:track02</c>), each with the size of its raw audio from its <c>INDEX 01</c> to where the next
 /// track's pregap or audio begins, as <see cref="CueBinSheet.TrackExtent"/> gives it on the source's
 /// <see cref="OriginalContentSource.Cue"/>. An audio track that source does not read, such as one in
-/// a compressed file or, for <see cref="OriginalContentSource.OpenCueBin(string)"/>, in a later
+/// an Ogg or MP3 file or, for <see cref="OriginalContentSource.OpenCueBin(string)"/>, in a later
 /// <c>FILE</c> of the sheet, is a stopped item under its track reference, naming the file.
 /// </para>
 /// <para>
@@ -215,7 +216,7 @@ public static partial class BuildListing
                     nameof(discs));
             if (string.IsNullOrWhiteSpace(disc.ImagePath) || Directory.Exists(disc.ImagePath))
                 throw new ArgumentException(
-                    $"Disc {disc.Prefix} is read from a disc image file, such as an .iso, a cue sheet, a .ccd, an .mds or an .nrg, not {disc.ImagePath}. " +
+                    $"Disc {disc.Prefix} is read from a disc image file, such as an .iso, a cue sheet, a .ccd, an .mds, an .nrg or a .chd, not {disc.ImagePath}. " +
                     "A mounted disc gives the names the drive chooses, such as Joliet names, not those of the primary volume.",
                     nameof(discs));
         }
@@ -342,11 +343,13 @@ public static partial class BuildListing
     }
 
     // An .iso is read as 2048-byte sectors. A .cue or .bin, a CloneCD .ccd (or its .img when the
-    // .ccd is beside it), an Alcohol .mds or .mdf and a Nero .nrg are read as OpenDiscImage reads
-    // them. Any other file is read as OpenCueBin reads it, as a cue sheet whatever its extension.
+    // .ccd is beside it), an Alcohol .mds or .mdf, a Nero .nrg and a CHD of any extension are read as
+    // OpenDiscImage reads them. Any other file is read as OpenCueBin reads it, as a cue sheet
+    // whatever its extension.
     private static OriginalContentSource OpenDisc(string path)
     {
         var extension = Path.GetExtension(path).ToLowerInvariant();
+        if (File.Exists(path) && ChdImage.HasSignature(path)) return OriginalContentSource.OpenDiscImage(path);
         if (extension == ".iso") return OriginalContentSource.OpenIso9660(path);
         // OpenDiscImage finds an .img's .ccd by name ignoring case, so the check here does too.
         if (extension is ".cue" or ".bin" or ".ccd" or ".mds" or ".mdf" or ".mdx" or ".nrg" ||

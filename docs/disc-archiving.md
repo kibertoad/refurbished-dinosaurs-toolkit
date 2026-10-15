@@ -41,15 +41,16 @@ Recommend what the importer reads:
 
 | Disc and importer | Recommend |
 |---|---|
-| Mixed-mode, importer reads a `disc-image` source of the toolkit's `OriginalContentSource` | `bincue`, `bincue-split`, `ccd`, `mds`, `nrg` or `iso-wav`; each reads as the same disc |
+| Mixed-mode, importer reads a `disc-image` source of the toolkit's `OriginalContentSource` | `chd`, the smallest copy that keeps every sector, or `bincue`, `bincue-split`, `ccd`, `mds`, `nrg`, `iso-wav` or `iso-flac`; each reads as the same disc |
 | Mixed-mode, importer reads the toolkit's `cue-bin` source or another one-file cue/bin reader | `bincue` |
 | Data-only, importer reads ISO files | `iso` |
 | Data-only, importer reads a directory only | `files`, then `iso` once ISO import exists |
 | Importer reads a build laid out in `GAME_DIR/<build ID>/CD` | `game-dir` |
 
 Prefer `bincue` for any disc with audio: it is the most complete format most readers accept, and
-an ISO loses the audio. A `disc-image` source reads the audio of `iso-flac` and `iso-ogg` copies as
-unreadable, so do not recommend them for an importer that checks audio.
+an ISO loses the audio. A `disc-image` source decodes the lossless audio of an `iso-flac` copy and
+reports the lossy audio of an `iso-ogg` copy as unreadable, so do not recommend `iso-ogg` for an
+importer that checks audio.
 
 ## Testing an importer against every format
 
@@ -175,12 +176,10 @@ same range: `CueBinSheet.TrackExtent`, `CddaWave` and `CddaTrackFingerprints`.
 ## Known gaps
 
 [Issue #514](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/issues/514) tracks what
-keeps a legally made copy from being identified as the same edition:
-
-- `OriginalContentSource` does not read the CHD form the archiver writes.
-
-Until it is closed, test the importer against the forms it reads, and record each form it
-should accept and does not in the restoration's plan.
+keeps a legally made copy from being identified as the same edition. No gap is open. Every gap the issue lists is closed: `OriginalContentSource` reads every form the
+archiver writes as the same edition, and reports the audio of an `iso-ogg` copy, which is lossy,
+as unreadable. Report a gap found later on that issue or a new one, and list it here until it is
+closed.
 
 ## What each format keeps
 

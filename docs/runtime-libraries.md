@@ -66,22 +66,25 @@ LegacyFormats parts of it:
   including `OpenBin`, fails with an `IOException` when either has changed. A rewrite that keeps
   both is not detected. A stream the importer opens from `BinPath` itself is not checked.
 - `OriginalContentSource.OpenDiscImage` reads a CD from any image form a player commonly holds: an
-  `.iso`, a cue sheet (cue/bin, one `BINARY` file per track, or an ISO with WAVE audio tracks as
-  DOSBox sheets and the archiver's `iso-wav` form write), a CloneCD `.ccd` and `.img`, an Alcohol
-  `.mds` (version 1) and `.mdf`, or a Nero `.nrg`. Its source kind is `disc-image`, one kind for
-  every form, because a manifest names one kind and the form depends on how the player copied the
-  disc: one `disc-image` manifest with volume pins and `AudioTracks` identifies the disc from any of
-  them. `DiscImageFormat` says which form was read. The data track is checked
+  `.iso`, a cue sheet (cue/bin, one `BINARY` file per track, or an ISO with WAVE or FLAC audio
+  tracks as DOSBox sheets and the archiver's `iso-wav` and `iso-flac` forms write), a CloneCD
+  `.ccd` and `.img`, an Alcohol `.mds` (version 1) and `.mdf`, a Nero `.nrg`, or a MAME CHD, which
+  it knows by its signature. Its source kind is `disc-image`, one kind for every form, because a
+  manifest names one kind and the form depends on how the player copied the disc: one
+  `disc-image` manifest with volume pins and `AudioTracks` identifies the disc from any of them. `DiscImageFormat` says which form was read. The data track is checked
   sector by sector as for cue/bin, every file the source reads is checked for changes as for cue/bin,
   and `OpenBin` and `Cue` give the audio tracks of every raw form as one stream of 2352-byte
-  sectors with the same extents. Audio is read from raw sectors and 16-bit stereo 44.1 kHz PCM WAVE
-  files; a track in a FLAC, Ogg or MP3 file is reported as `Unreadable` with that reason while the
-  data track is still verified. A layout the readers do not understand, such as a second session,
-  an `.mds` of version 2, a DVD or a track-at-once `.nrg`, is refused with the reason
-  ([Disc images](../packages/dotnet/README.md#disc-images)). The `cue-bin` kind keeps reading only
-  a sheet's first `FILE`. `BuildListing.Make` opens a `.cue`, `.bin`, `.ccd`, `.mds`, `.mdf` or
-  `.nrg`, and an `.img` with its `.ccd` beside it, the same way, so it lists a disc from any of these
-  forms.
+  sectors with the same extents. Audio is read from raw sectors and from 16-bit stereo 44.1 kHz PCM
+  in WAVE or FLAC files, so an ISO-plus-FLAC copy verifies against a fingerprint recorded from
+  cue/bin; a track in an Ogg or MP3 file, or FLAC of another sample format, is reported as
+  `Unreadable` with that reason while the data track is still verified. A CHD's hunks are decoded
+  by managed decoders for chdman's CD codecs (`cdlz`, `cdzl`, `cdfl`), with each hunk's CRC-16 and
+  the whole data's SHA-1 checked. A layout the readers do not understand, such as a second
+  session, an `.mds` of version 2, a DVD, a track-at-once `.nrg` or a CHD that needs a parent, is
+  refused with the reason ([Disc images](../packages/dotnet/README.md#disc-images)). The `cue-bin`
+  kind keeps reading only a sheet's first `FILE`. `BuildListing.Make` opens a `.cue`, `.bin`,
+  `.ccd`, `.mds`, `.mdf`, `.nrg` or CHD, and an `.img` with its `.ccd` beside it, the same way, so
+  it lists a disc from any of these forms.
 - An `.iso`, cue/bin or disc-image source also gives its ISO 9660 volume: the identifier (`Label`), the
   size in blocks (`VolumeBlocks`) and the bytes (`OpenVolume`). An `iso9660`, `cue-bin` or
   `disc-image` manifest can pin them with `VolumeIdentifier`, `VolumeBlocks` and `VolumeXxh3`,
@@ -129,7 +132,8 @@ LegacyFormats parts of it:
   writes, and removes what it wrote when it fails or is cancelled. See
   [extracting a source into a stage](../packages/dotnet/README.md#extracting-a-source-into-a-stage).
 - `AssetManifest` describes a supported edition by paths, sizes and XXH3-128 hashes, the same
-  `xxh3` values the spec's build entries give, and names the source kind to read it as.
+  `xxh3` values the spec's build entries give, and names the source kind to read it as. A
+  `disc-image` manifest identifies a disc from any image form the player holds.
   `AssetVerifier.IdentifyAsync` tries every edition against the player's copy and reports why the
   others did not match. It names an edition only when exactly one matches, and sets `IsAmbiguous`
   when the manifests cannot tell two apart. A file it cannot read is reported as `Unreadable`.
@@ -541,3 +545,17 @@ exist, which `OpenCueBin` replaced with the `.bin` of the sheet's name or the on
 it. Fix the sheet, or pass it with another extension to keep the `OpenCueBin` reading. A disc image
 of a form or layout `OpenDiscImage` refuses, such as an `.mds` of version 2 or several sessions,
 throws `NotSupportedException`, so code that catches the exceptions of `Make` catches it as well.
+
+### FLAC audio tracks and CHD images
+
+A `disc-image` source decodes an audio track in a FLAC file of 16-bit stereo 44.1 kHz audio,
+where 12.1.0 reported it as `Unreadable`. `AssetVerifier` now checks such a track's fingerprint,
+and a track after it in the sheet, and `BuildListing.Make` lists both as file items with their
+sizes where they were `stopped` items, so a record made from such a sheet changes when it is made
+again. FLAC of another sample format is still `Unreadable`, now with its channels, bits and rate
+in the reason.
+
+`Open(path)` and `BuildListing.Make` open a file that starts with the CHD signature as a
+`disc-image` source, whatever its extension, where they read it as an ISO or a cue sheet and
+failed. `OpenDiscImage` reads a CHD, and reads a directory holding one `.chd` and no other image
+through it; a directory that holds a `.chd` beside another image is refused as holding several.

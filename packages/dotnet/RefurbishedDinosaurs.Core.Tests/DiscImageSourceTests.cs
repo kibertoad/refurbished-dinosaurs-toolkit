@@ -13,14 +13,15 @@ public sealed class DiscImageSourceTests
     private const int AnchorSamples = CddaTrackFingerprint.SamplesPerSector;
 
     public static TheoryData<string> Forms =>
-        ["cue-bin", "split-bin", "iso-wav", "clonecd", "mds", "mds-sub", "mds-cooked", "mds-apart", "mds-mode2", "mds-mode2-form1",
-            "nrg-v2", "nrg-v1", "nrg-v1-binary"];
+        ["cue-bin", "split-bin", "iso-wav", "iso-flac", "clonecd", "mds", "mds-sub", "mds-cooked", "mds-apart", "mds-mode2",
+            "mds-mode2-form1", "nrg-v2", "nrg-v1", "nrg-v1-binary", "chd", "chd-pregap"];
 
     private static string Write(string form, string root) => form switch
     {
         "cue-bin" => CueBin(root),
         "split-bin" => SplitBin(root),
         "iso-wav" => IsoWave(root),
+        "iso-flac" => IsoFlac(root),
         "clonecd" => CloneCd(root),
         "mds" => Mds(root),
         "mds-sub" => Mds(root, subchannel: true),
@@ -31,13 +32,16 @@ public sealed class DiscImageSourceTests
         "nrg-v2" => Nrg(root),
         "nrg-v1" => Nrg(root, version2: false),
         "nrg-v1-binary" => Nrg(root, version2: false, bcdTimes: false),
+        "chd" => Chd(root),
+        "chd-pregap" => Chd(root, unstoredPregap: true),
         _ => throw new ArgumentOutOfRangeException(nameof(form)),
     };
 
     private static string ExpectedFormat(string form) => form switch
     {
-        "cue-bin" or "split-bin" or "iso-wav" => DiscImageFormats.CueSheet,
+        "cue-bin" or "split-bin" or "iso-wav" or "iso-flac" => DiscImageFormats.CueSheet,
         "clonecd" => DiscImageFormats.CloneCd,
+        "chd" or "chd-pregap" => DiscImageFormats.Chd,
         "nrg-v2" or "nrg-v1" or "nrg-v1-binary" => DiscImageFormats.NeroNrg,
         _ => DiscImageFormats.AlcoholMds,
     };
@@ -124,17 +128,16 @@ public sealed class DiscImageSourceTests
     }
 
     [Theory]
-    [InlineData("flac", "fLaC", "FLAC")]
     [InlineData("ogg", "OggS", "Ogg")]
     [InlineData("mp3", "ID3", "MP3")]
-    public async Task CompressedAudioIsReportedUnreadableAndTheDataTrackStillVerifies(string extension, string magic, string named)
+    public async Task LossyAudioIsReportedUnreadableAndTheDataTrackStillVerifies(string extension, string magic, string named)
     {
         var reference = Temporary();
         var root = Temporary();
         try
         {
             var manifest = await ReferenceManifestAsync(reference);
-            // The archiver gives FLAC and Ogg tracks the WAVE file type, as DOSBox sheets do.
+            // The archiver gives Ogg tracks the WAVE file type, as DOSBox sheets do.
             var cue = IsoWave(root, $"game (Track 02).{extension}", [.. System.Text.Encoding.ASCII.GetBytes(magic), .. new byte[64]]);
             using (var source = OriginalContentSource.OpenDiscImage(cue))
             {
@@ -197,8 +200,96 @@ public sealed class DiscImageSourceTests
             raw.Position = 0;
             error = Assert.Throws<InvalidDataException>(() => raw.ReadExactly(new byte[RawSector]));
             Assert.Contains("2048-byte user data", error.Message, StringComparison.Ordinal);
+
+            // A CHD records such a pregap without storing it.
+            using var chd = OriginalContentSource.OpenDiscImage(Chd(root, unstoredPregap: true));
+            using var chdRaw = chd.OpenBin();
+            chdRaw.Position = (DataSectors + 1) * (long)RawSector;
+            error = Assert.Throws<InvalidDataException>(() => chdRaw.ReadExactly(new byte[RawSector]));
+            Assert.Contains("recorded in the CHD, which does not store it", error.Message, StringComparison.Ordinal);
         }
         finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData(1, 16, 44100, -1, "FLAC audio of 1 channels, 16 bits and 44100 Hz")]
+    [InlineData(2, 24, 44100, -1, "FLAC audio of 2 channels, 24 bits and 44100 Hz")]
+    [InlineData(2, 16, 48000, -1, "FLAC audio of 2 channels, 16 bits and 48000 Hz")]
+    [InlineData(2, 16, 44100, 0, "does not give the number of samples")]
+    [InlineData(2, 16, 44100, TrackSectors * 588 + 1, "not a whole number of 2352-byte sectors")]
+    public async Task FlacOfOtherParametersIsUnreadableWithTheReason(int channels, int bits, int rate, long declared, string message)
+    {
+        var options = new SyntheticFlacOptions
+        {
+            Channels = channels, BitsPerSample = bits, SampleRate = rate, DeclaredSamples = declared < 0 ? null : declared,
+        };
+        var reference = Temporary();
+        var root = Temporary();
+        try
+        {
+            var manifest = await ReferenceManifestAsync(reference);
+            var cue = IsoFlac(root, options);
+            using (var source = OriginalContentSource.OpenDiscImage(cue))
+                Assert.Equal(1, source.Cue!.ImageTracks);
+            var result = await AssetVerifier.VerifyAsync(cue, manifest, TestContext.Current.CancellationToken);
+            var issues = result.Issues.ToArray();
+            Assert.Equal([(2, AssetProblem.Unreadable), (3, AssetProblem.Unreadable)],
+                issues.Select(issue => (issue.AudioTrack!.Value, issue.Problem)));
+            Assert.Contains(message, issues[0].Detail, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(reference, true);
+            Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task DamagedFlacFailsWhenReadInsteadOfGivingOtherSamples()
+    {
+        var reference = Temporary();
+        var root = Temporary();
+        try
+        {
+            var manifest = await ReferenceManifestAsync(reference);
+            var ct = TestContext.Current.CancellationToken;
+
+            // A flipped bit in the last frame fails a check of that frame.
+            var cue = IsoFlac(root);
+            var flac = Path.Combine(root, "game (Track 02).flac");
+            var bytes = await File.ReadAllBytesAsync(flac, ct);
+            bytes[^40] ^= 0x10;
+            await File.WriteAllBytesAsync(flac, bytes, ct);
+            using (var source = OriginalContentSource.OpenDiscImage(cue))
+            {
+                await using var raw = source.OpenBin();
+                raw.Position = (long)Track3Start * RawSector - RawSector;
+                var error = Assert.Throws<InvalidDataException>(() => raw.ReadExactly(new byte[RawSector]));
+                Assert.Contains("game (Track 02).flac cannot be decoded: the FLAC data is damaged", error.Message,
+                    StringComparison.Ordinal);
+            }
+            var result = await AssetVerifier.VerifyAsync(cue, manifest, ct);
+            Assert.Equal([(2, AssetProblem.Unreadable)], result.Issues.Select(issue => (issue.AudioTrack!.Value, issue.Problem)));
+
+            // Frames that decode but give other samples than STREAMINFO's MD5 records.
+            IsoFlac(root, new() { WrongMd5 = true });
+            result = await AssetVerifier.VerifyAsync(cue, manifest, ct);
+            Assert.Contains("MD5", Assert.Single(result.Issues).Detail, StringComparison.Ordinal);
+
+            // STREAMINFO declares a sector more than the frames hold.
+            IsoFlac(root, new() { DeclaredSamples = (TrackSectors + 1) * 588 });
+            result = await AssetVerifier.VerifyAsync(cue, manifest, ct);
+            Assert.Contains("ends before", Assert.Single(result.Issues).Detail, StringComparison.Ordinal);
+
+            // A file whose STREAMINFO records no MD5 is checked by its frames alone.
+            IsoFlac(root, new() { Md5 = false });
+            Assert.True((await AssetVerifier.VerifyAsync(cue, manifest, ct)).IsValid);
+        }
+        finally
+        {
+            Directory.Delete(reference, true);
+            Directory.Delete(root, true);
+        }
     }
 
     [Theory]
@@ -206,6 +297,8 @@ public sealed class DiscImageSourceTests
     [InlineData("mds")]
     [InlineData("nrg-v2")]
     [InlineData("iso-wav")]
+    [InlineData("iso-flac")]
+    [InlineData("chd")]
     public async Task AChangedImageFileIsDetected(string form)
     {
         var root = Temporary();
@@ -218,6 +311,8 @@ public sealed class DiscImageSourceTests
                 "clonecd" => "game.img",
                 "mds" => "game.mdf",
                 "nrg-v2" => "game.nrg",
+                "chd" => "game.chd",
+                "iso-flac" => "game (Track 02).flac",
                 _ => "game (Track 02).wav",
             };
             var changed = Path.Combine(root, data);
@@ -226,7 +321,7 @@ public sealed class DiscImageSourceTests
             await using var raw = source.OpenBin();
             raw.Position = Track2Start * (long)RawSector;
             Assert.Throws<IOException>(() => raw.ReadExactly(new byte[RawSector]));
-            if (form == "iso-wav") return;
+            if (form is "iso-wav" or "iso-flac") return;
             await using var file = source.OpenRead("EI/TEST.BIN");
             Assert.Throws<IOException>(() => file.ReadByte());
         }

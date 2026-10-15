@@ -18,16 +18,37 @@ import tempfile
 import zlib
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from importlib import metadata
 from pathlib import Path
 
 import xxhash
 
 from . import cdda, ccd, isofs, mds, nrg, redump, tools
-from .cue import read_cue, read_iso
-from .disc import RAW_SECTOR, Disc, DiscError, NotDataSector, Track, add_to_ranges, block_data, describe_ranges, session_gap
-from .formats import FORMATS, FormatUnavailable, Output, cdda_name, mds_losses, track_file_name, write_format
+from .cue import read_cue, read_cue_metadata, read_iso
+from .disc import (
+    RAW_SECTOR,
+    Disc,
+    DiscError,
+    Metadata,
+    NotDataSector,
+    Track,
+    add_to_ranges,
+    block_data,
+    describe_ranges,
+    session_gap,
+)
+from .formats import (
+    FORMATS,
+    METADATA,
+    FormatUnavailable,
+    Output,
+    cdda_name,
+    format_by_id,
+    metadata_losses,
+    track_file_name,
+    write_format,
+)
 from .notice import NOTICE_FILENAME, write_notice
 from .profile import Profile, check_profile, recommended_formats
 from .tools import Log
@@ -343,6 +364,58 @@ def _without_gap_sources(sessions: list[dict] | None) -> list[dict] | None:  # t
     return None if sessions is None else [{k: v for k, v in s.items() if k != "gapSource"} for s in sessions]
 
 
+# How a difference names each per-track METADATA item.
+_TRACK_ITEMS = {"isrc": "ISRC codes", "flags": "FLAGS", "indexes": "indexes after INDEX 01"}
+
+
+def _metadata_values(metadata: Metadata, item: str) -> object:
+    """One METADATA item of ``metadata``, empty when the disc has none of it."""
+    if item == "catalog":
+        return metadata.catalog or None
+    if item == "cd-text":
+        tracks = {n: t.cd_text for n, t in metadata.tracks.items() if t.cd_text}
+        return (metadata.cd_text, tracks) if metadata.cd_text or tracks else None
+    return {n: getattr(t, item) for n, t in metadata.tracks.items() if getattr(t, item)}
+
+
+def compare_metadata(disc: Disc, copied: Metadata, identifier: str, result: Verification) -> None:
+    """Compare the catalog number, ISRC codes, FLAGS, indexes after INDEX 01 and CD-Text that the
+    format ``identifier`` holds with the source ``disc``'s, and list what it cannot hold.
+
+    An item is compared when the source or the copy has it, so a copy that adds one differs too.
+    Each item the source has and the format cannot hold is listed as not compared (see
+    ``formats.metadata_losses``), which makes the verification ``partial``.
+    """
+    fmt = format_by_id(identifier)
+    source = Metadata.of(disc)
+    if fmt.control_flags:
+        # The copy can only carry the FLAGS a control nibble has bits for; the others are listed below.
+        tracks = {t.number: replace(source.tracks[t.number], flags=ccd.control_flags(t)) for t in disc.tracks}
+        source = replace(source, tracks=tracks)
+    for item, text in METADATA.items():
+        if item not in fmt.holds:
+            continue
+        mine = _metadata_values(source, item)
+        theirs = _metadata_values(copied, item)
+        if not mine and not theirs:
+            continue
+        result.compared.append(text)
+        if mine == theirs:
+            continue
+        if item in _TRACK_ITEMS:
+            assert isinstance(mine, dict) and isinstance(theirs, dict)
+            changed = sorted(n for n in mine.keys() | theirs.keys() if mine.get(n) != theirs.get(n))
+            result.differences.append(f"the {_TRACK_ITEMS[item]} of tracks {changed} differ from the source")
+        elif item == "catalog":
+            copy_has = f"{theirs!r}" if theirs else "none"
+            source_has = f"{mine!r}" if mine else "none"
+            result.differences.append(f"the catalog number differs from the source: {copy_has}, where the source has {source_has}")
+        else:
+            result.differences.append("the CD-Text differs from the source")
+    holder = fmt.holder
+    result.not_compared += [f"{lost}, which {holder} does not hold" for lost in metadata_losses(disc, identifier)]
+
+
 _WITHOUT_SESSIONS = ("session", "start")
 
 
@@ -399,6 +472,7 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
     if kind in ("bincue-split", "bincue", "ccd", "chd", "mds", "nrg", "iso-wav"):
         with open_source(output.entry, work, log) as copy:
             found = fingerprint(copy)
+            copied = Metadata.of(copy)
         if kind == "iso-wav" and any(t["mode"] == "MODE2" for t in reference["tracks"]):
             # The cue sheet types the ISO as MODE1/2048: it holds the user data, not the sector mode.
             found["tracks"] = [
@@ -419,23 +493,23 @@ def verify_output(output: Output, disc: Disc, reference: dict, work: Path, log: 
             unheld = _unheld_gaps(kind, reference, found)
             if unheld:
                 gaps = ", ".join(f"the {s['gap']}-sector gap before session {s['number']}" for s in unheld)
-                holder = "a CHD" if kind == "chd" else "a cue sheet"
-                result.not_compared.append(f"{gaps}, and the track starts that follow, which {holder} does not hold")
+                result.not_compared.append(f"{gaps}, and the track starts that follow, which {format_by_id(kind).holder} does not hold")
                 first = min(s["number"] for s in unheld)
                 reference, found = _drop_gaps(reference, first), _drop_gaps(found, first)
         _compare(reference, found, result, layout=True, audio=True, form2=kind != "iso-wav")
         if kind == "iso-wav" and any(a["pregapSilent"] is False for a in reference["audio"]):
             result.not_compared.append("audio in pregaps, which the format does not hold")
-        if kind == "mds":
-            result.not_compared += [f"{lost}, which an MDS descriptor does not hold" for lost in mds_losses(disc)]
+        compare_metadata(disc, copied, kind, result)
     elif kind == "iso":
         found = fingerprint(read_iso(output.entry))
         _compare(reference, found, result, layout=False, audio=False, form2=False)
         if reference["audio"]:
             result.not_compared.append("audio tracks, which an ISO does not hold")
+        compare_metadata(disc, Metadata(), kind, result)
     elif kind in ("iso-flac", "iso-ogg"):
         found = fingerprint(read_iso(output.entry.with_suffix(".iso")))
         _compare(reference, found, result, layout=False, audio=False, form2=False)
+        compare_metadata(disc, read_cue_metadata(output.entry), kind, result)
         if kind == "iso-ogg":
             result.not_compared.append("audio samples, because Ogg Vorbis is lossy")
         else:

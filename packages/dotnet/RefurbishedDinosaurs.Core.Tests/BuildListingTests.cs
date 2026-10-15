@@ -266,6 +266,7 @@ public sealed class BuildListingTests : IDisposable
     [Theory]
     [InlineData("split-bin", "MODE1/2352")]
     [InlineData("iso-wav", "2048")]
+    [InlineData("iso-flac", "2048")]
     [InlineData("clonecd", "MODE1/2352")]
     [InlineData("clonecd-img", "MODE1/2352")]
     [InlineData("mds", "MODE1/2352")]
@@ -273,6 +274,8 @@ public sealed class BuildListingTests : IDisposable
     [InlineData("mds-cooked", "2048")]
     [InlineData("nrg-v2", "MODE1/2352")]
     [InlineData("nrg-v1", "2048")]
+    [InlineData("chd", "MODE1/2352")]
+    [InlineData("chd-img", "MODE1/2352")]
     public void ListsEveryDiscImageFormAsTheCueBin(string form, string layout)
     {
         var root = Directory.CreateDirectory(Path.Combine(_work, form)).FullName;
@@ -280,12 +283,16 @@ public sealed class BuildListingTests : IDisposable
         {
             "split-bin" => SyntheticDiscImages.SplitBin(root),
             "iso-wav" => SyntheticDiscImages.IsoWave(root),
+            "iso-flac" => SyntheticDiscImages.IsoFlac(root),
             "clonecd" => SyntheticDiscImages.CloneCd(root),
             "clonecd-img" => Path.ChangeExtension(SyntheticDiscImages.CloneCd(root), ".img"),
             "mds" => SyntheticDiscImages.Mds(root),
             "mds-mdf" => Path.ChangeExtension(SyntheticDiscImages.Mds(root), ".mdf"),
             "mds-cooked" => SyntheticDiscImages.Mds(root, cookedData: true),
             "nrg-v2" => SyntheticDiscImages.Nrg(root),
+            "chd" => SyntheticDiscImages.Chd(root),
+            // A CHD is known by its signature, whatever its extension.
+            "chd-img" => Renamed(SyntheticDiscImages.Chd(root), ".img"),
             _ => SyntheticDiscImages.Nrg(root, version2: false),
         };
         var reference = Directory.CreateDirectory(Path.Combine(_work, "reference")).FullName;
@@ -307,17 +314,17 @@ public sealed class BuildListingTests : IDisposable
     [Fact]
     public void GivesAnAudioTrackTheDiscImageDoesNotReadAsStopped()
     {
-        // Track 02 of an ISO-and-audio set is FLAC, which is not decoded, so where track 03 lies is
-        // not known either.
-        var root = Directory.CreateDirectory(Path.Combine(_work, "flac")).FullName;
-        var cue = SyntheticDiscImages.IsoWave(root, "game (Track 02).flac", "fLaC"u8.ToArray());
+        // Track 02 of an ISO-and-audio set is Ogg Vorbis, which is lossy and not decoded, so where
+        // track 03 lies is not known either.
+        var root = Directory.CreateDirectory(Path.Combine(_work, "ogg")).FullName;
+        var cue = SyntheticDiscImages.IsoWave(root, "game (Track 02).ogg", "OggS"u8.ToArray());
 
         var record = BuildListing.Make(null, [new BuildListingDisc("CD:", cue, "game.cue")], Day);
 
         Assert.Equal(["CD:EI/TEST.BIN", "CD:track02", "CD:track03"], record.Items.Select(item => item.Path));
-        Assert.Contains("\"game (Track 02).flac\"", record.Items[1].Stopped, StringComparison.Ordinal);
-        Assert.Contains("FLAC", record.Items[1].Stopped, StringComparison.Ordinal);
-        Assert.Contains("follows game (Track 02).flac", record.Items[2].Stopped, StringComparison.Ordinal);
+        Assert.Contains("\"game (Track 02).ogg\"", record.Items[1].Stopped, StringComparison.Ordinal);
+        Assert.Contains("Ogg", record.Items[1].Stopped, StringComparison.Ordinal);
+        Assert.Contains("follows game (Track 02).ogg", record.Items[2].Stopped, StringComparison.Ordinal);
         Assert.All(record.Items.Skip(1), item => Assert.Null(item.Size));
     }
 
@@ -423,6 +430,13 @@ public sealed class BuildListingTests : IDisposable
         }), Token);
         var record = BuildListing.Make(null, [new BuildListingDisc("CD:", image, "Bob's \"best\" disc.iso")], Day);
         Assert.Contains("    source: 'Bob''s \"best\" disc.iso'\n", record.ToYaml(), StringComparison.Ordinal);
+    }
+
+    private static string Renamed(string path, string extension)
+    {
+        var renamed = Path.ChangeExtension(path, extension);
+        File.Move(path, renamed);
+        return renamed;
     }
 
     private static string Msf(int sector) => $"{sector / 75 / 60:D2}:{sector / 75 % 60:D2}:{sector % 75:D2}";
