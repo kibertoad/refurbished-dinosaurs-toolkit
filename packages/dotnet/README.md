@@ -239,7 +239,8 @@ each entry and the tracks it holds (setting `Files` on a sheet checks that the e
 another file. The data track ends where the image's second track begins, or at the end of the
 image when the image holds no other track. `AssetVerifier` reports a fingerprinted audio track
 stored in another file as `Unreadable`, naming the file, `CddaTrackFingerprints.RecordAsync`
-refuses to record one, and `BuildListing` gives it as a `stopped` item. `CueSheet.Tracks` reads
+refuses to record one, and `BuildListing`, listing a sheet that is not named `.cue` through
+`OpenCueBin`, gives it as a `stopped` item. `CueSheet.Tracks` reads
 single-file sheets only and throws for a sheet with a second `FILE`.
 
 ## Cue/bin data tracks
@@ -286,8 +287,8 @@ every file the source reads, its descriptor first.
 | `iso` | `.iso`, or a directory holding only one | the 2048-byte sectors; no audio |
 | `cue` | `.cue`, or a `.bin` through the `.cue` with its name | every `FILE`: the data track as raw `MODE1/2352` or `MODE2/2352` sectors, or as an ISO of 2048-byte sectors declared `MODE1/2048` or `MODE2/2048`; audio in the same `BINARY` file, later `BINARY` files of raw sectors, and `WAVE` files |
 | `clonecd` | `.ccd`, or its `.img` | the `.img` from LBA 0 to the lead-out; the `.sub` is not read |
-| `alcohol-mds` | `.mds` of version 1, or its `.mdf` | the one `.mdf` it names (`*.mdf` is the descriptor's own name), raw or 2048-byte data sectors, with or without 96 bytes of subchannel per sector |
-| `nero-nrg` | `.nrg` of version 1 (`NERO` footer) or 2 (`NER5`) | the disc-at-once tracks its `CUES`/`CUEX` and `DAOI`/`DAOX` chunks describe, raw or 2048-byte data sectors, with or without 96 bytes of subchannel |
+| `alcohol-mds` | `.mds` of version 1, or its `.mdf` | the one `.mdf` it names (`*.mdf` is the descriptor's own name): Mode 1, Mode 2 (read as CD-XA Form 1) or Mode 2 Form 1 data and audio, raw or 2048-byte data sectors, with or without 96 bytes of subchannel per sector; a later track's pregap stored after the previous track's sectors, counted in that track's length or not, or not stored |
+| `nero-nrg` | `.nrg` of version 1 (`NERO` footer) or 2 (`NER5`) | the disc-at-once tracks its `CUES`/`CUEX` and `DAOI`/`DAOX` chunks describe, raw or 2048-byte data sectors, with or without 96 bytes of subchannel; a version 1 `CUES` time is read as BCD and as binary, and the reading that fits the `DAOI` offsets is used |
 
 A directory is read through its one `.cue`, `.ccd`, `.mds` or `.nrg`, else its one `.iso`; a
 directory holding several is refused. `Open(path)` opens a `.ccd`, `.mds`, `.mdx` or `.nrg` as a disc
@@ -305,7 +306,7 @@ file that has changed since fails with `IOException`.
 file, so `Cue.TrackExtent`, `CddaWave` and `CddaTrackFingerprints` read a track the same way from
 every form. Sectors no file stores are in the stream's layout but a read of them throws
 `InvalidDataException` with the reason: a pregap a cue sheet declares with `PREGAP` or an Alcohol
-image leaves out, and the raw sectors of a data track stored as 2048-byte sectors.
+image does not store, and the raw sectors of a data track stored as 2048-byte sectors.
 
 A cue sheet read as a disc image follows the rules of [Cue sheets](#cue-sheets) with these
 differences: the first track may also be `MODE1/2048` or `MODE2/2048`, in a file that holds no other
@@ -328,11 +329,15 @@ disagrees with itself:
 |---|---|
 | every form but `iso` | more than one session (a CD-Extra or multisession copy), a first track that is not data or a later one that is, more sectors than a CD's 99:59:74 addresses reach |
 | `clonecd` | a version other than 2 or 3, scrambled data tracks, table-of-contents points other than the tracks, A0, A1 and A2, a table of contents that disagrees with the `[TRACK]` sections, an `.img` that does not end at the lead-out, an unknown section or a line that is not `key=value` |
-| `alcohol-mds` | version 2 descriptors and DAEMON Tools `.mdx` images, DVD media, Mode 2 formless, Form 2 and mixed tracks, sector sizes other than 2352, 2448 and 2048, tracks split across several files, tracks that leave a gap, overlap or end before the session does |
-| `nero-nrg` | a file without the `NER5` or `NERO` footer, track-at-once images (`ETNF`, `ETN2`), 2336-byte Mode 2 tracks, a chunk it does not know, cue and track chunks that disagree on a track's sectors |
+| `alcohol-mds` | version 2 descriptors and DAEMON Tools `.mdx` images, DVD media, Mode 2 Form 2 tracks and mode bytes whose low three bits are 0, 6 or 7, sector sizes other than 2352, 2448 and 2048, tracks split across several files, a track whose LBA or `.mdf` offset neither follows the previous track nor its own pregap after it, tracks that end before the session does |
+| `nero-nrg` | a file without the `NER5` or `NERO` footer, an `MTYP` media type that is not a CD, track-at-once images (`ETNF`, `ETN2`), 2336-byte Mode 2 tracks and 2352-byte tracks with a 2048-byte mode code, a chunk it does not know, cue and track chunks that disagree on a track's sectors, `CUES` times that fit the tracks both as BCD and as binary with different sectors |
 
 The table of contents of each form is read as libmirage's `image-ccd`, `image-mds` and `image-nrg`
-parsers read it. The readers are tested against synthetic images built to those layouts.
+parsers read it. The Alcohol and Nero layouts are checked against Aaru's `Alcohol120` and `Nero` images where the two
+differ: Alcohol's pregap storage, and whether a `CUES` time is BCD. The source files are cited in the
+readers' comments. The readers are tested against synthetic images built to those layouts. A raw
+data track whose sectors do not match the mode its descriptor declares fails naming the descriptor,
+such as `Sector 0 is mode 1, but the Alcohol .mds game.mds declares MODE2/2352.`
 
 ## Listing a build
 
@@ -352,7 +357,8 @@ File.WriteAllText("spec/builds/BLD-X.listing.yaml", record.ToYaml());
 |---|---|
 | Installation directory | Every file under it with its size, hidden and system files included, in every subdirectory. A symbolic link or junction is a `link` item with its target as stored, and is not entered (`links: listed`, `cycles: null`). Any other file reparse point, such as a cloud file's placeholder or a deduplicated file, is a file with the size the file system gives. Any other directory reparse point, a link whose target cannot be read, and a directory that cannot be entered are `stopped` items with the reason. |
 | `.iso` image | Each file of the primary volume under the disc's prefix, named as `OpenIso9660` names it, with layout `2048`. |
-| cue/bin image (the sheet, whatever its extension, or the `.bin`) | The same for the data track, with the track's type as the layout (`MODE1/2352` or `MODE2/2352`), and each audio track as `CD:track02` and so on, with the size of its raw audio from `CueBinSheet.TrackExtent`. An audio track the sheet stores in a later `FILE` is a `stopped` item naming that file, since the listing does not read it. |
+| `.cue` sheet or its `.bin`, CloneCD `.ccd` (or its `.img` when the `.ccd` of the same name is beside it), Alcohol `.mds` or `.mdf`, Nero `.nrg` | Opened with `OpenDiscImage`. The same for the data track, with layout `MODE1/2352` or `MODE2/2352` for raw sectors and `2048` for a data track of 2048-byte sectors (an ISO with WAVE audio, or a cooked CloneCD, Alcohol or Nero track), and each audio track as `CD:track02` and so on, with the size of its raw audio from `CueBinSheet.TrackExtent` on the source's `Cue`. An audio track the image does not read, such as one in a FLAC or MP3 file, or one after it, is a `stopped` item giving the image's reason. |
+| cue sheet with any other extension | Opened with `OpenCueBin`, and listed the same way. An audio track the sheet stores in a later `FILE` is a `stopped` item naming that file, since the listing does not read it. |
 
 `BuildListingDisc.Source` is the image's path as the manifest or the list of other files writes it,
 which the record gives as the medium's `source`. A mounted disc is refused, since the drive gives

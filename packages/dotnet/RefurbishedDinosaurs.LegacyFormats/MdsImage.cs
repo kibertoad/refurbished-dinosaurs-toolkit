@@ -3,10 +3,14 @@ using System.Text;
 
 namespace RefurbishedDinosaurs.LegacyFormats;
 
-// Reads an Alcohol 120% image: a version 1 .mds descriptor and the one .mdf it names. The layout is
-// the one libmirage's image-mds parser reads: an 88-byte header, a 24-byte block per session, an
-// 80-byte block per track or lead-in entry, an 8-byte extra block (pregap and length) per track and
-// a 16-byte footer naming the data file. All values are little-endian.
+// Reads an Alcohol 120% image: a version 1 .mds descriptor and the one .mdf it names. The structures
+// are the ones in libmirage's image-mds/image-mds.h (cdemu) and Aaru's Alcohol120/Structs.cs: an
+// 88-byte header (version at 16, medium type at 18, session count at 20, session blocks' offset at
+// 80), a 24-byte block per session (end at 4, number at 8, block counts at 10 and 11, first and last
+// track at 12 and 14, track blocks' offset at 20), an 80-byte block per track or lead-in entry (mode
+// at 0, subchannel at 1, point at 4, extra block offset at 12, sector size at 16, INDEX 01 LBA at 36,
+// .mdf offset at 40, file count at 48, footer offset at 52), an 8-byte extra block (pregap and
+// length) per track and a 16-byte footer naming the data file. All values are little-endian.
 internal static class MdsImage
 {
     private const int HeaderSize = 88;
@@ -23,6 +27,7 @@ internal static class MdsImage
         if (mds[16] != 1)
             throw new NotSupportedException(
                 $"{name} is an .mds of version {mds[16]}.{mds[17]}; only version 1, which Alcohol 120% 1.x writes, is read.");
+        // MDS_Medium in image-mds.h: 0x00 CD-ROM, 0x01 CD-R, 0x02 CD-RW, 0x10 DVD-ROM, 0x12 DVD-R.
         var medium = reader.U16(18);
         if (medium is not (0x00 or 0x01 or 0x02))
             throw new NotSupportedException(
@@ -60,18 +65,24 @@ internal static class MdsImage
             if (point < 1 || point > lastTrack || tracks.ContainsKey(point))
                 throw new InvalidDataException($"{name} has a track block for track {point}, outside 1 to {lastTrack} or given twice.");
             var mode = reader.U8(at);
-            // The low three bits give the mode, as libmirage reads them: 1 audio, 2 Mode 1,
-            // 3 Mode 2, 4 Mode 2 Form 1, 5 Mode 2 Form 2, 6 Mode 2 mixed.
+            // libmirage's mirage_parser_mds_convert_track_mode (image-mds/parser.c) reads only the low
+            // nibble and treats a value and that value plus 8 alike, so the low three bits give the
+            // mode: 1 audio, 2 Mode 1, 3 Mode 2, 4 Mode 2 Form 1, 5 Mode 2 Form 2 (0 and 7 Mode 2, 6
+            // unknown). Aaru's Alcohol120/Enums.cs lists the bytes Alcohol writes: A9/E9 audio, AA/EA
+            // Mode 1, AB Mode 2 formless, AC/EC Mode 2 Form 1, AD/ED Mode 2 Form 2. A raw Mode 2 track
+            // (AB, as a cue sheet's MODE2/2352) is read as CD-XA Form 1, each sector checked as it is read.
             var kind = mode & 0x07;
-            if (kind is not (1 or 2 or 4))
+            if (kind is not (1 or 2 or 3 or 4))
                 throw new NotSupportedException(
-                    $"{name} gives track {point} mode 0x{mode:X2}; only audio, Mode 1 and Mode 2 Form 1 tracks are read.");
+                    $"{name} gives track {point} mode 0x{mode:X2}; only audio, Mode 1 and Mode 2 (Form 1) tracks are read.");
             var subchannel = reader.U8(at + 1);
             if (subchannel is not (0 or 8))
                 throw new NotSupportedException($"{name} gives track {point} subchannel mode 0x{subchannel:X2}; only none (0) and 96-byte P-W (8) are read.");
             var sectorSize = reader.U16(at + 16);
             var raw = sectorSize == CueBinSheet.RawSectorSize + (subchannel == 8 ? 96 : 0);
-            var cooked = sectorSize == 2048 && subchannel == 0 && kind != 1;
+            // A 2048-byte sector holds Mode 1 or Mode 2 Form 1 user data (Aaru's
+            // TrackModeToCookedBytesPerSector, Alcohol120/Helpers.cs).
+            var cooked = sectorSize == 2048 && subchannel == 0 && kind is 2 or 4;
             if (!raw && !cooked)
                 throw new NotSupportedException(
                     $"{name} gives track {point} {sectorSize}-byte sectors; only raw 2352-byte sectors, with or without " +
@@ -99,49 +110,68 @@ internal static class MdsImage
             ?? throw new FileNotFoundException($"{name} reads its sectors from {mdfName}, which does not exist.", Path.Combine(directory, mdfName));
         var mdf = ImageSnapshot.Take(mdfPath);
 
+        // A track block gives the LBA and .mdf offset of the track's INDEX 01 and its extra block the
+        // pregap and length. The references disagree on where a pregap is: libmirage's parser.c
+        // ("MDS format doesn't seem to store pregap data in its data file") adds no stored sectors,
+        // while Aaru's Alcohol120/Read.cs reads the pregap from the bytes before the track's offset and
+        // its Write.cs stores it there. Each layout is read from the numbers it gives: a track's length
+        // either ends where the next track's pregap begins or runs through it to the next INDEX 01, and
+        // the pregap is stored when exactly its sectors lie between the two tracks' bytes in the .mdf
+        // and not stored when no bytes do. Any other layout is refused.
+        var list = tracks.Values.ToList();
+        var lengths = list.Select(track => (long)track.Length).ToArray();
+        var stored = new bool[list.Count];
+        for (var at = 1; at < list.Count; at++)
+        {
+            var (previous, track) = (list[at - 1], list[at]);
+            if ((long)track.Start == previous.Start + previous.Length + track.Pregap) { }
+            else if (track.Pregap > 0 && (long)track.Start == previous.Start + previous.Length)
+                lengths[at - 1] = previous.Length - track.Pregap;
+            else
+                throw new InvalidDataException(
+                    $"{name} starts track {track.Number} at sector {track.Start}, which does not follow track {previous.Number} " +
+                    $"(sector {previous.Start}, {previous.Length} sectors) and its own {track.Pregap}-sector pregap.");
+            if (lengths[at - 1] <= 0)
+                throw new InvalidDataException($"{name} leaves track {previous.Number} no sectors before track {track.Number}'s pregap.");
+            var previousEnd = previous.Offset + lengths[at - 1] * previous.SectorSize;
+            if (track.Offset == previousEnd + (long)track.Pregap * track.SectorSize) stored[at] = track.Pregap > 0;
+            else if (track.Pregap == 0 || track.Offset != previousEnd)
+                throw new InvalidDataException(
+                    $"{name} puts track {track.Number}'s sectors at byte {track.Offset} of {mdfName}, which follows neither " +
+                    $"track {previous.Number}'s sectors nor its own {track.Pregap}-sector pregap stored after them.");
+        }
+
         var builder = new DiscLayoutBuilder();
         DiscDataTrack? data = null;
-        long fileEnd = 0;
-        Track? previous = null;
-        foreach (var track in tracks.Values)
+        for (var at = 0; at < list.Count; at++)
         {
+            var track = list[at];
             if (track.Number == 1 && (track.Kind == 1 || track.Start != 0))
                 throw new NotSupportedException($"{name} must begin with a data track at sector 0; only such discs are read.");
             if (track.Number > 1 && track.Kind != 1)
                 throw new NotSupportedException($"{name} gives track {track.Number} data; only track 1 may hold data.");
-            if (track.Length == 0) throw new InvalidDataException($"{name} gives track {track.Number} no sectors.");
-            var bytes = checked((long)track.Length * track.SectorSize);
-            if (track.Offset < fileEnd || track.Offset + bytes > mdf.Length)
+            if (lengths[at] <= 0) throw new InvalidDataException($"{name} gives track {track.Number} no sectors.");
+            var bytes = checked(lengths[at] * track.SectorSize);
+            if (track.Offset + bytes > mdf.Length)
                 throw new InvalidDataException(
-                    $"{name} puts track {track.Number} at bytes {track.Offset} to {track.Offset + bytes} of {mdfName}, " +
-                    "overlapping the track before it or past the end of the file.");
-            fileEnd = track.Offset + bytes;
+                    $"{name} puts track {track.Number} at bytes {track.Offset} to {track.Offset + bytes} of {mdfName}, past the end of the file.");
 
             var mode = track.Kind == 2 ? RawDataTrackMode.Mode1 : RawDataTrackMode.Mode2Form1;
             builder.Track(track.Number, track.Number == 1 ? DiscImageOpener.TypeOf(mode, track.Cooked) : "AUDIO");
-            // The pregap of track 1 lies before LBA 0. Another track's pregap is either the end of the
-            // track before it, or stored in no file when the track before ends where the pregap begins.
-            if (previous is not null && track.Pregap > 0)
+            // Track 1's pregap is the 150 sectors before LBA 0, which no image form here stores.
+            if (at > 0 && track.Pregap > 0)
             {
-                var pregapStart = (long)track.Start - track.Pregap;
-                if (pregapStart <= previous.Start)
-                    throw new InvalidDataException(
-                        $"{name} gives track {track.Number} a {track.Pregap}-sector pregap that begins before track {previous.Number} does.");
-                builder.Index(0, pregapStart);
-                if (builder.Position == pregapStart)
-                    builder.Unavailable(track.Pregap, $"{name} does not store track {track.Number:D2}'s pregap.");
+                builder.Index(0, (long)track.Start - track.Pregap);
+                if (stored[at]) builder.Stored(mdf, track.Offset - (long)track.Pregap * track.SectorSize, track.SectorSize, track.Pregap);
+                else builder.Unavailable(track.Pregap, $"{name} does not store track {track.Number:D2}'s pregap.");
             }
-            if (builder.Position != track.Start)
-                throw new InvalidDataException(
-                    $"{name} starts track {track.Number} at sector {track.Start}, but the tracks before it end at sector {builder.Position}.");
             builder.Index(1, track.Start);
             if (track.Cooked)
             {
-                builder.Unavailable(track.Length, DiscImageOpener.CookedReason(mdfName));
-                data = new CookedDiscDataTrack(mdf, track.Offset, track.Length);
+                builder.Unavailable(lengths[at], DiscImageOpener.CookedReason(mdfName));
+                data = new CookedDiscDataTrack(mdf, track.Offset, lengths[at]);
             }
-            else builder.Stored(mdf, track.Offset, track.SectorSize, track.Length);
-            previous = track;
+            else builder.Stored(mdf, track.Offset, track.SectorSize, lengths[at]);
         }
         if (sessionEnd != builder.Position)
             throw new InvalidDataException(
@@ -149,7 +179,7 @@ internal static class MdsImage
 
         var first = tracks[1];
         data ??= new RawDiscDataTrack(first.Kind == 2 ? RawDataTrackMode.Mode1 : RawDataTrackMode.Mode2Form1,
-            builder.StartOf(2, 0) ?? builder.StartOf(2, 1) ?? builder.Position);
+            builder.StartOf(2, 0) ?? builder.StartOf(2, 1) ?? builder.Position, $"the Alcohol .mds {name}");
         return new(DiscImageFormats.AlcoholMds, [mdsPath, mdfPath], null, null, builder.Sheet(Path.GetFileName(mdfPath), []),
             builder.Segments, builder.Position, data, new Dictionary<int, string>());
     }

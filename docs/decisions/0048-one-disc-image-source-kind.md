@@ -1,4 +1,4 @@
-# ADR 0047: one source kind for every image form of a CD
+# ADR 0048: one source kind for every image form of a CD
 
 Status: accepted. Extends [ADR 0015](0015-iso-volume-pins.md), whose volume pins it allows on the
 new kind.

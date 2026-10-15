@@ -69,9 +69,9 @@ LegacyFormats parts of it:
   `.iso`, a cue sheet (cue/bin, one `BINARY` file per track, or an ISO with WAVE audio tracks as
   DOSBox sheets and the archiver's `iso-wav` form write), a CloneCD `.ccd` and `.img`, an Alcohol
   `.mds` (version 1) and `.mdf`, or a Nero `.nrg`. Its source kind is `disc-image`, one kind for
-  every form, because a manifest names one kind and the form is a property of the player's copy,
-  not of the edition: one `disc-image` manifest with volume pins and `AudioTracks` identifies the
-  disc from any of them. `DiscImageFormat` says which form was read. The data track is checked
+  every form, because a manifest names one kind and the form depends on how the player copied the
+  disc: one `disc-image` manifest with volume pins and `AudioTracks` identifies the disc from any of
+  them. `DiscImageFormat` says which form was read. The data track is checked
   sector by sector as for cue/bin, every file the source reads is checked for changes as for cue/bin,
   and `OpenBin` and `Cue` give the audio tracks of every raw form as one stream of 2352-byte
   sectors with the same extents. Audio is read from raw sectors and 16-bit stereo 44.1 kHz PCM WAVE
@@ -79,7 +79,9 @@ LegacyFormats parts of it:
   data track is still verified. A layout the readers do not understand, such as a second session,
   an `.mds` of version 2, a DVD or a track-at-once `.nrg`, is refused with the reason
   ([Disc images](../packages/dotnet/README.md#disc-images)). The `cue-bin` kind keeps reading only
-  a sheet's first `FILE`.
+  a sheet's first `FILE`. `BuildListing.Make` opens a `.cue`, `.bin`, `.ccd`, `.mds`, `.mdf` or
+  `.nrg`, and an `.img` with its `.ccd` beside it, the same way, so it lists a disc from any of these
+  forms.
 - An `.iso`, cue/bin or disc-image source also gives its ISO 9660 volume: the identifier (`Label`), the
   size in blocks (`VolumeBlocks`) and the bytes (`OpenVolume`). An `iso9660`, `cue-bin` or
   `disc-image` manifest can pin them with `VolumeIdentifier`, `VolumeBlocks` and `VolumeXxh3`,
@@ -524,3 +526,11 @@ is opened as a cue/bin image's sheet or `.bin`, so an image of another kind, suc
 fail with `ArgumentException` before anything was listed. The discs are now read before the
 installation directory is walked. Code that caught `ArgumentException` for a wrong image type
 catches `InvalidDataException` as well.
+
+### Build listings of disc images
+
+`BuildListing.Make` opens a `.cue` or `.bin` with `OpenDiscImage` where it used `OpenCueBin`. An
+audio track in a later `BINARY` file or a PCM WAVE file of the sheet is now a file item with its
+size where it was a `stopped` item, and a track in a FLAC, Ogg or MP3 file, or one after it, is a
+`stopped` item giving the image's reason. A record made from such a sheet changes when it is made
+again. A sheet with another extension is still opened with `OpenCueBin` and listed as before.

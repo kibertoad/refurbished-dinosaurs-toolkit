@@ -13,7 +13,8 @@ public sealed class DiscImageSourceTests
     private const int AnchorSamples = CddaTrackFingerprint.SamplesPerSector;
 
     public static TheoryData<string> Forms =>
-        ["cue-bin", "split-bin", "iso-wav", "clonecd", "mds", "mds-sub", "mds-cooked", "nrg-v2", "nrg-v1"];
+        ["cue-bin", "split-bin", "iso-wav", "clonecd", "mds", "mds-sub", "mds-cooked", "mds-apart", "mds-mode2", "nrg-v2", "nrg-v1",
+            "nrg-v1-binary"];
 
     private static string Write(string form, string root) => form switch
     {
@@ -24,8 +25,11 @@ public sealed class DiscImageSourceTests
         "mds" => Mds(root),
         "mds-sub" => Mds(root, subchannel: true),
         "mds-cooked" => Mds(root, cookedData: true),
+        "mds-apart" => Mds(root, pregapApart: true),
+        "mds-mode2" => Mds(root, mode2: true),
         "nrg-v2" => Nrg(root),
         "nrg-v1" => Nrg(root, version2: false),
+        "nrg-v1-binary" => Nrg(root, version2: false, bcdTimes: false),
         _ => throw new ArgumentOutOfRangeException(nameof(form)),
     };
 
@@ -33,7 +37,7 @@ public sealed class DiscImageSourceTests
     {
         "cue-bin" or "split-bin" or "iso-wav" => DiscImageFormats.CueSheet,
         "clonecd" => DiscImageFormats.CloneCd,
-        "nrg-v2" or "nrg-v1" => DiscImageFormats.NeroNrg,
+        "nrg-v2" or "nrg-v1" or "nrg-v1-binary" => DiscImageFormats.NeroNrg,
         _ => DiscImageFormats.AlcoholMds,
     };
 
@@ -284,7 +288,7 @@ public sealed class DiscImageSourceTests
         { 18, 0x10, typeof(NotSupportedException), "DVD" },
         { 20, 2, typeof(NotSupportedException), "2 sessions" },
         // Track 1's mode byte, then its sector size.
-        { 88 + 24 + 3 * 80, 0xAB, typeof(NotSupportedException), "mode 0xAB" },
+        { 88 + 24 + 3 * 80, 0xAD, typeof(NotSupportedException), "mode 0xAD" },
         { 88 + 24 + 3 * 80 + 16, 0x20, typeof(NotSupportedException), "-byte sectors" },
         { 0, (byte)'X', typeof(InvalidDataException), "MEDIA DESCRIPTOR" },
     };
@@ -312,7 +316,33 @@ public sealed class DiscImageSourceTests
             // Track 2's pregap made one sector shorter leaves a sector between the tracks.
             var path = Mds(root, cookedData: true, edit: mds => mds[88 + 24 + 6 * 80 + 8] = PregapSectors - 1);
             var error = Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenDiscImage(path));
-            Assert.Contains("the tracks before it end", error.Message, StringComparison.Ordinal);
+            Assert.Contains("does not follow track 1", error.Message, StringComparison.Ordinal);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData("clonecd", "the CloneCD .ccd game.ccd declares MODE2/2352")]
+    [InlineData("mds", "the Alcohol .mds game.mds declares MODE2/2352")]
+    [InlineData("nrg", "the Nero .nrg game.nrg declares MODE2/2352")]
+    public async Task ASectorThatDoesNotMatchItsDescriptorNamesIt(string form, string message)
+    {
+        // Each descriptor declares the MODE1 data track as Mode 2.
+        var root = Temporary();
+        try
+        {
+            var path = form switch
+            {
+                "clonecd" => CloneCd(root, edit: ccd => ccd.Replace("[TRACK 1]\r\nMODE=1", "[TRACK 1]\r\nMODE=2", StringComparison.Ordinal)),
+                "mds" => Mds(root, edit: mds => mds[88 + 24 + 3 * 80] = 0xAB),
+                _ => Nrg(root, edit: chunks => Edit(chunks, "DAOX", dao => dao[22 + 14] = 0x06)),
+            };
+            var error = await Assert.ThrowsAsync<InvalidDataException>(async () =>
+            {
+                using var source = OriginalContentSource.OpenDiscImage(path);
+                await HashAsync(source.OpenVolume());
+            });
+            Assert.Contains(message, error.Message, StringComparison.Ordinal);
         }
         finally { Directory.Delete(root, true); }
     }
@@ -350,6 +380,10 @@ public sealed class DiscImageSourceTests
             Assert.Contains("stores 20 sectors for track 3", Assert.Throws<InvalidDataException>(() => OriginalContentSource.OpenDiscImage(
                 Nrg(root, edit: chunks => Edit(chunks, "CUEX", cue => BinaryPrimitives.WriteInt32BigEndian(cue.AsSpan(7 * 8 + 4), LeadOut + 1)))))
                 .Message, StringComparison.Ordinal);
+
+            // A DVD-ROM media type (MEDIA_DVD_ROM).
+            Assert.Contains("not a CD", Assert.Throws<NotSupportedException>(() => OriginalContentSource.OpenDiscImage(
+                Nrg(root, edit: chunks => Edit(chunks, "MTYP", mtyp => { mtyp[2] = 0x02; mtyp[3] = 0; })))).Message, StringComparison.Ordinal);
 
             var path = Path.Combine(root, "game.nrg");
             File.WriteAllBytes(path, new byte[4096]);

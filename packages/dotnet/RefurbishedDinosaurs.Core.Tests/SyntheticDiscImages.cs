@@ -94,9 +94,12 @@ internal static class SyntheticDiscImages
     }
 
     // An Alcohol 120% version 1 image. With cookedData, track 1 is 2048-byte sectors and track 02's
-    // pregap is stored in no file; otherwise every sector is raw, followed by 96 bytes of subchannel
-    // when subchannel is set, and the pregap ends track 1's data.
-    public static string Mds(string root, bool cookedData = false, bool subchannel = false, Action<byte[]>? edit = null)
+    // pregap is stored in no file. Otherwise every sector is raw, followed by 96 bytes of subchannel
+    // when subchannel is set, and the pregap ends track 1's data, counted in track 1's length or,
+    // with pregapApart, stored after it outside that length, as Aaru's Alcohol120 writer and the
+    // archiver lay it out. With mode2, track 1 is a raw Mode 2 (0xAB) track of CD-XA Form 1 sectors.
+    public static string Mds(string root, bool cookedData = false, bool subchannel = false, bool pregapApart = false,
+        bool mode2 = false, Action<byte[]>? edit = null)
     {
         var sectorSize = RawSector + (subchannel ? 96 : 0);
         byte[] Sectors(byte[] raw) => subchannel ? WithSubchannel(raw) : raw;
@@ -106,6 +109,13 @@ internal static class SyntheticDiscImages
         {
             tracks.Add((1, 0xAA, CookedSector, 0, 0, 150, DataSectors));
             mdf.Write(Iso);
+            tracks.Add((2, 0xA9, sectorSize, Track2Start, mdf.Length, PregapSectors, TrackSectors));
+            mdf.Write(Sectors(Track2));
+        }
+        else if (pregapApart || mode2)
+        {
+            tracks.Add((1, mode2 ? (byte)0xAB : (byte)0xAA, sectorSize, 0, 0, 150, DataSectors));
+            mdf.Write(Sectors([.. mode2 ? Mode2Form1SourceTests.ToMode2Form1(Iso) : RawData, .. Silence]));
             tracks.Add((2, 0xA9, sectorSize, Track2Start, mdf.Length, PregapSectors, TrackSectors));
             mdf.Write(Sectors(Track2));
         }
@@ -162,9 +172,12 @@ internal static class SyntheticDiscImages
     }
 
     // A Nero image. Version 2 stores raw sectors with track 1's two-second pregap ahead of it;
-    // version 1 stores track 1 as 2048-byte sectors and the audio with 96 bytes of subchannel.
-    public static string Nrg(string root, bool version2 = true, Func<List<(string Id, byte[] Data)>, List<(string Id, byte[] Data)>>? edit = null)
+    // version 1 stores track 1 as 2048-byte sectors and the audio with 96 bytes of subchannel, and
+    // gives its CUES times in BCD or, with bcdTimes false, in binary.
+    public static string Nrg(string root, bool version2 = true, bool bcdTimes = true,
+        Func<List<(string Id, byte[] Data)>, List<(string Id, byte[] Data)>>? edit = null)
     {
+        byte Time(int value) => bcdTimes ? Bcd(value) : (byte)value;
         var body = new MemoryStream();
         var tracks = new List<(byte Mode, int Size, long Pregap, long Start, long End)>();
         if (version2)
@@ -202,9 +215,9 @@ internal static class SyntheticDiscImages
             else
             {
                 var frames = lba + 150;
-                value[1] = Bcd(frames / 4500);
-                value[2] = Bcd(frames / 75 % 60);
-                value[3] = Bcd(frames % 75);
+                value[1] = Time(frames / 4500);
+                value[2] = Time(frames / 75 % 60);
+                value[3] = Time(frames % 75);
             }
             cue.Write(value);
         }
@@ -237,7 +250,7 @@ internal static class SyntheticDiscImages
         BinaryPrimitives.WriteUInt32BigEndian(sinf, 3);
         var chunks = new List<(string Id, byte[] Data)>
         {
-            (version2 ? "CUEX" : "CUES", cue.ToArray()), (version2 ? "DAOX" : "DAOI", dao), ("SINF", sinf), ("MTYP", new byte[4]),
+            (version2 ? "CUEX" : "CUES", cue.ToArray()), (version2 ? "DAOX" : "DAOI", dao), ("SINF", sinf), ("MTYP", [0, 0, 0, 1]),
         };
         if (edit is not null) chunks = edit(chunks);
 

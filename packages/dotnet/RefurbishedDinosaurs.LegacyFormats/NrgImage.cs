@@ -4,10 +4,15 @@ using System.Text;
 namespace RefurbishedDinosaurs.LegacyFormats;
 
 // Reads a Nero image: one .nrg holding the tracks' sectors, then a list of chunks, then a footer
-// giving the list's offset. The layout is the one libmirage's image-nrg parser reads. Version 2 ends
-// in "NER5" and a 64-bit offset and uses the CUEX and DAOX chunks; version 1 ends in "NERO" and a
-// 32-bit offset and uses CUES and DAOI. All values are big-endian. Only one session of disc-at-once
-// tracks is read.
+// giving the list's offset. The structures are the ones in libmirage's image-nrg/image-nrg.h and
+// parser.c (cdemu) and Aaru's Nero/Read.cs. Version 2 ends in "NER5" and a 64-bit offset and uses
+// the CUEX and DAOX chunks; version 1 ends in "NERO" and a 32-bit offset and uses CUES and DAOI.
+// A CUEX or CUES entry is 8 bytes: ADR/control, BCD track (0xAA for the lead-out), BCD index, a zero
+// byte, then a signed LBA (CUEX) or a time in bytes 5 to 7 (CUES). The DAOX or DAOI chunk is a
+// 22-byte header (catalog number at 4, first and last track at 20 and 21) and a 42-byte (DAOX) or
+// 30-byte (DAOI) block per track: ISRC at 0, sector size at 12, mode code at 14, then the file
+// offsets of INDEX 00, INDEX 01 and the track's end at 18, as 64-bit or 32-bit values. Values are
+// big-endian. Only one session of disc-at-once tracks is read.
 internal static class NrgImage
 {
     private const int MaximumChunkBytes = 16 * 1024 * 1024;
@@ -67,13 +72,55 @@ internal static class NrgImage
         if (cues.Length == 0 || daos.Length == 0)
             throw new InvalidDataException($"{name} holds no {cueId} and {daoId} chunks describing its tracks.");
 
-        var (indices, leadOut) = Cue(cues[0].Data, version2, name);
+        // MTYP holds a NERO_MEDIA_TYPE (image-nrg.h). libmirage's mirage_parser_nrg_load_medium_type
+        // reads the disc as a CD when MEDIA_CD (0x1) or MEDIA_CDROM (0x400) is set; anything else is
+        // a DVD, Blu-ray or HD DVD image.
+        foreach (var (_, mtyp) in chunks.Where(chunk => chunk.Id == "MTYP"))
+        {
+            if (mtyp.Length != 4) throw new InvalidDataException($"{name}'s MTYP chunk is not one 32-bit media type.");
+            var media = BinaryPrimitives.ReadUInt32BigEndian(mtyp);
+            if ((media & 0x401) == 0)
+                throw new NotSupportedException($"{name} gives media type 0x{media:X}, which is not a CD; DVD and other images are not read.");
+        }
+
         var tracks = Dao(daos[0].Data, version2, name);
-        if (tracks.Count != indices.Count)
-            throw new InvalidDataException($"{name}'s {daoId} chunk describes {tracks.Count} tracks and its {cueId} chunk {indices.Count}.");
         if (sinfs.Length == 1 && (sinfs[0].Data.Length != 4 || BinaryPrimitives.ReadUInt32BigEndian(sinfs[0].Data) != tracks.Count))
             throw new InvalidDataException($"{name}'s SINF chunk does not give its session's {tracks.Count} tracks.");
 
+        // A CUES entry gives its time as minutes, seconds and frames in bytes 5 to 7. libmirage's
+        // image-nrg/parser.c reads them as binary (mirage_helper_msf2lba) and Aaru's Nero/Read.cs as
+        // BCD, so a version 1 image is read both ways and the reading that agrees with the DAOI
+        // offsets is used. Readings that both agree but give different sectors are refused.
+        (DiscImage Image, string Sectors)? read = null;
+        InvalidDataException? failure = null;
+        foreach (var bcdTimes in version2 ? [false] : new[] { true, false })
+        {
+            (DiscImage, string) attempt;
+            try
+            {
+                var (indices, leadOut) = Cue(cues[0].Data, version2, bcdTimes, name);
+                attempt = (Layout(nrgPath, name, file, listOffset, cueId, daoId, tracks, indices, leadOut),
+                    string.Join(',', indices.Select(track =>
+                        $"{track.IndexZero}/{track.IndexOne}/{string.Join('/', track.More.Select(more => more.Sector))}")) + $",{leadOut}");
+            }
+            catch (InvalidDataException exception)
+            {
+                failure ??= exception;
+                continue;
+            }
+            if (read is { } earlier && earlier.Sectors != attempt.Item2)
+                throw new InvalidDataException(
+                    $"{name}'s CUES chunk fits its tracks with its times read both as binary and as BCD, which give different sectors.");
+            read ??= attempt;
+        }
+        return read?.Image ?? throw failure!;
+    }
+
+    private static DiscImage Layout(string nrgPath, string name, ImageSnapshot file, long listOffset, string cueId, string daoId,
+        List<DaoTrack> tracks, List<(bool Data, long IndexZero, long IndexOne, List<(int Index, long Sector)> More)> indices, long leadOut)
+    {
+        if (tracks.Count != indices.Count)
+            throw new InvalidDataException($"{name}'s {daoId} chunk describes {tracks.Count} tracks and its {cueId} chunk {indices.Count}.");
         var builder = new DiscLayoutBuilder();
         DiscDataTrack? data = null;
         long fileEnd = 0;
@@ -133,7 +180,7 @@ internal static class NrgImage
         }
 
         data ??= new RawDiscDataTrack(tracks[0].Mode2 ? RawDataTrackMode.Mode2Form1 : RawDataTrackMode.Mode1,
-            builder.StartOf(2, 0) ?? builder.StartOf(2, 1) ?? builder.Position);
+            builder.StartOf(2, 0) ?? builder.StartOf(2, 1) ?? builder.Position, $"the Nero .nrg {name}");
         return new(DiscImageFormats.NeroNrg, [nrgPath], null, null, builder.Sheet(name, []), builder.Segments,
             builder.Position, data, new Dictionary<int, string>());
     }
@@ -169,9 +216,17 @@ internal static class NrgImage
 
     // Each track's data bit and indices from the CUEX or CUES chunk, and the lead-out sector.
     private static (List<(bool Data, long IndexZero, long IndexOne, List<(int Index, long Sector)> More)> Tracks, long LeadOut) Cue(
-        byte[] chunk, bool version2, string name)
+        byte[] chunk, bool version2, bool bcdTimes, string name)
     {
         var id = version2 ? "CUEX" : "CUES";
+        long Time(int at)
+        {
+            int Part(byte value) => bcdTimes ? Bcd(value, name, id) : value;
+            int minutes = Part(chunk[at + 5]), seconds = Part(chunk[at + 6]), frames = Part(chunk[at + 7]);
+            if (seconds >= 60 || frames >= 75)
+                throw new InvalidDataException($"{name}'s {id} chunk gives the time {minutes}:{seconds}:{frames}, which is not one.");
+            return (minutes * 60L + seconds) * 75 + frames - 150;
+        }
         if (chunk.Length % 8 != 0 || chunk.Length < 16)
             throw new InvalidDataException($"{name}'s {id} chunk is not a list of 8-byte entries.");
         var tracks = new List<(bool Data, long IndexZero, long IndexOne, List<(int, long)> More)>();
@@ -183,9 +238,7 @@ internal static class NrgImage
             var control = chunk[at];
             var track = Bcd(chunk[at + 1], name, id);
             var index = Bcd(chunk[at + 2], name, id);
-            long sector = version2
-                ? BinaryPrimitives.ReadInt32BigEndian(chunk.AsSpan(at + 4))
-                : (Bcd(chunk[at + 5], name, id) * 60L + Bcd(chunk[at + 6], name, id)) * 75 + Bcd(chunk[at + 7], name, id) - 150;
+            long sector = version2 ? BinaryPrimitives.ReadInt32BigEndian(chunk.AsSpan(at + 4)) : Time(at);
             if (at == 0)
             {
                 if (track != 0 || index != 0)
@@ -247,14 +300,18 @@ internal static class NrgImage
             var number = tracks.Count + 1;
             var sectorSize = BinaryPrimitives.ReadUInt16BigEndian(chunk.AsSpan(at + 12));
             var mode = chunk[at + 14];
-            // The mode codes libmirage's image-nrg parser reads, with the sector size each implies.
+            // The mode codes of libmirage's mirage_parser_nrg_decode_mode (image-nrg/parser.c), with the
+            // sector size each implies, and 0x08, which Aaru's Nero/Enums.cs (DaoMode.AudioAlt) reads as
+            // audio. A raw Mode 2 track (0x06, 0x11) is read as CD-XA Form 1, each sector checked as it
+            // is read. A 2352-byte track with mode 0x00, 0x02 or 0x03, which Aaru repairs as a MagicISO
+            // error, is refused.
             var (data, cooked, mode2, expected) = mode switch
             {
                 0x00 => (true, true, false, 2048),
                 0x02 => (true, true, true, 2048),
                 0x05 => (true, false, false, 2352),
                 0x06 => (true, false, true, 2352),
-                0x07 => (false, false, false, 2352),
+                0x07 or 0x08 => (false, false, false, 2352),
                 0x0F => (true, false, false, 2448),
                 0x10 => (false, false, false, 2448),
                 0x11 => (true, false, true, 2448),

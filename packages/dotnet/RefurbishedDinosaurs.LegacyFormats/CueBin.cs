@@ -557,10 +557,15 @@ internal enum RawDataTrackMode
 /// the zero blocks a MODE1 image of the disc holds there. File reads do not pass it.
 /// A Form 2 sector that carries any nonzero data byte still throws.
 /// </para>
+/// <para>
+/// <c>layoutSource</c> names the descriptor that declared the track, such as
+/// <c>the CloneCD .ccd game.ccd</c>, for the messages of a sector that does not match it. Without it
+/// the messages name the BIN and its cue sheet.
+/// </para>
 /// </remarks>
 internal sealed class RawDataTrackUserDataStream(
     Stream source, long sectorCount, RawDataTrackMode mode, bool leaveOpen = false,
-    bool emptyForm2AsZeros = false) : Stream
+    bool emptyForm2AsZeros = false, string? layoutSource = null) : Stream
 {
     private const int LogicalSectorSize = 2048;
     private const int ModeOffset = 15;
@@ -632,10 +637,11 @@ internal sealed class RawDataTrackUserDataStream(
         source.ReadExactly(sector);
         if (!sector.AsSpan(0, SyncPattern.Length).SequenceEqual(SyncPattern))
             throw new InvalidDataException(
-                $"Sector {index} has no {declared} sync pattern; the BIN does not match its cue sheet.");
+                $"Sector {index} has no {declared} sync pattern; " +
+                (layoutSource is null ? "the BIN does not match its cue sheet." : $"the image does not match {layoutSource}."));
         if (sector[ModeOffset] != modeByte)
             throw new InvalidDataException(
-                $"Sector {index} is mode {sector[ModeOffset]}, but the cue sheet declares {declared}.");
+                $"Sector {index} is mode {sector[ModeOffset]}, but {layoutSource ?? "the cue sheet"} declares {declared}.");
         if (mode == RawDataTrackMode.Mode2Form1) CheckSubheader(index);
         sectorIndex = index;
     }

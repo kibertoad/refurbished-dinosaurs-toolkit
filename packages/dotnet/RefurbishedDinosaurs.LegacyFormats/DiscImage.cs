@@ -34,8 +34,10 @@ internal sealed record RawSegment(long StartSector, long Sectors, ImageSnapshot?
 // How a disc image stores its data track's user data.
 internal abstract record DiscDataTrack(long Sectors);
 
-// The data track is raw sectors from sector 0 of the raw stream, in this layout.
-internal sealed record RawDiscDataTrack(RawDataTrackMode Mode, long Sectors) : DiscDataTrack(Sectors);
+// The data track is raw sectors from sector 0 of the raw stream, in this layout. LayoutSource names
+// the descriptor that declared it in the messages of a sector that does not match, or is null for a
+// cue sheet, whose messages name the BIN and its cue sheet.
+internal sealed record RawDiscDataTrack(RawDataTrackMode Mode, long Sectors, string? LayoutSource = null) : DiscDataTrack(Sectors);
 
 // The data track is 2048-byte user data sectors stored one after another in File from Offset.
 internal sealed record CookedDiscDataTrack(ImageSnapshot File, long Offset, long Sectors) : DiscDataTrack(Sectors);
@@ -119,8 +121,9 @@ internal sealed record DiscImage(
         switch (Data)
         {
             case RawDiscDataTrack raw:
-                openFiles = () => new RawDataTrackUserDataStream(OpenRaw(), raw.Sectors, raw.Mode);
-                openVolume = () => new RawDataTrackUserDataStream(OpenRaw(), raw.Sectors, raw.Mode, emptyForm2AsZeros: true);
+                openFiles = () => new RawDataTrackUserDataStream(OpenRaw(), raw.Sectors, raw.Mode, layoutSource: raw.LayoutSource);
+                openVolume = () => new RawDataTrackUserDataStream(OpenRaw(), raw.Sectors, raw.Mode, emptyForm2AsZeros: true,
+                    layoutSource: raw.LayoutSource);
                 break;
             case CookedDiscDataTrack cooked:
                 openFiles = openVolume = () => new ExtentReadStream(

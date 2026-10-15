@@ -139,7 +139,7 @@ internal static partial class CloneCdImage
         var dataSectors = builder.StartOf(2, 0) ?? builder.StartOf(2, 1) ?? sectors;
         return new(DiscImageFormats.CloneCd, [ccdPath, imagePath], null, null,
             builder.Sheet(Path.GetFileName(imagePath), []), builder.Segments, builder.Position,
-            new RawDiscDataTrack(mode, dataSectors), new Dictionary<int, string>());
+            new RawDiscDataTrack(mode, dataSectors, $"the CloneCD .ccd {name}"), new Dictionary<int, string>());
     }
 
     private static T Once<T>(T? existing, T value, string name, int point) where T : struct =>
