@@ -89,7 +89,8 @@ checked, and the same on every machine it is kept on.
    ([redumper's drive list](https://github.com/superg/redumper)). When its database has no offset
    for the drive, redumper reads with offset 0 and the manifest records `readOffsetCorrected`
    false; dump again with `--backend-arg=--drive-read-offset=<offset>`, taking the offset from
-   AccurateRip's drive list. `--format all` writes every form the importer tests need from the
+   AccurateRip's drive list. A drive redumper does not list at all has its sector order detected, and `source.driveConfiguration` records the order and where it came from. A misread order is refused instead of producing a dump.
+   `--format all` writes every form the importer tests need from the
    same dump, each read back and compared with it.
 2. **Read redumper's log.** In `archival/<name>.log`, look for C2 errors and sectors that stayed
    unreadable after the retries. Every format was written from that dump and carries the same

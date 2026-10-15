@@ -912,6 +912,8 @@ def archive(
     its log (see ``backends.redumper_read_offset``): false when redumper did not know the drive's
     offset, null when the log does not say. cdrdao is corrected when given ``read_offset`` and
     uncorrected without it. Both are null for an image or the data track copy, which reads no audio.
+    ``driveConfiguration`` is the drive configuration redumper read with, from its log (see
+    ``backends.redumper_drive``), and null for any other source.
     """
     from . import backends
 
@@ -934,10 +936,14 @@ def archive(
         dump = backends.rip(chosen, drive, output / "archival", name, log, list(backend_args))
         corrected: bool | None = None
         applied = read_offset
+        configuration: dict[str, object] | None = None
         if chosen.id == "redumper":
             redumper_log = dump.parent / f"{name}.log"
             text = redumper_log.read_text(encoding="utf-8", errors="replace") if redumper_log.is_file() else ""
             corrected, applied = backends.redumper_read_offset(text, list(backend_args))
+            configuration = backends.redumper_drive(text, list(backend_args))
+            if configuration is not None and configuration["sectorOrderSource"] == "auto-detected":
+                log(f"redumper does not list this drive and detected its sector order: {configuration['sectorOrder']}.")
             if corrected is None:
                 log(f"{redumper_log.name} does not say which read offset redumper used, so the manifest leaves it unknown.")
             elif not corrected:
@@ -962,12 +968,13 @@ def archive(
             "dump": dump.relative_to(output).as_posix(),
             "readOffsetCorrected": corrected,
             "readOffset": applied,
+            "driveConfiguration": configuration,
         }
     else:
         assert image is not None
         dump = image
         name = check_name(name or image.stem)
-        source = {"kind": "image", "file": image.name, "readOffsetCorrected": None, "readOffset": None}
+        source = {"kind": "image", "file": image.name, "readOffsetCorrected": None, "readOffset": None, "driveConfiguration": None}
     with open_source(dump, output, log) as disc:
         raw = all(t.storage != "cooked" for t in disc.tracks)
         wanted = list(formats) if formats is not None else list(recommended_formats(profile, disc.layout, raw))

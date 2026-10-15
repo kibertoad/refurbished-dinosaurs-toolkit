@@ -319,3 +319,52 @@ class SyntheticCdExtra:
         sheet = directory / f"{name}.cue"
         sheet.write_text("\n".join(lines) + "\n")
         return sheet
+
+
+def redumper_log(
+    *,
+    vendor: str = "STANDIN",
+    product: str = "DRIVE 100",
+    revision: str = "1.00",
+    in_database: bool = True,
+    configured_order: str = "DATA_C2_SUB",
+    detected_order: str | None = None,
+    arguments: str = "--drive=E: --image-name=Game",
+    lead_out: int = 1000,
+    q_errors: int = 0,
+    c2_samples: int = 0,
+    dumped: bool = True,
+) -> str:
+    """One run of a redumper b761 log, in the format its ``disc`` command writes.
+
+    The lines follow b761's ``logger.ixx``, ``redumper.ixx``, ``drive.ixx``, ``drive/detect.ixx`` and
+    ``cd/cd_dump.ixx``. The drive is a stand-in, not a real model. ``detected_order`` adds the
+    ``drive::detect`` line that ``--auto-detect`` writes, and ``dumped`` the dump's error totals.
+    """
+    lines = ["=== 2026-01-02 03:04:05 " + "=" * 56, "redumper (build: b761)", "", f"arguments: {arguments}"]
+    if not in_database:
+        lines += ["warning: drive not found in the database", "warning: using generic drive"]
+    lines += [
+        "",
+        "drive information",
+        "  path: E:",
+        f"  inquiry: {vendor} - {product} (revision level: {revision or '<empty>'}, vendor specific: <empty>)",
+        f"  configuration: GENERIC (read offset: +6, C2 shift: 0, pre-gap start: +0, read method: BE, sector order: {configured_order})",
+        "  profile: CD-ROM",
+        "",
+    ]
+    if detected_order is not None:
+        lines += ["*** DRIVE::DETECT (time check: 0s)", "", f"GENERIC: auto-detected sector order: {detected_order}", ""]
+    lines += [
+        "*** DUMP (time check: 0s)",
+        "",
+        "disc TOC:",
+        "  track 1 {  data }",
+        "    index 01 { LBA:      0, MSF: 00:02:00 }",
+        "  track A {  data }",
+        f"    index 01 {{ LBA: {lead_out:6}, MSF: 00:00:00 }}",
+        "",
+    ]
+    if dumped:
+        lines += ["media errors: ", "  SCSI: 0 samples", f"  C2: {c2_samples} samples", f"  Q: {q_errors}", ""]
+    return "\n".join(lines) + "\n"
