@@ -117,7 +117,8 @@ class SyntheticDisc:
             lines += [f'FILE "{names[i + 1]}" BINARY', f"  TRACK {i + 2:02d} AUDIO", "    INDEX 00 00:00:00"]
             lines.append(f"    INDEX 01 {_time(self.pregap)}")
         sheet = directory / f"{name}.cue"
-        sheet.write_text("\n".join(lines) + "\n")
+        # Redump's cue sheets end every line with CRLF.
+        sheet.write_bytes("".join(line + "\r\n" for line in lines).encode())
         return sheet
 
     def write_single(self, directory: Path, name: str = "Synth") -> Path:
@@ -132,7 +133,7 @@ class SyntheticDisc:
             position += self.pregap + self.audio_lengths[i]
         (directory / f"{name}.bin").write_bytes(b"".join(blob))
         sheet = directory / f"{name}.cue"
-        sheet.write_text("\n".join(lines) + "\n")
+        sheet.write_bytes("".join(line + "\r\n" for line in lines).encode())
         return sheet
 
 
