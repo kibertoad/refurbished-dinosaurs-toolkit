@@ -31,7 +31,7 @@ Reading the disc (`--backend`):
 | Backend | Program | What it keeps |
 |---|---|---|
 | `redumper` | [redumper](https://github.com/superg/redumper) | Everything: every sector of every track, subchannel, lead-in and lead-out, copy-protection data, C2 error checks and rereads. The Redump-quality archival dump. |
-| `cdrdao` | [cdrdao](https://cdrdao.sourceforge.net) and its `toc2cue` | Every raw sector of data and audio tracks, with pregaps. No subchannel or protection data. |
+| `cdrdao` | [cdrdao](https://cdrdao.sourceforge.net) and its `toc2cue` | Every raw sector of data and audio tracks, with pregaps. No subchannel or protection data. The audio is not corrected for the drive's read offset unless `--read-offset` gives it (see [Read offsets](#read-offsets)). |
 | `data-copy` | none | The data track's 2,048-byte sectors as an ISO. No audio. For data-only discs on a computer without either program. |
 
 `auto` (the default) works down that list:
@@ -165,7 +165,9 @@ disc-archiver rip --drive E: --output "D:\Discs\My Game" --name "My Game" \
 disc-archiver rip --drive /dev/sr0 --output ~/discs/game --format all --accept-personal-use
 disc-archiver convert --input "My Game.cue" --output ~/discs/game --format iso --format files \
     --accept-personal-use                                # formats from a copy you already have
+disc-archiver rip --drive E: --backend cdrdao --read-offset 6 --output out --accept-personal-use
 disc-archiver check --input "My Game.cue" --profile disc-profile.json
+disc-archiver check --input "Other copy.cue" --manifest "D:\Discs\My Game\rip-manifest.json"
 disc-archiver formats                                    # every format, most complete first
 disc-archiver notice                                     # the personal-use notice
 ```
@@ -173,11 +175,16 @@ disc-archiver notice                                     # the personal-use noti
 `convert` and `check` read `.cue` (one or several BIN files, ISO-plus-WAVE sheets), `.iso`,
 `.ccd` and `.chd` (through `chdman`). `rip` passes `--backend-arg` values on to the backend program,
 for example `--backend-arg=--retries=20` for redumper, and `--no-download` keeps it from
-downloading redumper. Progress goes to standard error and the
-summary to standard output.
+downloading redumper. `rip --read-offset <samples>` corrects a cdrdao dump's audio by the drive's
+read offset; it needs `--backend cdrdao` and is refused with any other backend, since redumper
+corrects the offset itself. `check` prints the copy's fingerprint as JSON, with the profile's
+checks and, given `--manifest`, the comparison described in
+[Checking a copy against a manifest](#checking-a-copy-against-a-manifest). Progress goes to
+standard error and the summary to standard output.
 
 Exit codes: `0` done and verified, `1` failed, `2` usage error or notice not accepted, `3` a
-profile check failed or a written format differs from its source.
+profile check failed, a written format differs from its source, or a copy given to `check` is not
+identified as its manifest's disc.
 
 On Windows, if redumper cannot open the drive, start the window or the terminal as
 administrator. On Linux, add yourself to the group that owns the drive (often `cdrom`).
@@ -202,6 +209,7 @@ My Game/
   PERSONAL-ARCHIVE-ONLY.txt
   rip-manifest.json
   archival/      the backend's dump, as it wrote it (rip only)
+    offset-corrected/   the cdrdao dump with its audio corrected (rip with --read-offset only)
   bincue/        My Game.cue, My Game.bin, PERSONAL-ARCHIVE-ONLY.txt
   iso/           My Game.iso, PERSONAL-ARCHIVE-ONLY.txt
   files/         My Game/ (the disc's files), PERSONAL-ARCHIVE-ONLY.txt
@@ -237,6 +245,29 @@ My Game/
   The declared size is an address, resolved as [Data tracks after audio](#data-tracks-after-audio)
   describes; a track whose file system cannot be located admits no sector past its volume. The
   addresses stored in the sector headers are not checked.
+- `disc.audio`: for each audio track, besides `sha256`:
+  - `fingerprint`: what the toolkit's .NET `CddaTrackFingerprint` holds, with the same field
+    names, so a restoration can copy it into its own records: `track`, `samples` (from INDEX 01 to
+    the next track's INDEX 00), `toleranceSamples`, `anchorOffset`, `anchorSamples`, and
+    `anchorXxh3` and `centralXxh3`, the XXH3-128 of the anchor's samples and of the track's
+    samples from `toleranceSamples` to `samples - toleranceSamples`. A sample is 4 bytes, one
+    16-bit stereo pair, as drive offsets are counted. The anchor is 5,880 samples (ten sectors)
+    or the track's samples less twice the tolerance, if fewer, placed at the first of nine places,
+    the middle of the track first, where its samples do not repeat within twice the tolerance.
+    The .NET fingerprint takes tracks 2 to 99, so an audio CD's first track cannot be carried
+    over.
+  - `fingerprintProblem`: null when the fingerprint was recorded. Otherwise `fingerprint` is null
+    and this gives a `reason` and a `detail`: `ambiguous` (the anchor repeats within twice the
+    tolerance at every place tried, as in silence or a short loop), `short` (the track is too short
+    for an anchor inside the tolerance), `unread` (samples the dump did not read lie inside the
+    central samples) or `unreadable` (the samples around the anchor are not held as raw samples).
+  - `unreadSamples`: `[first, stop)` sample ranges, counted from INDEX 01 and negative inside the
+    pregap, that the dump holds as zero fill because no read reached them (see
+    [Read offsets](#read-offsets)). `[]` when every sample was read.
+- `source`: where the disc came from. For a drive, the backend and `dump`, the cue sheet the formats
+  were written from. `readOffsetCorrected` is true for redumper and for cdrdao with
+  `--read-offset`, false for cdrdao without it, and null for an image (whose offset the archiver
+  cannot know) or the data track copy (which reads no audio). `readOffset` is the value given.
 - `profile.checks`: each expectation of the profile and what the disc showed.
 - `outputs`: each format's files, with size, CRC32, MD5, SHA-1 and SHA-256 (the hashes disc
   databases such as Redump list, so you can check your dump against them yourself), what the
@@ -251,6 +282,60 @@ My Game/
   sectors, so no BIN/CUE, CloneCD or CHD can be made from it. A data track with sectors that hold
   no user data has no ISO form, so the ISO formats are unavailable for it; BIN/CUE, CloneCD and
   CHD keep those sectors and compare them byte for byte.
+
+The formats the archiver writes are compared with the source sample for sample: each is written
+from the same samples, and none of them moves the audio.
+
+## Read offsets
+
+A drive reads audio a fixed number of samples early or late: its read offset. Counted as
+AccurateRip and EAC count it, a drive with an offset of +N returns at each position the sample N
+samples earlier on the disc. redumper corrects it. cdrdao does not, and neither do many player
+rips (ImgBurn, Alcohol, older cdrdao, EAC set up without the offset), so their audio sits N samples
+later than in a corrected dump and its `sha256` differs in every track. The disc's data track is
+addressed by its sector headers and is not moved.
+
+`rip --backend cdrdao --read-offset <N>` corrects the dump. The archiver keeps cdrdao's files in
+`archival` unchanged and writes `archival/offset-corrected/`, the same sheet and image with each
+corrected sample taken N samples later in the dump; the formats are written from it. Each run of
+consecutive audio tracks, pregaps included, is one stream on the disc, so samples move across the
+boundaries between those tracks. At the end of a run for a positive offset, or its start for a
+negative one, the corrected samples lie where the drive did not read (the lead-out, or the data
+track before the run). Those are written as zeros and listed in the track's `unreadSamples`, and
+the log names them. A check never counts them as matching content. Find the offset for your drive
+in [AccurateRip's drive offset list](https://www.accuraterip.com/driveoffsets.htm). Without
+`--read-offset`, the log says the cdrdao audio is uncorrected. Values beyond 5,880 samples are
+refused, and so is a dump that is not one file of raw sectors.
+
+## Checking a copy against a manifest
+
+`disc-archiver check --input <copy> --manifest rip-manifest.json` says whether a copy, from this
+archiver or any other tool, holds the manifest's disc. The data track's user data must match the
+manifest's exactly. The track list must have the same number of tracks with audio in the same
+places. Each audio track of the manifest gets a `status` in the `manifest.audio` list of the
+JSON report:
+
+| Status | Meaning |
+|---|---|
+| `matched` | Every sample from INDEX 01 to the next track's INDEX 00 equals the manifest's, and the manifest lists none of them as unread. `shift` is 0. |
+| `matched-shifted` | The samples differ, but the fingerprint's anchor matched at exactly one shift, given in `shift`, and the central samples at that shift equal the manifest's. A positive shift means the copy's audio sits later; an uncorrected rip shows its drive's read offset. The `toleranceSamples` at each end of the track were not compared, since a shifted copy holds the neighbouring audio or fill there. A track with unread samples matches this way, with shift 0, at best. |
+| `ambiguous` | The anchor matched at more than one shift (`shifts` lists them), or the manifest has no anchor because the track's audio repeats around every place tried and the samples differ. The alignment is unknown and the samples were not compared. |
+| `out-of-range` | The anchor matched at no shift within the tolerance: the copy is shifted further, or its audio differs there. |
+| `mismatched` | The anchor matched at one shift and the central samples there differ. |
+| `wrong-length` | The track's length differs from the manifest's by more than the tolerance. |
+| `unreadable` | Samples the check needs lie past the end of the copy, or in a track it holds without raw sectors. |
+| `missing` | The copy holds no audio track with that number, as an ISO does not. |
+| `not-fingerprinted` | The samples differ, and the manifest records no fingerprint for the track; `detail` says why. |
+
+`manifest.identified` is true, and the exit code `0`, when the data track and the track list match
+and every audio track is `matched` or `matched-shifted`. Otherwise the exit code is `3`.
+
+The tolerance is 3,528 samples (six sectors, 80 ms) in either direction. Drive read offsets in
+AccurateRip's list run from about -1,500 to +1,700 samples, so it covers an uncorrected rip from
+any of those drives against a corrected dump, and two uncorrected rips from drives at opposite ends
+of that range (about 3,200 samples apart). The .NET fingerprint accepts up to 5,880. The check
+follows `CddaTrackFingerprints.VerifyAsync` step for step: the length, then the anchor at every
+shift within the tolerance, then the central samples at the one shift found.
 
 ## Data tracks after audio
 

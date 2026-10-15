@@ -80,6 +80,23 @@ def audio(track: int, sectors: int, salt: str = "") -> bytes:
     return b"".join(block[i % 7 :] + block[: i % 7] for i in range(sectors))
 
 
+def noise(track: int, sectors: int, salt: str = "") -> bytes:
+    """Deterministic sample bytes in which no run of a sector or more repeats, as real audio."""
+    return b"".join(hashlib.shake_256(f"{salt}{track}:{i}".encode()).digest(2352) for i in range(sectors))
+
+
+# What a stand-in drive returns for samples outside the audio it was asked for.
+OUTSIDE = bytes([0x5A, 0xA5, 0x5A, 0xA5])
+
+
+def shift_samples(data: bytes, shift: int, outside: bytes = OUTSIDE) -> bytes:
+    """``data``'s 4-byte samples moved ``shift`` samples later (earlier when negative), with
+    ``outside`` in the samples left uncovered at the start (or end)."""
+    if shift >= 0:
+        return (outside * shift + data)[: len(data)]
+    return data[-shift * 4 :] + outside * min(-shift, len(data) // 4)
+
+
 @dataclass
 class SyntheticDisc:
     """A data track followed by audio tracks, each audio track with a pregap."""
@@ -88,6 +105,11 @@ class SyntheticDisc:
     audio_lengths: list[int] = field(default_factory=lambda: [80, 120])
     pregap: int = 150
     loud_pregap: bool = False
+    # Audio from noise() instead of audio(), whose sectors repeat every seven.
+    unique_audio: bool = False
+    # Samples the audio area (the audio tracks with their pregaps) is moved by in write_single,
+    # as an uncorrected rip from a drive with this read offset holds it.
+    audio_shift: int = 0
 
     @property
     def data_raw(self) -> bytes:
@@ -97,7 +119,7 @@ class SyntheticDisc:
 
     def track_audio(self, index: int) -> bytes:
         """Samples of audio track ``index`` (0 for the first audio track) from INDEX 01."""
-        return audio(index + 2, self.audio_lengths[index])
+        return (noise if self.unique_audio else audio)(index + 2, self.audio_lengths[index])
 
     def track_pregap(self, index: int) -> bytes:
         """The stored pregap of audio track ``index``."""
@@ -130,7 +152,10 @@ class SyntheticDisc:
             lines += [f"  TRACK {i + 2:02d} AUDIO", f"    INDEX 00 {_time(position)}", f"    INDEX 01 {_time(position + self.pregap)}"]
             blob += [self.track_pregap(i), self.track_audio(i)]
             position += self.pregap + self.audio_lengths[i]
-        (directory / f"{name}.bin").write_bytes(b"".join(blob))
+        image = b"".join(blob)
+        if self.audio_shift:
+            image = image[: len(blob[0])] + shift_samples(image[len(blob[0]) :], self.audio_shift)
+        (directory / f"{name}.bin").write_bytes(image)
         sheet = directory / f"{name}.cue"
         sheet.write_text("\n".join(lines) + "\n")
         return sheet

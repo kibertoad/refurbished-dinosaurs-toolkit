@@ -11,11 +11,12 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from synthetic import iso_image
+from synthetic import SyntheticDisc, iso_image
 
 from dinorefurb_disc_archiver import backends, redumper
 from dinorefurb_disc_archiver.disc import DiscError
-from dinorefurb_disc_archiver.pipeline import MANIFEST_NAME, archive
+from dinorefurb_disc_archiver.cue import read_cue
+from dinorefurb_disc_archiver.pipeline import MANIFEST_NAME, archive, fingerprint
 from dinorefurb_disc_archiver.profile import BUILTIN_PROFILES
 
 # Writes a synthetic split dump where redumper would write the real one, and records its arguments.
@@ -36,13 +37,16 @@ Path(args["image-path"], args["image-name"] + ".log").write_text("dump log")
 
 FAKE_CDRDAO = """\
 #!{python}
-import json, sys
+import json, os, sys
 sys.path.insert(0, {tests!r})
 from pathlib import Path
 from synthetic import SyntheticDisc, iso_image
 Path("argv.json").write_text(json.dumps(sys.argv[1:]))
 datafile = sys.argv[sys.argv.index("--datafile") + 1]
-sheet = SyntheticDisc(iso_image()).write_single(Path("."), Path(datafile).stem)
+# The audio moved by STAND_IN_DRIVE_OFFSET, as an uncorrected read from a drive with that read
+# offset holds it.
+offset = int(os.environ.get("STAND_IN_DRIVE_OFFSET", "0"))
+sheet = SyntheticDisc(iso_image(), unique_audio=True, audio_shift=offset).write_single(Path("."), Path(datafile).stem)
 Path(sys.argv[-1]).write_text("toc")
 Path(sheet.name + ".made").write_text(sheet.read_text())
 """
@@ -90,7 +94,10 @@ class ProgramBackendTests(unittest.TestCase):
         argv = json.loads((out / "archival" / "argv.json").read_text())
         self.assertEqual(argv, ["--drive=E:", f"--image-path={out / 'archival'}", "--image-name=Game"])
         self.assertTrue((out / "archival" / "Game.log").is_file())
-        self.assertEqual(manifest["source"], {"kind": "drive", "drive": "E:", "backend": "redumper", "dump": "archival/Game.cue"})
+        self.assertEqual(
+            manifest["source"],
+            {"kind": "drive", "drive": "E:", "backend": "redumper", "dump": "archival/Game.cue", "readOffsetCorrected": True, "readOffset": None},
+        )
         self.assertEqual([o["format"] for o in manifest["outputs"]], ["bincue"])  # type: ignore[union-attr]
         self.assertEqual(manifest["outputs"][0]["verification"]["status"], "matched")  # type: ignore[index]
 
@@ -121,6 +128,28 @@ class ProgramBackendTests(unittest.TestCase):
         self.assertEqual(argv[:4], ["read-cd", "--device", "/dev/sr0", "--read-raw"])
         self.assertIn("generic-mmc-raw:0x20000", argv)
         self.assertEqual(manifest["outputs"][0]["verification"]["status"], "matched")  # type: ignore[index]
+
+    def test_cdrdao_audio_is_corrected_by_the_drives_read_offset(self) -> None:
+        reference = fingerprint(read_cue(SyntheticDisc(iso_image(), unique_audio=True).write_single(self.dir / "reference")))
+        with mock.patch.dict(os.environ, {"STAND_IN_DRIVE_OFFSET": "667"}):
+            out = self.dir / "out"
+            manifest = archive(
+                output=out, profile=BUILTIN_PROFILES["any"], log=silent_log, drive="/dev/sr0", name="Game", backend="cdrdao", read_offset=667
+            )
+            lines: list[str] = []
+            uncorrected = archive(
+                output=self.dir / "plain", profile=BUILTIN_PROFILES["any"], log=lines.append, drive="/dev/sr0", name="Game", backend="cdrdao"
+            )
+        source = manifest["source"]
+        self.assertEqual((source["readOffsetCorrected"], source["readOffset"]), (True, 667))  # type: ignore[index]
+        self.assertEqual(source["dump"], "archival/offset-corrected/Game.cue")  # type: ignore[index]
+        self.assertTrue((out / "archival" / "Game.bin").is_file())
+        audio = manifest["disc"]["audio"]  # type: ignore[index]
+        self.assertEqual(audio[0]["sha256"], reference["audio"][0]["sha256"])  # type: ignore[index]
+        self.assertEqual(audio[1]["unreadSamples"], [[120 * 588 - 667, 120 * 588]])
+        self.assertEqual((uncorrected["source"]["readOffsetCorrected"], uncorrected["source"]["readOffset"]), (False, None))  # type: ignore[index]
+        self.assertTrue(any("the audio is uncorrected" in line for line in lines))
+        self.assertNotEqual(uncorrected["disc"]["audio"][0]["sha256"], reference["audio"][0]["sha256"])  # type: ignore[index]
 
     def test_a_missing_program_that_cannot_be_downloaded_says_how_to_install_it(self) -> None:
         os.environ["DISC_ARCHIVER_REDUMPER"] = str(self.dir / "nowhere")
