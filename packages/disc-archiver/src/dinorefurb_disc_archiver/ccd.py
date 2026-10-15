@@ -30,9 +30,12 @@ def crc16(data: bytes) -> int:
 
 
 def control(track: Track) -> int:
-    """The Q control nibble of a track: data, or audio with its FLAGS."""
+    """The Q control nibble of a track: data or audio, with the FLAGS it can carry.
+
+    A data track carries DCP (digital copy permitted). An audio track carries 4CH, DCP and PRE.
+    """
     if not track.is_audio:
-        return 0x4
+        return 0x4 | (0x2 if "DCP" in track.flags else 0)
     value = 0
     if "PRE" in track.flags:
         value |= 0x1
@@ -44,10 +47,17 @@ def control(track: Track) -> int:
 
 
 def flags(mode: str, ctl: int) -> tuple[str, ...]:
-    """The cue FLAGS a Q control nibble gives a track of ``mode``; a data track has none."""
+    """The cue FLAGS a Q control nibble gives a track of ``mode``: DCP for a data track, and 4CH,
+    DCP and PRE for an audio track."""
     if mode != "AUDIO":
-        return ()
+        return ("DCP",) if ctl & 0x2 else ()
     return tuple(name for bit, name in ((0x8, "4CH"), (0x2, "DCP"), (0x1, "PRE")) if ctl & bit)
+
+
+def control_flags(track: Track) -> frozenset[str]:
+    """The track's FLAGS that a Q control nibble carries. The others (SCMS, and 4CH or PRE on a
+    data track) have no place in a table of contents."""
+    return frozenset(flags(track.mode, control(track)))
 
 
 def _bcd_msf(frames: int) -> list[int]:
@@ -193,11 +203,15 @@ def _sections(path: Path) -> dict[str, dict[str, str]]:
     return sections
 
 
-def _toc(path: Path, sections: dict[str, dict[str, str]]) -> tuple[dict[int, tuple[int, int]], dict[int, int]]:
-    """The table of contents' tracks as ``{point: (session, LBA of INDEX 01)}`` and each session's
-    lead-out LBA, from the ``[Entry]`` sections."""
+def _toc(
+    path: Path, sections: dict[str, dict[str, str]]
+) -> tuple[dict[int, tuple[int, int]], dict[int, int], dict[int, int]]:
+    """The table of contents' tracks as ``{point: (session, LBA of INDEX 01)}``, each session's
+    lead-out LBA, and each track's control nibble where its entry gives one, from the ``[Entry]``
+    sections."""
     tracks: dict[int, tuple[int, int]] = {}
     lead_outs: dict[int, int] = {}
+    controls: dict[int, int] = {}
     for name, entry in sections.items():
         if not re.fullmatch(r"ENTRY \d+", name):
             continue
@@ -211,13 +225,16 @@ def _toc(path: Path, sections: dict[str, dict[str, str]]) -> tuple[dict[int, tup
                 lba = int(entry["PLBA"])
             else:
                 lba = (int(entry["PMIN"]) * 60 + int(entry["PSEC"])) * 75 + int(entry["PFRAME"]) - MSF_OFFSET
+            ctl = int(entry["CONTROL"], 0) if "CONTROL" in entry else None
         except (KeyError, ValueError):
             raise DiscError(f"{path.name}: [{name.title()}] does not give its mode, session, point and address") from None
         if 1 <= point <= 99:
             tracks[point] = (session, lba)
+            if ctl is not None:
+                controls[point] = ctl
         elif point == 0xA2:
             lead_outs[session] = lba
-    return tracks, lead_outs
+    return tracks, lead_outs, controls
 
 
 def read_ccd(path: Path) -> Disc:
@@ -230,6 +247,8 @@ def read_ccd(path: Path) -> Disc:
     from the first track's INDEX 00 to the session's lead-out, back to back. A later session must
     start :func:`disc.session_gap` sectors past the lead-out before it; a first track without
     INDEX 0 that starts later has a pregap the image does not hold.
+
+    Each track's FLAGS come from the control nibble of its table of contents entry.
     """
     img = path.with_suffix(".img")
     if not img.is_file():
@@ -259,10 +278,15 @@ def read_ccd(path: Path) -> Disc:
         }
         parsed.append((number, mode, index0, index1, extra))
     catalog = sections.get("DISC", {}).get("CATALOG")
-    toc, lead_outs = _toc(path, sections)
+    toc, lead_outs, controls = _toc(path, sections)
     if len({session for session, _ in toc.values()}) <= 1:
-        return _one_session(path, img, sectors, parsed, catalog)
-    return _sessions(path, img, sectors, parsed, catalog, toc, lead_outs)
+        disc = _one_session(path, img, sectors, parsed, catalog)
+    else:
+        disc = _sessions(path, img, sectors, parsed, catalog, toc, lead_outs)
+    for track in disc.tracks:
+        if track.number in controls:
+            track.flags = flags(track.mode, controls[track.number])
+    return disc
 
 
 def _one_session(

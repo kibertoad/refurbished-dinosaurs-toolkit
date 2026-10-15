@@ -27,7 +27,9 @@ from .disc import (
     RAW_SECTOR,
     Disc,
     DiscError,
+    Metadata,
     Track,
+    TrackMetadata,
     format_msf,
     header_lba,
     lead_out_sectors,
@@ -162,8 +164,41 @@ def _safe_file(sheet: Path, name: str, line: int) -> Path:
     return sheet.parent / PureWindowsPath(name).as_posix()
 
 
+@dataclass
+class _Sheet:
+    """A cue sheet's lines, read without opening the files it names."""
+
+    files: list[tuple[Path, str]]
+    tracks: list[_Track]
+    sessions: _Sessions
+    catalog: str | None
+    cd_text: dict[str, str]
+
+
 def read_cue(sheet: Path) -> Disc:
     """Read a cue sheet and the files it names into a Disc."""
+    parsed = _parse(sheet)
+    disc = _layout(sheet, parsed.files, parsed.tracks, parsed.catalog)
+    disc.cd_text = _ordered(parsed.cd_text)
+    if parsed.sessions.given:
+        _check_session_starts(disc)
+    return disc
+
+
+def read_cue_metadata(sheet: Path) -> Metadata:
+    """The catalog number, CD-Text, ISRC codes, FLAGS and later indexes a cue sheet gives, read
+    without opening the files it names, so a sheet of FLAC or Ogg files can be compared too."""
+    parsed = _parse(sheet)
+    tracks = {}
+    for track in parsed.tracks:
+        if 1 not in track.indexes:
+            raise DiscError(f"track {track.number} has no INDEX 01")
+        indexes = tuple((k, v - track.indexes[1]) for k, v in sorted(track.indexes.items()) if k > 1)
+        tracks[track.number] = TrackMetadata(track.isrc, frozenset(track.flags), indexes, _ordered(track.cd_text))
+    return Metadata(parsed.catalog, _ordered(parsed.cd_text), tracks)
+
+
+def _parse(sheet: Path) -> _Sheet:
     size = sheet.stat().st_size
     if size > MAXIMUM_CUE_BYTES:
         raise DiscError(f"{sheet} is {size} bytes; a cue sheet is at most {MAXIMUM_CUE_BYTES}")
@@ -229,11 +264,7 @@ def read_cue(sheet: Path) -> Disc:
         else:
             raise DiscError(f"line {number}: cannot read {raw.strip()!r}")
     sessions.finish()
-    disc = _layout(sheet, files, tracks, catalog)
-    disc.cd_text = _ordered(disc_text)
-    if sessions.given:
-        _check_session_starts(disc)
-    return disc
+    return _Sheet(files, tracks, sessions, catalog, disc_text)
 
 
 def _check_session_starts(disc: Disc) -> None:

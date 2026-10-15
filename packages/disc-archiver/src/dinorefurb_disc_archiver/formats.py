@@ -19,6 +19,21 @@ class FormatUnavailable(DiscError):
     """A format that cannot be made from this disc or with the programs installed."""
 
 
+# What a disc carries besides its layout and sectors, by the name formats list it under, and how
+# notes and verification name it.
+METADATA = {
+    "catalog": "the disc's catalog number",
+    "isrc": "the tracks' ISRC codes",
+    "flags": "the tracks' FLAGS",
+    "indexes": "the tracks' indexes after INDEX 01",
+    "cd-text": "the CD-Text",
+}
+CUE_METADATA = frozenset(METADATA)
+# Formats that hold FLAGS as the control nibble of each track's table of contents entry, which
+# carries only some of them (see ``ccd.control_flags``).
+CONTROL_FLAGS = ("ccd", "mds", "nrg")
+
+
 @dataclass(frozen=True)
 class Format:
     """One output format."""
@@ -30,6 +45,9 @@ class Format:
     needs: tuple[str, ...] = ()
     # Whether it stores every sector of every track, audio and pregaps included.
     complete: bool = False
+    # The METADATA it holds, and how a report names the copy when it lacks the rest.
+    holds: frozenset[str] = frozenset()
+    holder: str = ""
 
 
 FORMATS: tuple[Format, ...] = (
@@ -38,6 +56,8 @@ FORMATS: tuple[Format, ...] = (
         "BIN/CUE, one file per track",
         "The Redump layout: every raw sector of every track, pregaps included, one .bin per track.",
         complete=True,
+        holds=CUE_METADATA,
+        holder="a cue sheet",
     ),
     Format(
         "bincue",
@@ -45,45 +65,69 @@ FORMATS: tuple[Format, ...] = (
         "Every raw sector in one .bin with one cue sheet. Read by most tools and by the toolkit's "
         "OriginalContentSource.",
         complete=True,
+        holds=CUE_METADATA,
+        holder="a cue sheet",
     ),
     Format(
         "ccd",
         "CloneCD (.ccd/.img/.sub)",
-        "Every raw sector in .img; the .sub subchannel is generated from the table of contents.",
+        "Every raw sector in .img; the .sub subchannel is generated from the table of contents. The .ccd holds the "
+        "catalog number, FLAGS and indexes, and no ISRC codes or CD-Text.",
         complete=True,
+        holds=frozenset({"catalog", "flags", "indexes"}),
+        holder="a CloneCD image",
     ),
-    Format("chd", "CHD", "MAME's compressed disc image, made by chdman from the one-file BIN/CUE.", ("chdman",), True),
+    Format(
+        "chd",
+        "CHD",
+        "MAME's compressed disc image, made by chdman from the one-file BIN/CUE. It holds no catalog number, ISRC "
+        "codes, FLAGS, indexes after INDEX 01 or CD-Text.",
+        ("chdman",),
+        True,
+        holder="a CHD",
+    ),
     Format(
         "mds",
         "Alcohol 120% (.mds/.mdf)",
         "Every raw sector in .mdf with a version 1 .mds descriptor, without subchannel. The descriptor holds no "
-        "catalog number, ISRC codes or indexes after INDEX 01.",
+        "catalog number, ISRC codes, indexes after INDEX 01 or CD-Text.",
         complete=True,
+        holds=frozenset({"flags"}),
+        holder="an MDS descriptor",
     ),
     Format(
         "nrg",
         "Nero (.nrg)",
-        "Every raw sector in one version 2 disc-at-once .nrg file, with the catalog number, ISRC codes and indexes.",
+        "Every raw sector in one version 2 disc-at-once .nrg file, with the catalog number, ISRC codes, FLAGS and "
+        "indexes, without CD-Text.",
         complete=True,
+        holds=frozenset({"catalog", "isrc", "flags", "indexes"}),
+        holder="an NRG image",
     ),
     Format(
         "iso-flac",
         "ISO + FLAC audio",
         "The data track as an ISO file and each audio track as lossless FLAC, with a cue sheet.",
         ("ffmpeg",),
+        holds=CUE_METADATA,
+        holder="a cue sheet",
     ),
     Format(
         "iso-wav",
         "ISO + WAV audio",
         "The data track as an ISO file and each audio track as WAV, with a DOSBox-style cue sheet.",
+        holds=CUE_METADATA,
+        holder="a cue sheet",
     ),
     Format(
         "iso-ogg",
         "ISO + Ogg Vorbis audio (lossy)",
         "The form many re-releases ship: the ISO and lossy Ogg Vorbis audio tracks, with a cue sheet.",
         ("ffmpeg",),
+        holds=CUE_METADATA,
+        holder="a cue sheet",
     ),
-    Format("iso", "ISO", "The data track's 2,048-byte sectors only. Audio tracks are left out."),
+    Format("iso", "ISO", "The data track's 2,048-byte sectors only. Audio tracks are left out.", holder="an ISO"),
     Format("files", "Extracted files", "The data track's files copied out, with their dates."),
     Format(
         "game-dir",
@@ -209,15 +253,48 @@ def write_ccd(disc: Disc, directory: Path, name: str) -> Output:
             "The table of contents has each session's A0, A1 and A2 entries and its tracks, with the gap between "
             "sessions; it has no mode 5 (B0, C0) entries, which the source did not give."
         )
-    if any(t.isrc for t in disc.tracks):
-        notes.append("The tracks' ISRC codes are not carried into the CloneCD files.")
-    if _has_cd_text(disc):
-        notes.append("The CD-Text the cue sheet gave is not carried into the CloneCD files.")
+    notes += _metadata_notes(disc, "ccd")
     return Output("ccd", directory, files[0], files, notes)
 
 
-def _has_cd_text(disc: Disc) -> bool:
-    return bool(disc.cd_text) or any(t.cd_text for t in disc.tracks)
+def held_tracks(disc: Disc, identifier: str) -> list[Track]:
+    """The tracks whose metadata a format can hold: the first data track for ``iso``, every track otherwise."""
+    return disc.data_tracks[:1] if identifier == "iso" else disc.tracks
+
+
+def metadata_losses(disc: Disc, identifier: str) -> list[str]:
+    """The METADATA the disc has that the format ``identifier`` cannot hold, as a report names it.
+
+    A format that keeps FLAGS in its table of contents also loses each track's FLAGS that the
+    control nibble cannot carry.
+    """
+    fmt = format_by_id(identifier)
+    tracks = held_tracks(disc, identifier)
+    present = {
+        "catalog": bool(disc.catalog),
+        "isrc": any(t.isrc for t in tracks),
+        "flags": any(t.flags for t in tracks),
+        "indexes": any(t.extra_indexes for t in tracks),
+        "cd-text": bool(disc.cd_text) or any(t.cd_text for t in tracks),
+    }
+    losses = [text for item, text in METADATA.items() if present[item] and item not in fmt.holds]
+    if identifier in CONTROL_FLAGS:
+        for track in tracks:
+            lost = set(track.flags) - ccd.control_flags(track)
+            if lost:
+                kind = "an audio" if track.is_audio else "a data"
+                losses.append(
+                    f"track {track.number}'s FLAGS {' '.join(sorted(lost))} (the control field of {kind} track has no bit for them)"
+                )
+    return losses
+
+
+def _metadata_notes(disc: Disc, identifier: str) -> list[str]:
+    losses = metadata_losses(disc, identifier)
+    if not losses:
+        return []
+    holder = format_by_id(identifier).holder
+    return [f"Not carried into this copy, since {holder} has no place for them: {'; '.join(losses)}."]
 
 
 def _need_one_session_and_pregaps(disc: Disc, fmt: str) -> None:
@@ -242,25 +319,8 @@ def write_mds(disc: Disc, directory: Path, name: str) -> Output:
     _need_raw(disc, "Alcohol 120% MDS/MDF")
     _need_one_session_and_pregaps(disc, "Alcohol 120% MDS/MDF")
     files = mds.write_mds(disc, directory, name)
-    notes = _virtual_pregap_notes(disc)
-    losses = mds_losses(disc)
-    if losses:
-        notes.append(f"Not carried into the .mds, which has no place for them: {', '.join(losses)}.")
-    if _has_cd_text(disc):
-        notes.append("The CD-Text the cue sheet gave is not carried into the .mds.")
+    notes = [*_virtual_pregap_notes(disc), *_metadata_notes(disc, "mds")]
     return Output("mds", directory, files[0], files, notes)
-
-
-def mds_losses(disc: Disc) -> list[str]:
-    """What the disc holds that an MDS descriptor cannot."""
-    losses = []
-    if disc.catalog:
-        losses.append("the disc's catalog number")
-    if any(t.isrc for t in disc.tracks):
-        losses.append("the tracks' ISRC codes")
-    if any(t.extra_indexes for t in disc.tracks):
-        losses.append("the tracks' indexes after INDEX 01")
-    return losses
 
 
 def write_nrg(disc: Disc, directory: Path, name: str) -> Output:
@@ -275,9 +335,8 @@ def write_nrg(disc: Disc, directory: Path, name: str) -> Output:
         "Track 1's 150-sector pregap before LBA 0, which the NRG layout stores and the archiver does not read from "
         "any source, is written as zero bytes.",
         *_virtual_pregap_notes(disc),
+        *_metadata_notes(disc, "nrg"),
     ]
-    if _has_cd_text(disc):
-        notes.append("The CD-Text the cue sheet gave is not carried into the NRG.")
     return Output("nrg", directory, image, [image], notes)
 
 
@@ -354,6 +413,7 @@ def write_iso(disc: Disc, directory: Path, name: str) -> Output:
     notes = _write_iso(disc, image)
     if disc.audio_tracks:
         notes.append(f"The {len(disc.audio_tracks)} audio tracks are left out; an ISO file holds data only.")
+    notes += _metadata_notes(disc, "iso")
     return Output("iso", directory, image, [image], notes)
 
 
@@ -432,9 +492,7 @@ def write_chd(disc: Disc, directory: Path, name: str, log: Log) -> Output:
         tools.run([chdman, "createcd", "-i", source.entry, "-o", target, "-f"], log)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
-    notes = _virtual_pregap_notes(disc)
-    if _has_cd_text(disc):
-        notes.append("The CD-Text the cue sheet gave is not carried into the CHD; chdman does not store it.")
+    notes = [*_virtual_pregap_notes(disc), *_metadata_notes(disc, "chd")]
     return Output("chd", directory, target, [target], notes)
 
 

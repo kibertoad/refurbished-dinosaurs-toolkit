@@ -72,10 +72,10 @@ Writing the copy (`--format`, repeat for several):
 |---|---|---|
 | `bincue-split` | one `.bin` per track and a `.cue` | Every raw sector, pregaps included: the Redump layout. The sheet keeps the source sheet's `CATALOG`, CD-Text (`TITLE`, `PERFORMER`, `SONGWRITER`), `ISRC`, `FLAGS` and sessions in the line order redumper writes, so a redumper dump's sheet is written back byte for byte. |
 | `bincue` | one `.bin` and a `.cue` | The same in one file. Read by most tools and by the toolkit's `OriginalContentSource`. |
-| `ccd` | `.ccd`, `.img`, `.sub` | Every raw sector; the subchannel is generated from the table of contents, not read from the disc. |
-| `chd` | `.chd` | Every raw sector, compressed by MAME's `chdman`. Needs `chdman`. chdman releases up to MAME 0.289 store no sessions; see [Sessions](#sessions). |
-| `mds` | `.mds`, `.mdf` | Every raw sector, without subchannel, with a version 1 Alcohol 120% descriptor. The descriptor has no place for the catalog number, ISRC codes or indexes after INDEX 01; the manifest lists them under `notCompared` when the disc has them. Unavailable for a disc of several sessions. |
-| `nrg` | `.nrg` | Every raw sector in a version 2 Nero disc-at-once image, with the catalog number, ISRC codes and indexes. Track 1's 150-sector pregap before LBA 0, which the layout stores, is written as zero bytes. Unavailable for a disc of several sessions. |
+| `ccd` | `.ccd`, `.img`, `.sub` | Every raw sector; the subchannel is generated from the table of contents, not read from the disc. The `.ccd` holds the catalog number, the indexes and the FLAGS a track's control field carries; it has no place for ISRC codes or CD-Text. |
+| `chd` | `.chd` | Every raw sector, compressed by MAME's `chdman`. Needs `chdman`. chdman releases up to MAME 0.289 store no sessions; see [Sessions](#sessions). A CHD holds no catalog number, ISRC codes, FLAGS, indexes after INDEX 01 or CD-Text. |
+| `mds` | `.mds`, `.mdf` | Every raw sector, without subchannel, with a version 1 Alcohol 120% descriptor. The descriptor holds the FLAGS a track's control field carries and has no place for the catalog number, ISRC codes, indexes after INDEX 01 or CD-Text. Unavailable for a disc of several sessions. |
+| `nrg` | `.nrg` | Every raw sector in a version 2 Nero disc-at-once image, with the catalog number, ISRC codes, indexes and the FLAGS a track's control field carries, without CD-Text. Track 1's 150-sector pregap before LBA 0, which the layout stores, is written as zero bytes. Unavailable for a disc of several sessions. |
 | `iso-flac` | `.iso`, one `.flac` per audio track, `.cue` | Data user data and lossless audio from each track's INDEX 01. Needs `ffmpeg`. |
 | `iso-wav` | `.iso`, one `.wav` per audio track, `.cue` | The same with WAV audio: the DOSBox-style sheet. |
 | `iso-ogg` | `.iso`, one `.ogg` per audio track, `.cue` | The form many re-releases ship. Lossy. Needs `ffmpeg`. |
@@ -95,6 +95,10 @@ writes what the disc profile recommends.
 Programs are found on `PATH`, or through `DISC_ARCHIVER_REDUMPER`, `DISC_ARCHIVER_CDRDAO`,
 `DISC_ARCHIVER_TOC2CUE`, `DISC_ARCHIVER_CHDMAN` and `DISC_ARCHIVER_FFMPEG`. A format whose program
 is missing is skipped and reported; the others are still written.
+
+A track's control field, where `ccd`, `mds` and `nrg` keep FLAGS, carries `4CH`, `DCP` and `PRE`
+on an audio track and `DCP` on a data track. Each format's notes and `notCompared` name what it
+has no place for (see the `verification` of [the output folder](#the-output-folder)).
 
 ## Install
 
@@ -329,12 +333,20 @@ My Game/
 - `outputs`: each format's files, with size, CRC32, MD5, SHA-1 and SHA-256 (the hashes disc
   databases such as Redump list, which `--dat` compares) and XXH3-128 (`xxh3`), what the
   format leaves out or generates (`notes`), for `game-dir` the `listing` of its files, and its
-  `verification`:
+  `verification`. Each disc image format is read back and compared by its layout and content
+  hashes, and by the catalog number, ISRC codes, FLAGS, indexes after INDEX 01 and CD-Text it
+  holds, each of which is compared when the source or the copy has it (a copy that drops, changes
+  or adds one differs). The cue sheets of `bincue-split`, `bincue` and the `iso-*` formats hold
+  all of them; the sheet of `iso-flac` and `iso-ogg` is read without decoding its audio files.
+  What a format has no place for and the source has is listed under `notCompared`, naming the
+  item and the format, so the copy is `partial`:
   - `matched`: everything the source holds was compared and agreed.
   - `partial`: everything compared agreed, and `notCompared` lists what the format does not hold
     or could not be compared: audio left out of an ISO, lossy Ogg audio, sound in a pregap that
     ISO-plus-audio formats drop, which sectors were empty form 2 sectors (an ISO holds them as zero
-    blocks, and its `notes` name them), sessions a CHD does not hold.
+    blocks, and its `notes` name them), sessions a CHD does not hold, and the catalog number, ISRC
+    codes, FLAGS, indexes or CD-Text of the formats above that have no place for them (an `iso`
+    lists the catalog number, the CD-Text and its data track's own items).
   - `mismatched`: `differences` says what differs.
 - `unavailable`: formats that could not be made from this source, and why. A plain ISO has no raw
   sectors, so no BIN/CUE, CloneCD, CHD, MDS or NRG can be made from it. An NRG file holds a
