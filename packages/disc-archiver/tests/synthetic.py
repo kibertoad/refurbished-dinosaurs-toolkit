@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -346,16 +347,20 @@ def redumper_log(
     q_errors: int = 0,
     c2_samples: int = 0,
     dumped: bool = True,
+    write_offset: int | None = None,
+    data_error_sectors: int | None = None,
+    extra_lines: tuple[str, ...] = (),
     warning: str | None = None,
 ) -> str:
     """One run of a redumper b761 log, in the format its ``disc`` command writes.
 
     The lines follow b761's ``logger.ixx``, ``redumper.ixx``, ``drive.ixx``, ``drive/detect.ixx``,
-    ``cd/toc.ixx`` and ``cd/cd_dump.ixx``. The drive is a stand-in, not a real model.
-    ``detected_order`` adds the ``drive::detect`` line that ``--auto-detect`` writes, and ``dumped``
-    the dump's error totals. ``sessions`` lists each session's first LBA and lead-out (one data
-    track each), in place of one session from 0 to ``lead_out``. ``warning`` replaces the
-    database warning a drive the database lacks gets.
+    ``cd/toc.ixx``, ``cd/cd_dump.ixx`` and ``cd/cd_split.ixx``. The drive is a stand-in, not a real
+    model. ``detected_order`` adds the ``drive::detect`` line that ``--auto-detect`` writes, ``dumped``
+    the dump's error totals, ``write_offset`` split's disc write offset, ``data_error_sectors`` split
+    stopping on that many sectors with C2 errors, and ``extra_lines`` lines at the end. ``sessions``
+    lists each session's first LBA and lead-out (one data track each), in place of one session from
+    0 to ``lead_out``. ``warning`` replaces the database warning a drive the database lacks gets.
     """
     lines = ["=== 2026-01-02 03:04:05 " + "=" * 56, "redumper (build: b761)", "", f"arguments: {arguments}"]
     if not in_database:
@@ -387,4 +392,92 @@ def redumper_log(
     lines.append("")
     if dumped:
         lines += ["media errors: ", "  SCSI: 0 samples", f"  C2: {c2_samples} samples", f"  Q: {q_errors}", ""]
+    if write_offset is not None:
+        lines += ["*** SPLIT (time check: 0s)", "", f"disc write offset: {write_offset:+}", ""]
+    if data_error_sectors is not None:
+        samples = data_error_sectors * 100
+        lines += [
+            "checking tracks",
+            f"errors detected, track: 1, sectors: {{SKIP: 0, C2: {data_error_sectors}}}, samples: {{SKIP: 0, C2: {samples}}}",
+            "error: data errors detected, unable to continue",
+            "",
+        ]
+    lines += list(extra_lines)
     return "\n".join(lines) + "\n"
+
+
+# redumper's CD dump files start at this LBA, the start of the lead-in, with 588 samples per
+# sector (``LBA_START`` and the ``.state`` layout in redumper).
+DUMP_FIRST_LBA = -45150
+DUMP_SAMPLES = 588
+STATE_C2, STATE_SUCCESS = 1, 4
+
+
+def _scrambler() -> bytes:
+    table, register = bytearray(), 1
+    for _ in range(2340):
+        value = 0
+        for bit in range(8):
+            value |= (register & 1) << bit
+            feedback = (register ^ (register >> 1)) & 1
+            register = (register >> 1) | (feedback << 14)
+        table.append(value)
+    return bytes(table)
+
+
+SCRAMBLER = _scrambler()
+
+
+def cd_edc(data: bytes) -> int:
+    """The CD-ROM EDC (ECMA-130 14.3): CRC-32 with the polynomial 0xD8018001, reflected."""
+    value = 0
+    for byte in data:
+        value ^= byte
+        for _ in range(8):
+            value = (value >> 1) ^ 0xD8018001 if value & 1 else value >> 1
+    return value
+
+
+def edc_sector(lba: int, user: bytes) -> bytes:
+    """A raw MODE1 sector holding ``user`` with its EDC; the ECC is left zero."""
+    sector = bytearray(mode1_sector(lba, user))
+    sector[2064:2068] = cd_edc(bytes(sector[:2064])).to_bytes(4, "little")
+    return bytes(sector)
+
+
+def scramble(sector: bytes) -> bytes:
+    """A raw data sector as a drive reads it in audio mode: bytes 12 onward scrambled."""
+    return sector[:12] + bytes(a ^ b for a, b in zip(sector[12:], SCRAMBLER))
+
+
+def write_redumper_dump(directory: Path, name: str, iso: bytes, bad: Collection[int] = (), offset: int = 0) -> None:
+    """The ``.scram`` and ``.state`` files redumper's dump of ``iso`` as one data track would leave.
+
+    Sectors in ``bad`` have damaged user data and 100 samples flagged with C2 errors. ``offset``
+    is the disc write offset in samples, which moves every data sector by that much in both files.
+    The files are written sparsely from the lead-in on, as redumper's are laid out.
+    """
+    sectors = len(iso) // 2048
+    directory.mkdir(parents=True, exist_ok=True)
+    with (directory / f"{name}.scram").open("wb") as scram:
+        for lba in range(sectors):
+            raw = bytearray(edc_sector(lba, iso[lba * 2048 : (lba + 1) * 2048]))
+            if lba in bad:
+                raw[100:110] = bytes(b ^ 0xFF for b in raw[100:110])
+            scram.seek((lba - DUMP_FIRST_LBA) * 2352 + offset * 4)
+            scram.write(scramble(bytes(raw)))
+    state = bytearray([STATE_SUCCESS]) * ((sectors - DUMP_FIRST_LBA + 1) * DUMP_SAMPLES)
+    for lba in bad:
+        start = (lba - DUMP_FIRST_LBA) * DUMP_SAMPLES + offset
+        state[start + 200 : start + 300] = bytes([STATE_C2]) * 100
+    (directory / f"{name}.state").write_bytes(bytes(state))
+
+
+def iso_extent(iso: bytes, path: str) -> int:
+    """The first sector of the file at ISO 9660 ``path`` (with its ``;1``) in ``iso``."""
+    reader = pycdlib.PyCdlib()
+    reader.open_fp(io.BytesIO(iso))
+    try:
+        return reader.get_record(iso_path=path).extent_location()
+    finally:
+        reader.close()

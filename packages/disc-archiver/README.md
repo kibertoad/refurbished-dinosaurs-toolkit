@@ -55,6 +55,22 @@ redumper keeps a database of drives and how each returns a raw sector: the order
 
 A dump whose subchannel is invalid in more than 90% of its sectors is refused: the order was misread, so the dump cannot be used. The error names the orders to try. Dump again into a new output folder, since redumper will not overwrite the refused dump. A correctly read disc fails the check in a fraction of a percent of its sectors, even when scratched. An order without a subchannel (`DATA_C2`) is not checked.
 
+### Data errors
+
+redumper does not write the image of a dump whose data track has sectors the drive flagged with C2 errors: its log ends with "data errors detected, unable to continue". The archiver then reads, from redumper's own files, which sectors those are, whether each one's data is damaged (its EDC), and which file of the disc's ISO 9660 volume holds it, if any. It counts only sectors inside the data tracks of the `disc TOC:` that redumper logged, since C2 errors in audio tracks do not stop redumper; when the log lists no TOC, every flagged sector counts. It reads the volume's directory itself, so a volume whose primary volume descriptor copies differ, which pycdlib refuses, is still read.
+
+With at most 2,000 bad sectors it runs `redumper refine` once, at speed 8 with 3 rereads per sector (`--backend-arg=--speed=` or `--retries=` override them), with the sector order the dump used, and reads the sectors again. A slow reread clears dust and marginal reads; a sector that fails three slow reads fails the same way on more. With more bad sectors it does not reread: about ten minutes of rereads at most is the limit before dumping again is the better use of time.
+
+Then `redumper split` writes the image, with `--force-split` while bad sectors remain. redumper regenerates those sectors from the data it read, which is how Redump's dumps of such discs hold them, so a disc whose bad sectors are deliberate can still match its Redump entry. redumper's hash and info steps, which follow split in its disc sequence, are not run. The manifest's `source.dataErrors` records what happened (see [The output folder](#the-output-folder)):
+
+| `outcome` | Means | Exit code |
+|---|---|---|
+| `cleared` | Reading again cleared every bad sector. | `0` |
+| `outsideFiles` | Bad sectors remain, and no file holds any of them: every file was read intact. Some copy protections write such sectors on purpose. The archiver does not claim that a disc is protected, only where the sectors are. | `0` |
+| `insideFiles` | At least one file holds a bad sector. The log and `files` name them. Clean the disc and copy it again, or copy it in another drive. | `3` |
+| `tooMany` | More than 2,000 bad sectors, so they were not read again. | `3` |
+| `unlocated` | Bad sectors remain, and the disc's ISO 9660 volume could not be read to say which files hold them. | `3` |
+
 ### Downloading redumper
 
 The release to download is pinned in
@@ -221,9 +237,7 @@ checks and, given `--manifest`, the comparison described in
 [Checking a copy against a manifest](#checking-a-copy-against-a-manifest). Progress goes to
 standard error and the summary to standard output.
 
-Exit codes: `0` done and verified, `1` failed, `2` usage error or notice not accepted, `3` a
-profile check failed, a written format differs from its source, a copy given to `check` is not
-identified as its manifest's disc, or the Redump comparison is `mismatched`.
+Exit codes: `0` done and verified, `1` failed, `2` usage error or notice not accepted, `3` a profile check failed, a written format differs from its source, a copy given to `check` is not identified as its manifest's disc, the Redump comparison is `mismatched`, or a rip's data errors are `insideFiles`, `tooMany` or `unlocated` (see [Data errors](#data-errors)).
 
 ### Comparing with a Redump DAT
 
@@ -252,8 +266,7 @@ size and well-formed CRC32, MD5 and SHA-1, and it uses no entities. The DTD a do
 declaration names is never loaded. A DAT that breaks one of these rules is refused before the disc
 is read.
 
-On Windows, if redumper cannot open the drive, start the window or the terminal as
-administrator. On Linux, add yourself to the group that owns the drive (often `cdrom`).
+On Windows, if redumper cannot open the drive, start the window or the terminal as administrator. On Linux, add yourself to the group that owns the drive (often `cdrom`). The archiver's error says so when redumper's log shows it could not open the drive, and only then.
 
 ### Building the download
 
@@ -356,6 +369,14 @@ My Game/
   - `type`, `readOffset`, `c2Shift`, `pregapStart` and `readMethod`: redumper's `configuration:` line.
   - `sectorOrder`: the order of the data, C2 and subchannel blocks the dump read with.
   - `sectorOrderSource`: `database` (redumper's entry for the drive), `auto-detected` (found by `--auto-detect`, see [Drives redumper does not list](#drives-redumper-does-not-list)), `override` (given with `--backend-arg=--drive-sector-order=<order>`) or `default` (the generic order, for a drive the database lacks when detection found none).
+
+  `dataErrors` is null unless redumper stopped on data errors and the archiver wrote the image anyway (see [Data errors](#data-errors)). It holds:
+  - `sectorsBefore`: the data sectors with C2 errors in the dump.
+  - `refined`: whether `redumper refine` read them again.
+  - `sectors`: the bad sectors left, and `edcFailing`: how many of those have data whose EDC does not match.
+  - `ranges`: the sectors left, as `first` and `last` LBA and the count of bad `sectors` between them; sectors less than 16 apart share a range.
+  - `files`: each file of the primary ISO 9660 tree that holds a bad sector, as its `path` and the count of `sectors`; empty when none does, null when the volume could not be read. A directory whose records hold a bad sector is listed too, with a path ending in `/`, since the damage can hide the files it lists.
+  - `outcome`: `cleared`, `outsideFiles`, `insideFiles`, `tooMany` or `unlocated`.
 - `profile.checks`: each expectation of the profile and what the disc showed.
 - `outputs`: each format's files, with size, CRC32, MD5, SHA-1 and SHA-256 (the hashes disc
   databases such as Redump list, which `--dat` compares) and XXH3-128 (`xxh3`), what the
