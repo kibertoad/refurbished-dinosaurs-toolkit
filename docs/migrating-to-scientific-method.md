@@ -525,8 +525,13 @@ a disc now carry the sessions, so their file hashes differ from earlier runs; th
 
 A cue sheet whose `REM SESSION` lines are out of order or leave a session without tracks, or whose
 `REM LEAD-OUT` or `REM LEAD-IN` gives other than the standard sizes, is now refused; earlier
-versions skipped every `REM` line. Discs of one session keep every value and every file; their
+versions skipped every `REM` line. Discs of one session keep every manifest value, and their
 manifests gain the two new fields.
+
+Cue sheets are written in redumper's line order and keep CD-Text (`TITLE`, `PERFORMER`,
+`SONGWRITER`): `ISRC` now comes before `FLAGS`, and flags are written as `4CH DCP PRE`. A sheet
+whose source has CD-Text, a track with both `ISRC` and `FLAGS`, or flags in another order is
+written differently from earlier versions, so its file hashes differ; the content hashes do not.
 
 ### Disc archiver 2.0.0: empty form 2 sectors are zero blocks of the data hash
 
