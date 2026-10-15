@@ -114,13 +114,13 @@ def _parser() -> argparse.ArgumentParser:
     common(rip)
 
     convert = commands.add_parser("convert", help="write the chosen formats from a copy you already have")
-    convert.add_argument("--input", required=True, type=Path, help="a .cue, .iso, .ccd or .chd file")
+    convert.add_argument("--input", required=True, type=Path, help="a .cue, .iso, .ccd, .chd, .mds or .nrg file")
     common(convert)
 
     check = commands.add_parser(
         "check", help="print a copy's fingerprint and check it against a profile, and against a manifest if given"
     )
-    check.add_argument("--input", required=True, type=Path, help="a .cue, .iso, .ccd or .chd file")
+    check.add_argument("--input", required=True, type=Path, help="a .cue, .iso, .ccd, .chd, .mds or .nrg file")
     check.add_argument("--profile", default="any", help="a disc profile file or a built-in profile")
     check.add_argument(
         "--manifest",

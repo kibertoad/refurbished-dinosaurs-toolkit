@@ -7,8 +7,8 @@ ship, and how to use the formats to test an importer.
 
 > Copies are for the owner's personal archive and their own restoration runtime only. They are
 > never shared, and never enter a repository, a test fixture, an issue or a pull request.
-> `tools/Verify-Repository.ps1` keeps `.cue`, `.iso`, `.wav` and `.ogg` files out; the rest is on
-> you.
+> `tools/Verify-Repository.ps1` keeps `.cue`, `.iso`, `.mds`, `.mdf`, `.nrg`, `.wav` and `.ogg`
+> files out; the rest is on you.
 
 ## What a restoration ships
 
@@ -175,9 +175,8 @@ same range: `CueBinSheet.TrackExtent`, `CddaWave` and `CddaTrackFingerprints`.
 [Issue #514](https://github.com/kibertoad/refurbished-dinosaurs-toolkit/issues/514) tracks what
 keeps a legally made copy from being identified as the same edition:
 
-- Alcohol MDS/MDF and Nero NRG copies are neither read nor written;
-- `OriginalContentSource` reads a directory, an ISO and cue/bin, not the CHD, CloneCD or
-  ISO-plus-audio forms the archiver writes, and of a `bincue-split` sheet it reads only the
+- `OriginalContentSource` reads a directory, an ISO and cue/bin, not the CHD, CloneCD, MDS, NRG
+  or ISO-plus-audio forms the archiver writes, and of a `bincue-split` sheet it reads only the
   data track, so its audio tracks cannot be fingerprinted;
 - sessions are not kept, so a CD-Extra disc's cue, CloneCD and CHD copies lose them.
 
@@ -191,6 +190,7 @@ should accept and does not in the restoration's plan.
 | redumper dump (`archival/`) | raw | yes | yes | read from the disc |
 | `bincue-split`, `bincue`, `chd` | raw | yes | yes | none |
 | `ccd` | raw | yes | yes | generated from the table of contents |
+| `mds`, `nrg` | raw | yes | yes | none |
 | `iso-flac`, `iso-wav` | user data | yes, from INDEX 01 | as a cue `PREGAP` | none |
 | `iso-ogg` | user data | lossy | as a cue `PREGAP` | none |
 | `iso` | user data | no | no | none |
