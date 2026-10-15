@@ -163,7 +163,7 @@ class ProgramBackendTests(unittest.TestCase):
 
 
 class RedumperReadOffsetTests(unittest.TestCase):
-    # The lines redumper b756 logs: drive_config_string and the warnings of drive_get_config.
+    # The lines redumper b761 logs: drive_config_string and the warnings of drive_get_config.
     CONFIGURATION = "  configuration: GENERIC (read offset: {}, C2 shift: 0, pre-gap start: -135, read method: BE, sector order: DATA_C2_SUB)\n"
     UNKNOWN = "warning: drive read offset not found in the database\nwarning: drive not found in the database\n"
 

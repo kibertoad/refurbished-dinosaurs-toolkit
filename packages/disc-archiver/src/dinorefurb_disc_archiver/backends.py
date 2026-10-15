@@ -126,7 +126,7 @@ def _redumper(drive: str, directory: Path, name: str, log: Log, extra: Sequence[
     return sheet
 
 
-# redumper b756 logs the drive's settings as "  configuration: <type> (read offset: +6, ...)"
+# redumper b761 logs the drive's settings as "  configuration: <type> (read offset: +6, ...)"
 # (``drive_config_string`` in ``drive.ixx``), and, before that, warns when its database has no
 # read offset for the drive, in which case it reads with offset 0 (``drive_get_config``).
 _REDUMPER_CONFIGURATION = re.compile(r"^\s*configuration: .*\(read offset: ([+-]?\d+),", re.MULTILINE)

@@ -9,7 +9,7 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import backends, drives, redumper, tools
+from . import backends, drives, redump, redumper, tools
 from .disc import DiscError
 from .formats import FORMAT_IDS, FORMATS
 from .notice import NOTICE
@@ -22,6 +22,7 @@ from .pipeline import (
     open_source,
     package_version,
     profile_paths,
+    redump_check,
 )
 from .profile import BUILTIN_PROFILES, check_profile, load_profile
 
@@ -32,8 +33,9 @@ EXIT_MISMATCH = 3
 
 EPILOG = f"""\
 exit codes: {EXIT_OK} done and verified; {EXIT_FAILED} failed; {EXIT_USAGE} usage error or notice not
-accepted; {EXIT_MISMATCH} a profile check failed, a written format differs from its source, or a
-checked copy is not identified as its manifest's disc.
+accepted; {EXIT_MISMATCH} a profile check failed, a written format differs from its source, a
+checked copy is not identified as its manifest's disc, or --dat found the copy mismatched with
+the DAT's game.
 
 Copies are for your own archive and your own restoration runtime only. Never share them.
 Run "disc-archiver notice" to read the full notice."""
@@ -58,7 +60,16 @@ def _parser() -> argparse.ArgumentParser:
     install = commands.add_parser("install-redumper", help="download the pinned redumper release now")
     install.add_argument("--force", action="store_true", help="download it again even if it is already there")
 
+    def dat_option(sub: argparse.ArgumentParser, compared: str) -> None:
+        sub.add_argument(
+            "--dat",
+            type=Path,
+            help=f"a Redump DAT you downloaded from redump.org (.dat or its .zip) to compare {compared} with; "
+            "never downloaded by the archiver",
+        )
+
     def common(sub: argparse.ArgumentParser) -> None:
+        dat_option(sub, "the bincue-split copy, which is then written too,")
         sub.add_argument("--output", required=True, type=Path, help="directory to write the copy into")
         sub.add_argument("--name", help="base file name of the images")
         sub.add_argument(
@@ -117,6 +128,7 @@ def _parser() -> argparse.ArgumentParser:
         help="a rip-manifest.json: the copy's data track must match it exactly, and each audio track "
         "exactly or at a shift within the fingerprint's tolerance",
     )
+    dat_option(check, "the cue sheet and its track files")
     return parser
 
 
@@ -164,7 +176,19 @@ def _report(manifest: dict) -> int:  # type: ignore[type-arg]
     for check in manifest["profile"]["checks"]:
         if not check["matched"]:
             print(f"profile: {check['check']} expected {check['expected']!r}, found {check['found']!r}")
+    _report_redump(manifest["redump"])
     return EXIT_OK if manifest_ok(manifest) else EXIT_MISMATCH
+
+
+def _report_redump(report: dict | None) -> None:  # type: ignore[type-arg]
+    if report is None:
+        return
+    game = f" {report['game']!r}" if report["game"] else ""
+    print(f"redump: {report['status']}{game} in {report['dat']}")
+    for item in report["nameDifferences"]:
+        print(f"  name: {item['path']} is {item['datName']!r} in the DAT")
+    for difference in report["differences"]:
+        print(f"  {difference}")
 
 
 def _tools() -> int:
@@ -210,15 +234,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         profile = load_profile(arguments.profile)
         if arguments.command == "check":
             manifest = load_manifest(arguments.manifest) if arguments.manifest else None
+            dat = None
+            if arguments.dat is not None:
+                if arguments.input.suffix.lower() != ".cue":
+                    raise DiscError("--dat compares a cue sheet and its track files; convert the copy to bincue-split first")
+                dat = redump.load_dat(arguments.dat)
             with tempfile.TemporaryDirectory() as work, open_source(arguments.input, Path(work), _log) as disc:
                 found = fingerprint(disc)
                 checks = check_profile(profile, found, profile_paths(profile, disc))
-                report: dict[str, object] = {"disc": found, "checks": [c.as_json() for c in checks]}
+                redump_report = redump_check(dat, arguments.input, disc) if dat is not None else None
+                result: dict[str, object] = {"disc": found, "checks": [c.as_json() for c in checks], "redump": redump_report}
                 if manifest is not None:
-                    report["manifest"] = check_against_manifest(disc, found, manifest)
-            print(json.dumps(report, indent=2))
-            identified = manifest is None or report["manifest"]["identified"]  # type: ignore[index]
-            return EXIT_OK if all(c.matched for c in checks) and identified else EXIT_MISMATCH
+                    result["manifest"] = check_against_manifest(disc, found, manifest)
+            print(json.dumps(result, indent=2))
+            if redump_report is not None:
+                _log(f"redump: {redump.summary(redump_report)}")
+            failed = not all(c.matched for c in checks) or (redump_report is not None and redump_report["status"] == "mismatched")
+            identified = manifest is None or result["manifest"]["identified"]  # type: ignore[index]
+            return EXIT_MISMATCH if failed or not identified else EXIT_OK
         if arguments.command == "rip" and arguments.read_offset is not None and arguments.backend != "cdrdao":
             print(
                 "error: --read-offset corrects a cdrdao dump and needs --backend cdrdao; redumper corrects the drive's "
@@ -240,6 +273,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             image=getattr(arguments, "input", None),
             allow_download=not getattr(arguments, "no_download", False),
             read_offset=getattr(arguments, "read_offset", None),
+            dat=arguments.dat,
         )
         return _report(manifest)
     except DiscError as error:

@@ -52,9 +52,9 @@ kept unchanged in the `archival` folder.
 The release to download is pinned in
 [`src/dinorefurb_disc_archiver/redumper.json`](src/dinorefurb_disc_archiver/redumper.json): a
 tag and the SHA-256 of each platform's zip. A download is used only when its SHA-256 matches the
-pin, or, for a platform the pin leaves `null`, the digest GitHub publishes for that asset; a
-download with neither is refused. It is unpacked, unmodified, into your own data folder under its
-tag, so a new pin downloads its own copy:
+pin; any other download is refused. It is unpacked, unmodified, into your own data folder under
+its tag, so a new pin downloads its own copy, and the copies of earlier tags there are removed once
+it is in place:
 
 | System | Folder |
 |---|---|
@@ -79,6 +79,13 @@ Writing the copy (`--format`, repeat for several):
 | `iso-ogg` | `.iso`, one `.ogg` per audio track, `.cue` | The form many re-releases ship. Lossy. Needs `ffmpeg`. |
 | `iso` | `.iso` | The data track's user data only. Audio tracks are left out. A CD-Extra disc's ISO keeps the addresses counted from the start of the disc, so most programs cannot list its files; the manifest notes it. |
 | `files` | a directory | The data track's files, with Joliet names where the disc has them, and their dates. Unavailable, with the reason, when the file system cannot be located (see [Data tracks after audio](#data-tracks-after-audio)). |
+| `game-dir` | a `CD` directory | The documentation standard's `GAME_DIR` layout of a build's files from one disc (see [The GAME_DIR layout](#the-game_dir-layout)). Unavailable when the disc has no data track, its file system cannot be located, or a root file or directory is named like a track file. |
+
+Every cue sheet the archiver writes (`bincue-split`, `bincue` and the `iso-*` sheets) is UTF-8
+with CRLF at the end of every line, the last included, as Redump's cue sheets are. The same disc
+gives the same cue bytes on Windows, macOS and Linux, so a `bincue-split` sheet can match a Redump
+DAT's cue entry wherever it was written. redumper's own `.cue` in `archival` is left as redumper
+wrote it, which is CRLF on Windows and LF elsewhere.
 
 `--format all` writes every format that can be made. `--format recommended`, the default,
 writes what the disc profile recommends.
@@ -149,6 +156,7 @@ disc-archiver-gui --profile path/to/disc-profile.json         # installed with P
 
 Tick the notice, choose the drive (or an image you already made), the game's profile and the
 folder, and press **Make the copy**. The formats the profile recommends are ticked already.
+**Redump DAT**, under the folder, takes a DAT you downloaded, as `--dat` does.
 
 ### The command
 
@@ -168,6 +176,7 @@ disc-archiver convert --input "My Game.cue" --output ~/discs/game --format iso -
 disc-archiver rip --drive E: --backend cdrdao --read-offset 6 --output out --accept-personal-use
 disc-archiver check --input "My Game.cue" --profile disc-profile.json
 disc-archiver check --input "Other copy.cue" --manifest "D:\Discs\My Game\rip-manifest.json"
+disc-archiver check --input "My Game.cue" --dat redump-pc.zip     # against a Redump DAT
 disc-archiver formats                                    # every format, most complete first
 disc-archiver notice                                     # the personal-use notice
 ```
@@ -183,8 +192,35 @@ checks and, given `--manifest`, the comparison described in
 standard error and the summary to standard output.
 
 Exit codes: `0` done and verified, `1` failed, `2` usage error or notice not accepted, `3` a
-profile check failed, a written format differs from its source, or a copy given to `check` is not
-identified as its manifest's disc.
+profile check failed, a written format differs from its source, a copy given to `check` is not
+identified as its manifest's disc, or the Redump comparison is `mismatched`.
+
+### Comparing with a Redump DAT
+
+`--dat <file>` on `rip`, `convert` and `check` compares the copy with a DAT you downloaded
+yourself from [redump.org](https://redump.org/downloads/): the `.dat` file, or the `.zip` the site
+serves holding one `.dat`. The archiver never downloads a DAT. `rip` and `convert` also write
+`bincue-split`, the layout Redump lists, and compare its files; `check` compares the `.cue` it is
+given and the track files it names. `check` refuses other inputs, and a cue sheet of another layout
+(several tracks in one file, an ISO or WAVE file, a pregap no file holds), whose files could not
+match the DAT's. The comparison and its outcome are
+in the manifest's `redump` (in `check`'s output, its `redump`).
+
+Each track file is matched with a DAT file by size, CRC32, MD5 and SHA-1, all four agreeing; file
+names are reported separately. The outcome is:
+
+| `status` | Means | Exit code |
+|---|---|---|
+| `matched` | Every track file and the cue sheet match one game's files, and the game lists no other file. | `0` |
+| `partial` | Every track file matches one game, which lists no other track, but the cue sheet differs. `differences` says whether only its `FILE` names (Redump names them `<game> (Track N).bin`; `--name` with the game's name writes those), only its line endings (a sheet redumper wrote outside Windows ends lines with LF), or its content differs. | `0` |
+| `notListed` | No game in the DAT lists any of the track files. Printed; the copy cannot be checked this way. | `0` |
+| `mismatched` | Some track files match a game and others do not, or the copy lacks a file the game lists. `differences` names them. The DAT cannot tell a bad dump from an edition it does not list that shares some of the game's tracks; dumping again and comparing tells them apart. | `3` |
+| `notCompared` | `bincue-split` could not be written from this source (an ISO has no raw sectors). | `0` |
+
+A DAT is read only when it is UTF-8 Logiqx XML of at most 128 MiB, every file lists a decimal
+size and well-formed CRC32, MD5 and SHA-1, and it uses no entities. The DTD a document type
+declaration names is never loaded. A DAT that breaks one of these rules is refused before the disc
+is read.
 
 On Windows, if redumper cannot open the drive, start the window or the terminal as
 administrator. On Linux, add yourself to the group that owns the drive (often `cdrom`).
@@ -213,16 +249,24 @@ My Game/
   bincue/        My Game.cue, My Game.bin, PERSONAL-ARCHIVE-ONLY.txt
   iso/           My Game.iso, PERSONAL-ARCHIVE-ONLY.txt
   files/         My Game/ (the disc's files), PERSONAL-ARCHIVE-ONLY.txt
+  game-dir/      CD/ (the disc's files and trackNN.cdda), PERSONAL-ARCHIVE-ONLY.txt
 ```
 
 `rip-manifest.json` records:
 
 - `disc`: the layout, the volume identifier (each byte read as the Latin-1 character of the same
   value without the trailing spaces and NULs, as the .NET `OriginalContentSource.Label` reads it,
-  or `null` when it is all padding), each track's start, pregap and length, the SHA-256 of the
-  data track's user data from INDEX 01, and the SHA-256 of each audio track's samples
-  from INDEX 01 to the next track's INDEX 00. These hashes are the same whichever format holds the
-  disc, so they are what restorations' fingerprints and the formats are compared by.
+  or `null` when it is all padding), each track's start, pregap and length, the hashes of the
+  data track's user data from INDEX 01, and the hashes of each audio track's raw 2,352-byte sectors
+  from INDEX 01 to the next track's INDEX 00, or to the lead-out for the last track, with no
+  header. Each audio entry gives that range as `first` and `stop`, disc LBAs with track 1's
+  INDEX 01 at 0, and `audioRange` says it in words. It is the range the toolkit's
+  `CueBinSheet.TrackExtent` gives and `CddaWave` and `CddaTrackFingerprints` read, and the bytes
+  of the track's `.cdda` file in `game-dir`. Every content hash is given as SHA-256 (`sha256`,
+  `nonDataSha256`) and as XXH3-128 (`xxh3`, `nonDataXxh3`), the hash the documentation standard
+  uses: 32 lower-case hex digits in canonical byte order, as `xxhsum -H2` prints it. These hashes
+  are the same whichever format holds the disc, so they are what restorations' fingerprints and
+  the formats are compared by.
   CD-ROM XA masters leave empty form 2 sectors on MODE2 data tracks as padding and postgaps: mode 2
   sectors whose two subheader copies agree and set the form 2 bit, with all 2,324 data bytes zero
   (the EDC is not checked). Wherever such a sector sits on the track, it adds 2,048 zero bytes to
@@ -231,16 +275,16 @@ My Game/
   sectors as `[first, stop)` ranges counted from INDEX 01 (`[]` when there are none), since no ISO
   keeps the fact that they were form 2. A form 2 sector with any nonzero data byte, and a mode 2
   sector of either form whose two subheader copies differ, holds no user data. A file whose extent covers an empty form 2
-  sector is not read: the `files` format, or a profile that lists expected paths (whose check
+  sector is not read: the `files` and `game-dir` formats, or a profile that lists expected paths (whose check
   reads the files), stops the run with its sector number before any format is written.
   A raw data track can run on past the ISO 9660 volume its primary volume descriptor declares,
   and some discs hold sectors there with no user data: no sync pattern, another mode, a form 2
   sector that carries data, or subheader copies that differ.
   `data.nonDataSectors` lists those sectors as `[first, stop)` ranges counted from INDEX 01, and
-  `data.nonDataSha256` is the SHA-256 of their raw 2,352 bytes in order (`[]` and `null` when there
-  are none). They add nothing to `data.sha256`. Inside the declared volume, or on a track with no
+  `data.nonDataSha256` and `data.nonDataXxh3` hash their raw 2,352 bytes in order (`[]` and `null`
+  when there are none). They add nothing to `data.sha256`. Inside the declared volume, or on a track with no
   volume descriptor (or one whose logical block size is not 2,048 bytes), a sector without user
-  data stops the run with its sector number. When `files` is requested and a file's extent reaches
+  data stops the run with its sector number. When `files` or `game-dir` is requested and a file's extent reaches
   one of the listed sectors, the run stops with its sector number before any format is written.
   The declared size is an address, resolved as [Data tracks after audio](#data-tracks-after-audio)
   describes; a track whose file system cannot be located admits no sector past its volume. The
@@ -274,8 +318,9 @@ My Game/
   image (whose offset the archiver cannot know) or the data track copy (which reads no audio).
 - `profile.checks`: each expectation of the profile and what the disc showed.
 - `outputs`: each format's files, with size, CRC32, MD5, SHA-1 and SHA-256 (the hashes disc
-  databases such as Redump list, so you can check your dump against them yourself), what the
-  format leaves out or generates (`notes`), and its `verification`:
+  databases such as Redump list, which `--dat` compares) and XXH3-128 (`xxh3`), what the
+  format leaves out or generates (`notes`), for `game-dir` the `listing` of its files, and its
+  `verification`:
   - `matched`: everything the source holds was compared and agreed.
   - `partial`: everything compared agreed, and `notCompared` lists what the format does not hold
     or could not be compared: audio left out of an ISO, lossy Ogg audio, sound in a pregap that
@@ -286,9 +331,47 @@ My Game/
   sectors, so no BIN/CUE, CloneCD or CHD can be made from it. A data track with sectors that hold
   no user data has no ISO form, so the ISO formats are unavailable for it; BIN/CUE, CloneCD and
   CHD keep those sectors and compare them byte for byte.
+- `redump`: `null` without `--dat`. Otherwise the DAT's file name (`dat`), the outcome (`status`,
+  see [Comparing with a Redump DAT](#comparing-with-a-redump-dat)), the game the track files match
+  best (`game`, `null` when none), each file of the `bincue-split` copy with its `kind`
+  (`cueSheet` or `track`), whether it `matched` and the DAT's name for it (`datName`), the files
+  whose name differs from the DAT's (`nameDifferences`), and what differed (`differences`).
 
 The formats the archiver writes are compared with the source sample for sample: each is written
 from the same samples, and none of them moves the audio.
+
+## The GAME_DIR layout
+
+The documentation standard lays out a build's files in `GAME_DIR/<build ID>/`, with the files a
+game reads from its disc under `CD` (`CD2` and so on for a later disc). `game-dir` writes that `CD`
+directory for one disc, ready to copy into `GAME_DIR/<build ID>/`:
+
+- `CD/<path>` for each file of the first data track. Names come from the disc's primary ISO 9660
+  volume, as a build entry names a file read from its CD (the standard's ENTRY-TYPES-11), not from
+  Joliet: the version suffix is dropped, so `SETUP.EXE;1` becomes `CD/SETUP.EXE`, as is a dot
+  that ends a name with no extension. A name that would then be the same as another file's or a
+  directory's beside it is kept in full (`INSTALL.;1` beside the directory `INSTALL`). Each file
+  gets the date the volume records.
+- `CD/trackNN.cdda` for each audio track, with its two-digit number from the table of contents:
+  the track's raw 2,352-byte sectors from INDEX 01 to the next track's INDEX 00, or to the lead-out
+  for the last track, with no header. This is the range of the manifest's audio hashes, and the
+  range `CueBinSheet.TrackExtent` gives in LegacyFormats. The pregap is left out.
+
+The output's `listing` in the manifest gives each file as a build entry's manifest lists it, to
+copy into the restoration's build entry:
+
+```json
+[
+  { "path": "CD:SETUP.EXE", "size": 48128, "xxh3": "..." },
+  { "path": "CD:track02", "format": "cdda", "size": 31752000, "xxh3": "..." }
+]
+```
+
+Each `xxh3` is what `xxhsum -H2` prints for the file. The run reads every written file back and
+compares its path, size, SHA-256 and XXH3-128 with the source's files and audio hashes, and the
+listing with the written files. Sound in a pregap, which the layout does not hold, is listed as
+not compared. A disc file or directory at the root named like a track file (`TRACK02.CDDA`)
+makes the format unavailable, since the two would share a name.
 
 ## Read offsets
 

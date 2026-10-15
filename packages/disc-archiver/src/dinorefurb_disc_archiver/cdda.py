@@ -97,22 +97,24 @@ def disc_samples(disc: Disc, first: int, count: int) -> bytes:
     return b"".join(iter_disc_samples(disc, first, count))
 
 
-def track_hashes(track: Track, tolerance: int = TOLERANCE_SAMPLES) -> tuple[str, int, str | None]:
-    """SHA-256 and size of a track's samples from INDEX 01, and the XXH3-128 of its central samples.
+def track_hashes(track: Track, tolerance: int = TOLERANCE_SAMPLES) -> tuple[str, str, int, str | None]:
+    """SHA-256, XXH3-128 and size of a track's samples from INDEX 01, and the XXH3-128 of its
+    central samples.
 
     The central samples run from ``tolerance`` to the track's samples minus ``tolerance``; None when
     the track is too short to have any.
     """
-    sha, central, position = hashlib.sha256(), xxhash.xxh3_128(), 0
+    sha, whole, central, position = hashlib.sha256(), xxhash.xxh3_128(), xxhash.xxh3_128(), 0
     low = tolerance * BYTES_PER_SAMPLE
     high = (track.length * SAMPLES_PER_SECTOR - tolerance) * BYTES_PER_SAMPLE
     for chunk in track.iter_raw(0, track.length):
         sha.update(chunk)
+        whole.update(chunk)
         start, stop = max(low, position), min(high, position + len(chunk))
         if start < stop:
             central.update(memoryview(chunk)[start - position : stop - position])
         position += len(chunk)
-    return sha.hexdigest(), position, central.hexdigest() if high > low else None
+    return sha.hexdigest(), whole.hexdigest(), position, central.hexdigest() if high > low else None
 
 
 @dataclass(frozen=True)
@@ -318,7 +320,7 @@ def correct_read_offset(sheet: Path, offset: int, directory: Path, log: Log) -> 
     ``offset`` means what the same value means to redumper, whose drive database takes AccurateRip's
     offsets: a drive with a read offset of +N returns, at each position, the sample N samples
     earlier on the disc, so the corrected sample at each position is the dump's sample N later.
-    redumper (release b756, the one ``redumper.json`` pins) says so beside
+    redumper (release b761, the one ``redumper.json`` pins) says so beside
     ``drive_get_read_offset`` in ``drive.ixx`` ("the drive offset number has to be added to the
     data read start in order to get it corrected (positive offset means that data has to be
     shifted left)"), and does it in ``cd/cd_dump.ixx``: the sector the drive returns for LBA L is

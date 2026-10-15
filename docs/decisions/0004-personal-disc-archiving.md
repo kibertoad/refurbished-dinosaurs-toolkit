@@ -44,11 +44,10 @@ same content, to test its fingerprinting and import against all of them.
    standalone download per platform (Windows x64, macOS arm64, Linux x64), frozen with
    PyInstaller, holding the window and the command. When redumper is missing, the archiver
    downloads the release pinned in `redumper.json` (a tag and each platform's SHA-256) into the
-   person's data folder, unmodified, and uses it only when its SHA-256 matches the pin, or
-   GitHub's published digest while the pin leaves the platform `null`. The window asks before
-   downloading; the command downloads unless told not to. When the download is declined or
-   fails, `auto` falls back to cdrdao, then to the data track copy, and says so. The PyPI package
-   stays for developers, scripts and CI.
+   person's data folder, unmodified, and uses it only when its SHA-256 matches the pin. The
+   window asks before downloading; the command downloads unless told not to. When the download
+   is declined or fails, `auto` falls back to cdrdao, then to the data track copy, and says so.
+   The PyPI package stays for developers, scripts and CI.
 
 ## Consequences
 
