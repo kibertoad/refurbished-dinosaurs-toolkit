@@ -258,6 +258,14 @@ class ProgramBackendTests(unittest.TestCase):
         self.assertEqual((record["refined"], record["sectors"], record["outcome"]), (False, 2, "tooMany"))
         self.assertFalse(manifest_ok(manifest))
 
+    def test_a_failed_run_is_not_judged_by_an_earlier_run_in_the_log(self) -> None:
+        # redumper appends to the log: an earlier misread run must not stand in for this one.
+        archival = self.dir / "out" / "archival"
+        archival.mkdir(parents=True)
+        (archival / "disc.log").write_text(redumper_log(in_database=False, q_errors=1000))
+        with self.assertRaisesRegex(DiscError, "redumper exited with code 1"):
+            archive(output=self.dir / "out", profile=BUILTIN_PROFILES["any"], log=silent_log, drive="broken", backend="redumper")
+
     def test_a_drive_redumper_does_not_list_has_its_sector_order_detected(self) -> None:
         lines: list[str] = []
         with mock.patch.dict(os.environ, {"STAND_IN_DRIVE": "unknown"}):
@@ -325,6 +333,21 @@ class ProgramBackendTests(unittest.TestCase):
         self.assertTrue(any("the audio is uncorrected" in line for line in lines))
         self.assertNotEqual(uncorrected["disc"]["audio"][0]["sha256"], reference["audio"][0]["sha256"])  # type: ignore[index]
 
+    def test_a_reference_copy_reads_with_redumper_and_writes_its_formats(self) -> None:
+        out = self.dir / "out"
+        manifest = archive(output=out, profile=BUILTIN_PROFILES["any"], log=silent_log, drive="E:", formats=["reference"])
+        self.assertEqual(manifest["source"]["backend"], "redumper")  # type: ignore[index]
+        self.assertEqual([o["format"] for o in manifest["outputs"]], ["bincue-split", "files"])  # type: ignore[union-attr]
+
+    def test_a_reference_copy_does_not_fall_back_to_cdrdao(self) -> None:
+        os.environ["DISC_ARCHIVER_REDUMPER"] = str(self.dir / "nowhere")
+        out = self.dir / "out"
+        with self.assertRaisesRegex(DiscError, "A reference copy is made only with redumper"):
+            archive(output=out, profile=BUILTIN_PROFILES["any"], log=silent_log, drive="E:", formats=["reference"])
+        self.assertFalse((out / "archival" / "argv.json").exists())
+        with self.assertRaisesRegex(DiscError, "not with the cdrdao backend"):
+            archive(output=out, profile=BUILTIN_PROFILES["any"], log=silent_log, drive="E:", backend="cdrdao", formats=["reference"])
+
     def test_a_missing_program_that_cannot_be_downloaded_says_how_to_install_it(self) -> None:
         os.environ["DISC_ARCHIVER_REDUMPER"] = str(self.dir / "nowhere")
         with self.assertRaisesRegex(DiscError, "offline in tests.*github.com/superg/redumper"):
@@ -390,6 +413,11 @@ class RedumperDriveTests(unittest.TestCase):
         assert drive is not None
         self.assertEqual((drive["sectorOrder"], drive["sectorOrderSource"]), ("DATA_SUB", "override"))
 
+    def test_a_firmware_the_database_lacks_reads_with_the_default(self) -> None:
+        drive = backends.redumper_drive(redumper_log(in_database=False, warning="warning: unsupported drive firmware"))
+        assert drive is not None
+        self.assertEqual((drive["inRedumperDatabase"], drive["sectorOrderSource"]), (False, "default"))
+
     def test_an_empty_revision_is_none(self) -> None:
         drive = backends.redumper_drive(redumper_log(revision=""))
         assert drive is not None
@@ -423,6 +451,19 @@ class RedumperDriveTests(unittest.TestCase):
         self.assertEqual(backends.redumper_dumped_sectors(redumper_log(lead_out=319278)), 319278)
         limited = redumper_log(lead_out=319278, arguments="dump --drive=E: --lba-start=150000 --lba-end=152000")
         self.assertEqual(backends.redumper_dumped_sectors(limited), 2000)
+        # redumper also takes an option's value as the next argument.
+        spaced = redumper_log(lead_out=319278, arguments="dump --drive=E: --lba-start 150000 --lba-end 152000")
+        self.assertEqual(backends.redumper_dumped_sectors(spaced), 2000)
+
+    def test_the_dump_starts_at_the_drives_pregap_start(self) -> None:
+        self.assertEqual(backends.redumper_dumped_sectors(redumper_log(lead_out=1000, pregap_start=-135)), 1135)
+
+    def test_the_gap_between_sessions_is_not_counted(self) -> None:
+        # Session 2's track starts at 31,400, so redumper reads again from 31,400 - 135.
+        text = redumper_log(sessions=[(0, 20000), (31400, 36400)], pregap_start=-135)
+        self.assertEqual(backends.redumper_dumped_sectors(text), 135 + 20000 + 135 + 5000)
+        misread = redumper_log(sessions=[(0, 20000), (31400, 36400)], pregap_start=-135, in_database=False, q_errors=25270)
+        self.assertIsNotNone(backends.redumper_misread_layout(misread))
 
     def test_q_failing_in_every_sector_is_a_misread_order(self) -> None:
         message = backends.redumper_misread_layout(redumper_log(in_database=False, q_errors=1000))

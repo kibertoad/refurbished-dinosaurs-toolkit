@@ -14,7 +14,7 @@ import wave
 from pathlib import Path
 
 import xxhash
-from synthetic import FILES, SyntheticCdExtra, SyntheticDisc, form2_sector, iso_image, mode1_sector, mode2_raw
+from synthetic import FILES, SyntheticCdExtra, SyntheticDisc, form2_sector, iso_image, mode1_sector, mode2_raw, second_pvd
 
 from dinorefurb_disc_archiver import ccd, formats, isofs, pipeline
 from dinorefurb_disc_archiver.cue import read_cue, read_iso
@@ -266,6 +266,47 @@ class DataFormatTests(FormatTestCase):
         plain.write_bytes(iso_image({"README.TXT": b"x"}, joliet=False))
         output = self.write("files", read_iso(plain))
         self.assertEqual([p.name for p in output.entry.iterdir()], ["README.TXT"])
+
+    def test_files_are_read_when_a_pvd_copy_differs_only_in_application_use(self) -> None:
+        marked = self.dir / "marked.iso"
+        # A second primary volume descriptor marked in its application use field, as some
+        # copy-protected discs have it.
+        marked.write_bytes(second_pvd(iso_image({"README.TXT": b"x", "DATA/A.BIN": b"y" * 5000}), {898: 0x25, 899: 0x94, 908: 0xE9}))
+        output = self.write("files", read_iso(marked))
+        self.assertEqual((output.entry / "README.TXT").read_bytes(), b"x")
+        self.assertEqual((output.entry / "DATA" / "A.BIN").read_bytes(), b"y" * 5000)
+
+    def test_files_are_read_when_a_pvd_copy_also_differs_in_the_reserved_bytes(self) -> None:
+        marked = self.dir / "reserved.iso"
+        # pycdlib does not compare the reserved bytes after the application use field.
+        marked.write_bytes(second_pvd(iso_image({"README.TXT": b"x"}), {898: 0x25, 1400: 0x7F}))
+        output = self.write("files", read_iso(marked))
+        self.assertEqual((output.entry / "README.TXT").read_bytes(), b"x")
+
+    def test_a_pvd_copy_differing_outside_application_use_leaves_files_unavailable(self) -> None:
+        disagreeing = self.dir / "disagreeing.iso"
+        # The second copy's root directory record gives another recording year.
+        disagreeing.write_bytes(second_pvd(iso_image({"README.TXT": b"x"}), {156 + 18: 0x01}))
+        manifest = derive(read_iso(disagreeing), self.dir / "out", "Synth", ["iso", "files"], BUILTIN_PROFILES["any"], silent_log, {})
+        self.assertEqual([o["format"] for o in manifest["outputs"]], ["iso"])  # type: ignore[index]
+        self.assertEqual(manifest["outputs"][0]["verification"]["status"], "matched")  # type: ignore[index]
+        (unavailable,) = manifest["unavailable"]  # type: ignore[misc]
+        self.assertEqual(unavailable["format"], "files")
+        self.assertIn("differs from the one at sector 16 at byte 174, outside the application use field", unavailable["reason"])
+        self.assertFalse((self.dir / "out" / "files").exists())
+
+    def test_a_volume_pycdlib_cannot_read_leaves_files_unavailable(self) -> None:
+        broken = self.dir / "broken.iso"
+        iso = bytearray(iso_image({"README.TXT": b"x"}))
+        # The volume descriptor set terminator at sector 18 becomes a boot record, so the set has
+        # no terminator.
+        iso[18 * 2048] = 0
+        broken.write_bytes(bytes(iso))
+        manifest = derive(read_iso(broken), self.dir / "out", "Synth", ["iso", "files"], BUILTIN_PROFILES["any"], silent_log, {})
+        self.assertEqual([o["format"] for o in manifest["outputs"]], ["iso"])  # type: ignore[index]
+        (unavailable,) = manifest["unavailable"]  # type: ignore[misc]
+        self.assertEqual(unavailable["format"], "files")
+        self.assertIn("is not a readable ISO 9660 file system", unavailable["reason"])
 
     def test_joliet_versions_are_dropped_from_extracted_names(self) -> None:
         versioned = self.dir / "versioned.iso"

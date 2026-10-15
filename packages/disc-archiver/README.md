@@ -49,11 +49,11 @@ kept unchanged in the `archival` folder.
 
 ### Drives redumper does not list
 
-redumper keeps a database of drives and how each returns a raw sector: the order of its data, C2 and subchannel blocks. A drive missing from it is read in the generic order, and a drive that returns its blocks in another order then reads as damaged in every sector: C2 errors throughout, an invalid subchannel everywhere, and a dump that takes hours. The archiver passes redumper `--auto-detect`, which reads one sector in each order and keeps the first whose subchannel checks out. It changes nothing for a drive the database has its own configuration for.
+redumper keeps a database of drives and how each returns a raw sector: the order of its data, C2 and subchannel blocks. A drive missing from it is read in the generic order, and a drive that returns its blocks in another order then reads as damaged in every sector: C2 errors throughout, an invalid subchannel everywhere, and a dump that takes hours. The archiver passes redumper `--auto-detect`, which reads one sector in each order and keeps the first whose subchannel checks out. redumper detects the order of every drive it reads in the generic way, which takes in the drives its database lists with the generic drive type (detection confirms or replaces their listed order), and leaves other drive types alone.
 
 `--backend-arg=--drive-sector-order=<order>` sets the order by hand, and the archiver then leaves detection off. The manifest's `source.driveConfiguration` records the configuration redumper read with and where the order came from.
 
-A dump whose subchannel is invalid in more than 90% of its sectors is refused: the order was misread, so the dump cannot be used. The error names the orders to try. A correctly read disc fails the check in a fraction of a percent of its sectors, even when scratched. An order without a subchannel (`DATA_C2`) is not checked.
+A dump whose subchannel is invalid in more than 90% of its sectors is refused: the order was misread, so the dump cannot be used. The error names the orders to try. Dump again into a new output folder, since redumper will not overwrite the refused dump. A correctly read disc fails the check in a fraction of a percent of its sectors, even when scratched. An order without a subchannel (`DATA_C2`) is not checked.
 
 ### Data errors
 
@@ -113,8 +113,15 @@ gives the same cue bytes on Windows, macOS and Linux, so a `bincue-split` sheet 
 DAT's cue entry wherever it was written. redumper's own `.cue` in `archival` is left as redumper
 wrote it, which is CRLF on Windows and LF elsewhere.
 
-`--format all` writes every format that can be made. `--format recommended`, the default,
-writes what the disc profile recommends.
+`--format all` writes every format that can be made. `--format recommended`, the default, writes
+what the disc profile recommends, and combines with other formats: `--format recommended --format
+iso` writes both. `--format reference` makes a golden-reference copy: `bincue-split`, the layout a
+Redump DAT lists, so `check --dat` compares the copy later without converting it, and `files`. On
+`rip` it reads the disc with redumper only. With `--backend auto` it does not fall back to cdrdao
+or the data track copy, which keep no subchannel or protection data: if redumper is neither
+installed nor downloadable, or `--no-download` declines it, the rip stops before reading the disc.
+`--backend cdrdao` or `data-copy` with `reference` is a usage error (exit code `2`). An ISO given
+to `convert` has no raw sectors, so `bincue-split` is reported as not written.
 
 Programs are found on `PATH`, or through `DISC_ARCHIVER_REDUMPER`, `DISC_ARCHIVER_CDRDAO`,
 `DISC_ARCHIVER_TOC2CUE`, `DISC_ARCHIVER_CHDMAN` and `DISC_ARCHIVER_FFMPEG`. A format whose program
@@ -185,8 +192,11 @@ disc-archiver-gui --profile path/to/disc-profile.json         # installed with P
 ```
 
 Tick the notice, choose the drive (or an image you already made), the game's profile and the
-folder, and press **Make the copy**. The formats the profile recommends are ticked already.
-**Redump DAT**, under the folder, takes a DAT you downloaded, as `--dat` does.
+folder, and press **Make the copy**. The formats the profile recommends are ticked already. **Make
+a reference copy** ticks the reference formats instead and, for a drive, chooses redumper; both
+stay chosen when the profile or the source changes, until you choose another backend or **Use the
+recommended formats**. **Redump DAT**, under the folder, takes a DAT you downloaded, as `--dat`
+does.
 
 ### The command
 
@@ -201,6 +211,7 @@ disc-archiver install-redumper                           # download the pinned r
 disc-archiver rip --drive E: --output "D:\Discs\My Game" --name "My Game" \
     --profile disc-profile.json --accept-personal-use
 disc-archiver rip --drive /dev/sr0 --output ~/discs/game --format all --accept-personal-use
+disc-archiver rip --drive E: --output "D:\Discs\My Game" --format reference --accept-personal-use
 disc-archiver convert --input "My Game.cue" --output ~/discs/game --format iso --format files \
     --accept-personal-use                                # formats from a copy you already have
 disc-archiver rip --drive E: --backend cdrdao --read-offset 6 --output out --accept-personal-use
@@ -354,7 +365,7 @@ My Game/
   image (whose offset the archiver cannot know) or the data track copy (which reads no audio).
   `driveConfiguration` is the drive configuration redumper read with, from its log, and null for any other source or when the log does not show it:
   - `vendor`, `product` and `revision`: the drive's inquiry. `revision` is null when the drive reports none.
-  - `inRedumperDatabase`: false when redumper warned that its database does not list the drive.
+  - `inRedumperDatabase`: false when redumper warned that its database does not list the drive, or lists it without its firmware revision. Either way redumper starts from the generic configuration.
   - `type`, `readOffset`, `c2Shift`, `pregapStart` and `readMethod`: redumper's `configuration:` line.
   - `sectorOrder`: the order of the data, C2 and subchannel blocks the dump read with.
   - `sectorOrderSource`: `database` (redumper's entry for the drive), `auto-detected` (found by `--auto-detect`, see [Drives redumper does not list](#drives-redumper-does-not-list)), `override` (given with `--backend-arg=--drive-sector-order=<order>`) or `default` (the generic order, for a drive the database lacks when detection found none).
@@ -593,6 +604,8 @@ choose: `files` is unavailable with the reason, a profile's `expectedPaths` stop
 fingerprint admits no sector past the volume. An ISO-plus-cue copy of a CD-Extra disc keeps no
 sector headers, so its files can be located only when its sheet gives the sessions with
 `REM SESSION` lines or otherwise places the track where it sits on the disc.
+
+A volume may record its primary volume descriptor more than once. Some copy-protected discs mark the second copy in its application use field, which the file system never reads, so a copy that differs from the one at sector 16 only there is read as the first one. The bytes after that field are reserved, and pycdlib reads a copy that differs only in them, or in the file structure version, as it is. A copy whose other fields differ leaves which one describes the file system unknown: `files` and `game-dir` are unavailable with the reason, and the other formats are still written. The same holds for a volume whose descriptors or directories cannot be read at all.
 
 ## Disc profiles
 

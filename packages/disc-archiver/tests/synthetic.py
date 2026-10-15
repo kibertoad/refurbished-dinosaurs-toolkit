@@ -45,6 +45,16 @@ def iso_image(files: dict[str, bytes] | None = None, volume: str = "SYNTH_DISC",
     return out.getvalue()
 
 
+def second_pvd(iso: bytes, changes: dict[int, int]) -> bytes:
+    """``iso`` (made by :func:`iso_image` with Joliet names) with its supplementary volume
+    descriptor at sector 17 replaced by a copy of the primary one at sector 16, each byte at an
+    offset in ``changes`` set to the value given. The volume then reads by its ISO 9660 names."""
+    copy = bytearray(iso[16 * 2048 : 17 * 2048])
+    for offset, value in changes.items():
+        copy[offset] = value
+    return iso[: 17 * 2048] + bytes(copy) + iso[18 * 2048 :]
+
+
 def _iso_name(name: str, is_file: bool) -> str:
     cleaned = "".join(c if c.isalnum() or c in "._" else "_" for c in name.upper())
     if not is_file:
@@ -332,45 +342,54 @@ def redumper_log(
     detected_order: str | None = None,
     arguments: str = "--drive=E: --image-name=Game",
     lead_out: int = 1000,
+    sessions: list[tuple[int, int]] | None = None,
+    pregap_start: int = 0,
     q_errors: int = 0,
     c2_samples: int = 0,
     dumped: bool = True,
     write_offset: int | None = None,
     data_error_sectors: int | None = None,
     extra_lines: tuple[str, ...] = (),
+    warning: str | None = None,
 ) -> str:
     """One run of a redumper b761 log, in the format its ``disc`` command writes.
 
     The lines follow b761's ``logger.ixx``, ``redumper.ixx``, ``drive.ixx``, ``drive/detect.ixx``,
-    ``cd/cd_dump.ixx`` and ``cd/cd_split.ixx``. The drive is a stand-in, not a real model.
-    ``detected_order`` adds the ``drive::detect`` line that ``--auto-detect`` writes, ``dumped`` the
-    dump's error totals, ``write_offset`` split's disc write offset, ``data_error_sectors`` split
-    stopping on that many sectors with C2 errors, and ``extra_lines`` lines at the end.
+    ``cd/toc.ixx``, ``cd/cd_dump.ixx`` and ``cd/cd_split.ixx``. The drive is a stand-in, not a real
+    model. ``detected_order`` adds the ``drive::detect`` line that ``--auto-detect`` writes, ``dumped``
+    the dump's error totals, ``write_offset`` split's disc write offset, ``data_error_sectors`` split
+    stopping on that many sectors with C2 errors, and ``extra_lines`` lines at the end. ``sessions``
+    lists each session's first LBA and lead-out (one data track each), in place of one session from
+    0 to ``lead_out``. ``warning`` replaces the database warning a drive the database lacks gets.
     """
     lines = ["=== 2026-01-02 03:04:05 " + "=" * 56, "redumper (build: b761)", "", f"arguments: {arguments}"]
     if not in_database:
-        lines += ["warning: drive not found in the database", "warning: using generic drive"]
+        lines += [warning or "warning: drive not found in the database", "warning: using generic drive"]
     lines += [
         "",
         "drive information",
         "  path: E:",
         f"  inquiry: {vendor} - {product} (revision level: {revision or '<empty>'}, vendor specific: <empty>)",
-        f"  configuration: GENERIC (read offset: +6, C2 shift: 0, pre-gap start: +0, read method: BE, sector order: {configured_order})",
+        f"  configuration: GENERIC (read offset: +6, C2 shift: 0, pre-gap start: {pregap_start:+}, read method: BE, "
+        f"sector order: {configured_order})",
         "  profile: CD-ROM",
         "",
     ]
     if detected_order is not None:
         lines += ["*** DRIVE::DETECT (time check: 0s)", "", f"GENERIC: auto-detected sector order: {detected_order}", ""]
-    lines += [
-        "*** DUMP (time check: 0s)",
-        "",
-        "disc TOC:",
-        "  track 1 {  data }",
-        "    index 01 { LBA:      0, MSF: 00:02:00 }",
-        "  track A {  data }",
-        f"    index 01 {{ LBA: {lead_out:6}, MSF: 00:00:00 }}",
-        "",
-    ]
+    lines += ["*** DUMP (time check: 0s)", "", "disc TOC:"]
+    listed = sessions or [(0, lead_out)]
+    indent = "  " if len(listed) > 1 else ""
+    for number, (first, end) in enumerate(listed, 1):
+        if len(listed) > 1:
+            lines.append(f"  session {number}")
+        lines += [
+            f"{indent}  track {number} {{  data }}",
+            f"{indent}    index 01 {{ LBA: [{first:6} .. {end - 1:6}], length: {end - first:6}, MSF: 00:02:00-00:00:00 }}",
+            f"{indent}  track A {{  data }}",
+            f"{indent}    index 01 {{ LBA: {end:6}, MSF: 00:00:00 }}",
+        ]
+    lines.append("")
     if dumped:
         lines += ["media errors: ", "  SCSI: 0 samples", f"  C2: {c2_samples} samples", f"  Q: {q_errors}", ""]
     if write_offset is not None:
